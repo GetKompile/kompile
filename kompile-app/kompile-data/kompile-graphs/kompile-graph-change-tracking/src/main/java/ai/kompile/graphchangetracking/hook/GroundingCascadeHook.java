@@ -19,6 +19,7 @@ import ai.kompile.core.crawl.graph.GraphEnrichmentService;
 import ai.kompile.gateway.core.gateway.channel.ChannelMessageReceivedEvent;
 import ai.kompile.graphchangetracking.event.GraphChangesetCompletedEvent;
 import ai.kompile.knowledgegraph.grounding.AgentFactAssertedEvent;
+import ai.kompile.knowledgegraph.grounding.GroundingProgressEvent;
 import ai.kompile.knowledgegraph.reasoning.IncrementalReasoningOrchestrator;
 import ai.kompile.knowledgegraph.reasoning.RegroundResult;
 import lombok.extern.slf4j.Slf4j;
@@ -131,7 +132,7 @@ public class GroundingCascadeHook {
                         + "(+{}n +{}e)",
                 factSheetId, event.getChangesetId(),
                 event.getNodesCreated(), event.getEdgesCreated());
-        schedule(factSheetId, "changeset:" + event.getChangesetId());
+        schedule(factSheetId, "changeset:" + event.getChangesetId(), GroundingProgressEvent.TRIGGER_CRAWL);
     }
 
     /**
@@ -181,10 +182,21 @@ public class GroundingCascadeHook {
         log.info("GroundingCascadeHook: scheduling cascade for factSheet={} on agent assert '{}' "
                         + "value={} session={}",
                 factSheetId, event.getAtomKey(), event.getValue(), event.getSessionId());
-        schedule(factSheetId, "agentAssert:" + event.getAtomKey());
+        schedule(factSheetId, "agentAssert:" + event.getAtomKey(), GroundingProgressEvent.TRIGGER_ASSERT);
     }
 
     // ── Internal ─────────────────────────────────────────────────────────────────
+
+    /**
+     * Submit a cascade task to the per-factSheet executor using {@link GroundingProgressEvent#TRIGGER_CASCADE}
+     * as the default trigger label.
+     *
+     * @param factSheetId the fact sheet to re-ground
+     * @param logLabel    human-readable label for logging only (not propagated to progress events)
+     */
+    void schedule(long factSheetId, String logLabel) {
+        schedule(factSheetId, logLabel, GroundingProgressEvent.TRIGGER_CASCADE);
+    }
 
     /**
      * Submit a cascade task to the per-factSheet executor.
@@ -194,9 +206,11 @@ public class GroundingCascadeHook {
      * a fresh cascade that covers any missed delta.</p>
      *
      * @param factSheetId the fact sheet to re-ground
-     * @param trigger     human-readable trigger label for logging
+     * @param logLabel    human-readable trigger label for logging
+     * @param trigger     one of the {@link GroundingProgressEvent} TRIGGER_* constants, propagated
+     *                    to every {@link GroundingProgressEvent} emitted by this cascade run
      */
-    void schedule(long factSheetId, String trigger) {
+    void schedule(long factSheetId, String logLabel, String trigger) {
         ExecutorService executor = executors.computeIfAbsent(factSheetId, id -> {
             NamedThreadFactory threadFactory = new NamedThreadFactory(
                     "grounding-cascade-" + id);
@@ -206,27 +220,32 @@ public class GroundingCascadeHook {
         executor.submit(() -> {
             try {
                 log.debug("GroundingCascadeHook: starting cascade for factSheet={} trigger={}",
-                        factSheetId, trigger);
+                        factSheetId, logLabel);
                 if (graphEnrichmentService != null) {
                     // Preferred path: delegate to GraphHydrationOrchestrator via the SPI so that
                     // CASCADE (incremental) and BATCH (crawl ENRICHMENT) share the same pipeline.
-                    // The no-op callback is correct here — the cascade runs async after the SSE
-                    // has already closed, so there is no live progress listener.
+                    // Since GraphHydrationOrchestrator calls reasoningOrchestrator.runFullReground()
+                    // which already publishes GroundingProgressEvents via ApplicationEventPublisher,
+                    // events are emitted for free from the async cascade path.
+                    // NOTE: GraphEnrichmentService.enrich() uses the no-trigger overload (CASCADE);
+                    // for richer trigger labelling (CRAWL/ASSERT) the orchestrator is called directly
+                    // when graphEnrichmentService is absent (fallback path below).
                     graphEnrichmentService.enrich(factSheetId);
                     log.debug("GroundingCascadeHook: cascade done for factSheet={} trigger={} "
                                     + "(via GraphEnrichmentService)",
-                            factSheetId, trigger);
+                            factSheetId, logLabel);
                 } else {
                     // Fallback path: direct orchestrator call for lightweight deployments that
                     // do not include kompile-crawl-graph on the classpath.
-                    RegroundResult rg = orchestrator.runFullReground(factSheetId);
+                    // Thread the trigger label so GroundingProgressEvents carry the correct source.
+                    RegroundResult rg = orchestrator.runFullReground(factSheetId, trigger);
                     log.debug("GroundingCascadeHook: cascade done for factSheet={} trigger={} "
                                     + "versionsWritten={}",
-                            factSheetId, trigger, rg.versionsWritten());
+                            factSheetId, logLabel, rg.versionsWritten());
                 }
             } catch (Exception e) {
                 log.error("GroundingCascadeHook: cascade failed for factSheet={} trigger={}: {}",
-                        factSheetId, trigger, e.getMessage(), e);
+                        factSheetId, logLabel, e.getMessage(), e);
             }
         });
     }

@@ -80,6 +80,29 @@ export interface ClusterWorkersUpdate {
   timestamp: string;
 }
 
+/** A single step event in the living-KB grounding cascade, emitted on /topic/grounding/{factSheetId}. */
+export interface GroundingCascadeEvent {
+  factSheetId: number;
+  cascadeId: string;
+  trigger: 'CRAWL' | 'CHANNEL' | 'ASSERT' | 'MANUAL' | 'CASCADE';
+  stage: string;
+  status: 'STARTED' | 'RUNNING' | 'DONE' | 'ERROR';
+  message: string;
+  stepIndex: number;
+  totalSteps: number;
+  data?: {
+    rulesUpdated?: number;
+    meanWeightDelta?: number;
+    maxWeightDelta?: number;
+    factsMaterialized?: number;
+    promoted?: number;
+    contradictions?: number;
+    meanStrengthDelta?: number;
+    [key: string]: any;
+  };
+  timestamp: number;
+}
+
 @Injectable({
   providedIn: 'root'
 })
@@ -1134,6 +1157,39 @@ export class WebSocketService extends BaseService implements OnDestroy {
 
   unsubscribeFromSyncProgress(): void {
     this.unsubscribeFromTopic(WebSocketService.SYNC_ALL_TOPIC);
+  }
+
+  // ==================== Grounding Cascade Monitor WebSocket ====================
+
+  /** One event emitted per cascade step on /topic/grounding/{factSheetId} or /topic/grounding/all. */
+  private groundingCascadeUpdates = new Subject<GroundingCascadeEvent>();
+  public groundingCascadeUpdates$ = this.groundingCascadeUpdates.asObservable();
+
+  /**
+   * Subscribe to the live grounding/living-KB cascade events for a specific fact sheet.
+   * The backend emits one message per cascade stage (PROJECTION, PSL_LEARNING, PROMOTION, etc.)
+   * on /topic/grounding/{factSheetId}.  Also subscribes to the broadcast /topic/grounding/all
+   * so a null factSheetId shows all cascades.
+   */
+  subscribeToGroundingCascade(factSheetId: number | null): Observable<GroundingCascadeEvent> {
+    const allTopic = '/topic/grounding/all';
+    this.subscribeToSchedulerTopic(allTopic, this.groundingCascadeUpdates);
+
+    if (factSheetId != null) {
+      const fseTopic = `/topic/grounding/${factSheetId}`;
+      this.subscribeToSchedulerTopic(fseTopic, this.groundingCascadeUpdates);
+      return this.groundingCascadeUpdates$.pipe(
+        filter(ev => ev.factSheetId == null || ev.factSheetId === factSheetId)
+      );
+    }
+    return this.groundingCascadeUpdates$;
+  }
+
+  unsubscribeFromGroundingCascade(factSheetId: number | null): void {
+    this.unsubscribeFromTopic('/topic/grounding/all');
+    if (factSheetId != null) {
+      this.unsubscribeFromTopic(`/topic/grounding/${factSheetId}`);
+    }
   }
 
   // ==================== Adaptive Batching Audit WebSocket ====================

@@ -1,0 +1,98 @@
+<!--
+  ~ Copyright 2025 Kompile Inc.
+  ~ Licensed under the Apache License, Version 2.0 (the "License").
+  -->
+
+<div class="grounding-monitor">
+  <!-- Header -->
+  <div class="monitor-header">
+    <div class="header-row">
+      <mat-icon class="header-icon">sync</mat-icon>
+      <div>
+        <h3 class="header-title">Live Reasoning / Living-KB Cascade</h3>
+        <p class="header-sub">
+          Real-time stream of the KB grounding cascade — PSL inference, weight learning,
+          fact promotion, pruning and more — triggered by crawls, channel messages, or
+          manual assertions.
+        </p>
+      </div>
+      <div class="connection-badge" [class.live]="connected" [class.waiting]="!connected">
+        <span class="dot"></span>
+        {{ connected ? 'Live' : 'Waiting for events…' }}
+      </div>
+    </div>
+  </div>
+
+  <!-- Empty state -->
+  <div *ngIf="cascades.length === 0" class="empty-state">
+    <mat-icon>sensors</mat-icon>
+    <span>No cascade events yet.</span>
+    <span class="empty-hint">
+      Trigger a crawl, send a channel message, or assert a fact to start the cascade.
+      Events appear here in real time via
+      <code>/topic/grounding/{{ factSheetId ?? 'all' }}</code>.
+    </span>
+  </div>
+
+  <!-- Cascade cards — newest first -->
+  <div *ngFor="let group of cascades; trackBy: trackByCascadeId" class="cascade-card"
+       [class.active]="!group.isComplete && !group.hasError"
+       [class.done]="group.isComplete"
+       [class.errored]="group.hasError">
+
+    <!-- Cascade header -->
+    <div class="cascade-header">
+      <mat-icon class="trigger-icon" [matTooltip]="triggerLabel(group.trigger)">
+        {{ triggerIcon(group.trigger) }}
+      </mat-icon>
+      <div class="cascade-meta">
+        <span class="cascade-id" [matTooltip]="'Cascade ID: ' + group.cascadeId">
+          {{ group.cascadeId | slice:0:12 }}…
+        </span>
+        <span class="trigger-badge trigger-{{ group.trigger.toLowerCase() }}">
+          {{ triggerLabel(group.trigger) }}
+        </span>
+        <span class="fs-badge" *ngIf="group.factSheetId">FS {{ group.factSheetId }}</span>
+      </div>
+
+      <div class="cascade-status">
+        <span *ngIf="!group.isComplete && !group.hasError" class="pulse-dot"></span>
+        <mat-icon *ngIf="group.isComplete" class="status-icon done-icon">check_circle</mat-icon>
+        <mat-icon *ngIf="group.hasError" class="status-icon error-icon">error</mat-icon>
+        <span class="duration" *ngIf="group.finishedAt">{{ formatDuration(group) }}</span>
+      </div>
+    </div>
+
+    <!-- Progress bar (active cascades) -->
+    <mat-progress-bar *ngIf="!group.isComplete && !group.hasError"
+                      mode="determinate"
+                      [value]="cascadeProgress(group)"
+                      class="cascade-progress">
+    </mat-progress-bar>
+
+    <!-- Step list -->
+    <div class="steps-list">
+      <div *ngFor="let step of group.steps; trackBy: trackByStage"
+           class="step-row"
+           [class.step-done]="step.status === 'DONE'"
+           [class.step-running]="step.status === 'RUNNING' || step.status === 'STARTED'"
+           [class.step-error]="step.status === 'ERROR'">
+
+        <mat-icon class="step-icon">{{ statusIcon(step.status) }}</mat-icon>
+
+        <div class="step-body">
+          <div class="step-top">
+            <span class="step-label">{{ stageLabel(step.stage) }}</span>
+            <span class="step-progress" *ngIf="step.totalSteps > 0">
+              {{ step.stepIndex }}/{{ step.totalSteps }}
+            </span>
+          </div>
+          <div class="step-message" *ngIf="step.message">{{ step.message }}</div>
+          <div class="step-data" *ngIf="step.data && formatDataSummary(step.data) as summary">
+            <span *ngIf="summary">{{ summary }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

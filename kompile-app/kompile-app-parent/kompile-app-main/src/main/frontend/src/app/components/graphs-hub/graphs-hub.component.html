@@ -99,9 +99,9 @@
       <mat-icon class="tab-icon">history</mat-icon>
       <span class="tab-label">Audit</span>
     </button>
-    <button class="sub-tab" [class.active]="activeSubTab === 'hydration'" (click)="selectSubTab('hydration')">
-      <mat-icon class="tab-icon">water</mat-icon>
-      <span class="tab-label">Hydration</span>
+    <button class="sub-tab" [class.active]="activeSubTab === 'liveReasoning'" (click)="selectSubTab('liveReasoning')">
+      <mat-icon class="tab-icon">sensors</mat-icon>
+      <span class="tab-label">Live Reasoning</span>
     </button>
     <button class="sub-tab" [class.active]="activeSubTab === 'factsByTier'" (click)="selectSubTab('factsByTier')">
       <mat-icon class="tab-icon">grade</mat-icon>
@@ -188,8 +188,8 @@
     <div *ngIf="activeSubTab === 'audit'">
       <app-audit-timeline [factSheetId]="activeFactSheetId"></app-audit-timeline>
     </div>
-    <div *ngIf="activeSubTab === 'hydration'">
-      <app-hydration-progress-panel></app-hydration-progress-panel>
+    <div *ngIf="activeSubTab === 'liveReasoning'">
+      <app-grounding-monitor [factSheetId]="activeFactSheetId"></app-grounding-monitor>
     </div>
     <div *ngIf="activeSubTab === 'factsByTier'">
       <app-facts-by-tier-panel [factSheetId]="activeFactSheetId"></app-facts-by-tier-panel>

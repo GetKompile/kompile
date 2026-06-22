@@ -41,7 +41,7 @@ import { EventObservationDashboardComponent } from '../event-observation/event-o
 import { CausalAttributionPanelComponent } from '../event-observation/causal-attribution-panel.component';
 import { GroundingConsolePanelComponent } from '../grounding-console-panel/grounding-console-panel.component';
 import { AuditTimelineComponent } from '../audit-timeline/audit-timeline.component';
-import { HydrationProgressPanelComponent } from '../hydration-progress-panel/hydration-progress-panel.component';
+import { GroundingMonitorComponent } from '../grounding-monitor/grounding-monitor.component';
 import { FactsByTierPanelComponent } from '../facts-by-tier-panel/facts-by-tier-panel.component';
 import { KbWeightsPanelComponent } from '../kb-weights-panel/kb-weights-panel.component';
 import { OpinionBrowserComponent } from '../opinion-browser/opinion-browser.component';
@@ -52,7 +52,7 @@ type GraphsTab = 'visualizer' | 'hierarchy' | 'builder'
   | 'eventObservation' | 'causalAttribution'
   | 'overview' | 'health' | 'pipelines' | 'provenance' | 'diff'
   | 'maintenance' | 'rules' | 'extract' | 'patch' | 'eval' | 'io'
-  | 'grounding' | 'audit' | 'hydration' | 'folRules'
+  | 'grounding' | 'audit' | 'liveReasoning' | 'folRules'
   | 'factsByTier' | 'weights' | 'opinions' | 'communities';
 
 /**
@@ -88,7 +88,7 @@ type GraphsTab = 'visualizer' | 'hierarchy' | 'builder'
     CausalAttributionPanelComponent,
     GroundingConsolePanelComponent,
     AuditTimelineComponent,
-    HydrationProgressPanelComponent,
+    GroundingMonitorComponent,
     FactsByTierPanelComponent,
     KbWeightsPanelComponent,
     OpinionBrowserComponent,

@@ -33,6 +33,7 @@ import ai.kompile.knowledgegraph.confidence.KbConfigManager;
 import ai.kompile.knowledgegraph.confidence.SourceTrustResolver;
 import jakarta.annotation.PostConstruct;
 import ai.kompile.graph.reasoning.learning.WeightStore;
+import ai.kompile.graph.reasoning.mebn.MFrag;
 import ai.kompile.graph.reasoning.mebn.MTheory;
 import ai.kompile.graph.reasoning.model.ReasoningGraph;
 import ai.kompile.graph.reasoning.psl.HlMrfMapInference;
@@ -44,6 +45,7 @@ import ai.kompile.graph.reasoning.tms.JustificationIndex;
 import ai.kompile.knowledgegraph.audit.PinGuard;
 import ai.kompile.knowledgegraph.grounding.ContradictionDetectedEvent;
 import ai.kompile.knowledgegraph.grounding.FactSheetKbState;
+import ai.kompile.knowledgegraph.grounding.GroundingProgressEvent;
 import ai.kompile.knowledgegraph.grounding.KbCorrectionService;
 import ai.kompile.knowledgegraph.grounding.KbGroundingService;
 import ai.kompile.knowledgegraph.persistence.FileBackedWeightStore;
@@ -400,6 +402,12 @@ public class IncrementalReasoningOrchestrator {
     }
 
     /**
+     * Total number of named cascade steps — used as {@code totalSteps} in progress events.
+     * Matches the set of stages emitted in {@link #doReground}.
+     */
+    static final int TOTAL_CASCADE_STEPS = 17;
+
+    /**
      * Re-ground the KB for {@code factSheetId} using all currently-observed facts.
      *
      * <p>The write lock on the state is held for the entire operation. Reads are blocked for
@@ -410,11 +418,23 @@ public class IncrementalReasoningOrchestrator {
      *         the run ID, and the set of retracted atom keys (currently always empty)
      */
     public RegroundResult runFullReground(long factSheetId) {
+        return runFullReground(factSheetId, GroundingProgressEvent.TRIGGER_CASCADE);
+    }
+
+    /**
+     * Re-ground the KB for {@code factSheetId} with an explicit trigger label for progress events.
+     *
+     * @param factSheetId the fact sheet to re-ground
+     * @param trigger     one of the {@link GroundingProgressEvent} TRIGGER_* constants
+     * @return a {@link RegroundResult} with the number of {@link InferredFact} versions written,
+     *         the run ID, and the set of retracted atom keys
+     */
+    public RegroundResult runFullReground(long factSheetId, String trigger) {
         FactSheetKbState state = kbGroundingService.getState(factSheetId);
         ReadWriteLock lock = state.lock();
         lock.writeLock().lock();
         try {
-            return doReground(factSheetId, state);
+            return doReground(factSheetId, state, trigger);
         } finally {
             lock.writeLock().unlock();
         }
@@ -448,34 +468,83 @@ public class IncrementalReasoningOrchestrator {
     // ─── Internal ─────────────────────────────────────────────────────────────────
 
     /**
-     * Execute the full re-ground. MUST be called while holding {@code state.lock().writeLock()}.
+     * Publish a {@link GroundingProgressEvent} non-fatally (exceptions are swallowed so that
+     * a broken event-listener never aborts the cascade).
+     */
+    private void publishProgress(long factSheetId, String cascadeId, String trigger,
+                                 String stage, String status, String message,
+                                 int stepIndex, @Nullable java.util.Map<String, Object> data) {
+        try {
+            eventPublisher.publishEvent(
+                    new GroundingProgressEvent(this, factSheetId, cascadeId, trigger,
+                            stage, status, message, stepIndex, TOTAL_CASCADE_STEPS, data));
+        } catch (Exception ex) {
+            log.debug("GroundingProgressEvent publish failed for factSheet={} stage={}: {}",
+                    factSheetId, stage, ex.getMessage());
+        }
+    }
+
+    /**
+     * Execute the full re-ground (backward-compatible no-trigger overload).
+     * MUST be called while holding {@code state.lock().writeLock()}.
      */
     private RegroundResult doReground(long factSheetId, FactSheetKbState state) {
+        return doReground(factSheetId, state, GroundingProgressEvent.TRIGGER_CASCADE);
+    }
+
+    /**
+     * Execute the full re-ground with an explicit trigger. MUST be called while holding
+     * {@code state.lock().writeLock()}.
+     */
+    private RegroundResult doReground(long factSheetId, FactSheetKbState state, String trigger) {
         FactStore factStore = state.factStore();
+        // runId is established early so all progress events share the same cascadeId.
+        String runId = UUID.randomUUID().toString();
 
         // ── STEP 0 (NEW): Project live graph into FactStore before MAP solve ─────────
         // This is the missing production link (design spec §5): without this call the
         // FactStore is empty after a fresh crawl, so the MAP solve produces nothing.
         // null-safe: graphProjector is null in plain-Java test contexts.
+        publishProgress(factSheetId, runId, trigger,
+                GroundingProgressEvent.STAGE_PROJECTION, GroundingProgressEvent.STATUS_STARTED,
+                "Projecting graph atoms into FactStore for factSheet=" + factSheetId, 0, null);
         if (graphProjector != null) {
             try {
                 int projected = graphProjector.project(factSheetId);
                 log.debug("Grounding cascade for factSheet={}: projected {} graph atoms into FactStore",
                         factSheetId, projected);
+                Map<String, Object> projData = new java.util.LinkedHashMap<>();
+                projData.put("atomsProjected", projected);
+                publishProgress(factSheetId, runId, trigger,
+                        GroundingProgressEvent.STAGE_PROJECTION, GroundingProgressEvent.STATUS_DONE,
+                        "Projected " + projected + " atoms", 0, projData);
             } catch (Exception e) {
                 log.warn("Grounding cascade for factSheet={}: graph projection failed — {}",
                         factSheetId, e.getMessage());
+                publishProgress(factSheetId, runId, trigger,
+                        GroundingProgressEvent.STAGE_PROJECTION, GroundingProgressEvent.STATUS_ERROR,
+                        "Projection failed: " + e.getMessage(), 0, null);
                 // Non-fatal: continue with whatever is already in the FactStore
             }
+        } else {
+            publishProgress(factSheetId, runId, trigger,
+                    GroundingProgressEvent.STAGE_PROJECTION, GroundingProgressEvent.STATUS_DONE,
+                    "Projection skipped (no projector wired)", 0, null);
         }
 
         if (factStore.isEmpty()) {
             log.debug("Grounding cascade for factSheet={}: FactStore is empty — skipping MAP solve",
                     factSheetId);
+            publishProgress(factSheetId, runId, trigger,
+                    GroundingProgressEvent.STAGE_COMPLETE, GroundingProgressEvent.STATUS_DONE,
+                    "FactStore empty — cascade skipped", TOTAL_CASCADE_STEPS - 1, null);
             return RegroundResult.empty();
         }
 
         // ── STEP 2+3: Build PSL program from the observed FactStore ──────────────────
+        publishProgress(factSheetId, runId, trigger,
+                GroundingProgressEvent.STAGE_PROGRAM_BUILD, GroundingProgressEvent.STATUS_STARTED,
+                "Building PSL program from FactStore (" + factStore.allFacts().size() + " facts)", 1, null);
         PslProgram program = buildProgramFromFactStore(factStore, kbCfg().getPslDefaultRuleWeight());
 
         // ── STEP 3b (NEW): Load project-level PSL rules if dataDir is configured ─────
@@ -484,12 +553,28 @@ public class IncrementalReasoningOrchestrator {
         // rule seam described in design spec §7 (P0 build plan item 4).
         loadProjectPslRules(program);
 
+        Map<String, Object> pbData = new java.util.LinkedHashMap<>();
+        pbData.put("rulesCount", program.rules().size());
+        publishProgress(factSheetId, runId, trigger,
+                GroundingProgressEvent.STAGE_PROGRAM_BUILD, GroundingProgressEvent.STATUS_DONE,
+                "PSL program built: " + program.rules().size() + " rule(s)", 1, pbData);
+
         // ── STEP 3b-ont (Phase 3): Inject ontology axiom → PSL rules ─────────────────
         // When a bound ontology is present, compile its DOMAIN/RANGE axioms into soft PSL
         // rules and add them to the program before the MAP solve. When the provider is null,
         // the fact sheet has no bound ontology, or axioms are empty, this step is a strict
         // no-op — today's behaviour is fully preserved.
+        publishProgress(factSheetId, runId, trigger,
+                GroundingProgressEvent.STAGE_ONTOLOGY_RULES, GroundingProgressEvent.STATUS_STARTED,
+                "Injecting ontology axiom rules", 2, null);
+        int rulesBefore = program.rules().size();
         injectOntologyRules(program, factSheetId);
+        int ontRulesAdded = program.rules().size() - rulesBefore;
+        Map<String, Object> ontData = new java.util.LinkedHashMap<>();
+        ontData.put("ontologyRulesAdded", ontRulesAdded);
+        publishProgress(factSheetId, runId, trigger,
+                GroundingProgressEvent.STAGE_ONTOLOGY_RULES, GroundingProgressEvent.STATUS_DONE,
+                "Ontology rules injected: +" + ontRulesAdded, 2, ontData);
 
         // ── STEP 3c (L0 FIX): Reload persisted learned weights into the program ──────
         // Before the MAP solve, load the last-persisted PSL weights and apply them onto the
@@ -497,20 +582,25 @@ public class IncrementalReasoningOrchestrator {
         // Prefers DualStoreGroundingFactory (JPA-backed) when available; falls back to
         // FileBackedWeightStore. If no persisted weights exist yet (first run), falls back
         // to defaults silently.
+        publishProgress(factSheetId, runId, trigger,
+                GroundingProgressEvent.STAGE_WEIGHT_RELOAD, GroundingProgressEvent.STATUS_STARTED,
+                "Reloading persisted PSL weights", 3, null);
         WeightStore cascadeWeightStore = null;
         if (dualStoreFactory != null) {
             cascadeWeightStore = dualStoreFactory.weightStoreFor(factSheetId);
         } else if (fileBackedWeightStore != null) {
             cascadeWeightStore = fileBackedWeightStore.fileWeightStoreFor(String.valueOf(factSheetId));
         }
+        int reloadedWeights = 0;
         if (kbCfg().isLearningEnabled() && cascadeWeightStore != null && !program.rules().isEmpty()) {
             try {
                 String programKey = factSheetId + "-cascade";
                 Optional<Map<String, Double>> persistedWeights = cascadeWeightStore.latest(programKey);
                 if (persistedWeights.isPresent()) {
                     program = PslWeightLearningService.applyWeights(program, persistedWeights.get());
+                    reloadedWeights = persistedWeights.get().size();
                     log.debug("Grounding cascade factSheet={}: applied {} learned PSL weights from store",
-                            factSheetId, persistedWeights.get().size());
+                            factSheetId, reloadedWeights);
                 }
             } catch (Exception e) {
                 log.warn("Grounding cascade factSheet={}: could not reload learned weights — {}",
@@ -518,26 +608,51 @@ public class IncrementalReasoningOrchestrator {
                 // Non-fatal: continue with current (default or prior) weights
             }
         }
+        Map<String, Object> wrData = new java.util.LinkedHashMap<>();
+        wrData.put("weightsReloaded", reloadedWeights);
+        publishProgress(factSheetId, runId, trigger,
+                GroundingProgressEvent.STAGE_WEIGHT_RELOAD, GroundingProgressEvent.STATUS_DONE,
+                "Weight reload: " + reloadedWeights + " weight(s) applied", 3, wrData);
 
         if (program.targetKeys().isEmpty()) {
             log.debug("Grounding cascade for factSheet={}: no target atoms in program — skipping",
                     factSheetId);
+            publishProgress(factSheetId, runId, trigger,
+                    GroundingProgressEvent.STAGE_COMPLETE, GroundingProgressEvent.STATUS_DONE,
+                    "No target atoms — cascade skipped", TOTAL_CASCADE_STEPS - 1, null);
             return RegroundResult.empty();
         }
 
         // ── STEP 4: MAP solve ─────────────────────────────────────────────────────────
+        // STARTED fires BEFORE the solve call (fixing the label-timing bug where the old code
+        // emitted WEIGHT_LEARNING before re-ground and DERIVATION only after the solve).
+        publishProgress(factSheetId, runId, trigger,
+                GroundingProgressEvent.STAGE_MAP_SOLVE, GroundingProgressEvent.STATUS_STARTED,
+                "Starting MAP inference (HL-MRF) for factSheet=" + factSheetId, 4, null);
         HlMrfMapInference.Result result;
-        String runId = UUID.randomUUID().toString();
         try {
             result = HlMrfMapInference.solve(program);
             log.debug("Grounding cascade factSheet={}: MAP solve converged={} iterations={} objective={}",
                     factSheetId, result.converged(), result.iterations(), result.objective());
         } catch (Exception e) {
             log.warn("Grounding cascade factSheet={}: MAP solve failed — {}", factSheetId, e.getMessage(), e);
+            publishProgress(factSheetId, runId, trigger,
+                    GroundingProgressEvent.STAGE_MAP_SOLVE, GroundingProgressEvent.STATUS_ERROR,
+                    "MAP solve failed: " + e.getMessage(), 4, null);
             return RegroundResult.empty();
         }
+        Map<String, Object> mapData = new java.util.LinkedHashMap<>();
+        mapData.put("iterations", result.iterations());
+        mapData.put("objective", result.objective());
+        mapData.put("converged", result.converged());
+        publishProgress(factSheetId, runId, trigger,
+                GroundingProgressEvent.STAGE_MAP_SOLVE, GroundingProgressEvent.STATUS_DONE,
+                "MAP solve done: converged=" + result.converged() + " iter=" + result.iterations(), 4, mapData);
 
         // ── STEP 5: Materialize inferred facts ────────────────────────────────────────
+        publishProgress(factSheetId, runId, trigger,
+                GroundingProgressEvent.STAGE_MATERIALIZE, GroundingProgressEvent.STATUS_STARTED,
+                "Materializing inferred facts", 5, null);
         List<EntailmentRecord> records = EntailmentEngine.entailFromPslResult(
                 program, result, factStore, runId);
 
@@ -608,6 +723,39 @@ public class IncrementalReasoningOrchestrator {
             }
         }
 
+        Map<String, Object> matData = new java.util.LinkedHashMap<>();
+        matData.put("factsMaterialized", versionsWritten);
+        matData.put("recordsProduced", records.size());
+        publishProgress(factSheetId, runId, trigger,
+                GroundingProgressEvent.STAGE_MATERIALIZE, GroundingProgressEvent.STATUS_DONE,
+                "Materialized " + versionsWritten + " fact version(s) (" + records.size() + " records)", 5, matData);
+
+        // ── STEP 5c PROMOTION progress event ─────────────────────────────────────────
+        // Collect band counts from promotionTracker (if available) and emit PROMOTION event.
+        {
+            Map<String, Object> promoData = new java.util.LinkedHashMap<>();
+            if (promotionTracker != null) {
+                try {
+                    int promoted = promotionTracker.promotedAtomCount(factSheetId);
+                    promoData.put("promoted", promoted);
+                    Map<ai.kompile.graph.reasoning.confidence.StrengthBand, Integer> bands =
+                            promotionTracker.bandCounts(factSheetId);
+                    if (bands != null) {
+                        Map<String, Integer> bandStr = new java.util.LinkedHashMap<>();
+                        for (Map.Entry<ai.kompile.graph.reasoning.confidence.StrengthBand, Integer> e : bands.entrySet()) {
+                            bandStr.put(e.getKey().name(), e.getValue());
+                        }
+                        promoData.put("bandCounts", bandStr);
+                    }
+                } catch (Exception ex) {
+                    log.debug("Could not collect promotion metrics: {}", ex.getMessage());
+                }
+            }
+            publishProgress(factSheetId, runId, trigger,
+                    GroundingProgressEvent.STAGE_PROMOTION, GroundingProgressEvent.STATUS_DONE,
+                    "Promotion check complete", 6, promoData.isEmpty() ? null : promoData);
+        }
+
         // ── JOINT TRAINING SIGNAL: one consensus for PSL (5b) + MEBN (9), derived EVERY cascade ──
         // Replaces the previously independent buildObservedTargets calls AND the throttled hybrid path
         // that ran a second structural inference (+ embedding co-training) only every Nth cascade. Under
@@ -626,6 +774,17 @@ public class IncrementalReasoningOrchestrator {
                 ? deriveHybridConsensus(result.values(), observedTargets)
                 : observedTargets;
 
+        // CONSENSUS event: emit after the hybrid-consensus targets are derived so the UI shows
+        // the consensus blending step.
+        {
+            Map<String, Object> consData = new java.util.LinkedHashMap<>();
+            consData.put("observedTargets", observedTargets.size());
+            consData.put("consensusTargets", consensusTargets.size());
+            publishProgress(factSheetId, runId, trigger,
+                    GroundingProgressEvent.STAGE_CONSENSUS, GroundingProgressEvent.STATUS_DONE,
+                    "Hybrid consensus derived: " + consensusTargets.size() + " target(s)", 12, consData);
+        }
+
         // ── STEP 5b (L1 NEW): PSL weight learning — co-train on the hybrid-ranked consensus ──
         // The shared consensus targets blend the extracted observed facts with the hybrid reasoner's
         // ranked response, so PSL weights move toward explaining BOTH the data and the consensus.
@@ -636,6 +795,11 @@ public class IncrementalReasoningOrchestrator {
         final PslProgram programForSnapshot;
         if (kbCfg().isLearningEnabled() && cascadeWeightStore != null && !program.rules().isEmpty()
                 && !result.values().isEmpty()) {
+            // PSL_LEARNING STARTED fires at the actual weight-training step, NOT before re-ground
+            // (fixing the prior label-timing bug in GraphHydrationOrchestrator.STAGE_WEIGHT_LEARNING).
+            publishProgress(factSheetId, runId, trigger,
+                    GroundingProgressEvent.STAGE_PSL_LEARNING, GroundingProgressEvent.STATUS_STARTED,
+                    "PSL weight learning: 1 mini-batch gradient step", 7, null);
             PslProgram trainedProgram = program;
             try {
                 // Co-train on the hybrid-ranked consensus (observed facts pulled toward the hybrid
@@ -653,11 +817,44 @@ public class IncrementalReasoningOrchestrator {
                 // 1 update step: cheap warm-start accumulation, no convergence risk
                 trainedProgram = pslWeightLearner(perRuleMeans).updateOnBatch(program, softTargets, 1);
 
+                // ── REAL weight-delta computation (closes WEIGHT_DELTA_UNAVAILABLE gap) ──────────
+                // The orchestrator has BOTH programs (before=program, after=trainedProgram) so we
+                // can compute per-rule weight deltas directly — no learner API change needed.
+                int rulesUpdated = 0;
+                double sumDelta = 0.0;
+                double maxDelta = 0.0;
+                List<PslRule> beforeRules = program.rules();
+                List<PslRule> afterRules  = trainedProgram.rules();
+                double weightEpsilon = 0.001;
+                if (beforeRules.size() == afterRules.size()) {
+                    for (int i = 0; i < beforeRules.size(); i++) {
+                        double delta = Math.abs(afterRules.get(i).weight() - beforeRules.get(i).weight());
+                        if (delta > weightEpsilon) {
+                            rulesUpdated++;
+                            sumDelta += delta;
+                            if (delta > maxDelta) maxDelta = delta;
+                        }
+                    }
+                }
+                double meanDelta = (rulesUpdated > 0) ? sumDelta / rulesUpdated : 0.0;
+
                 // Persist the updated weights via whichever store was resolved above
                 String programKey = factSheetId + ":cascade";
                 int savedVersion = cascadeWeightStore.save(programKey, trainedProgram.rules());
                 log.debug("Grounding cascade factSheet={}: PSL weight training done ({} rules persisted, v{})",
                         factSheetId, trainedProgram.rules().size(), savedVersion);
+
+                // Emit PSL_LEARNING DONE with real weight delta metrics
+                Map<String, Object> pslData = new java.util.LinkedHashMap<>();
+                pslData.put("rulesUpdated", rulesUpdated);
+                pslData.put("meanWeightDelta", meanDelta);
+                pslData.put("maxWeightDelta", maxDelta);
+                pslData.put("savedVersion", savedVersion);
+                publishProgress(factSheetId, runId, trigger,
+                        GroundingProgressEvent.STAGE_PSL_LEARNING, GroundingProgressEvent.STATUS_DONE,
+                        "PSL weight update: " + rulesUpdated + " rule(s) changed (meanΔ="
+                                + String.format("%.4f", meanDelta) + " maxΔ=" + String.format("%.4f", maxDelta) + ")",
+                        7, pslData);
 
                 // STEP 5b-event: publish ModelTrainedEvent so app-main can stage the artifact.
                 // Only when file-backed store is the active store (dualStoreFactory path does not
@@ -683,11 +880,17 @@ public class IncrementalReasoningOrchestrator {
             } catch (Exception e) {
                 log.warn("Grounding cascade factSheet={}: PSL weight training failed — {}",
                         factSheetId, e.getMessage());
+                publishProgress(factSheetId, runId, trigger,
+                        GroundingProgressEvent.STAGE_PSL_LEARNING, GroundingProgressEvent.STATUS_ERROR,
+                        "PSL learning failed: " + e.getMessage(), 7, null);
                 // Non-fatal: inference result already materialized; keep un-trained program
             }
             programForSnapshot = trainedProgram;
         } else {
             programForSnapshot = program;
+            publishProgress(factSheetId, runId, trigger,
+                    GroundingProgressEvent.STAGE_PSL_LEARNING, GroundingProgressEvent.STATUS_DONE,
+                    "PSL weight learning skipped (learning disabled or no weight store)", 7, null);
         }
 
         // Register the PSL program snapshot (trained if learning ran) with the correction
@@ -705,11 +908,21 @@ public class IncrementalReasoningOrchestrator {
 
         // ── STEP 6: Rebuild JustificationIndex ───────────────────────────────────────
         // Full rebuild (O(|ground rules|)); incremental merge is a TODO per design §9.1.
+        publishProgress(factSheetId, runId, trigger,
+                GroundingProgressEvent.STAGE_JUSTIFICATION, GroundingProgressEvent.STATUS_STARTED,
+                "Rebuilding JustificationIndex", 8, null);
         JustificationIndex newIndex = JustificationIndex.build(result, factStore);
+        publishProgress(factSheetId, runId, trigger,
+                GroundingProgressEvent.STAGE_JUSTIFICATION, GroundingProgressEvent.STATUS_DONE,
+                "JustificationIndex rebuilt", 8, null);
 
         // ── STEP 7: Contradiction scan + TMS retraction ───────────────────────────────
+        publishProgress(factSheetId, runId, trigger,
+                GroundingProgressEvent.STAGE_CONTRADICTION, GroundingProgressEvent.STATUS_STARTED,
+                "Scanning for contradictions", 9, null);
         List<ContradictionDetector.Pair<Fact, Fact>> contradictions =
                 ContradictionDetector.findFactContradictions(factStore);
+        int retracted = 0;
         if (!contradictions.isEmpty()) {
             log.warn("Grounding cascade factSheet={}: {} contradiction pair(s) — running TMS retraction",
                     factSheetId, contradictions.size());
@@ -733,6 +946,7 @@ public class IncrementalReasoningOrchestrator {
                     Fact higher = a.value() > b.value() ? a : b;
                     try {
                         BeliefReviser.retract(lower.atomKey(), factStore, newIndex);
+                        retracted++;
                         log.debug("Grounding cascade factSheet={}: TMS retracted '{}' (value={}) in favour of '{}' (value={})",
                                 factSheetId, lower.atomKey(), lower.value(),
                                 higher.atomKey(), higher.value());
@@ -750,9 +964,21 @@ public class IncrementalReasoningOrchestrator {
                 }
             }
         }
+        Map<String, Object> cData = new java.util.LinkedHashMap<>();
+        cData.put("contradictions", contradictions.size());
+        cData.put("retracted", retracted);
+        publishProgress(factSheetId, runId, trigger,
+                GroundingProgressEvent.STAGE_CONTRADICTION, GroundingProgressEvent.STATUS_DONE,
+                "Contradiction scan: " + contradictions.size() + " found, " + retracted + " retracted", 9, cData);
 
         // ── STEP 8: Epoch bump ────────────────────────────────────────────────────────
+        publishProgress(factSheetId, runId, trigger,
+                GroundingProgressEvent.STAGE_EPOCH, GroundingProgressEvent.STATUS_STARTED,
+                "Marking epoch for factSheet=" + factSheetId, 10, null);
         kbGroundingService.markEpoch(factSheetId, runId, newIndex);
+        publishProgress(factSheetId, runId, trigger,
+                GroundingProgressEvent.STAGE_EPOCH, GroundingProgressEvent.STATUS_DONE,
+                "Epoch marked: runId=" + runId, 10, null);
 
         // ── STEP 9 (L1): Online MEBN weight learning — incremental, EVERY cascade ────────────
         // MEBN finite-difference is O(|edges|) inferences per step. Under partial observability there is
@@ -765,7 +991,13 @@ public class IncrementalReasoningOrchestrator {
             MTheory theory = mebnTheories.get(factSheetId);
             ReasoningGraph mebnGraph = mebnGraphs.get(factSheetId);
             if (theory != null && mebnGraph != null && !result.values().isEmpty()) {
+                publishProgress(factSheetId, runId, trigger,
+                        GroundingProgressEvent.STAGE_MEBN_LEARNING, GroundingProgressEvent.STATUS_STARTED,
+                        "MEBN online weight step (cascade " + cascadeCount + ")", 11, null);
                 try {
+                    // Snapshot edge strengths BEFORE learning to compute real strength deltas.
+                    Map<String, Double> strengthsBefore = snapshotEdgeStrengths(theory);
+
                     // Warm-start from previously persisted strengths (survives process restarts).
                     mebnWeightAdapter.load(factSheetId, theory);
                     // Co-train MEBN on the shared consensus (same signal PSL used); fall back to MAP
@@ -775,8 +1007,37 @@ public class IncrementalReasoningOrchestrator {
                     // ONE online step — the cost lever under partial observability.
                     mebnWeightLearner.learn(theory, mebnGraph, observations, 1);
                     mebnWeightAdapter.persist(factSheetId, theory);
+
+                    // Snapshot edge strengths AFTER learning to compute real strength deltas.
+                    Map<String, Double> strengthsAfter = snapshotEdgeStrengths(theory);
+                    double sumStrengthDelta = 0.0;
+                    double maxStrengthDelta = 0.0;
+                    int edgesUpdated = 0;
+                    for (Map.Entry<String, Double> entry : strengthsBefore.entrySet()) {
+                        Double after = strengthsAfter.get(entry.getKey());
+                        if (after != null) {
+                            double delta = Math.abs(after - entry.getValue());
+                            if (delta > 1e-6) {
+                                edgesUpdated++;
+                                sumStrengthDelta += delta;
+                                if (delta > maxStrengthDelta) maxStrengthDelta = delta;
+                            }
+                        }
+                    }
+                    double meanStrengthDelta = (edgesUpdated > 0) ? sumStrengthDelta / edgesUpdated : 0.0;
+
                     log.debug("Grounding cascade factSheet={}: MEBN online step done (cascade {})",
                             factSheetId, cascadeCount);
+
+                    Map<String, Object> mebnData = new java.util.LinkedHashMap<>();
+                    mebnData.put("cascadeCount", cascadeCount);
+                    mebnData.put("edgesUpdated", edgesUpdated);
+                    mebnData.put("meanStrengthDelta", meanStrengthDelta);
+                    mebnData.put("maxStrengthDelta", maxStrengthDelta);
+                    publishProgress(factSheetId, runId, trigger,
+                            GroundingProgressEvent.STAGE_MEBN_LEARNING, GroundingProgressEvent.STATUS_DONE,
+                            "MEBN step done: " + edgesUpdated + " edge(s) updated (meanΔ="
+                                    + String.format("%.4f", meanStrengthDelta) + ")", 11, mebnData);
 
                     // STEP 9-event: re-stage the artifact on the first cascade (so even short crawls get
                     // an initial staged model) and then every interval (not every cascade) so app-main
@@ -796,14 +1057,51 @@ public class IncrementalReasoningOrchestrator {
                 } catch (Exception e) {
                     log.warn("Grounding cascade factSheet={}: MEBN online step failed — {}",
                             factSheetId, e.getMessage());
+                    publishProgress(factSheetId, runId, trigger,
+                            GroundingProgressEvent.STAGE_MEBN_LEARNING, GroundingProgressEvent.STATUS_ERROR,
+                            "MEBN step failed: " + e.getMessage(), 11, null);
                     // Non-fatal: inference already complete
+                }
+            } else {
+                publishProgress(factSheetId, runId, trigger,
+                        GroundingProgressEvent.STAGE_MEBN_LEARNING, GroundingProgressEvent.STATUS_DONE,
+                        "MEBN learning skipped (no theory or empty result)", 11, null);
+            }
+        } else {
+            publishProgress(factSheetId, runId, trigger,
+                    GroundingProgressEvent.STAGE_MEBN_LEARNING, GroundingProgressEvent.STATUS_DONE,
+                    "MEBN learning skipped (learning disabled or no adapter)", 11, null);
+        }
+
+        // ── COMPLETE ─────────────────────────────────────────────────────────────────
+        Map<String, Object> completeData = new java.util.LinkedHashMap<>();
+        completeData.put("versionsWritten", versionsWritten);
+        completeData.put("retractedAtomKeys", retractedAtomKeys.size());
+        completeData.put("cascadeCount", cascadeCount);
+        log.info("Grounding cascade factSheet={}: {} InferredFact version(s) written, {} retracted, runId={}",
+                factSheetId, versionsWritten, retractedAtomKeys.size(), runId);
+        publishProgress(factSheetId, runId, trigger,
+                GroundingProgressEvent.STAGE_COMPLETE, GroundingProgressEvent.STATUS_DONE,
+                "Cascade complete: " + versionsWritten + " version(s) written, " + retractedAtomKeys.size()
+                        + " retracted", TOTAL_CASCADE_STEPS - 1, completeData);
+        return new RegroundResult(versionsWritten, runId, Set.copyOf(retractedAtomKeys));
+    }
+
+    /**
+     * Snapshot the edge strengths of an {@link MTheory} as a flat map of "frag:parent->child" → strength.
+     * Used before/after {@link MebnWeightLearner#learn} to compute real strength deltas.
+     */
+    private static Map<String, Double> snapshotEdgeStrengths(MTheory theory) {
+        Map<String, Double> snapshot = new java.util.LinkedHashMap<>();
+        for (MFrag frag : theory.getMFrags()) {
+            Map<String, Double> strengths = frag.getEdgeStrengths();
+            if (strengths != null) {
+                for (Map.Entry<String, Double> e : strengths.entrySet()) {
+                    snapshot.put(frag.getName() + ":" + e.getKey(), e.getValue());
                 }
             }
         }
-
-        log.info("Grounding cascade factSheet={}: {} InferredFact version(s) written, {} retracted, runId={}",
-                factSheetId, versionsWritten, retractedAtomKeys.size(), runId);
-        return new RegroundResult(versionsWritten, runId, Set.copyOf(retractedAtomKeys));
+        return snapshot;
     }
 
     /**
