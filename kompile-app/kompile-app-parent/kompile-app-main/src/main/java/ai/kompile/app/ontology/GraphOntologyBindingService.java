@@ -18,6 +18,8 @@ package ai.kompile.app.ontology;
 import ai.kompile.app.web.dto.ontology.GraphConformanceReport;
 import ai.kompile.core.graphrag.conformance.GraphConformanceChecker;
 import ai.kompile.core.graphrag.conformance.GraphConformanceSummary;
+import ai.kompile.core.graphrag.conformance.OntologyAxiom;
+import ai.kompile.core.graphrag.conformance.OntologyProjectionProvider;
 import ai.kompile.core.graphrag.typing.GraphNodeTypes;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
@@ -25,14 +27,17 @@ import ai.kompile.knowledgegraph.domain.NamedGraph;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import ai.kompile.knowledgegraph.service.NamedGraphService;
+import ai.kompile.process.ontology.EntityTypeDefinition;
 import ai.kompile.process.ontology.OntologyConformanceValidator;
 import ai.kompile.process.ontology.OntologySchema;
+import ai.kompile.process.ontology.RelationshipTypeDefinition;
 import ai.kompile.process.service.ProcessEngineService;
 import ai.kompile.process.workflow.ProcessDefinition;
 import ai.kompile.process.workflow.ProcessStatus;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
@@ -59,7 +64,7 @@ import java.util.Optional;
  */
 @Slf4j
 @Service
-public class GraphOntologyBindingService implements GraphConformanceChecker {
+public class GraphOntologyBindingService implements GraphConformanceChecker, OntologyProjectionProvider {
 
     /** Cap on per-report violation detail so the response stays bounded on large graphs. */
     private static final int MAX_VIOLATIONS = 200;
@@ -89,6 +94,58 @@ public class GraphOntologyBindingService implements GraphConformanceChecker {
             return explicit;
         }
         return resolveProcessBinding(factSheetId);
+    }
+
+    // ── OntologyProjectionProvider: lightweight projections for the extraction/reasoning pipeline ──
+
+    @Override
+    public boolean hasBoundOntology(Long factSheetId) {
+        return resolveActiveOntology(factSheetId).isPresent();
+    }
+
+    @Override
+    public List<String> allowedEntityTypes(Long factSheetId) {
+        OntologySchema schema = resolveActiveOntology(factSheetId).orElse(null);
+        if (schema == null || schema.getEntityTypes() == null) {
+            return List.of();
+        }
+        return schema.getEntityTypes().stream()
+                .filter(e -> e != null && e.getName() != null && !e.getName().isBlank())
+                .map(EntityTypeDefinition::getName)
+                .toList();
+    }
+
+    @Override
+    public List<String> allowedRelationshipTypes(Long factSheetId) {
+        OntologySchema schema = resolveActiveOntology(factSheetId).orElse(null);
+        if (schema == null || schema.getRelationshipTypes() == null) {
+            return List.of();
+        }
+        return schema.getRelationshipTypes().stream()
+                .filter(r -> r != null && r.getType() != null && !r.getType().isBlank())
+                .map(RelationshipTypeDefinition::getType)
+                .toList();
+    }
+
+    @Override
+    public List<OntologyAxiom> ontologyAxioms(Long factSheetId) {
+        OntologySchema schema = resolveActiveOntology(factSheetId).orElse(null);
+        if (schema == null || schema.getRelationshipTypes() == null) {
+            return List.of();
+        }
+        List<OntologyAxiom> axioms = new ArrayList<>();
+        for (RelationshipTypeDefinition rel : schema.getRelationshipTypes()) {
+            if (rel == null || rel.getType() == null || rel.getType().isBlank()) {
+                continue;
+            }
+            if (rel.getSourceEntityType() != null && !rel.getSourceEntityType().isBlank()) {
+                axioms.add(new OntologyAxiom(OntologyAxiom.Kind.DOMAIN, rel.getType(), rel.getSourceEntityType()));
+            }
+            if (rel.getTargetEntityType() != null && !rel.getTargetEntityType().isBlank()) {
+                axioms.add(new OntologyAxiom(OntologyAxiom.Kind.RANGE, rel.getType(), rel.getTargetEntityType()));
+            }
+        }
+        return axioms;
     }
 
     /**
