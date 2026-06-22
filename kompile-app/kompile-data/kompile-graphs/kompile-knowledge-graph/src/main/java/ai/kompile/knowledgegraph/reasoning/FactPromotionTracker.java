@@ -15,6 +15,7 @@
  */
 package ai.kompile.knowledgegraph.reasoning;
 
+import ai.kompile.graph.reasoning.confidence.Opinion;
 import ai.kompile.graph.reasoning.confidence.StrengthBand;
 import ai.kompile.graph.reasoning.fol.InferredFact;
 import ai.kompile.graph.reasoning.fol.InferredFactStore;
@@ -72,6 +73,10 @@ public class FactPromotionTracker {
         volatile StrengthBand lastBand = StrengthBand.SPECULATIVE;
         volatile String promotionStatus = "NONE";
         final AtomicInteger corroborationCount = new AtomicInteger(0);
+        /** Cumulative positive evidence weight (sum of sourceTrust across corroborations). */
+        volatile double evidencePos = 0.0;
+        /** Cumulative negative evidence weight (contradiction-sourced). */
+        volatile double evidenceNeg = 0.0;
     }
 
     /**
@@ -117,6 +122,14 @@ public class FactPromotionTracker {
     private String dataDir;
 
     /**
+     * Prior strength (W) used in Beta-distribution Opinion initialisation.
+     * With W=2 a single observation at trust 0.6 gives expectation ≈ 0.23 (LOW band).
+     * Configurable via {@code kompile.kb.evidence.priorStrength}.
+     */
+    @Value("${kompile.kb.evidence.priorStrength:2.0}")
+    private double priorStrength;
+
+    /**
      * Primary Spring constructor.
      */
     @Autowired
@@ -138,6 +151,10 @@ public class FactPromotionTracker {
      * Check whether this observation promotes the fact to a higher StrengthBand,
      * and if so emit the promotion event and audit record.
      *
+     * <p>This overload uses a default sourceTrust of 0.6 (LLM_EXTRACTION default).
+     * Prefer {@link #checkPromotion(long, String, double, double, String, double)} when the
+     * source trust is known.</p>
+     *
      * @param factSheetId the fact sheet owning the atom
      * @param atomKey     the atom key
      * @param oldValue    the previous soft-truth value (NaN if no prior observation)
@@ -146,6 +163,88 @@ public class FactPromotionTracker {
      */
     public void checkPromotion(long factSheetId, String atomKey,
                                 double oldValue, double newValue, String runId) {
+        // Scalar-band path: derive the band directly from the newValue scalar (zero-uncertainty
+        // projection) rather than via Beta-distribution evidence accumulation.  This mirrors the
+        // original intent documented in the class javadoc ("Determines the new band from the new
+        // value via StrengthBand.fromScalar(double)") and is what the plain-Java durability tests
+        // verify.  The 6-arg overload (explicit sourceTrust) is the Beta-evidence path.
+        ensureHydrated(factSheetId);
+
+        PromotionState state = getOrCreateState(factSheetId, atomKey);
+
+        StrengthBand oldBand = Double.isNaN(oldValue)
+                ? StrengthBand.SPECULATIVE
+                : state.lastBand;
+
+        StrengthBand newBand = Double.isNaN(newValue)
+                ? StrengthBand.SPECULATIVE
+                : StrengthBand.fromScalar(newValue);
+
+        int count = state.corroborationCount.incrementAndGet();
+
+        if (newBand.ordinal() < oldBand.ordinal()) {
+            log.debug("FactPromotionTracker: fact '{}' in sheet {} promoted {} → {} (scalar path, count={})",
+                    atomKey, factSheetId, oldBand, newBand, count);
+
+            state.lastBand = newBand;
+            state.promotionStatus = "PROMOTED";
+
+            if (eventPublisher != null) {
+                try {
+                    eventPublisher.publishEvent(
+                            new FactPromotedEvent(this, factSheetId, atomKey, oldBand, newBand, runId, count));
+                } catch (Exception e) {
+                    log.warn("FactPromotionTracker: failed to publish FactPromotedEvent — {}", e.getMessage());
+                }
+            }
+
+            try {
+                FactAuditEvent auditEvent = FactAuditEvent.promoted(
+                        atomKey, oldValue, newValue, oldBand.name(), newBand.name(), runId, null);
+                getAuditLog(factSheetId).append(auditEvent);
+            } catch (Exception e) {
+                log.warn("FactPromotionTracker: failed to append PROMOTED audit event — {}", e.getMessage());
+            }
+        } else {
+            if (newBand.ordinal() < state.lastBand.ordinal()) {
+                state.lastBand = newBand;
+            }
+        }
+
+        if (factRepo != null) {
+            try {
+                factRepo.updateBandAndPromotion(
+                        factSheetId, atomKey,
+                        state.lastBand.name(),
+                        state.promotionStatus,
+                        count);
+            } catch (Exception e) {
+                log.warn("FactPromotionTracker: could not persist band/promotion for '{}' sheet={} — {}",
+                        atomKey, factSheetId, e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * Check whether this observation promotes the fact to a higher StrengthBand.
+     *
+     * <p>In addition to the legacy scalar-based band comparison, this method accumulates
+     * Beta-distribution evidence: each call adds {@code sourceTrust} to
+     * {@code state.evidencePos}, then computes
+     * {@code Opinion.fromBetaEvidence(evidencePos, evidenceNeg, 0.5, priorStrength)}
+     * and derives the band from the full Opinion (which respects the uncertainty gate —
+     * a single observation with high u can NEVER be ESTABLISHED regardless of expectation).</p>
+     *
+     * @param factSheetId the fact sheet owning the atom
+     * @param atomKey     the atom key
+     * @param oldValue    the previous soft-truth value (NaN if no prior observation)
+     * @param newValue    the newly observed soft-truth value
+     * @param runId       the cascade run ID (for traceability)
+     * @param sourceTrust the trust scalar of the source providing this observation (0..1)
+     */
+    public void checkPromotion(long factSheetId, String atomKey,
+                                double oldValue, double newValue, String runId,
+                                double sourceTrust) {
         // Hydrate corroboration state from DB on first access for this fact sheet
         // (makes counts durable across restarts when a JPA repo is available).
         ensureHydrated(factSheetId);
@@ -154,16 +253,21 @@ public class FactPromotionTracker {
 
         StrengthBand oldBand = Double.isNaN(oldValue)
                 ? StrengthBand.SPECULATIVE
-                : StrengthBand.fromScalar(oldValue);
+                : state.lastBand;  // use accumulated band from Beta evidence, not raw scalar
 
-        StrengthBand newBand = StrengthBand.fromScalar(newValue);
-
+        // Accumulate positive evidence — each corroboration adds sourceTrust (not 1.0)
+        state.evidencePos += sourceTrust;
         int count = state.corroborationCount.incrementAndGet();
+
+        // Compute band from Beta-distribution Opinion (respects uncertainty gate)
+        Opinion opinion = Opinion.fromBetaEvidence(state.evidencePos, state.evidenceNeg, 0.5,
+                priorStrength > 0 ? priorStrength : 2.0);
+        StrengthBand newBand = StrengthBand.from(opinion);
 
         // Promotion: new band is strictly higher tier (lower ordinal = higher tier in the enum)
         if (newBand.ordinal() < oldBand.ordinal()) {
-            log.debug("FactPromotionTracker: fact '{}' in sheet {} promoted {} → {} (corroboration={})",
-                    atomKey, factSheetId, oldBand, newBand, count);
+            log.debug("FactPromotionTracker: fact '{}' in sheet {} promoted {} → {} (corroboration={}, evidencePos={})",
+                    atomKey, factSheetId, oldBand, newBand, count, state.evidencePos);
 
             state.lastBand = newBand;
             state.promotionStatus = "PROMOTED";
@@ -193,15 +297,27 @@ public class FactPromotionTracker {
             }
         }
 
-        // Persist the updated band, promotionStatus, and corroborationCount to the DB
-        // so they survive a restart (L2 durability gap closed).
+        // Persist the updated band, promotionStatus, corroborationCount, and evidence accumulators
+        // to the DB so they survive a restart (L2 durability gap closed).
         if (factRepo != null) {
             try {
-                factRepo.updateBandAndPromotion(
-                        factSheetId, atomKey,
-                        state.lastBand.name(),
-                        state.promotionStatus,
-                        count);
+                // Prefer the evidence-aware update (slice 1); fall back to legacy update if method unavailable
+                try {
+                    factRepo.updateBandPromotionAndEvidence(
+                            factSheetId, atomKey,
+                            state.lastBand.name(),
+                            state.promotionStatus,
+                            count,
+                            state.evidencePos,
+                            state.evidenceNeg);
+                } catch (Exception ex) {
+                    // Fall back to legacy update without evidence columns
+                    factRepo.updateBandAndPromotion(
+                            factSheetId, atomKey,
+                            state.lastBand.name(),
+                            state.promotionStatus,
+                            count);
+                }
             } catch (Exception e) {
                 log.warn("FactPromotionTracker: could not persist band/promotion for '{}' sheet={} — {}",
                         atomKey, factSheetId, e.getMessage());
@@ -333,6 +449,13 @@ public class FactPromotionTracker {
                 }
                 if (row.getPromotionStatus() != null) {
                     state.promotionStatus = row.getPromotionStatus();
+                }
+                // Restore Beta-distribution accumulators (added in slice 1)
+                if (row.getEvidencePos() != null) {
+                    state.evidencePos = row.getEvidencePos();
+                }
+                if (row.getEvidenceNeg() != null) {
+                    state.evidenceNeg = row.getEvidenceNeg();
                 }
             }
             if (!rows.isEmpty()) {

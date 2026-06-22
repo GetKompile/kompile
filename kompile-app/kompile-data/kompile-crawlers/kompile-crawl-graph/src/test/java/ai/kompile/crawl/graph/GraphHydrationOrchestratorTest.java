@@ -105,8 +105,10 @@ class GraphHydrationOrchestratorTest {
         assertEquals(3, result.stagesRun(),          "all 3 stages ran");
         assertEquals("run-abc", result.runId());
 
-        // All three stage callbacks fired
+        // WEIGHT_LEARNING is an informational sub-stage label emitted inside DERIVATION
+        // (immediately before runFullReground), followed by the three counted stages.
         assertThat(callbackStages).containsExactly(
+                GraphHydrationOrchestrator.STAGE_WEIGHT_LEARNING,
                 GraphHydrationOrchestrator.STAGE_DERIVATION,
                 GraphHydrationOrchestrator.STAGE_PRUNE_COMPACT,
                 GraphHydrationOrchestrator.STAGE_HEALTH);
@@ -178,7 +180,10 @@ class GraphHydrationOrchestratorTest {
         List<String> stages = new ArrayList<>();
         orchestrator.run(3L, cfg, (s, m) -> stages.add(s));
 
-        assertThat(stages).containsExactly(GraphHydrationOrchestrator.STAGE_DERIVATION);
+        // DERIVATION emits the WEIGHT_LEARNING sub-stage label before its own completion callback.
+        assertThat(stages).containsExactly(
+                GraphHydrationOrchestrator.STAGE_WEIGHT_LEARNING,
+                GraphHydrationOrchestrator.STAGE_DERIVATION);
         verify(pruneCompactOrchestrator, never()).run(anyLong(), anySet(), anyString(), anyBoolean(), any());
     }
 

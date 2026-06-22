@@ -41,6 +41,16 @@ public class FactStore {
     }
 
     /**
+     * Alias for {@link #assertFact(Fact)} using the conventional {@code assert_} name
+     * (since {@code assert} is a reserved keyword in Java).
+     *
+     * @param fact the fact to assert; must not be null
+     */
+    public void assert_(Fact fact) {
+        assertFact(fact);
+    }
+
+    /**
      * Retract a fact by its atom key.
      *
      * @param atomKey the atom key to retract

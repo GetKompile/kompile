@@ -175,6 +175,15 @@ public class IncrementalReasoningOrchestrator {
     boolean learningEnabled;
 
     /**
+     * Default PSL soft-propagation rule weight used in {@link #buildProgramFromFactStore}.
+     * Configurable via {@code kompile.kb.psl.defaultRuleWeight=0.8} (default 0.8).
+     * Subsequent cascades use persisted learned weights from the weight store; this value
+     * only applies to the first cascade on a new fact sheet (cold start).
+     */
+    @Value("${kompile.kb.psl.defaultRuleWeight:0.8}")
+    double defaultRuleWeight;
+
+    /**
      * Spring-injected file-backed weight store for PSL weight persistence.
      * Null in plain-Java test contexts — PSL training step is skipped.
      */
@@ -397,7 +406,7 @@ public class IncrementalReasoningOrchestrator {
         }
 
         // ── STEP 2+3: Build PSL program from the observed FactStore ──────────────────
-        PslProgram program = buildProgramFromFactStore(factStore);
+        PslProgram program = buildProgramFromFactStore(factStore, defaultRuleWeight);
 
         // ── STEP 3b (NEW): Load project-level PSL rules if dataDir is configured ─────
         // If <dataDir>/rules/*.psl files exist, their rules override the default soft-
@@ -525,8 +534,15 @@ public class IncrementalReasoningOrchestrator {
                 && !result.values().isEmpty()) {
             PslProgram trainedProgram = program;
             try {
-                // Build soft targets: use MAP atom values (posteriors) as labels
-                Map<String, Double> softTargets = new HashMap<>(result.values());
+                // Build soft targets from OBSERVED facts in the FactStore (the extracted ground
+                // truth). Training on MAP posteriors (result.values()) is self-training — the
+                // gradient dist(innerMAP)-dist(outerMAP) ≈ 0. Instead, train toward what the
+                // LLM/Tika actually extracted so rule weights move toward explaining the data.
+                Map<String, Double> softTargets = buildObservedTargets(factStore);
+                // Fall back to MAP posteriors only when the fact store is empty
+                if (softTargets.isEmpty()) {
+                    softTargets = new HashMap<>(result.values());
+                }
                 // 1 update step: cheap warm-start accumulation, no convergence risk
                 trainedProgram = pslWeightLearner.updateOnBatch(program, softTargets, 1);
 
@@ -647,8 +663,13 @@ public class IncrementalReasoningOrchestrator {
                 try {
                     // Load previously persisted weights to warm-start learning
                     mebnWeightAdapter.load(factSheetId, theory);
-                    // Use MAP posteriors as observations (same label signal as PSL training)
-                    Map<String, Double> observations = new HashMap<>(result.values());
+                    // Use OBSERVED facts as training targets (not MAP posteriors — same
+                    // self-training bug as PSL path; both must use buildObservedTargets).
+                    Map<String, Double> observations = buildObservedTargets(factStore);
+                    if (observations.isEmpty()) {
+                        // Fall back to MAP posteriors if fact store has no observed facts
+                        observations = new HashMap<>(result.values());
+                    }
                     // 5 epochs per throttled run — finite-diff is inherently slow but 5 steps
                     // is sufficient for incremental online updates
                     mebnWeightLearner.learn(theory, mebnGraph, observations, 5);
@@ -761,7 +782,15 @@ public class IncrementalReasoningOrchestrator {
      * {@link ai.kompile.knowledgegraph.service.KnowledgeGraphService} (not wired here to
      * keep the test surface minimal and avoid the Spring JPA context).</p>
      */
-    static PslProgram buildProgramFromFactStore(FactStore factStore) {
+    public static PslProgram buildProgramFromFactStore(FactStore factStore) {
+        return buildProgramFromFactStore(factStore, 0.8);
+    }
+
+    /**
+     * Overload used by the instance path so the configurable {@link #defaultRuleWeight} can
+     * be passed in without breaking the static test API.
+     */
+    public static PslProgram buildProgramFromFactStore(FactStore factStore, double ruleWeight) {
         PslProgram program = new PslProgram();
         Set<String> predicates = new LinkedHashSet<>();
 
@@ -793,21 +822,47 @@ public class IncrementalReasoningOrchestrator {
         }
 
         // Add soft propagation rules so the MAP solver derives confidence values.
+        // Rule weight is configurable via kompile.kb.psl.defaultRuleWeight (default 0.8).
+        // Subsequent cascades overwrite these weights with learned values from the weight store.
         for (String pred : predicates) {
             try {
                 // Unary rule — works for any arity ≤ 1 in the predicate index
-                program.addRule("0.8: " + pred + "(?X) -> derived_" + pred + "(?X)");
+                program.addRule(ruleWeight + ": " + pred + "(?X) -> derived_" + pred + "(?X)");
             } catch (Exception ignored) {
                 // Rule may fail to parse for 0-arity or higher-arity predicates — silently skip
             }
             try {
-                program.addRule("0.8: " + pred + "(?X, ?Y) -> derived_" + pred + "(?X, ?Y)");
+                program.addRule(ruleWeight + ": " + pred + "(?X, ?Y) -> derived_" + pred + "(?X, ?Y)");
             } catch (Exception ignored) {
                 // Silently skip — only one arity variant will match
             }
         }
 
         return program;
+    }
+
+    /**
+     * Build the observed-fact target map from the FactStore for PSL/MEBN weight learning.
+     *
+     * <p>This is the fix for the self-training bug: instead of training on MAP posteriors
+     * ({@code result.values()}), we train on the facts that were actually extracted from the
+     * graph (the hard=true and soft Fact values from the FactStore). The structured-perceptron
+     * gradient {@code dist(innerMAP) - dist(observedFacts)} is then non-zero and causes rule
+     * weights to converge toward making the MAP output match the extracted observations.</p>
+     *
+     * @param factStore the projected FactStore (already populated by buildProgramFromFactStore)
+     * @return map of atomKey → observed value; empty map if factStore is empty or null
+     */
+    private Map<String, Double> buildObservedTargets(@Nullable FactStore factStore) {
+        if (factStore == null) return new HashMap<>();
+        Map<String, Double> targets = new HashMap<>();
+        for (Fact f : factStore.allFacts()) {
+            // Include both hard-observed (value=1.0) and soft-truth facts as training signal.
+            // Hard facts (confidence >= 0.99) are the strongest signal; soft facts contribute
+            // a weaker but still correct gradient direction.
+            targets.put(f.atomKey(), f.value());
+        }
+        return targets;
     }
 
     /** Split a comma-separated argument string, trimming each token. */

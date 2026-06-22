@@ -114,4 +114,25 @@ public interface InferredFactRowRepository extends JpaRepository<InferredFactRow
     @Query("SELECT f FROM InferredFactRow f WHERE f.factSheetId = :factSheetId AND f.corroborationCount > 0 AND f.version = " +
            "(SELECT MAX(f2.version) FROM InferredFactRow f2 WHERE f2.factSheetId = :factSheetId AND f2.atomKey = f.atomKey)")
     List<InferredFactRow> findLatestWithCorroborationByFactSheetId(@Param("factSheetId") Long factSheetId);
+
+    /**
+     * Durably update the band, promotionStatus, corroborationCount, evidencePos, and evidenceNeg
+     * on the latest version row for the given (factSheetId, atomKey).
+     *
+     * <p>Called by {@link ai.kompile.knowledgegraph.reasoning.FactPromotionTracker} when evidence
+     * accumulation changes the Beta distribution for the fact.</p>
+     */
+    @Modifying
+    @Transactional
+    @Query("UPDATE InferredFactRow f SET f.band = :band, f.promotionStatus = :promotionStatus, " +
+           "f.corroborationCount = :corroborationCount, f.evidencePos = :evidencePos, f.evidenceNeg = :evidenceNeg " +
+           "WHERE f.factSheetId = :factSheetId AND f.atomKey = :atomKey AND f.version = " +
+           "(SELECT MAX(f2.version) FROM InferredFactRow f2 WHERE f2.factSheetId = :factSheetId AND f2.atomKey = :atomKey)")
+    void updateBandPromotionAndEvidence(@Param("factSheetId") Long factSheetId,
+                                        @Param("atomKey") String atomKey,
+                                        @Param("band") String band,
+                                        @Param("promotionStatus") String promotionStatus,
+                                        @Param("corroborationCount") int corroborationCount,
+                                        @Param("evidencePos") double evidencePos,
+                                        @Param("evidenceNeg") double evidenceNeg);
 }

@@ -19,16 +19,20 @@ import ai.kompile.core.graphbuilder.*;
 import ai.kompile.core.graphrag.format.GraphExtractionValidator;
 import ai.kompile.core.llm.chat.LLMChat;
 import ai.kompile.core.retrievers.RetrievedDoc;
+import ai.kompile.graph.reasoning.confidence.Opinion;
 import ai.kompile.knowledgegraph.builder.domain.ExtractionJob;
 import ai.kompile.knowledgegraph.builder.domain.ExtractionLogRecord;
 import ai.kompile.knowledgegraph.builder.repository.ExtractionJobRepository;
 import ai.kompile.knowledgegraph.builder.repository.ExtractionLogRepository;
 import ai.kompile.knowledgegraph.builder.dto.ExtractedGraphDTO;
+import ai.kompile.knowledgegraph.confidence.SourceTrustResolver;
+import ai.kompile.knowledgegraph.domain.GraphProvenanceKeys;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
@@ -57,6 +61,22 @@ public class LlmKnowledgeGraphBuilder implements KnowledgeGraphBuilder {
     private final ObjectMapper objectMapper;
     private final ExtractionJobRepository jobRepository;
     private final ExtractionLogRepository logRepository;
+
+    /**
+     * Optional SourceTrustResolver — when available (Spring context), resolves the
+     * per-type trust scalar for evidence-based confidence initialisation (Pillar 5, Slice 1).
+     * When null (plain-Java test contexts), falls back to a literal 0.60 default.
+     */
+    @Autowired(required = false)
+    private SourceTrustResolver sourceTrustResolver;
+
+    /**
+     * Prior strength (W) for Beta-distribution evidence initialisation.
+     * Configurable via {@code kompile.kb.evidence.priorStrength=2.0}.
+     * W=2 means a single LLM observation gives expectation ≈ 0.23 (LOW band, not ESTABLISHED).
+     */
+    @Value("${kompile.kb.evidence.priorStrength:2.0}")
+    private double priorStrength;
 
     private BuilderConfig config;
 
@@ -384,7 +404,42 @@ public class LlmKnowledgeGraphBuilder implements KnowledgeGraphBuilder {
                 continue;
             }
 
-            Double confidence = rel.getConfidence() != null ? rel.getConfidence() : 0.8;
+            // Resolve source trust for LLM extraction (tier-1 Pillar 5, Slice 1).
+            // If SourceTrustResolver is not wired (plain-Java tests), fall back to 0.60 default.
+            double sourceTrust = sourceTrustResolver != null
+                    ? sourceTrustResolver.trustFor("LLM_EXTRACTION")
+                    : 0.60;
+
+            // Evidence-based confidence initialisation (Pillar 1, Slice 1):
+            // A single LLM extraction with W=2, trust=0.6 → expectation ≈ 0.23 (LOW band).
+            // This replaces the hardcoded 0.8 which caused all LLM extractions to start at HIGH.
+            // If the LLM returns an explicit confidence score, honour it (it's already calibrated).
+            double confidence;
+            if (rel.getConfidence() != null) {
+                confidence = rel.getConfidence();
+            } else {
+                double W = priorStrength > 0 ? priorStrength : 2.0;
+                confidence = Opinion.fromBetaEvidence(sourceTrust, 0.0, 0.5, W).expectation();
+            }
+
+            // Build evidence metadata for Pillar 1/3 (persisted in edge metadataJson)
+            double W = priorStrength > 0 ? priorStrength : 2.0;
+            Opinion opinion = Opinion.fromBetaEvidence(sourceTrust, 0.0, 0.5, W);
+            Map<String, Object> evidenceMeta = new LinkedHashMap<>();
+            evidenceMeta.put(GraphProvenanceKeys.OPINION, opinion.toJson());
+            evidenceMeta.put(GraphProvenanceKeys.EVIDENCE_POS, sourceTrust);
+            evidenceMeta.put(GraphProvenanceKeys.EVIDENCE_NEG, 0.0);
+            evidenceMeta.put(GraphProvenanceKeys.PRIOR_STRENGTH, W);
+            evidenceMeta.put(GraphProvenanceKeys.SOURCE_TRUST, sourceTrust);
+            evidenceMeta.put(GraphProvenanceKeys.BASIS_TYPE, "LLM_EXTRACTION");
+            evidenceMeta.put(GraphProvenanceKeys.CORROBORATION_COUNT, 1);
+            evidenceMeta.put(GraphProvenanceKeys.VALID_FROM, System.currentTimeMillis());
+
+            Map<String, Object> extraMeta = new LinkedHashMap<>();
+            extraMeta.put("sourceDescription", sourceEntity.getDescription() != null ? sourceEntity.getDescription() : "");
+            extraMeta.put("targetDescription", targetEntity.getDescription() != null ? targetEntity.getDescription() : "");
+            extraMeta.put("relationshipDescription", rel.getDescription() != null ? rel.getDescription() : "");
+            extraMeta.putAll(evidenceMeta);
 
             ProposedTriple proposal = new ProposedTriple(
                     sourceEntity.getTitle(),
@@ -396,11 +451,7 @@ public class LlmKnowledgeGraphBuilder implements KnowledgeGraphBuilder {
                     chunk.getId(),
                     getDocumentId(chunk),
                     truncateContext(chunk.getText(), 500),
-                    Map.of(
-                            "sourceDescription", sourceEntity.getDescription() != null ? sourceEntity.getDescription() : "",
-                            "targetDescription", targetEntity.getDescription() != null ? targetEntity.getDescription() : "",
-                            "relationshipDescription", rel.getDescription() != null ? rel.getDescription() : ""
-                    )
+                    extraMeta
             );
 
             proposals.add(proposal);
@@ -495,7 +546,13 @@ public class LlmKnowledgeGraphBuilder implements KnowledgeGraphBuilder {
                 extracted.setRelationships(objectMapper.readValue(record.getParsedRelationshipsJson(),
                         objectMapper.getTypeFactory().constructCollectionType(List.class, ExtractedGraphDTO.ExtractedRelationship.class)));
 
-                // Simplified conversion for log display
+                // Simplified conversion for log display — use the same evidence-based
+                // confidence as the live extraction path (no hardcoded 0.8 fallback).
+                double displaySourceTrust = sourceTrustResolver != null
+                        ? sourceTrustResolver.trustFor("LLM_EXTRACTION") : 0.60;
+                double displayW = priorStrength > 0 ? priorStrength : 2.0;
+                double displayDefaultConf = Opinion.fromBetaEvidence(
+                        displaySourceTrust, 0.0, 0.5, displayW).expectation();
                 for (ExtractedGraphDTO.ExtractedRelationship rel : extracted.getRelationships()) {
                     proposals.add(ProposedTriple.of(
                             rel.getSource(),
@@ -503,7 +560,7 @@ public class LlmKnowledgeGraphBuilder implements KnowledgeGraphBuilder {
                             rel.getRelationshipType(),
                             rel.getTarget(),
                             null,
-                            rel.getConfidence() != null ? rel.getConfidence() : 0.8
+                            rel.getConfidence() != null ? rel.getConfidence() : displayDefaultConf
                     ));
                 }
             }

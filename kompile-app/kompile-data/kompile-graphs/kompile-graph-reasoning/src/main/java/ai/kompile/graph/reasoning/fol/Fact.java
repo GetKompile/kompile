@@ -64,4 +64,17 @@ public record Fact(
     public static Fact soft(String atomKey, double value, String sourceId) {
         return new Fact(atomKey, value, sourceId, Instant.now(), false);
     }
+
+    /**
+     * Create a soft fact with an explicit timestamp (hard=false).
+     *
+     * @param atomKey   the ground atom key
+     * @param value     truth value in [0,1]
+     * @param sourceId  provenance identifier
+     * @param timestamp explicit assertion timestamp
+     * @return a soft Fact
+     */
+    public static Fact soft(String atomKey, double value, String sourceId, Instant timestamp) {
+        return new Fact(atomKey, value, sourceId, timestamp, false);
+    }
 }

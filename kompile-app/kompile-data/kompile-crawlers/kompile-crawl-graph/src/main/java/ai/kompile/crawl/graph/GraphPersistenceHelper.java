@@ -27,6 +27,7 @@ import ai.kompile.knowledgegraph.domain.EdgeProvenance;
 import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.EntityMention;
 import ai.kompile.knowledgegraph.domain.GraphNode;
+import ai.kompile.knowledgegraph.domain.GraphProvenanceKeys;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
 import ai.kompile.knowledgegraph.repository.EntityMentionRepository;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
@@ -247,12 +248,19 @@ class GraphPersistenceHelper {
                         relMeta.put("weight", weight);
                     }
 
+                    // Annotate structural edges with basis type before building metaJson.
+                    // The 1.0 fallback (was: weight != null ? weight : 1.0) is replaced with 0.5
+                    // because a Tika/graph-constructor structural edge is NOT maximally certain:
+                    // pinning it at 1.0 marks it Fact.observed (hard=true, confidence>=0.99)
+                    // which collapses PSL MAP gradient signal (all atoms become pinned observations).
+                    relMeta.put(GraphProvenanceKeys.BASIS_TYPE, "STRUCTURAL");
+                    relMeta.put(GraphProvenanceKeys.VALID_FROM, System.currentTimeMillis());
                     String metaJson = semanticRelationMetadataJson(jobId, sourcePath,
                             "graph_constructor", rel.getSource(), rel.getTarget(), label, description,
                             confidence, relMeta);
                     knowledgeGraphService.createEdgeWithMetadata(srcNodeId, tgtNodeId,
                             EdgeType.USER_DEFINED,
-                            confidence != null ? confidence : weight != null ? weight : 1.0,
+                            confidence != null ? confidence : weight != null ? weight : 0.5,
                             label, description, metaJson,
                             EdgeProvenance.EXTRACTED, factSheetId);
                     relationshipsPersisted++;

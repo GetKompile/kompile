@@ -128,4 +128,28 @@ public class InferredFactRow {
      */
     @Column(name = "corroboration_count", nullable = false)
     private int corroborationCount;
+
+    /**
+     * Cumulative positive evidence weight accumulated via Beta-distribution mapping.
+     * Each corroborating observation adds {@code sourceTrust} (not 1.0) to this accumulator
+     * so that high-trust sources contribute more than low-trust ones.
+     *
+     * <p>Used by {@link ai.kompile.knowledgegraph.reasoning.FactPromotionTracker} to compute
+     * {@code Opinion.fromBetaEvidence(evidencePos, evidenceNeg, 0.5, priorStrength)} and derive
+     * a meaningful band rather than relying on the raw PSL MAP scalar.</p>
+     *
+     * <p>Default 0.0 (no evidence yet). Nullable for backward-compatibility with pre-slice-1 rows.</p>
+     */
+    @Column(name = "evidence_pos", nullable = true)
+    private Double evidencePos;
+
+    /**
+     * Cumulative negative evidence weight (contradiction-sourced).
+     * Incremented when {@link ai.kompile.knowledgegraph.grounding.KbCorrectionService} or
+     * {@code ContradictionDetector} determines a source contradicts this fact.
+     *
+     * <p>Default 0.0. Nullable for backward-compatibility with pre-slice-1 rows.</p>
+     */
+    @Column(name = "evidence_neg", nullable = true)
+    private Double evidenceNeg;
 }

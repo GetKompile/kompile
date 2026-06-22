@@ -45,10 +45,47 @@ public final class GraphProvenanceKeys {
     /** Link to the full prompt/response record (ExtractionLogRecord). */
     public static final String EXTRACTION_LOG_ID = "_extractionLogId";
 
+    // ── Evidence / confidence metadata (Slice 1) ──────────────────────────────
+
+    /** Full Subjective-Logic Opinion at write time, serialized as JSON
+     *  {belief, disbelief, uncertainty, baseRate}. */
+    public static final String OPINION = "_opinion";
+
+    /** Cumulative positive evidence weight accumulated via Beta distribution. */
+    public static final String EVIDENCE_POS = "_evidencePos";
+
+    /** Cumulative negative evidence weight (contradiction-sourced). */
+    public static final String EVIDENCE_NEG = "_evidenceNeg";
+
+    /** Prior strength (W) used in Opinion.fromBetaEvidence. */
+    public static final String PRIOR_STRENGTH = "_priorStrength";
+
+    /** Trust scalar of the source that created or most recently updated this fact. */
+    public static final String SOURCE_TRUST = "_sourceTrust";
+
+    /** Basis type: STRUCTURAL | LLM_EXTRACTION | PSL_INFERENCE | MEBN_INFERENCE | CORROBORATION | ASSERTED. */
+    public static final String BASIS_TYPE = "_basisType";
+
+    /** Number of independent observations that have corroborated this fact (diagnostic counter). */
+    public static final String CORROBORATION_COUNT = "_corroborationCount";
+
+    // ── Validity-time (Pillar 3) ──────────────────────────────────────────────
+
+    /** Epoch-millis when the fact became true. For extracted facts, set to the extraction
+     *  timestamp (or document date if available). */
+    public static final String VALID_FROM = "_validFrom";
+
+    /** Epoch-millis when the fact ceased to be true. {@code null} = still valid.
+     *  Set by ContradictionDetector / KbCorrectionService on supersession. */
+    public static final String VALID_TO = "_validTo";
+
     /** All reserved provenance keys, in display order. */
     public static final List<String> ALL = List.of(
             SOURCE, SOURCE_DOCUMENT_ID, SOURCE_CHUNK_ID, CRAWL_RUN_ID,
-            EXTRACTION_MODEL, EXTRACTED_AT, EXTRACTION_LOG_ID);
+            EXTRACTION_MODEL, EXTRACTED_AT, EXTRACTION_LOG_ID,
+            OPINION, EVIDENCE_POS, EVIDENCE_NEG, PRIOR_STRENGTH,
+            SOURCE_TRUST, BASIS_TYPE, CORROBORATION_COUNT,
+            VALID_FROM, VALID_TO);
 
     private GraphProvenanceKeys() {
     }
