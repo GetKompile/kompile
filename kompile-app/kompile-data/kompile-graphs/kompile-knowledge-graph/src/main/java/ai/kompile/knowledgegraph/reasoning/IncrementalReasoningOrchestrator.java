@@ -24,6 +24,11 @@ import ai.kompile.graph.reasoning.fol.Fact;
 import ai.kompile.graph.reasoning.fol.FactStore;
 import ai.kompile.graph.reasoning.fol.InferredFact;
 import ai.kompile.graph.reasoning.fol.InferredFactStore;
+import ai.kompile.graph.reasoning.embedding.learn.EmbeddingConfig;
+import ai.kompile.graph.reasoning.embedding.learn.EmbeddingLearner;
+import ai.kompile.graph.reasoning.embedding.learn.Node2VecLearner;
+import ai.kompile.graph.reasoning.hybrid.HybridReasoner;
+import ai.kompile.graph.reasoning.learning.HybridConsensusTrainer;
 import ai.kompile.graph.reasoning.learning.MebnWeightLearner;
 import ai.kompile.graph.reasoning.learning.PslWeightLearningService;
 import ai.kompile.graph.reasoning.learning.StructuredPerceptronLearner;
@@ -33,6 +38,7 @@ import ai.kompile.knowledgegraph.confidence.SourceTrustResolver;
 import jakarta.annotation.PostConstruct;
 import ai.kompile.graph.reasoning.learning.WeightStore;
 import ai.kompile.graph.reasoning.mebn.MTheory;
+import ai.kompile.graph.reasoning.model.MutableReasoningGraph;
 import ai.kompile.graph.reasoning.model.ReasoningGraph;
 import ai.kompile.graph.reasoning.psl.HlMrfMapInference;
 import ai.kompile.graph.reasoning.psl.PslProgram;
@@ -303,6 +309,14 @@ public class IncrementalReasoningOrchestrator {
      * Reused across cascades.
      */
     private final MebnWeightLearner mebnWeightLearner = new MebnWeightLearner();
+
+    /**
+     * Embedding learner used to co-train entity embeddings into the cascade's reasoning graph so the
+     * {@link HybridReasoner} ranking carries semantic (not just structural) signal during joint
+     * training. Refreshed on the MEBN throttle; failures are non-fatal (the hybrid degrades to
+     * structural-only). Durable KGE embeddings remain the separate KGE job's responsibility.
+     */
+    private final EmbeddingLearner embeddingLearner = new Node2VecLearner();
 
     /**
      * How many cascades between MEBN weight-learning runs.
@@ -607,8 +621,29 @@ public class IncrementalReasoningOrchestrator {
             }
         }
 
-        // ── STEP 5b (L1 NEW): PSL weight learning — train on materialized soft targets ──
-        // Use the MAP posteriors as soft training targets (atomKey → posterior value).
+        // ── JOINT TRAINING SIGNAL: one hybrid-ranked consensus for PSL (5b) + MEBN (9) ──────
+        // Replaces the previously independent buildObservedTargets calls. A reasoning graph is
+        // projected from the FactStore; on the throttle, embeddings are co-trained into it so the
+        // hybrid score carries semantic signal; the HybridReasoner ranks the entities; and the
+        // observed soft targets are pulled toward that ranking. PSL and MEBN then both train against
+        // this SINGLE consensus signal — simultaneous, hybrid-supervised training of every learned
+        // parameter, instead of three disconnected learners on three re-derived target sets.
+        long cascadeCount = cascadeCounters
+                .computeIfAbsent(factSheetId, id -> new AtomicLong(0L))
+                .incrementAndGet();
+        boolean throttledTraining = kbCfg().isLearningEnabled()
+                && cascadeCount % Math.max(1, kbCfg().getMebnLearningInterval()) == 0;
+        // The hybrid rank is a full structural inference; run the joint consensus on the throttle
+        // (where MEBN + embeddings also co-train). Off-throttle cascades keep the cheap PSL warm-start
+        // on observed targets, so per-cascade latency is unchanged.
+        Map<String, Double> observedTargets = buildObservedTargets(factStore);
+        Map<String, Double> consensusTargets = throttledTraining
+                ? deriveHybridConsensus(factStore, observedTargets, true)
+                : observedTargets;
+
+        // ── STEP 5b (L1 NEW): PSL weight learning — co-train on the hybrid-ranked consensus ──
+        // The shared consensus targets blend the extracted observed facts with the hybrid reasoner's
+        // ranked response, so PSL weights move toward explaining BOTH the data and the consensus.
         // Run 1 mini-batch step (cheap; accumulates across cascades via warm-start from
         // persisted weights; 1 step keeps wall-time overhead below 10 ms for typical fact
         // sheets of ≤5000 atoms).
@@ -618,12 +653,12 @@ public class IncrementalReasoningOrchestrator {
                 && !result.values().isEmpty()) {
             PslProgram trainedProgram = program;
             try {
-                // Build soft targets from OBSERVED facts in the FactStore (the extracted ground
-                // truth). Training on MAP posteriors (result.values()) is self-training — the
-                // gradient dist(innerMAP)-dist(outerMAP) ≈ 0. Instead, train toward what the
-                // LLM/Tika actually extracted so rule weights move toward explaining the data.
-                Map<String, Double> softTargets = buildObservedTargets(factStore);
-                // Fall back to MAP posteriors only when the fact store is empty
+                // Co-train on the hybrid-ranked consensus (observed facts pulled toward the hybrid
+                // reasoner's ranking). Training on MAP posteriors alone is self-training (gradient
+                // dist(innerMAP)-dist(outerMAP) ≈ 0); the consensus moves rule weights toward
+                // explaining both the extracted data and the hybrid structural+semantic ranking.
+                Map<String, Double> softTargets = consensusTargets;
+                // Fall back to MAP posteriors only when the consensus / fact store is empty
                 if (softTargets.isEmpty()) {
                     softTargets = new HashMap<>(result.values());
                 }
@@ -738,23 +773,19 @@ public class IncrementalReasoningOrchestrator {
         // MEBN finite-difference gradient descent is O(|edges| × maxEpochs) — too expensive
         // to run every cascade. We run it every MEBN_LEARNING_INTERVAL cascades (default: 10)
         // to balance learning responsiveness vs. per-cascade wall time.
-        // Uses MAP posteriors as training observations (same soft-target signal as PSL).
-        long cascadeCount = cascadeCounters
-                .computeIfAbsent(factSheetId, id -> new AtomicLong(0L))
-                .incrementAndGet();
-        if (kbCfg().isLearningEnabled() && mebnWeightAdapter != null
-                && cascadeCount % kbCfg().getMebnLearningInterval() == 0) {
+        // Co-trains on the SAME hybrid-ranked consensus signal as PSL (computed once above);
+        // {@code throttledTraining} / {@code cascadeCount} were resolved before STEP 5b.
+        if (throttledTraining && mebnWeightAdapter != null) {
             MTheory theory = mebnTheories.get(factSheetId);
             ReasoningGraph mebnGraph = mebnGraphs.get(factSheetId);
             if (theory != null && mebnGraph != null && !result.values().isEmpty()) {
                 try {
                     // Load previously persisted weights to warm-start learning
                     mebnWeightAdapter.load(factSheetId, theory);
-                    // Use OBSERVED facts as training targets (not MAP posteriors — same
-                    // self-training bug as PSL path; both must use buildObservedTargets).
-                    Map<String, Double> observations = buildObservedTargets(factStore);
+                    // Co-train MEBN on the shared hybrid-ranked consensus (same signal PSL used).
+                    Map<String, Double> observations = consensusTargets;
                     if (observations.isEmpty()) {
-                        // Fall back to MAP posteriors if fact store has no observed facts
+                        // Fall back to MAP posteriors if the consensus / fact store is empty
                         observations = new HashMap<>(result.values());
                     }
                     // 5 epochs per throttled run — finite-diff is inherently slow but 5 steps
@@ -1010,6 +1041,85 @@ public class IncrementalReasoningOrchestrator {
             targets.put(f.atomKey(), f.value());
         }
         return targets;
+    }
+
+    /**
+     * Project the FactStore atoms into a {@link MutableReasoningGraph} for hybrid ranking: each atom's
+     * arguments become entities and each binary atom a weighted relation. This keeps the hybrid
+     * reasoner's view consistent with the soft-truth state the PSL program reasons over, and being
+     * mutable it can have embeddings co-trained into it for the semantic component of the ranking.
+     */
+    private MutableReasoningGraph factStoreToReasoningGraph(@Nullable FactStore factStore) {
+        MutableReasoningGraph graph = new MutableReasoningGraph();
+        if (factStore == null) {
+            return graph;
+        }
+        Set<String> added = new HashSet<>();
+        int edgeId = 0;
+        for (Fact f : factStore.allFacts()) {
+            String atom = f.atomKey();
+            int open = atom.indexOf('(');
+            int close = atom.lastIndexOf(')');
+            if (open < 0 || close <= open) {
+                continue;
+            }
+            String pred = atom.substring(0, open).trim();
+            String[] args = atom.substring(open + 1, close).split(",");
+            for (int i = 0; i < args.length; i++) {
+                args[i] = args[i].trim();
+            }
+            if (args.length == 1 && !args[0].isEmpty()) {
+                if (added.add(args[0])) {
+                    graph.addEntity(args[0], "ENTITY", args[0]);
+                }
+            } else if (args.length >= 2 && !args[0].isEmpty() && !args[1].isEmpty()) {
+                if (added.add(args[0])) {
+                    graph.addEntity(args[0], "ENTITY", args[0]);
+                }
+                if (added.add(args[1])) {
+                    graph.addEntity(args[1], "ENTITY", args[1]);
+                }
+                graph.addRelation("r" + (edgeId++), args[0], args[1], pred, f.value());
+            }
+        }
+        return graph;
+    }
+
+    /**
+     * Derive the joint-training consensus signal: build a reasoning graph from the FactStore, co-train
+     * embeddings into it on the throttle (so the hybrid score carries semantic, not just structural,
+     * signal), rank the entities with the {@link HybridReasoner}, and pull the observed soft targets
+     * toward that ranking ({@link HybridConsensusTrainer#consensusTargets}). Falls back to the raw
+     * observed targets on any failure. This is what makes PSL (STEP 5b) and MEBN (STEP 9) co-train
+     * against ONE hybrid-ranked signal instead of two independently re-derived target sets.
+     */
+    private Map<String, Double> deriveHybridConsensus(@Nullable FactStore factStore, Map<String, Double> observed,
+                                                      boolean coTrainEmbeddings) {
+        if (factStore == null || observed == null || observed.isEmpty()) {
+            return observed == null ? new HashMap<>() : observed;
+        }
+        try {
+            MutableReasoningGraph graph = factStoreToReasoningGraph(factStore);
+            if (graph.isEmpty()) {
+                return observed;
+            }
+            if (coTrainEmbeddings && embeddingLearner != null) {
+                try {
+                    embeddingLearner.learnInto(graph, EmbeddingConfig.defaults());
+                } catch (RuntimeException e) {
+                    log.debug("Hybrid consensus: embedding co-training skipped — {}", e.getMessage());
+                }
+            }
+            List<HybridReasoner.ScoredEntity> ranking = new HybridReasoner().rank(graph);
+            Map<String, Double> consensus = HybridConsensusTrainer.consensusTargets(
+                    observed, ranking, kbCfg().getHybridConsensusWeight());
+            log.debug("Hybrid consensus: ranked {} entities -> consensus over {} targets (w={})",
+                    ranking.size(), consensus.size(), kbCfg().getHybridConsensusWeight());
+            return consensus;
+        } catch (Exception e) {
+            log.warn("Hybrid consensus derivation failed — using observed targets: {}", e.getMessage());
+            return observed;
+        }
     }
 
     /**

@@ -121,6 +121,10 @@ public class KbConfig {
     /** P3: soft PSL rule weight for DOMAIN/RANGE rules compiled from a bound ontology. */
     private double ontologyRuleWeight = 0.8;
 
+    // ── Hybrid consensus training (HybridConsensusTrainer) ─────────────────────────
+    /** How strongly the hybrid reasoner's ranked responses pull the joint-training targets, in [0,1]. */
+    private double hybridConsensusWeight = 0.5;
+
     // ── Personal / free email providers (belongs_to_org exclusion list) ───────────
     private List<String> personalEmailDomains = new ArrayList<>(List.of(
             "gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com",
@@ -164,6 +168,7 @@ public class KbConfig {
         m.put("kbPrunePolicyPruneSuppressedBand", prunePolicyPruneSuppressedBand);
         m.put("kbOntologyGuidedExtractionEnabled", ontologyGuidedExtractionEnabled);
         m.put("kbOntologyRuleWeight", ontologyRuleWeight);
+        m.put("kbHybridConsensusWeight", hybridConsensusWeight);
         m.put("kbRuleWeightEstablishedMean", ruleWeightEstablishedMean);
         m.put("kbRuleWeightHighMean", ruleWeightHighMean);
         m.put("kbRuleWeightProbableMean", ruleWeightProbableMean);
@@ -210,6 +215,7 @@ public class KbConfig {
         c.prunePolicyPruneSuppressedBand = bool(root, "kbPrunePolicyPruneSuppressedBand", c.prunePolicyPruneSuppressedBand);
         c.ontologyGuidedExtractionEnabled = bool(root, "kbOntologyGuidedExtractionEnabled", c.ontologyGuidedExtractionEnabled);
         c.ontologyRuleWeight = dbl(root, "kbOntologyRuleWeight", c.ontologyRuleWeight, 0.0, 100.0);
+        c.hybridConsensusWeight = dbl(root, "kbHybridConsensusWeight", c.hybridConsensusWeight, 0.0, 1.0);
         c.ruleWeightEstablishedMean = dbl(root, "kbRuleWeightEstablishedMean", c.ruleWeightEstablishedMean, 0.0, 100.0);
         c.ruleWeightHighMean = dbl(root, "kbRuleWeightHighMean", c.ruleWeightHighMean, 0.0, 100.0);
         c.ruleWeightProbableMean = dbl(root, "kbRuleWeightProbableMean", c.ruleWeightProbableMean, 0.0, 100.0);
