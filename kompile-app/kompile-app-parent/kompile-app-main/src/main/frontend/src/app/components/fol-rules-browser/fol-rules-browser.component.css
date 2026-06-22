@@ -1,0 +1,233 @@
+/*
+ * Copyright 2025 Kompile Inc.
+ * Licensed under the Apache License, Version 2.0 (the "License").
+ */
+
+.rules-panel {
+  padding: 12px;
+}
+
+/* ── Empty states ─────────────────────────────────────────────────────────── */
+
+.empty-state,
+.no-rules-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 48px 16px;
+  color: rgba(0, 0, 0, 0.5);
+}
+
+.empty-state mat-icon,
+.no-rules-state mat-icon {
+  font-size: 40px;
+  height: 40px;
+  width: 40px;
+}
+
+/* ── Toolbar ──────────────────────────────────────────────────────────────── */
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.kind-filter {
+  min-width: 200px;
+  margin-bottom: -22px; /* align mat-form-field baseline with buttons */
+}
+
+/* ── Summary chips ────────────────────────────────────────────────────────── */
+
+.summary-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.chip {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 12px;
+  line-height: 20px;
+}
+
+.chip-total {
+  background: var(--bg-surface, #f5f5f5);
+  color: rgba(0, 0, 0, 0.7);
+  border: 1px solid rgba(0, 0, 0, 0.12);
+}
+
+/* ── Kind badges (used both in chips and inline rule rows) ────────────────── */
+
+.badge-psl {
+  background: #e3f2fd;
+  color: #1565c0;
+}
+
+.badge-ontology {
+  background: #f3e5f5;
+  color: #7b1fa2;
+}
+
+.badge-file {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+/* ── Rules card ───────────────────────────────────────────────────────────── */
+
+.rules-card {
+  margin-bottom: 16px;
+}
+
+.rules-card mat-card-content {
+  padding: 0 !important;
+}
+
+/* ── Individual rule row ──────────────────────────────────────────────────── */
+
+.rule-row {
+  border-bottom: 1px solid rgba(0, 0, 0, 0.07);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.rule-row:hover {
+  background: var(--bg-surface, rgba(0, 0, 0, 0.03));
+}
+
+.rule-row.expanded {
+  background: var(--bg-surface, rgba(0, 0, 0, 0.03));
+}
+
+.rule-row:last-child {
+  border-bottom: none;
+}
+
+/* ── Rule header (always visible) ────────────────────────────────────────── */
+
+.rule-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+}
+
+.badge {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.rule-text {
+  flex: 1;
+  font-family: 'Roboto Mono', 'Courier New', monospace;
+  font-size: 12.5px;
+  color: var(--color-text, rgba(0, 0, 0, 0.87));
+  word-break: break-all;
+  min-width: 0;
+}
+
+.rule-text.truncated {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Weight bar ───────────────────────────────────────────────────────────── */
+
+.weight-section {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  cursor: default;
+}
+
+.weight-bar-track {
+  width: 72px;
+  height: 6px;
+  background: rgba(0, 0, 0, 0.1);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.weight-bar-fill {
+  height: 100%;
+  background: #1976d2;
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.weight-bar-fill.hard-fill {
+  background: #c62828;
+}
+
+.weight-value {
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(0, 0, 0, 0.6);
+  min-width: 30px;
+  text-align: right;
+}
+
+/* ── Expand/collapse icon ─────────────────────────────────────────────────── */
+
+.expand-icon {
+  flex-shrink: 0;
+  color: rgba(0, 0, 0, 0.4);
+  font-size: 20px;
+  height: 20px;
+  width: 20px;
+}
+
+/* ── Expanded detail section ─────────────────────────────────────────────── */
+
+.rule-detail {
+  padding: 8px 14px 14px 14px;
+  border-top: 1px dashed rgba(0, 0, 0, 0.08);
+  background: var(--bg-body, #fafafa);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.detail-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  font-size: 13px;
+}
+
+.detail-label {
+  flex-shrink: 0;
+  width: 60px;
+  font-weight: 600;
+  color: rgba(0, 0, 0, 0.55);
+  padding-top: 2px;
+}
+
+.detail-value {
+  flex: 1;
+  color: var(--color-text, rgba(0, 0, 0, 0.87));
+}
+
+code.detail-value {
+  font-family: 'Roboto Mono', 'Courier New', monospace;
+  font-size: 12px;
+  background: rgba(0, 0, 0, 0.04);
+  padding: 2px 6px;
+  border-radius: 4px;
+  word-break: break-all;
+}

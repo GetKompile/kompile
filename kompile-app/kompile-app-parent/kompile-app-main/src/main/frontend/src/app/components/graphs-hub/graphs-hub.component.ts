@@ -49,13 +49,14 @@ import { FactsByTierPanelComponent } from '../facts-by-tier-panel/facts-by-tier-
 import { KbWeightsPanelComponent } from '../kb-weights-panel/kb-weights-panel.component';
 import { OpinionBrowserComponent } from '../opinion-browser/opinion-browser.component';
 import { CommunityPanelComponent } from '../community-panel/community-panel.component';
+import { FolRulesBrowserComponent } from '../fol-rules-browser/fol-rules-browser.component';
 import { ProcessLineagePanelComponent } from '../process-lineage-panel/process-lineage-panel.component';
 
 type GraphsTab = 'visualizer' | 'entityBrowser' | 'hierarchy' | 'builder'
   | 'eventObservation' | 'causalAttribution'
   | 'overview' | 'health' | 'ontology' | 'pipelines' | 'provenance' | 'diff'
   | 'maintenance' | 'rules' | 'extract' | 'patch' | 'eval' | 'io'
-  | 'grounding' | 'processes' | 'audit' | 'hydration'
+  | 'grounding' | 'processes' | 'audit' | 'hydration' | 'folRules'
   | 'factsByTier' | 'weights' | 'opinions' | 'communities' | 'processLineage';
 
 /**
@@ -99,6 +100,7 @@ type GraphsTab = 'visualizer' | 'entityBrowser' | 'hierarchy' | 'builder'
     KbWeightsPanelComponent,
     OpinionBrowserComponent,
     CommunityPanelComponent,
+    FolRulesBrowserComponent,
     ProcessLineagePanelComponent
   ],
   templateUrl: './graphs-hub.component.html',

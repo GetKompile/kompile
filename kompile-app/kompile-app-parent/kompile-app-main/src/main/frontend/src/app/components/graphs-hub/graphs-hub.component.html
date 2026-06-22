@@ -114,6 +114,10 @@
       <mat-icon class="tab-icon">bubble_chart</mat-icon>
       <span class="tab-label">Communities</span>
     </button>
+    <button class="sub-tab" [class.active]="activeSubTab === 'folRules'" (click)="selectSubTab('folRules')">
+      <mat-icon class="tab-icon">rule</mat-icon>
+      <span class="tab-label">FOL Rules</span>
+    </button>
     <button class="sub-tab" [class.active]="activeSubTab === 'processLineage'" (click)="selectSubTab('processLineage')">
       <mat-icon class="tab-icon">device_hub</mat-icon>
       <span class="tab-label">Process Lineage</span>
@@ -210,6 +214,9 @@
     </div>
     <div *ngIf="activeSubTab === 'communities'">
       <app-community-panel [factSheetId]="activeFactSheetId"></app-community-panel>
+    </div>
+    <div *ngIf="activeSubTab === 'folRules'">
+      <app-fol-rules-browser [factSheetId]="activeFactSheetId"></app-fol-rules-browser>
     </div>
     <div *ngIf="activeSubTab === 'processLineage'">
       <app-process-lineage-panel [factSheetId]="activeFactSheetId"></app-process-lineage-panel>
