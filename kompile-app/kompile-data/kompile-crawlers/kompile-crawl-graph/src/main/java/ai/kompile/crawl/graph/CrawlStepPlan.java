@@ -39,9 +39,13 @@ import java.util.TreeMap;
  *   <li><b>Legacy / default</b> — {@code enabledSteps} and {@code archivedSteps} both empty: every step
  *       RUNs, with the coarse {@code graphExtraction.enabled} / {@code vectorIndex.enabled} toggles and
  *       the PREPROCESSING opt-in folded in (so old requests behave exactly as before).</li>
- *   <li><b>Explicit selection</b> — {@code enabledSteps}/{@code archivedSteps} non-empty: only the
- *       selected steps (plus their transitive hard dependencies and all foundational steps) RUN;
- *       everything else is SKIP. This makes the UI's per-step toggles dependency-safe.</li>
+ *   <li><b>Explicit RUN</b> — {@code enabledSteps} non-empty: only those steps (plus their transitive
+ *       hard dependencies and all foundational steps) RUN; everything else is SKIP. Dependency-safe.</li>
+ *   <li><b>Archive</b> — {@code archivedSteps} non-empty while {@code enabledSteps} is empty: the
+ *       default "every step RUNs" still holds, MINUS the archived steps (and their dependents).
+ *       Archiving one step NEVER flips the plan to whitelist mode — ENRICHMENT and the other graph
+ *       steps keep running. (Archiving + enabling together: explicit RUN of the enabled set, then the
+ *       archived steps are removed from it.)</li>
  * </ul>
  */
 public final class CrawlStepPlan {
@@ -92,10 +96,12 @@ public final class CrawlStepPlan {
         List<String> enabled = request.getEnabledSteps();
         List<String> archived = request.getArchivedSteps();
 
-        // Seed of explicitly-selected steps (to RUN or ARCHIVE). Both pull in their dependencies.
+        // Seed of explicitly-ENABLED steps only. Archiving must NOT flip the plan to whitelist mode:
+        // archived steps are subtracted from the default-everything-runs below. Seeding `archived` here
+        // (the old behaviour) meant archiving ONE step silently SKIPped every unselected step —
+        // ENRICHMENT and the rest of the graph pipeline — which is the opposite of a modular opt-out.
         Set<String> selected = new LinkedHashSet<>();
         addKnown(selected, enabled);
-        addKnown(selected, archived);
 
         if (!selected.isEmpty()) {
             // Explicit selection: keep = selected + their transitive hard deps + all foundational steps.
