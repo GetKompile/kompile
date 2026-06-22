@@ -47,6 +47,8 @@ public class StructuredPerceptronLearner implements WeightLearner {
     private final double tolerance;
     private final int batchSize;
     private final long seed;
+    private final double weightPriorStrength;
+    private final double weightPriorMean;
 
     public StructuredPerceptronLearner() {
         this(0.1, 1e-4, FULL_BATCH, DEFAULT_SEED);
@@ -66,10 +68,31 @@ public class StructuredPerceptronLearner implements WeightLearner {
      * @param seed         RNG seed for reproducible subsampling
      */
     public StructuredPerceptronLearner(double learningRate, double tolerance, int batchSize, long seed) {
+        this(learningRate, tolerance, batchSize, seed, 0.0, 0.0);
+    }
+
+    /**
+     * Full constructor with MAP (L2 / Gaussian-prior) weight regularization.
+     *
+     * <p>MAP = MLE + log-prior. A Gaussian prior {@code N(weightPriorMean, 1/weightPriorStrength)}
+     * on each rule weight contributes the penalty gradient
+     * {@code weightPriorStrength * (w - weightPriorMean)} to the structured-perceptron descent
+     * gradient, shrinking weights toward the prior mean unless the data pulls them away.
+     * {@code weightPriorStrength = 0} disables regularization (pure MLE — the exact prior
+     * behaviour). A small prior mean is the principled form of "start near zero; let the data
+     * justify larger weights" — weights no longer drift unboundedly under noisy labels.</p>
+     *
+     * @param weightPriorStrength lambda {@code >= 0}; 0 disables regularization (pure MLE)
+     * @param weightPriorMean     the prior mean each rule weight is shrunk toward
+     */
+    public StructuredPerceptronLearner(double learningRate, double tolerance, int batchSize, long seed,
+                                       double weightPriorStrength, double weightPriorMean) {
         this.learningRate = learningRate;
         this.tolerance = tolerance;
         this.batchSize = batchSize;
         this.seed = seed;
+        this.weightPriorStrength = weightPriorStrength;
+        this.weightPriorMean = weightPriorMean;
     }
 
     @Override
@@ -115,6 +138,18 @@ public class StructuredPerceptronLearner implements WeightLearner {
 
             // Per-rule descent gradient = mean(distPred - distGT); shared with PseudolikelihoodLearner.
             double[] gradient = PslRuleGradient.ruleGradient(rules, batch, predicted, groundTruth);
+
+            // MAP regularization (Gaussian prior on weights): MAP = MLE + log-prior. The penalty
+            // (weightPriorStrength/2)*(w - weightPriorMean)^2 contributes
+            // weightPriorStrength*(w - weightPriorMean) to the descent gradient, so optimizer.step
+            // shrinks each weight toward weightPriorMean unless the data gradient pulls it away.
+            // weightPriorStrength=0 is a no-op (pure structured-perceptron MLE — exact prior behaviour).
+            if (weightPriorStrength > 0.0) {
+                for (int i = 0; i < gradient.length; i++) {
+                    gradient[i] += weightPriorStrength * (weights[i] - weightPriorMean);
+                }
+            }
+
             double maxChange = optimizer.step(weights, gradient);
             log.debug("StructuredPerceptronLearner epoch {}: maxChange={}", epoch, maxChange);
 
