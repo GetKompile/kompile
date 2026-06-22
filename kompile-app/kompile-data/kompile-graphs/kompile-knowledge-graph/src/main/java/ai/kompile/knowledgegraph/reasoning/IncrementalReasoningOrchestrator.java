@@ -778,9 +778,10 @@ public class IncrementalReasoningOrchestrator {
                     log.debug("Grounding cascade factSheet={}: MEBN online step done (cascade {})",
                             factSheetId, cascadeCount);
 
-                    // STEP 9-event: re-stage the artifact on the interval (not every cascade) so app-main
+                    // STEP 9-event: re-stage the artifact on the first cascade (so even short crawls get
+                    // an initial staged model) and then every interval (not every cascade) so app-main
                     // staging is not churned by per-cascade online steps.
-                    if (cascadeCount % Math.max(1, kbCfg().getMebnLearningInterval()) == 0) {
+                    if (cascadeCount == 1L || cascadeCount % Math.max(1, kbCfg().getMebnLearningInterval()) == 0) {
                         try {
                             Path mebnArtifact = mebnWeightAdapter.mebnArtifactPath(factSheetId);
                             eventPublisher.publishEvent(
