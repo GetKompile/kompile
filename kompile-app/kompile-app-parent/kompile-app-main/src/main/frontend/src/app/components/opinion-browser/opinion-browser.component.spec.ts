@@ -19,13 +19,13 @@ import { NO_ERRORS_SCHEMA } from '@angular/core';
 import { NoopAnimationsModule } from '@angular/platform-browser/animations';
 import { HttpClientTestingModule, HttpTestingController } from '@angular/common/http/testing';
 
-import { OpinionBrowserComponent } from './opinion-browser.component';
+import { OpinionBrowserComponent, BasisTypeValue } from './opinion-browser.component';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Minimal FactOpinionRow shape used in tests (mirrors the private interface). */
+/** Minimal FactOpinionRow shape used in tests (mirrors the component interface). */
 interface FactOpinionRow {
   atomKey: string;
   confidence: number;
@@ -37,6 +37,7 @@ interface FactOpinionRow {
   uncertainty: number | null;
   expectation: number | null;
   baseRate: number | null;
+  basisType: string | null;
 }
 
 function makeRow(overrides: Partial<FactOpinionRow> = {}): FactOpinionRow {
@@ -51,6 +52,7 @@ function makeRow(overrides: Partial<FactOpinionRow> = {}): FactOpinionRow {
     uncertainty: null,
     expectation: null,
     baseRate: null,
+    basisType: 'LLM_EXTRACTION',
     ...overrides,
   };
 }
@@ -198,7 +200,7 @@ describe('OpinionBrowserComponent', () => {
   }));
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Additional: error path
+  // 7. Error path
   // ─────────────────────────────────────────────────────────────────────────
 
   it('loadData sets error message on HTTP error', fakeAsync(() => {
@@ -222,4 +224,336 @@ describe('OpinionBrowserComponent', () => {
     expect(component.error).toBeTruthy();
     expect(component.loading).toBeFalse();
   }));
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // D4: BasisType filter tests
+  // ─────────────────────────────────────────────────────────────────────────
+
+  describe('D4: BasisType filter', () => {
+
+    it('basisTypeColor returns correct colour for LLM_EXTRACTION', () => {
+      expect(component.basisTypeColor('LLM_EXTRACTION')).toBe('#9C27B0');
+    });
+
+    it('basisTypeColor returns correct colour for STRUCTURAL', () => {
+      expect(component.basisTypeColor('STRUCTURAL')).toBe('#2196F3');
+    });
+
+    it('basisTypeColor returns grey for unknown basis type', () => {
+      expect(component.basisTypeColor('UNKNOWN')).toBe('#9E9E9E');
+    });
+
+    it('basisTypeColor returns grey for null basis type', () => {
+      expect(component.basisTypeColor(null)).toBe('#9E9E9E');
+    });
+
+    it('basisTypeAbbrev returns LLM for LLM_EXTRACTION', () => {
+      expect(component.basisTypeAbbrev('LLM_EXTRACTION')).toBe('LLM');
+    });
+
+    it('basisTypeAbbrev returns STRUCT for STRUCTURAL', () => {
+      expect(component.basisTypeAbbrev('STRUCTURAL')).toBe('STRUCT');
+    });
+
+    it('basisTypeAbbrev returns PSL for PSL_INFERENCE', () => {
+      expect(component.basisTypeAbbrev('PSL_INFERENCE')).toBe('PSL');
+    });
+
+    it('basisTypeAbbrev returns MEBN for MEBN_INFERENCE', () => {
+      expect(component.basisTypeAbbrev('MEBN_INFERENCE')).toBe('MEBN');
+    });
+
+    it('basisTypeAbbrev returns CORR for CORROBORATION', () => {
+      expect(component.basisTypeAbbrev('CORROBORATION')).toBe('CORR');
+    });
+
+    it('basisTypeAbbrev returns ASSERT for ASSERTED', () => {
+      expect(component.basisTypeAbbrev('ASSERTED')).toBe('ASSERT');
+    });
+
+    it('toggleBasisType null clears selection', () => {
+      component.selectedBasisTypes.add('LLM_EXTRACTION');
+      component.selectedBasisTypes.add('PSL_INFERENCE');
+      component.rows = [];
+      component.toggleBasisType(null);
+      expect(component.selectedBasisTypes.size).toBe(0);
+    });
+
+    it('toggleBasisType adds a type when not present', () => {
+      component.rows = [];
+      component.toggleBasisType('STRUCTURAL');
+      expect(component.selectedBasisTypes.has('STRUCTURAL')).toBeTrue();
+    });
+
+    it('toggleBasisType removes a type when already selected', () => {
+      component.rows = [];
+      component.selectedBasisTypes.add('STRUCTURAL');
+      component.toggleBasisType('STRUCTURAL');
+      expect(component.selectedBasisTypes.has('STRUCTURAL')).toBeFalse();
+    });
+
+    it('clientFilter keeps only rows matching selected basisTypes', () => {
+      const rows: FactOpinionRow[] = [
+        makeRow({ atomKey: 'a', basisType: 'STRUCTURAL' }),
+        makeRow({ atomKey: 'b', basisType: 'LLM_EXTRACTION' }),
+        makeRow({ atomKey: 'c', basisType: 'PSL_INFERENCE' }),
+      ];
+      component.selectedBasisTypes = new Set<BasisTypeValue>(['STRUCTURAL', 'PSL_INFERENCE']);
+      component.searchQuery = '';
+      const filtered = component.clientFilter(rows);
+      expect(filtered.length).toBe(2);
+      expect(filtered.map(r => r.atomKey)).toContain('a');
+      expect(filtered.map(r => r.atomKey)).toContain('c');
+      expect(filtered.map(r => r.atomKey)).not.toContain('b');
+    });
+
+    it('clientFilter passes all rows when selectedBasisTypes is empty', () => {
+      const rows: FactOpinionRow[] = [
+        makeRow({ atomKey: 'a', basisType: 'STRUCTURAL' }),
+        makeRow({ atomKey: 'b', basisType: 'LLM_EXTRACTION' }),
+      ];
+      component.selectedBasisTypes = new Set();
+      component.searchQuery = '';
+      const filtered = component.clientFilter(rows);
+      expect(filtered.length).toBe(2);
+    });
+
+    it('clientFilter treats null basisType as LLM_EXTRACTION for filtering', () => {
+      const rows: FactOpinionRow[] = [
+        makeRow({ atomKey: 'a', basisType: null }),
+        makeRow({ atomKey: 'b', basisType: 'STRUCTURAL' }),
+      ];
+      component.selectedBasisTypes = new Set<BasisTypeValue>(['LLM_EXTRACTION']);
+      component.searchQuery = '';
+      const filtered = component.clientFilter(rows);
+      // null basisType is treated as LLM_EXTRACTION
+      expect(filtered.length).toBe(1);
+      expect(filtered[0].atomKey).toBe('a');
+    });
+
+    it('filteredRows is updated when toggleBasisType is called with loaded rows', () => {
+      const rows: FactOpinionRow[] = [
+        makeRow({ atomKey: 'a', basisType: 'STRUCTURAL' }),
+        makeRow({ atomKey: 'b', basisType: 'LLM_EXTRACTION' }),
+      ];
+      component.rows = rows;
+      component.searchQuery = '';
+      component.toggleBasisType('STRUCTURAL');
+      expect(component.filteredRows.length).toBe(1);
+      expect(component.filteredRows[0].atomKey).toBe('a');
+    });
+
+    it('basisTypeChips contains an entry for all 6 types plus All', () => {
+      const values = component.basisTypeChips.map(c => c.value);
+      expect(values).toContain(null);          // All
+      expect(values).toContain('STRUCTURAL');
+      expect(values).toContain('LLM_EXTRACTION');
+      expect(values).toContain('PSL_INFERENCE');
+      expect(values).toContain('MEBN_INFERENCE');
+      expect(values).toContain('CORROBORATION');
+      expect(values).toContain('ASSERTED');
+      expect(values.length).toBe(7);
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // D3: Simplex inspector tests
+  // ─────────────────────────────────────────────────────────────────────────
+
+  describe('D3: Simplex inspector', () => {
+
+    it('simplexTrianglePoints returns a non-empty string', () => {
+      const pts = component.simplexTrianglePoints();
+      expect(typeof pts).toBe('string');
+      expect(pts.length).toBeGreaterThan(0);
+      // Should contain three coordinate pairs
+      const pairs = pts.trim().split(' ');
+      expect(pairs.length).toBe(3);
+    });
+
+    it('simplexOpinionPoint with b=1 d=0 u=0 returns point at T vertex', () => {
+      const row = makeRow({ belief: 1.0, disbelief: 0.0, uncertainty: 0.0 });
+      const pt = component.simplexOpinionPoint(row);
+      expect(pt.x).toBeCloseTo(component.SIMPLEX_T.x, 5);
+      expect(pt.y).toBeCloseTo(component.SIMPLEX_T.y, 5);
+    });
+
+    it('simplexOpinionPoint with b=0 d=1 u=0 returns point at F vertex', () => {
+      const row = makeRow({ belief: 0.0, disbelief: 1.0, uncertainty: 0.0 });
+      const pt = component.simplexOpinionPoint(row);
+      expect(pt.x).toBeCloseTo(component.SIMPLEX_F.x, 5);
+      expect(pt.y).toBeCloseTo(component.SIMPLEX_F.y, 5);
+    });
+
+    it('simplexOpinionPoint with b=0 d=0 u=1 returns point at V vertex', () => {
+      const row = makeRow({ belief: 0.0, disbelief: 0.0, uncertainty: 1.0 });
+      const pt = component.simplexOpinionPoint(row);
+      expect(pt.x).toBeCloseTo(component.SIMPLEX_V.x, 5);
+      expect(pt.y).toBeCloseTo(component.SIMPLEX_V.y, 5);
+    });
+
+    it('simplexOpinionPoint with equal b=d=u=1/3 returns centroid of triangle', () => {
+      const row = makeRow({ belief: 1/3, disbelief: 1/3, uncertainty: 1/3 });
+      const pt = component.simplexOpinionPoint(row);
+      const T = component.SIMPLEX_T;
+      const F = component.SIMPLEX_F;
+      const V = component.SIMPLEX_V;
+      const cx = (T.x + F.x + V.x) / 3;
+      const cy = (T.y + F.y + V.y) / 3;
+      expect(pt.x).toBeCloseTo(cx, 4);
+      expect(pt.y).toBeCloseTo(cy, 4);
+    });
+
+    it('simplexOpinionPoint handles all-null b/d/u gracefully', () => {
+      const row = makeRow({ belief: null, disbelief: null, uncertainty: null });
+      // Should not throw — nulls default to 0
+      expect(() => component.simplexOpinionPoint(row)).not.toThrow();
+    });
+
+    it('toggleExpand sets expandedRow when row is different', () => {
+      const row = makeRow({ atomKey: 'x' });
+      component.toggleExpand(row);
+      expect(component.expandedRow).toBe(row);
+    });
+
+    it('toggleExpand collapses when same row is toggled twice', () => {
+      const row = makeRow({ atomKey: 'x' });
+      component.toggleExpand(row);
+      component.toggleExpand(row);
+      expect(component.expandedRow).toBeNull();
+    });
+
+    it('toggleExpand switches to the newly clicked row', () => {
+      const rowA = makeRow({ atomKey: 'a' });
+      const rowB = makeRow({ atomKey: 'b' });
+      component.toggleExpand(rowA);
+      component.toggleExpand(rowB);
+      expect(component.expandedRow).toBe(rowB);
+    });
+
+    it('displayedColumns contains expand and basisType columns', () => {
+      expect(component.displayedColumns).toContain('expand');
+      expect(component.displayedColumns).toContain('basisType');
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // D5: Corpus-level search tests
+  // ─────────────────────────────────────────────────────────────────────────
+
+  describe('D5: Corpus-level text search', () => {
+
+    it('clientFilter returns all rows when searchQuery is empty', () => {
+      const rows: FactOpinionRow[] = [
+        makeRow({ atomKey: 'worksAt(alice, acme)' }),
+        makeRow({ atomKey: 'worksAt(bob, globex)' }),
+      ];
+      component.selectedBasisTypes = new Set();
+      component.searchQuery = '';
+      expect(component.clientFilter(rows).length).toBe(2);
+    });
+
+    it('clientFilter matches on subject within atomKey', () => {
+      const rows: FactOpinionRow[] = [
+        makeRow({ atomKey: 'worksAt(alice, acme)' }),
+        makeRow({ atomKey: 'worksAt(bob, globex)' }),
+      ];
+      component.selectedBasisTypes = new Set();
+      component.searchQuery = 'alice';
+      const filtered = component.clientFilter(rows);
+      expect(filtered.length).toBe(1);
+      expect(filtered[0].atomKey).toContain('alice');
+    });
+
+    it('clientFilter matches on predicate within atomKey', () => {
+      const rows: FactOpinionRow[] = [
+        makeRow({ atomKey: 'worksAt(alice, acme)' }),
+        makeRow({ atomKey: 'likes(alice, pizza)' }),
+      ];
+      component.selectedBasisTypes = new Set();
+      component.searchQuery = 'worksat';
+      const filtered = component.clientFilter(rows);
+      expect(filtered.length).toBe(1);
+      expect(filtered[0].atomKey).toContain('worksAt');
+    });
+
+    it('clientFilter is case-insensitive', () => {
+      const rows: FactOpinionRow[] = [
+        makeRow({ atomKey: 'WORKSATA(ALICE, ACME)' }),
+      ];
+      component.selectedBasisTypes = new Set();
+      component.searchQuery = 'alice';
+      expect(component.clientFilter(rows).length).toBe(1);
+    });
+
+    it('clientFilter returns empty list when no rows match', () => {
+      const rows: FactOpinionRow[] = [
+        makeRow({ atomKey: 'worksAt(alice, acme)' }),
+      ];
+      component.selectedBasisTypes = new Set();
+      component.searchQuery = 'zombo';
+      expect(component.clientFilter(rows).length).toBe(0);
+    });
+
+    it('applyClientFilters updates filteredRows from loaded rows without fetching', fakeAsync(() => {
+      // Pre-populate rows (simulating a previous loadData call)
+      component.rows = [
+        makeRow({ atomKey: 'worksAt(alice, acme)' }),
+        makeRow({ atomKey: 'worksAt(bob, globex)' }),
+      ];
+      component.filteredRows = [...component.rows];
+      component.selectedBasisTypes = new Set();
+
+      component.searchQuery = 'bob';
+      component.applyClientFilters();
+
+      // Must NOT have fired any HTTP request
+      httpMock.expectNone(() => true);
+
+      expect(component.filteredRows.length).toBe(1);
+      expect(component.filteredRows[0].atomKey).toContain('bob');
+    }));
+
+    it('loadData passes q param to the server URL', fakeAsync(() => {
+      component.factSheetId = 7;
+      component.searchQuery = 'acme';
+      component.selectedTier = null;
+      component.maxUncertainty = null;
+      component.minExpectation = null;
+
+      component.loadData();
+      tick();
+
+      const req = httpMock.expectOne(r =>
+        r.url.includes('/kb-grounding/7/opinions') && r.url.includes('q=acme')
+      );
+      expect(req.request.method).toBe('GET');
+      req.flush([]);
+
+      const summary = httpMock.expectOne(r => r.url.includes('/kb-grounding/7/band-summary'));
+      summary.flush({});
+    }));
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Combined D4+D5: basisType filter + text search
+  // ─────────────────────────────────────────────────────────────────────────
+
+  describe('Combined D4+D5 filters', () => {
+
+    it('clientFilter applies both basisType and text search simultaneously', () => {
+      const rows: FactOpinionRow[] = [
+        makeRow({ atomKey: 'worksAt(alice, acme)',  basisType: 'STRUCTURAL' }),
+        makeRow({ atomKey: 'worksAt(bob, globex)',  basisType: 'LLM_EXTRACTION' }),
+        makeRow({ atomKey: 'likes(alice, pizza)',   basisType: 'STRUCTURAL' }),
+      ];
+      component.selectedBasisTypes = new Set<BasisTypeValue>(['STRUCTURAL']);
+      component.searchQuery = 'alice';
+      const filtered = component.clientFilter(rows);
+      // Only STRUCTURAL rows containing 'alice'
+      expect(filtered.length).toBe(1);
+      expect(filtered[0].atomKey).toContain('alice');
+      expect(filtered[0].basisType).toBe('STRUCTURAL');
+    });
+  });
 });

@@ -87,9 +87,13 @@ public class KbOpinionBrowserController {
      * @param factSheetId     path variable — the fact sheet to query
      * @param tier            optional {@link StrengthBand} name filter
      *                        (ESTABLISHED / HIGH / PROBABLE / SPECULATIVE / SUPPRESSED)
-     * @param q               optional case-insensitive substring filter on atomKey
+     * @param q               optional case-insensitive substring filter on atomKey, subject,
+     *                        or predicate (supports corpus-level text search — D5)
      * @param maxUncertainty  optional upper bound on opinion.uncertainty() (inclusive, 0..1)
      * @param minExpectation  optional lower bound on opinion.expectation() (inclusive, 0..1)
+     * @param basisType       optional {@link ai.kompile.knowledgegraph.confidence.BasisType} name
+     *                        filter (STRUCTURAL / LLM_EXTRACTION / PSL_INFERENCE / MEBN_INFERENCE /
+     *                        CORROBORATION / ASSERTED) — D4
      * @param limit           maximum number of rows to return (default 200, capped at 1000)
      */
     @GetMapping("/opinions")
@@ -99,6 +103,7 @@ public class KbOpinionBrowserController {
             @RequestParam(required = false) @Nullable String q,
             @RequestParam(required = false) @Nullable Double maxUncertainty,
             @RequestParam(required = false) @Nullable Double minExpectation,
+            @RequestParam(required = false) @Nullable String basisType,
             @RequestParam(defaultValue = "" + DEFAULT_LIMIT) int limit) {
 
         if (promotionTracker == null) {
@@ -123,8 +128,12 @@ public class KbOpinionBrowserController {
         // Cap the limit
         int effectiveLimit = Math.min(Math.max(1, limit), MAX_LIMIT);
 
-        // Build the text filter (lower-cased once)
+        // Build the text filter (lower-cased once) — D5: matches atomKey, subject, or predicate
         String qLower = (q != null && !q.isBlank()) ? q.toLowerCase() : null;
+
+        // D4: basis-type filter (null = all)
+        String basisTypeLower = (basisType != null && !basisType.isBlank())
+                ? basisType.trim().toUpperCase() : null;
 
         List<FactOpinionRow> rows = new ArrayList<>();
 
@@ -137,13 +146,20 @@ public class KbOpinionBrowserController {
 
                 String atomKey = fact.atomKey();
 
-                // Text filter
+                // Text filter — match on full atomKey string (covers predicate and arguments)
                 if (qLower != null && !atomKey.toLowerCase().contains(qLower)) {
                     continue;
                 }
 
-                // Derive the full Opinion for this fact
-                Opinion opinion = resolveOpinion(factSheetId, atomKey, fact.confidence());
+                // Derive the full Opinion and basisType for this fact
+                ResolvedFactDetail detail = resolveDetail(factSheetId, atomKey, fact.confidence());
+                Opinion opinion = detail.opinion();
+                String resolvedBasisType = detail.basisType();
+
+                // D4: basisType filter
+                if (basisTypeLower != null && !basisTypeLower.equals(resolvedBasisType)) {
+                    continue;
+                }
 
                 // Uncertainty filter
                 if (maxUncertainty != null && opinion.uncertainty() > maxUncertainty) {
@@ -169,7 +185,8 @@ public class KbOpinionBrowserController {
                         opinion.disbelief(),
                         opinion.uncertainty(),
                         opinion.expectation(),
-                        opinion.baseRate()));
+                        opinion.baseRate(),
+                        resolvedBasisType));
             }
         }
 
@@ -205,18 +222,31 @@ public class KbOpinionBrowserController {
 
     // ── Internal helpers ──────────────────────────────────────────────────────
 
+    /** JSON key under which a serialized basisType may be embedded in provenanceJson. */
+    private static final String BASIS_TYPE_JSON_KEY = "\"_basisType\"";
+
+    /** Default basisType string used when the provenance JSON has no _basisType entry. */
+    private static final String DEFAULT_BASIS_TYPE = "LLM_EXTRACTION";
+
     /**
-     * Resolve the best-available {@link Opinion} for the given (factSheetId, atomKey) triple.
+     * Resolved fact detail: the best-available {@link Opinion} and the {@code _basisType} string.
+     */
+    private record ResolvedFactDetail(Opinion opinion, String basisType) {}
+
+    /**
+     * Resolve the best-available {@link Opinion} and {@code _basisType} for the given triple.
      *
      * <ol>
      *   <li>Beta-distribution evidence columns ({@code evidencePos}/{@code evidenceNeg}) — most
-     *       accurate when the fact has gone through the Trust-accumulation path.</li>
+     *       accurate when the fact has gone through the Trust-accumulation path.  The
+     *       {@code _basisType} is read from {@code provenanceJson} in the same row.</li>
      *   <li>Embedded {@code "_opinion"} JSON blob in {@code provenanceJson} — present when the
      *       LLM extraction path serialized a full opinion at write time.</li>
-     *   <li>Scalar soft-truth fallback via {@link Opinion#fromSoftTruth(double)}.</li>
+     *   <li>Scalar soft-truth fallback via {@link Opinion#fromSoftTruth(double)};
+     *       {@code basisType} defaults to {@value #DEFAULT_BASIS_TYPE}.</li>
      * </ol>
      */
-    private Opinion resolveOpinion(long factSheetId, String atomKey, double confidence) {
+    private ResolvedFactDetail resolveDetail(long factSheetId, String atomKey, double confidence) {
         if (factRepo != null) {
             try {
                 Optional<InferredFactRow> rowOpt =
@@ -224,31 +254,42 @@ public class KbOpinionBrowserController {
                 if (rowOpt.isPresent()) {
                     InferredFactRow row = rowOpt.get();
 
+                    // Read basisType from provenanceJson (present in all post-D4 rows)
+                    String provJson = row.getProvenanceJson();
+                    String basisType = extractStringValue(provJson, BASIS_TYPE_JSON_KEY);
+                    if (basisType == null) {
+                        basisType = DEFAULT_BASIS_TYPE;
+                    }
+
                     // Strategy 1: Beta-distribution evidence accumulators
                     if (row.getEvidencePos() != null && row.getEvidenceNeg() != null) {
-                        return Opinion.fromBetaEvidence(row.getEvidencePos(), row.getEvidenceNeg());
+                        return new ResolvedFactDetail(
+                                Opinion.fromBetaEvidence(row.getEvidencePos(), row.getEvidenceNeg()),
+                                basisType);
                     }
 
                     // Strategy 2: embedded _opinion blob in provenanceJson
-                    String provJson = row.getProvenanceJson();
                     if (provJson != null && provJson.contains(OPINION_JSON_KEY)) {
                         String opinionJson = extractOpinionJson(provJson);
                         if (opinionJson != null) {
                             try {
-                                return Opinion.fromJson(opinionJson);
+                                return new ResolvedFactDetail(Opinion.fromJson(opinionJson), basisType);
                             } catch (Exception ignored) {
                                 // Malformed blob — fall through to scalar fallback
                             }
                         }
                     }
+
+                    // Strategy 3: scalar fallback (but basisType still read from provenanceJson)
+                    return new ResolvedFactDetail(Opinion.fromSoftTruth(confidence), basisType);
                 }
             } catch (Exception ignored) {
                 // DB unavailable or row missing — fall through to scalar fallback
             }
         }
 
-        // Strategy 3: scalar soft-truth approximation
-        return Opinion.fromSoftTruth(confidence);
+        // Strategy 3: scalar soft-truth approximation (no DB row available)
+        return new ResolvedFactDetail(Opinion.fromSoftTruth(confidence), DEFAULT_BASIS_TYPE);
     }
 
     /**
@@ -297,6 +338,48 @@ public class KbOpinionBrowserController {
         return provenanceJson.substring(start, end);
     }
 
+    /**
+     * Extract the string value for a given JSON key (e.g. {@code "\"_basisType\""}) from a flat
+     * JSON string.  Returns the unquoted value for a string field, or {@code null} if not found.
+     *
+     * <p>Used to read simple string fields (like {@code _basisType}) without pulling in Jackson.</p>
+     *
+     * @param json  the JSON string to search; may be {@code null}
+     * @param jsonKey the quoted key to search for, e.g. {@code "\"_basisType\""}
+     * @return the unquoted string value, or {@code null} if the key is absent or not a string
+     */
+    @Nullable
+    static String extractStringValue(@Nullable String json, String jsonKey) {
+        if (json == null || json.isEmpty()) return null;
+        int keyIdx = json.indexOf(jsonKey);
+        if (keyIdx < 0) return null;
+
+        // Advance past key and separating colon
+        int colonIdx = json.indexOf(':', keyIdx + jsonKey.length());
+        if (colonIdx < 0) return null;
+
+        // Skip whitespace after the colon
+        int start = colonIdx + 1;
+        while (start < json.length() && Character.isWhitespace(json.charAt(start))) start++;
+        if (start >= json.length() || json.charAt(start) != '"') return null;
+
+        // Find closing quote (respecting simple escapes)
+        int vs = start + 1;
+        StringBuilder sb = new StringBuilder();
+        while (vs < json.length()) {
+            char c = json.charAt(vs);
+            if (c == '\\' && vs + 1 < json.length()) {
+                sb.append(json.charAt(vs + 1));
+                vs += 2;
+                continue;
+            }
+            if (c == '"') break;
+            sb.append(c);
+            vs++;
+        }
+        return sb.toString();
+    }
+
     // ── Response DTO ──────────────────────────────────────────────────────────
 
     /**
@@ -305,6 +388,10 @@ public class KbOpinionBrowserController {
      * <p>The {@code belief}, {@code disbelief}, {@code uncertainty}, {@code expectation}, and
      * {@code baseRate} fields come from the resolved {@link Opinion}.  They are all non-null
      * because the scalar-fallback strategy guarantees an opinion is always produced.</p>
+     *
+     * <p>{@code basisType} is read from the {@code _basisType} key in {@code provenanceJson}
+     * (D4).  It defaults to {@code "LLM_EXTRACTION"} when the row has no explicit basis type
+     * (pre-D4 rows, or rows from the soft-truth fallback path).</p>
      */
     public record FactOpinionRow(
             String atomKey,
@@ -316,5 +403,6 @@ public class KbOpinionBrowserController {
             Double disbelief,
             Double uncertainty,
             Double expectation,
-            Double baseRate) {}
+            Double baseRate,
+            String basisType) {}
 }
