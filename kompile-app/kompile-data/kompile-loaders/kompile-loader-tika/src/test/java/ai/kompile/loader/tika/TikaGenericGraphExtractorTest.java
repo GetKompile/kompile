@@ -16,14 +16,18 @@
 
 package ai.kompile.loader.tika;
 
+import ai.kompile.core.graphrag.conformance.OntologyProjectionProvider;
 import ai.kompile.core.graphrag.format.GraphExtractionSchema.*;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.document.Document;
 
 import java.util.*;
+import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
 
 class TikaGenericGraphExtractorTest {
 
@@ -32,6 +36,12 @@ class TikaGenericGraphExtractorTest {
     @BeforeEach
     void setUp() {
         extractor = new TikaGenericGraphExtractor();
+    }
+
+    @AfterEach
+    void tearDown() {
+        // Always clear ThreadLocal after each test to prevent leaks between tests
+        TikaGenericGraphExtractor.clearCurrentFactSheetId();
     }
 
     // --- supportedDocumentTypes ---
@@ -1410,5 +1420,232 @@ class TikaGenericGraphExtractorTest {
         meta.put("documentType", "Word Document");
         assertFalse(extractor.canExtract(new Document("content", meta)),
                 "Word documents should still be rejected (handled by OfficeGraphExtractor)");
+    }
+
+    // ─── Ontology-guided extraction (Phase 1) ─────────────────────────────────
+
+    /**
+     * When a bound ontology limits entity types to a specific set, extracted entities
+     * whose type is NOT in that set must be dropped from the result.
+     */
+    @Test
+    void boundOntology_entitiesNotInAllowedTypesAreFiltered() {
+        // Set up a mock provider that allows only PERSON entities
+        OntologyProjectionProvider provider = mock(OntologyProjectionProvider.class);
+        Long fsId = 10L;
+        when(provider.hasBoundOntology(fsId)).thenReturn(true);
+        when(provider.allowedEntityTypes(fsId)).thenReturn(List.of("PERSON"));
+        when(provider.allowedRelationshipTypes(fsId)).thenReturn(Collections.emptyList());
+        injectOntologyProvider(extractor, provider);
+
+        // Document with author (→ PERSON) and keywords (→ TOPIC)
+        Map<String, Object> meta = new HashMap<>();
+        meta.put("loader", "tika-loader");
+        meta.put("documentType", "text");
+        meta.put("author", "Alice Smith");
+        meta.put("keywords", "machine learning, AI");
+
+        TikaGenericGraphExtractor.setCurrentFactSheetId(fsId);
+        ExtractionResult result = extractor.extract(new Document("Some content", meta));
+
+        // Only PERSON-type entities (plus DOCUMENT which is the doc root) may appear.
+        // TOPIC entities from keywords must be filtered out because the ontology disallows them.
+        // Note: the DOCUMENT-type root entity for the document itself may be retained or filtered
+        // depending on whether "DOCUMENT" is in the ontology — in this test we only allow PERSON,
+        // so DOCUMENT entities are also dropped. What matters is that TOPIC is absent.
+        Set<String> types = result.entities().stream()
+                .map(ExtractedEntity::type)
+                .collect(Collectors.toSet());
+        assertFalse(types.contains("TOPIC"), "TOPIC entities must be filtered when not in ontology");
+    }
+
+    /**
+     * When a bound ontology allows entity types, entities of matching types must be retained.
+     */
+    @Test
+    void boundOntology_entitiesInAllowedTypesAreRetained() {
+        OntologyProjectionProvider provider = mock(OntologyProjectionProvider.class);
+        Long fsId = 11L;
+        // Allow both PERSON and DOCUMENT types
+        when(provider.hasBoundOntology(fsId)).thenReturn(true);
+        when(provider.allowedEntityTypes(fsId)).thenReturn(List.of("PERSON", "DOCUMENT"));
+        when(provider.allowedRelationshipTypes(fsId)).thenReturn(Collections.emptyList());
+        injectOntologyProvider(extractor, provider);
+
+        Map<String, Object> meta = new HashMap<>();
+        meta.put("loader", "tika-loader");
+        meta.put("documentType", "text");
+        meta.put("author", "Bob Jones");
+
+        TikaGenericGraphExtractor.setCurrentFactSheetId(fsId);
+        ExtractionResult result = extractor.extract(new Document("Some content", meta));
+
+        Set<String> types = result.entities().stream()
+                .map(ExtractedEntity::type)
+                .collect(Collectors.toSet());
+        // PERSON from author should be present
+        assertTrue(types.contains("PERSON"), "PERSON entities must be retained when in ontology");
+    }
+
+    /**
+     * When no OntologyProjectionProvider is wired (null), behaviour is identical to today's
+     * free-form extraction — no entities are filtered.
+     */
+    @Test
+    void nullProvider_noFilteringApplied_freeFormBehaviour() {
+        // extractor has no ontologyProvider (default null after new TikaGenericGraphExtractor())
+        // No ThreadLocal factSheetId set either
+
+        Map<String, Object> meta = new HashMap<>();
+        meta.put("loader", "tika-loader");
+        meta.put("documentType", "text");
+        meta.put("author", "Alice Smith");
+        meta.put("keywords", "AI, robotics");
+
+        ExtractionResult result = extractor.extract(new Document("Some content.", meta));
+
+        // With no provider, TOPIC entities from keywords should be present (free-form)
+        Set<String> types = result.entities().stream()
+                .map(ExtractedEntity::type)
+                .collect(Collectors.toSet());
+        assertTrue(types.contains("TOPIC") || types.contains("PERSON") || types.contains("DOCUMENT"),
+                "Free-form extraction should produce entities without filtering");
+    }
+
+    /**
+     * When a provider is present but hasBoundOntology returns false for this fact sheet,
+     * no filtering must be applied — permissive free-form behaviour is preserved.
+     */
+    @Test
+    void unboundOntology_noFilteringApplied() {
+        OntologyProjectionProvider provider = mock(OntologyProjectionProvider.class);
+        Long fsId = 12L;
+        when(provider.hasBoundOntology(fsId)).thenReturn(false); // NOT bound
+        injectOntologyProvider(extractor, provider);
+
+        Map<String, Object> meta = new HashMap<>();
+        meta.put("loader", "tika-loader");
+        meta.put("documentType", "text");
+        meta.put("author", "Carol White");
+        meta.put("keywords", "finance, audit");
+
+        TikaGenericGraphExtractor.setCurrentFactSheetId(fsId);
+        ExtractionResult result = extractor.extract(new Document("Some text.", meta));
+
+        Set<String> types = result.entities().stream()
+                .map(ExtractedEntity::type)
+                .collect(Collectors.toSet());
+        // No filtering expected — TOPIC should appear from keywords
+        assertFalse(types.isEmpty(), "Unbound ontology must not filter out all entities");
+        assertTrue(types.contains("TOPIC") || types.contains("PERSON") || types.contains("DOCUMENT"),
+                "Unbound ontology must preserve free-form entity types");
+        // Verify allowedEntityTypes was never called (no filtering logic ran)
+        verify(provider, never()).allowedEntityTypes(any());
+    }
+
+    /**
+     * When no ThreadLocal factSheetId is set (null), no filtering is applied even if a provider
+     * is available — the extractor cannot identify the fact sheet, so it stays permissive.
+     */
+    @Test
+    void noThreadLocalFactSheetId_noFilteringApplied() {
+        OntologyProjectionProvider provider = mock(OntologyProjectionProvider.class);
+        injectOntologyProvider(extractor, provider);
+        // ThreadLocal is null (clearCurrentFactSheetId already called in @AfterEach; never set here)
+
+        Map<String, Object> meta = new HashMap<>();
+        meta.put("loader", "tika-loader");
+        meta.put("documentType", "text");
+        meta.put("author", "Dave Brown");
+        meta.put("keywords", "operations");
+
+        ExtractionResult result = extractor.extract(new Document("Some text.", meta));
+
+        // Provider should never be consulted when factSheetId is null
+        verify(provider, never()).hasBoundOntology(any());
+        assertFalse(result.entities().isEmpty(), "Without factSheetId, all entities should be retained");
+    }
+
+    /**
+     * When ontology filtering drops entities, relations whose source or target was dropped
+     * must also be removed to avoid dangling references.
+     */
+    @Test
+    void boundOntology_relationsWithDroppedEndpointsAreRemoved() {
+        OntologyProjectionProvider provider = mock(OntologyProjectionProvider.class);
+        Long fsId = 13L;
+        // Only DOCUMENT type allowed — PERSON and TOPIC are dropped
+        when(provider.hasBoundOntology(fsId)).thenReturn(true);
+        when(provider.allowedEntityTypes(fsId)).thenReturn(List.of("DOCUMENT"));
+        when(provider.allowedRelationshipTypes(fsId)).thenReturn(Collections.emptyList());
+        injectOntologyProvider(extractor, provider);
+
+        Map<String, Object> meta = new HashMap<>();
+        meta.put("loader", "tika-loader");
+        meta.put("documentType", "text");
+        meta.put("author", "Eve Williams");   // creates PERSON + AUTHORED_BY relation to DOCUMENT
+
+        TikaGenericGraphExtractor.setCurrentFactSheetId(fsId);
+        ExtractionResult result = extractor.extract(new Document("Content.", meta));
+
+        // PERSON was dropped, so the AUTHORED_BY relation (DOCUMENT→PERSON) should also be gone
+        boolean anyRelToDroppedEntity = result.relations().stream()
+                .anyMatch(r -> {
+                    Set<String> entityIds = result.entities().stream()
+                            .map(ExtractedEntity::id)
+                            .collect(Collectors.toSet());
+                    return !entityIds.contains(r.source()) || !entityIds.contains(r.target());
+                });
+        assertFalse(anyRelToDroppedEntity,
+                "All relations must reference entities that survived the ontology filter");
+    }
+
+    /**
+     * When the bound ontology's allowedEntityTypes is empty, no filtering is applied —
+     * the extractor remains permissive (deny-all must never happen).
+     */
+    @Test
+    void emptyAllowedEntityTypes_noFilteringApplied_permissive() {
+        OntologyProjectionProvider provider = mock(OntologyProjectionProvider.class);
+        Long fsId = 14L;
+        when(provider.hasBoundOntology(fsId)).thenReturn(true);
+        when(provider.allowedEntityTypes(fsId)).thenReturn(Collections.emptyList()); // empty → permissive
+        when(provider.allowedRelationshipTypes(fsId)).thenReturn(Collections.emptyList());
+        injectOntologyProvider(extractor, provider);
+
+        Map<String, Object> meta = new HashMap<>();
+        meta.put("loader", "tika-loader");
+        meta.put("documentType", "text");
+        meta.put("author", "Frank Green");
+        meta.put("keywords", "chemistry, biology");
+
+        TikaGenericGraphExtractor.setCurrentFactSheetId(fsId);
+        ExtractionResult result = extractor.extract(new Document("Some text.", meta));
+
+        // Empty allowed types = no filtering (permissive)
+        assertFalse(result.entities().isEmpty(),
+                "Empty allowed-entity-types must be permissive — no entities should be filtered");
+        Set<String> types = result.entities().stream()
+                .map(ExtractedEntity::type)
+                .collect(Collectors.toSet());
+        assertTrue(types.contains("TOPIC") || types.contains("PERSON") || types.contains("DOCUMENT"),
+                "All structural entity types should be present when ontology list is empty");
+    }
+
+    // ─── ThreadLocal lifecycle helpers ────────────────────────────────────────
+
+    /**
+     * Injects OntologyProjectionProvider into TikaGenericGraphExtractor via reflection
+     * (simulating Spring @Autowired(required=false) field injection in plain-Java tests).
+     */
+    private static void injectOntologyProvider(TikaGenericGraphExtractor extractor,
+                                                OntologyProjectionProvider provider) {
+        try {
+            var field = TikaGenericGraphExtractor.class.getDeclaredField("ontologyProvider");
+            field.setAccessible(true);
+            field.set(extractor, provider);
+        } catch (NoSuchFieldException | IllegalAccessException e) {
+            throw new RuntimeException("Could not inject OntologyProjectionProvider for test", e);
+        }
     }
 }

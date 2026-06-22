@@ -19,6 +19,7 @@ package ai.kompile.loader.tika;
 import ai.kompile.core.graphrag.DocumentGraphExtractor;
 import ai.kompile.core.graphrag.ExtractorUtils;
 import ai.kompile.core.graphrag.GraphConstants;
+import ai.kompile.core.graphrag.conformance.OntologyProjectionProvider;
 import ai.kompile.core.graphrag.format.GraphExtractionSchema.*;
 import ai.kompile.core.graphrag.model.Entity;
 import ai.kompile.core.graphrag.model.Graph;
@@ -28,12 +29,14 @@ import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.ai.document.Document;
 import org.springframework.stereotype.Component;
 
 import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 import static ai.kompile.core.graphrag.ExtractorUtils.*;
 import static ai.kompile.core.graphrag.GraphConstants.*;
@@ -52,6 +55,43 @@ import static ai.kompile.core.graphrag.GraphConstants.*;
 public class TikaGenericGraphExtractor implements DocumentGraphExtractor {
 
     private static final Logger log = LoggerFactory.getLogger(TikaGenericGraphExtractor.class);
+
+    /**
+     * ThreadLocal for propagating the fact-sheet ID into {@link #extract(Document)} without
+     * changing the {@link DocumentGraphExtractor} interface signature.
+     *
+     * <p>Callers that know the fact-sheet context (e.g. a crawl orchestrator) should call
+     * {@link #setCurrentFactSheetId(Long)} before invoking {@code extract()} and
+     * {@link #clearCurrentFactSheetId()} in a finally block afterwards. When not set (the
+     * default), extraction falls back to free-form behaviour — permissive, never restrictive.</p>
+     */
+    private static final ThreadLocal<Long> CURRENT_FACT_SHEET_ID = new ThreadLocal<>();
+
+    /**
+     * Sets the fact-sheet ID for the current thread. The value is used by {@link #extract(Document)}
+     * to look up the bound ontology (if any) and filter entities accordingly.
+     * Must be cleared with {@link #clearCurrentFactSheetId()} after extraction.
+     */
+    public static void setCurrentFactSheetId(Long factSheetId) {
+        CURRENT_FACT_SHEET_ID.set(factSheetId);
+    }
+
+    /**
+     * Removes the fact-sheet ID from the current thread's context.
+     * Call this in a {@code finally} block after extraction to prevent leaks.
+     */
+    public static void clearCurrentFactSheetId() {
+        CURRENT_FACT_SHEET_ID.remove();
+    }
+
+    /**
+     * Optional OntologyProjectionProvider — when available, constrains Tika extraction
+     * by filtering out entities whose type is not in the bound ontology's allowed types.
+     * When null or when the fact sheet has no bound ontology, no filtering is applied
+     * (free-form, permissive behaviour is preserved exactly as before).
+     */
+    @Autowired(required = false)
+    private OntologyProjectionProvider ontologyProvider;
 
     private static final Pattern URL_PATTERN =
             Pattern.compile("(?:https?|ftps?|mailto):[\\w\\-._~:/?#\\[\\]@!$&'()*+,;=%]+");
@@ -1852,6 +1892,60 @@ public class TikaGenericGraphExtractor implements DocumentGraphExtractor {
         }
 
         entities.addAll(entityIndex.values());
+
+        // ── Ontology-guided entity filtering (Phase 1) ──────────────────────────
+        // When a fact-sheet ID is present on the current thread AND the provider
+        // reports a bound ontology with a non-empty allowed-entity-types list,
+        // drop entities whose type is not in that list and remove dangling relations.
+        // Rationale for drop (vs. re-type): Tika extraction is structural/deterministic;
+        // an entity type mismatch means the ontology does not model that concept — best
+        // to exclude it rather than silently map it to a wrong type.
+        // NEVER filter when unbound (empty allowedEntityTypes → no restriction).
+        Long fsId = CURRENT_FACT_SHEET_ID.get();
+        if (fsId != null && ontologyProvider != null
+                && ontologyProvider.hasBoundOntology(fsId)) {
+            List<String> allowedTypes = ontologyProvider.allowedEntityTypes(fsId);
+            if (allowedTypes != null && !allowedTypes.isEmpty()) {
+                Set<String> allowedSet = new HashSet<>(allowedTypes);
+                // Track which entity IDs are dropped to clean up dangling relations
+                Set<String> droppedEntityIds = new HashSet<>();
+                List<ExtractedEntity> filtered = new ArrayList<>();
+                for (ExtractedEntity e : entities) {
+                    if (allowedSet.contains(e.type())) {
+                        filtered.add(e);
+                    } else {
+                        droppedEntityIds.add(e.id());
+                        log.debug("Ontology filter: dropped entity id={} type={} (not in ontology for factSheet={})",
+                                e.id(), e.type(), fsId);
+                    }
+                }
+                if (!droppedEntityIds.isEmpty()) {
+                    log.debug("Ontology filter for factSheet={}: dropped {}/{} entities",
+                            fsId, droppedEntityIds.size(), entities.size());
+                    entities = filtered;
+                    // Remove relations whose source or target was dropped
+                    List<ExtractedRelation> filteredRels = relations.stream()
+                            .filter(r -> !droppedEntityIds.contains(r.source())
+                                    && !droppedEntityIds.contains(r.target()))
+                            .collect(Collectors.toList());
+                    relations = filteredRels;
+                }
+
+                // Optionally filter relations to allowed relationship types
+                List<String> allowedRelTypes = ontologyProvider.allowedRelationshipTypes(fsId);
+                if (allowedRelTypes != null && !allowedRelTypes.isEmpty()) {
+                    Set<String> allowedRelSet = new HashSet<>(allowedRelTypes);
+                    List<ExtractedRelation> relFiltered = relations.stream()
+                            .filter(r -> allowedRelSet.contains(r.type()))
+                            .collect(Collectors.toList());
+                    if (relFiltered.size() < relations.size()) {
+                        log.debug("Ontology filter for factSheet={}: dropped {}/{} relations",
+                                fsId, relations.size() - relFiltered.size(), relations.size());
+                        relations = relFiltered;
+                    }
+                }
+            }
+        }
 
         ExtractionMetadata extractionMeta = new ExtractionMetadata(
                 source, source, SOURCE_TIKA_EXTRACTOR, null, null, null
