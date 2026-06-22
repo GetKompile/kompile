@@ -36,6 +36,7 @@ import { MatMenuModule } from '@angular/material/menu';
 import { MatDividerModule } from '@angular/material/divider';
 import { MatDialog, MatDialogModule } from '@angular/material/dialog';
 import { MatRadioModule } from '@angular/material/radio';
+import { HttpClient } from '@angular/common/http';
 import { Subject, Subscription, takeUntil, debounceTime, interval, filter, of } from 'rxjs';
 import { catchError } from 'rxjs/operators';
 import { ConfirmDialogComponent, ConfirmDialogData } from '../confirm-dialog/confirm-dialog.component';
@@ -203,6 +204,13 @@ import {
                   matTooltip="Toggle Provenance Overlay (circle=observed, diamond=derived)">
             <mat-icon>account_tree</mat-icon>
           </button>
+          <button mat-icon-button
+                  [color]="communityOverlayEnabled ? 'accent' : ''"
+                  (click)="toggleCommunityOverlay()"
+                  [disabled]="communityLoading"
+                  matTooltip="Toggle Community Detection Overlay">
+            <mat-icon>{{communityLoading ? 'hourglass_empty' : 'bubble_chart'}}</mat-icon>
+          </button>
           <button mat-icon-button (click)="toggleSidePanel()" matTooltip="Toggle Side Panel">
             <mat-icon>{{showSidePanel ? 'chevron_right' : 'chevron_left'}}</mat-icon>
           </button>
@@ -227,6 +235,8 @@ import {
             [strengthOverlayEnabled]="strengthOverlayEnabled"
             [strengthBandMap]="strengthBandMap"
             [provenanceOverlayEnabled]="provenanceOverlayEnabled"
+            [communityOverlayEnabled]="communityOverlayEnabled"
+            [communityMap]="communityMap"
             (nodeSelected)="onNodeSelected($event)"
             (nodeDoubleClicked)="onNodeDoubleClicked($event)"
             (edgeCreated)="onEdgeCreated($event)"
@@ -1966,6 +1976,16 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
   private verifiedNodeIds = new Set<string>();
   private overlayDebounceTimer: any = null;
 
+  // Community detection overlay state
+  communityOverlayEnabled = false;
+  communityMap: Map<string, number> = new Map();
+  communityLoading = false;
+  communityError: string | null = null;
+  communityModularity: number | null = null;
+  communityCount: number | null = null;
+  communityMethod: 'louvain' | 'label_propagation' = 'louvain';
+  communityResolution = 1.0;
+
   // Phase-2 filter state
   allStrengthBands: StrengthBand[] = ['ESTABLISHED', 'HIGH', 'PROBABLE', 'SPECULATIVE', 'SUPPRESSED'];
   strengthBandFilter: Set<StrengthBand> = new Set(this.allStrengthBands);
@@ -2060,7 +2080,8 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
     private attributionService: AttributionService,
     private kbGrounding: KbGroundingService,
     private snackBar: MatSnackBar,
-    private dialog: MatDialog
+    private dialog: MatDialog,
+    private http: HttpClient
   ) {}
 
   ngOnInit(): void {
@@ -3016,6 +3037,47 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
 
   toggleProvenanceOverlay(): void {
     this.provenanceOverlayEnabled = !this.provenanceOverlayEnabled;
+  }
+
+  toggleCommunityOverlay(): void {
+    if (this.communityOverlayEnabled) {
+      this.communityOverlayEnabled = false;
+      this.communityMap = new Map();
+      return;
+    }
+    if (!this.factSheetId) {
+      this.snackBar.open('Select a fact sheet first', 'Dismiss', { duration: 2000 });
+      return;
+    }
+    this.loadCommunityOverlay();
+  }
+
+  private loadCommunityOverlay(): void {
+    if (!this.factSheetId) return;
+    this.communityLoading = true;
+    this.communityError = null;
+    const url = `/api/graph/${this.factSheetId}/communities?method=${this.communityMethod}&resolution=${this.communityResolution}&maxNodes=500`;
+    this.http.get<any>(url).subscribe({
+      next: (result) => {
+        const map = new Map<string, number>();
+        if (result.nodeToCommunit) {
+          for (const [nodeId, cid] of Object.entries(result.nodeToCommunit as Record<string, number>)) {
+            map.set(nodeId, cid);
+          }
+        }
+        this.communityMap = map;
+        this.communityModularity = result.modularity;
+        this.communityCount = result.communityCount;
+        this.communityOverlayEnabled = true;
+        this.communityLoading = false;
+        this.snackBar.open(`${result.communityCount} communities detected (Q=${result.modularity?.toFixed(3)})`, 'Dismiss', { duration: 3000 });
+      },
+      error: (err) => {
+        this.communityError = err?.error?.error || err?.message || 'Community detection failed';
+        this.communityLoading = false;
+        this.snackBar.open('Community detection failed: ' + this.communityError, 'Dismiss', { duration: 3000 });
+      }
+    });
   }
 
   toggleStrengthBandFilter(band: StrengthBand): void {

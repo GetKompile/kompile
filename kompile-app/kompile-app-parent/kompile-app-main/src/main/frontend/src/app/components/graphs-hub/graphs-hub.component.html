@@ -106,6 +106,14 @@
       <mat-icon class="tab-icon">scale</mat-icon>
       <span class="tab-label">Weights</span>
     </button>
+    <button class="sub-tab" [class.active]="activeSubTab === 'opinions'" (click)="selectSubTab('opinions')">
+      <mat-icon class="tab-icon">psychology_alt</mat-icon>
+      <span class="tab-label">Opinions</span>
+    </button>
+    <button class="sub-tab" [class.active]="activeSubTab === 'communities'" (click)="selectSubTab('communities')">
+      <mat-icon class="tab-icon">bubble_chart</mat-icon>
+      <span class="tab-label">Communities</span>
+    </button>
     <button class="sub-tab" [class.active]="activeSubTab === 'processLineage'" (click)="selectSubTab('processLineage')">
       <mat-icon class="tab-icon">device_hub</mat-icon>
       <span class="tab-label">Process Lineage</span>
@@ -196,6 +204,12 @@
     </div>
     <div *ngIf="activeSubTab === 'weights'">
       <app-kb-weights-panel [factSheetId]="activeFactSheetId"></app-kb-weights-panel>
+    </div>
+    <div *ngIf="activeSubTab === 'opinions'">
+      <app-opinion-browser [factSheetId]="activeFactSheetId"></app-opinion-browser>
+    </div>
+    <div *ngIf="activeSubTab === 'communities'">
+      <app-community-panel [factSheetId]="activeFactSheetId"></app-community-panel>
     </div>
     <div *ngIf="activeSubTab === 'processLineage'">
       <app-process-lineage-panel [factSheetId]="activeFactSheetId"></app-process-lineage-panel>

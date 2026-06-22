@@ -47,6 +47,8 @@ import { AuditTimelineComponent } from '../audit-timeline/audit-timeline.compone
 import { HydrationProgressPanelComponent } from '../hydration-progress-panel/hydration-progress-panel.component';
 import { FactsByTierPanelComponent } from '../facts-by-tier-panel/facts-by-tier-panel.component';
 import { KbWeightsPanelComponent } from '../kb-weights-panel/kb-weights-panel.component';
+import { OpinionBrowserComponent } from '../opinion-browser/opinion-browser.component';
+import { CommunityPanelComponent } from '../community-panel/community-panel.component';
 import { ProcessLineagePanelComponent } from '../process-lineage-panel/process-lineage-panel.component';
 
 type GraphsTab = 'visualizer' | 'entityBrowser' | 'hierarchy' | 'builder'
@@ -54,7 +56,7 @@ type GraphsTab = 'visualizer' | 'entityBrowser' | 'hierarchy' | 'builder'
   | 'overview' | 'health' | 'ontology' | 'pipelines' | 'provenance' | 'diff'
   | 'maintenance' | 'rules' | 'extract' | 'patch' | 'eval' | 'io'
   | 'grounding' | 'processes' | 'audit' | 'hydration'
-  | 'factsByTier' | 'weights' | 'processLineage';
+  | 'factsByTier' | 'weights' | 'opinions' | 'communities' | 'processLineage';
 
 /**
  * Unified "Graphs" workspace — a first-class home for knowledge graphs as assets. Combines the
@@ -95,6 +97,8 @@ type GraphsTab = 'visualizer' | 'entityBrowser' | 'hierarchy' | 'builder'
     HydrationProgressPanelComponent,
     FactsByTierPanelComponent,
     KbWeightsPanelComponent,
+    OpinionBrowserComponent,
+    CommunityPanelComponent,
     ProcessLineagePanelComponent
   ],
   templateUrl: './graphs-hub.component.html',

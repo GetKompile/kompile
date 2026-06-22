@@ -358,6 +358,8 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
   @Input() strengthOverlayEnabled: boolean = false;
   @Input() strengthBandMap: Map<string, string> = new Map();  // nodeId -> StrengthBand name
   @Input() provenanceOverlayEnabled: boolean = false;
+  @Input() communityOverlayEnabled: boolean = false;
+  @Input() communityMap: Map<string, number> = new Map();  // nodeId -> communityId (integer)
 
   @Output() nodeSelected = new EventEmitter<D3Node | null>();
   @Output() nodeDoubleClicked = new EventEmitter<D3Node>();
@@ -434,6 +436,9 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
     }
     if (changes['provenanceOverlayEnabled'] && this.nodesGroup) {
       this.updateProvenanceOverlay();
+    }
+    if ((changes['communityOverlayEnabled'] || changes['communityMap']) && this.nodesGroup) {
+      this.updateCommunityOverlay();
     }
   }
 
@@ -1001,6 +1006,66 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
     const prov = meta['_provenance'] as string | undefined;
     if (prov && prov.toLowerCase().includes('derived')) return true;
     return false;
+  }
+
+  // ── Community Overlay ─────────────────────────────────────────────────────────
+  // Community rings are rebuilt by updateCommunityOverlay() when communityMap/
+  // communityOverlayEnabled inputs change — NOT on every simulation tick (same
+  // pattern as provenance diamond overlays).
+
+  private readonly COMMUNITY_PALETTE: string[] = [
+    '#4285F4', '#EA4335', '#FBBC05', '#34A853', '#FF6D00',
+    '#9C27B0', '#00BCD4', '#FF5722', '#607D8B', '#795548',
+    '#E91E63', '#009688', '#FF9800', '#3F51B5', '#8BC34A',
+    '#F44336', '#2196F3', '#4CAF50', '#FFC107', '#9E9E9E'
+  ];
+
+  private communityColor(communityId: number): string {
+    return this.COMMUNITY_PALETTE[communityId % this.COMMUNITY_PALETTE.length];
+  }
+
+  private updateCommunityOverlay(): void {
+    if (!this.nodesGroup) return;
+
+    this.nodesGroup.selectAll('.community-ring').remove();
+
+    if (!this.communityOverlayEnabled || this.communityMap.size === 0) {
+      this.nodesGroup.selectAll<SVGCircleElement, SimulationNode>('circle.graph-node')
+        .attr('stroke', d => this.selectedNode?.id === d.id ? '#667eea' : '#ffffff')
+        .attr('stroke-width', d => this.selectedNode?.id === d.id ? 4 : 2.5);
+      return;
+    }
+
+    // Color node strokes by community id
+    this.nodesGroup.selectAll<SVGCircleElement, SimulationNode>('circle.graph-node')
+      .attr('stroke', (d: SimulationNode) => {
+        if (this.selectedNode?.id === d.id) return '#667eea';
+        const cid = this.communityMap.get(d.id);
+        return cid !== undefined ? this.communityColor(cid) : '#ffffff';
+      })
+      .attr('stroke-width', (d: SimulationNode) => {
+        if (this.selectedNode?.id === d.id) return 4;
+        return this.communityMap.has(d.id) ? 4 : 2.5;
+      });
+
+    // Add a semi-transparent ring behind each node in the community color
+    const nodesWithCommunity = this.nodes.filter(n => this.communityMap.has(n.id));
+    for (const node of nodesWithCommunity) {
+      const cid = this.communityMap.get(node.id)!;
+      const color = this.communityColor(cid);
+      const baseR = NODE_SIZES[node.type] || 10;
+      this.nodesGroup.insert('circle', 'circle')
+        .datum(node)
+        .classed('community-ring', true)
+        .attr('cx', node.x || 0)
+        .attr('cy', node.y || 0)
+        .attr('r', baseR + 7)
+        .attr('fill', color + '22')  // 13% opacity
+        .attr('stroke', color)
+        .attr('stroke-width', 1.5)
+        .attr('stroke-opacity', 0.6)
+        .attr('pointer-events', 'none');
+    }
   }
 
   private readonly MFRAG_COLORS = [
