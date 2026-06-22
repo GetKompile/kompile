@@ -57,6 +57,10 @@ export interface KbConfig {
   kbPrunePolicyMinExpectation: number;
   kbPrunePolicyPruneSuppressedBand: boolean;
 
+  // Ontology tie-in (P1 extraction guidance, P3 rule weight)
+  kbOntologyGuidedExtractionEnabled: boolean;
+  kbOntologyRuleWeight: number;
+
   // Personal email domains
   kbPersonalEmailDomains: string[];
 }
@@ -109,6 +113,8 @@ export class KbConfigService {
       kbPrunePolicyMaxUncertainty: 0.80,
       kbPrunePolicyMinExpectation: 0.15,
       kbPrunePolicyPruneSuppressedBand: true,
+      kbOntologyGuidedExtractionEnabled: true,
+      kbOntologyRuleWeight: 0.8,
       kbPersonalEmailDomains: ['gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com']
     };
   }

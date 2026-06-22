@@ -317,6 +317,31 @@
       </mat-slide-toggle>
     </mat-expansion-panel>
 
+    <!-- ── Section: Ontology Tie-in ──────────────────────────────── -->
+    <mat-expansion-panel class="section-panel">
+      <mat-expansion-panel-header>
+        <mat-panel-title>
+          <mat-icon>schema</mat-icon>
+          Ontology Tie-in
+        </mat-panel-title>
+        <mat-panel-description>Govern crawl→graph extraction + reasoning with a bound ontology</mat-panel-description>
+      </mat-expansion-panel-header>
+
+      <mat-slide-toggle [(ngModel)]="config.kbOntologyGuidedExtractionEnabled"
+                        [ngModelOptions]="{standalone: true}" class="toggle-row">
+        Constrain extraction to a bound ontology's entity/relationship types (P1)
+      </mat-slide-toggle>
+
+      <div class="fields-grid">
+        <mat-form-field appearance="outline">
+          <mat-label>Ontology Rule Weight</mat-label>
+          <input matInput type="number" [(ngModel)]="config.kbOntologyRuleWeight"
+                 [ngModelOptions]="{standalone: true}" min="0" max="100" step="0.1">
+          <mat-hint>Soft PSL weight for DOMAIN/RANGE rules from the ontology (P3; e.g. 0.8)</mat-hint>
+        </mat-form-field>
+      </div>
+    </mat-expansion-panel>
+
     <!-- ── Section: Personal Email Domains ───────────────────────── -->
     <mat-expansion-panel class="section-panel">
       <mat-expansion-panel-header>
