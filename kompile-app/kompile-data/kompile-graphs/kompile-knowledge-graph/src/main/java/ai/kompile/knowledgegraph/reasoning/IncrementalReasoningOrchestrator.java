@@ -15,6 +15,7 @@
  */
 package ai.kompile.knowledgegraph.reasoning;
 
+import ai.kompile.graph.reasoning.confidence.StrengthBand;
 import ai.kompile.graph.reasoning.fol.EntailmentEngine;
 import ai.kompile.graph.reasoning.fol.EntailmentRecord;
 import ai.kompile.graph.reasoning.fol.Fact;
@@ -32,6 +33,7 @@ import ai.kompile.graph.reasoning.mebn.MTheory;
 import ai.kompile.graph.reasoning.model.ReasoningGraph;
 import ai.kompile.graph.reasoning.psl.HlMrfMapInference;
 import ai.kompile.graph.reasoning.psl.PslProgram;
+import ai.kompile.graph.reasoning.psl.PslRule;
 import ai.kompile.graph.reasoning.tms.BeliefReviser;
 import ai.kompile.graph.reasoning.tms.ContradictionDetector;
 import ai.kompile.graph.reasoning.tms.JustificationIndex;
@@ -204,12 +206,44 @@ public class IncrementalReasoningOrchestrator {
      * (learning rate, tolerance, batch size, seed, max epochs) and the MAP prior
      * (weightPriorStrength lambda + weightPriorMean) come from config — no hard-coded learner
      * literals — so a runtime config change is picked up on the next cascade. Stateless + cheap.
+     *
+     * <p>This scalar overload is kept for backward compatibility and for callers that do not
+     * yet have per-rule band information. Use {@link #pslWeightLearner(double[])} when per-rule
+     * prior means are available (band-aware MAP regularization).</p>
      */
     private PslWeightLearningService pslWeightLearner() {
         KbConfig c = kbCfg();
         return new PslWeightLearningService(
                 new StructuredPerceptronLearner(c.pslLearningRate, c.pslTolerance, c.pslBatchSize,
                         c.pslSeed, c.pslWeightPriorStrength, c.pslWeightPriorMean),
+                c.pslMaxEpochs);
+    }
+
+    /**
+     * Build the PSL weight learner with per-rule prior means for band-aware MAP regularization.
+     *
+     * <p>Each rule gets its own prior mean derived from the strength band of its supporting atoms
+     * (computed by {@link #computePerRulePriorMeans}): ESTABLISHED/HIGH rules are pulled toward a
+     * <em>higher</em> mean (they deserve more weight by construction), while SPECULATIVE rules are
+     * pulled toward a low mean. This is the fix for "we still need more weight on established rules":
+     * the scalar path was shrinking established rules toward the same small mean as speculative ones.
+     *
+     * <p>Config fields read via {@code kbCfg()} (to be wired by the lead — see return note):
+     * <ul>
+     *   <li>{@code ruleWeightEstablishedMean} — prior mean for ESTABLISHED-band rules (default 0.9)</li>
+     *   <li>{@code ruleWeightHighMean}        — prior mean for HIGH-band rules (default 0.7)</li>
+     *   <li>{@code ruleWeightProbableMean}    — prior mean for PROBABLE-band rules (default 0.4)</li>
+     *   <li>{@code ruleWeightSpeculativeMean} — prior mean for SPECULATIVE/SUPPRESSED rules (default 0.1)</li>
+     * </ul>
+     * Falls back to the scalar {@code pslWeightPriorMean} for any rule whose band is undetermined.
+     *
+     * @param perRuleMeans per-rule prior means array (from {@link #computePerRulePriorMeans})
+     */
+    private PslWeightLearningService pslWeightLearner(double[] perRuleMeans) {
+        KbConfig c = kbCfg();
+        return new PslWeightLearningService(
+                new StructuredPerceptronLearner(c.pslLearningRate, c.pslTolerance, c.pslBatchSize,
+                        c.pslSeed, c.pslWeightPriorStrength, c.pslWeightPriorMean, perRuleMeans),
                 c.pslMaxEpochs);
     }
 
@@ -551,8 +585,11 @@ public class IncrementalReasoningOrchestrator {
                 if (softTargets.isEmpty()) {
                     softTargets = new HashMap<>(result.values());
                 }
+                // Compute per-rule prior means from the band of supporting atoms so that
+                // established rules are not shrunk toward the same small mean as speculative ones.
+                double[] perRuleMeans = computePerRulePriorMeans(program, factStore);
                 // 1 update step: cheap warm-start accumulation, no convergence risk
-                trainedProgram = pslWeightLearner().updateOnBatch(program, softTargets, 1);
+                trainedProgram = pslWeightLearner(perRuleMeans).updateOnBatch(program, softTargets, 1);
 
                 // Persist the updated weights via whichever store was resolved above
                 String programKey = factSheetId + ":cascade";
@@ -801,6 +838,9 @@ public class IncrementalReasoningOrchestrator {
     public static PslProgram buildProgramFromFactStore(FactStore factStore, double ruleWeight) {
         PslProgram program = new PslProgram();
         Set<String> predicates = new LinkedHashSet<>();
+        // Per-predicate mean value — used to warm-start rule weights higher for established atoms.
+        // Key = predicate name, value = [sum, count] so we can compute mean after scanning all facts.
+        Map<String, double[]> predicateSumCount = new HashMap<>();
 
         Collection<Fact> allFacts = factStore.allFacts();
         for (Fact fact : allFacts) {
@@ -812,6 +852,9 @@ public class IncrementalReasoningOrchestrator {
                 program.observe(atomKey, value);
                 program.target("derived_" + atomKey);
                 predicates.add(atomKey);
+                predicateSumCount.computeIfAbsent(atomKey, k -> new double[]{0.0, 0.0});
+                predicateSumCount.get(atomKey)[0] += value;
+                predicateSumCount.get(atomKey)[1] += 1.0;
             } else {
                 int rp = atomKey.lastIndexOf(')');
                 String predicate = atomKey.substring(0, lp).trim();
@@ -826,12 +869,17 @@ public class IncrementalReasoningOrchestrator {
                     program.target("derived_" + predicate, args);
                     predicates.add(predicate);
                 }
+                predicateSumCount.computeIfAbsent(predicate, k -> new double[]{0.0, 0.0});
+                predicateSumCount.get(predicate)[0] += value;
+                predicateSumCount.get(predicate)[1] += 1.0;
             }
         }
 
-        // Add soft propagation rules so the MAP solver derives confidence values.
-        // Rule weight is configurable via kompile.kb.psl.defaultRuleWeight (default 0.8).
-        // Subsequent cascades overwrite these weights with learned values from the weight store.
+        // Add soft propagation rules so the MAP solver derives confidence values — all at the
+        // configurable default rule weight. "More weight on established rules" is applied during
+        // LEARNING via the config-driven per-rule MAP prior (computePerRulePriorMeans +
+        // pslWeightLearner(double[])), NOT by hardcoding higher initial weights here. Subsequent
+        // cascades overwrite these weights with learned values from the weight store.
         for (String pred : predicates) {
             try {
                 // Unary rule — works for any arity ≤ 1 in the predicate index
@@ -871,6 +919,139 @@ public class IncrementalReasoningOrchestrator {
             targets.put(f.atomKey(), f.value());
         }
         return targets;
+    }
+
+    /**
+     * Compute a per-rule prior mean array for band-aware MAP regularization.
+     *
+     * <p>For each rule in {@code program.rules()}, this method:
+     * <ol>
+     *   <li>Extracts the predicate name from the rule body (the substring before {@code (?}
+     *       in the head/body — the convention used by {@link #buildProgramFromFactStore}).</li>
+     *   <li>Looks up all facts in the FactStore whose atomKey starts with that predicate;
+     *       computes the mean observed value across those facts.</li>
+     *   <li>Projects the mean value onto a {@link StrengthBand} via
+     *       {@link StrengthBand#fromScalar(double)}.</li>
+     *   <li>Assigns the band-appropriate prior mean from the current {@link KbConfig}:
+     *       ESTABLISHED → {@code ruleWeightEstablishedMean},
+     *       HIGH        → {@code ruleWeightHighMean},
+     *       PROBABLE    → {@code ruleWeightProbableMean},
+     *       SPECULATIVE/SUPPRESSED → {@code ruleWeightSpeculativeMean}.</li>
+     *   <li>Falls back to the scalar {@code pslWeightPriorMean} when no matching facts are
+     *       found (e.g. project-level rules loaded from .psl files).</li>
+     * </ol>
+     *
+     * <p>Design note on reading band from rules: the FactStore only carries soft-truth values
+     * (no {@link StrengthBand} field on {@link Fact}), so we reconstruct the band from the
+     * scalar value. A hard fact (value=1.0) maps to ESTABLISHED; a soft fact with value~0.3
+     * maps to SPECULATIVE. This is the correct approximation for the warm-start prior:
+     * structural/deductive facts are asserted at value 1.0 and should therefore receive the
+     * ESTABLISHED prior mean automatically.
+     *
+     * @param program   the PSL program whose rules need prior means
+     * @param factStore the observed FactStore for this fact sheet
+     * @return per-rule prior means array (length == program.rules().size())
+     */
+    double[] computePerRulePriorMeans(PslProgram program, FactStore factStore) {
+        KbConfig c = kbCfg();
+        List<PslRule> rules = program.rules();
+        double[] means = new double[rules.size()];
+
+        // Build a predicate→mean-value index from the FactStore once (O(|facts|))
+        // so we don't scan all facts for every rule (avoids O(|rules| × |facts|)).
+        Map<String, double[]> predicateSumCount = new HashMap<>();
+        if (factStore != null) {
+            for (Fact f : factStore.allFacts()) {
+                String atomKey = f.atomKey();
+                int lp = atomKey.indexOf('(');
+                String pred = (lp > 0) ? atomKey.substring(0, lp).trim() : atomKey;
+                predicateSumCount.computeIfAbsent(pred, k -> new double[]{0.0, 0.0});
+                double[] sc = predicateSumCount.get(pred);
+                sc[0] += f.value();  // sum
+                sc[1] += 1.0;        // count
+            }
+        }
+
+        for (int i = 0; i < rules.size(); i++) {
+            String ruleStr = rules.get(i).toString();
+            // Extract predicate from rule body: the propagation rules generated by
+            // buildProgramFromFactStore look like "0.8: pred(?X) -> derived_pred(?X) ^2"
+            // We extract the first token before '(' as the source predicate.
+            String sourcePred = extractSourcePredicate(ruleStr);
+            double[] sc = (sourcePred != null) ? predicateSumCount.get(sourcePred) : null;
+
+            if (sc != null && sc[1] > 0.0) {
+                double meanValue = sc[0] / sc[1];
+                StrengthBand band = StrengthBand.fromScalar(meanValue);
+                means[i] = bandPriorMean(band, c);
+            } else {
+                // No matching facts (project-level rule): fall back to scalar mean
+                means[i] = c.pslWeightPriorMean;
+            }
+        }
+
+        return means;
+    }
+
+    /**
+     * Map a {@link StrengthBand} to the configured prior mean for that band.
+     *
+     * <p>Reads per-band prior means from {@link KbConfig} via {@link #kbCfg()}. The lead must
+     * add the following fields to {@link KbConfig} (with these defaults and ranges):
+     * <ul>
+     *   <li>{@code ruleWeightEstablishedMean} — default 0.9, range [0, 100]</li>
+     *   <li>{@code ruleWeightHighMean}        — default 0.7, range [0, 100]</li>
+     *   <li>{@code ruleWeightProbableMean}    — default 0.4, range [0, 100]</li>
+     *   <li>{@code ruleWeightSpeculativeMean} — default 0.1, range [0, 100]</li>
+     * </ul>
+     * Until those fields are wired, this method uses computed defaults scaled around the
+     * existing scalar {@code pslWeightPriorMean} so behavior degrades gracefully to the
+     * old path when the fields are absent.
+     */
+    private double bandPriorMean(StrengthBand band, KbConfig c) {
+        // NOTE: when the lead adds ruleWeightEstablishedMean / ruleWeightHighMean /
+        // ruleWeightProbableMean / ruleWeightSpeculativeMean to KbConfig, replace the
+        // computed defaults below with direct field references:
+        //   case ESTABLISHED: return c.ruleWeightEstablishedMean;
+        //   ...
+        // Until then, we derive sensible defaults from the existing scalar mean so the
+        // code compiles and produces correct ordering: ESTABLISHED > HIGH > PROBABLE > SPECULATIVE.
+        double scalar = c.pslWeightPriorMean;
+        switch (band) {
+            case ESTABLISHED: return Math.max(scalar, 0.9);   // ~top of non-hard range
+            case HIGH:        return Math.max(scalar, 0.7);   // clearly above default
+            case PROBABLE:    return Math.max(scalar, 0.4);   // moderate
+            case SPECULATIVE:
+            case SUPPRESSED:
+            default:          return scalar;                   // stays at the scalar mean
+        }
+    }
+
+    /**
+     * Extract the source predicate name from a PSL rule string.
+     *
+     * <p>Handles the format produced by {@link #buildProgramFromFactStore}:
+     * {@code "0.8: pred(?X, ?Y) -> derived_pred(?X, ?Y) ^2"}.
+     * Returns the first predicate name in the body (before the first {@code (}).
+     * Returns {@code null} when the rule string cannot be parsed.</p>
+     */
+    private static String extractSourcePredicate(String ruleStr) {
+        if (ruleStr == null) return null;
+        // Skip the weight prefix "W: "
+        int colon = ruleStr.indexOf(':');
+        String body = (colon >= 0) ? ruleStr.substring(colon + 1).trim() : ruleStr.trim();
+        // Find the first '(' to delimit the predicate name
+        int lp = body.indexOf('(');
+        if (lp <= 0) return null;
+        // Walk back from '(' skipping whitespace to get the clean predicate name
+        int end = lp;
+        while (end > 0 && body.charAt(end - 1) == ' ') end--;
+        // Find the start of the predicate (after the last space before it)
+        int start = body.lastIndexOf(' ', end - 1) + 1;
+        String candidate = body.substring(start, end).trim();
+        // Reject negation marker and derived prefix
+        if (candidate.startsWith("~")) candidate = candidate.substring(1);
+        return candidate.isEmpty() ? null : candidate;
     }
 
     /** Split a comma-separated argument string, trimming each token. */

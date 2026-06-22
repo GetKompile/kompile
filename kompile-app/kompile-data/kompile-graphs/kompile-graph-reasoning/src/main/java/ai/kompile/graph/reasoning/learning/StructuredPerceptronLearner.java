@@ -17,6 +17,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -48,7 +49,18 @@ public class StructuredPerceptronLearner implements WeightLearner {
     private final int batchSize;
     private final long seed;
     private final double weightPriorStrength;
+    /** Scalar fallback prior mean — used when {@link #perRuleWeightPriorMean} is null. */
     private final double weightPriorMean;
+    /**
+     * Per-rule prior means array (length == number of rules). When non-null, the MAP
+     * gradient for rule {@code r} uses {@code perRuleWeightPriorMean[r]} in place of the
+     * scalar {@link #weightPriorMean}. If the array is shorter than the rule count the
+     * tail rules fall back to the scalar mean (safe for forward-compatible programs that
+     * grow more rules than the array was built for).
+     *
+     * <p>null = scalar path (exact prior behavior — all existing tests unchanged).</p>
+     */
+    private final double[] perRuleWeightPriorMean;
 
     public StructuredPerceptronLearner() {
         this(0.1, 1e-4, FULL_BATCH, DEFAULT_SEED);
@@ -83,7 +95,8 @@ public class StructuredPerceptronLearner implements WeightLearner {
      * justify larger weights" — weights no longer drift unboundedly under noisy labels.</p>
      *
      * @param weightPriorStrength lambda {@code >= 0}; 0 disables regularization (pure MLE)
-     * @param weightPriorMean     the prior mean each rule weight is shrunk toward
+     * @param weightPriorMean     the prior mean each rule weight is shrunk toward (all rules
+     *                            share the same mean; use the per-rule overload for band-aware priors)
      */
     public StructuredPerceptronLearner(double learningRate, double tolerance, int batchSize, long seed,
                                        double weightPriorStrength, double weightPriorMean) {
@@ -93,6 +106,53 @@ public class StructuredPerceptronLearner implements WeightLearner {
         this.seed = seed;
         this.weightPriorStrength = weightPriorStrength;
         this.weightPriorMean = weightPriorMean;
+        this.perRuleWeightPriorMean = null;  // scalar path
+    }
+
+    /**
+     * Per-rule prior mean constructor for band-aware MAP regularization.
+     *
+     * <p>This overload replaces the global {@code weightPriorMean} with a per-rule array so
+     * that each rule is regularized toward its own prior mean rather than a single shared mean.
+     * The motivating use-case is band-aware priors: rules whose supporting atoms are in the
+     * ESTABLISHED or HIGH band (structural / deductive basis) are given a <em>higher</em> prior
+     * mean and therefore a higher warm-start weight, while speculative rules keep a low mean and
+     * converge more slowly upward. This prevents the global-mean path from de-weighting
+     * established rules even when there is strong empirical support for them.</p>
+     *
+     * <p>Contract:
+     * <ul>
+     *   <li>When {@code perRuleMeans} is non-null and {@code perRuleMeans.length > ruleIndex},
+     *       the MAP gradient for rule {@code ruleIndex} is
+     *       {@code lambda * (w[ruleIndex] - perRuleMeans[ruleIndex])}.</li>
+     *   <li>When {@code perRuleMeans} is shorter than the program's rule list, rules past the
+     *       array boundary fall back to the scalar {@code weightPriorMean} (forward-compatible
+     *       when the program grows more rules than the array was built for).</li>
+     *   <li>Passing {@code null} for {@code perRuleMeans} reproduces the scalar path exactly
+     *       (equivalent to the 6-arg constructor with the same scalar mean).</li>
+     * </ul>
+     *
+     * <p>Backward compatibility: all existing 6-arg-and-below constructors route through the
+     * scalar path ({@code perRuleWeightPriorMean = null}); their behavior is unchanged.</p>
+     *
+     * @param learningRate        gradient step size
+     * @param tolerance           convergence threshold on max per-epoch weight change
+     * @param batchSize           mini-batch size; 0 = full-batch
+     * @param seed                RNG seed for reproducible subsampling
+     * @param weightPriorStrength lambda {@code >= 0}; 0 = pure MLE (per-rule array ignored)
+     * @param weightPriorMean     scalar fallback mean for rules past the array boundary
+     * @param perRuleMeans        per-rule prior means (may be null → scalar path)
+     */
+    public StructuredPerceptronLearner(double learningRate, double tolerance, int batchSize, long seed,
+                                       double weightPriorStrength, double weightPriorMean,
+                                       double[] perRuleMeans) {
+        this.learningRate = learningRate;
+        this.tolerance = tolerance;
+        this.batchSize = batchSize;
+        this.seed = seed;
+        this.weightPriorStrength = weightPriorStrength;
+        this.weightPriorMean = weightPriorMean;
+        this.perRuleWeightPriorMean = (perRuleMeans != null) ? Arrays.copyOf(perRuleMeans, perRuleMeans.length) : null;
     }
 
     @Override
@@ -140,13 +200,19 @@ public class StructuredPerceptronLearner implements WeightLearner {
             double[] gradient = PslRuleGradient.ruleGradient(rules, batch, predicted, groundTruth);
 
             // MAP regularization (Gaussian prior on weights): MAP = MLE + log-prior. The penalty
-            // (weightPriorStrength/2)*(w - weightPriorMean)^2 contributes
-            // weightPriorStrength*(w - weightPriorMean) to the descent gradient, so optimizer.step
-            // shrinks each weight toward weightPriorMean unless the data gradient pulls it away.
+            // (weightPriorStrength/2)*(w[r] - priorMean[r])^2 contributes
+            // weightPriorStrength*(w[r] - priorMean[r]) to the descent gradient, so optimizer.step
+            // shrinks each weight toward ITS prior mean unless the data gradient pulls it away.
             // weightPriorStrength=0 is a no-op (pure structured-perceptron MLE — exact prior behaviour).
+            //
+            // Per-rule path: when perRuleWeightPriorMean is non-null, each rule uses its own mean
+            // (band-aware: established rules → higher mean → maintained weight; speculative → low mean).
+            // Rules past the array boundary fall back to the scalar weightPriorMean.
+            // Scalar path: perRuleWeightPriorMean==null → all rules share weightPriorMean (old behavior).
             if (weightPriorStrength > 0.0) {
                 for (int i = 0; i < gradient.length; i++) {
-                    gradient[i] += weightPriorStrength * (weights[i] - weightPriorMean);
+                    double mean = effectivePriorMean(i);
+                    gradient[i] += weightPriorStrength * (weights[i] - mean);
                 }
             }
 
@@ -161,6 +227,19 @@ public class StructuredPerceptronLearner implements WeightLearner {
 
         log.info("StructuredPerceptronLearner: {} epochs, converged={}", epoch, converged);
         return buildRulesWithWeights(rules, weights);
+    }
+
+    /**
+     * Return the effective prior mean for rule {@code ruleIndex}.
+     *
+     * <p>When a per-rule array is present and covers this index, returns the per-rule value.
+     * Otherwise falls back to the scalar {@link #weightPriorMean}.</p>
+     */
+    private double effectivePriorMean(int ruleIndex) {
+        if (perRuleWeightPriorMean != null && ruleIndex < perRuleWeightPriorMean.length) {
+            return perRuleWeightPriorMean[ruleIndex];
+        }
+        return weightPriorMean;
     }
 
     /**

@@ -391,7 +391,16 @@ public final class RecursiveQueryEngine {
         // idb[p]: full accumulated set through the current round (starts empty for this stratum)
         Map<String, Set<List<String>>> idb = new LinkedHashMap<>();
         for (String p : stratumIdb) {
-            idb.put(p, new LinkedHashSet<>(globalIdb.get(p)));
+            // Seed the IDB working set from prior-stratum IDB AND the EDB base facts for this
+            // predicate. In standard Datalog a predicate may be BOTH extensional (base facts) and
+            // intensional (a rule head) — e.g. recursive transitive closure
+            // {@code ancestor(X,Z) :- ancestor(X,Y), ancestor(Y,Z)} over base ancestor facts.
+            // Unioning the EDB base tuples here lets such same-predicate recursive rules fire.
+            // For the distinct-IDB-head convention (e.g. {@code derived_<pred>}) the EDB has no
+            // tuples for the head predicate, so this union is a no-op.
+            Set<List<String>> seed = new LinkedHashSet<>(globalIdb.get(p));
+            seed.addAll(combinedEdb.tuplesFor(p));
+            idb.put(p, seed);
         }
 
         // Build negation facts from the GLOBAL idb (includes fully-evaluated lower strata)

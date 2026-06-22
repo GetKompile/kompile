@@ -407,6 +407,74 @@ public class FactPromotionTracker {
         return state == null ? StrengthBand.SPECULATIVE : state.lastBand;
     }
 
+    /**
+     * Return the count of atoms at each {@link StrengthBand} for the given fact sheet,
+     * based on the in-memory {@code lastBand} field (no DB call).
+     *
+     * <p>Used by {@link ai.kompile.crawl.graph.GraphHydrationOrchestrator} to populate
+     * the per-band breakdown in {@code LearningMetrics} after a derivation run. The map
+     * always contains an entry for every band; unknown (null) atoms count toward
+     * {@link StrengthBand#SPECULATIVE}.</p>
+     *
+     * <p>If no promotion state exists yet for the fact sheet (e.g. first cascade), an empty
+     * map with zero counts for every band is returned. Thread-safe — iterates a snapshot of
+     * the inner map's values.</p>
+     *
+     * @param factSheetId the fact sheet to aggregate
+     * @return immutable map of band → atom count; all five {@link StrengthBand} values present
+     */
+    public java.util.Map<StrengthBand, Integer> bandCounts(long factSheetId) {
+        java.util.Map<StrengthBand, Integer> counts = new java.util.EnumMap<>(StrengthBand.class);
+        for (StrengthBand b : StrengthBand.values()) counts.put(b, 0);
+        ConcurrentHashMap<String, PromotionState> sheetMap = stateMap.get(factSheetId);
+        if (sheetMap != null) {
+            for (PromotionState state : sheetMap.values()) {
+                counts.merge(state.lastBand, 1, Integer::sum);
+            }
+        }
+        return java.util.Collections.unmodifiableMap(counts);
+    }
+
+    /**
+     * Return the total number of corroboration events accumulated across all atoms in the
+     * given fact sheet.  Each call to {@link #checkPromotion} increments the count for
+     * the affected atom; this method sums across the sheet.
+     *
+     * <p>Used by {@code LearningMetrics} to surface a coarse "evidence accumulated" counter
+     * without requiring per-atom iteration by the monitoring layer.</p>
+     *
+     * @param factSheetId the fact sheet to aggregate
+     * @return total corroboration events seen in this session (since last restart or hydration)
+     */
+    public int totalCorroboration(long factSheetId) {
+        ConcurrentHashMap<String, PromotionState> sheetMap = stateMap.get(factSheetId);
+        if (sheetMap == null) return 0;
+        int total = 0;
+        for (PromotionState state : sheetMap.values()) {
+            total += state.corroborationCount.get();
+        }
+        return total;
+    }
+
+    /**
+     * Return the count of atoms currently marked as {@code "PROMOTED"} for the given fact sheet.
+     *
+     * <p>An atom is PROMOTED when at least one {@link #checkPromotion} call caused its band
+     * to advance to a higher tier (lower ordinal) than it held previously.</p>
+     *
+     * @param factSheetId the fact sheet to aggregate
+     * @return number of promoted atoms tracked in-memory for this fact sheet
+     */
+    public int promotedAtomCount(long factSheetId) {
+        ConcurrentHashMap<String, PromotionState> sheetMap = stateMap.get(factSheetId);
+        if (sheetMap == null) return 0;
+        int count = 0;
+        for (PromotionState state : sheetMap.values()) {
+            if ("PROMOTED".equals(state.promotionStatus)) count++;
+        }
+        return count;
+    }
+
     // ── Internal helpers ─────────────────────────────────────────────────────────
 
     private PromotionState getOrCreateState(long factSheetId, String atomKey) {

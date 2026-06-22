@@ -19,6 +19,7 @@ import ai.kompile.core.graphrag.maintenance.model.ComponentPrunePolicy;
 import ai.kompile.core.graphrag.maintenance.model.ConfidencePrunePolicy;
 import ai.kompile.core.graphrag.maintenance.model.GraphHealthSnapshot;
 import ai.kompile.core.graphrag.maintenance.model.TaskReport;
+import ai.kompile.graph.reasoning.pruning.PrunePolicy;
 import ai.kompile.knowledgegraph.reasoning.InferredFactGraphPruner;
 import ai.kompile.knowledgegraph.reasoning.InferredFactGraphPruner.PruneResult;
 import ai.kompile.knowledgegraph.resolution.GraphCompactionService;
@@ -46,6 +47,8 @@ import java.util.Set;
  *   <li><b>P3</b> — remove low-confidence INFERRED edges + standard ConfidencePruner</li>
  *   <li><b>P4</b> — orphan GC (if budget permits)</li>
  *   <li><b>P5</b> — component sweep (if budget permits)</li>
+ *   <li><b>P6</b> — prior-based Opinion prune: remove INFERRED/AMBIGUOUS edges whose
+ *       Subjective-Logic {@code _opinion} falls below the {@link PrunePolicy} thresholds</li>
  *   <li><b>PH(post)</b> — persist updated health snapshot</li>
  * </ol>
  *
@@ -64,6 +67,7 @@ public class PruneCompactOrchestrator {
     private final OrphanPruner orphanPruner;
     private final ComponentPruner componentPruner;
     private final GraphHealthService graphHealthService;
+    private final OpinionPrunePass opinionPrunePass;
 
     /**
      * Sticky aggressive-prune mode flag — per orchestrator instance (shared across fact sheets).
@@ -79,7 +83,8 @@ public class PruneCompactOrchestrator {
             ConfidencePruner confidencePruner,
             OrphanPruner orphanPruner,
             ComponentPruner componentPruner,
-            GraphHealthService graphHealthService) {
+            GraphHealthService graphHealthService,
+            OpinionPrunePass opinionPrunePass) {
         this.inferredPruner = inferredPruner;
         this.compactionService = compactionService;
         this.identityService = identityService;
@@ -87,20 +92,24 @@ public class PruneCompactOrchestrator {
         this.orphanPruner = orphanPruner;
         this.componentPruner = componentPruner;
         this.graphHealthService = graphHealthService;
+        this.opinionPrunePass = opinionPrunePass;
     }
 
     /**
-     * Run the full P1–P5 cascade for the given fact sheet.
+     * Run the full P1–P6 cascade for the given fact sheet.
      *
      * @param factSheetId       the fact sheet to process
      * @param retractedAtomKeys atom keys retracted by BeliefReviser this run (may be empty)
      * @param runId             the hydration run ID (identifies materialized INFERRED edges)
      * @param dryRun            when true no writes are performed
      * @param setpoints         health setpoints for budget computation
+     * @param opinionPolicy     Subjective-Logic prune thresholds for P6; pass
+     *                          {@link PrunePolicy#defaults()} when not overridden by config
      * @return result with per-stage counts and post-prune health snapshot
      */
     public PruneCompactResult run(Long factSheetId, Set<String> retractedAtomKeys,
-                                   String runId, boolean dryRun, HealthSetpoints setpoints) {
+                                   String runId, boolean dryRun, HealthSetpoints setpoints,
+                                   PrunePolicy opinionPolicy) {
 
         // ── PH(pre): Compute health BEFORE prune to drive budget ─────────────────
         GraphHealthSnapshot prePruneHealth;
@@ -109,7 +118,7 @@ public class PruneCompactOrchestrator {
         } catch (Exception e) {
             log.warn("PruneCompactOrchestrator: health snapshot failed for factSheet={} — "
                     + "skipping prune/compact: {}", factSheetId, e.getMessage());
-            return new PruneCompactResult(0, 0, 0, 0, 0, null, dryRun);
+            return new PruneCompactResult(0, 0, 0, 0, 0, 0, null, dryRun);
         }
 
         PruneCompactBudget budget = PruneCompactBudget.from(prePruneHealth, setpoints,
@@ -196,6 +205,19 @@ public class PruneCompactOrchestrator {
             }
         }
 
+        // ── P6: Prior-based Opinion prune ────────────────────────────────────────
+        int opinionEdgesRemoved = 0;
+        try {
+            OpinionPrunePass.Result opinionResult =
+                    opinionPrunePass.execute(factSheetId, opinionPolicy, dryRun);
+            opinionEdgesRemoved = opinionResult.pruned();
+            log.info("PruneCompactOrchestrator P6: opinion-prune affected {} edges for factSheet={}",
+                    opinionEdgesRemoved, factSheetId);
+        } catch (Exception e) {
+            log.warn("PruneCompactOrchestrator P6: opinion prune failed for factSheet={}: {}",
+                    factSheetId, e.getMessage());
+        }
+
         // ── PH(post): Persist updated health snapshot ─────────────────────────────
         GraphHealthSnapshot postHealth = null;
         try {
@@ -211,8 +233,18 @@ public class PruneCompactOrchestrator {
                 mergesPerformed,
                 orphansRemoved,
                 componentNodesRemoved,
+                opinionEdgesRemoved,
                 postHealth,
                 dryRun
         );
+    }
+
+    /**
+     * Convenience overload that uses {@link PrunePolicy#defaults()} for the opinion-prune pass.
+     * Existing callers that do not yet supply a {@link PrunePolicy} continue to work.
+     */
+    public PruneCompactResult run(Long factSheetId, Set<String> retractedAtomKeys,
+                                   String runId, boolean dryRun, HealthSetpoints setpoints) {
+        return run(factSheetId, retractedAtomKeys, runId, dryRun, setpoints, PrunePolicy.defaults());
     }
 }
