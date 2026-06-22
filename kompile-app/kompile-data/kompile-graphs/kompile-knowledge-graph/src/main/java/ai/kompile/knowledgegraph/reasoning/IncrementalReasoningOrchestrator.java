@@ -24,10 +24,6 @@ import ai.kompile.graph.reasoning.fol.Fact;
 import ai.kompile.graph.reasoning.fol.FactStore;
 import ai.kompile.graph.reasoning.fol.InferredFact;
 import ai.kompile.graph.reasoning.fol.InferredFactStore;
-import ai.kompile.graph.reasoning.embedding.learn.EmbeddingConfig;
-import ai.kompile.graph.reasoning.embedding.learn.EmbeddingLearner;
-import ai.kompile.graph.reasoning.embedding.learn.Node2VecLearner;
-import ai.kompile.graph.reasoning.hybrid.HybridReasoner;
 import ai.kompile.graph.reasoning.learning.HybridConsensusTrainer;
 import ai.kompile.graph.reasoning.learning.MebnWeightLearner;
 import ai.kompile.graph.reasoning.learning.PslWeightLearningService;
@@ -38,7 +34,6 @@ import ai.kompile.knowledgegraph.confidence.SourceTrustResolver;
 import jakarta.annotation.PostConstruct;
 import ai.kompile.graph.reasoning.learning.WeightStore;
 import ai.kompile.graph.reasoning.mebn.MTheory;
-import ai.kompile.graph.reasoning.model.MutableReasoningGraph;
 import ai.kompile.graph.reasoning.model.ReasoningGraph;
 import ai.kompile.graph.reasoning.psl.HlMrfMapInference;
 import ai.kompile.graph.reasoning.psl.PslProgram;
@@ -309,14 +304,6 @@ public class IncrementalReasoningOrchestrator {
      * Reused across cascades.
      */
     private final MebnWeightLearner mebnWeightLearner = new MebnWeightLearner();
-
-    /**
-     * Embedding learner used to co-train entity embeddings into the cascade's reasoning graph so the
-     * {@link HybridReasoner} ranking carries semantic (not just structural) signal during joint
-     * training. Refreshed on the MEBN throttle; failures are non-fatal (the hybrid degrades to
-     * structural-only). Durable KGE embeddings remain the separate KGE job's responsibility.
-     */
-    private final EmbeddingLearner embeddingLearner = new Node2VecLearner();
 
     /**
      * How many cascades between MEBN weight-learning runs.
@@ -621,24 +608,22 @@ public class IncrementalReasoningOrchestrator {
             }
         }
 
-        // ── JOINT TRAINING SIGNAL: one hybrid-ranked consensus for PSL (5b) + MEBN (9) ──────
-        // Replaces the previously independent buildObservedTargets calls. A reasoning graph is
-        // projected from the FactStore; on the throttle, embeddings are co-trained into it so the
-        // hybrid score carries semantic signal; the HybridReasoner ranks the entities; and the
-        // observed soft targets are pulled toward that ranking. PSL and MEBN then both train against
-        // this SINGLE consensus signal — simultaneous, hybrid-supervised training of every learned
-        // parameter, instead of three disconnected learners on three re-derived target sets.
+        // ── JOINT TRAINING SIGNAL: one consensus for PSL (5b) + MEBN (9), derived EVERY cascade ──
+        // Replaces the previously independent buildObservedTargets calls AND the throttled hybrid path
+        // that ran a second structural inference (+ embedding co-training) only every Nth cascade. Under
+        // partial observability there is no complete target to converge to, so every learner runs
+        // INCREMENTAL ONLINE — one warm-started step per cascade. To keep that affordable the consensus
+        // reuses the structural signal we ALREADY have (this cascade's MAP posteriors, aggregated per
+        // entity) instead of a fresh ranking inference; the observed extracted facts are pulled toward
+        // that structural importance. PSL and MEBN then both train against this SINGLE consensus —
+        // simultaneous online co-training of every structural parameter, not three disconnected learners
+        // on three re-derived target sets. (Embeddings are refreshed by the separate offline KGE job.)
         long cascadeCount = cascadeCounters
                 .computeIfAbsent(factSheetId, id -> new AtomicLong(0L))
                 .incrementAndGet();
-        boolean throttledTraining = kbCfg().isLearningEnabled()
-                && cascadeCount % Math.max(1, kbCfg().getMebnLearningInterval()) == 0;
-        // The hybrid rank is a full structural inference; run the joint consensus on the throttle
-        // (where MEBN + embeddings also co-train). Off-throttle cascades keep the cheap PSL warm-start
-        // on observed targets, so per-cascade latency is unchanged.
         Map<String, Double> observedTargets = buildObservedTargets(factStore);
-        Map<String, Double> consensusTargets = throttledTraining
-                ? deriveHybridConsensus(factStore, observedTargets, true)
+        Map<String, Double> consensusTargets = kbCfg().isLearningEnabled()
+                ? deriveHybridConsensus(result.values(), observedTargets)
                 : observedTargets;
 
         // ── STEP 5b (L1 NEW): PSL weight learning — co-train on the hybrid-ranked consensus ──
@@ -679,7 +664,7 @@ public class IncrementalReasoningOrchestrator {
                 // expose a file artifact path here; KGE covers that separately).
                 if (fileBackedWeightStore != null && dualStoreFactory == null) {
                     try {
-                        java.nio.file.Path artifactPath = fileBackedWeightStore.pslArtifactPath(
+                        Path artifactPath = fileBackedWeightStore.pslArtifactPath(
                                 String.valueOf(factSheetId), programKey, savedVersion);
                         eventPublisher.publishEvent(
                                 new ModelTrainedEvent(this, "psl", factSheetId, artifactPath, "psl-cascade"));
@@ -769,46 +754,46 @@ public class IncrementalReasoningOrchestrator {
         // ── STEP 8: Epoch bump ────────────────────────────────────────────────────────
         kbGroundingService.markEpoch(factSheetId, runId, newIndex);
 
-        // ── STEP 9 (L1 NEW): Throttled MEBN weight learning ──────────────────────────
-        // MEBN finite-difference gradient descent is O(|edges| × maxEpochs) — too expensive
-        // to run every cascade. We run it every MEBN_LEARNING_INTERVAL cascades (default: 10)
-        // to balance learning responsiveness vs. per-cascade wall time.
-        // Co-trains on the SAME hybrid-ranked consensus signal as PSL (computed once above);
-        // {@code throttledTraining} / {@code cascadeCount} were resolved before STEP 5b.
-        if (throttledTraining && mebnWeightAdapter != null) {
+        // ── STEP 9 (L1): Online MEBN weight learning — incremental, EVERY cascade ────────────
+        // MEBN finite-difference is O(|edges|) inferences per step. Under partial observability there is
+        // no complete target to converge to, so we take ONE warm-started online step per cascade
+        // (maxEpochs=1) that ACCUMULATES across cascades — the parameter analogue of the Beta-evidence
+        // fact accumulation, NOT a from-scratch re-fit. Co-trains on the SAME consensus signal as PSL.
+        // Weights are loaded + persisted each cascade (warm-start ← persisted, durable small JSON); the
+        // model artifact is re-staged only every getMebnLearningInterval() cascades to bound staging churn.
+        if (kbCfg().isLearningEnabled() && mebnWeightAdapter != null) {
             MTheory theory = mebnTheories.get(factSheetId);
             ReasoningGraph mebnGraph = mebnGraphs.get(factSheetId);
             if (theory != null && mebnGraph != null && !result.values().isEmpty()) {
                 try {
-                    // Load previously persisted weights to warm-start learning
+                    // Warm-start from previously persisted strengths (survives process restarts).
                     mebnWeightAdapter.load(factSheetId, theory);
-                    // Co-train MEBN on the shared hybrid-ranked consensus (same signal PSL used).
-                    Map<String, Double> observations = consensusTargets;
-                    if (observations.isEmpty()) {
-                        // Fall back to MAP posteriors if the consensus / fact store is empty
-                        observations = new HashMap<>(result.values());
-                    }
-                    // 5 epochs per throttled run — finite-diff is inherently slow but 5 steps
-                    // is sufficient for incremental online updates
-                    mebnWeightLearner.learn(theory, mebnGraph, observations, 5);
-                    // Persist updated strengths
+                    // Co-train MEBN on the shared consensus (same signal PSL used); fall back to MAP
+                    // posteriors only if the consensus / fact store is empty.
+                    Map<String, Double> observations = consensusTargets.isEmpty()
+                            ? new HashMap<>(result.values()) : consensusTargets;
+                    // ONE online step — the cost lever under partial observability.
+                    mebnWeightLearner.learn(theory, mebnGraph, observations, 1);
                     mebnWeightAdapter.persist(factSheetId, theory);
-                    log.debug("Grounding cascade factSheet={}: MEBN weight training done (cascade {})",
+                    log.debug("Grounding cascade factSheet={}: MEBN online step done (cascade {})",
                             factSheetId, cascadeCount);
 
-                    // STEP 9-event: publish ModelTrainedEvent so app-main can stage the artifact.
-                    try {
-                        java.nio.file.Path mebnArtifact = mebnWeightAdapter.mebnArtifactPath(factSheetId);
-                        eventPublisher.publishEvent(
-                                new ModelTrainedEvent(this, "mebn", factSheetId, mebnArtifact, "mebn-grounding"));
-                        log.debug("Grounding cascade factSheet={}: published ModelTrainedEvent(mebn, cascade {})",
-                                factSheetId, cascadeCount);
-                    } catch (Exception e) {
-                        log.warn("Grounding cascade factSheet={}: could not publish MEBN ModelTrainedEvent — {}",
-                                factSheetId, e.getMessage());
+                    // STEP 9-event: re-stage the artifact on the interval (not every cascade) so app-main
+                    // staging is not churned by per-cascade online steps.
+                    if (cascadeCount % Math.max(1, kbCfg().getMebnLearningInterval()) == 0) {
+                        try {
+                            Path mebnArtifact = mebnWeightAdapter.mebnArtifactPath(factSheetId);
+                            eventPublisher.publishEvent(
+                                    new ModelTrainedEvent(this, "mebn", factSheetId, mebnArtifact, "mebn-grounding"));
+                            log.debug("Grounding cascade factSheet={}: published ModelTrainedEvent(mebn, cascade {})",
+                                    factSheetId, cascadeCount);
+                        } catch (Exception e) {
+                            log.warn("Grounding cascade factSheet={}: could not publish MEBN ModelTrainedEvent — {}",
+                                    factSheetId, e.getMessage());
+                        }
                     }
                 } catch (Exception e) {
-                    log.warn("Grounding cascade factSheet={}: MEBN weight training failed — {}",
+                    log.warn("Grounding cascade factSheet={}: MEBN online step failed — {}",
                             factSheetId, e.getMessage());
                     // Non-fatal: inference already complete
                 }
@@ -1044,80 +1029,65 @@ public class IncrementalReasoningOrchestrator {
     }
 
     /**
-     * Project the FactStore atoms into a {@link MutableReasoningGraph} for hybrid ranking: each atom's
-     * arguments become entities and each binary atom a weighted relation. This keeps the hybrid
-     * reasoner's view consistent with the soft-truth state the PSL program reasons over, and being
-     * mutable it can have embeddings co-trained into it for the semantic component of the ranking.
+     * Aggregate this cascade's MAP posteriors into a per-entity structural importance score: each
+     * entity's score is the mean soft-truth of the atoms that mention it. This reuses the inference we
+     * already ran — no second ranking pass — which is what lets the consensus be derived EVERY cascade
+     * for online co-training. (Argument position is ignored; an entity central to many high-truth atoms
+     * scores high.)
      */
-    private MutableReasoningGraph factStoreToReasoningGraph(@Nullable FactStore factStore) {
-        MutableReasoningGraph graph = new MutableReasoningGraph();
-        if (factStore == null) {
-            return graph;
-        }
-        Set<String> added = new HashSet<>();
-        int edgeId = 0;
-        for (Fact f : factStore.allFacts()) {
-            String atom = f.atomKey();
+    private Map<String, Double> entityImportanceFromMap(Map<String, Double> mapValues) {
+        Map<String, double[]> acc = new HashMap<>(); // entity -> [sum, count]
+        for (Map.Entry<String, Double> e : mapValues.entrySet()) {
+            String atom = e.getKey();
             int open = atom.indexOf('(');
             int close = atom.lastIndexOf(')');
             if (open < 0 || close <= open) {
                 continue;
             }
-            String pred = atom.substring(0, open).trim();
-            String[] args = atom.substring(open + 1, close).split(",");
-            for (int i = 0; i < args.length; i++) {
-                args[i] = args[i].trim();
-            }
-            if (args.length == 1 && !args[0].isEmpty()) {
-                if (added.add(args[0])) {
-                    graph.addEntity(args[0], "ENTITY", args[0]);
+            for (String raw : atom.substring(open + 1, close).split(",")) {
+                String ent = raw.trim();
+                if (ent.isEmpty()) {
+                    continue;
                 }
-            } else if (args.length >= 2 && !args[0].isEmpty() && !args[1].isEmpty()) {
-                if (added.add(args[0])) {
-                    graph.addEntity(args[0], "ENTITY", args[0]);
-                }
-                if (added.add(args[1])) {
-                    graph.addEntity(args[1], "ENTITY", args[1]);
-                }
-                graph.addRelation("r" + (edgeId++), args[0], args[1], pred, f.value());
+                double[] a = acc.computeIfAbsent(ent, k -> new double[2]);
+                a[0] += e.getValue();
+                a[1] += 1.0;
             }
         }
-        return graph;
+        Map<String, Double> out = new HashMap<>(acc.size());
+        for (Map.Entry<String, double[]> e : acc.entrySet()) {
+            out.put(e.getKey(), e.getValue()[0] / e.getValue()[1]);
+        }
+        return out;
     }
 
     /**
-     * Derive the joint-training consensus signal: build a reasoning graph from the FactStore, co-train
-     * embeddings into it on the throttle (so the hybrid score carries semantic, not just structural,
-     * signal), rank the entities with the {@link HybridReasoner}, and pull the observed soft targets
-     * toward that ranking ({@link HybridConsensusTrainer#consensusTargets}). Falls back to the raw
-     * observed targets on any failure. This is what makes PSL (STEP 5b) and MEBN (STEP 9) co-train
-     * against ONE hybrid-ranked signal instead of two independently re-derived target sets.
+     * Derive the joint-training consensus signal CHEAPLY enough to run every cascade: aggregate the
+     * cascade's MAP posteriors into per-entity structural importance ({@link #entityImportanceFromMap})
+     * and pull the observed extracted facts toward it ({@link HybridConsensusTrainer#consensusTargets}).
+     * This is the structural component of the hybrid ranking, computed from the inference we ALREADY ran,
+     * so PSL (STEP 5b) and MEBN (STEP 9) co-train against ONE signal with no extra inference. The observed
+     * facts anchor the target (so it is NOT self-training on the MAP alone — observed ≠ MAP); the
+     * structural importance reweights toward central entities. Falls back to the raw observed targets on
+     * any failure. The semantic/embedding component is refreshed by the separate offline KGE job — not
+     * per cascade — and the full structural⊕semantic hybrid still applies at query/explain time.
      */
-    private Map<String, Double> deriveHybridConsensus(@Nullable FactStore factStore, Map<String, Double> observed,
-                                                      boolean coTrainEmbeddings) {
-        if (factStore == null || observed == null || observed.isEmpty()) {
+    private Map<String, Double> deriveHybridConsensus(Map<String, Double> mapValues, Map<String, Double> observed) {
+        if (observed == null || observed.isEmpty()) {
             return observed == null ? new HashMap<>() : observed;
         }
         try {
-            MutableReasoningGraph graph = factStoreToReasoningGraph(factStore);
-            if (graph.isEmpty()) {
+            Map<String, Double> entityScores = entityImportanceFromMap(mapValues);
+            if (entityScores.isEmpty()) {
                 return observed;
             }
-            if (coTrainEmbeddings && embeddingLearner != null) {
-                try {
-                    embeddingLearner.learnInto(graph, EmbeddingConfig.defaults());
-                } catch (RuntimeException e) {
-                    log.debug("Hybrid consensus: embedding co-training skipped — {}", e.getMessage());
-                }
-            }
-            List<HybridReasoner.ScoredEntity> ranking = new HybridReasoner().rank(graph);
             Map<String, Double> consensus = HybridConsensusTrainer.consensusTargets(
-                    observed, ranking, kbCfg().getHybridConsensusWeight());
-            log.debug("Hybrid consensus: ranked {} entities -> consensus over {} targets (w={})",
-                    ranking.size(), consensus.size(), kbCfg().getHybridConsensusWeight());
+                    observed, entityScores, kbCfg().getHybridConsensusWeight());
+            log.debug("Consensus: {} entity scores from MAP -> consensus over {} targets (w={})",
+                    entityScores.size(), consensus.size(), kbCfg().getHybridConsensusWeight());
             return consensus;
         } catch (Exception e) {
-            log.warn("Hybrid consensus derivation failed — using observed targets: {}", e.getMessage());
+            log.warn("Consensus derivation failed — using observed targets: {}", e.getMessage());
             return observed;
         }
     }

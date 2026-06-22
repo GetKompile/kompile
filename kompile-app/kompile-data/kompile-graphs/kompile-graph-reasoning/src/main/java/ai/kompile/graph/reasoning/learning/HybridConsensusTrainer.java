@@ -160,8 +160,21 @@ public final class HybridConsensusTrainer {
      * Atoms whose entities are not in the ranking keep their observed value.
      */
     public static Map<String, Double> consensusTargets(Map<String, Double> observed, List<ScoredEntity> ranking, double w) {
-        double cw = clamp01(w);
-        Map<String, Double> byEntity = normalizeScores(ranking);
+        return blend(observed, normalizeScores(ranking), clamp01(w));
+    }
+
+    /**
+     * Consensus from precomputed per-entity scores (e.g. the cascade's MAP posteriors aggregated per
+     * entity) — the SAME observed↔structural blend as the ranking overload, but without constructing a
+     * ranking. Lets a caller reuse a structural signal it already has instead of running a second
+     * inference purely to rank, which is what makes a per-cascade (online) consensus affordable.
+     */
+    public static Map<String, Double> consensusTargets(Map<String, Double> observed, Map<String, Double> entityScores, double w) {
+        return blend(observed, normalizeScoreMap(entityScores), clamp01(w));
+    }
+
+    /** Shared blend: each atom's target = (1-w)·observed + w·(normalized structural score of its entities). */
+    private static Map<String, Double> blend(Map<String, Double> observed, Map<String, Double> byEntity, double cw) {
         if (byEntity.isEmpty() || cw == 0.0) {
             return new HashMap<>(observed);
         }
@@ -179,16 +192,28 @@ public final class HybridConsensusTrainer {
         if (ranking == null || ranking.isEmpty()) {
             return Map.of();
         }
+        Map<String, Double> raw = new HashMap<>(ranking.size());
+        for (ScoredEntity s : ranking) {
+            raw.put(s.entityId(), s.score());
+        }
+        return normalizeScoreMap(raw);
+    }
+
+    /** Min-max normalize a per-entity score map to [0,1] (uniform 0.5 when all scores are equal). */
+    static Map<String, Double> normalizeScoreMap(Map<String, Double> scores) {
+        if (scores == null || scores.isEmpty()) {
+            return Map.of();
+        }
         double min = Double.POSITIVE_INFINITY;
         double max = Double.NEGATIVE_INFINITY;
-        for (ScoredEntity s : ranking) {
-            min = Math.min(min, s.score());
-            max = Math.max(max, s.score());
+        for (double v : scores.values()) {
+            min = Math.min(min, v);
+            max = Math.max(max, v);
         }
         double range = max - min;
-        Map<String, Double> out = new HashMap<>(ranking.size());
-        for (ScoredEntity s : ranking) {
-            out.put(s.entityId(), range <= 1e-12 ? 0.5 : (s.score() - min) / range);
+        Map<String, Double> out = new HashMap<>(scores.size());
+        for (Map.Entry<String, Double> e : scores.entrySet()) {
+            out.put(e.getKey(), range <= 1e-12 ? 0.5 : (e.getValue() - min) / range);
         }
         return out;
     }

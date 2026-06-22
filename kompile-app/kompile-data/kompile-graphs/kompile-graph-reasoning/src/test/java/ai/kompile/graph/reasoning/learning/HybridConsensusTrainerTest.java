@@ -84,6 +84,28 @@ class HybridConsensusTrainerTest {
         assertEquals(observed, HybridConsensusTrainer.consensusTargets(observed, ranking, 0.0));
     }
 
+    @Test
+    void consensusTargets_mapOverload_matchesRankingOverload() {
+        // The cheap per-cascade path passes precomputed per-entity scores (e.g. aggregated MAP
+        // posteriors) directly; it must produce exactly the same blend as ranking the same scores.
+        Map<String, Double> observed = Map.of("State(alice)", 0.2, "State(bob)", 0.9);
+        List<ScoredEntity> ranking = List.of(
+                new ScoredEntity("alice", 1.0, 1.0, 0.0),
+                new ScoredEntity("bob", 0.0, 0.0, 0.0));
+        Map<String, Double> entityScores = Map.of("alice", 1.0, "bob", 0.0);
+        assertEquals(
+                HybridConsensusTrainer.consensusTargets(observed, ranking, 0.5),
+                HybridConsensusTrainer.consensusTargets(observed, entityScores, 0.5));
+    }
+
+    @Test
+    void normalizeScoreMap_minMaxToUnitInterval() {
+        Map<String, Double> n = HybridConsensusTrainer.normalizeScoreMap(Map.of("a", 0.9, "b", 0.1, "c", 0.5));
+        assertEquals(1.0, n.get("a"), 1e-9);
+        assertEquals(0.0, n.get("b"), 1e-9);
+        assertEquals(0.5, n.get("c"), 1e-9);
+    }
+
     // ── end-to-end joint training (PSL against a real hybrid ranking) ────────────────────────
 
     @Test
