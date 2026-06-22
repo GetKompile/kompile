@@ -17,9 +17,11 @@
 package ai.kompile.crawl.graph;
 
 import ai.kompile.core.crawl.graph.GraphEnrichmentService;
+import ai.kompile.graph.reasoning.confidence.StrengthBand;
 import ai.kompile.knowledgegraph.maintenance.HealthSetpoints;
 import ai.kompile.knowledgegraph.maintenance.PruneCompactOrchestrator;
 import ai.kompile.knowledgegraph.maintenance.PruneCompactResult;
+import ai.kompile.knowledgegraph.reasoning.FactPromotionTracker;
 import ai.kompile.knowledgegraph.reasoning.IncrementalReasoningOrchestrator;
 import ai.kompile.knowledgegraph.reasoning.RegroundResult;
 import org.slf4j.Logger;
@@ -28,6 +30,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
 
+import java.util.Map;
 import java.util.Set;
 import java.util.function.BiConsumer;
 
@@ -87,6 +90,17 @@ public class GraphHydrationOrchestrator implements GraphEnrichmentService {
      */
     public static final String STAGE_WEIGHT_LEARNING = "WEIGHT_LEARNING";
 
+    /**
+     * Stage ID for the structured {@link LearningMetrics} callback emitted after derivation
+     * completes (or is skipped).  Callers (e.g. the crawl status card) can filter on this key
+     * to extract the rich learning diagnostic payload from the progress stream.
+     *
+     * <p>The callback message for this stage is a
+     * {@link LearningMetrics#summary()} string rather than a plain text log line,
+     * so UI consumers can parse the structured fields.</p>
+     */
+    public static final String STAGE_LEARNING_METRICS = "LEARNING_METRICS";
+
     @Autowired(required = false)
     @Nullable
     private IncrementalReasoningOrchestrator reasoningOrchestrator;
@@ -94,6 +108,16 @@ public class GraphHydrationOrchestrator implements GraphEnrichmentService {
     @Autowired(required = false)
     @Nullable
     private PruneCompactOrchestrator pruneCompactOrchestrator;
+
+    /**
+     * Optional: fact-promotion tracker.  When non-null, {@link #collectLearningMetrics} queries
+     * aggregate band counts, promotion counts, and total corroboration for the fact sheet so they
+     * appear in the returned {@link LearningMetrics}.  Null in plain-Java test contexts or
+     * Spring contexts that have not loaded the knowledge-graph module.
+     */
+    @Autowired(required = false)
+    @Nullable
+    private FactPromotionTracker promotionTracker;
 
     /**
      * Run the full hydration pipeline for the given fact sheet.
@@ -122,10 +146,14 @@ public class GraphHydrationOrchestrator implements GraphEnrichmentService {
         int stagesRun               = 0;
         String runId                = null;
         Set<String> retractedAtomKeys = Set.of();
+        boolean derivationAttempted = false;
+        boolean derivationSucceeded = false;
+        LearningMetrics learningMetrics = LearningMetrics.skipped();
 
         // ── Stage 1: DERIVATION ──────────────────────────────────────────────────────
         if (config.stageEnabled(STAGE_DERIVATION)) {
             if (reasoningOrchestrator != null) {
+                derivationAttempted = true;
                 try {
                     log.info("[Hydration factSheet={}] DERIVATION: starting MAP re-ground", factSheetId);
                     // Signal the learning phase before the MAP solve + weight-update runs.
@@ -143,6 +171,7 @@ public class GraphHydrationOrchestrator implements GraphEnrichmentService {
                     retractedAtomCount = rr.retractedAtomKeys().size();
                     retractedAtomKeys  = rr.retractedAtomKeys();
                     runId              = rr.runId();
+                    derivationSucceeded = true;
                     stagesRun++;
                     String msg = "DERIVATION complete: " + relationsDerived + " fact version(s) derived, "
                             + retractedAtomCount + " retracted, runId=" + runId;
@@ -160,6 +189,17 @@ public class GraphHydrationOrchestrator implements GraphEnrichmentService {
                 safeCallback(progressCallback, STAGE_DERIVATION,
                         "DERIVATION skipped: reasoning orchestrator not available");
             }
+
+            // ── LEARNING_METRICS callback: emit after derivation regardless of outcome ──────
+            // Collect rich learning diagnostics from the promotion tracker (if available) and
+            // from the RegroundResult fields we have access to.  Even when derivation failed
+            // or was skipped, emit a SKIPPED metrics object so the status card always gets
+            // a LEARNING_METRICS event and can update its display accordingly.
+            boolean skippedDerivation = !derivationAttempted || !derivationSucceeded;
+            learningMetrics = collectLearningMetrics(
+                    factSheetId, relationsDerived, retractedAtomCount, skippedDerivation);
+            safeCallback(progressCallback, STAGE_LEARNING_METRICS, learningMetrics.summary());
+            log.debug("[Hydration factSheet={}] {}", factSheetId, learningMetrics.summary());
         }
 
         // ── Stage 2: PRUNE_COMPACT (P1–P5 + PH(post)) ───────────────────────────────
@@ -222,7 +262,8 @@ public class GraphHydrationOrchestrator implements GraphEnrichmentService {
                 orphansRemoved,
                 componentNodesRemoved,
                 stagesRun,
-                runId);
+                runId,
+                learningMetrics);     // populated during DERIVATION stage; skipped() if stage not enabled
     }
 
     /**
@@ -243,6 +284,76 @@ public class GraphHydrationOrchestrator implements GraphEnrichmentService {
         } catch (Exception e) {
             log.warn("[Hydration] enrich() failed for factSheet={}: {}", factSheetId, e.getMessage(), e);
         }
+    }
+
+    /**
+     * Collect {@link LearningMetrics} for the current enrichment pass.
+     *
+     * <p>Sources:
+     * <ul>
+     *   <li>{@code factVersionsWritten} / {@code retractedAtomCount} — from the
+     *       {@link ai.kompile.knowledgegraph.reasoning.RegroundResult} already extracted by the
+     *       calling {@link #run} method.</li>
+     *   <li>{@code promotedAtomCount} / {@code totalCorroboration} / {@code bandCounts} — from
+     *       {@link FactPromotionTracker} aggregate queries; zeroed when tracker is null (no Spring).</li>
+     *   <li>{@code ruleWeightsUpdated} / {@code meanWeightDelta} / {@code maxWeightDelta} — NOT
+     *       available from the current API surface; set to
+     *       {@link LearningMetrics#WEIGHT_DELTA_UNAVAILABLE} / {@link Double#NaN}.
+     *       To populate: extend {@link ai.kompile.knowledgegraph.reasoning.RegroundResult} with a
+     *       {@code Map<String,Double>} of per-rule weight deltas, or publish a dedicated
+     *       {@code PslWeightEvent} from inside
+     *       {@link IncrementalReasoningOrchestrator}.</li>
+     * </ul>
+     *
+     * @param factSheetId       the fact sheet being enriched
+     * @param versionsWritten   inferred-fact versions written (from RegroundResult)
+     * @param retractedCount    implicit retraction count (from RegroundResult)
+     * @param derivationSkipped true when derivation did not complete successfully
+     * @return populated metrics; never null
+     */
+    private LearningMetrics collectLearningMetrics(long factSheetId,
+                                                   int versionsWritten,
+                                                   int retractedCount,
+                                                   boolean derivationSkipped) {
+        if (derivationSkipped) {
+            return LearningMetrics.skipped();
+        }
+
+        int promoted      = 0;
+        int corroboration = 0;
+        Map<String, Integer> bandCountsStr = Map.of();
+
+        if (promotionTracker != null) {
+            try {
+                promoted      = promotionTracker.promotedAtomCount(factSheetId);
+                corroboration = promotionTracker.totalCorroboration(factSheetId);
+                // Convert StrengthBand keys to String so LearningMetrics has no direct
+                // dependency on the graph-reasoning StrengthBand enum (keeps the crawl-graph
+                // module decoupled from the reasoning API shape).
+                Map<StrengthBand, Integer> rawCounts = promotionTracker.bandCounts(factSheetId);
+                if (rawCounts != null && !rawCounts.isEmpty()) {
+                    java.util.LinkedHashMap<String, Integer> bands = new java.util.LinkedHashMap<>();
+                    for (Map.Entry<StrengthBand, Integer> e : rawCounts.entrySet()) {
+                        bands.put(e.getKey().name(), e.getValue());
+                    }
+                    bandCountsStr = java.util.Collections.unmodifiableMap(bands);
+                }
+            } catch (Exception e) {
+                log.debug("[Hydration factSheet={}] Could not collect promotion metrics: {}",
+                        factSheetId, e.getMessage());
+            }
+        }
+
+        return new LearningMetrics(
+                versionsWritten,
+                retractedCount,
+                promoted,
+                corroboration,
+                bandCountsStr,
+                LearningMetrics.WEIGHT_DELTA_UNAVAILABLE,  // not yet surfaced by RegroundResult
+                Double.NaN,                                 // meanWeightDelta: deferred
+                Double.NaN,                                 // maxWeightDelta: deferred
+                false);
     }
 
     /** Invoke callback without letting it throw back into the hydration pipeline. */

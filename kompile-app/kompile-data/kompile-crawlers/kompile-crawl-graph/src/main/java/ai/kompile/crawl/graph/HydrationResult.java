@@ -33,6 +33,9 @@ package ai.kompile.crawl.graph;
  * @param componentNodesRemoved disconnected-component nodes removed in P5
  * @param stagesRun           how many of the three top-level stages actually ran
  * @param runId               the PSL re-ground run ID; null when derivation was skipped
+ * @param learningMetrics     rich learning diagnostics captured during the WEIGHT_LEARNING
+ *                            sub-stage; never null — use {@link LearningMetrics#skipped()}
+ *                            when derivation was skipped
  */
 public record HydrationResult(
         int relationsDerived,
@@ -44,11 +47,28 @@ public record HydrationResult(
         int orphansRemoved,
         int componentNodesRemoved,
         int stagesRun,
-        String runId) {
+        String runId,
+        LearningMetrics learningMetrics) {
+
+    /**
+     * Backward-compatible 10-arg constructor (no {@code learningMetrics}).
+     * Supplies {@link LearningMetrics#skipped()} so existing callers that construct
+     * {@code HydrationResult} directly in tests continue to compile and run unchanged.
+     */
+    public HydrationResult(int relationsDerived, int retractedAtomCount,
+                           int factsMaterialized, int factsRetractedPruned,
+                           int factsConfidencePruned, int mergesPerformed,
+                           int orphansRemoved, int componentNodesRemoved,
+                           int stagesRun, String runId) {
+        this(relationsDerived, retractedAtomCount, factsMaterialized,
+             factsRetractedPruned, factsConfidencePruned, mergesPerformed,
+             orphansRemoved, componentNodesRemoved, stagesRun, runId,
+             LearningMetrics.skipped());
+    }
 
     /** Zero-result for when hydration is fully skipped. */
     public static HydrationResult empty() {
-        return new HydrationResult(0, 0, 0, 0, 0, 0, 0, 0, 0, null);
+        return new HydrationResult(0, 0, 0, 0, 0, 0, 0, 0, 0, null, LearningMetrics.skipped());
     }
 
     /** Total facts changed (derived + materialized). */

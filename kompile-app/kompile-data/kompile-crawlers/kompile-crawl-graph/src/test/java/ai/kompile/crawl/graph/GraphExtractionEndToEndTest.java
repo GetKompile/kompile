@@ -20,6 +20,7 @@ import ai.kompile.core.crawl.graph.*;
 import ai.kompile.core.loaders.DocumentLoader;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
 import ai.kompile.core.llm.chat.LLMChat;
+import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.junit.jupiter.api.*;
 import org.mockito.*;
 import org.springframework.ai.document.Document;
@@ -75,6 +76,7 @@ class GraphExtractionEndToEndTest {
     @SpyBean private CrawlRuntimeConfigManager runtimeConfigManager;
     @MockBean private CrawlSourceLoadingService sourceLoadingService;
     @MockBean private LLMChat llmChat;
+    @MockBean private KnowledgeGraphService knowledgeGraphService;
 
     // Plain (non-bean) mocks for the LLM call chain and the loader the source service bridges to.
     private final DocumentLoader loader = mock(DocumentLoader.class);

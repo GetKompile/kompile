@@ -17,9 +17,11 @@
 package ai.kompile.crawl.graph;
 
 import ai.kompile.core.crawl.graph.UnifiedCrawlRequest;
+import ai.kompile.graph.reasoning.confidence.StrengthBand;
 import ai.kompile.knowledgegraph.maintenance.HealthSetpoints;
 import ai.kompile.knowledgegraph.maintenance.PruneCompactOrchestrator;
 import ai.kompile.knowledgegraph.maintenance.PruneCompactResult;
+import ai.kompile.knowledgegraph.reasoning.FactPromotionTracker;
 import ai.kompile.knowledgegraph.reasoning.IncrementalReasoningOrchestrator;
 import ai.kompile.knowledgegraph.reasoning.RegroundResult;
 import org.junit.jupiter.api.BeforeEach;
@@ -31,6 +33,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -41,6 +44,7 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anySet;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -69,6 +73,9 @@ class GraphHydrationOrchestratorTest {
     @Mock
     private PruneCompactOrchestrator pruneCompactOrchestrator;
 
+    @Mock
+    private FactPromotionTracker promotionTracker;
+
     private GraphHydrationOrchestrator orchestrator;
 
     @BeforeEach
@@ -76,6 +83,13 @@ class GraphHydrationOrchestratorTest {
         orchestrator = new GraphHydrationOrchestrator();
         ReflectionTestUtils.setField(orchestrator, "reasoningOrchestrator", reasoningOrchestrator);
         ReflectionTestUtils.setField(orchestrator, "pruneCompactOrchestrator", pruneCompactOrchestrator);
+        ReflectionTestUtils.setField(orchestrator, "promotionTracker", promotionTracker);
+
+        // Default stubs for FactPromotionTracker aggregate queries so existing tests don't fail.
+        // Individual learning-metrics tests override these with specific counts.
+        lenient().when(promotionTracker.promotedAtomCount(anyLong())).thenReturn(0);
+        lenient().when(promotionTracker.totalCorroboration(anyLong())).thenReturn(0);
+        lenient().when(promotionTracker.bandCounts(anyLong())).thenReturn(java.util.Map.of());
     }
 
     // ──────────────────────────────────────────────────────────────────────────────
@@ -88,7 +102,7 @@ class GraphHydrationOrchestratorTest {
                 .thenReturn(new RegroundResult(7, "run-abc", Set.of("retracted1", "retracted2")));
 
         when(pruneCompactOrchestrator.run(anyLong(), anySet(), anyString(), anyBoolean(), any(HealthSetpoints.class)))
-                .thenReturn(new PruneCompactResult(5, 3, 2, 1, 0, null, false));
+                .thenReturn(PruneCompactResult.of(5, 3, 2, 1, 0, null, false));
 
         List<String> callbackStages = new ArrayList<>();
         HydrationResult result = orchestrator.run(1L, HydrationConfig.defaults(),
@@ -106,10 +120,12 @@ class GraphHydrationOrchestratorTest {
         assertEquals("run-abc", result.runId());
 
         // WEIGHT_LEARNING is an informational sub-stage label emitted inside DERIVATION
-        // (immediately before runFullReground), followed by the three counted stages.
+        // (immediately before runFullReground), followed by DERIVATION completion, then
+        // LEARNING_METRICS (structured diagnostic payload), then the remaining stages.
         assertThat(callbackStages).containsExactly(
                 GraphHydrationOrchestrator.STAGE_WEIGHT_LEARNING,
                 GraphHydrationOrchestrator.STAGE_DERIVATION,
+                GraphHydrationOrchestrator.STAGE_LEARNING_METRICS,
                 GraphHydrationOrchestrator.STAGE_PRUNE_COMPACT,
                 GraphHydrationOrchestrator.STAGE_HEALTH);
     }
@@ -120,7 +136,7 @@ class GraphHydrationOrchestratorTest {
         when(reasoningOrchestrator.runFullReground(2L))
                 .thenReturn(new RegroundResult(1, "run-xyz", retracted));
         when(pruneCompactOrchestrator.run(anyLong(), anySet(), anyString(), anyBoolean(), any()))
-                .thenReturn(new PruneCompactResult(0, 0, 0, 0, 0, null, false));
+                .thenReturn(PruneCompactResult.of(0, 0, 0, 0, 0, null, false));
 
         orchestrator.run(2L, HydrationConfig.defaults(), null);
 
@@ -158,7 +174,7 @@ class GraphHydrationOrchestratorTest {
         ReflectionTestUtils.setField(partial, "pruneCompactOrchestrator", pruneCompactOrchestrator);
 
         when(pruneCompactOrchestrator.run(anyLong(), anySet(), anyString(), anyBoolean(), any()))
-                .thenReturn(new PruneCompactResult(0, 0, 0, 0, 0, null, false));
+                .thenReturn(PruneCompactResult.of(0, 0, 0, 0, 0, null, false));
 
         HydrationResult result = partial.run(5L, HydrationConfig.defaults(), null);
 
@@ -180,17 +196,19 @@ class GraphHydrationOrchestratorTest {
         List<String> stages = new ArrayList<>();
         orchestrator.run(3L, cfg, (s, m) -> stages.add(s));
 
-        // DERIVATION emits the WEIGHT_LEARNING sub-stage label before its own completion callback.
+        // DERIVATION emits the WEIGHT_LEARNING sub-stage label before its own completion callback,
+        // then LEARNING_METRICS immediately after (always emitted when derivation stage runs).
         assertThat(stages).containsExactly(
                 GraphHydrationOrchestrator.STAGE_WEIGHT_LEARNING,
-                GraphHydrationOrchestrator.STAGE_DERIVATION);
+                GraphHydrationOrchestrator.STAGE_DERIVATION,
+                GraphHydrationOrchestrator.STAGE_LEARNING_METRICS);
         verify(pruneCompactOrchestrator, never()).run(anyLong(), anySet(), anyString(), anyBoolean(), any());
     }
 
     @Test
     void pruneCompactOnly_reasoningNotCalled() {
         when(pruneCompactOrchestrator.run(anyLong(), anySet(), anyString(), anyBoolean(), any()))
-                .thenReturn(new PruneCompactResult(1, 2, 0, 0, 0, null, false));
+                .thenReturn(PruneCompactResult.of(1, 2, 0, 0, 0, null, false));
 
         HydrationConfig cfg = new HydrationConfig(Set.of(GraphHydrationOrchestrator.STAGE_PRUNE_COMPACT), 0.4, false);
         List<String> stages = new ArrayList<>();
@@ -209,7 +227,7 @@ class GraphHydrationOrchestratorTest {
         when(reasoningOrchestrator.runFullReground(6L))
                 .thenReturn(new RegroundResult(3, "run-t", Set.of()));
         when(pruneCompactOrchestrator.run(anyLong(), anySet(), anyString(), anyBoolean(), any()))
-                .thenReturn(new PruneCompactResult(0, 0, 0, 0, 0, null, false));
+                .thenReturn(PruneCompactResult.of(0, 0, 0, 0, 0, null, false));
 
         HydrationResult result = assertDoesNotThrow(() ->
                 orchestrator.run(6L, HydrationConfig.defaults(),
@@ -228,7 +246,7 @@ class GraphHydrationOrchestratorTest {
         when(reasoningOrchestrator.runFullReground(7L))
                 .thenThrow(new RuntimeException("MAP solve failed"));
         when(pruneCompactOrchestrator.run(anyLong(), anySet(), anyString(), anyBoolean(), any()))
-                .thenReturn(new PruneCompactResult(0, 0, 0, 0, 0, null, false));
+                .thenReturn(PruneCompactResult.of(0, 0, 0, 0, 0, null, false));
 
         List<String> stages = new ArrayList<>();
         HydrationResult result = assertDoesNotThrow(() ->
@@ -261,7 +279,7 @@ class GraphHydrationOrchestratorTest {
         when(reasoningOrchestrator.runFullReground(8L))
                 .thenReturn(new RegroundResult(0, "run-dry", Set.of()));
         when(pruneCompactOrchestrator.run(anyLong(), anySet(), anyString(), anyBoolean(), any()))
-                .thenReturn(new PruneCompactResult(0, 0, 0, 0, 0, null, true));
+                .thenReturn(PruneCompactResult.of(0, 0, 0, 0, 0, null, true));
 
         HydrationConfig dryRun = new HydrationConfig(Set.of(), 0.4, true);
         orchestrator.run(8L, dryRun, null);
@@ -351,7 +369,7 @@ class GraphHydrationOrchestratorTest {
         when(reasoningOrchestrator.runFullReground(10L))
                 .thenReturn(new RegroundResult(1, "run-enrich", Set.of()));
         when(pruneCompactOrchestrator.run(anyLong(), anySet(), anyString(), anyBoolean(), any()))
-                .thenReturn(new PruneCompactResult(0, 0, 0, 0, 0, null, false));
+                .thenReturn(PruneCompactResult.of(0, 0, 0, 0, 0, null, false));
 
         // enrich() must not throw and must invoke the full pipeline (DERIVATION + PRUNE_COMPACT)
         assertDoesNotThrow(() -> orchestrator.enrich(10L));
@@ -394,5 +412,162 @@ class GraphHydrationOrchestratorTest {
     void crawlRequest_nullHydration_defaults() {
         UnifiedCrawlRequest req = UnifiedCrawlRequest.builder().name("no-hydration").build();
         assertThat(req.getHydration()).isNull();
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────────
+    // 12. LearningMetrics: populated + emitted via LEARNING_METRICS callback
+    // ──────────────────────────────────────────────────────────────────────────────
+
+    @Test
+    void learningMetrics_populatedFromRegroundResultAndPromotionTracker() {
+        // Stub derivation: 5 versions written, 3 retracted
+        when(reasoningOrchestrator.runFullReground(20L))
+                .thenReturn(new RegroundResult(5, "run-lm", Set.of("r1", "r2", "r3")));
+        when(pruneCompactOrchestrator.run(anyLong(), anySet(), anyString(), anyBoolean(), any()))
+                .thenReturn(PruneCompactResult.of(0, 0, 0, 0, 0, null, false));
+
+        // Stub promotion tracker: 2 promoted atoms, 10 total corroborations, band distribution
+        when(promotionTracker.promotedAtomCount(20L)).thenReturn(2);
+        when(promotionTracker.totalCorroboration(20L)).thenReturn(10);
+        when(promotionTracker.bandCounts(20L)).thenReturn(Map.of(
+                StrengthBand.ESTABLISHED, 1,
+                StrengthBand.HIGH,        2,
+                StrengthBand.PROBABLE,    3,
+                StrengthBand.SPECULATIVE, 4,
+                StrengthBand.SUPPRESSED,  0));
+
+        List<String> stages   = new ArrayList<>();
+        List<String> messages = new ArrayList<>();
+        HydrationResult result = orchestrator.run(20L, HydrationConfig.defaults(),
+                (s, m) -> { stages.add(s); messages.add(m); });
+
+        // ── HydrationResult.learningMetrics() is populated ──────────────────────────────
+        LearningMetrics lm = result.learningMetrics();
+        assertThat(lm).isNotNull();
+        assertThat(lm.derivationSkipped()).isFalse();
+        assertEquals(5, lm.factVersionsWritten(),  "versionsWritten from RegroundResult");
+        assertEquals(3, lm.retractedAtomCount(),   "retracted atom count from RegroundResult");
+        assertEquals(2, lm.promotedAtomCount(),    "promoted atom count from FactPromotionTracker");
+        assertEquals(10, lm.totalCorroboration(),  "total corroboration from FactPromotionTracker");
+
+        // Band counts should be populated (string-keyed)
+        assertThat(lm.bandCounts()).containsEntry("ESTABLISHED", 1);
+        assertThat(lm.bandCounts()).containsEntry("HIGH",        2);
+        assertThat(lm.bandCounts()).containsEntry("PROBABLE",    3);
+        assertThat(lm.bandCounts()).containsEntry("SPECULATIVE", 4);
+        assertThat(lm.bandCounts()).containsEntry("SUPPRESSED",  0);
+
+        // Weight delta fields are NOT yet available — sentinel values expected
+        assertEquals(LearningMetrics.WEIGHT_DELTA_UNAVAILABLE, lm.ruleWeightsUpdated(),
+                "ruleWeightsUpdated must be WEIGHT_DELTA_UNAVAILABLE until RegroundResult exposes it");
+        assertThat(Double.isNaN(lm.meanWeightDelta())).isTrue();
+        assertThat(Double.isNaN(lm.maxWeightDelta())).isTrue();
+
+        // ── LEARNING_METRICS callback was emitted in the stage sequence ───────────────────
+        assertThat(stages).contains(GraphHydrationOrchestrator.STAGE_LEARNING_METRICS);
+
+        // The LEARNING_METRICS stage must appear AFTER DERIVATION and BEFORE PRUNE_COMPACT
+        int derivationIdx     = stages.indexOf(GraphHydrationOrchestrator.STAGE_DERIVATION);
+        int learningMetricsIdx = stages.indexOf(GraphHydrationOrchestrator.STAGE_LEARNING_METRICS);
+        int pruneCompactIdx   = stages.indexOf(GraphHydrationOrchestrator.STAGE_PRUNE_COMPACT);
+        assertThat(derivationIdx).isLessThan(learningMetricsIdx);
+        assertThat(learningMetricsIdx).isLessThan(pruneCompactIdx);
+
+        // The LEARNING_METRICS message should contain the structured summary
+        int lmMsgIdx = stages.indexOf(GraphHydrationOrchestrator.STAGE_LEARNING_METRICS);
+        String lmMsg = messages.get(lmMsgIdx);
+        assertThat(lmMsg).contains("versions=5");
+        assertThat(lmMsg).contains("retracted=3");
+        assertThat(lmMsg).contains("promoted=2");
+        assertThat(lmMsg).contains("corroboration=10");
+        assertThat(lmMsg).contains("ESTABLISHED=1");
+    }
+
+    @Test
+    void learningMetrics_skippedWhenDerivationFails() {
+        // Derivation throws — metrics should reflect skipped state
+        when(reasoningOrchestrator.runFullReground(21L))
+                .thenThrow(new RuntimeException("MAP solve blew up"));
+        when(pruneCompactOrchestrator.run(anyLong(), anySet(), anyString(), anyBoolean(), any()))
+                .thenReturn(PruneCompactResult.of(0, 0, 0, 0, 0, null, false));
+
+        HydrationResult result = assertDoesNotThrow(() ->
+                orchestrator.run(21L, HydrationConfig.defaults(), (s, m) -> {}));
+
+        LearningMetrics lm = result.learningMetrics();
+        assertThat(lm).isNotNull();
+        assertThat(lm.derivationSkipped()).isTrue();
+        assertEquals(0, lm.factVersionsWritten());
+        assertEquals(0, lm.retractedAtomCount());
+        assertEquals(0, lm.promotedAtomCount());
+    }
+
+    @Test
+    void learningMetrics_noPromotionTracker_stillPopulatesCountsFromReground() {
+        // No FactPromotionTracker wired — band counts and promotion are zero but reground
+        // counts (versions + retracted) should still be populated.
+        GraphHydrationOrchestrator noTrackerOrchestrator = new GraphHydrationOrchestrator();
+        ReflectionTestUtils.setField(noTrackerOrchestrator, "reasoningOrchestrator", reasoningOrchestrator);
+        ReflectionTestUtils.setField(noTrackerOrchestrator, "pruneCompactOrchestrator", pruneCompactOrchestrator);
+        // promotionTracker intentionally NOT injected
+
+        when(reasoningOrchestrator.runFullReground(22L))
+                .thenReturn(new RegroundResult(9, "run-notracker", Set.of("x", "y")));
+        when(pruneCompactOrchestrator.run(anyLong(), anySet(), anyString(), anyBoolean(), any()))
+                .thenReturn(PruneCompactResult.of(0, 0, 0, 0, 0, null, false));
+
+        HydrationResult result = noTrackerOrchestrator.run(22L, HydrationConfig.defaults(), null);
+
+        LearningMetrics lm = result.learningMetrics();
+        assertThat(lm).isNotNull();
+        assertThat(lm.derivationSkipped()).isFalse();
+        assertEquals(9, lm.factVersionsWritten(),  "version count from RegroundResult even without tracker");
+        assertEquals(2, lm.retractedAtomCount(),   "retraction count from RegroundResult even without tracker");
+        assertEquals(0, lm.promotedAtomCount(),    "zero when no tracker");
+        assertEquals(0, lm.totalCorroboration(),   "zero when no tracker");
+        assertThat(lm.bandCounts()).isEmpty();
+    }
+
+    @Test
+    void learningMetrics_skippedWhenDerivationStageNotEnabled() {
+        // When DERIVATION stage is disabled, learningMetrics should be skipped
+        when(pruneCompactOrchestrator.run(anyLong(), anySet(), anyString(), anyBoolean(), any()))
+                .thenReturn(PruneCompactResult.of(0, 0, 0, 0, 0, null, false));
+
+        HydrationConfig pruneOnly = new HydrationConfig(
+                Set.of(GraphHydrationOrchestrator.STAGE_PRUNE_COMPACT), 0.4, false);
+        HydrationResult result = orchestrator.run(23L, pruneOnly, null);
+
+        LearningMetrics lm = result.learningMetrics();
+        assertThat(lm).isNotNull();
+        assertThat(lm.derivationSkipped()).isTrue();
+        // No derivation ran → no LEARNING_METRICS callback emitted for this path
+    }
+
+    @Test
+    void learningMetrics_summaryContainsKeyFields() {
+        // Unit-test the LearningMetrics.summary() rendering directly
+        LearningMetrics lm = new LearningMetrics(
+                7, 2, 3, 18,
+                Map.of("ESTABLISHED", 1, "HIGH", 3, "PROBABLE", 5, "SPECULATIVE", 8, "SUPPRESSED", 1),
+                LearningMetrics.WEIGHT_DELTA_UNAVAILABLE,
+                Double.NaN, Double.NaN,
+                false);
+
+        String summary = lm.summary();
+        assertThat(summary).contains("versions=7");
+        assertThat(summary).contains("retracted=2");
+        assertThat(summary).contains("promoted=3");
+        assertThat(summary).contains("corroboration=18");
+        assertThat(summary).contains("ruleWeightsUpdated=N/A");
+        assertThat(summary).contains("meanDelta=N/A");
+        assertThat(summary).contains("ESTABLISHED=1");
+    }
+
+    @Test
+    void learningMetrics_skippedSummary() {
+        LearningMetrics skipped = LearningMetrics.skipped();
+        assertThat(skipped.derivationSkipped()).isTrue();
+        assertThat(skipped.summary()).contains("SKIPPED");
     }
 }
