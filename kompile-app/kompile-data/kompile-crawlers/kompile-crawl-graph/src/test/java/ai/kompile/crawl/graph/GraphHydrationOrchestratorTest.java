@@ -17,6 +17,7 @@
 package ai.kompile.crawl.graph;
 
 import ai.kompile.core.crawl.graph.UnifiedCrawlRequest;
+import ai.kompile.crawl.graph.ontology.OntologyConformanceTagger;
 import ai.kompile.graph.reasoning.confidence.StrengthBand;
 import ai.kompile.knowledgegraph.maintenance.HealthSetpoints;
 import ai.kompile.knowledgegraph.maintenance.PruneCompactOrchestrator;
@@ -76,6 +77,9 @@ class GraphHydrationOrchestratorTest {
     @Mock
     private FactPromotionTracker promotionTracker;
 
+    @Mock
+    private OntologyConformanceTagger ontologyConformanceTagger;
+
     private GraphHydrationOrchestrator orchestrator;
 
     @BeforeEach
@@ -84,12 +88,18 @@ class GraphHydrationOrchestratorTest {
         ReflectionTestUtils.setField(orchestrator, "reasoningOrchestrator", reasoningOrchestrator);
         ReflectionTestUtils.setField(orchestrator, "pruneCompactOrchestrator", pruneCompactOrchestrator);
         ReflectionTestUtils.setField(orchestrator, "promotionTracker", promotionTracker);
+        ReflectionTestUtils.setField(orchestrator, "ontologyConformanceTagger", ontologyConformanceTagger);
 
         // Default stubs for FactPromotionTracker aggregate queries so existing tests don't fail.
         // Individual learning-metrics tests override these with specific counts.
         lenient().when(promotionTracker.promotedAtomCount(anyLong())).thenReturn(0);
         lenient().when(promotionTracker.totalCorroboration(anyLong())).thenReturn(0);
         lenient().when(promotionTracker.bandCounts(anyLong())).thenReturn(java.util.Map.of());
+
+        // Default stub for OntologyConformanceTagger so existing tests that don't care about it
+        // get a safe zero-count result without needing per-test stubs.
+        lenient().when(ontologyConformanceTagger.tag(anyLong(), anyBoolean()))
+                .thenReturn(OntologyConformanceTagger.TagResult.empty());
     }
 
     // ──────────────────────────────────────────────────────────────────────────────
@@ -104,6 +114,9 @@ class GraphHydrationOrchestratorTest {
         when(pruneCompactOrchestrator.run(anyLong(), anySet(), anyString(), anyBoolean(), any(HealthSetpoints.class)))
                 .thenReturn(PruneCompactResult.of(5, 3, 2, 1, 0, null, false));
 
+        when(ontologyConformanceTagger.tag(1L, true))
+                .thenReturn(new OntologyConformanceTagger.TagResult(4, 1, 0, 0));
+
         List<String> callbackStages = new ArrayList<>();
         HydrationResult result = orchestrator.run(1L, HydrationConfig.defaults(),
                 (stage, msg) -> callbackStages.add(stage));
@@ -116,7 +129,7 @@ class GraphHydrationOrchestratorTest {
         assertEquals(2, result.mergesPerformed(),    "P2 merges");
         assertEquals(1, result.orphansRemoved(),     "P4 orphans");
         assertEquals(0, result.componentNodesRemoved(), "P5 components");
-        assertEquals(3, result.stagesRun(),          "all 3 stages ran");
+        assertEquals(4, result.stagesRun(),          "all 4 stages ran");
         assertEquals("run-abc", result.runId());
 
         // WEIGHT_LEARNING is an informational sub-stage label emitted inside DERIVATION
@@ -127,6 +140,7 @@ class GraphHydrationOrchestratorTest {
                 GraphHydrationOrchestrator.STAGE_DERIVATION,
                 GraphHydrationOrchestrator.STAGE_LEARNING_METRICS,
                 GraphHydrationOrchestrator.STAGE_PRUNE_COMPACT,
+                GraphHydrationOrchestrator.STAGE_ONTOLOGY_CONFORMANCE,
                 GraphHydrationOrchestrator.STAGE_HEALTH);
     }
 
@@ -228,13 +242,15 @@ class GraphHydrationOrchestratorTest {
                 .thenReturn(new RegroundResult(3, "run-t", Set.of()));
         when(pruneCompactOrchestrator.run(anyLong(), anySet(), anyString(), anyBoolean(), any()))
                 .thenReturn(PruneCompactResult.of(0, 0, 0, 0, 0, null, false));
+        when(ontologyConformanceTagger.tag(6L, true))
+                .thenReturn(new OntologyConformanceTagger.TagResult(0, 0, 0, 0));
 
         HydrationResult result = assertDoesNotThrow(() ->
                 orchestrator.run(6L, HydrationConfig.defaults(),
                         (s, m) -> { throw new RuntimeException("simulated callback failure"); }));
 
-        // All 3 stages still completed despite callback explosions
-        assertEquals(3, result.stagesRun());
+        // All 4 stages still completed despite callback explosions
+        assertEquals(4, result.stagesRun());
     }
 
     // ──────────────────────────────────────────────────────────────────────────────
@@ -247,18 +263,21 @@ class GraphHydrationOrchestratorTest {
                 .thenThrow(new RuntimeException("MAP solve failed"));
         when(pruneCompactOrchestrator.run(anyLong(), anySet(), anyString(), anyBoolean(), any()))
                 .thenReturn(PruneCompactResult.of(0, 0, 0, 0, 0, null, false));
+        when(ontologyConformanceTagger.tag(7L, true))
+                .thenReturn(new OntologyConformanceTagger.TagResult(0, 0, 0, 0));
 
         List<String> stages = new ArrayList<>();
         HydrationResult result = assertDoesNotThrow(() ->
                 orchestrator.run(7L, HydrationConfig.defaults(), (s, m) -> stages.add(s)));
 
-        // Derivation fired its error callback; PRUNE_COMPACT and HEALTH still ran
+        // Derivation fired its error callback; PRUNE_COMPACT, ONTOLOGY_CONFORMANCE and HEALTH still ran
         assertThat(stages).contains(
                 GraphHydrationOrchestrator.STAGE_DERIVATION,   // error fallback callback
                 GraphHydrationOrchestrator.STAGE_PRUNE_COMPACT,
+                GraphHydrationOrchestrator.STAGE_ONTOLOGY_CONFORMANCE,
                 GraphHydrationOrchestrator.STAGE_HEALTH);
-        // 2 stages effectively ran (pruner + health sentinel)
-        assertEquals(2, result.stagesRun());
+        // 3 stages effectively ran (pruner + conformance + health sentinel)
+        assertEquals(3, result.stagesRun());
     }
 
     // ──────────────────────────────────────────────────────────────────────────────
@@ -270,6 +289,7 @@ class GraphHydrationOrchestratorTest {
         HydrationConfig cfg = HydrationConfig.defaults();
         assertThat(cfg.stageEnabled(GraphHydrationOrchestrator.STAGE_DERIVATION)).isTrue();
         assertThat(cfg.stageEnabled(GraphHydrationOrchestrator.STAGE_PRUNE_COMPACT)).isTrue();
+        assertThat(cfg.stageEnabled(GraphHydrationOrchestrator.STAGE_ONTOLOGY_CONFORMANCE)).isTrue();
         assertThat(cfg.stageEnabled(GraphHydrationOrchestrator.STAGE_HEALTH)).isTrue();
         assertThat(cfg.dryRun()).isFalse();
     }
@@ -569,5 +589,104 @@ class GraphHydrationOrchestratorTest {
         LearningMetrics skipped = LearningMetrics.skipped();
         assertThat(skipped.derivationSkipped()).isTrue();
         assertThat(skipped.summary()).contains("SKIPPED");
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────────
+    // 13. ONTOLOGY_CONFORMANCE stage: integrated with hydration pipeline
+    // ──────────────────────────────────────────────────────────────────────────────
+
+    @Test
+    void ontologyConformanceStage_runsAfterPruneCompact_callbackEmitted() {
+        // Stub the full pipeline so all stages run
+        when(reasoningOrchestrator.runFullReground(30L))
+                .thenReturn(new RegroundResult(1, "run-oc", Set.of()));
+        when(pruneCompactOrchestrator.run(anyLong(), anySet(), anyString(), anyBoolean(), any()))
+                .thenReturn(PruneCompactResult.of(0, 0, 0, 0, 0, null, false));
+        // Stub tagger: 5 conformant, 2 non-conformant
+        when(ontologyConformanceTagger.tag(30L, true))
+                .thenReturn(new OntologyConformanceTagger.TagResult(5, 2, 0, 0));
+
+        List<String> stages = new ArrayList<>();
+        List<String> messages = new ArrayList<>();
+        HydrationResult result = orchestrator.run(30L, HydrationConfig.defaults(),
+                (s, m) -> { stages.add(s); messages.add(m); });
+
+        // Stage appeared in the sequence
+        assertThat(stages).contains(GraphHydrationOrchestrator.STAGE_ONTOLOGY_CONFORMANCE);
+
+        // Stage must appear AFTER PRUNE_COMPACT and BEFORE HEALTH
+        int pruneIdx      = stages.indexOf(GraphHydrationOrchestrator.STAGE_PRUNE_COMPACT);
+        int conformanceIdx = stages.indexOf(GraphHydrationOrchestrator.STAGE_ONTOLOGY_CONFORMANCE);
+        int healthIdx     = stages.indexOf(GraphHydrationOrchestrator.STAGE_HEALTH);
+        assertThat(pruneIdx).isLessThan(conformanceIdx);
+        assertThat(conformanceIdx).isLessThan(healthIdx);
+
+        // Callback message contains the counts
+        int msgIdx = stages.indexOf(GraphHydrationOrchestrator.STAGE_ONTOLOGY_CONFORMANCE);
+        String msg = messages.get(msgIdx);
+        assertThat(msg).contains("conformant=5");
+        assertThat(msg).contains("nonConformant=2");
+
+        // Tagger was called exactly once
+        verify(ontologyConformanceTagger, times(1)).tag(30L, true);
+    }
+
+    @Test
+    void ontologyConformanceStage_taggerAbsent_noopStageSkipped() {
+        // Wire orchestrator WITHOUT the tagger
+        GraphHydrationOrchestrator noTagger = new GraphHydrationOrchestrator();
+        ReflectionTestUtils.setField(noTagger, "reasoningOrchestrator", reasoningOrchestrator);
+        ReflectionTestUtils.setField(noTagger, "pruneCompactOrchestrator", pruneCompactOrchestrator);
+        ReflectionTestUtils.setField(noTagger, "promotionTracker", promotionTracker);
+        // ontologyConformanceTagger intentionally NOT injected
+
+        when(reasoningOrchestrator.runFullReground(31L))
+                .thenReturn(new RegroundResult(0, "run-nt", Set.of()));
+        when(pruneCompactOrchestrator.run(anyLong(), anySet(), anyString(), anyBoolean(), any()))
+                .thenReturn(PruneCompactResult.of(0, 0, 0, 0, 0, null, false));
+
+        List<String> stages = new ArrayList<>();
+        HydrationResult result = assertDoesNotThrow(() ->
+                noTagger.run(31L, HydrationConfig.defaults(), (s, m) -> stages.add(s)));
+
+        // Stage callback still fired (skip message)
+        assertThat(stages).contains(GraphHydrationOrchestrator.STAGE_ONTOLOGY_CONFORMANCE);
+    }
+
+    @Test
+    void ontologyConformanceStage_selectiveEnable_onlyTaggerCalled() {
+        // Enable only ONTOLOGY_CONFORMANCE
+        HydrationConfig cfg = new HydrationConfig(
+                Set.of(GraphHydrationOrchestrator.STAGE_ONTOLOGY_CONFORMANCE), 0.4, false);
+
+        when(ontologyConformanceTagger.tag(32L, true))
+                .thenReturn(new OntologyConformanceTagger.TagResult(3, 1, 0, 0));
+
+        List<String> stages = new ArrayList<>();
+        orchestrator.run(32L, cfg, (s, m) -> stages.add(s));
+
+        // Only the conformance stage ran
+        assertThat(stages).containsExactly(GraphHydrationOrchestrator.STAGE_ONTOLOGY_CONFORMANCE);
+        verify(reasoningOrchestrator, never()).runFullReground(anyLong());
+        verify(pruneCompactOrchestrator, never()).run(anyLong(), anySet(), anyString(), anyBoolean(), any());
+    }
+
+    @Test
+    void ontologyConformanceStage_taggerThrows_nonFatal_pipelineContinues() {
+        when(reasoningOrchestrator.runFullReground(33L))
+                .thenReturn(new RegroundResult(0, "run-ex", Set.of()));
+        when(pruneCompactOrchestrator.run(anyLong(), anySet(), anyString(), anyBoolean(), any()))
+                .thenReturn(PruneCompactResult.of(0, 0, 0, 0, 0, null, false));
+        when(ontologyConformanceTagger.tag(33L, true))
+                .thenThrow(new RuntimeException("simulated tagger failure"));
+
+        List<String> stages = new ArrayList<>();
+        HydrationResult result = assertDoesNotThrow(() ->
+                orchestrator.run(33L, HydrationConfig.defaults(), (s, m) -> stages.add(s)));
+
+        // HEALTH sentinel still ran after the tagger failed
+        assertThat(stages).contains(GraphHydrationOrchestrator.STAGE_HEALTH);
+        // The ONTOLOGY_CONFORMANCE skip callback was emitted
+        assertThat(stages).contains(GraphHydrationOrchestrator.STAGE_ONTOLOGY_CONFORMANCE);
     }
 }

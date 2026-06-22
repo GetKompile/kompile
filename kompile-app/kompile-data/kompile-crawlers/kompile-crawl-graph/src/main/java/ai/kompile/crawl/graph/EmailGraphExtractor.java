@@ -325,7 +325,7 @@ class EmailGraphExtractor {
                         String addrSourceType = "SENT_BY".equals(relationType) ? "email-from" : "email-to-cc";
                         double addrTrust = sourceTrustResolver != null
                                 ? sourceTrustResolver.trustFor(addrSourceType)
-                                : ("SENT_BY".equals(relationType) ? kbCfg().trustEmailFrom : kbCfg().trustEmailToCc);
+                                : ("SENT_BY".equals(relationType) ? kbCfg().getTrustEmailFrom() : kbCfg().getTrustEmailToCc());
                         double addrWeight = 1.0;
                         Map<String, Object> addrProps = graphPersistenceHelper.metadataProperties(
                                 "email", finalEmailAddr,
@@ -386,10 +386,10 @@ class EmailGraphExtractor {
                                         "personName", finalPersonName,
                                         "inferredFrom", "email-domain");
                                 if (structuralFactAssertionService != null) {
-                                    Opinion orgOpinion = structuralFactAssertionService.structural(kbCfg().belongsToOrgStrength, 0.5);
+                                    Opinion orgOpinion = structuralFactAssertionService.structural(kbCfg().getBelongsToOrgStrength(), 0.5);
                                     orgWeight = orgOpinion.expectation();
                                     orgProps.putAll(structuralFactAssertionService.metadataFor(
-                                            BasisType.STRUCTURAL, orgOpinion, kbCfg().belongsToOrgStrength, 0.0, addrTrust,
+                                            BasisType.STRUCTURAL, orgOpinion, kbCfg().getBelongsToOrgStrength(), 0.0, addrTrust,
                                             System.currentTimeMillis()));
                                 }
                                 String orgMetaJson = graphPersistenceHelper.semanticRelationMetadataJson(jobId, sourcePath,

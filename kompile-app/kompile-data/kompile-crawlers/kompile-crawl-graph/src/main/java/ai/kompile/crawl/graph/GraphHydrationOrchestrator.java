@@ -17,6 +17,7 @@
 package ai.kompile.crawl.graph;
 
 import ai.kompile.core.crawl.graph.GraphEnrichmentService;
+import ai.kompile.crawl.graph.ontology.OntologyConformanceTagger;
 import ai.kompile.graph.reasoning.confidence.StrengthBand;
 import ai.kompile.knowledgegraph.maintenance.HealthSetpoints;
 import ai.kompile.knowledgegraph.maintenance.PruneCompactOrchestrator;
@@ -74,12 +75,23 @@ public class GraphHydrationOrchestrator implements GraphEnrichmentService {
      * Total number of stages; used by callers to initialise {@code totalItems} in
      * the pipeline-step progress tracker.
      */
-    public static final int TOTAL_STAGES = 3;
+    public static final int TOTAL_STAGES = 4;
 
     /** Stage IDs for progress callbacks and {@link HydrationConfig#stageEnabled}. */
-    public static final String STAGE_DERIVATION    = "DERIVATION";
-    public static final String STAGE_PRUNE_COMPACT = "PRUNE_COMPACT";
-    public static final String STAGE_HEALTH        = "HEALTH";
+    public static final String STAGE_DERIVATION          = "DERIVATION";
+    public static final String STAGE_PRUNE_COMPACT       = "PRUNE_COMPACT";
+    public static final String STAGE_HEALTH              = "HEALTH";
+
+    /**
+     * Stage ID for the ontology-conformance hydration pass.
+     *
+     * <p>When a fact sheet has a bound ontology, tags every ENTITY node with
+     * {@code ontology.conformant=true/false} (and optionally edges).  LENIENT: never
+     * deletes or drops any node; tag only.  When no ontology is bound — or when
+     * {@link OntologyConformanceTagger} / {@link ai.kompile.core.graphrag.conformance.OntologyProjectionProvider}
+     * is not wired — the stage is a clean no-op that returns zero counts.</p>
+     */
+    public static final String STAGE_ONTOLOGY_CONFORMANCE = "ONTOLOGY_CONFORMANCE";
 
     /**
      * Sub-stage label emitted immediately before {@link IncrementalReasoningOrchestrator#runFullReground}
@@ -118,6 +130,18 @@ public class GraphHydrationOrchestrator implements GraphEnrichmentService {
     @Autowired(required = false)
     @Nullable
     private FactPromotionTracker promotionTracker;
+
+    /**
+     * Optional: ontology-conformance tagger.  When non-null, the
+     * {@link #STAGE_ONTOLOGY_CONFORMANCE} stage tags each ENTITY node with
+     * {@code ontology.conformant=true/false}.  The tagger itself guards against a missing
+     * {@link ai.kompile.core.graphrag.conformance.OntologyProjectionProvider} and returns zero
+     * counts when no ontology is bound to the fact sheet.  Null only in test/minimal Spring
+     * contexts that exclude the crawl-graph module entirely.
+     */
+    @Autowired(required = false)
+    @Nullable
+    private OntologyConformanceTagger ontologyConformanceTagger;
 
     /**
      * Run the full hydration pipeline for the given fact sheet.
@@ -244,7 +268,41 @@ public class GraphHydrationOrchestrator implements GraphEnrichmentService {
             }
         }
 
-        // ── Stage 3: HEALTH — covered by PH(post) inside PruneCompactOrchestrator ───
+        // ── Stage 3: ONTOLOGY_CONFORMANCE — tag nodes against bound ontology ───────────
+        // LENIENT: tags only, never deletes.  No-op when no ontology is bound or tagger absent.
+        int nodesConformant    = 0;
+        int nodesNonConformant = 0;
+        if (config.stageEnabled(STAGE_ONTOLOGY_CONFORMANCE)) {
+            if (ontologyConformanceTagger != null) {
+                try {
+                    log.info("[Hydration factSheet={}] ONTOLOGY_CONFORMANCE: tagging nodes " +
+                            "for ontology conformance", factSheetId);
+                    OntologyConformanceTagger.TagResult tr =
+                            ontologyConformanceTagger.tag(factSheetId, true);
+                    nodesConformant    = tr.nodesTaggedConformant();
+                    nodesNonConformant = tr.nodesTaggedNonConformant();
+                    stagesRun++;
+                    String msg = "ONTOLOGY_CONFORMANCE complete: "
+                            + "conformant=" + nodesConformant
+                            + " nonConformant=" + nodesNonConformant
+                            + " edgesTagged=" + tr.totalEdgesTagged();
+                    log.info("[Hydration factSheet={}] {}", factSheetId, msg);
+                    safeCallback(progressCallback, STAGE_ONTOLOGY_CONFORMANCE, msg);
+                } catch (Exception e) {
+                    log.warn("[Hydration factSheet={}] ONTOLOGY_CONFORMANCE failed (non-fatal): {}",
+                            factSheetId, e.getMessage(), e);
+                    safeCallback(progressCallback, STAGE_ONTOLOGY_CONFORMANCE,
+                            "ONTOLOGY_CONFORMANCE skipped: " + e.getMessage());
+                }
+            } else {
+                log.debug("[Hydration factSheet={}] ONTOLOGY_CONFORMANCE skipped: " +
+                        "OntologyConformanceTagger not available", factSheetId);
+                safeCallback(progressCallback, STAGE_ONTOLOGY_CONFORMANCE,
+                        "ONTOLOGY_CONFORMANCE skipped: tagger not available");
+            }
+        }
+
+        // ── Stage 4: HEALTH — covered by PH(post) inside PruneCompactOrchestrator ───
         // This stage is a sentinel so callers can gate HEALTH-only runs via enabledStageIds.
         if (config.stageEnabled(STAGE_HEALTH)) {
             stagesRun++;

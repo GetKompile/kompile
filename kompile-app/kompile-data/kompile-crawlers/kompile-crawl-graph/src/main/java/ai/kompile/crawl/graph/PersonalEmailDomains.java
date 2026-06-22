@@ -62,6 +62,6 @@ public class PersonalEmailDomains {
         if (domain == null || domain.isBlank()) {
             return true;
         }
-        return kbCfg().personalEmailDomains.contains(domain.trim().toLowerCase());
+        return kbCfg().getPersonalEmailDomains().contains(domain.trim().toLowerCase());
     }
 }
