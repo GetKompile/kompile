@@ -130,12 +130,26 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
     volatile boolean costSortChunks = true;
     volatile int llmCallTimeoutSeconds = 300;
     volatile int graphExtractionBatchTimeoutSeconds = 2700;
-    // Configurable truncation limits for inline LLM extraction (defaults equal the former
-    // hard-coded values so behaviour is unchanged unless set via graph-extraction-config.json).
-    volatile int crawlGraphExtractionMaxCharsPerChunk = 12_000;
-    volatile int crawlGraphExtractionMaxCharsPerChunkVlm = 16_000;
+    // Per-chunk truncation ceiling for inline LLM extraction. Raised from 12 000 / 16 000 chars
+    // to 50 000 / 60 000 so large-context CLI agents (e.g. opencode-cli / DeepSeek V4 ~1 M tokens)
+    // are not capped at the old ~11.8 k-char/call average caused by the 12 000 limit.
+    // Synced from graph-extraction-config.json / project config at crawl start.
+    volatile int crawlGraphExtractionMaxCharsPerChunk = 50_000;
+    volatile int crawlGraphExtractionMaxCharsPerChunkVlm = 60_000;
     // Chunks-per-prompt grouping (1 = legacy one-LLM-call-per-chunk, bit-for-bit identical).
     volatile int graphExtractionChunksPerPrompt = 1;
+    /**
+     * When true, skip per-file pipeline steps (CONVERTING/CHUNKING/GRAPH_EXTRACTION/
+     * VECTOR_INDEXING) for files whose SHA-256 content hash matches the stored hash
+     * from the previous crawl. Global steps (ENTITY_RESOLUTION, EDGE_COMPUTATION,
+     * ENRICHMENT) still run over the full current graph. Default: ON.
+     */
+    volatile boolean crawlIncrementalByContentHash = true;
+    /**
+     * When true, bypass the content-hash skip for this crawl run — every file is
+     * (re-)processed and the hash store is updated.  Intended for forced full re-crawls.
+     */
+    volatile boolean crawlForceFullRecrawl = false;
 
     // Optional Spring dependencies
 
@@ -313,6 +327,38 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
         shutdownPool(sharedChunkingPool, "sharedChunkingPool");
         shutdownPool(sharedGraphExtractionPool, "sharedGraphExtractionPool");
         shutdownPool(sharedSourceLoadPool, "sharedSourceLoadPool");
+        archiveDeferredEmbeddingChunksOnShutdown();
+    }
+
+    /**
+     * On graceful shutdown, persist in-memory deferred embedding chunks to disk for all
+     * COMPLETED_PENDING_EMBEDDING jobs so they can be replayed after restart via
+     * {@code POST /api/unified-crawl/jobs/{jobId}/steps/VECTOR_INDEXING/run}.
+     */
+    private void archiveDeferredEmbeddingChunksOnShutdown() {
+        int archived = 0;
+        int failed = 0;
+        for (UnifiedCrawlJob job : jobs.values()) {
+            if (job.getStatus().get() != UnifiedCrawlJob.Status.COMPLETED_PENDING_EMBEDDING) continue;
+            List<org.springframework.ai.document.Document> chunks = job.getDeferredEmbeddingChunks();
+            if (chunks == null || chunks.isEmpty()) continue;
+            try {
+                String dir = archiveStep(job.getJobId(), "VECTOR_INDEXING");
+                if (dir != null) {
+                    archived++;
+                    log.info("[Shutdown] Archived {} deferred embedding chunk(s) for job {} → {}",
+                            chunks.size(), job.getJobId(), dir);
+                }
+            } catch (Exception e) {
+                failed++;
+                log.warn("[Shutdown] Failed to archive deferred embedding chunks for job {}: {}",
+                        job.getJobId(), e.getMessage());
+            }
+        }
+        if (archived > 0 || failed > 0) {
+            log.info("[Shutdown] Deferred-embedding archival complete: {} job(s) archived, {} failed",
+                    archived, failed);
+        }
     }
 
     private void shutdownPool(ExecutorService pool, String name) {
@@ -607,7 +653,12 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
             g.setRelationships(new ArrayList<>());
             g.setCommunities(new ArrayList<>());
             graphExtractionOrchestrator.resetGraphExtractionProgress(job, pending.size());
-            graphExtractionOrchestrator.extractGraphFromDocuments(pending, config, g, job, sharedGraphExtractionPool);
+            graphExtractionOrchestrator.progressNotifier = j -> publishProgressEvent(j, CrawlProgressEvent.EventType.PROGRESS, "Graph extraction progress");
+            try {
+                graphExtractionOrchestrator.extractGraphFromDocuments(pending, config, g, job, sharedGraphExtractionPool);
+            } finally {
+                graphExtractionOrchestrator.progressNotifier = null;
+            }
             // Clear ONLY on full success so a partial/failed resume keeps the chunks for the next tick.
             job.getDeferredGraphChunks().clear();
             if (job.getStatus().compareAndSet(UnifiedCrawlJob.Status.COMPLETED_PENDING_GRAPH,
@@ -690,26 +741,36 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
             return null;
         }
         String step = pipelineStepTracker.normalizeStepId(stepId);
-        // On-demand archiving converts a job's deferred embedding chunks into a durable, restart-safe archive.
-        if (!"VECTOR_INDEXING".equals(step)) {
-            log.warn("[Job {}] On-demand archive is only supported for VECTOR_INDEXING (got {})", jobId, step);
+        if ("VECTOR_INDEXING".equals(step)) {
+            List<Document> chunks = new ArrayList<>(job.getDeferredEmbeddingChunks());
+            if (chunks.isEmpty()) {
+                log.warn("[Job {}] No deferred chunks available to archive for {}", jobId, step);
+                return null;
+            }
+            VectorIndexConfig cfg = job.getDeferredVectorIndexConfig() != null
+                    ? job.getDeferredVectorIndexConfig()
+                    : (job.getRequest() != null ? job.getRequest().getVectorIndex() : null);
+            String dir = crawlStepArchiveService.archive(job, step, chunks, cfg);
+            if (dir != null) {
+                pipelineStepTracker.archivePipelineStep(job, step,
+                        chunks.size() + " chunk(s) archived to disk for later embedding");
+                job.getDeferredEmbeddingChunks().clear();
+            }
+            return dir;
+        } else if ("GRAPH_EXTRACTION".equals(step)) {
+            // Archive graph-extraction with the job's extraction config so the step can be
+            // re-run against the fact sheet's existing graph state on resume.
+            GraphExtractionConfig cfg = job.getRequest() != null ? job.getRequest().getGraphExtraction() : null;
+            String dir = crawlStepArchiveService.archive(job, step, List.of(), cfg);
+            if (dir != null) {
+                pipelineStepTracker.archivePipelineStep(job, step,
+                        "Graph extraction archived for later re-run on fact sheet graph");
+            }
+            return dir;
+        } else {
+            log.warn("[Job {}] On-demand archive is only supported for VECTOR_INDEXING and GRAPH_EXTRACTION (got {})", jobId, step);
             return null;
         }
-        List<Document> chunks = new ArrayList<>(job.getDeferredEmbeddingChunks());
-        if (chunks.isEmpty()) {
-            log.warn("[Job {}] No deferred chunks available to archive for {}", jobId, step);
-            return null;
-        }
-        VectorIndexConfig cfg = job.getDeferredVectorIndexConfig() != null
-                ? job.getDeferredVectorIndexConfig()
-                : (job.getRequest() != null ? job.getRequest().getVectorIndex() : null);
-        String dir = crawlStepArchiveService.archive(job, step, chunks, cfg);
-        if (dir != null) {
-            pipelineStepTracker.archivePipelineStep(job, step,
-                    chunks.size() + " chunk(s) archived to disk for later embedding");
-            job.getDeferredEmbeddingChunks().clear();
-        }
-        return dir;
     }
 
     @Override
@@ -845,7 +906,12 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                 g.setRelationships(new ArrayList<>());
                 g.setCommunities(new ArrayList<>());
                 graphExtractionOrchestrator.resetGraphExtractionProgress(job, chunks.size());
-                graphExtractionOrchestrator.extractGraphFromDocuments(chunks, cfg, g, job, sharedGraphExtractionPool);
+                graphExtractionOrchestrator.progressNotifier = j -> publishProgressEvent(j, CrawlProgressEvent.EventType.PROGRESS, "Graph extraction progress");
+                try {
+                    graphExtractionOrchestrator.extractGraphFromDocuments(chunks, cfg, g, job, sharedGraphExtractionPool);
+                } finally {
+                    graphExtractionOrchestrator.progressNotifier = null;
+                }
                 return chunks.size();
             }
             case "ENTITY_RESOLUTION" -> {
@@ -867,8 +933,93 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                     throw new IllegalStateException("Graph edge computation service not available");
                 }
                 Long factSheetId = jobFactSheetId(job);
-                graphEdgeComputationService.computeSharedEntityEdges(factSheetId, 2);
+                // minSharedEntities=1: link document pairs that share even a single entity
+                // so per-document islands are connected and cells survive the component sweep.
+                graphEdgeComputationService.computeSharedEntityEdges(factSheetId, 1);
+                graphEdgeComputationService.computeNameBasedCrossDocEdges(factSheetId);
+                // Embedding-similarity edges: only when the embedding model is ready so that
+                // resume works in CPU mode and backfills similarity edges later on GPU.
+                EmbeddingModel embModel = vectorIndexingHelper.primaryEmbeddingModel();
+                if (vectorIndexingHelper.isEmbeddingModelReady(embModel)) {
+                    graphEdgeComputationService.computeEmbeddingSimilarityEdges(factSheetId, 0.7, 10);
+                } else {
+                    log.info("[Job {}] EDGE_COMPUTATION resume: embedding model not ready ({}), " +
+                                    "skipping similarity edges — re-run this step when GPU is available",
+                            job.getJobId(), vectorIndexingHelper.embeddingModelNotReadyReason(embModel));
+                }
                 return 1;
+            }
+            case "ENRICHMENT" -> {
+                // Re-run the full hydration pipeline (DERIVATION + PRUNE_COMPACT + ONTOLOGY_CONFORMANCE)
+                // against the already-persisted graph without re-crawling or re-extracting.
+                Long factSheetId = jobFactSheetId(job);
+                if (graphHydrationOrchestrator == null) {
+                    log.warn("[Job {}] ENRICHMENT step resume: graphHydrationOrchestrator not wired — skipping",
+                            job.getJobId());
+                    return 0;
+                }
+                HydrationResult result = graphHydrationOrchestrator.run(
+                        factSheetId,
+                        HydrationConfig.defaults(),
+                        (stage, msg) -> log.info("[Job {}] ENRICHMENT re-run [{}]: {}",
+                                job.getJobId(), stage, msg));
+                log.info("[Job {}] ENRICHMENT re-run complete: derivedRelations={} factsMaterialized={} "
+                        + "merges={} orphansRemoved={} componentNodesRemoved={}",
+                        job.getJobId(),
+                        result.relationsDerived(),
+                        result.factsMaterialized(),
+                        result.mergesPerformed(),
+                        result.orphansRemoved(),
+                        result.componentNodesRemoved());
+                return result.stagesRun();
+            }
+            case "PRUNE" -> {
+                // Re-run ONLY the prune/compact pass (P1–P5 + PH health snapshot) without
+                // re-running derivation first. Idempotent: uses the current inferred-fact set.
+                Long factSheetId = jobFactSheetId(job);
+                if (graphHydrationOrchestrator == null) {
+                    log.warn("[Job {}] PRUNE step resume: graphHydrationOrchestrator not wired — skipping",
+                            job.getJobId());
+                    return 0;
+                }
+                HydrationResult result = graphHydrationOrchestrator.runPruneOnly(factSheetId);
+                log.info("[Job {}] PRUNE re-run complete: merges={} orphansRemoved={} componentNodesRemoved={}",
+                        job.getJobId(),
+                        result.mergesPerformed(),
+                        result.orphansRemoved(),
+                        result.componentNodesRemoved());
+                return result.componentNodesRemoved() + result.orphansRemoved() + result.mergesPerformed();
+            }
+            case "DERIVATION" -> {
+                // Re-run ONLY the MAP inference derivation without prune or conformance.
+                // Use this when embeddings are back and you want to re-ground inferred facts
+                // without touching the existing graph topology.
+                Long factSheetId = jobFactSheetId(job);
+                if (graphHydrationOrchestrator == null) {
+                    log.warn("[Job {}] DERIVATION step resume: graphHydrationOrchestrator not wired — skipping",
+                            job.getJobId());
+                    return 0;
+                }
+                HydrationResult result = graphHydrationOrchestrator.runDerivationOnly(factSheetId);
+                log.info("[Job {}] DERIVATION re-run complete: derivedRelations={} factsMaterialized={}",
+                        job.getJobId(),
+                        result.relationsDerived(),
+                        result.factsMaterialized());
+                return result.factsMaterialized();
+            }
+            case "ONTOLOGY_CONFORMANCE" -> {
+                // Re-run ONLY the ontology conformance tagging pass. Tag-only: never removes nodes.
+                // No-op if no ontology is bound to the fact sheet.
+                Long factSheetId = jobFactSheetId(job);
+                if (graphHydrationOrchestrator == null) {
+                    log.warn("[Job {}] ONTOLOGY_CONFORMANCE step resume: graphHydrationOrchestrator not wired — skipping",
+                            job.getJobId());
+                    return 0;
+                }
+                HydrationResult result = graphHydrationOrchestrator.runOntologyConformanceOnly(factSheetId);
+                log.info("[Job {}] ONTOLOGY_CONFORMANCE re-run complete: stagesRun={}",
+                        job.getJobId(), result.stagesRun());
+                return result.stagesRun();
             }
             default -> throw new IllegalArgumentException("Step is not resumable from archive: " + step);
         }
@@ -1074,6 +1225,10 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
 
             // Phase 1: Crawl/load documents from all sources
             Map<String, List<Document>> docsBySource = new LinkedHashMap<>();
+            // Propagate incremental-crawl flags to the loading service so the per-file
+            // hash-check skip logic can read them without a back-reference to this class.
+            sourceLoadingService.crawlIncrementalByContentHash = crawlIncrementalByContentHash;
+            sourceLoadingService.crawlForceFullRecrawl = crawlForceFullRecrawl;
             List<CrawlSourceLoadingService.SourceLoadResult> sourceResults =
                     sourceLoadingService.loadSources(job, sourceLoadParallelism, sharedSourceLoadPool);
             List<Document> allDocuments = new ArrayList<>();
@@ -1403,7 +1558,12 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                 waitForMemoryCapacity(job, "GRAPH_EXTRACTION");
                 log.info("[Job {}] Starting LLM graph extraction for {} chunks (vector indexing queued after graph cleanup)",
                         job.getJobId(), chunkedDocuments.size());
-                graphExtractionOrchestrator.extractGraphFromDocuments(chunkedDocuments, graphConfig, unifiedGraph, job, sharedGraphExtractionPool);
+                graphExtractionOrchestrator.progressNotifier = j -> publishProgressEvent(j, CrawlProgressEvent.EventType.PROGRESS, "Graph extraction progress");
+                try {
+                    graphExtractionOrchestrator.extractGraphFromDocuments(chunkedDocuments, graphConfig, unifiedGraph, job, sharedGraphExtractionPool);
+                } finally {
+                    graphExtractionOrchestrator.progressNotifier = null;
+                }
                 job.getCurrentFile().set(null);
 
                 int extractedEntities = job.getEntitiesExtracted().get();
@@ -1572,7 +1732,10 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                         Long factSheetId = jobFactSheetId(job);
                         log.info("[Job {}] Computing shared entity edges for factSheetId={}",
                                 job.getJobId(), factSheetId);
-                        graphEdgeComputationService.computeSharedEntityEdges(factSheetId, 2);
+                        // minSharedEntities=1: link document pairs that share even a single entity
+                        // so per-document islands are connected and cells survive the component sweep.
+                        graphEdgeComputationService.computeSharedEntityEdges(factSheetId, 1);
+                        graphEdgeComputationService.computeNameBasedCrossDocEdges(factSheetId);
                         incrementPipelineStep(job, "EDGE_COMPUTATION", 1, 0, "Shared entity edges computed");
                         log.info("[Job {}] Shared entity edge computation complete", job.getJobId());
                     } catch (Exception e) {
@@ -1587,6 +1750,11 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                 if (!vectorIndexingHelper.isEmbeddingModelReady(embModel)) {
                     vectorIndexingHelper.deferVectorIndexing(job, chunksForIndex, indexConfig,
                             "Embedding model not ready: " + vectorIndexingHelper.embeddingModelNotReadyReason(embModel));
+                    // Auto-archive deferred chunks so they survive a restart and can be resumed via
+                    // POST /api/unified-crawl/jobs/{id}/steps/VECTOR_INDEXING/run
+                    archiveCrawlStep(job, "VECTOR_INDEXING", new ArrayList<>(job.getDeferredEmbeddingChunks()),
+                            job.getDeferredVectorIndexConfig(),
+                            job.getDeferredEmbeddingChunks().size() + " chunk(s) auto-archived (embedding model not ready)");
                 } else if (vectorIndexingHelper.shouldDeferForGpu()) {
                     // GPU VRAM has no headroom right now — defer embedding (a heavy local workload)
                     // instead of risking OOM. DeferredEmbeddingResumer drains it when VRAM frees.
@@ -1594,6 +1762,10 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                             job.getJobId());
                     vectorIndexingHelper.deferVectorIndexing(job, chunksForIndex, indexConfig,
                             "GPU under pressure — embedding deferred for resource recovery");
+                    // Auto-archive so chunks survive a restart
+                    archiveCrawlStep(job, "VECTOR_INDEXING", new ArrayList<>(job.getDeferredEmbeddingChunks()),
+                            job.getDeferredVectorIndexConfig(),
+                            job.getDeferredEmbeddingChunks().size() + " chunk(s) auto-archived (GPU pressure)");
                 } else {
                     try {
                         job.getCurrentFile().set("(indexing " + chunksForIndex.size() + " chunks)");
@@ -1606,6 +1778,10 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                         log.warn("[Job {}] Vector indexing deferred after failure: {}", job.getJobId(), errorDetail, e);
                         vectorIndexingHelper.deferVectorIndexing(job, chunksForIndex, indexConfig,
                                 "Vector indexing failed and was deferred: " + errorDetail);
+                        // Auto-archive on failure too so the step is resumable after a restart
+                        archiveCrawlStep(job, "VECTOR_INDEXING", new ArrayList<>(job.getDeferredEmbeddingChunks()),
+                                job.getDeferredVectorIndexConfig(),
+                                job.getDeferredEmbeddingChunks().size() + " chunk(s) auto-archived after failure");
                     }
                 }
                 chunksForIndex.clear();

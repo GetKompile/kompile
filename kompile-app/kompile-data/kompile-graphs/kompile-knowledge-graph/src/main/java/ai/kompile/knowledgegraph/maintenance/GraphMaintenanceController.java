@@ -19,18 +19,17 @@ import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
-import ai.kompile.knowledgegraph.repository.GraphEdgeRepository;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import ai.kompile.knowledgegraph.service.GraphDataPatchService;
 import ai.kompile.knowledgegraph.service.GraphDataPatchService.PatchRequest;
 import ai.kompile.knowledgegraph.service.GraphDataPatchService.PatchResult;
+import ai.kompile.knowledgegraph.service.GraphEdgeComputationService;
+import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
-import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.*;
@@ -53,21 +52,21 @@ public class GraphMaintenanceController {
     private static final Logger log = LoggerFactory.getLogger(GraphMaintenanceController.class);
     private static final TypeReference<LinkedHashMap<String, Object>> MAP_TYPE = new TypeReference<>() {};
 
-    private  GraphNodeRepository nodeRepository;
-    private  GraphEdgeRepository edgeRepository;
+    private  KnowledgeGraphService knowledgeGraphService;
     private  GraphDataPatchService patchService;
     private  ObjectMapper objectMapper;
+
+    @Autowired(required = false)
+    private GraphEdgeComputationService graphEdgeComputationService;
 
     // @Autowired forces Spring to use this constructor for injection. Without it, the no-arg
     // constructor below (kept for GraalVM native-image proxying) wins on the JVM and every
     // dependency — including patchService — is left null, NPE-ing every endpoint at runtime.
     @Autowired
-    public GraphMaintenanceController(GraphNodeRepository nodeRepository,
-                                      GraphEdgeRepository edgeRepository,
+    public GraphMaintenanceController(KnowledgeGraphService knowledgeGraphService,
                                       GraphDataPatchService patchService,
                                       ObjectMapper objectMapper) {
-        this.nodeRepository = nodeRepository;
-        this.edgeRepository = edgeRepository;
+        this.knowledgeGraphService = knowledgeGraphService;
         this.patchService = patchService;
         this.objectMapper = objectMapper;
     }
@@ -82,11 +81,11 @@ public class GraphMaintenanceController {
     public ResponseEntity<Map<String, Object>> health(
             @RequestParam(required = false) Long factSheetId) {
         List<GraphNode> nodes = factSheetId != null
-                ? nodeRepository.findByFactSheetId(factSheetId)
-                : nodeRepository.findAll();
+                ? knowledgeGraphService.getNodesInFactSheet(factSheetId)
+                : knowledgeGraphService.getAllNodes(Integer.MAX_VALUE);
         List<GraphEdge> edges = factSheetId != null
-                ? edgeRepository.findByFactSheetId(factSheetId)
-                : edgeRepository.findAll();
+                ? knowledgeGraphService.getEdgesInFactSheet(factSheetId)
+                : knowledgeGraphService.searchEdges(null, null, Integer.MAX_VALUE);
 
         Map<String, Long> nodeCountsByType = nodes.stream()
                 .collect(Collectors.groupingBy(n -> n.getNodeType().name(), Collectors.counting()));
@@ -104,14 +103,16 @@ public class GraphMaintenanceController {
             if (n.getNodeType() == NodeLevel.ENTITY) {
                 String entityType = extractEntityType(n);
                 entityTypeDist.merge(entityType != null ? entityType : "UNKNOWN", 1L, Long::sum);
-                if (n.getEdgeCount() == null || n.getEdgeCount() == 0) orphanEntityCount++;
+                if (knowledgeGraphService.getEdgesForNode(n.getNodeId()).isEmpty()) orphanEntityCount++;
             }
         }
 
-        Set<Long> nodeIds = nodes.stream().map(GraphNode::getId).collect(Collectors.toSet());
+        // Use nodeId (String) for membership checks — the @Primary matrix store has no JPA Long id
+        Set<String> nodeIdSet = nodes.stream().map(GraphNode::getNodeId).collect(Collectors.toSet());
         long danglingEdgeCount = edges.stream()
-                .filter(e -> !nodeIds.contains(e.getSourceNode().getId())
-                        || !nodeIds.contains(e.getTargetNode().getId()))
+                .filter(e -> e.getSourceNode() == null || e.getTargetNode() == null
+                        || !nodeIdSet.contains(e.getSourceNode().getNodeId())
+                        || !nodeIdSet.contains(e.getTargetNode().getNodeId()))
                 .count();
         long weakEdgeCount = edges.stream()
                 .filter(e -> e.getWeight() != null && e.getWeight() < 0.3
@@ -122,7 +123,9 @@ public class GraphMaintenanceController {
         Set<String> edgeSigs = new HashSet<>();
         long duplicateEdgeCount = 0;
         for (GraphEdge e : edges) {
-            String sig = e.getSourceNode().getId() + "->" + e.getTargetNode().getId() + ":" + e.getEdgeType();
+            String srcId = e.getSourceNode() != null ? e.getSourceNode().getNodeId() : "?";
+            String tgtId = e.getTargetNode() != null ? e.getTargetNode().getNodeId() : "?";
+            String sig = srcId + "->" + tgtId + ":" + e.getEdgeType();
             if (!edgeSigs.add(sig)) duplicateEdgeCount++;
         }
 
@@ -154,7 +157,7 @@ public class GraphMaintenanceController {
     // ── Prune ────────────────────────────────────────────────────────────────
 
     @PostMapping("/prune")
-    @Transactional
+
     public ResponseEntity<Map<String, Object>> prune(
             @RequestParam(required = false) Long factSheetId,
             @RequestBody PruneRequest req) {
@@ -173,11 +176,11 @@ public class GraphMaintenanceController {
         double edgeWeightThreshold = req.edgeWeightThreshold() != null ? req.edgeWeightThreshold() : 0.3;
 
         List<GraphNode> nodes = factSheetId != null
-                ? nodeRepository.findByFactSheetId(factSheetId)
-                : nodeRepository.findAll();
+                ? knowledgeGraphService.getNodesInFactSheet(factSheetId)
+                : knowledgeGraphService.getAllNodes(Integer.MAX_VALUE);
         List<GraphEdge> edges = factSheetId != null
-                ? edgeRepository.findByFactSheetId(factSheetId)
-                : edgeRepository.findAll();
+                ? knowledgeGraphService.getEdgesInFactSheet(factSheetId)
+                : knowledgeGraphService.searchEdges(null, null, Integer.MAX_VALUE);
 
         List<Map<String, String>> details = new ArrayList<>();
         List<GraphNode> nodesToDelete = new ArrayList<>();
@@ -185,7 +188,8 @@ public class GraphMaintenanceController {
 
         for (GraphNode n : nodes) {
             if (n.getNodeType() == NodeLevel.ENTITY) {
-                if (n.getEdgeCount() == null || n.getEdgeCount() == 0) {
+                boolean orphan = knowledgeGraphService.getEdgesForNode(n.getNodeId()).isEmpty();
+                if (orphan) {
                     nodesToDelete.add(n);
                     details.add(Map.of("nodeId", n.getNodeId(), "title", deriveTitle(n),
                             "reason", "orphan_entity", "info", "Entity with zero edges"));
@@ -196,7 +200,7 @@ public class GraphMaintenanceController {
                 }
             }
             if (n.getTitle() == null || n.getTitle().isBlank()) {
-                if (n.getEdgeCount() == null || n.getEdgeCount() == 0) {
+                if (knowledgeGraphService.getEdgesForNode(n.getNodeId()).isEmpty()) {
                     nodesToDelete.add(n);
                     details.add(Map.of("nodeId", n.getNodeId(), "title", "(blank)",
                             "reason", "blank_orphan", "info", "Blank title, no edges"));
@@ -213,10 +217,15 @@ public class GraphMaintenanceController {
         }
 
         if (!dryRun) {
-            for (GraphEdge e : edgesToDelete) edgeRepository.delete(e);
+            for (GraphEdge e : edgesToDelete) {
+                if (e.getEdgeId() != null) knowledgeGraphService.deleteEdge(e.getEdgeId());
+            }
             for (GraphNode n : nodesToDelete) {
-                edgeRepository.deleteAllEdgesForNode(n);
-                nodeRepository.delete(n);
+                // Remove all edges for this node before deleting it
+                for (GraphEdge e : knowledgeGraphService.getEdgesForNode(n.getNodeId())) {
+                    if (e.getEdgeId() != null) knowledgeGraphService.deleteEdge(e.getEdgeId());
+                }
+                knowledgeGraphService.deleteNode(n.getNodeId());
             }
         }
 
@@ -232,7 +241,7 @@ public class GraphMaintenanceController {
     // ── Validate ─────────────────────────────────────────────────────────────
 
     @PostMapping("/validate")
-    @Transactional
+
     public ResponseEntity<Map<String, Object>> validate(
             @RequestParam(required = false) Long factSheetId,
             @RequestParam(defaultValue = "false") boolean dryRun) {
@@ -247,13 +256,14 @@ public class GraphMaintenanceController {
 
     private ResponseEntity<Map<String, Object>> doValidate(Long factSheetId, boolean dryRun) {
         List<GraphNode> nodes = factSheetId != null
-                ? nodeRepository.findByFactSheetId(factSheetId)
-                : nodeRepository.findAll();
+                ? knowledgeGraphService.getNodesInFactSheet(factSheetId)
+                : knowledgeGraphService.getAllNodes(Integer.MAX_VALUE);
         List<GraphEdge> edges = factSheetId != null
-                ? edgeRepository.findByFactSheetId(factSheetId)
-                : edgeRepository.findAll();
+                ? knowledgeGraphService.getEdgesInFactSheet(factSheetId)
+                : knowledgeGraphService.searchEdges(null, null, Integer.MAX_VALUE);
 
-        Set<Long> nodeIds = nodes.stream().map(GraphNode::getId).collect(Collectors.toSet());
+        // Use nodeId (String) — the @Primary matrix store has no JPA Long id
+        Set<String> nodeIdSet = nodes.stream().map(GraphNode::getNodeId).collect(Collectors.toSet());
         List<Map<String, String>> details = new ArrayList<>();
 
         for (GraphNode n : nodes) {
@@ -262,27 +272,33 @@ public class GraphMaintenanceController {
                         "description", "Node has blank/null title (" + n.getNodeType() + ")"));
                 if (!dryRun) {
                     n.setTitle(deriveTitle(n));
-                    nodeRepository.save(n);
+                    knowledgeGraphService.saveNode(n);
                 }
             }
         }
 
         for (GraphEdge e : edges) {
-            if (!nodeIds.contains(e.getSourceNode().getId())
-                    || !nodeIds.contains(e.getTargetNode().getId())) {
-                details.add(Map.of("id", e.getEdgeId(), "action", "dangling_edge",
+            String srcId = e.getSourceNode() != null ? e.getSourceNode().getNodeId() : null;
+            String tgtId = e.getTargetNode() != null ? e.getTargetNode().getNodeId() : null;
+            if (srcId == null || tgtId == null
+                    || !nodeIdSet.contains(srcId) || !nodeIdSet.contains(tgtId)) {
+                details.add(Map.of("id", e.getEdgeId() != null ? e.getEdgeId() : "?",
+                        "action", "dangling_edge",
                         "description", "Edge references missing node"));
-                if (!dryRun) edgeRepository.delete(e);
+                if (!dryRun && e.getEdgeId() != null) knowledgeGraphService.deleteEdge(e.getEdgeId());
             }
         }
 
         Set<String> edgeSigs = new HashSet<>();
         for (GraphEdge e : edges) {
-            String sig = e.getSourceNode().getId() + "->" + e.getTargetNode().getId() + ":" + e.getEdgeType();
+            String srcId = e.getSourceNode() != null ? e.getSourceNode().getNodeId() : "?";
+            String tgtId = e.getTargetNode() != null ? e.getTargetNode().getNodeId() : "?";
+            String sig = srcId + "->" + tgtId + ":" + e.getEdgeType();
             if (!edgeSigs.add(sig)) {
-                details.add(Map.of("id", e.getEdgeId(), "action", "duplicate_edge",
+                details.add(Map.of("id", e.getEdgeId() != null ? e.getEdgeId() : "?",
+                        "action", "duplicate_edge",
                         "description", "Duplicate edge " + e.getEdgeType() + " between same nodes"));
-                if (!dryRun) edgeRepository.delete(e);
+                if (!dryRun && e.getEdgeId() != null) knowledgeGraphService.deleteEdge(e.getEdgeId());
             }
         }
 
@@ -297,7 +313,7 @@ public class GraphMaintenanceController {
     // ── Relabel ──────────────────────────────────────────────────────────────
 
     @PostMapping("/relabel")
-    @Transactional
+
     public ResponseEntity<Map<String, Object>> relabel(
             @RequestParam(required = false) Long factSheetId,
             @RequestBody RelabelRequest req) {
@@ -313,8 +329,8 @@ public class GraphMaintenanceController {
 
     private ResponseEntity<Map<String, Object>> doRelabel(Long factSheetId, RelabelRequest req, boolean dryRun) {
         List<GraphNode> nodes = factSheetId != null
-                ? nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.ENTITY)
-                : nodeRepository.findByNodeType(NodeLevel.ENTITY);
+                ? knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY)
+                : knowledgeGraphService.getNodesByType(NodeLevel.ENTITY);
 
         Pattern titlePattern = req.titlePattern() != null
                 ? Pattern.compile(req.titlePattern(), Pattern.CASE_INSENSITIVE)
@@ -330,7 +346,7 @@ public class GraphMaintenanceController {
                     "oldType", entityType != null ? entityType : "", "newType", req.toType()));
             if (!dryRun) {
                 setEntityType(n, req.toType());
-                nodeRepository.save(n);
+                knowledgeGraphService.saveNode(n);
             }
         }
 
@@ -350,8 +366,8 @@ public class GraphMaintenanceController {
     public ResponseEntity<List<Map<String, Object>>> labels(
             @RequestParam(required = false) Long factSheetId) {
         List<GraphNode> entities = factSheetId != null
-                ? nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.ENTITY)
-                : nodeRepository.findByNodeType(NodeLevel.ENTITY);
+                ? knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY)
+                : knowledgeGraphService.getNodesByType(NodeLevel.ENTITY);
 
         Map<String, Long> counts = new LinkedHashMap<>();
         for (GraphNode n : entities) {
@@ -374,7 +390,7 @@ public class GraphMaintenanceController {
     // ── Bulk Delete ──────────────────────────────────────────────────────────
 
     @PostMapping("/bulk-delete")
-    @Transactional
+
     public ResponseEntity<Map<String, Object>> bulkDelete(
             @RequestParam(required = false) Long factSheetId,
             @RequestBody BulkDeleteRequest req) {
@@ -390,8 +406,8 @@ public class GraphMaintenanceController {
 
     private ResponseEntity<Map<String, Object>> doBulkDelete(Long factSheetId, BulkDeleteRequest req, boolean dryRun) {
         List<GraphNode> nodes = factSheetId != null
-                ? nodeRepository.findByFactSheetId(factSheetId)
-                : nodeRepository.findAll();
+                ? knowledgeGraphService.getNodesInFactSheet(factSheetId)
+                : knowledgeGraphService.getAllNodes(Integer.MAX_VALUE);
 
         Pattern titlePattern = req.titlePattern() != null
                 ? Pattern.compile(req.titlePattern(), Pattern.CASE_INSENSITIVE)
@@ -404,8 +420,10 @@ public class GraphMaintenanceController {
             details.add(Map.of("nodeId", n.getNodeId(), "title", deriveTitle(n),
                     "nodeType", n.getNodeType().name(), "entityType", et != null ? et : ""));
             if (!dryRun) {
-                edgeRepository.deleteAllEdgesForNode(n);
-                nodeRepository.delete(n);
+                for (GraphEdge e : knowledgeGraphService.getEdgesForNode(n.getNodeId())) {
+                    if (e.getEdgeId() != null) knowledgeGraphService.deleteEdge(e.getEdgeId());
+                }
+                knowledgeGraphService.deleteNode(n.getNodeId());
             }
         }
 
@@ -420,7 +438,7 @@ public class GraphMaintenanceController {
     // ── Edge Cleanup ─────────────────────────────────────────────────────────
 
     @PostMapping("/edge-cleanup")
-    @Transactional
+
     public ResponseEntity<Map<String, Object>> edgeCleanup(
             @RequestParam(required = false) Long factSheetId,
             @RequestBody EdgeCleanupRequest req) {
@@ -436,13 +454,14 @@ public class GraphMaintenanceController {
 
     private ResponseEntity<Map<String, Object>> doEdgeCleanup(Long factSheetId, EdgeCleanupRequest req, boolean dryRun) {
         List<GraphNode> nodes = factSheetId != null
-                ? nodeRepository.findByFactSheetId(factSheetId)
-                : nodeRepository.findAll();
+                ? knowledgeGraphService.getNodesInFactSheet(factSheetId)
+                : knowledgeGraphService.getAllNodes(Integer.MAX_VALUE);
         List<GraphEdge> edges = factSheetId != null
-                ? edgeRepository.findByFactSheetId(factSheetId)
-                : edgeRepository.findAll();
+                ? knowledgeGraphService.getEdgesInFactSheet(factSheetId)
+                : knowledgeGraphService.searchEdges(null, null, Integer.MAX_VALUE);
 
-        Set<Long> nodeIds = nodes.stream().map(GraphNode::getId).collect(Collectors.toSet());
+        // Use nodeId (String) — the @Primary matrix store has no JPA Long id
+        Set<String> nodeIdSet = nodes.stream().map(GraphNode::getNodeId).collect(Collectors.toSet());
         Set<EdgeType> allowedTypes = req.edgeTypes() != null
                 ? req.edgeTypes().stream().map(EdgeType::valueOf).collect(Collectors.toSet())
                 : null;
@@ -452,10 +471,12 @@ public class GraphMaintenanceController {
 
         if (req.removeDangling() != null && req.removeDangling()) {
             for (GraphEdge e : edges) {
-                if (!nodeIds.contains(e.getSourceNode().getId())
-                        || !nodeIds.contains(e.getTargetNode().getId())) {
+                String srcId = e.getSourceNode() != null ? e.getSourceNode().getNodeId() : null;
+                String tgtId = e.getTargetNode() != null ? e.getTargetNode().getNodeId() : null;
+                if (srcId == null || tgtId == null
+                        || !nodeIdSet.contains(srcId) || !nodeIdSet.contains(tgtId)) {
                     danglingRemoved++;
-                    if (!dryRun) edgeRepository.delete(e);
+                    if (!dryRun && e.getEdgeId() != null) knowledgeGraphService.deleteEdge(e.getEdgeId());
                 }
             }
         }
@@ -463,10 +484,12 @@ public class GraphMaintenanceController {
         if (req.removeDuplicates() != null && req.removeDuplicates()) {
             Set<String> sigs = new HashSet<>();
             for (GraphEdge e : edges) {
-                String sig = e.getSourceNode().getId() + "->" + e.getTargetNode().getId() + ":" + e.getEdgeType();
+                String srcId = e.getSourceNode() != null ? e.getSourceNode().getNodeId() : "?";
+                String tgtId = e.getTargetNode() != null ? e.getTargetNode().getNodeId() : "?";
+                String sig = srcId + "->" + tgtId + ":" + e.getEdgeType();
                 if (!sigs.add(sig)) {
                     duplicatesRemoved++;
-                    if (!dryRun) edgeRepository.delete(e);
+                    if (!dryRun && e.getEdgeId() != null) knowledgeGraphService.deleteEdge(e.getEdgeId());
                 }
             }
         }
@@ -476,7 +499,7 @@ public class GraphMaintenanceController {
             if (e.getEdgeType() == EdgeType.HIERARCHICAL || e.getEdgeType() == EdgeType.USER_DEFINED) continue;
             if (e.getWeight() != null && e.getWeight() < minWeight) {
                 weakRemoved++;
-                if (!dryRun) edgeRepository.delete(e);
+                if (!dryRun && e.getEdgeId() != null) knowledgeGraphService.deleteEdge(e.getEdgeId());
             }
         }
 
@@ -553,12 +576,79 @@ public class GraphMaintenanceController {
             if (n.getConfidence() == null || n.getConfidence() > req.maxConfidence()) return false;
         }
         if (req.orphansOnly() != null && req.orphansOnly()) {
-            if (n.getEdgeCount() != null && n.getEdgeCount() > 0) return false;
+            // edgeCount may be null on matrix-store nodes; fall back to live edge query
+            boolean hasEdges = (n.getEdgeCount() != null && n.getEdgeCount() > 0)
+                    || !knowledgeGraphService.getEdgesForNode(n.getNodeId()).isEmpty();
+            if (hasEdges) return false;
         }
         if (titlePattern != null) {
             if (n.getTitle() == null || !titlePattern.matcher(n.getTitle()).find()) return false;
         }
         return true;
+    }
+
+    // ── Edge Computation ─────────────────────────────────────────────────────
+
+    /**
+     * Re-run edge computation on an existing fact-sheet graph without re-crawling.
+     *
+     * <p>Runs all three edge passes in order:</p>
+     * <ol>
+     *   <li>Shared-entity edges (embedding-free)</li>
+     *   <li>Name-based cross-document entity resolution (embedding-free)</li>
+     *   <li>Embedding-similarity edges (only when the embedding model is available)</li>
+     * </ol>
+     *
+     * <p>All passes are idempotent — existing edges are never duplicated.  Use this endpoint
+     * to fill in embedding-similarity edges after the GPU/embedding subprocess recovers,
+     * or to link cross-document entities by name after a new crawl completes.</p>
+     *
+     * <p>Example: {@code POST /api/graph/maintenance/compute-edges?factSheetId=1}</p>
+     */
+    @PostMapping("/compute-edges")
+    public ResponseEntity<Map<String, Object>> computeEdges(
+            @RequestParam(required = false) Long factSheetId) {
+        if (graphEdgeComputationService == null) {
+            return ResponseEntity.status(503).body(Map.of(
+                    "error", "GraphEdgeComputationService not available"));
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("factSheetId", factSheetId);
+
+        // Pass 1: shared-entity edges (embedding-free)
+        try {
+            graphEdgeComputationService.computeSharedEntityEdges(factSheetId, 1);
+            result.put("sharedEntityEdges", "ok");
+        } catch (Exception e) {
+            log.warn("compute-edges: shared-entity pass failed (factSheetId={}): {}", factSheetId, e.getMessage());
+            result.put("sharedEntityEdges", "failed: " + e.getMessage());
+        }
+
+        // Pass 2: name-based cross-document entity resolution (embedding-free)
+        try {
+            graphEdgeComputationService.computeNameBasedCrossDocEdges(factSheetId);
+            result.put("nameBasedCrossDocEdges", "ok");
+        } catch (Exception e) {
+            log.warn("compute-edges: name-based cross-doc pass failed (factSheetId={}): {}", factSheetId, e.getMessage());
+            result.put("nameBasedCrossDocEdges", "failed: " + e.getMessage());
+        }
+
+        // Pass 3: embedding-similarity edges (requires embedding model)
+        Map<String, Object> status = graphEdgeComputationService.getComputationStatus();
+        boolean embeddingAvailable = Boolean.TRUE.equals(status.get("embeddingModelAvailable"));
+        if (embeddingAvailable) {
+            try {
+                graphEdgeComputationService.computeEmbeddingSimilarityEdges(factSheetId, 0.7, 10);
+                result.put("embeddingSimilarityEdges", "ok");
+            } catch (Exception e) {
+                log.warn("compute-edges: similarity pass failed (factSheetId={}): {}", factSheetId, e.getMessage());
+                result.put("embeddingSimilarityEdges", "failed: " + e.getMessage());
+            }
+        } else {
+            result.put("embeddingSimilarityEdges", "skipped (embedding model not available — re-run when GPU is ready)");
+        }
+
+        return ResponseEntity.ok(result);
     }
 
     // ── Request DTOs ─────────────────────────────────────────────────────────
