@@ -555,6 +555,110 @@ public class GraphEdgeComputationServiceImpl implements GraphEdgeComputationServ
                 String emailKey = "email:" + emailAddr.toLowerCase().trim();
                 byNormalizedName.computeIfAbsent(emailKey, k -> new ArrayList<>()).add(n);
             }
+
+            // ── Slack / Discord user-ID buckets ──────────────────────────
+            // Both SlackGraphExtractor and DiscordGraphExtractor store the stable platform
+            // user snowflake in the "userId" metadata field, but on different entity types:
+            //   SLACK_USER / SLACK_BOT   → bucket "slack_user:<id>"
+            //   DISCORD_USER / DISCORD_BOT → bucket "discord_user:<id>"
+            // This resolves the same person across multiple partial exports of the same workspace/server.
+            String platformUserId = metaValue(n, "userId");
+            if (platformUserId != null && !platformUserId.isBlank()) {
+                if (isEntityType(n, "SLACK_USER", "SLACK_BOT")) {
+                    byNormalizedName.computeIfAbsent("slack_user:" + platformUserId.trim(),
+                            k -> new ArrayList<>()).add(n);
+                } else if (isEntityType(n, "DISCORD_USER", "DISCORD_BOT")) {
+                    byNormalizedName.computeIfAbsent("discord_user:" + platformUserId.trim(),
+                            k -> new ArrayList<>()).add(n);
+                }
+            }
+
+            // ── Confluence accountId bucket ───────────────────────────────
+            // ConfluenceGraphExtractor stores "accountId" (Atlassian account UUID) on PERSON nodes.
+            // The same person can be author, editor, and comment author — all share the same accountId.
+            String confluenceAccountId = metaValue(n, "accountId");
+            if (confluenceAccountId != null && !confluenceAccountId.isBlank()) {
+                byNormalizedName.computeIfAbsent("confluence_account:" + confluenceAccountId.trim(),
+                        k -> new ArrayList<>()).add(n);
+            }
+
+            // ── ORGANIZATION domain bucket ────────────────────────────────
+            // EmailGraphExtractor and GmailGraphExtractor write "domain" on ORGANIZATION nodes
+            // (e.g. "corp.com" extracted from sender@corp.com).  Two ORGANIZATION nodes with the
+            // same domain represent the same org whether they came from email or a web crawl.
+            String orgDomain = metaValue(n, "domain");
+            if (orgDomain != null && !orgDomain.isBlank()
+                    && isEntityType(n, "ORGANIZATION")) {
+                byNormalizedName.computeIfAbsent("org_domain:" + orgDomain.toLowerCase().trim(),
+                        k -> new ArrayList<>()).add(n);
+            }
+
+            // ── ATTACHMENT filename bucket ────────────────────────────────
+            // EmailGraphExtractor stores "filename" on ATTACHMENT nodes.  The same attachment
+            // (e.g. "Q4_Report.xlsx") forwarded across multiple email threads will produce
+            // separate nodes that should collapse.
+            String attachFilename = metaValue(n, "filename");
+            if (attachFilename != null && !attachFilename.isBlank()
+                    && isEntityType(n, "ATTACHMENT")) {
+                // Normalise: lowercase, strip extension suffix and common separators
+                String normFilename = attachFilename.toLowerCase()
+                        .replaceAll("\\.[a-z0-9]{1,5}$", "")   // strip extension
+                        .replaceAll("[_\\-\\s]+", " ")
+                        .trim();
+                if (!normFilename.isEmpty()) {
+                    byNormalizedName.computeIfAbsent("attachment:" + normFilename,
+                            k -> new ArrayList<>()).add(n);
+                }
+            }
+
+            // ── WEB_PAGE / WEBSITE canonical URL bucket ───────────────────
+            // HtmlWebGraphExtractor stores "url" on WEB_PAGE and WEBSITE nodes.
+            // GmailGraphExtractor and GoogleDocsGraphExtractor also store "url" on URL nodes.
+            // Normalising to lowercase + stripping trailing slash deduplicates the same page
+            // crawled multiple times or referenced from multiple docs.
+            String nodeUrl = metaValue(n, "url");
+            if (nodeUrl != null && !nodeUrl.isBlank()
+                    && isEntityType(n, "WEB_PAGE", "WEBSITE", "HYPERLINK")) {
+                String normUrl = nodeUrl.toLowerCase().trim().replaceAll("/$", "");
+                byNormalizedName.computeIfAbsent("url:" + normUrl,
+                        k -> new ArrayList<>()).add(n);
+            }
+
+            // ── SOCIAL_ACCOUNT platform+handle bucket ─────────────────────
+            // HtmlWebGraphExtractor stores "platform" + "handle" (or the full profile URL as
+            // the node title) on SOCIAL_ACCOUNT nodes.  Two pages that both link to the same
+            // @acme Twitter account should be co-resolved.
+            String socialHandle = metaValue(n, "handle");
+            String socialPlatform = metaValue(n, "platform");
+            if (socialHandle != null && !socialHandle.isBlank()
+                    && socialPlatform != null && !socialPlatform.isBlank()
+                    && isEntityType(n, "SOCIAL_ACCOUNT")) {
+                byNormalizedName.computeIfAbsent(
+                        "social:" + socialPlatform.toLowerCase() + ":" + socialHandle.toLowerCase().trim(),
+                        k -> new ArrayList<>()).add(n);
+            }
+
+            // ── Confluence SPACE key bucket ───────────────────────────────
+            // ConfluenceGraphExtractor stores "spaceKey" on CONFLUENCE_SPACE nodes.
+            // Multiple Confluence exports from the same space should co-resolve.
+            String spaceKey = metaValue(n, "spaceKey");
+            if (spaceKey != null && !spaceKey.isBlank()
+                    && isEntityType(n, "CONFLUENCE_SPACE")) {
+                byNormalizedName.computeIfAbsent("confluence_space:" + spaceKey.trim(),
+                        k -> new ArrayList<>()).add(n);
+            }
+
+            // ── Slack/Discord channel-ID bucket ──────────────────────────
+            // Both SlackGraphExtractor and DiscordGraphExtractor store "channelId" on their
+            // respective channel entity types.  Cross-export archives of the same channel
+            // (e.g. two partial Slack export ZIPs for the same #general) should merge.
+            String channelId = metaValue(n, "channelId");
+            if (channelId != null && !channelId.isBlank()
+                    && isEntityType(n, "SLACK_CHANNEL", "SLACK_THREAD",
+                                       "DISCORD_CHANNEL", "DISCORD_THREAD")) {
+                byNormalizedName.computeIfAbsent("channel:" + channelId.trim(),
+                        k -> new ArrayList<>()).add(n);
+            }
         }
 
         // Track already-linked pairs so dual-bucketing (name + email) never creates duplicates.
@@ -655,6 +759,21 @@ public class GraphEdgeComputationServiceImpl implements GraphEdgeComputationServ
         start++; // skip opening quote
         int end = meta.indexOf('"', start);
         return end > start ? meta.substring(start, end) : null;
+    }
+
+    /**
+     * Returns true if this node's {@code entity_type} metadata field matches any of the
+     * given candidate type strings (case-insensitive).  Used by alias buckets that are
+     * only meaningful for a specific entity type (e.g. "userId" appears on both Slack and
+     * Discord nodes but the bucket prefix differs, so we guard by type).
+     */
+    private static boolean isEntityType(GraphNode n, String... candidates) {
+        String entityType = metaValue(n, "entity_type");
+        if (entityType == null) return false;
+        for (String c : candidates) {
+            if (c.equalsIgnoreCase(entityType)) return true;
+        }
+        return false;
     }
 
     /** Returns true if two nodes come from the same source document (same sourcePath metadata). */
