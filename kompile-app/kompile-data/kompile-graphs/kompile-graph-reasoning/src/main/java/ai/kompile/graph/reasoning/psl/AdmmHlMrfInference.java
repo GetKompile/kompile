@@ -9,11 +9,16 @@
  */
 package ai.kompile.graph.reasoning.psl;
 
+import ai.kompile.graph.reasoning.prior.DefaultPriorProvider;
+import ai.kompile.graph.reasoning.prior.PriorContext;
+import ai.kompile.graph.reasoning.prior.PriorProvider;
+
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * Consensus-ADMM HL-MRF MAP inference — the canonical PSL solver described in
@@ -68,6 +73,8 @@ public class AdmmHlMrfInference implements HlMrfSolver {
     private final double rho;
     private final double epsAbs;
     private final double epsRel;
+    /** Resolves informative warm-start priors for unobserved PSL target atoms (default: 0.5). */
+    private PriorProvider priorProvider = DefaultPriorProvider.INSTANCE;
 
     public AdmmHlMrfInference() {
         this(DEFAULT_RHO, DEFAULT_EPS_ABS, DEFAULT_EPS_REL);
@@ -78,6 +85,18 @@ public class AdmmHlMrfInference implements HlMrfSolver {
         this.rho = rho;
         this.epsAbs = epsAbs;
         this.epsRel = epsRel;
+    }
+
+    /**
+     * Override the prior provider used to warm-start unobserved target atoms in the ADMM
+     * consensus variables.  The default is {@link DefaultPriorProvider#INSTANCE} (0.5).
+     *
+     * @param provider the provider to use; never {@code null}
+     * @return this solver for fluent chaining
+     */
+    public AdmmHlMrfInference priorProvider(PriorProvider provider) {
+        this.priorProvider = Objects.requireNonNull(provider, "provider");
+        return this;
     }
 
     // ─── HlMrfSolver interface ───────────────────────────────────────────────
@@ -109,7 +128,7 @@ public class AdmmHlMrfInference implements HlMrfSolver {
         int n = atoms.size();
         if (n == 0 || (logicalRules.isEmpty() && arithmeticRules.isEmpty())) {
             Map<String, Double> snap = program.valueSnapshot();
-            for (String t : program.targetKeys()) snap.put(t, 0.5);
+            for (String t : program.targetKeys()) snap.put(t, priorProvider.priorFor(t, PriorContext.EMPTY));
             return new HlMrfMapInference.Result(snap, logicalRules, 0, 0.0, true);
         }
 
@@ -123,7 +142,7 @@ public class AdmmHlMrfInference implements HlMrfSolver {
         for (int i = 0; i < n; i++) {
             String key = atoms.get(i);
             isObserved[i] = program.isObserved(key);
-            z[i] = isObserved[i] ? program.value(key) : 0.5; // neutral init for targets
+            z[i] = isObserved[i] ? program.value(key) : priorProvider.priorFor(key, PriorContext.EMPTY);
         }
 
         // ─── Per-rule local state ─────────────────────────────────────────────
@@ -144,7 +163,7 @@ public class AdmmHlMrfInference implements HlMrfSolver {
             for (int j = 0; j < ruleAtoms.size(); j++) {
                 int ai = index.getOrDefault(ruleAtoms.get(j), -1);
                 ruleAtomIdx[r][j] = ai;
-                x[r][j] = ai >= 0 ? z[ai] : 0.5;
+                x[r][j] = ai >= 0 ? z[ai] : priorProvider.priorFor(ruleAtoms.get(j), PriorContext.EMPTY);
             }
         }
 
@@ -160,7 +179,7 @@ public class AdmmHlMrfInference implements HlMrfSolver {
             for (int j = 0; j < agr.atomKeys().length; j++) {
                 int ai = index.getOrDefault(agr.atomKeys()[j], -1);
                 aRuleAtomIdx[r][j] = ai;
-                xa[r][j] = ai >= 0 ? z[ai] : 0.5;
+                xa[r][j] = ai >= 0 ? z[ai] : priorProvider.priorFor(agr.atomKeys()[j], PriorContext.EMPTY);
             }
         }
 
@@ -208,7 +227,7 @@ public class AdmmHlMrfInference implements HlMrfSolver {
                 if (isObserved[i]) {
                     zNew[i] = z[i]; // fix observed atoms
                 } else if (refCount[i] == 0) {
-                    zNew[i] = 0.5;  // unreferenced target
+                    zNew[i] = priorProvider.priorFor(atoms.get(i), PriorContext.EMPTY);
                 } else {
                     zNew[i] = Math.max(0.0, Math.min(1.0, sumXU[i] / refCount[i]));
                 }

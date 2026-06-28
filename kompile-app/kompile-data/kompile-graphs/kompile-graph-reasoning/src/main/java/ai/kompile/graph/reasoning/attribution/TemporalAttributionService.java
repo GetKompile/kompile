@@ -352,7 +352,7 @@ public final class TemporalAttributionService {
                     // Build evidence list for this hop
                     List<AttributionEvidence> evidence = buildEvidence(
                             decision, decayWeight, causeTimestamp, effectTimestamp,
-                            causeId, rel);
+                            causeId, rel, decayConfig);
 
                     // Build the CausalHop (hops are ordered root→target, so prepend)
                     CausalHop hop = CausalHop.builder()
@@ -513,7 +513,8 @@ public final class TemporalAttributionService {
                                                             Instant causeTimestamp,
                                                             Instant effectTimestamp,
                                                             String causeId,
-                                                            GraphRelation rel) {
+                                                            GraphRelation rel,
+                                                            TemporalDecayConfig decayConfig) {
         List<AttributionEvidence> evidence = new ArrayList<>();
 
         // Temporal precedence evidence
@@ -525,7 +526,7 @@ public final class TemporalAttributionService {
 
         double precStrength = (decision == PrecedenceDecision.PRECEDENCE_CONFIRMED)
                 ? rel.weight()
-                : rel.weight() * 0.5; // unknown timestamps halve the precedence strength
+                : rel.weight() * decayConfig.decayPrior(causeTimestamp, effectTimestamp);
 
         String precSummary = buildPrecedenceSummary(decision, causeTimestamp, effectTimestamp, causeId);
 

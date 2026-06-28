@@ -17,6 +17,7 @@ package ai.kompile.graph.reasoning.attribution;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.Objects;
 
 /**
@@ -170,6 +171,41 @@ public final class TemporalDecayConfig {
         // age = effect − cause; negative if cause is after effect (shouldn't pass precedence filter)
         Duration age = Duration.between(causeTime, effectTime);
         return weight(age);
+    }
+
+    /**
+     * Prior weight for "temporal unknown" scenarios: {@code P = 0.5 + 0.5·exp(−γ·Δt)}.
+     *
+     * <p>Unlike the hop-strength {@link #weight(Instant, Instant)} which returns {@code 1.0} when
+     * timestamps are null (preserving "unknown age → no penalty"), this method returns {@code 0.5}
+     * for null timestamps — signalling maximum uncertainty rather than "no penalty".  This is the
+     * correct semantics for the {@link ai.kompile.graph.reasoning.prior.PriorProvider} cascade:
+     * an entity whose temporal context is completely unknown gets the uninformative prior.</p>
+     *
+     * <p>γ is derived from the configured half-life for {@link DecayFunction#EXPONENTIAL}; for
+     * {@link DecayFunction#NONE} and {@link DecayFunction#LINEAR} a default of ln(2)/3600
+     * (≈1-hour half-life) is used.</p>
+     *
+     * @param referenceTime when the event/entity was last known (null = unknown → returns 0.5)
+     * @param now           the current instant (null = unknown → returns 0.5)
+     * @return prior in {@code [0.5, 1.0]}; {@code 1.0} when age=0, decaying toward {@code 0.5}
+     */
+    public double decayPrior(Instant referenceTime, Instant now) {
+        if (referenceTime == null || now == null) return 0.5;
+        double deltaT = Math.max(0.0, ChronoUnit.SECONDS.between(referenceTime, now));
+        return 0.5 + 0.5 * Math.exp(-deriveGamma() * deltaT);
+    }
+
+    /**
+     * Derives the temporal decay rate γ in s⁻¹.
+     * For {@link DecayFunction#EXPONENTIAL}: {@code γ = ln(2) / halfLife_in_seconds}.
+     * Otherwise uses the default (1-hour half-life: ln(2)/3600).
+     */
+    private double deriveGamma() {
+        if (function == DecayFunction.EXPONENTIAL && halfLife != null && halfLife.toSeconds() > 0) {
+            return Math.log(2.0) / halfLife.toSeconds();
+        }
+        return Math.log(2.0) / 3600.0;
     }
 
     // ─── Accessors ───────────────────────────────────────────────────────────────

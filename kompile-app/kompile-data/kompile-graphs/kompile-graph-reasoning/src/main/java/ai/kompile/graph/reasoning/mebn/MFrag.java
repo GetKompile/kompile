@@ -10,6 +10,9 @@
 package ai.kompile.graph.reasoning.mebn;
 
 import ai.kompile.graph.reasoning.mebn.logic.LogicalConstraint;
+import ai.kompile.graph.reasoning.prior.DefaultPriorProvider;
+import ai.kompile.graph.reasoning.prior.PriorContext;
+import ai.kompile.graph.reasoning.prior.PriorProvider;
 
 import java.util.*;
 import java.util.function.BiFunction;
@@ -166,7 +169,29 @@ public class MFrag {
     }
 
     public double getEdgeStrength(String parentRvName, String residentRvName) {
-        return edgeStrengths.getOrDefault(parentRvName + "->" + residentRvName, 0.5);
+        return getEdgeStrength(parentRvName, residentRvName, DefaultPriorProvider.INSTANCE, PriorContext.EMPTY);
+    }
+
+    /**
+     * Edge strength with {@link PriorProvider} fallback — replaces the flat {@code 0.5} default.
+     *
+     * <p>If the edge is present in the internal strength map the stored value is returned directly.
+     * Otherwise the provider is asked for the conditional strength of the {@code parentRvName →
+     * residentRvName} edge using the supplied context.</p>
+     *
+     * @param parentRvName   parent random-variable name
+     * @param residentRvName resident (child) random-variable name
+     * @param priorProvider  fallback provider; use {@link DefaultPriorProvider#INSTANCE} to get
+     *                       the old {@code 0.5} behaviour
+     * @param ctx            context bag for the provider lookup
+     * @return causal strength in {@code [0, 1]}
+     */
+    public double getEdgeStrength(String parentRvName, String residentRvName,
+                                   PriorProvider priorProvider, PriorContext ctx) {
+        String key = parentRvName + "->" + residentRvName;
+        return edgeStrengths.containsKey(key)
+                ? edgeStrengths.get(key)
+                : priorProvider.strengthFor(parentRvName, residentRvName, ctx);
     }
 
     public Map<String, Double> getEdgeStrengths() {

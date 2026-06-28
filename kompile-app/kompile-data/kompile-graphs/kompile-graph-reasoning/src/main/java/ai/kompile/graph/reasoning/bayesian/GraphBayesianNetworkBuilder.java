@@ -18,6 +18,9 @@ package ai.kompile.graph.reasoning.bayesian;
 import ai.kompile.graph.reasoning.model.GraphEntity;
 import ai.kompile.graph.reasoning.model.GraphRelation;
 import ai.kompile.graph.reasoning.model.ReasoningGraph;
+import ai.kompile.graph.reasoning.prior.DefaultPriorProvider;
+import ai.kompile.graph.reasoning.prior.PriorContext;
+import ai.kompile.graph.reasoning.prior.PriorProvider;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -38,12 +41,15 @@ public class GraphBayesianNetworkBuilder {
 
     private double defaultStrength = 0.5;
     private double leak = NoisyOrCpt.DEFAULT_LEAK;
+    private PriorProvider priorProvider = DefaultPriorProvider.INSTANCE;
 
     private final Map<String, String> variableToEntityId = new LinkedHashMap<>();
     private final Map<String, String> entityIdToVariable = new LinkedHashMap<>();
 
     public GraphBayesianNetworkBuilder defaultStrength(double s) { this.defaultStrength = s; return this; }
-    public GraphBayesianNetworkBuilder leak(double l) { this.leak = l; return this; }
+    public GraphBayesianNetworkBuilder leak(double l)             { this.leak = l;            return this; }
+    /** Override the prior provider for missing-edge-strength resolution (default: {@link DefaultPriorProvider#INSTANCE}). */
+    public GraphBayesianNetworkBuilder priorProvider(PriorProvider p) { this.priorProvider = p; return this; }
 
     public Map<String, String> variableToEntityId() { return variableToEntityId; }
     public Map<String, String> entityIdToVariable() { return entityIdToVariable; }
@@ -93,7 +99,11 @@ public class GraphBayesianNetworkBuilder {
                 for (int k = 0; k < parents.size(); k++) {
                     String parentVar = parents.get(k).getVariableName();
                     parentVars.add(parentVar);
-                    strengths[k] = edgeStrength.getOrDefault(parentVar + "->" + node.getVariableName(), defaultStrength);
+                    String edgeKey = parentVar + "->" + node.getVariableName();
+                    // Prefer explicit edge strength from the map; fall back to PriorProvider (replaces flat 0.5).
+                    strengths[k] = edgeStrength.containsKey(edgeKey)
+                            ? edgeStrength.get(edgeKey)
+                            : priorProvider.strengthFor(parentVar, node.getVariableName(), PriorContext.EMPTY);
                 }
                 node.setCpt(NoisyOrCpt.buildCpt(node.getVariableName(), parentVars, strengths, leak));
             }

@@ -9,6 +9,10 @@
  */
 package ai.kompile.graph.reasoning.bayesian;
 
+import ai.kompile.graph.reasoning.prior.DefaultPriorProvider;
+import ai.kompile.graph.reasoning.prior.PriorContext;
+import ai.kompile.graph.reasoning.prior.PriorProvider;
+
 import java.util.*;
 
 /**
@@ -146,8 +150,33 @@ public class NoisyOrCpt {
      */
     public static double computeCausalStrength(Double edgeWeight, Double edgeConfidence,
                                                 double typeMultiplier) {
-        double weight = edgeWeight != null ? edgeWeight : 0.5;
-        double confidence = edgeConfidence != null ? edgeConfidence : 0.5;
+        return computeCausalStrength(edgeWeight, edgeConfidence, typeMultiplier,
+                null, null, DefaultPriorProvider.INSTANCE, PriorContext.EMPTY);
+    }
+
+    /**
+     * Variant that resolves {@code null} edge-weight and edge-confidence via a {@link PriorProvider}
+     * rather than a flat 0.5 fallback.
+     *
+     * @param edgeWeight     edge weight (0–1), or {@code null}
+     * @param edgeConfidence edge confidence (0–1), or {@code null}
+     * @param typeMultiplier causal-type multiplier
+     * @param parentRv       parent random-variable name (used as context key for strength lookup)
+     * @param childRv        child random-variable name
+     * @param priorProvider  the provider to call when a field is {@code null}
+     * @param ctx            lookup context for the provider
+     * @return causal strength in {@code [0, 1]}
+     */
+    public static double computeCausalStrength(Double edgeWeight, Double edgeConfidence,
+                                                double typeMultiplier,
+                                                String parentRv, String childRv,
+                                                PriorProvider priorProvider, PriorContext ctx) {
+        double weight     = edgeWeight     != null ? edgeWeight
+                                                    : priorProvider.strengthFor(parentRv, childRv, ctx);
+        double confidence = edgeConfidence != null ? edgeConfidence
+                                                    : priorProvider.priorFor(
+                                                            parentRv != null ? parentRv + "->" + childRv + "/confidence"
+                                                                             : "edge/confidence", ctx);
         return clamp(weight * confidence * typeMultiplier, 0.0, 1.0);
     }
 
@@ -163,8 +192,22 @@ public class NoisyOrCpt {
      * @return estimated prior P(node = TRUE) in [0.1, 0.9]
      */
     public static double estimatePrior(Double nodeConfidence, int outDegree) {
-        double base = nodeConfidence != null ? nodeConfidence : 0.5;
-        // Small boost for highly connected nodes (capped)
+        return estimatePrior(nodeConfidence, outDegree, null, DefaultPriorProvider.INSTANCE, PriorContext.EMPTY);
+    }
+
+    /**
+     * Variant that resolves {@code null} node-confidence via a {@link PriorProvider}.
+     *
+     * @param nodeConfidence node confidence score, or {@code null}
+     * @param outDegree      number of outgoing edges
+     * @param varName        grounded variable name (context key for the provider)
+     * @param priorProvider  the provider to call when confidence is {@code null}
+     * @param ctx            lookup context for the provider
+     * @return estimated prior P(node = TRUE) in {@code [0.1, 0.9]}
+     */
+    public static double estimatePrior(Double nodeConfidence, int outDegree,
+                                        String varName, PriorProvider priorProvider, PriorContext ctx) {
+        double base = nodeConfidence != null ? nodeConfidence : priorProvider.priorFor(varName, ctx);
         double degreeBoost = Math.min(0.1, outDegree * 0.01);
         return clamp(base + degreeBoost, 0.1, 0.9);
     }
