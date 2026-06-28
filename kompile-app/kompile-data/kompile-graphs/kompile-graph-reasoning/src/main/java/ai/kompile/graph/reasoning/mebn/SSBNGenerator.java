@@ -12,6 +12,7 @@ package ai.kompile.graph.reasoning.mebn;
 import ai.kompile.graph.reasoning.bayesian.*;
 import ai.kompile.graph.reasoning.mebn.logic.KnowledgeBase;
 import ai.kompile.graph.reasoning.mebn.logic.LogicalConstraint;
+import ai.kompile.graph.reasoning.mebn.type.TypeHierarchy;
 import ai.kompile.graph.reasoning.prior.DefaultPriorProvider;
 import ai.kompile.graph.reasoning.prior.PriorContext;
 import ai.kompile.graph.reasoning.prior.PriorProvider;
@@ -65,6 +66,14 @@ public class SSBNGenerator {
     private PriorProvider priorProvider = DefaultPriorProvider.INSTANCE;
 
     /**
+     * Type hierarchy for subsumption-aware grounding. When set and it knows an RV's argument
+     * type, the Cartesian product grounds over that type AND all its declared subtypes (is-a
+     * navigation). When {@code null} (default), grounding uses each {@link EntityType}'s
+     * exact-match members — fully backward compatible.
+     */
+    private TypeHierarchy typeHierarchy;
+
+    /**
      * Observed/finding assignments: maps a grounded variable name (e.g. "isActive(alice)") to
      * the name of the observed state (e.g. "TRUE").
      *
@@ -100,6 +109,19 @@ public class SSBNGenerator {
      */
     public SSBNGenerator priorProvider(PriorProvider provider) {
         this.priorProvider = Objects.requireNonNull(provider, "provider");
+        return this;
+    }
+
+    /**
+     * Provide a {@link TypeHierarchy} so SSBN grounding navigates is-a: an RV declared over a
+     * supertype grounds over every instance of that type and all its subtypes. Without it,
+     * grounding is exact-type only (original behaviour).
+     *
+     * @param hierarchy the type hierarchy ({@code null} disables subsumption grounding)
+     * @return this generator for fluent chaining
+     */
+    public SSBNGenerator typeHierarchy(TypeHierarchy hierarchy) {
+        this.typeHierarchy = hierarchy;
         return this;
     }
 
@@ -270,8 +292,9 @@ public class SSBNGenerator {
             String key = argKeys.get(i);
             List<Map<String, String>> extended = new ArrayList<>();
 
+            Collection<String> instances = groundingInstances(type);
             for (Map<String, String> partial : allGroundings) {
-                for (String entityId : type.getEntityIds()) {
+                for (String entityId : instances) {
                     Map<String, String> newBinding = new HashMap<>(partial);
                     newBinding.put(key, entityId);
                     newBinding.put(type.getTypeName(), entityId);
@@ -297,6 +320,24 @@ public class SSBNGenerator {
         }
 
         log.debug("MFrag '{}': processed {} groundings", mfrag.getName(), allGroundings.size());
+    }
+
+    /**
+     * The entity instances to ground an MFrag argument of {@code type} over.
+     *
+     * <p>When a {@link TypeHierarchy} is configured and knows this type, grounding is
+     * <b>subsumption-inclusive</b>: it returns instances of the type AND all declared subtypes
+     * (is-a navigation), so an RV declared over a supertype grounds over subtype instances.
+     * Otherwise it falls back to the {@link EntityType}'s exact-match members.</p>
+     */
+    private Collection<String> groundingInstances(EntityType type) {
+        if (typeHierarchy != null && typeHierarchy.forType(type.getTypeName()).isPresent()) {
+            Set<String> withSubtypes = typeHierarchy.entitiesOfType(type.getTypeName(), true);
+            if (!withSubtypes.isEmpty()) {
+                return withSubtypes;
+            }
+        }
+        return type.getEntityIds();
     }
 
     /**

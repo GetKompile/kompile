@@ -9,7 +9,13 @@
  */
 package ai.kompile.app.web.controllers.explain;
 
+import ai.kompile.knowledgegraph.reasoning.KnowledgeGraphReasoningAdapter;
 import ai.kompile.knowledgegraph.reasoning.TraceHumanizer;
+import ai.kompile.app.ontology.GraphOntologyBindingService;
+import ai.kompile.process.ontology.OntologySchema;
+import ai.kompile.process.ontology.OntologySchemaTypeRegistry;
+import ai.kompile.graph.reasoning.model.ReasoningGraph;
+import ai.kompile.graph.reasoning.mebn.type.TypeHierarchy;
 import ai.kompile.event.attribution.service.BayesianNetworkService;
 import ai.kompile.event.attribution.service.EventAttributionService;
 import ai.kompile.event.attribution.service.PslReasoningService;
@@ -74,6 +80,13 @@ public class ExplainOrchestrator {
     @org.springframework.lang.Nullable
     private final TraceHumanizer traceHumanizer;
 
+    /**
+     * Optional — resolves the active {@link OntologySchema} for a fact sheet so MEBN/SSBN grounding
+     * can navigate is-a (subsumption). Null in plain-lib/test contexts → exact-type grounding.
+     */
+    @org.springframework.lang.Nullable
+    private final GraphOntologyBindingService ontologyBindingService;
+
     /** Primary Spring constructor: all dependencies including TraceHumanizer. */
     @Autowired
     public ExplainOrchestrator(KbGroundingService groundingService,
@@ -81,13 +94,15 @@ public class ExplainOrchestrator {
                                EventAttributionService attributionService,
                                PslReasoningService pslService,
                                BayesianNetworkService bayesianService,
-                               @org.springframework.lang.Nullable TraceHumanizer traceHumanizer) {
+                               @org.springframework.lang.Nullable TraceHumanizer traceHumanizer,
+                               @org.springframework.lang.Nullable GraphOntologyBindingService ontologyBindingService) {
         this.groundingService = groundingService;
         this.graphService = graphService;
         this.attributionService = attributionService;
         this.pslService = pslService;
         this.bayesianService = bayesianService;
         this.traceHumanizer = traceHumanizer;
+        this.ontologyBindingService = ontologyBindingService;
     }
 
     /** Test / legacy constructor: no TraceHumanizer (falls back to empty maps). */
@@ -96,7 +111,7 @@ public class ExplainOrchestrator {
                                EventAttributionService attributionService,
                                PslReasoningService pslService,
                                BayesianNetworkService bayesianService) {
-        this(groundingService, graphService, attributionService, pslService, bayesianService, null);
+        this(groundingService, graphService, attributionService, pslService, bayesianService, null, null);
     }
 
     /**
@@ -435,9 +450,36 @@ public class ExplainOrchestrator {
      * {@code activatedRules} — MEBN uses CPT templates rather than named rules; the
      * inference trace in {@code evidence} is the closest equivalent.</p>
      */
+    /**
+     * Build the subsumption {@link TypeHierarchy} for an MEBN query from the fact sheet's active
+     * ontology schema (is-a from {@code parentType}) merged with the seed subgraph's membership.
+     * Returns {@code null} — preserving exact-type grounding — when no schema is bound or the schema
+     * declares no is-a links.
+     */
+    @org.springframework.lang.Nullable
+    private TypeHierarchy mebnTypeHierarchy(long factSheetId, List<String> seeds) {
+        if (ontologyBindingService == null) {
+            return null;
+        }
+        OntologySchema schema = ontologyBindingService.resolveActiveOntology(factSheetId).orElse(null);
+        if (schema == null || schema.getEntityTypes() == null) {
+            return null;
+        }
+        boolean hasIsA = schema.getEntityTypes().stream()
+                .anyMatch(e -> e != null && e.getParentType() != null && !e.getParentType().isBlank());
+        if (!hasIsA) {
+            return null;
+        }
+        ReasoningGraph rg = new KnowledgeGraphReasoningAdapter(graphService)
+                .maxDepth(3).maxNodes(100)
+                .subgraph(seeds);
+        return OntologySchemaTypeRegistry.toHierarchy(schema, rg);
+    }
+
     private ReasoningTrail mebnTrail(String target, long factSheetId) {
+        List<String> seeds = List.of(target);
         BayesianInferenceResult result = bayesianService.queryMebnFromKg(
-                List.of(target), Map.of(), 3, 100);
+                seeds, Map.of(), 3, 100, mebnTypeHierarchy(factSheetId, seeds));
 
         String runId = result.getComputedAt() != null ? result.getComputedAt().toString() : "";
         Instant computedAt = result.getComputedAt() != null ? result.getComputedAt() : Instant.now();

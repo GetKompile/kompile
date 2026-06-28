@@ -50,6 +50,14 @@
             <version>${project.version}</version>
         </dependency>
 
+        <!-- Reasoning type system: bridge OntologySchema is-a declarations onto the generic,
+             infra-free TypeRegistry/TypeHierarchy used by MEBN/SSBN subsumption grounding. -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-graph-reasoning</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-jpa</artifactId>

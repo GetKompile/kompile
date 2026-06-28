@@ -48,4 +48,12 @@ public class EntityTypeDefinition {
     private List<ValidationRule> rules;
     private List<ProvenanceCitation> provenance;
     private List<ChangeRecord> changeHistory;
+
+    /**
+     * Optional is-a parent type name (OWL {@code subClassOf}). When set, this type is a subtype of
+     * {@code parentType}, enabling MEBN/SSBN subsumption grounding: an RV declared over the parent
+     * grounds over instances of this type too. Bridged into a graph-reasoning {@code TypeHierarchy}
+     * by {@code OntologySchemaTypeRegistry}.
+     */
+    private String parentType;
 }

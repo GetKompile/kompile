@@ -19,6 +19,7 @@ import ai.kompile.graph.reasoning.domain.BayesianInferenceResult;
 import ai.kompile.graph.reasoning.domain.InferenceStep;
 import ai.kompile.graph.reasoning.domain.MpeResult;
 import ai.kompile.graph.reasoning.domain.SensitivityResult;
+import ai.kompile.graph.reasoning.mebn.type.TypeHierarchy;
 import ai.kompile.core.events.EmpiricalPriorSource;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.slf4j.Logger;
@@ -253,6 +254,17 @@ public class BayesianNetworkService {
      */
     public BayesianInferenceResult queryWithMTheory(MTheory mTheory,
                                                       Map<String, Integer> evidence) {
+        return queryWithMTheory(mTheory, evidence, null);
+    }
+
+    /**
+     * As {@link #queryWithMTheory(MTheory, Map)}, but grounds the SSBN with subsumption (is-a)
+     * navigation when {@code typeHierarchy} is non-null: an RV declared over a supertype grounds
+     * over instances of its declared subtypes. Pass {@code null} for exact-type grounding.
+     */
+    public BayesianInferenceResult queryWithMTheory(MTheory mTheory,
+                                                      Map<String, Integer> evidence,
+                                                      TypeHierarchy typeHierarchy) {
         long startTime = System.currentTimeMillis();
 
         GraphKnowledgeBase kb = new GraphKnowledgeBase(graphService);
@@ -262,7 +274,7 @@ public class BayesianNetworkService {
             kb.registerEntityType(entityType.getTypeName(), entityType.getEntityIds());
         }
 
-        SSBNGenerator generator = new SSBNGenerator(mTheory, kb);
+        SSBNGenerator generator = new SSBNGenerator(mTheory, kb).typeHierarchy(typeHierarchy);
         BayesianNetwork network = generator.generate();
 
         if (network.size() == 0) {
@@ -295,6 +307,18 @@ public class BayesianNetworkService {
                                                           String queryRvName,
                                                           String queryEntityId,
                                                           Map<String, Integer> evidence) {
+        return queryMTheoryVariable(mTheory, queryRvName, queryEntityId, evidence, null);
+    }
+
+    /**
+     * As {@link #queryMTheoryVariable(MTheory, String, String, Map)}, with optional subsumption
+     * (is-a) grounding via {@code typeHierarchy} ({@code null} = exact-type grounding).
+     */
+    public BayesianInferenceResult queryMTheoryVariable(MTheory mTheory,
+                                                          String queryRvName,
+                                                          String queryEntityId,
+                                                          Map<String, Integer> evidence,
+                                                          TypeHierarchy typeHierarchy) {
         long startTime = System.currentTimeMillis();
 
         GraphKnowledgeBase kb = new GraphKnowledgeBase(graphService);
@@ -302,7 +326,7 @@ public class BayesianNetworkService {
             kb.registerEntityType(entityType.getTypeName(), entityType.getEntityIds());
         }
 
-        SSBNGenerator generator = new SSBNGenerator(mTheory, kb);
+        SSBNGenerator generator = new SSBNGenerator(mTheory, kb).typeHierarchy(typeHierarchy);
         BayesianNetwork network = generator.generateForQuery(queryRvName);
 
         if (network.size() == 0) {
@@ -359,6 +383,20 @@ public class BayesianNetworkService {
     public BayesianInferenceResult queryMebnFromKg(Collection<String> seedNodeIds,
                                                       Map<String, Integer> evidence,
                                                       int maxDepth, int maxNodes) {
+        return queryMebnFromKg(seedNodeIds, evidence, maxDepth, maxNodes, null);
+    }
+
+    /**
+     * As {@link #queryMebnFromKg(Collection, Map, int, int)}, but grounds the SSBN with subsumption
+     * (is-a) navigation using {@code typeHierarchy}. Callers that have resolved the active ontology
+     * schema (e.g. via the graph-ontology binding) build it with
+     * {@code OntologySchemaTypeRegistry.toHierarchy(schema, graph)} and pass it here; {@code null}
+     * preserves exact-type grounding.
+     */
+    public BayesianInferenceResult queryMebnFromKg(Collection<String> seedNodeIds,
+                                                      Map<String, Integer> evidence,
+                                                      int maxDepth, int maxNodes,
+                                                      TypeHierarchy typeHierarchy) {
         long startTime = System.currentTimeMillis();
 
         KgMTheoryBuilder builder = new KgMTheoryBuilder(graphService)
@@ -374,7 +412,7 @@ public class BayesianNetworkService {
                     .build();
         }
 
-        return queryWithMTheory(mTheory, evidence);
+        return queryWithMTheory(mTheory, evidence, typeHierarchy);
     }
 
     /**
