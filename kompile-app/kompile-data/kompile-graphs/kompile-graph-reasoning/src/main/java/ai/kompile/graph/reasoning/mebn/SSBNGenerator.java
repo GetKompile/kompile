@@ -12,6 +12,9 @@ package ai.kompile.graph.reasoning.mebn;
 import ai.kompile.graph.reasoning.bayesian.*;
 import ai.kompile.graph.reasoning.mebn.logic.KnowledgeBase;
 import ai.kompile.graph.reasoning.mebn.logic.LogicalConstraint;
+import ai.kompile.graph.reasoning.prior.DefaultPriorProvider;
+import ai.kompile.graph.reasoning.prior.PriorContext;
+import ai.kompile.graph.reasoning.prior.PriorProvider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -58,6 +61,8 @@ public class SSBNGenerator {
     private final KnowledgeBase kb;
     private final double defaultLeakProbability;
     private final int maxRecursionDepth;
+    /** Resolves informative priors for root/default SSBN nodes (default: uniform 0.5). */
+    private PriorProvider priorProvider = DefaultPriorProvider.INSTANCE;
 
     /**
      * Observed/finding assignments: maps a grounded variable name (e.g. "isActive(alice)") to
@@ -84,6 +89,18 @@ public class SSBNGenerator {
         this.kb = kb;
         this.defaultLeakProbability = defaultLeakProbability;
         this.maxRecursionDepth = maxRecursionDepth;
+    }
+
+    /**
+     * Override the prior provider used for root/default nodes in {@link #buildAllCpts}.
+     * The default is {@link DefaultPriorProvider#INSTANCE} (returns 0.5 for all nodes).
+     *
+     * @param provider the provider to use; never {@code null}
+     * @return this generator for fluent chaining
+     */
+    public SSBNGenerator priorProvider(PriorProvider provider) {
+        this.priorProvider = Objects.requireNonNull(provider, "provider");
+        return this;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -530,16 +547,17 @@ public class SSBNGenerator {
                         node.setCpt(buildCustomCpt(varName, parents, cptValues));
                     }
                 } else {
-                    // Uniform fallback when no default distribution is set
-                    node.setCpt(NoisyOrCpt.buildPrior(varName, 0.5));
+                    // Uniform fallback when no default distribution is set → consult PriorProvider
+                    node.setCpt(NoisyOrCpt.buildPrior(varName, priorProvider.priorFor(varName, PriorContext.EMPTY)));
                 }
             } else if (node.isRoot()) {
-                // Root node in contextual mode: uniform prior
-                node.setCpt(NoisyOrCpt.buildPrior(varName, 0.5));
+                // Root node in contextual mode: resolve via PriorProvider (replaces flat 0.5)
+                node.setCpt(NoisyOrCpt.buildPrior(varName, priorProvider.priorFor(varName, PriorContext.EMPTY)));
             } else {
                 List<ParentBinding> parents = parentBindings.getOrDefault(varName, List.of());
                 if (parents.isEmpty()) {
-                    node.setCpt(NoisyOrCpt.buildPrior(varName, 0.5));
+                    // No parents resolved: resolve prior via PriorProvider
+                    node.setCpt(NoisyOrCpt.buildPrior(varName, priorProvider.priorFor(varName, PriorContext.EMPTY)));
                 } else {
                     List<String> parentVars = parents.stream()
                             .map(ParentBinding::parentVariable).toList();
