@@ -109,6 +109,11 @@ public class OwlOntologyBridge {
                 if (rt.getTargetEntityType() != null && !rt.getTargetEntityType().isBlank()) {
                     propBuilder.range(OwlIri.classIri(rt.getTargetEntityType()));
                 }
+                // Part-of / composition / chain relations → owl:TransitiveProperty, so the OWL-RL
+                // reasoner computes their transitive closure (has-a navigation + derived PSL rules).
+                if (rt.isTransitive()) {
+                    propBuilder.transitive(true);
+                }
 
                 builder.addObjectProperty(propBuilder.build());
             }

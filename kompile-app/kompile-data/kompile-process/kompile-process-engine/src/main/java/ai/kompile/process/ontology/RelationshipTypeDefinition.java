@@ -40,4 +40,11 @@ public class RelationshipTypeDefinition {
     private String description;
     private Cardinality cardinality;
     private Map<String, Object> metadata;
+
+    /**
+     * Marks this relationship as transitive (OWL {@code owl:TransitiveProperty}):
+     * {@code P(a,b) ∧ P(b,c) → P(a,c)}. Set for part-of / composition / chain relations so the
+     * OWL-RL reasoner computes their transitive closure — the basis for has-a navigation.
+     */
+    private boolean transitive;
 }
