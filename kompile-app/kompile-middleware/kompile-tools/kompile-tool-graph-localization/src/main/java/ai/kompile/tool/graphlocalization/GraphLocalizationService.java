@@ -19,7 +19,6 @@ import ai.kompile.graph.algorithms.adjacency.AdjacencyView;
 import ai.kompile.utils.StringUtils;
 import ai.kompile.graph.algorithms.service.GraphAlgorithmService;
 import ai.kompile.knowledgegraph.domain.*;
-import ai.kompile.knowledgegraph.repository.EntityMentionRepository;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -42,9 +41,6 @@ public class GraphLocalizationService {
 
     private final KnowledgeGraphService graphService;
     private final GraphAlgorithmService algorithmService;
-
-    @Autowired(required = false)
-    private EntityMentionRepository entityMentionRepository;
 
     @Autowired
     public GraphLocalizationService(KnowledgeGraphService graphService,
@@ -116,12 +112,12 @@ public class GraphLocalizationService {
                         ? edge.getTargetNode()
                         : edge.getSourceNode();
 
-                // Entity type filter (skipped when entityMentionRepository is unavailable)
-                if (entityTypes != null && neighbor.getNodeType() == NodeLevel.ENTITY
-                        && entityMentionRepository != null) {
-                    List<EntityMention> mentions = entityMentionRepository.findByNode(neighbor);
+                // Entity type filter
+                if (entityTypes != null && neighbor.getNodeType() == NodeLevel.ENTITY) {
+                    List<EntityMention> mentions = graphService.getEntityMentionsForNode(neighbor);
                     boolean matchesType = mentions.stream()
-                            .anyMatch(m -> entityTypes.contains(m.getEntityType().toUpperCase()));
+                            .anyMatch(m -> m.getEntityType() != null
+                                    && entityTypes.contains(m.getEntityType().toUpperCase()));
                     if (!matchesType) continue;
                 }
 
@@ -221,15 +217,16 @@ public class GraphLocalizationService {
             }
 
             // Required entity types: node must be connected to entities of these types
-            // (skipped when entityMentionRepository is unavailable)
-            if (reqEntityTypes != null && entityMentionRepository != null) {
+            if (reqEntityTypes != null) {
                 Set<String> connectedEntityTypes = new HashSet<>();
                 for (GraphEdge edge : edges) {
                     GraphNode neighbor = edge.getSourceNode().getNodeId().equals(nodeId)
                             ? edge.getTargetNode() : edge.getSourceNode();
                     if (neighbor.getNodeType() == NodeLevel.ENTITY) {
-                        List<EntityMention> mentions = entityMentionRepository.findByNode(neighbor);
-                        mentions.forEach(m -> connectedEntityTypes.add(m.getEntityType().toUpperCase()));
+                        List<EntityMention> mentions = graphService.getEntityMentionsForNode(neighbor);
+                        mentions.stream()
+                                .filter(m -> m.getEntityType() != null)
+                                .forEach(m -> connectedEntityTypes.add(m.getEntityType().toUpperCase()));
                     }
                 }
                 if (!connectedEntityTypes.containsAll(reqEntityTypes)) continue;
@@ -298,10 +295,12 @@ public class GraphLocalizationService {
 
             nodeTypeDistribution.merge(n.getNodeType().name(), 1, Integer::sum);
 
-            if (n.getNodeType() == NodeLevel.ENTITY && entityMentionRepository != null) {
-                List<EntityMention> mentions = entityMentionRepository.findByNode(n);
+            if (n.getNodeType() == NodeLevel.ENTITY) {
+                List<EntityMention> mentions = graphService.getEntityMentionsForNode(n);
                 for (EntityMention m : mentions) {
-                    entityTypeDistribution.merge(m.getEntityType().toUpperCase(), 1, Integer::sum);
+                    if (m.getEntityType() != null) {
+                        entityTypeDistribution.merge(m.getEntityType().toUpperCase(), 1, Integer::sum);
+                    }
                 }
             }
 
@@ -712,18 +711,18 @@ public class GraphLocalizationService {
                 })
                 .collect(Collectors.toList());
 
-        // Entity type summary for community (skipped when entityMentionRepository is unavailable)
+        // Entity type summary for community
         Map<String, Integer> entityTypeSummary = new LinkedHashMap<>();
-        if (entityMentionRepository != null) {
-            for (String id : communityMembers) {
-                resolveNode(id).ifPresent(n -> {
-                    if (n.getNodeType() == NodeLevel.ENTITY) {
-                        entityMentionRepository.findByNode(n)
-                                .forEach(em -> entityTypeSummary.merge(
-                                        em.getEntityType().toUpperCase(), 1, Integer::sum));
-                    }
-                });
-            }
+        for (String id : communityMembers) {
+            resolveNode(id).ifPresent(n -> {
+                if (n.getNodeType() == NodeLevel.ENTITY) {
+                    graphService.getEntityMentionsForNode(n)
+                            .stream()
+                            .filter(em -> em.getEntityType() != null)
+                            .forEach(em -> entityTypeSummary.merge(
+                                    em.getEntityType().toUpperCase(), 1, Integer::sum));
+                }
+            });
         }
 
         // Total communities count
@@ -808,14 +807,13 @@ public class GraphLocalizationService {
 
     private Map<String, Set<String>> collectEntityTypes(Set<String> nodeIds) {
         Map<String, Set<String>> typeToNames = new LinkedHashMap<>();
-        if (entityMentionRepository == null) {
-            return typeToNames;
-        }
         for (String id : nodeIds) {
             resolveNode(id).ifPresent(n -> {
                 if (n.getNodeType() == NodeLevel.ENTITY) {
-                    entityMentionRepository.findByNode(n).forEach(m ->
-                            typeToNames.computeIfAbsent(m.getEntityType().toUpperCase(),
+                    graphService.getEntityMentionsForNode(n)
+                            .stream()
+                            .filter(m -> m.getEntityType() != null)
+                            .forEach(m -> typeToNames.computeIfAbsent(m.getEntityType().toUpperCase(),
                                     k -> new HashSet<>()).add(m.getEntityName()));
                 }
             });

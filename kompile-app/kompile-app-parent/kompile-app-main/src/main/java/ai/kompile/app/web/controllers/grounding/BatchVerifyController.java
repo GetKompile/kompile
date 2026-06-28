@@ -9,6 +9,9 @@
  */
 package ai.kompile.app.web.controllers.grounding;
 
+import ai.kompile.graph.reasoning.confidence.StrengthBand;
+import ai.kompile.graph.reasoning.fol.grounding.PlattCalibrator;
+import ai.kompile.graph.reasoning.fol.grounding.StrengthCalibrator;
 import ai.kompile.graph.reasoning.fol.grounding.VerifyResult;
 import ai.kompile.knowledgegraph.grounding.KbGroundingService;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
@@ -42,10 +45,12 @@ public class BatchVerifyController {
     private static final int MAX_BATCH_SIZE = 200;
 
     private final KbGroundingService groundingService;
+    private final PlattCalibrator calibrator;
 
     @Autowired
     public BatchVerifyController(KbGroundingService groundingService) {
         this.groundingService = groundingService;
+        this.calibrator = new PlattCalibrator();
     }
 
     /**
@@ -77,11 +82,16 @@ public class BatchVerifyController {
                     ? groundingService.verify(factSheetId, atomKey, threshold)
                     : groundingService.verify(factSheetId, atomKey);
 
+            double calibratedConfidence = calibrator.calibrate(
+                    vr.confidence(), StrengthCalibrator.SignalType.OBSERVED, vr);
+            StrengthBand band = StrengthBand.fromScalar(calibratedConfidence);
             results.put(atomKey, new VerifyResultSummary(
                     vr.status().name(),
                     vr.confidence(),
                     vr.evidence().size(),
-                    Instant.now()
+                    Instant.now(),
+                    calibratedConfidence,
+                    band.name()
             ));
         }
 
@@ -130,15 +140,19 @@ public class BatchVerifyController {
     /**
      * Per-atom verify summary — compact form for the UI overlay.
      *
-     * @param verdict       SUPPORTED | REFUTED | UNKNOWN
-     * @param confidence    calibrated confidence in [0,1]
-     * @param evidenceCount number of evidence items backing this verdict
-     * @param evaluatedAt   time the verdict was produced
+     * @param verdict               SUPPORTED | REFUTED | UNKNOWN
+     * @param confidence            raw grounding confidence in [0,1]
+     * @param evidenceCount         number of evidence items backing this verdict
+     * @param evaluatedAt           time the verdict was produced
+     * @param calibratedConfidence  Platt-calibrated confidence in [0,1]
+     * @param strengthBand          named strength band (VERY_WEAK … VERY_STRONG)
      */
     public record VerifyResultSummary(
             String verdict,
             double confidence,
             int evidenceCount,
-            Instant evaluatedAt
+            Instant evaluatedAt,
+            double calibratedConfidence,
+            String strengthBand
     ) {}
 }

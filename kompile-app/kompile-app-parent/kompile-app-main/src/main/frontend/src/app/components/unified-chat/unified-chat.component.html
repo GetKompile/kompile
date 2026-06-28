@@ -1282,6 +1282,9 @@
                     {{ (source.sourceUrl || source.filePath) | slice:0:60 }}{{ (source.sourceUrl || source.filePath)?.length > 60 ? '...' : '' }}
                   </span>
                 </div>
+
+                <!-- Structured citation (basisType, crawlRunId, page, confidence, etc.) -->
+                <app-source-citation *ngIf="source.citation" [citation]="source.citation" [compact]="true"></app-source-citation>
               </div>
             </div>
 
@@ -1289,6 +1292,67 @@
             <div class="sources-footer" *ngIf="message._sourcesExpanded && message.sources.length > 0">
               <button class="sources-footer-btn" (click)="toggleSources(message)">
                 Collapse sources
+              </button>
+            </div>
+          </div>
+
+          <!-- Reasoning Trails (from kb_verify_explain tool calls) -->
+          <div *ngIf="message.role === 'assistant' && message.reasoningTrails && message.reasoningTrails.length > 0"
+            class="reasoning-trails-panel" data-testid="reasoning-trails">
+            <app-reasoning-trail
+              *ngFor="let trail of message.reasoningTrails"
+              [trail]="trail"
+              [stale]="trail.stale || false"
+              [mode]="'compact'">
+            </app-reasoning-trail>
+          </div>
+
+          <!-- Retrieved Documents (RAG document store) -->
+          <div *ngIf="message.role === 'assistant' && showDocuments && message.documents?.length"
+            class="sources-section documents-section" data-testid="documents-section">
+            <div class="sources-header" (click)="toggleDocuments(message)">
+              <span class="sources-icon">📄</span>
+              <span class="sources-title">{{ message.documents!.length }} retrieved document{{ message.documents!.length !== 1 ? 's' : '' }}</span>
+              <span class="expand-icon">{{ message.documentsExpanded ? '▼' : '▶' }}</span>
+            </div>
+
+            <div class="sources-list" *ngIf="message.documentsExpanded">
+              <div *ngFor="let doc of message.documents; let j = index"
+                class="source-item"
+                [id]="'doc-' + message.id + '-' + j">
+
+                <div class="source-header">
+                  <span class="source-index">[{{ j + 1 }}]</span>
+                  <span class="source-name">{{ doc.citation?.sourceName || doc.sourceId || doc.id }}</span>
+                  <span class="source-score" *ngIf="doc.score">{{ (doc.score * 100).toFixed(1) }}%</span>
+                </div>
+
+                <!-- Document location metadata -->
+                <div class="source-metadata" *ngIf="doc.pageNumber !== undefined || doc.chunkIndex !== undefined || doc.sourceId">
+                  <span class="metadata-badge" *ngIf="doc.pageNumber !== undefined">Page {{ doc.pageNumber }}</span>
+                  <span class="metadata-badge" *ngIf="doc.chunkIndex !== undefined">Chunk #{{ doc.chunkIndex + 1 }}</span>
+                  <span class="metadata-badge file-id" *ngIf="doc.sourceId" title="Source ID">
+                    📄 {{ doc.sourceId.substring(0, 8) }}...
+                  </span>
+                </div>
+
+                <!-- Document content snippet -->
+                <div class="source-content" *ngIf="doc.content">
+                  <span class="content-snippet">{{ doc.content | slice:0:200 }}{{ doc.content.length > 200 ? '...' : '' }}</span>
+                </div>
+
+                <!-- Structured citation: prefer doc.citation, fall back to toCitation(doc) -->
+                <app-source-citation
+                  [citation]="doc.citation || toCitation(doc)"
+                  [compact]="true">
+                </app-source-citation>
+              </div>
+            </div>
+
+            <!-- Documents footer -->
+            <div class="sources-footer" *ngIf="message.documentsExpanded && message.documents!.length > 0">
+              <button class="sources-footer-btn" (click)="toggleDocuments(message)">
+                Collapse documents
               </button>
             </div>
           </div>
@@ -1343,6 +1407,11 @@
         <span class="hint" *ngIf="currentSession && messages.length > 0">
           {{ messages.length }} messages
         </span>
+        <!-- Graph-RAG quick toggle -->
+        <label class="hint graph-rag-toggle" title="Enable knowledge-graph context for this message">
+          <input type="checkbox" [(ngModel)]="graphRagEnabled" [ngModelOptions]="{standalone: true}">
+          🔗 Graph RAG
+        </label>
       </div>
     </div>
 

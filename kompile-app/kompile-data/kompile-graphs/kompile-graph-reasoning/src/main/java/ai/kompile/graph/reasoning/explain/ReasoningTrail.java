@@ -14,6 +14,7 @@ import ai.kompile.graph.reasoning.fol.grounding.DerivationTree;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -48,7 +49,13 @@ public record ReasoningTrail(
     Instant computedAt,
 
     // NL
-    String naturalLanguageSummary
+    String naturalLanguageSummary,
+
+    // HUMAN-READABLE TRANSLATION MAP (atom key → display title for PSL grounding constants)
+    Map<String, String> atomKeyToTitle,
+
+    // RULE HUMANIZATION MAP (raw rule string → humanized label; used in derivation-tree JSON)
+    Map<String, String> ruleToHumanized
 ) {
     public ReasoningTrail {
         Objects.requireNonNull(targetId, "targetId");
@@ -60,6 +67,8 @@ public record ReasoningTrail(
         activatedRules = activatedRules == null ? List.of() : List.copyOf(activatedRules);
         entailments = entailments == null ? List.of() : List.copyOf(entailments);
         if (naturalLanguageSummary == null) naturalLanguageSummary = "";
+        atomKeyToTitle = atomKeyToTitle == null ? Map.of() : Map.copyOf(atomKeyToTitle);
+        ruleToHumanized = ruleToHumanized == null ? Map.of() : Map.copyOf(ruleToHumanized);
     }
 
     // ─── Factories ────────────────────────────────────────────────────────────
@@ -81,6 +90,8 @@ public record ReasoningTrail(
         private String runId = "";
         private Instant computedAt = Instant.now();
         private String naturalLanguageSummary = "";
+        private Map<String, String> atomKeyToTitle = Map.of();
+        private Map<String, String> ruleToHumanized = Map.of();
 
         private Builder(String targetId) {
             this.targetId = Objects.requireNonNull(targetId, "targetId");
@@ -97,11 +108,14 @@ public record ReasoningTrail(
         public Builder runId(String id) { this.runId = id; return this; }
         public Builder computedAt(Instant t) { this.computedAt = t; return this; }
         public Builder naturalLanguageSummary(String s) { this.naturalLanguageSummary = s; return this; }
+        public Builder atomKeyToTitle(Map<String, String> m) { this.atomKeyToTitle = m; return this; }
+        public Builder ruleToHumanized(Map<String, String> m) { this.ruleToHumanized = m; return this; }
 
         public ReasoningTrail build() {
             return new ReasoningTrail(targetId, question, confidence, breakdown,
                 derivationTree, entailments, evidence, activatedRules,
-                inferenceMode, runId, computedAt, naturalLanguageSummary);
+                inferenceMode, runId, computedAt, naturalLanguageSummary,
+                atomKeyToTitle, ruleToHumanized);
         }
     }
 

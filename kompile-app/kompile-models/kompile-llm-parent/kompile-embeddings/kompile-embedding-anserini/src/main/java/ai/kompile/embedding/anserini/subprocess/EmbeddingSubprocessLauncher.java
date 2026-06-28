@@ -16,15 +16,20 @@
 
 package ai.kompile.embedding.anserini.subprocess;
 
+import ai.kompile.app.subprocess.RestartableSubprocess;
 import ai.kompile.app.subprocess.SubprocessEnvironmentPropagator;
+import ai.kompile.app.subprocess.SubprocessRegistry;
 import ai.kompile.cli.common.logs.AgentLogRecord;
 import ai.kompile.cli.common.logs.SubprocessLogWriter;
 import ai.kompile.embedding.anserini.AnseriniEncoderFactory;
 import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.sun.management.OperatingSystemMXBean;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.lang.management.ManagementFactory;
 
 import java.io.*;
 import java.nio.file.Files;
@@ -41,6 +46,9 @@ import java.util.jar.JarFile;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.Locale;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -61,7 +69,7 @@ import java.util.Deque;
  * The subprocess runs SameDiff/ND4J in isolation, so the main application
  * JVM never loads these heavy native libraries.
  */
-public class EmbeddingSubprocessLauncher implements AutoCloseable {
+public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSubprocess {
 
     private static final Logger logger = LoggerFactory.getLogger(EmbeddingSubprocessLauncher.class);
     private static final ObjectMapper OBJECT_MAPPER = JsonUtils.standardMapper();
@@ -108,7 +116,11 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
     private final String javaHome;
     private final List<String> classpath;
     private final int maxHeapMb;
+    /** JavaCPP maxphysicalbytes cap in MB (0 = 4 × maxHeapMb). */
+    private final long maxPhysicalMb;
     private final long requestTimeoutMs;
+    /** Separate timeout for LoadModel requests; CPU SameDiff warm-up takes ~111s+. */
+    private final long loadModelTimeoutMs;
     private final long heartbeatTimeoutMs;
 
     // Native image configuration
@@ -130,7 +142,7 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
     private volatile Long deviceRoutingMaxDeviceMemory;
 
     // Subprocess registry for centralized lifecycle tracking (optional)
-    private volatile ai.kompile.app.subprocess.SubprocessRegistry subprocessRegistry;
+    private volatile SubprocessRegistry subprocessRegistry;
 
     // Callbacks
     private Consumer<EmbeddingSubprocessMessage.Heartbeat> heartbeatCallback;
@@ -139,6 +151,8 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
     private Consumer<EmbeddingSubprocessMessage.Log> logCallback;
     private Consumer<EmbeddingSubprocessMessage.Error> errorCallback;
     private Consumer<Exception> crashCallback;
+    /** Optional callback for native-memory-pressure batch-resize decisions from the encoder. */
+    private Consumer<EmbeddingSubprocessMessage.BatchResizeNotice> batchResizeCallback;
 
     // Health monitoring
     private ScheduledExecutorService healthMonitor;
@@ -916,8 +930,12 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
         private String javaHome = System.getProperty("java.home");
         private List<String> classpath = new ArrayList<>();
         private int maxHeapMb = 4096;
+        /** JavaCPP maxphysicalbytes in MB; 0 means auto (4 × maxHeapMb). */
+        private long maxPhysicalMb = 0;
         // Default to 0 (no timeout) - timeouts can be configured via properties
         private long requestTimeoutMs = 0;
+        // Default to 0 (falls back to requestTimeoutMs) - configured via properties
+        private long loadModelTimeoutMs = 0;
         private long heartbeatTimeoutMs = 0;
         private LaunchMode launchMode = LaunchMode.AUTO;
         private String nativeExecutablePath;
@@ -928,6 +946,7 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
         private Consumer<EmbeddingSubprocessMessage.Log> logCallback;
         private Consumer<EmbeddingSubprocessMessage.Error> errorCallback;
         private Consumer<Exception> crashCallback;
+        private Consumer<EmbeddingSubprocessMessage.BatchResizeNotice> batchResizeCallback;
 
         public Builder javaHome(String javaHome) {
             this.javaHome = javaHome;
@@ -949,8 +968,31 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
             return this;
         }
 
+        /**
+         * Set the JavaCPP native-memory ceiling for the subprocess in MB.
+         * Passed as {@code -Dorg.bytedeco.javacpp.maxphysicalbytes=Nm}.
+         * 0 (default) → auto: 4 × maxHeapMb.
+         */
+        public Builder maxPhysicalMb(long maxPhysicalMb) {
+            this.maxPhysicalMb = maxPhysicalMb;
+            return this;
+        }
+
         public Builder requestTimeoutMs(long requestTimeoutMs) {
             this.requestTimeoutMs = requestTimeoutMs;
+            return this;
+        }
+
+        /**
+         * Timeout in milliseconds for the LoadModel request specifically.
+         * CPU SameDiff/DSP model warm-up can take ~111s or more; setting this
+         * higher than {@code requestTimeoutMs} prevents a crash-loop where
+         * the 60s general timeout kills the subprocess before it finishes loading.
+         * When 0, falls back to {@code requestTimeoutMs} (or waits indefinitely
+         * if that is also 0).
+         */
+        public Builder loadModelTimeoutMs(long loadModelTimeoutMs) {
+            this.loadModelTimeoutMs = loadModelTimeoutMs;
             return this;
         }
 
@@ -1024,6 +1066,15 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
         }
 
         /**
+         * Callback invoked when the encoder shrinks a sub-batch due to native-memory pressure.
+         * Useful for operator dashboards and auto-tuning.
+         */
+        public Builder batchResizeCallback(Consumer<EmbeddingSubprocessMessage.BatchResizeNotice> callback) {
+            this.batchResizeCallback = callback;
+            return this;
+        }
+
+        /**
          * Set the debug configuration for subprocess execution.
          *
          * @param debugConfig the debug configuration
@@ -1061,8 +1112,59 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
      * When set, the launcher registers/deregisters its process with the registry,
      * enabling orphan protection via JVM shutdown hook.
      */
-    public void setSubprocessRegistry(ai.kompile.app.subprocess.SubprocessRegistry registry) {
+    public void setSubprocessRegistry(SubprocessRegistry registry) {
         this.subprocessRegistry = registry;
+    }
+
+    // ── RestartableSubprocess implementation ──────────────────────────────────
+
+    @Override
+    public String getSubprocessId() {
+        return "embedding";
+    }
+
+    /**
+     * Request a restart of the embedding subprocess from the parent-side watchdog.
+     *
+     * <p>Stores the external-crash reason and fires {@link #triggerExternalCrash(String)}
+     * on a daemon thread so the watchdog's scheduler thread is never blocked.
+     *
+     * @param reason human-readable explanation from the watchdog (e.g. "RSS 18432 MB exceeds limit")
+     */
+    @Override
+    public void requestRestart(String reason) {
+        logger.warn("Watchdog-triggered restart requested for embedding subprocess: {}", reason);
+        lastCrashReason = reason;
+        Thread t = new Thread(() -> triggerExternalCrash(reason), "embedding-watchdog-restart");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    /**
+     * Entry point for external (watchdog-initiated) crash handling.
+     *
+     * <p>Forcibly destroys the current process (if still alive) so that the existing
+     * {@link #handleSubprocessCrash()} path picks it up naturally — reusing all
+     * backoff, model-reload, and event-history logic already wired there.
+     *
+     * @param reason diagnostic reason string stored before calling this method
+     */
+    private synchronized void triggerExternalCrash(String reason) {
+        if (shuttingDown.get()) {
+            logger.debug("Watchdog restart suppressed — launcher is shutting down");
+            return;
+        }
+        Process p = this.process;
+        if (p != null && p.isAlive()) {
+            logger.warn("Watchdog killing embedding subprocess PID={} (reason: {})", p.pid(), reason);
+            p.destroyForcibly();
+        }
+        // handleSubprocessCrash() will be invoked by the output-reader thread detecting EOF,
+        // which is the normal crash-detection path.  Calling it here too would double-restart.
+        // If the process was already dead when we arrived, fire it directly.
+        if (p == null || !p.isAlive()) {
+            handleSubprocessCrash();
+        }
     }
 
     private EmbeddingSubprocessLauncher(Builder builder) {
@@ -1070,7 +1172,9 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
         this.classpath = builder.classpath.isEmpty() ?
             buildSubprocessClasspath() : builder.classpath;
         this.maxHeapMb = builder.maxHeapMb;
+        this.maxPhysicalMb = builder.maxPhysicalMb > 0 ? builder.maxPhysicalMb : (long) builder.maxHeapMb * 4;
         this.requestTimeoutMs = builder.requestTimeoutMs;
+        this.loadModelTimeoutMs = builder.loadModelTimeoutMs;
         this.heartbeatTimeoutMs = builder.heartbeatTimeoutMs;
         this.subprocessTypeFlag = builder.subprocessTypeFlag;
         this.heartbeatCallback = builder.heartbeatCallback;
@@ -1079,6 +1183,7 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
         this.logCallback = builder.logCallback;
         this.errorCallback = builder.errorCallback;
         this.crashCallback = builder.crashCallback;
+        this.batchResizeCallback = builder.batchResizeCallback;
         this.debugConfig = builder.debugConfig != null ? builder.debugConfig.copy() : new DebugConfig();
 
         // Resolve launch mode and native executable path
@@ -1365,6 +1470,23 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
         // Propagate all ND4J/CUDA/threading/Triton env vars via central propagator
         SubprocessEnvironmentPropagator.propagateToEnvironment(pb.environment());
 
+        // ALWAYS clear DSP diagnostics for the embedding subprocess.
+        // SubprocessEnvironmentPropagator propagates ND4J_DSP_DIAGNOSTICS and all ND4J_* vars
+        // from the parent environment, which can enable ~970k [DSP_DIAG] native trace lines.
+        // Embedding inference never needs DSP diagnostics. Use an explicit opt-in flag
+        // (set ND4J_EMBEDDING_DSP_DIAGNOSTICS env var) to re-enable for debugging.
+        boolean dspDiagEnabled = System.getenv("ND4J_EMBEDDING_DSP_DIAGNOSTICS") != null;
+        if (!dspDiagEnabled) {
+            pb.environment().remove("ND4J_DSP_DIAGNOSTICS");
+            pb.environment().remove("ND4J_DSP_DIAGNOSTICS_LEVEL");
+            pb.environment().remove("ND4J_DSP_DIAGNOSTICS_BUFFER_SIZE");
+            pb.environment().remove("ND4J_DSP_OOM_CAPTURE_DIR");
+            pb.environment().remove("ND4J_DSP_OOM_CAPTURE_ENABLED");
+            logger.debug("Cleared ND4J_DSP_DIAGNOSTICS env vars from embedding subprocess (set ND4J_EMBEDDING_DSP_DIAGNOSTICS to re-enable)");
+        } else {
+            logger.info("ND4J_EMBEDDING_DSP_DIAGNOSTICS is set — DSP diagnostics will be forwarded to embedding subprocess");
+        }
+
         // Add debug-specific environment variables if enabled
         if (debugConfig != null && debugConfig.getMode() != DebugMode.NONE) {
             Map<String, String> debugEnv = debugConfig.buildEnvironmentVariables();
@@ -1375,11 +1497,28 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
             }
         }
 
+        // FIX A: Cap OpenBLAS/OMP native thread count to 1 for the CPU embedding path.
+        // nd4j-environment-config.json sets ompNumThreads:1 but the native OMP runtime only
+        // honours OMP_NUM_THREADS / OPENBLAS_NUM_THREADS / GOTO_NUM_THREADS env vars — the
+        // config-file value is silently ignored by libgomp/libopenblas.  Without these caps
+        // each GEMM call spawns 4 OMP threads and each allocates 5–8 GB of UNCAPPED scratch,
+        // totalling ~20 GB of avoidable native RSS on a quad-core embedding subprocess.
+        // Single-threaded BLAS is the correct default for the CPU embedding path because the
+        // batch-planner already parallelises at the request level (one text → one forward pass)
+        // and intra-op parallelism causes contention and OOM at this subprocess's RSS budget.
+        int ompThreads = Integer.getInteger("kompile.embedding.subprocess.ompThreads", 1);
+        pb.environment().put("OMP_NUM_THREADS", String.valueOf(ompThreads));
+        pb.environment().put("OPENBLAS_NUM_THREADS", String.valueOf(ompThreads));
+        pb.environment().put("GOTO_NUM_THREADS", String.valueOf(ompThreads));
+        logger.info("OMP/BLAS thread cap for embedding subprocess: {} (override via -Dkompile.embedding.subprocess.ompThreads)",
+                ompThreads);
+
         process = pb.start();
 
-        // Register with centralized subprocess registry for orphan protection
+        // Register with centralized subprocess registry for orphan protection and watchdog restart
         if (subprocessRegistry != null) {
             subprocessRegistry.register("embedding", process, "embedding");
+            subprocessRegistry.registerRestartHandler(getSubprocessId(), this);
         }
 
         // Initialise per-run log writer (non-fatal if it fails)
@@ -1429,6 +1568,38 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
     }
 
     /**
+     * Resolve the {@code maxphysicalbytes} ceiling (MB) for this subprocess.
+     *
+     * JavaCPP's {@code physicalBytes()} on Linux measures SYSTEM-WIDE physical RAM,
+     * NOT this process's RSS.  Setting {@code maxphysicalbytes} equal to the
+     * per-process off-heap budget ({@code maxbytes}) means the check trips the instant
+     * a sibling subprocess (e.g. the matrix graph at :8094) pushes TOTAL box RAM past the
+     * threshold — causing a false OOM-restart even when THIS process is well within budget
+     * (observed: embedding subprocess restarted at ~30g RSS on a box where sibling was using ~35g).
+     *
+     * The correct value is a near-machine-TOTAL guard (95% of physical RAM by default):
+     * it must only trip when the WHOLE BOX is genuinely exhausted, not when a sibling is busy.
+     * The per-process budget is separately enforced by {@code maxbytes}.
+     *
+     * Fraction is configurable via {@code -Dkompile.subprocess.maxphysical-fraction} (mirrors
+     * the same property used by {@link ai.kompile.app.subprocess.ManagedSubprocessLauncher}).
+     */
+    // visible for testing (EmbeddingSubprocessPhysicalCeilingTest)
+    long resolveSystemPhysicalCeilingMb(long offHeapFloorMb) {
+        try {
+            long totalBytes = ((OperatingSystemMXBean) ManagementFactory.getOperatingSystemMXBean())
+                    .getTotalMemorySize();
+            double fraction = Double.parseDouble(
+                    System.getProperty("kompile.subprocess.maxphysical-fraction", "0.95"));
+            long ceilingMb = (long) (totalBytes / (1024.0 * 1024.0) * fraction);
+            return Math.max(offHeapFloorMb, ceilingMb);
+        } catch (Throwable t) {
+            // Fallback: 3× the per-process floor keeps the guard sane without a MXBean
+            return offHeapFloorMb * 3L;
+        }
+    }
+
+    /**
      * Build the command for launching the subprocess based on launch mode.
      */
     private List<String> buildCommand() {
@@ -1470,6 +1641,20 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
             command.add("-Xmx" + maxHeapMb + "m");
             command.add("-Xms" + Math.min(maxHeapMb / 2, 1024) + "m");
 
+            // Deterministic JavaCPP native-memory cap so transformer forward-pass activations
+            // cannot exhaust host RAM.  maxPhysicalMb defaults to 4 × heap (set in constructor).
+            // Without this the subprocess inherits an undefined/cgroup value and a large batch
+            // can allocate ~36GB of native activation memory before the JVM detects anything.
+            // maxbytes   = PER-PROCESS off-heap cap; the real lever bounding THIS subprocess's ND4J arrays.
+            // maxphysicalbytes = SYSTEM-WIDE physical guard; must be near-machine-total so sibling
+            //   subprocesses (graph matrix at :8094, etc.) do NOT false-trigger an OOM restart here.
+            //   See resolveSystemPhysicalCeilingMb() for full explanation.
+            long systemPhysicalCeilingMb = resolveSystemPhysicalCeilingMb(maxPhysicalMb);
+            command.add("-Dorg.bytedeco.javacpp.maxbytes=" + maxPhysicalMb + "m");
+            command.add("-Dorg.bytedeco.javacpp.maxphysicalbytes=" + systemPhysicalCeilingMb + "m");
+            logger.info("JavaCPP native memory cap: maxbytes={}m maxphysicalbytes={}m (heap={}m)",
+                    maxPhysicalMb, systemPhysicalCeilingMb, maxHeapMb);
+
             // Add performance tuning flags
             command.add("-XX:+UseG1GC");
             command.add("-XX:MaxGCPauseMillis=100");
@@ -1485,9 +1670,15 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
             }
 
             // Give subprocess its own temp directory for native library extraction
-            // This prevents conflicts with parent process that may have loaded same libraries
+            // (prevents conflicts with the parent process that may have loaded the same libraries).
+            // Use a STABLE, reused directory: a fresh Files.createTempDirectory() per launch leaked
+            // ~2GB of javacpp natives into /tmp on every (re)start (never cleaned), filling the tmpfs
+            // and breaking later builds with "No space left on device". Only one embedding subprocess
+            // runs at a time, so reuse is safe and lets javacpp reuse its extracted natives (faster
+            // restarts, zero accumulation).
             try {
-                Path subprocessTempDir = Files.createTempDirectory("embedding-subprocess-javacpp-");
+                Path subprocessTempDir = Path.of(System.getProperty("java.io.tmpdir"), "kompile-embedding-subprocess");
+                Files.createDirectories(subprocessTempDir);
                 command.add("-Dorg.bytedeco.javacpp.cachedir=" + subprocessTempDir.toAbsolutePath());
                 command.add("-Djava.io.tmpdir=" + subprocessTempDir.toAbsolutePath());
                 logger.info("Subprocess using temp directory: {}", subprocessTempDir);
@@ -1507,9 +1698,15 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
             try {
                 org.nd4j.linalg.factory.Environment env = org.nd4j.linalg.factory.Nd4j.getEnvironment();
                 if (env != null) {
-                    // Pass all environment flags via system properties
-                    command.add("-Dnd4j.environment.verbose=" + env.isVerbose());
-                    command.add("-Dnd4j.environment.debug=" + env.isDebug());
+                    // ALWAYS force verbose=false and debug=false for the embedding subprocess.
+                    // The parent JVM (Nd4jStartup) unconditionally sets both to true, which
+                    // causes ~970k [DSP_DIAG] / KernelDispatch native trace lines per run and
+                    // adds ~10 seconds per single-text embed (string-format + IO per op).
+                    // Embedding never needs per-op native tracing — use an explicit opt-in
+                    // flag (kompile.embedding.subprocess.nd4j.debug=true) if you ever need it.
+                    boolean subprocDebug = Boolean.getBoolean("kompile.embedding.subprocess.nd4j.debug");
+                    command.add("-Dnd4j.environment.verbose=false");
+                    command.add("-Dnd4j.environment.debug=" + subprocDebug);
                     command.add("-Dnd4j.environment.profiling=" + env.isProfiling());
                     command.add("-Dnd4j.environment.detectingLeaks=" + env.isDetectingLeaks());
                     command.add("-Dnd4j.environment.lifecycleTracking=" + env.isLifecycleTracking());
@@ -1730,7 +1927,8 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
             healthMonitor.shutdownNow();
         }
 
-        // Close I/O streams before interrupting reader threads
+        // Close I/O streams. With the process already terminated above, this drives the reader
+        // threads' readLine() to EOF / "Stream closed" so they exit on their own.
         if (processStdin != null) {
             try { processStdin.close(); } catch (Exception ignored) {}
             processStdin = null;
@@ -1740,12 +1938,19 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
             processStdout = null;
         }
 
-        // Interrupt reader threads
-        if (outputReaderThread != null) {
-            outputReaderThread.interrupt();
+        // Do NOT interrupt the reader threads. They persist subprocess output to H2 via logCallback;
+        // a Thread.interrupt() landing while a reader is mid-write throws ClosedByInterruptException
+        // on H2's NIO FileChannel and closes the ENTIRE application database ("database has been
+        // closed"). The stream close above already breaks the read loop, so we just join (bounded)
+        // and let each reader finish its current line cleanly. They are daemon threads, so a
+        // straggler can never block JVM shutdown.
+        Thread out = outputReaderThread;
+        if (out != null) {
+            try { out.join(3000); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
         }
-        if (errorReaderThread != null) {
-            errorReaderThread.interrupt();
+        Thread err = errorReaderThread;
+        if (err != null) {
+            try { err.join(3000); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
         }
 
         // Complete any pending requests with error
@@ -1781,20 +1986,44 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
     public CompletableFuture<EmbeddingSubprocessMessage.LoadModelResponse> loadModel(
             String modelId, int optimalBatchSize, int maxBatchSize) {
 
-        return loadModel(modelId, optimalBatchSize, maxBatchSize, null);
+        return loadModel(modelId, optimalBatchSize, maxBatchSize, 0, null);
     }
 
     /**
      * Load a model in the subprocess with optional configuration.
+     * <p>
+     * Uses {@code loadModelTimeoutMs} if configured (> 0), otherwise falls back to
+     * {@code requestTimeoutMs}.  This allows a longer timeout specifically for model
+     * loading (CPU SameDiff warm-up can take ~111s) without raising the timeout for
+     * all other short-lived requests.
      */
     public CompletableFuture<EmbeddingSubprocessMessage.LoadModelResponse> loadModel(
             String modelId, int optimalBatchSize, int maxBatchSize, Map<String, String> modelConfig) {
 
+        return loadModel(modelId, optimalBatchSize, maxBatchSize, 0, modelConfig);
+    }
+
+    /**
+     * Load a model in the subprocess with explicit absolute-max batch size.
+     *
+     * @param absoluteMaxBatchSize ceiling forwarded to {@code GenericDenseSameDiffEncoder.configureBatchSize()};
+     *                             0 means "use maxBatchSize as the ceiling" (safe default, avoids the old 8192 runaway)
+     */
+    public CompletableFuture<EmbeddingSubprocessMessage.LoadModelResponse> loadModel(
+            String modelId, int optimalBatchSize, int maxBatchSize, int absoluteMaxBatchSize,
+            Map<String, String> modelConfig) {
+
         String requestId = UUID.randomUUID().toString();
         EmbeddingSubprocessMessage.LoadModelRequest request =
-            new EmbeddingSubprocessMessage.LoadModelRequest(requestId, modelId, optimalBatchSize, maxBatchSize, modelConfig);
+            new EmbeddingSubprocessMessage.LoadModelRequest(requestId, modelId, optimalBatchSize, maxBatchSize,
+                    absoluteMaxBatchSize, modelConfig);
 
-        return sendRequest(request, requestId)
+        // Prefer the dedicated loadModel timeout; fall back to the general request timeout.
+        long effectiveTimeoutMs = loadModelTimeoutMs > 0 ? loadModelTimeoutMs : requestTimeoutMs;
+        logger.info("LoadModel request {}: using timeout {}ms (loadModelTimeoutMs={}, requestTimeoutMs={})",
+                requestId, effectiveTimeoutMs, loadModelTimeoutMs, requestTimeoutMs);
+
+        return sendRequest(request, requestId, effectiveTimeoutMs)
             .thenApply(msg -> {
                 if (msg instanceof EmbeddingSubprocessMessage.LoadModelResponse resp) {
                     if (resp.success()) {
@@ -1954,6 +2183,16 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
      */
     private CompletableFuture<EmbeddingSubprocessMessage> sendRequest(
             EmbeddingSubprocessMessage request, String requestId) {
+        return sendRequest(request, requestId, requestTimeoutMs);
+    }
+
+    /**
+     * Send a request and wait for response, using a caller-specified timeout.
+     *
+     * @param effectiveTimeoutMs timeout in ms; if {@code <= 0} waits indefinitely
+     */
+    private CompletableFuture<EmbeddingSubprocessMessage> sendRequest(
+            EmbeddingSubprocessMessage request, String requestId, long effectiveTimeoutMs) {
 
         if (!running.get()) {
             return CompletableFuture.failedFuture(
@@ -1978,12 +2217,12 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
             sendMessage(request);
 
             // Apply timeout only if configured (> 0), otherwise wait indefinitely
-            if (requestTimeoutMs > 0) {
-                return future.orTimeout(requestTimeoutMs, TimeUnit.MILLISECONDS)
+            if (effectiveTimeoutMs > 0) {
+                return future.orTimeout(effectiveTimeoutMs, TimeUnit.MILLISECONDS)
                     .whenComplete((result, error) -> {
                         pendingRequests.remove(requestId);
                         if (error != null && error instanceof TimeoutException) {
-                            logger.error("Request {} timed out after {}ms", requestId, requestTimeoutMs);
+                            logger.error("Request {} timed out after {}ms", requestId, effectiveTimeoutMs);
                         }
                     });
             } else {
@@ -2049,6 +2288,31 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
     }
 
     /**
+     * Persist a subprocess log line via the callback WITHOUT exposing the reader thread's interrupt
+     * status to the persistence layer. A Java NIO interrupt during an H2 FileChannel write throws
+     * ClosedByInterruptException and closes the ENTIRE application database, so we clear the interrupt
+     * flag before touching H2 (and restore it afterwards so loop-exit logic still works). Combined
+     * with stop() no longer interrupting these threads, a subprocess crash/restart can never take
+     * down the app DB. Persistence is best-effort — failures are swallowed.
+     */
+    private void persistLogSafely(EmbeddingSubprocessMessage.Log logMsg) {
+        Consumer<EmbeddingSubprocessMessage.Log> cb = logCallback;
+        if (cb == null) {
+            return;
+        }
+        boolean wasInterrupted = Thread.interrupted(); // clear flag before any H2 / NIO work
+        try {
+            cb.accept(logMsg);
+        } catch (Throwable t) {
+            logger.debug("Subprocess log persistence failed (non-fatal): {}", t.toString());
+        } finally {
+            if (wasInterrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
+    /**
      * Read output from subprocess.
      */
     private void readOutput() {
@@ -2070,13 +2334,22 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
                         logger.error("Failed to parse subprocess message: {}", json, e);
                     }
                 } else {
-                    // Regular stdout line - forward to logCallback for database persistence
-                    logger.info("[subprocess] {}", line);
+                    // Regular stdout line - forward to logCallback for database persistence.
+                    // Demote routine lines to DEBUG to avoid double-INFO flooding (the structured
+                    // EmbeddingSubprocessMessage.Log messages in handleLog() already surface
+                    // real INFO/WARN/ERROR lines via the JSON protocol path).
+                    // Only promote to WARN/ERROR when the line content indicates a real problem.
+                    // Classify by the line's real logger level, not message-body substrings.
+                    String level = determineLogLevel(line);
+                    if ("ERROR".equals(level)) {
+                        logger.warn("[subprocess:stdout] {}", line);
+                    } else {
+                        logger.debug("[subprocess:stdout] {}", line);
+                    }
                     if (logCallback != null) {
-                        String level = determineLogLevel(line);
                         EmbeddingSubprocessMessage.Log logMsg = new EmbeddingSubprocessMessage.Log(
                                 level, "stdout", line, System.currentTimeMillis());
-                        logCallback.accept(logMsg);
+                        persistLogSafely(logMsg);
                     }
                     // Write to central log file (non-fatal)
                     try {
@@ -2111,15 +2384,26 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
                 if (line == null) {
                     break;
                 }
-                // Log subprocess stderr as info (it contains its logs)
-                logger.info("[subprocess] {}", line);
+                // Route subprocess stderr at the appropriate level to avoid double-INFO spam.
+                // Structured EmbeddingSubprocessMessage.Log messages (forwarded via JSON on
+                // stdout) already surface real INFO/WARN/ERROR via handleLog(). Raw stderr
+                // lines are demoted to DEBUG unless they indicate an actual error condition.
+                // Classify by the line's real logger level (not message-body substrings):
+                // benign diagnostics whose text mentions "error" (e.g. the tokenizer
+                // printing document text "...formula errors") must not surface as ERROR.
+                String level = determineLogLevel(line);
+                boolean isErrorLine = "ERROR".equals(level);
+                if (isErrorLine) {
+                    logger.warn("[subprocess:stderr] {}", line);
+                } else {
+                    logger.debug("[subprocess:stderr] {}", line);
+                }
 
                 // Forward to logCallback so it gets persisted to the database
                 if (logCallback != null) {
-                    String level = determineLogLevel(line);
                     EmbeddingSubprocessMessage.Log logMsg = new EmbeddingSubprocessMessage.Log(
                             level, "stderr", line, System.currentTimeMillis());
-                    logCallback.accept(logMsg);
+                    persistLogSafely(logMsg);
                 }
                 // Write to central log file (non-fatal)
                 try {
@@ -2131,12 +2415,10 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
                     logger.debug("SubprocessLogWriter stderr write failed: {}", _logEx.getMessage());
                 }
 
-                // Track recent error lines for crash diagnostics
-                // Look for ERROR level or exception markers
-                String upperLine = line.toUpperCase();
-                if (upperLine.contains("ERROR") || upperLine.contains("EXCEPTION") ||
-                        upperLine.contains("FATAL") || upperLine.contains("FAILED") ||
-                        line.contains("at ") || line.startsWith("Caused by:")) {
+                // Track recent error lines for crash diagnostics. Gate on the real ERROR
+                // level (which already covers stack traces / OOM / use-after-free) so the
+                // ring buffer isn't polluted by benign document text mentioning "error".
+                if (isErrorLine) {
                     trackRecentError(line);
                 }
 
@@ -2187,21 +2469,40 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
     }
 
     /**
-     * Determine log level from stderr line content.
+     * Matches the actual log-level field a logger emits after the {@code [thread]}
+     * bracket, e.g. {@code 12:00:00.123 [main] ERROR o.n.Foo - msg}. Anchoring on the
+     * closing {@code ]} of the thread bracket means message bodies are never scanned,
+     * so document text like {@code "formula errors"} or {@code "#REF! error"} cannot be
+     * mistaken for an ERROR.
+     */
+    private static final Pattern STDERR_LEVEL_FIELD =
+            Pattern.compile("^(?:[^\\]]*\\]\\s+)?(ERROR|WARN|WARNING|INFO|DEBUG|TRACE)\\b");
+
+    /**
+     * Determine the log level of a subprocess stderr line.
+     *
+     * <p>The level is taken from the line's explicit logger level field (see
+     * {@link #STDERR_LEVEL_FIELD}) — NOT by substring-matching the message body, which
+     * caused benign diagnostics whose text contains the word "error" (e.g. the
+     * tokenizer printing {@code Text='...formula errors' -> 34 tokens}) to be surfaced
+     * as ERROR job events. Raw diagnostic prints that carry no level field default to
+     * INFO; only genuine JVM crash markers (stack traces, OOM, native use-after-free)
+     * are always ERROR regardless of formatting.
      */
     private String determineLogLevel(String line) {
         if (line == null) return "INFO";
-        String upper = line.toUpperCase();
-        if (upper.contains("ERROR") || upper.contains("EXCEPTION") ||
-                upper.contains("FATAL") || upper.contains("FAILED") ||
-                line.startsWith("\tat ") || line.startsWith("Caused by:")) {
+        // Genuine crash markers are errors regardless of formatting.
+        if (line.startsWith("\tat ") || line.startsWith("Caused by:")
+                || line.contains("Exception in thread")
+                || line.contains("OutOfMemoryError")
+                || line.contains("USE-AFTER-FREE")) {
             return "ERROR";
-        } else if (upper.contains("WARN")) {
-            return "WARN";
-        } else if (upper.contains("DEBUG")) {
-            return "DEBUG";
-        } else if (upper.contains("TRACE")) {
-            return "TRACE";
+        }
+        // Otherwise trust the logger's own level field; default INFO when absent.
+        Matcher m = STDERR_LEVEL_FIELD.matcher(line);
+        if (m.find()) {
+            String lvl = m.group(1).toUpperCase(Locale.ROOT);
+            return "WARNING".equals(lvl) ? "WARN" : lvl;
         }
         return "INFO";
     }
@@ -2296,6 +2597,17 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
                 if (future != null) {
                     future.completeExceptionally(new RuntimeException(error.errorMessage()));
                 }
+            }
+            return;
+        }
+
+        if (message instanceof EmbeddingSubprocessMessage.BatchResizeNotice notice) {
+            // Log prominently so operators can tune absoluteMaxBatchSize
+            logger.warn("EMBED_DECISION batchResize old={} new={} reason={} physicalBytes={} maxPhysicalBytes={}",
+                    notice.oldBatch(), notice.newBatch(), notice.reason(),
+                    notice.physicalBytes(), notice.maxPhysicalBytes());
+            if (batchResizeCallback != null) {
+                batchResizeCallback.accept(notice);
             }
             return;
         }
@@ -2637,6 +2949,13 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
      */
     public void setCrashCallback(Consumer<Exception> callback) {
         this.crashCallback = callback;
+    }
+
+    /**
+     * Set the batch-resize callback (native-memory-pressure shrink decisions).
+     */
+    public void setBatchResizeCallback(Consumer<EmbeddingSubprocessMessage.BatchResizeNotice> callback) {
+        this.batchResizeCallback = callback;
     }
 
     // ===================== RESTART TRACKING METHODS =====================

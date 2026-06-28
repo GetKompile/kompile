@@ -57,7 +57,8 @@ class PipelineStepTracker {
                 "ENTITY_RESOLUTION",
                 "EDGE_COMPUTATION",
                 "VECTOR_INDEXING",
-                "ENRICHMENT")) {
+                "ENRICHMENT",
+                "LEARNING")) {
             ensurePipelineStep(job, phase);
         }
         updatePipelineStep(job, "LOADING", UnifiedCrawlJob.PipelineStepStatus.PENDING,
@@ -321,6 +322,7 @@ class PipelineStepTracker {
             case "EDGE_COMPUTATION" -> "Graph Edge Cleanup";
             case "VECTOR_INDEXING" -> "Embedding & Vector Index";
             case "ENRICHMENT" -> "Post-Crawl Enrichment";
+            case "LEARNING" -> "KGE Training (Learning)";
             default -> humanizePhase(phase);
         };
     }
@@ -333,6 +335,7 @@ class PipelineStepTracker {
             case "GRAPH_EXTRACTION" -> graphConstructorPresent ? "GRAPH_CONSTRUCTOR" : "LLM";
             case "VECTOR_INDEXING" -> "EMBEDDING";
             case "ENRICHMENT" -> "ENRICHMENT";
+            case "LEARNING" -> "LEARNING";
             default -> "PIPELINE";
         };
     }

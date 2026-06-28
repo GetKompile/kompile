@@ -453,7 +453,8 @@
                       </mat-expansion-panel-header>
                       <div *ngFor="let doc of result.retrievedDocuments; let j = index" class="doc-item">
                         <span class="doc-number">{{ j + 1 }}.</span>
-                        <p class="doc-content">{{ doc }}</p>
+                        <app-source-citation *ngIf="doc.citation" [citation]="doc.citation" [compact]="true"></app-source-citation>
+                        <p class="doc-content">{{ doc.text }}</p>
                       </div>
                     </mat-expansion-panel>
                   </div>

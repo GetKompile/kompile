@@ -21,6 +21,13 @@ import ai.kompile.app.facts.domain.Fact.SourceType;
 import ai.kompile.app.facts.domain.Fact.ViewMode;
 import ai.kompile.app.facts.domain.FactSheet;
 import ai.kompile.app.facts.service.FactSheetService;
+import ai.kompile.app.web.dto.factsheet.CopyFactsRequest;
+import ai.kompile.app.web.dto.factsheet.CreateFactSheetRequest;
+import ai.kompile.app.web.dto.factsheet.DeleteFactsRequest;
+import ai.kompile.app.web.dto.factsheet.FactDto;
+import ai.kompile.app.web.dto.factsheet.FactSheetDto;
+import ai.kompile.app.web.dto.factsheet.IndexingStatsDto;
+import ai.kompile.app.web.dto.factsheet.MarkIndexedRequest;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -86,7 +93,7 @@ class FactSheetControllerTest {
     void getAllSheets_returnsOkWithList() {
         when(factSheetService.getAllSheets()).thenReturn(List.of(sheet(1L, "Default")));
 
-        ResponseEntity<List<FactSheetController.FactSheetDto>> resp = controller.getAllSheets();
+        ResponseEntity<List<FactSheetDto>> resp = controller.getAllSheets();
 
         assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(resp.getBody()).hasSize(1);
@@ -97,7 +104,7 @@ class FactSheetControllerTest {
     void getAllSheets_emptyList_returnsOk() {
         when(factSheetService.getAllSheets()).thenReturn(List.of());
 
-        ResponseEntity<List<FactSheetController.FactSheetDto>> resp = controller.getAllSheets();
+        ResponseEntity<List<FactSheetDto>> resp = controller.getAllSheets();
 
         assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(resp.getBody()).isEmpty();
@@ -111,7 +118,7 @@ class FactSheetControllerTest {
         active.setIsActive(true);
         when(factSheetService.getActiveSheet()).thenReturn(active);
 
-        ResponseEntity<FactSheetController.FactSheetDto> resp = controller.getActiveSheet();
+        ResponseEntity<FactSheetDto> resp = controller.getActiveSheet();
 
         assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(resp.getBody().isActive()).isTrue();
@@ -123,7 +130,7 @@ class FactSheetControllerTest {
     void getSheet_found_returnsOk() {
         when(factSheetService.getSheetById(1L)).thenReturn(Optional.of(sheet(1L, "s1")));
 
-        ResponseEntity<FactSheetController.FactSheetDto> resp = controller.getSheet(1L);
+        ResponseEntity<FactSheetDto> resp = controller.getSheet(1L);
 
         assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
     }
@@ -132,7 +139,7 @@ class FactSheetControllerTest {
     void getSheet_notFound_returnsNotFound() {
         when(factSheetService.getSheetById(99L)).thenReturn(Optional.empty());
 
-        ResponseEntity<FactSheetController.FactSheetDto> resp = controller.getSheet(99L);
+        ResponseEntity<FactSheetDto> resp = controller.getSheet(99L);
 
         assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
     }
@@ -147,13 +154,13 @@ class FactSheetControllerTest {
                 any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()
         )).thenReturn(created);
 
-        FactSheetController.CreateFactSheetRequest req = new FactSheetController.CreateFactSheetRequest(
+        CreateFactSheetRequest req = new CreateFactSheetRequest(
                 "New Sheet", "desc", "blue", "icon",
                 null, null, null, null, null,
                 null, null, null, null, null, null, null
         );
 
-        ResponseEntity<FactSheetController.FactSheetDto> resp = controller.createSheet(req);
+        ResponseEntity<FactSheetDto> resp = controller.createSheet(req);
 
         assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         assertThat(resp.getBody().name()).isEqualTo("New Sheet");
@@ -165,11 +172,11 @@ class FactSheetControllerTest {
                 anyString(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()
         )).thenThrow(new IllegalArgumentException("invalid name"));
 
-        FactSheetController.CreateFactSheetRequest req = new FactSheetController.CreateFactSheetRequest(
+        CreateFactSheetRequest req = new CreateFactSheetRequest(
                 "", null, null, null, null, null, null, null, null, null, null, null, null, null, null, null
         );
 
-        ResponseEntity<FactSheetController.FactSheetDto> resp = controller.createSheet(req);
+        ResponseEntity<FactSheetDto> resp = controller.createSheet(req);
 
         assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
     }
@@ -202,7 +209,7 @@ class FactSheetControllerTest {
         activated.setIsActive(true);
         when(factSheetService.activateSheet(1L)).thenReturn(activated);
 
-        ResponseEntity<FactSheetController.FactSheetDto> resp = controller.activateSheet(1L);
+        ResponseEntity<FactSheetDto> resp = controller.activateSheet(1L);
 
         assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(resp.getBody().isActive()).isTrue();
@@ -216,7 +223,7 @@ class FactSheetControllerTest {
         Fact f = fact(10L, s);
         when(factSheetService.getActiveFacts()).thenReturn(List.of(f));
 
-        ResponseEntity<List<FactSheetController.FactDto>> resp = controller.getActiveFacts();
+        ResponseEntity<List<FactDto>> resp = controller.getActiveFacts();
 
         assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(resp.getBody()).hasSize(1);
@@ -230,7 +237,7 @@ class FactSheetControllerTest {
         FactSheet s = sheet(1L, "s1");
         when(factSheetService.getFactById(10L)).thenReturn(Optional.of(fact(10L, s)));
 
-        ResponseEntity<FactSheetController.FactDto> resp = controller.getFact(10L);
+        ResponseEntity<FactDto> resp = controller.getFact(10L);
 
         assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
     }
@@ -239,7 +246,7 @@ class FactSheetControllerTest {
     void getFact_notFound_returnsNotFound() {
         when(factSheetService.getFactById(99L)).thenReturn(Optional.empty());
 
-        ResponseEntity<FactSheetController.FactDto> resp = controller.getFact(99L);
+        ResponseEntity<FactDto> resp = controller.getFact(99L);
 
         assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
     }
@@ -260,7 +267,7 @@ class FactSheetControllerTest {
     @Test
     void deleteFacts_callsServiceAndReturnsNoContent() {
         doNothing().when(factSheetService).deleteFacts(any());
-        FactSheetController.DeleteFactsRequest req = new FactSheetController.DeleteFactsRequest(Set.of(1L, 2L));
+        DeleteFactsRequest req = new DeleteFactsRequest(Set.of(1L, 2L));
 
         ResponseEntity<Void> resp = controller.deleteFacts(req);
 
@@ -273,7 +280,7 @@ class FactSheetControllerTest {
     @Test
     void copyFacts_success_returnsCopiedCount() {
         when(factSheetService.copyFacts(1L, 2L, Set.of(10L))).thenReturn(1);
-        FactSheetController.CopyFactsRequest req = new FactSheetController.CopyFactsRequest(Set.of(10L));
+        CopyFactsRequest req = new CopyFactsRequest(Set.of(10L));
 
         ResponseEntity<java.util.Map<String, Integer>> resp = controller.copyFacts(1L, 2L, req);
 
@@ -285,7 +292,7 @@ class FactSheetControllerTest {
     void copyFacts_illegalArgument_returnsBadRequest() {
         when(factSheetService.copyFacts(anyLong(), anyLong(), any()))
                 .thenThrow(new IllegalArgumentException("sheet not found"));
-        FactSheetController.CopyFactsRequest req = new FactSheetController.CopyFactsRequest(Set.of());
+        CopyFactsRequest req = new CopyFactsRequest(Set.of());
 
         ResponseEntity<java.util.Map<String, Integer>> resp = controller.copyFacts(1L, 99L, req);
 
@@ -297,7 +304,7 @@ class FactSheetControllerTest {
     @Test
     void markFactsAsIndexed_returnsMarkedCount() {
         when(factSheetService.markFactsAsIndexed(any())).thenReturn(3);
-        FactSheetController.MarkIndexedRequest req = new FactSheetController.MarkIndexedRequest(Set.of(1L, 2L, 3L));
+        MarkIndexedRequest req = new MarkIndexedRequest(Set.of(1L, 2L, 3L));
 
         ResponseEntity<java.util.Map<String, Integer>> resp = controller.markFactsAsIndexed(req);
 
@@ -332,7 +339,7 @@ class FactSheetControllerTest {
         FactSheetService.IndexingStats stats = new FactSheetService.IndexingStats(10, 8, 2);
         when(factSheetService.getActiveSheetIndexingStats()).thenReturn(stats);
 
-        ResponseEntity<FactSheetController.IndexingStatsDto> resp = controller.getActiveSheetIndexingStats();
+        ResponseEntity<IndexingStatsDto> resp = controller.getActiveSheetIndexingStats();
 
         assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(resp.getBody().totalFacts()).isEqualTo(10);
@@ -348,7 +355,7 @@ class FactSheetControllerTest {
         Fact f = fact(5L, s);
         when(factSheetService.searchFacts("AI")).thenReturn(List.of(f));
 
-        ResponseEntity<List<FactSheetController.FactDto>> resp = controller.searchFacts("AI");
+        ResponseEntity<List<FactDto>> resp = controller.searchFacts("AI");
 
         assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(resp.getBody()).hasSize(1);

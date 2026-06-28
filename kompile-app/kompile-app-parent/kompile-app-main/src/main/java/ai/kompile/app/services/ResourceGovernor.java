@@ -86,6 +86,11 @@ public class ResourceGovernor implements ResourceGovernorAdapter {
      * admission stays with {@code GpuResourceManager.canFit()} in the scheduler — this method only
      * adds the CPU/RAM gates. GPU-requiring jobs are NOT deferred on high CPU (they block on GPU
      * anyway); CPU-bound jobs are.
+     *
+     * <p>In addition to the fractional RAM threshold, this method also defers when the absolute
+     * MemAvailable is below the configured {@code governorRamFloorMb} (default 8 GB). This
+     * prevents OOM crashes on large-model hosts where the fractional threshold may still leave
+     * only a few hundred MB free.</p>
      */
     public AdmissionResult admitJob(JobResourceProfile profile) {
         ResourceSchedulerConfig cfg = configService.getConfiguration();
@@ -93,6 +98,12 @@ public class ResourceGovernor implements ResourceGovernorAdapter {
             return AdmissionResult.allow();
         }
         ResourceSnapshot s = telemetry.latest();
+
+        // Hard absolute floor check (additional to the fractional threshold).
+        String floorReason = absoluteRamFloorReason(s, cfg);
+        if (floorReason != null) {
+            return AdmissionResult.defer(floorReason);
+        }
 
         if (s.ramPressure().atLeast(PressureLevel.HIGH)) {
             return AdmissionResult.defer(String.format(Locale.ROOT,
@@ -106,6 +117,70 @@ public class ResourceGovernor implements ResourceGovernorAdapter {
         }
 
         return AdmissionResult.allow();
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Returns {@code true} when either the absolute MemAvailable is below the configured
+     * floor ({@code governorRamFloorMb}) or the fractional RAM pressure is at/above HIGH.
+     * This is a stage-agnostic gate for heavy-memory operations (KGE training, batch embedding)
+     * that should not start when host RAM is critically constrained.</p>
+     */
+    @Override
+    public boolean shouldThrottleHeavyMemory() {
+        ResourceSchedulerConfig cfg = configService.getConfiguration();
+        if (!cfg.isGovernorEnabled()) {
+            return false;
+        }
+        ResourceSnapshot s = telemetry.latest();
+        return absoluteRamFloorReason(s, cfg) != null || s.ramPressure().atLeast(PressureLevel.HIGH);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Returns a human-readable reason when the host is memory-constrained, or {@code null}
+     * when memory is healthy. Considers both the absolute floor and fractional threshold.</p>
+     */
+    @Override
+    public String memoryPressureReason() {
+        ResourceSchedulerConfig cfg = configService.getConfiguration();
+        if (!cfg.isGovernorEnabled()) {
+            return null;
+        }
+        ResourceSnapshot s = telemetry.latest();
+        String floorReason = absoluteRamFloorReason(s, cfg);
+        if (floorReason != null) {
+            return floorReason;
+        }
+        if (s.ramPressure().atLeast(PressureLevel.HIGH)) {
+            return String.format(Locale.ROOT,
+                    "RAM pressure %s (%.0f%% used)", s.ramPressure(), s.systemRamUsedFraction() * 100);
+        }
+        return null;
+    }
+
+    /**
+     * Checks the hard absolute RAM floor: returns a non-null reason string when
+     * MemAvailable is known AND below {@code governorRamFloorMb}; returns {@code null}
+     * when the floor is not breached or when the floor is disabled (0) or MemAvailable
+     * is unavailable (-1).
+     */
+    private static String absoluteRamFloorReason(ResourceSnapshot s, ResourceSchedulerConfig cfg) {
+        long floorMb = cfg.getGovernorRamFloorMb();
+        if (floorMb <= 0) {
+            return null; // floor disabled
+        }
+        long availMb = s.memAvailableMb();
+        if (availMb < 0) {
+            return null; // unavailable on non-Linux
+        }
+        if (availMb < floorMb) {
+            return String.format(Locale.ROOT,
+                    "MemAvailable %d MB < floor %d MB (OOM floor)", availMb, floorMb);
+        }
+        return null;
     }
 
     @Override
@@ -205,6 +280,10 @@ public class ResourceGovernor implements ResourceGovernorAdapter {
         out.put("cpuPressure", s.cpuPressure().name());
         out.put("ramUsedFraction", s.systemRamUsedFraction());
         out.put("ramPressure", s.ramPressure().name());
+        out.put("memAvailableMb", s.memAvailableMb());
+        out.put("governorRamFloorMb", cfg.getGovernorRamFloorMb());
+        out.put("shouldThrottleHeavyMemory", shouldThrottleHeavyMemory());
+        out.put("memoryPressureReason", memoryPressureReason());
         out.put("heapUsedFraction", s.jvmHeapUsedFraction());
         out.put("gpuBackendAvailable", s.gpuBackendAvailable());
         out.put("worstGpuUsedFraction", s.worstGpuUsedFraction());

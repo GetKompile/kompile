@@ -16,8 +16,6 @@ import ai.kompile.knowledgegraph.io.GraphEmbeddingSidecar;
 import ai.kompile.knowledgegraph.io.GraphIOService;
 import ai.kompile.knowledgegraph.io.model.ExportResult;
 import ai.kompile.knowledgegraph.io.model.ImportResult;
-import ai.kompile.knowledgegraph.repository.GraphEdgeRepository;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -40,8 +38,6 @@ import static org.mockito.Mockito.*;
  */
 class SnapshotManagerTest {
 
-    private final GraphNodeRepository nodeRepo = mock(GraphNodeRepository.class);
-    private final GraphEdgeRepository edgeRepo = mock(GraphEdgeRepository.class);
     private final GraphIOService graphIOService = mock(GraphIOService.class);
     private final KnowledgeGraphService knowledgeGraphService = mock(KnowledgeGraphService.class);
     private SnapshotManager manager;
@@ -51,7 +47,7 @@ class SnapshotManagerTest {
 
     @BeforeEach
     void setUp() throws Exception {
-        manager = new SnapshotManager(nodeRepo, edgeRepo, new ObjectMapper(), graphIOService, knowledgeGraphService);
+        manager = new SnapshotManager(new ObjectMapper(), graphIOService, knowledgeGraphService);
         // Point snapshot storage at the temp dir (the @Value dataDir field).
         Field f = SnapshotManager.class.getDeclaredField("dataDir");
         f.setAccessible(true);
@@ -131,9 +127,7 @@ class SnapshotManagerTest {
         assertTrue(nodeIds.contains("node-1"), "manifest must list node-1 from live store");
         assertTrue(nodeIds.contains("node-2"), "manifest must list node-2 from live store");
 
-        // JPA repos were NEVER called
-        verifyNoInteractions(nodeRepo);
-        verifyNoInteractions(edgeRepo);
+        // JPA repos are no longer wired — the seam is the only data source (H-6 complete).
     }
 
     /**

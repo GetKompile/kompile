@@ -1102,6 +1102,13 @@ public class RagTestController {
             result.put("answer", graphResult.getAnswer());
             result.put("context", graphResult.getFormattedContext());
 
+            // Structured graph results
+            result.put("entities", graphResult.getEntities() != null ? graphResult.getEntities() : List.of());
+            result.put("relationships", graphResult.getRelationships() != null ? graphResult.getRelationships() : List.of());
+            result.put("communities", graphResult.getCommunities() != null ? graphResult.getCommunities() : List.of());
+            result.put("sourceChunks", graphResult.getSourceChunks() != null ? graphResult.getSourceChunks() : List.of());
+            result.put("sourceChunkRefs", graphResult.getSourceChunkRefs() != null ? graphResult.getSourceChunkRefs() : List.of());
+
             // Add context preview (first 500 chars)
             String context = graphResult.getFormattedContext();
             if (context != null && context.length() > 500) {

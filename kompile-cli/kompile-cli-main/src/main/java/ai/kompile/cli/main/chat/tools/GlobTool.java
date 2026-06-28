@@ -95,6 +95,10 @@ public class GlobTool implements CliTool {
             return ToolResult.error("Not a directory: " + dir);
         }
 
+        // Prune git-ignored data directories (model builds, corpora, generated indices) so a
+        // recursive glob over a large repo doesn't walk gigabytes the project never tracks.
+        final SearchExclusions.GitignoreDirFilter gitFilter = SearchExclusions.loadGitignoreDirFilter(dir);
+
         try {
             PathMatcher matcher = FileSystems.getDefault().getPathMatcher("glob:" + pattern);
 
@@ -132,7 +136,8 @@ public class GlobTool implements CliTool {
                     // dir; only prune excluded directories encountered while descending.
                     if (!dirPath.equals(dir)) {
                         String name = dirPath.getFileName() != null ? dirPath.getFileName().toString() : "";
-                        if (SearchExclusions.isExcludedDir(name, includeHidden)) {
+                        if (SearchExclusions.isExcludedDir(name, includeHidden)
+                                || gitFilter.isIgnoredDir(dir.relativize(dirPath).toString(), name)) {
                             return FileVisitResult.SKIP_SUBTREE;
                         }
                     }

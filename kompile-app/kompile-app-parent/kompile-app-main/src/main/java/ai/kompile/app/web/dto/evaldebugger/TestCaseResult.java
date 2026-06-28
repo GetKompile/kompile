@@ -29,7 +29,7 @@ public class TestCaseResult {
     private String prompt;
     private String expectedAnswer;
     private String actualAnswer;
-    private List<String> retrievedDocuments;
+    private List<EvalRetrievedDoc> retrievedDocuments;
     private boolean success;
     private boolean passed;
     private String error;

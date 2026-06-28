@@ -122,8 +122,17 @@ public final class Nd4jStartup {
         }
 
         try {
-            org.nd4j.linalg.factory.Nd4j.getEnvironment().setDebug(true);
-            org.nd4j.linalg.factory.Nd4j.getEnvironment().setVerbose(true);
+            // ND4J debug/verbose emit per-op native [DSP_DIAG]/KernelDispatch traces — ~969k lines per crawl
+            // (45% of the log), drowning real activity and adding ~10s/embed. Default OFF; opt-in for diagnosis
+            // via -Dkompile.nd4j.debug=true / -Dkompile.nd4j.verbose=true.
+            boolean nd4jDebug = Boolean.getBoolean("kompile.nd4j.debug");
+            boolean nd4jVerbose = Boolean.getBoolean("kompile.nd4j.verbose");
+            org.nd4j.linalg.factory.Nd4j.getEnvironment().setDebug(nd4jDebug);
+            org.nd4j.linalg.factory.Nd4j.getEnvironment().setVerbose(nd4jVerbose);
+            if (nd4jDebug || nd4jVerbose) {
+                logger.warn("ND4J debug={} verbose={} ENABLED — expect heavy per-op [DSP_DIAG] log volume",
+                        nd4jDebug, nd4jVerbose);
+            }
 
             org.nd4j.imports.converters.DifferentialFunctionClassHolder.initInstance();
 

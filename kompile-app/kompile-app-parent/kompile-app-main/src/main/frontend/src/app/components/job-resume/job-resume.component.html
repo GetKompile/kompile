@@ -192,6 +192,129 @@
     </div>
   </div>
 
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       Unified Crawl Jobs — Per-Step Resume
+       Lists jobs from GET /api/unified-crawl/jobs/resumable.
+       Expands to show per-step status; ARCHIVED/DEFERRED steps get a
+       "Resume failed step(s)" button that calls POST …/steps/{id}/run.
+  ═══════════════════════════════════════════════════════════════════════ -->
+  <div class="job-section" *ngIf="resumableUnifiedJobs.length > 0">
+    <h4>
+      <span class="material-icons">account_tree</span>
+      Unified Crawl — Resumable Steps
+      <span class="badge">{{ resumableUnifiedJobs.length }}</span>
+    </h4>
+
+    <div class="ucj-list">
+      <div *ngFor="let job of resumableUnifiedJobs" class="ucj-card">
+
+        <!-- Job header row -->
+        <div class="ucj-header" (click)="toggleUnifiedJobExpanded(job)" role="button">
+          <span class="material-icons ucj-chevron" [class.ucj-chevron-open]="job.expanded">chevron_right</span>
+          <div class="ucj-title">
+            <span class="ucj-name">{{ job.name || job.jobId }}</span>
+            <span class="ucj-meta">
+              {{ job.jobId | slice:0:8 }}
+              <ng-container *ngIf="job.factSheetId"> · fact-sheet {{ job.factSheetId }}</ng-container>
+            </span>
+          </div>
+          <div class="ucj-archived-steps">
+            <span class="ucj-badge ucj-badge-warn"
+                  matTooltip="Archived/deferred steps: {{ job.archivedSteps.join(', ') }}">
+              <span class="material-icons" style="font-size:14px">archive</span>
+              {{ job.archivedSteps.length }} step{{ job.archivedSteps.length !== 1 ? 's' : '' }} deferred
+            </span>
+          </div>
+          <!-- Resume-all shortcut (top-level; only if steps loaded and any resumable) -->
+          <button class="btn btn-primary small ucj-resume-all-btn"
+                  *ngIf="job.expanded && job.stepsLoaded && getResumableSteps(job).length > 0"
+                  [disabled]="isResumingAnyStep(job)"
+                  (click)="resumeAllSteps(job); $event.stopPropagation()"
+                  title="Resume failed step(s)">
+            <span class="material-icons" *ngIf="!isResumingAnyStep(job)">play_circle</span>
+            <mat-spinner *ngIf="isResumingAnyStep(job)" diameter="16"></mat-spinner>
+            Resume failed step(s)
+          </button>
+        </div>
+
+        <!-- Per-step detail panel (expanded) -->
+        <div class="ucj-steps" *ngIf="job.expanded">
+
+          <!-- Loading steps -->
+          <div class="ucj-steps-loading" *ngIf="!job.stepsLoaded">
+            <mat-progress-bar mode="indeterminate" style="height:2px;"></mat-progress-bar>
+            <span>Loading step detail…</span>
+          </div>
+
+          <!-- No steps returned -->
+          <div class="ucj-steps-empty" *ngIf="job.stepsLoaded && (!job.steps || job.steps.length === 0)">
+            <span class="material-icons">info_outline</span>
+            No step detail available — the job may still be running or the archived steps are:
+            <code>{{ job.archivedSteps.join(', ') }}</code>
+          </div>
+
+          <!-- Step rows -->
+          <div *ngFor="let step of job.steps" class="ucj-step-row" [ngClass]="getStepStatusClass(step.status)">
+            <div class="ucj-step-left">
+              <span class="material-icons ucj-step-type-icon">{{ getStepTypeIcon(step.stepType) }}</span>
+              <div class="ucj-step-info">
+                <span class="ucj-step-name">{{ step.displayName || step.stepId }}</span>
+                <span class="ucj-step-meta">{{ step.stepType }} · {{ step.status }}</span>
+                <span class="ucj-step-progress" *ngIf="step.totalItems">
+                  {{ step.completedItems }}/{{ step.totalItems }}
+                  <ng-container *ngIf="step.failedItems"> · <span class="ucj-fail">{{ step.failedItems }} failed</span></ng-container>
+                </span>
+                <span class="ucj-step-message" *ngIf="step.message">{{ step.message }}</span>
+              </div>
+            </div>
+            <div class="ucj-step-right">
+              <span class="material-icons ucj-status-icon">{{ getStepStatusIcon(step.status) }}</span>
+              <!-- Success notice for this step -->
+              <span class="ucj-step-success" *ngIf="hasStepNotice(job.jobId, step.stepId)">
+                <span class="material-icons" style="font-size:14px;color:#16a34a">check_circle</span>
+                Queued
+                <button class="btn btn-icon small" (click)="dismissStepNotice(job.jobId, step.stepId)">
+                  <span class="material-icons" style="font-size:14px">close</span>
+                </button>
+              </span>
+              <!-- Resume button for resumable steps -->
+              <button class="btn btn-primary small"
+                      *ngIf="isStepResumable(step) && !hasStepNotice(job.jobId, step.stepId)"
+                      [disabled]="isResumingStep(job.jobId, step.stepId) || !!resumingStep"
+                      (click)="resumeUnifiedStep(job, step)"
+                      title="Run this archived/deferred step now">
+                <span class="material-icons" *ngIf="!isResumingStep(job.jobId, step.stepId)">play_arrow</span>
+                <mat-spinner *ngIf="isResumingStep(job.jobId, step.stepId)" diameter="14"></mat-spinner>
+                Resume step
+              </button>
+            </div>
+          </div><!-- /step row -->
+
+          <!-- Archived-step IDs listed when no steps detail loaded yet or steps missing -->
+          <div class="ucj-archived-ids" *ngIf="job.stepsLoaded && job.archivedSteps.length > 0
+               && getResumableSteps(job).length === 0">
+            <div class="ucj-note">
+              <span class="material-icons" style="font-size:15px">info_outline</span>
+              Archived step IDs (use Resume step above to trigger):
+              <span *ngFor="let sid of job.archivedSteps" class="ucj-sid">{{ sid }}</span>
+            </div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;">
+              <button *ngFor="let sid of job.archivedSteps"
+                      class="btn btn-primary small"
+                      [disabled]="!!resumingStep"
+                      (click)="resumeUnifiedStep(job, makeSyntheticStep(sid))"
+                      title="Run archived step {{ sid }}">
+                <span class="material-icons" style="font-size:14px">play_arrow</span>
+                Resume {{ sid }}
+              </button>
+            </div>
+          </div>
+
+        </div><!-- /ucj-steps -->
+      </div><!-- /ucj-card -->
+    </div><!-- /ucj-list -->
+  </div>
+
   <!-- Checkpoint Detail Panel -->
   <div class="checkpoint-detail" *ngIf="checkpointDetail">
     <div class="section-header">

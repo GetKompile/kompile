@@ -92,21 +92,30 @@ public class DualStoreInferredFactStore implements InferredFactStore {
 
         // 2. Persist to DB — populate band + promotionStatus eagerly so every row
         //    carries queryable tier metadata from the moment it is written.
-        String band = StrengthBand.fromScalar(fact.confidence()).name();
-        InferredFactRow row = InferredFactRow.builder()
-                .factSheetId(factSheetId)
-                .atomKey(fact.atomKey())
-                .version(fact.version())
-                .value(fact.value())
-                .confidence(fact.confidence())
-                .runId(fact.runId())
-                .provenanceJson(fact.toJson())
-                .inferredAt(fact.inferredAt())
-                .band(band)
-                .promotionStatus("NONE")
-                .corroborationCount(0)
-                .build();
-        repo.save(row);
+        // Clear interrupt flag before I/O so NIO channels are not closed mid-write;
+        // re-interrupt after the write if it was set, so callers can observe it.
+        boolean interrupted = Thread.interrupted();
+        try {
+            String band = StrengthBand.fromScalar(fact.confidence()).name();
+            InferredFactRow row = InferredFactRow.builder()
+                    .factSheetId(factSheetId)
+                    .atomKey(fact.atomKey())
+                    .version(fact.version())
+                    .value(fact.value())
+                    .confidence(fact.confidence())
+                    .runId(fact.runId())
+                    .provenanceJson(fact.toJson())
+                    .inferredAt(fact.inferredAt())
+                    .band(band)
+                    .promotionStatus("NONE")
+                    .corroborationCount(0)
+                    .build();
+            repo.save(row);
+        } finally {
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }
 
         // 3. Async graph materialization (non-blocking; failure must never propagate)
         if (materializer != null) {
@@ -115,6 +124,59 @@ public class DualStoreInferredFactStore implements InferredFactStore {
             } catch (Exception e) {
                 log.warn("DualStoreInferredFactStore: graph materialization failed for atomKey='{}' factSheet={} — {}",
                         fact.atomKey(), factSheetId, e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * Bulk-persist a batch of inferred facts using JPA {@code saveAll}, which is dramatically
+     * faster than individual {@link #store(InferredFact)} calls for large batches (e.g. 48k atoms).
+     *
+     * <p>The interrupt flag is cleared before I/O and re-set on exit (see {@link #store}).</p>
+     */
+    @Override
+    public void storeAll(java.util.Collection<InferredFact> facts) {
+        if (facts == null || facts.isEmpty()) return;
+
+        // 1. In-memory writes (fast; no interrupt risk)
+        for (InferredFact fact : facts) {
+            delegate.store(fact);
+        }
+
+        // 2. Bulk DB persist — clear interrupt to avoid ClosedByInterruptException
+        boolean interrupted = Thread.interrupted();
+        try {
+            List<InferredFactRow> rows = new java.util.ArrayList<>(facts.size());
+            for (InferredFact fact : facts) {
+                String band = StrengthBand.fromScalar(fact.confidence()).name();
+                rows.add(InferredFactRow.builder()
+                        .factSheetId(factSheetId)
+                        .atomKey(fact.atomKey())
+                        .version(fact.version())
+                        .value(fact.value())
+                        .confidence(fact.confidence())
+                        .runId(fact.runId())
+                        .provenanceJson(fact.toJson())
+                        .inferredAt(fact.inferredAt())
+                        .band(band)
+                        .promotionStatus("NONE")
+                        .corroborationCount(0)
+                        .build());
+            }
+            repo.saveAll(rows);
+        } finally {
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }
+
+        // 3. Async graph materialization (non-blocking)
+        if (materializer != null) {
+            try {
+                materializer.materialize(new java.util.ArrayList<>(facts), factSheetId);
+            } catch (Exception e) {
+                log.warn("DualStoreInferredFactStore: bulk graph materialization failed factSheet={} — {}",
+                        factSheetId, e.getMessage());
             }
         }
     }

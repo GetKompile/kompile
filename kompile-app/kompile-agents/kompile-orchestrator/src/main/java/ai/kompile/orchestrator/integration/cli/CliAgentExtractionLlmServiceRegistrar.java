@@ -25,8 +25,11 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * Discovers available CLI agents at startup, registers each as a persistent
@@ -47,6 +50,25 @@ public class CliAgentExtractionLlmServiceRegistrar {
 
     private final List<CliAgentExtractionLlmService> services = new ArrayList<>();
 
+    /**
+     * CLI agents that must NEVER run relation extraction (hard user mandate: paid agents such as
+     * Claude/Codex are forbidden for extraction — only free opencode models alternate). Configurable
+     * via {@code kompile.extraction.excludedAgents} (comma-separated, case-insensitive substring
+     * match); defaults to the known paid agents. Not hardcoded — overridable on the fly.
+     */
+    private static final List<String> EXTRACTION_EXCLUDED =
+            Arrays.stream(System.getProperty("kompile.extraction.excludedAgents", "claude,codex")
+                            .toLowerCase(Locale.ROOT).split(","))
+                    .map(String::trim).filter(s -> !s.isEmpty()).collect(Collectors.toList());
+
+    private static boolean isExtractionExcluded(String agentName) {
+        if (agentName == null) {
+            return false;
+        }
+        String lower = agentName.toLowerCase(Locale.ROOT);
+        return EXTRACTION_EXCLUDED.stream().anyMatch(lower::contains);
+    }
+
     @PostConstruct
     public void registerCliAgents() {
         if (registry == null) {
@@ -56,6 +78,11 @@ public class CliAgentExtractionLlmServiceRegistrar {
 
         for (AgentProvider agent : CliAgentRegistry.loadAll()) {
             CliAgentConfig config = toCliAgentConfig(agent);
+            if (isExtractionExcluded(config.getName())) {
+                log.info("CLI agent '{}' EXCLUDED from relation extraction (forbidden per kompile.extraction.excludedAgents)",
+                        config.getName());
+                continue;
+            }
             if (config.checkAvailability()) {
                 CliAgentExtractionLlmService service = new CliAgentExtractionLlmService(
                         config.getName(),

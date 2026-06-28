@@ -59,12 +59,15 @@
         {{ step.message || step.currentItem }}
       </div>
 
-      <!-- Run-now button when archived/deferred -->
+      <!-- Retry / Re-run button for every terminal state (COMPLETED, FAILED, ARCHIVED, DEFERRED) -->
       <div class="csm-run-now" *ngIf="isStepRunNowEligible(step.status)">
         <button mat-stroked-button class="csm-run-btn"
+                [disabled]="isStepInProgress(step.stepId)"
+                [matTooltip]="isStepInProgress(step.stepId) ? 'Step re-run in progress…' : ''"
                 (click)="runStep(step.stepId); $event.stopPropagation()">
-          <mat-icon>play_circle</mat-icon>
-          {{ step.status === 'ARCHIVED' ? 'Run archived step' : 'Run now' }}
+          <mat-icon *ngIf="!isStepInProgress(step.stepId)">{{ getRunStepIcon(step.status) }}</mat-icon>
+          <mat-icon class="csm-spin" *ngIf="isStepInProgress(step.stepId)">sync</mat-icon>
+          {{ isStepInProgress(step.stepId) ? 'Running…' : getRunStepLabel(step.status) }}
         </button>
       </div>
 
@@ -130,6 +133,52 @@
             <span *ngIf="step.currentBatchSize"><strong>Batch size</strong> {{ step.currentBatchSize }}</span>
           </div>
         </div>
+
+        <!-- (3b) Resource & model-routing decisions — surfaced separately so 'decision' SSE events
+             are immediately visible without expanding the full tuning section. Shown for EMBEDDING
+             and GRAPH_EXTRACTION steps (the steps that gate on memory / route model backends). -->
+        <ng-container *ngIf="getStepResourceEvents(step) as resEvents">
+          <ng-container *ngIf="resEvents.length || getStepMemoryDecisions(step).length">
+            <div class="csm-section csm-resource-section">
+              <div class="csm-section-head">
+                <mat-icon inline>balance</mat-icon>
+                <span>Resource decisions</span>
+                <span class="csm-badge csm-badge-resource csm-resource-badge-live" *ngIf="isJobRunning">LIVE</span>
+              </div>
+
+              <!-- Memory-pressure tuning decisions (batch resizes, OOM defers) -->
+              <ng-container *ngIf="getStepMemoryDecisions(step) as memDecisions">
+                <div class="csm-resource-list" *ngIf="memDecisions.length">
+                  <div *ngFor="let d of memDecisions | slice:-15; trackBy: trackByIndex"
+                       class="csm-resource-row csm-resource-tuning"
+                       [ngClass]="tuningDirectionClass(d.direction)">
+                    <mat-icon inline class="csm-resource-icon">{{ tuningDirectionIcon(d.direction) }}</mat-icon>
+                    <span class="csm-resource-time">{{ formatEventTime(d.timestamp) }}</span>
+                    <span class="csm-resource-phase">{{ d.stage }}</span>
+                    <span class="csm-resource-delta">{{ d.oldValue }}&rarr;{{ d.newValue }}</span>
+                    <span class="csm-resource-reason">{{ d.reason }}</span>
+                    <span class="csm-resource-mem" *ngIf="d.memoryPercent">{{ d.memoryPercent }}% mem</span>
+                    <span class="csm-resource-detail" *ngIf="d.detail" [title]="d.detail">{{ d.detail }}</span>
+                  </div>
+                </div>
+              </ng-container>
+
+              <!-- RESOURCE_GATE / MODEL_ROUTING stage events (gate waits, backend selection) -->
+              <div class="csm-resource-list" *ngIf="resEvents.length">
+                <div *ngFor="let ev of resEvents | slice:-15; trackBy: trackByIndex"
+                     class="csm-resource-row csm-resource-event"
+                     [class.csm-resource-gate]="ev.phase === 'RESOURCE_GATE'"
+                     [class.csm-resource-routing]="ev.phase === 'MODEL_ROUTING'">
+                  <mat-icon inline class="csm-resource-icon">{{ ev.phase === 'MODEL_ROUTING' ? 'route' : 'memory' }}</mat-icon>
+                  <span class="csm-resource-time">{{ formatEventTime(ev.timestamp) }}</span>
+                  <span class="csm-resource-phase">{{ ev.phase }}</span>
+                  <span class="csm-resource-msg">{{ ev.message }}</span>
+                  <span class="csm-resource-detail" *ngIf="ev.details" [title]="ev.details">{{ ev.details }}</span>
+                </div>
+              </div>
+            </div>
+          </ng-container>
+        </ng-container>
 
         <!-- (4) Batch sizing & tuning — the LLM graph-extractor adaptive controllers -->
         <ng-container *ngIf="isBatchingStep(step) && job">
@@ -225,19 +274,22 @@
               <span><strong>Avg response</strong> {{ llm.avgResponseChars }} ch</span>
             </div>
           </div>
-          <!-- Full transcript viewer (lazy; not in compact mode) -->
-          <div class="csm-section" *ngIf="!compact && taskId">
+          <!-- Transcript expander: available in both full and compact mode when taskId is present.
+               Collapsed by default so compact (fact-sheet) cards are not blown out. -->
+          <div class="csm-section" *ngIf="taskId">
             <div class="csm-section-head csm-clickable" (click)="toggleTranscripts(step.stepId)">
               <mat-icon inline>{{ isTranscriptsOpen(step.stepId) ? 'expand_more' : 'chevron_right' }}</mat-icon>
               <mat-icon inline>forum</mat-icon><span>LLM transcripts</span>
+              <span class="csm-live" *ngIf="isJobRunning && isTranscriptsOpen(step.stepId)">LIVE</span>
             </div>
-            <div class="csm-transcripts" *ngIf="isTranscriptsOpen(step.stepId)">
+            <div class="csm-transcripts" *ngIf="isTranscriptsOpen(step.stepId)"
+                 [class.csm-transcripts-compact]="compact">
               <app-job-log-viewer
                 [taskId]="taskId"
                 [isJobRunning]="isJobRunning"
                 logSource="ingest"
                 [source]="'LLM_TRANSCRIPT'"
-                [maxTailLogs]="100">
+                [maxTailLogs]="compact ? 20 : 100">
               </app-job-log-viewer>
             </div>
           </div>

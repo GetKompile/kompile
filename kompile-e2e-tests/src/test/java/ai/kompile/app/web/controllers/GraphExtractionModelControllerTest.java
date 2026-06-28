@@ -17,9 +17,9 @@
 package ai.kompile.app.web.controllers;
 
 import ai.kompile.core.graphrag.GraphConstructor;
-import ai.kompile.staging.staging.StagingModelInfo;
+import ai.kompile.core.staging.StagingModelInfo;
 import ai.kompile.staging.staging.StagingService;
-import ai.kompile.staging.staging.StagingStatus;
+import ai.kompile.core.staging.StagingStatus;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;

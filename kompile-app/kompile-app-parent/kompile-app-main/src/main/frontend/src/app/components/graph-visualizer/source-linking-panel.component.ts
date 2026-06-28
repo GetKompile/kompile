@@ -192,7 +192,7 @@ interface ConnectedSource {
   styles: [`
     .source-linking-panel {
       padding: 16px;
-      background: #1e1e2e;
+      background: var(--bg-body);
       min-height: 100%;
     }
 
@@ -208,7 +208,7 @@ interface ConnectedSource {
       align-items: center;
       gap: 8px;
       margin: 0;
-      color: #fff;
+      color: var(--text-primary);
       font-size: 16px;
     }
 
@@ -222,7 +222,7 @@ interface ConnectedSource {
       display: grid;
       grid-template-columns: repeat(4, 1fr);
       gap: 8px;
-      background: #2d2d44;
+      background: var(--bg-surface-elevated);
       border-radius: 8px;
       padding: 12px;
     }
@@ -237,18 +237,18 @@ interface ConnectedSource {
     .stat-value {
       font-size: 24px;
       font-weight: 600;
-      color: #64b5f6;
+      color: var(--color-primary);
     }
 
     .stat-label {
       font-size: 11px;
-      color: #888;
+      color: var(--text-tertiary, #888);
       text-transform: uppercase;
     }
 
     .count-chip {
       margin-left: 8px;
-      background: #3d5a80 !important;
+      background: var(--bg-surface-elevated, #3d5a80) !important;
       font-size: 11px;
     }
 
@@ -266,7 +266,8 @@ interface ConnectedSource {
     }
 
     .link-item {
-      background: #2d2d44;
+      background: var(--bg-surface, #2d2d44);
+      border: 1px solid var(--border-color, #3d3d5c);
       border-radius: 8px;
       padding: 12px;
     }
@@ -279,12 +280,12 @@ interface ConnectedSource {
     }
 
     .source-name {
-      color: #fff;
+      color: var(--text-primary, #fff);
       font-weight: 500;
     }
 
     .link-sources mat-icon {
-      color: #64b5f6;
+      color: var(--color-primary, #64b5f6);
       font-size: 18px;
     }
 
@@ -305,7 +306,7 @@ interface ConnectedSource {
     .link-type.embedding_similarity { background: #9C27B0 !important; }
 
     .link-strength {
-      color: #888;
+      color: var(--text-tertiary, #888);
       font-size: 12px;
     }
 
@@ -325,22 +326,22 @@ interface ConnectedSource {
       gap: 4px;
       margin-top: 8px;
       padding-top: 8px;
-      border-top: 1px solid #3d3d5c;
+      border-top: 1px solid var(--border-color, #3d3d5c);
     }
 
     .concepts-label {
-      color: #888;
+      color: var(--text-tertiary, #888);
       font-size: 11px;
       margin-right: 4px;
     }
 
     .concept-chip {
       font-size: 10px;
-      background: #3d5a80 !important;
+      background: var(--bg-surface-elevated, #3d5a80) !important;
     }
 
     .more-concepts {
-      color: #888;
+      color: var(--text-tertiary, #888);
       font-size: 11px;
     }
 
@@ -349,7 +350,7 @@ interface ConnectedSource {
       flex-direction: column;
       align-items: center;
       padding: 24px;
-      color: #888;
+      color: var(--text-tertiary, #888);
     }
 
     .no-links mat-icon {
@@ -368,7 +369,7 @@ interface ConnectedSource {
     }
 
     mat-expansion-panel-header {
-      background: #2d2d44 !important;
+      background: var(--bg-surface-elevated) !important;
     }
 
     mat-panel-title {
@@ -378,7 +379,7 @@ interface ConnectedSource {
     }
 
     ::ng-deep .mat-mdc-list-item-title {
-      color: #fff !important;
+      color: var(--text-primary) !important;
     }
   `]
 })

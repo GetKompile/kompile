@@ -15,6 +15,7 @@ import ai.kompile.graph.reasoning.fol.InferredFact;
 import ai.kompile.knowledgegraph.persistence.dual.InferredFactRow;
 import ai.kompile.knowledgegraph.persistence.dual.InferredFactRowRepository;
 import ai.kompile.knowledgegraph.reasoning.FactPromotionTracker;
+import ai.kompile.knowledgegraph.reasoning.TraceHumanizer;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -68,6 +69,11 @@ public class KbOpinionBrowserController {
 
     @Nullable
     private final InferredFactRowRepository factRepo;
+
+    /** Optional: humanizes atom keys to entity titles for the opinion browser. Null-safe. */
+    @Nullable
+    @Autowired(required = false)
+    private TraceHumanizer traceHumanizer;
 
     @Autowired
     public KbOpinionBrowserController(
@@ -186,7 +192,11 @@ public class KbOpinionBrowserController {
                         opinion.uncertainty(),
                         opinion.expectation(),
                         opinion.baseRate(),
-                        resolvedBasisType));
+                        resolvedBasisType,
+                        detail.sourceDocumentId(),
+                        detail.crawlRunId(),
+                        detail.sourceName(),
+                        traceHumanizer != null ? traceHumanizer.humanizeAtom(atomKey) : atomKey));
             }
         }
 
@@ -225,13 +235,28 @@ public class KbOpinionBrowserController {
     /** JSON key under which a serialized basisType may be embedded in provenanceJson. */
     private static final String BASIS_TYPE_JSON_KEY = "\"_basisType\"";
 
+    /** JSON key for the source document identifier (_sourceDocumentId) in provenanceJson. */
+    private static final String SOURCE_DOCUMENT_ID_JSON_KEY = "\"_sourceDocumentId\"";
+
+    /** JSON key for the crawl run/job identifier (_crawlRunId) in provenanceJson. */
+    private static final String CRAWL_RUN_ID_JSON_KEY = "\"_crawlRunId\"";
+
+    /** JSON key for the source chunk identifier, used as a human-readable sourceName (_sourceChunkId). */
+    private static final String SOURCE_CHUNK_ID_JSON_KEY = "\"_sourceChunkId\"";
+
     /** Default basisType string used when the provenance JSON has no _basisType entry. */
     private static final String DEFAULT_BASIS_TYPE = "LLM_EXTRACTION";
 
     /**
-     * Resolved fact detail: the best-available {@link Opinion} and the {@code _basisType} string.
+     * Resolved fact detail: the best-available {@link Opinion}, the {@code _basisType} string,
+     * and source provenance fields read from the same provenanceJson.
      */
-    private record ResolvedFactDetail(Opinion opinion, String basisType) {}
+    private record ResolvedFactDetail(
+            Opinion opinion,
+            String basisType,
+            String sourceDocumentId,
+            String crawlRunId,
+            String sourceName) {}
 
     /**
      * Resolve the best-available {@link Opinion} and {@code _basisType} for the given triple.
@@ -254,18 +279,22 @@ public class KbOpinionBrowserController {
                 if (rowOpt.isPresent()) {
                     InferredFactRow row = rowOpt.get();
 
-                    // Read basisType from provenanceJson (present in all post-D4 rows)
+                    // Read all provenance fields from provenanceJson in one pass
                     String provJson = row.getProvenanceJson();
                     String basisType = extractStringValue(provJson, BASIS_TYPE_JSON_KEY);
                     if (basisType == null) {
                         basisType = DEFAULT_BASIS_TYPE;
                     }
+                    String sourceDocumentId = extractStringValue(provJson, SOURCE_DOCUMENT_ID_JSON_KEY);
+                    String crawlRunId       = extractStringValue(provJson, CRAWL_RUN_ID_JSON_KEY);
+                    // Use _sourceChunkId as a human-readable name when available (holds filename for uploads)
+                    String sourceName       = extractStringValue(provJson, SOURCE_CHUNK_ID_JSON_KEY);
 
                     // Strategy 1: Beta-distribution evidence accumulators
                     if (row.getEvidencePos() != null && row.getEvidenceNeg() != null) {
                         return new ResolvedFactDetail(
                                 Opinion.fromBetaEvidence(row.getEvidencePos(), row.getEvidenceNeg()),
-                                basisType);
+                                basisType, sourceDocumentId, crawlRunId, sourceName);
                     }
 
                     // Strategy 2: embedded _opinion blob in provenanceJson
@@ -273,15 +302,19 @@ public class KbOpinionBrowserController {
                         String opinionJson = extractOpinionJson(provJson);
                         if (opinionJson != null) {
                             try {
-                                return new ResolvedFactDetail(Opinion.fromJson(opinionJson), basisType);
+                                return new ResolvedFactDetail(
+                                        Opinion.fromJson(opinionJson),
+                                        basisType, sourceDocumentId, crawlRunId, sourceName);
                             } catch (Exception ignored) {
                                 // Malformed blob — fall through to scalar fallback
                             }
                         }
                     }
 
-                    // Strategy 3: scalar fallback (but basisType still read from provenanceJson)
-                    return new ResolvedFactDetail(Opinion.fromSoftTruth(confidence), basisType);
+                    // Strategy 3: scalar fallback (basisType + provenance still read from provenanceJson)
+                    return new ResolvedFactDetail(
+                            Opinion.fromSoftTruth(confidence),
+                            basisType, sourceDocumentId, crawlRunId, sourceName);
                 }
             } catch (Exception ignored) {
                 // DB unavailable or row missing — fall through to scalar fallback
@@ -289,7 +322,7 @@ public class KbOpinionBrowserController {
         }
 
         // Strategy 3: scalar soft-truth approximation (no DB row available)
-        return new ResolvedFactDetail(Opinion.fromSoftTruth(confidence), DEFAULT_BASIS_TYPE);
+        return new ResolvedFactDetail(Opinion.fromSoftTruth(confidence), DEFAULT_BASIS_TYPE, null, null, null);
     }
 
     /**
@@ -404,5 +437,13 @@ public class KbOpinionBrowserController {
             Double uncertainty,
             Double expectation,
             Double baseRate,
-            String basisType) {}
+            String basisType,
+            /** Source document identifier read from {@code _sourceDocumentId} in provenanceJson. */
+            String sourceDocumentId,
+            /** Crawl run/job identifier read from {@code _crawlRunId} in provenanceJson. */
+            String crawlRunId,
+            /** Human-readable source name read from {@code _sourceChunkId} in provenanceJson; null for crawl-extracted facts. */
+            String sourceName,
+            /** Human-readable label for {@code atomKey} (entity titles); falls back to atomKey. */
+            String displayLabel) {}
 }

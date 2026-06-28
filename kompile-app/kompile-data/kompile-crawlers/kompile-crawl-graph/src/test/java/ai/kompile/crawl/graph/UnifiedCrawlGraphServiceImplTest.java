@@ -230,6 +230,11 @@ class UnifiedCrawlGraphServiceImplTest {
         doReturn(GraphNode.builder().nodeId("table-1").nodeType(NodeLevel.TABLE).build())
                 .when(knowledgeGraphService).createTableNode(anyString(), anyString(), anyString(),
                         anyInt(), anyInt(), any(), any(), any());
+        // Batch node/snippet creation: delegate to the per-node stubs via the default method body.
+        // This lets tests stub individual createNode() calls and still have createNodesBatch()
+        // honour them, so existing verify(createNode(...)) assertions remain valid.
+        doCallRealMethod().when(knowledgeGraphService).createNodesBatch(anyList(), any());
+        doCallRealMethod().when(knowledgeGraphService).createSnippetNodesBatch(anyList());
         when(entityMentionRepository.findByNodeAndEntityNameAndFactSheet(
                 any(GraphNode.class), anyString(), nullable(Long.class))).thenReturn(Optional.empty());
         when(entityMentionRepository.save(any(EntityMention.class))).thenAnswer(invocation -> invocation.getArgument(0));
@@ -2788,9 +2793,10 @@ class UnifiedCrawlGraphServiceImplTest {
         awaitCompletion(job);
 
         assertEquals(UnifiedCrawlJob.Status.COMPLETED, job.getStatus().get());
-        // Verify createSnippetNode called for each chunk
-        verify(knowledgeGraphService, atLeast(1)).createSnippetNode(
-                eq(docNode), anyString(), anyString(), anyInt());
+        // Snippet creation now goes through createSnippetNodesBatch (batched write per fact-sheet).
+        // Verify at least one batch call was made with non-empty specs — this proves snippet nodes
+        // are registered for chunked documents that have a source_path.
+        verify(knowledgeGraphService, atLeast(1)).createSnippetNodesBatch(argThat(list -> !list.isEmpty()));
     }
 
     @Test

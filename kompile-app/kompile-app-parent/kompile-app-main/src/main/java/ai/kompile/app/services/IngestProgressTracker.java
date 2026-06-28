@@ -71,6 +71,7 @@ public class IngestProgressTracker implements DisposableBean {
         this(messagingTemplate, jobLogService, null);
     }
 
+    @org.springframework.beans.factory.annotation.Autowired
     public IngestProgressTracker(
             @org.springframework.beans.factory.annotation.Autowired(required = false) SimpMessagingTemplate messagingTemplate,
             @org.springframework.beans.factory.annotation.Autowired(required = false) JobLogService jobLogService,

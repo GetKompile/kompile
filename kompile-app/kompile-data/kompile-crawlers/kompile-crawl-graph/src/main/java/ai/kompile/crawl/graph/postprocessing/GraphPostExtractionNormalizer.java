@@ -17,6 +17,8 @@
 package ai.kompile.crawl.graph.postprocessing;
 
 import ai.kompile.core.graphbuilder.GraphBuildCompletedEvent;
+import ai.kompile.knowledgegraph.domain.EdgeType;
+import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
@@ -24,6 +26,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.event.EventListener;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
 
 import java.text.Normalizer;
@@ -133,7 +136,11 @@ public class GraphPostExtractionNormalizer {
     /**
      * Triggered automatically when a crawl job publishes
      * {@link GraphBuildCompletedEvent}. Skips if {@code factSheetId} is null.
+     *
+     * <p>Runs {@code @Async} so the crawl thread is released immediately after
+     * COMPLETED is published; normalization proceeds in the application task pool.</p>
      */
+    @Async
     @EventListener
     public void onGraphBuildCompleted(GraphBuildCompletedEvent event) {
         Long factSheetId = event.getFactSheetId();
@@ -193,6 +200,10 @@ public class GraphPostExtractionNormalizer {
 
             if (isDegenerate(canonical, minTitleLength)) {
                 try {
+                    // [FIX-3] Degenerate nodes: no useful survivor to re-point edges to, so just
+                    // drop any edges to/from this node via deleteEdgesForNode before deleting.
+                    // (Edges referencing a deleted node become dangling; this avoids that state.)
+                    dropEdgesForNode(node.getNodeId());
                     knowledgeGraphService.deleteNode(node.getNodeId());
                     degenDropped++;
                 } catch (Exception e) {
@@ -231,6 +242,9 @@ public class GraphPostExtractionNormalizer {
                         knowledgeGraphService.updateNode(original.getNodeId(),
                                 original.getTitle(), original.getDescription(), mergedMeta);
                     }
+                    // [FIX-3] Re-point duplicate's edges to the canonical survivor BEFORE deletion,
+                    // so no edges are lost (previously deleteNode() dropped them silently).
+                    redirectEdgesToSurvivor(node.getNodeId(), original.getNodeId());
                     knowledgeGraphService.deleteNode(node.getNodeId());
                     mergedDups++;
                 } catch (Exception e) {
@@ -243,6 +257,17 @@ public class GraphPostExtractionNormalizer {
             }
         }
 
+        // [FIX-3] Flush the graph state after normalization so all edge redirections and
+        // node deletions are durably persisted to the vector store.
+        if (degenDropped > 0 || mergedDups > 0) {
+            try {
+                knowledgeGraphService.flushPendingNodes();
+                log.info("GraphPostExtractionNormalizer: flushed post-normalization graph state to persistent store");
+            } catch (Exception e) {
+                log.warn("GraphPostExtractionNormalizer: non-fatal flush error: {}", e.getMessage());
+            }
+        }
+
         NormalizationResult result = new NormalizationResult(
                 factSheetId, entityNodes.size(), canonicalized, degenDropped, mergedDups, false);
         log.info("GraphPostExtractionNormalizer: factSheetId={} — {} nodes processed, " +
@@ -252,6 +277,67 @@ public class GraphPostExtractionNormalizer {
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
+
+    /**
+     * Re-points all outgoing edges that touch {@code duplicateId} onto {@code survivorId}.
+     *
+     * <p>Collects all eligible edge tuples in a single {@code getEdgesForNode} call, then
+     * issues ONE {@code createEdgesBatch} RPC rather than 1+2N individual RPCs (the old
+     * pattern of per-edge {@code edgeExists} + {@code createEdge} blocked the crawl thread
+     * and quadratically scaled with the number of outgoing edges per duplicate).
+     * Idempotency (skip-if-exists) is handled server-side inside {@code createEdgesBatch}.</p>
+     */
+    private void redirectEdgesToSurvivor(String duplicateId, String survivorId) {
+        try {
+            List<GraphEdge> edges = knowledgeGraphService.getEdgesForNode(duplicateId);
+            if (edges == null || edges.isEmpty()) return;
+
+            // Collect eligible tuples — one pass, no RPCs
+            List<KnowledgeGraphService.EdgeSpec> specs = new ArrayList<>(edges.size());
+            for (GraphEdge edge : edges) {
+                String targetId = edge.getTargetNode() != null ? edge.getTargetNode().getNodeId() : null;
+                if (targetId == null || targetId.equals(survivorId) || targetId.equals(duplicateId)) {
+                    continue; // skip null targets, self-loops onto survivor, and loops back to duplicate
+                }
+                EdgeType edgeType = edge.getEdgeType() != null ? edge.getEdgeType() : EdgeType.USER_DEFINED;
+                specs.add(new KnowledgeGraphService.EdgeSpec(
+                        survivorId, targetId, edgeType, edge.getWeight(), edge.getDescription()));
+            }
+
+            if (!specs.isEmpty()) {
+                // ONE batch RPC — createEdgesBatch checks edgeExists server-side per spec
+                int redirected = knowledgeGraphService.createEdgesBatch(specs);
+                log.debug("GraphPostExtractionNormalizer: redirected {} / {} edges from duplicate {} to survivor {} (batch)",
+                        redirected, specs.size(), duplicateId, survivorId);
+            }
+        } catch (Exception e) {
+            log.debug("GraphPostExtractionNormalizer: could not redirect edges for duplicate {}: {}",
+                    duplicateId, e.getMessage());
+        }
+    }
+
+    /**
+     * [FIX-3] Drops all edges to/from a degenerate node before it is deleted.
+     *
+     * <p>Degenerate nodes have no useful survivor to re-point edges to; dropping the edges
+     * prevents dangling edge references in the adjacency matrix after the node is removed.</p>
+     */
+    private void dropEdgesForNode(String nodeId) {
+        try {
+            List<GraphEdge> edges = knowledgeGraphService.getEdgesForNode(nodeId);
+            for (GraphEdge edge : edges) {
+                try {
+                    knowledgeGraphService.deleteEdge(edge.getEdgeId());
+                } catch (Exception innerEx) {
+                    log.debug("Could not delete edge {} for degenerate node {}: {}",
+                            edge.getEdgeId(), nodeId, innerEx.getMessage());
+                }
+            }
+        } catch (Exception e) {
+            log.debug("GraphPostExtractionNormalizer: could not drop edges for degenerate node {}: {}",
+                    nodeId, e.getMessage());
+        }
+    }
 
     /**
      * Canonicalizes a node title:

@@ -69,8 +69,20 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingDeque;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
+import ai.kompile.utils.inference.InferenceBatchPlanner;
 import org.apache.lucene.index.IndexableField;
 
 /**
@@ -116,6 +128,90 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
     private final AtomicBoolean destroyed = new AtomicBoolean(false);
     private Thread shutdownHook;
 
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // ASYNC EMBEDDING POOL
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // Background pool for async embedding dispatch. Size configurable via
+    // -Dkompile.vectorstore.async.threads (default 2). Fixed pool naturally serializes
+    // embedding subprocess calls so the subprocess minibatch caps are respected.
+    private static final int DEFAULT_ASYNC_THREADS = 2;
+    private static final int DEFAULT_ASYNC_MAX_PENDING = 500;
+    // Memory-bounded backpressure: cap the HEAP held by buffered (not-yet-written) documents.
+    // Item count alone does NOT bound memory — content-heavy nodes (table/cell text) can hold
+    // multiple GB at 500 items and OOM the graph-matrix subprocess (observed: 8094 → 34g/32g).
+    // Default 512 MiB; override via -Dkompile.vectorstore.async.maxPendingBytes.
+    private static final long DEFAULT_ASYNC_MAX_PENDING_BYTES = 512L * 1024 * 1024;
+    private ExecutorService asyncEmbedPool;
+    // Tracks in-flight futures for barrier + backpressure.
+    private final CopyOnWriteArrayList<CompletableFuture<Void>> pendingFutures = new CopyOnWriteArrayList<>();
+    private final AtomicInteger pendingCount = new AtomicInteger(0);
+    // Approximate heap bytes of buffered documents awaiting async embed+write (UTF-16 text estimate).
+    private final AtomicLong pendingBytes = new AtomicLong(0L);
+
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // DOCUMENT COALESCER  (FIX 1 — kill the batch-of-1)
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // When callers add one node at a time (addNode → saveNode → add([1 doc])), each
+    // arrives at dispatchAsyncEmbed as a 1-element list.  A 1-element list becomes a
+    // 1-row embedding batch: one full BERT forward pass per node (~2 s on CPU).
+    //
+    // The coalescer buffers small incoming batches for up to COALESCE_IDLE_WAIT_MS (500 ms
+    // of idle — i.e. no new doc arriving) or until COALESCE_MIN_BATCH (32) docs accumulate,
+    // then flushes them all as one async embed task so InferenceBatchPlanner sees a real
+    // batch (up to maxRows=64).  Batches that are already ≥ COALESCE_MIN_BATCH bypass the
+    // coalescer entirely.
+    //
+    // DEBOUNCE (FIX 1b): each new doc arrival CANCELS and reschedules the pending timer so
+    // the window resets on every arrival.  This means a burst of single-node adds that arrive
+    // every ~100 ms (due to graph-subprocess RPC latency between addNode calls) will
+    // accumulate until 500 ms of silence — fusing many single-doc dispatches into one real
+    // batch.  A hard-cap timer (COALESCE_HARD_MAX_WAIT_MS = 4000 ms from first doc in the
+    // batch) prevents starvation when adds arrive without pause.
+    //
+    // pendingBytes is incremented immediately when docs enter the coalescer (so the
+    // memory-backpressure gate in dispatchAsyncEmbed counts buffered docs).
+    // pendingCount + CompletableFuture tracking happen at flush time (when the async
+    // task is submitted), consistent with the large-batch fast path.
+    //
+    // awaitPendingEmbeddings() force-flushes the coalescer before blocking so the
+    // barrier never misses docs sitting in the buffer.
+
+    /** Per-doc entry in the coalescer queue — holds the doc and its pre-computed byte estimate. */
+    private record DocEntry(org.springframework.ai.document.Document doc, long bytes) {}
+
+    private static final int DEFAULT_COALESCE_MIN_BATCH = 32;
+    /** Idle-window for the debounce flush: timer resets on every new doc arrival.
+     *  Set long enough to span the graph-subprocess RPC latency between single-node adds.
+     *  Configurable via {@code -Dkompile.vectorstore.coalesce.maxWaitMs}. */
+    private static final long DEFAULT_COALESCE_IDLE_WAIT_MS = 500L;
+    /** Hard cap: force-flush this many ms after the FIRST doc entered the current batch,
+     *  regardless of whether new docs keep arriving.
+     *  Configurable via {@code -Dkompile.vectorstore.coalesce.hardMaxWaitMs}. */
+    private static final long DEFAULT_COALESCE_HARD_MAX_WAIT_MS = 4000L;
+
+    private final LinkedBlockingDeque<DocEntry> coalescerQueue = new LinkedBlockingDeque<>();
+    // pendingBytes for docs currently sitting in the coalescer buffer (counted against maxPendingBytes).
+    private final AtomicLong coalescerBytes = new AtomicLong(0L);
+    // Monotonic nanosecond timestamp of the first doc that entered the current coalescer batch.
+    // 0 means the queue is empty / no batch in progress.
+    private final AtomicLong coalescerBatchStartNs = new AtomicLong(0L);
+    // Single-thread scheduler for the time-based coalescer flush.
+    private ScheduledExecutorService coalescerScheduler;
+    // Holds the currently-pending debounce flush task; replaced on every new doc arrival.
+    private final AtomicReference<ScheduledFuture<?>> pendingCoalescerFlush = new AtomicReference<>();
+
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // FAIL-FAST COUNTER  (FIX 3 — 8094 cascade resilience)
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // Tracks consecutive embed-empty results inside embedAndWriteToLucene.  When the
+    // embedding subprocess is dead, every batch returns an empty matrix; without a
+    // circuit-breaker the async tasks hold their doc references until each one times out,
+    // pinning potentially hundreds of MB in 8094's heap.  After MAX_CONSECUTIVE_EMBED_EMPTY
+    // consecutive empties the task aborts early so pendingCount/pendingBytes drain fast.
+    private final AtomicInteger consecutiveEmbedEmpty = new AtomicInteger(0);
+    private static final int MAX_CONSECUTIVE_EMBED_EMPTY =
+            Integer.getInteger("kompile.vectorstore.async.maxConsecutiveEmbedEmpty", 5);
+
     // PERFORMANCE: Track if searcher needs refresh (lazy refresh pattern)
     // Instead of refreshing searcher after every commit (expensive: 5-50ms each),
     // we mark it as stale and only refresh when a search is actually performed.
@@ -154,6 +250,17 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
         this.properties = properties;
         this.embeddingModel = embeddingModel;
         this.rerankerService = rerankerService;
+        int asyncThreads = Integer.getInteger("kompile.vectorstore.async.threads", DEFAULT_ASYNC_THREADS);
+        this.asyncEmbedPool = Executors.newFixedThreadPool(asyncThreads, r -> {
+            Thread t = new Thread(r, "anserini-async-embed-" + System.nanoTime() % 1000);
+            t.setDaemon(true);
+            return t;
+        });
+        this.coalescerScheduler = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "anserini-coalescer-flush");
+            t.setDaemon(true);
+            return t;
+        });
 
         // CRITICAL FIX: Always ensure path uniqueness per JVM instance
         // Previous versions relied on Spring placeholders like ${random.uuid} which may
@@ -522,13 +629,29 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
         }
 
         if (embeddings != null && embeddings.size() != documents.size()) {
-            log.warn("Pre-computed embeddings size ({}) does not match documents size ({}). " +
-                    "Will generate embeddings using configured EmbeddingModel.",
+            log.warn("Pre-computed embeddings size ({}) does not match documents size ({}). "
+                    + "Will generate embeddings asynchronously.",
                     embeddings.size(), documents.size());
+            embeddings = null;
         }
 
+        // Fast path: pre-computed embeddings supplied — write to Lucene synchronously.
+        if (embeddings != null && !embeddings.isEmpty()) {
+            return addWithPrecomputedListEmbeddings(documents, embeddings);
+        }
+
+        // Slow path: embeddings must be generated — dispatch to background pool so the
+        // caller (e.g. GRAPH_PREP node persistence) is not blocked for minutes.
+        return dispatchAsyncEmbed(documents);
+    }
+
+    /**
+     * Synchronous write path used when pre-computed {@code List<List<Float>>} embeddings are supplied.
+     * No embedding is performed here; the embeddings are converted and written directly to Lucene.
+     */
+    private int addWithPrecomputedListEmbeddings(List<org.springframework.ai.document.Document> documents,
+            List<List<Float>> embeddings) {
         synchronized (writerLock) {
-            // Check if we're shutting down
             if (shuttingDown) {
                 log.info("VectorStore is shutting down, skipping document addition");
                 return 0;
@@ -538,163 +661,383 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
             int skippedCount = 0;
             boolean interrupted = false;
 
-            // PERFORMANCE: Generate all embeddings in bulk if not pre-computed
-            float[][] bulkEmbeddings = null;
-            if (embeddings == null || embeddings.isEmpty()) {
-                log.debug("Generating bulk embeddings for {} documents", documents.size());
-                try {
-                    // Extract text from all documents
-                    List<String> texts = new ArrayList<>(documents.size());
-                    for (org.springframework.ai.document.Document doc : documents) {
-                        texts.add(doc.getText() != null ? doc.getText() : "");
-                    }
-
-                    // Bulk embed all texts at once - much more efficient
-                    org.nd4j.linalg.api.ndarray.INDArray embeddingMatrix = null;
-                    try {
-                        // Use the Spring AI adapter's embed method which accepts List<String>
-                        if (embeddingModel instanceof ai.kompile.core.embeddings.EmbeddingModel) {
-                            embeddingMatrix = ((ai.kompile.core.embeddings.EmbeddingModel) embeddingModel).embed(texts);
-                        } else {
-                            // Fallback to per-document embedding for Spring AI models
-                            log.debug("Using per-document embedding (non-Kompile embedding model)");
-                        }
-
-                        if (embeddingMatrix != null && !embeddingMatrix.isEmpty()) {
-                            // PERFORMANCE OPTIMIZATION: Extract all embeddings at once without creating
-                            // temporary INDArray views for each row. This avoids N allocations and closes.
-                            //
-                            // Before: N getRow() + N toFloatVector() + N close() = O(N) allocations
-                            // After: 1 toFloatMatrix() = O(1) allocation
-                            //
-                            // For 1000 documents, this saves ~1000 INDArray allocations (~100-500ms)
-                            int numRows = (int) embeddingMatrix.rows();
-                            int numCols = (int) embeddingMatrix.columns();
-                            bulkEmbeddings = new float[numRows][];
-
-                            // Get all data as a single float array and partition it
-                            float[] flatData = embeddingMatrix.data().asFloat();
-                            for (int i = 0; i < numRows; i++) {
-                                bulkEmbeddings[i] = new float[numCols];
-                                System.arraycopy(flatData, i * numCols, bulkEmbeddings[i], 0, numCols);
-                            }
-                            log.debug("Generated {} bulk embeddings (optimized extraction)", bulkEmbeddings.length);
-                        }
-                    } finally {
-                        if (embeddingMatrix != null && !embeddingMatrix.wasClosed()) {
-                            try {
-                                embeddingMatrix.close();
-                            } catch (Exception e) {
-                                log.warn("Failed to close bulk embedding matrix: {}", e.getMessage());
-                            }
-                        }
-                    }
-                } catch (Exception e) {
-                    log.warn("Bulk embedding failed, falling back to per-document: {}", e.getMessage());
-                    bulkEmbeddings = null;
-                }
-            }
-
             try {
                 for (int i = 0; i < documents.size(); i++) {
-                    // Check for interrupt before processing each document
                     if (Thread.currentThread().isInterrupted()) {
-                        log.info("Document addition interrupted after processing {} documents", addedCount);
                         interrupted = true;
                         break;
                     }
-
                     org.springframework.ai.document.Document springAiDoc = documents.get(i);
-
-                    // Use embeddings in priority order: pre-computed List > bulk-generated >
-                    // individual
                     float[] embedding = null;
-
-                    // 1. Try pre-computed List<Float> embeddings
-                    if (embeddings != null && i < embeddings.size() && embeddings.get(i) != null) {
+                    if (i < embeddings.size() && embeddings.get(i) != null) {
                         List<Float> embeddingList = embeddings.get(i);
                         embedding = new float[embeddingList.size()];
                         for (int j = 0; j < embeddingList.size(); j++) {
                             embedding[j] = embeddingList.get(j);
                         }
                     }
-                    // 2. Try bulk-generated embeddings
-                    else if (bulkEmbeddings != null && i < bulkEmbeddings.length && bulkEmbeddings[i] != null) {
-                        embedding = bulkEmbeddings[i];
-                    }
-                    // 3. Generate individually (fallback)
-                    else {
-                        try {
-                            embedding = embeddingModel.embed(springAiDoc.getText()).toFloatVector();
-                        } catch (NullPointerException e) {
-                            log.warn("Native pointer error during embedding generation for document {}, skipping: {}",
-                                    springAiDoc.getId(), e.getMessage());
-                            embedding = null;
-                        } catch (RuntimeException e) {
-                            log.warn("Runtime error during embedding generation for document {}, skipping: {}",
-                                    springAiDoc.getId(), e.getMessage());
-                            embedding = null;
-                        }
-                    }
-
-                    // Skip documents with empty embeddings (can happen during shutdown/interrupt)
                     if (embedding == null || embedding.length == 0) {
-                        log.debug("Skipping document {} with empty embedding (likely due to interrupt)",
-                                springAiDoc.getId());
                         skippedCount++;
                         continue;
                     }
-
                     Document luceneDoc = createLuceneDocument(springAiDoc, embedding);
                     indexWriter.addDocument(luceneDoc);
                     addedCount++;
                 }
 
-                // Only commit if we weren't interrupted and not shutting down
                 if (!interrupted && !shuttingDown && !Thread.currentThread().isInterrupted()) {
-                    try {
-                        indexWriter.commit();
-
-                        if (skippedCount > 0) {
-                            log.info(
-                                    "Added {} documents to Anserini VectorStore, skipped {} documents with empty embeddings",
-                                    addedCount, skippedCount);
-                        } else {
-                            log.info("Successfully added {} documents to Anserini VectorStore", addedCount);
-                        }
-
-                        // PERFORMANCE: Mark searcher as needing refresh instead of refreshing now.
-                        // The searcher will be lazily refreshed on the next search operation.
-                        // This eliminates 5-50ms overhead per batch during bulk indexing.
-                        searcherNeedsRefresh = true;
-                    } catch (Exception e) {
-                        // IndexWriter might be closed during shutdown
-                        if (shuttingDown || Thread.currentThread().isInterrupted()) {
-                            log.info("Skipping commit during shutdown, added {} documents before interruption",
-                                    addedCount);
-                        } else {
-                            throw e;
-                        }
-                    }
-                } else {
-                    log.info(
-                            "Skipping commit due to interrupt or shutdown, {} documents were added to IndexWriter but not committed",
-                            addedCount);
+                    indexWriter.commit();
+                    searcherNeedsRefresh = true;
+                    log.info("Added {} documents (skipped {}) to Anserini VectorStore (pre-computed embeddings)",
+                            addedCount, skippedCount);
                 }
-
             } catch (IOException e) {
-                // Check if this is due to shutdown
-                if (shuttingDown || Thread.currentThread().isInterrupted()) {
-                    log.info("IndexWriter operation interrupted during shutdown after adding {} documents", addedCount);
-                } else {
+                if (!shuttingDown && !Thread.currentThread().isInterrupted()) {
                     log.error("Error adding documents to Anserini VectorStore", e);
                     throw new RuntimeException("Failed to add documents to Anserini VectorStore", e);
                 }
             }
-
-            // Return the actual count of documents persisted (committed to the index)
             return addedCount;
         }
+    }
+
+    /**
+     * Dispatches async embedding for documents whose embeddings have not yet been computed.
+     *
+     * <p>Backpressure: if buffered bytes reach the cap
+     * ({@code kompile.vectorstore.async.maxPendingBytes}, default 512 MiB) OR the in-flight
+     * task count reaches {@code maxPending} (default 500), this method blocks until the queue
+     * drains below the cap before accepting new documents.</p>
+     *
+     * <p>Coalescing (FIX 1): batches smaller than {@code kompile.vectorstore.coalesce.minBatch}
+     * (default 32) are held in the coalescer queue for up to
+     * {@code kompile.vectorstore.coalesce.maxWaitMs} (default 50 ms) so that rapid single-node
+     * saves from {@code addNode()} are fused into real batches before reaching the embedding
+     * subprocess, preventing the pathological 1-text-per-request pattern.</p>
+     *
+     * @return Optimistic count ({@code documents.size()}); actual count is resolved in the future.
+     */
+    private int dispatchAsyncEmbed(List<org.springframework.ai.document.Document> documents) {
+        if (shuttingDown) return 0;
+
+        int maxPending = Integer.getInteger("kompile.vectorstore.async.maxPending", DEFAULT_ASYNC_MAX_PENDING);
+        long maxPendingBytes = Long.getLong("kompile.vectorstore.async.maxPendingBytes", DEFAULT_ASYNC_MAX_PENDING_BYTES);
+        int coalescerMinBatch = Integer.getInteger("kompile.vectorstore.coalesce.minBatch", DEFAULT_COALESCE_MIN_BATCH);
+
+        // Approximate heap footprint of this batch's text (UTF-16 ≈ 2 bytes/char + per-doc overhead).
+        long batchBytes = 0L;
+        for (org.springframework.ai.document.Document d : documents) {
+            String t = d.getText();
+            batchBytes += (t != null ? (long) t.length() * 2L : 0L) + 256L;
+        }
+
+        // Backpressure: block until BOTH in-flight count AND buffered bytes drop below their caps.
+        // pendingBytes covers both the async pool queue AND the coalescer buffer.
+        // The MEMORY bound is primary — content-heavy nodes blow item-count budgets and OOM'd 8094.
+        while ((pendingCount.get() >= maxPending || pendingBytes.get() >= maxPendingBytes) && !shuttingDown) {
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                return 0;
+            }
+        }
+        if (shuttingDown) return 0;
+
+        // COALESCER PATH: small batches go into the buffer; flush fires when the buffer is
+        // large enough or the timer expires.  Large batches skip the coalescer entirely so
+        // they are processed without artificial delay.
+        if (documents.size() < coalescerMinBatch) {
+            // Account for these bytes in pendingBytes immediately so backpressure remains accurate
+            // while docs sit in the coalescer buffer.
+            pendingBytes.addAndGet(batchBytes);
+            coalescerBytes.addAndGet(batchBytes);
+            for (org.springframework.ai.document.Document doc : documents) {
+                String t = doc.getText();
+                long docBytes = (t != null ? (long) t.length() * 2L : 0L) + 256L;
+                coalescerQueue.add(new DocEntry(doc, docBytes));
+            }
+            // Stamp batch start on the first doc entering an empty coalescer so the
+            // hard-cap timer knows when this batch began.
+            coalescerBatchStartNs.compareAndSet(0L, System.nanoTime());
+            // Flush immediately if the coalescer has reached the minimum batch size;
+            // otherwise schedule a debounce flush so a burst of isolated-node adds can fuse.
+            if (coalescerQueue.size() >= coalescerMinBatch) {
+                flushCoalescer();
+            } else {
+                scheduleCoalescerFlush();
+            }
+            return documents.size();
+        }
+
+        // FAST PATH: large batch — submit directly without coalescer delay.
+        submitEmbedTask(new ArrayList<>(documents), batchBytes, maxPending);
+        return documents.size();
+    }
+
+    /**
+     * Schedules (or reschedules) the debounce-flush timer for the coalescer.
+     *
+     * <p><b>Debounce (sliding-window) behaviour</b>: every new doc arrival cancels any
+     * existing pending timer and installs a fresh one with the idle-wait delay.  This
+     * means a burst of single-node adds separated by {@literal <} idleWaitMs each will
+     * accumulate in the coalescer queue until the burst goes quiet for idleWaitMs — then
+     * the whole accumulated batch is submitted as one embed task.</p>
+     *
+     * <p><b>Hard cap</b>: if the first doc in the current batch arrived more than
+     * hardMaxWaitMs ago (configurable, default 4 s), the coalescer is flushed immediately
+     * regardless of idle time to prevent starvation under continuous load.</p>
+     *
+     * <p>Idle window: {@code -Dkompile.vectorstore.coalesce.maxWaitMs} (default 500 ms)<br>
+     * Hard cap: {@code -Dkompile.vectorstore.coalesce.hardMaxWaitMs} (default 4000 ms)</p>
+     */
+    private void scheduleCoalescerFlush() {
+        if (shuttingDown || coalescerScheduler == null || coalescerScheduler.isShutdown()) return;
+        long idleMs = Long.getLong("kompile.vectorstore.coalesce.maxWaitMs",     DEFAULT_COALESCE_IDLE_WAIT_MS);
+        long capMs  = Long.getLong("kompile.vectorstore.coalesce.hardMaxWaitMs", DEFAULT_COALESCE_HARD_MAX_WAIT_MS);
+
+        // Check hard cap: if the batch has been open longer than capMs, flush now.
+        long batchStart = coalescerBatchStartNs.get();
+        if (batchStart > 0) {
+            long elapsedMs = (System.nanoTime() - batchStart) / 1_000_000L;
+            if (elapsedMs >= capMs) {
+                ScheduledFuture<?> old = pendingCoalescerFlush.getAndSet(null);
+                if (old != null) old.cancel(false);
+                coalescerBatchStartNs.set(0L);
+                flushCoalescer();
+                return;
+            }
+        }
+
+        // Debounce: schedule a fresh flush task with a full idle window, atomically
+        // replacing (and cancelling) whatever was previously pending.
+        ScheduledFuture<?> freshTask = coalescerScheduler.schedule(() -> {
+            pendingCoalescerFlush.compareAndSet(null, null); // no-op; just ensures visibility
+            coalescerBatchStartNs.set(0L);
+            flushCoalescer();
+        }, idleMs, TimeUnit.MILLISECONDS);
+
+        // Atomically swap in the new task; cancel the one we displaced (if any).
+        ScheduledFuture<?> displaced = pendingCoalescerFlush.getAndSet(freshTask);
+        if (displaced != null && !displaced.isDone()) displaced.cancel(false);
+    }
+
+    /**
+     * Drains the coalescer queue and submits all buffered documents as a single async embed task.
+     * Safe to call concurrently — the LinkedBlockingDeque drain is atomic per element; at worst
+     * two concurrent flush calls produce two slightly-smaller batches, which is correct.
+     */
+    void flushCoalescer() {
+        if (shuttingDown || coalescerQueue.isEmpty()) return;
+        // Reset batch-start stamp before draining so docs that arrive concurrently
+        // (after the drain but before the reset) are treated as a fresh batch.
+        coalescerBatchStartNs.set(0L);
+        List<DocEntry> drained = new ArrayList<>();
+        coalescerQueue.drainTo(drained);
+        if (drained.isEmpty()) return;
+
+        long totalBytes = 0L;
+        List<org.springframework.ai.document.Document> docs = new ArrayList<>(drained.size());
+        for (DocEntry e : drained) {
+            docs.add(e.doc());
+            totalBytes += e.bytes();
+        }
+        // coalescerBytes was incremented when docs entered the buffer; decrement now that we're
+        // handing them to a real async task.
+        coalescerBytes.addAndGet(-totalBytes);
+        // pendingBytes stays incremented — the async task will decrement it in its finally block.
+
+        int maxPending = Integer.getInteger("kompile.vectorstore.async.maxPending", DEFAULT_ASYNC_MAX_PENDING);
+        log.debug("Coalescer flush: submitting {} documents as one embed task", docs.size());
+        submitEmbedTask(docs, totalBytes, maxPending);
+    }
+
+    /**
+     * Submits one async embedding task to {@code asyncEmbedPool}.
+     * Increments {@code pendingCount}, adds the resulting future to {@code pendingFutures},
+     * and decrements both counters in the task's {@code finally} block.
+     *
+     * <p>Callers must have already incremented {@code pendingBytes} by {@code batchBytes}
+     * before calling this method.</p>
+     */
+    private void submitEmbedTask(List<org.springframework.ai.document.Document> docs,
+                                  long batchBytes, int maxPending) {
+        pendingCount.incrementAndGet();
+        final long batchBytesFinal = batchBytes;
+        CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
+            try {
+                embedAndWriteToLucene(docs);
+            } catch (Exception e) {
+                log.error("Async embedding task failed for {} documents: {}", docs.size(), e.getMessage(), e);
+                throw new RuntimeException("Async embed failed", e);
+            } finally {
+                pendingCount.decrementAndGet();
+                pendingBytes.addAndGet(-batchBytesFinal);
+            }
+        }, asyncEmbedPool);
+
+        pendingFutures.add(future);
+
+        // Prune completed futures to keep the list bounded.
+        if (pendingFutures.size() > maxPending * 2) {
+            pendingFutures.removeIf(CompletableFuture::isDone);
+        }
+        log.debug("Submitted embed task for {} documents; pendingCount={}", docs.size(), pendingCount.get());
+    }
+
+    /**
+     * Background task: embed documents using {@link InferenceBatchPlanner} for token-budget
+     * micro-batching, then write each batch to Lucene under {@code writerLock}.
+     *
+     * <p>Embedding is done OUTSIDE the lock; only the Lucene write acquires it, keeping
+     * lock hold time short (a few ms per batch vs. 3-13s for embedding).</p>
+     */
+    private void embedAndWriteToLucene(List<org.springframework.ai.document.Document> documents) {
+        if (documents == null || documents.isEmpty()) return;
+
+        List<String> texts = new ArrayList<>(documents.size());
+        for (org.springframework.ai.document.Document doc : documents) {
+            texts.add(doc.getText() != null ? doc.getText() : "");
+        }
+
+        // Approximate token lengths: ~chars / 4 (rough BPE estimate, sufficient for planning).
+        int[] tokenLengths = new int[texts.size()];
+        for (int i = 0; i < texts.size(); i++) {
+            tokenLengths[i] = Math.max(1, texts.get(i).length() / 4);
+        }
+
+        InferenceBatchPlanner.Budget budget = InferenceBatchPlanner.Budget.builder()
+                .seqHardCap(512)
+                .seqBuckets(new int[]{64, 128, 256, 512})
+                .maxBatchTokens(16384L)
+                .maxRows(64)
+                .build();
+
+        List<InferenceBatchPlanner.Batch> batches = InferenceBatchPlanner.plan(tokenLengths, budget);
+        log.debug("Async embed: {} documents → {} token-budget micro-batches", documents.size(), batches.size());
+
+        for (InferenceBatchPlanner.Batch batch : batches) {
+            if (shuttingDown || Thread.currentThread().isInterrupted()) break;
+
+            int[] indices = batch.itemIndices();
+            List<String> batchTexts = new ArrayList<>(indices.length);
+            List<org.springframework.ai.document.Document> batchDocs = new ArrayList<>(indices.length);
+            for (int idx : indices) {
+                batchTexts.add(texts.get(idx));
+                batchDocs.add(documents.get(idx));
+            }
+
+            INDArray embeddingMatrix = null;
+            try {
+                embeddingMatrix = embeddingModel.embed(batchTexts);
+                if (embeddingMatrix == null || embeddingMatrix.isEmpty()) {
+                    int empties = consecutiveEmbedEmpty.incrementAndGet();
+                    log.warn("Async embed: null/empty matrix for batch of {} documents (consecutive={})",
+                            batchDocs.size(), empties);
+                    // FIX 3 — fail-fast when embedding subprocess appears persistently dead.
+                    // After MAX_CONSECUTIVE_EMBED_EMPTY empties in a row the task aborts early
+                    // so pendingCount/pendingBytes drain quickly and 8094 releases doc references
+                    // instead of holding them until the subprocess eventually recovers.
+                    if (empties >= MAX_CONSECUTIVE_EMBED_EMPTY) {
+                        log.error("Async embed: {} consecutive empty results — embedding subprocess " +
+                                "appears down; aborting remaining batches in this task to release memory",
+                                empties);
+                        return;
+                    }
+                    continue;
+                }
+                // Subprocess responded — reset the fail-fast counter.
+                consecutiveEmbedEmpty.set(0);
+
+                int numRows = (int) embeddingMatrix.rows();
+                int numCols = (int) embeddingMatrix.columns();
+                float[] flatData;
+                if (embeddingMatrix.ordering() == 'c' && !embeddingMatrix.isView()
+                        && embeddingMatrix.stride(0) == numCols && embeddingMatrix.stride(1) == 1) {
+                    flatData = embeddingMatrix.data().getFloatsAt(embeddingMatrix.offset(), numRows * numCols);
+                } else {
+                    flatData = embeddingMatrix.data().asFloat();
+                }
+
+                // Write to Lucene — lock hold is now short (just Lucene addDocument calls).
+                synchronized (writerLock) {
+                    if (shuttingDown) return;
+                    int written = 0;
+                    for (int i = 0; i < Math.min(numRows, batchDocs.size()); i++) {
+                        float[] embedding = new float[numCols];
+                        System.arraycopy(flatData, i * numCols, embedding, 0, numCols);
+                        if (embedding.length == 0) continue;
+                        try {
+                            Document luceneDoc = createLuceneDocument(batchDocs.get(i), embedding);
+                            indexWriter.addDocument(luceneDoc);
+                            written++;
+                            documentsAddedSinceCommit++;
+                        } catch (Exception e) {
+                            log.warn("Async embed: failed to add document {} to Lucene: {}",
+                                    batchDocs.get(i).getId(), e.getMessage());
+                        }
+                    }
+                    batchesSinceCommit++;
+                    if (shouldCommitNow(false)) {
+                        try {
+                            indexWriter.commit();
+                            resetCommitTracking();
+                        } catch (IOException e) {
+                            log.warn("Async embed: commit failed: {}", e.getMessage());
+                        }
+                    }
+                    searcherNeedsRefresh = true;
+                    log.debug("Async embed: wrote {} documents (batch {}/{})", written,
+                            batches.indexOf(batch) + 1, batches.size());
+                }
+            } finally {
+                if (embeddingMatrix != null && !embeddingMatrix.wasClosed()) {
+                    try {
+                        embeddingMatrix.close();
+                    } catch (Exception e) {
+                        log.trace("Async embed: error closing embedding matrix: {}", e.getMessage());
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Blocks until all pending async embedding futures complete, then flushes any buffered documents.
+     *
+     * <p>Must be called before VECTOR_INDEXING or KGE training to ensure graph-node embeddings
+     * dispatched during GRAPH_PREP are visible to subsequent steps.</p>
+     *
+     * @throws RuntimeException if any background embedding task failed
+     */
+    @Override
+    public void awaitPendingEmbeddings() {
+        // FIX 1 — force-flush the coalescer so docs buffered there are promoted to real
+        // async tasks BEFORE we snapshot pendingFutures.  Without this, documents that
+        // arrived as single-node saves and are still waiting in the coalescer buffer would
+        // be missed by the barrier and end up embedded AFTER VECTOR_INDEXING starts.
+        ScheduledFuture<?> pending = pendingCoalescerFlush.getAndSet(null);
+        if (pending != null) pending.cancel(false);
+        flushCoalescer();
+
+        List<CompletableFuture<Void>> snapshot = new ArrayList<>();
+        for (CompletableFuture<Void> f : pendingFutures) {
+            if (!f.isDone()) snapshot.add(f);
+        }
+        if (snapshot.isEmpty()) {
+            log.debug("awaitPendingEmbeddings: no pending futures, nothing to wait for");
+            return;
+        }
+        log.info("Awaiting {} pending async embedding futures before proceeding...", snapshot.size());
+        try {
+            CompletableFuture.allOf(snapshot.toArray(new CompletableFuture[0])).join();
+        } catch (Exception e) {
+            throw new RuntimeException("One or more async embedding tasks failed during barrier wait", e);
+        }
+        // Commit any buffered documents not yet committed by the batch commit threshold.
+        flushAndCommit();
+        pendingFutures.removeIf(CompletableFuture::isDone);
+        log.info("awaitPendingEmbeddings: all pending embeddings complete and committed");
     }
 
     @Override
@@ -1544,6 +1887,20 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
 
         log.info("Cleaning up AnseriniVectorStoreImpl resources...");
         shuttingDown = true;
+
+        // Flush coalescer before shutting down so in-buffer docs are at least submitted
+        // (they'll be interrupted by asyncEmbedPool.shutdownNow immediately after, which is fine).
+        try { flushCoalescer(); } catch (Exception ignored) {}
+
+        // Shut down the coalescer scheduler first so no new flush tasks are scheduled.
+        if (coalescerScheduler != null && !coalescerScheduler.isShutdown()) {
+            coalescerScheduler.shutdownNow();
+        }
+
+        // Shut down the async embedding pool — interrupt any in-flight embed tasks.
+        if (asyncEmbedPool != null && !asyncEmbedPool.isShutdown()) {
+            asyncEmbedPool.shutdownNow();
+        }
 
         // Close searcher first (it holds a reader reference)
         closeSearcherQuietly();

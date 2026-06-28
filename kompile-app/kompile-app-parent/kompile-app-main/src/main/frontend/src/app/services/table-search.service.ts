@@ -119,9 +119,12 @@ export class TableSearchService {
 
   /**
    * Get full detail for a single table by ID.
+   * Uses ?tableId= query param instead of path variable because table IDs
+   * contain slashes and colons that break URL path routing.
    */
   getTable(tableId: string): Observable<TableDetail> {
-    return this.http.get<TableDetail>(`${this.baseUrl}/${tableId}`);
+    const params = new HttpParams().set('tableId', tableId);
+    return this.http.get<TableDetail>(`${this.baseUrl}/detail`, { params });
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -152,9 +155,11 @@ export class TableSearchService {
     if (column !== undefined) {
       body['column'] = column;
     }
+    const params = new HttpParams().set('tableId', tableId);
     return this.http.post<TableAnalysis | SingleColumnAnalysis>(
-      `${this.baseUrl}/${tableId}/analyze`,
-      body
+      `${this.baseUrl}/analyze`,
+      body,
+      { params }
     );
   }
 
@@ -172,11 +177,12 @@ export class TableSearchService {
     operator: string,
     value: string
   ): Observable<{ content: string }> {
-    return this.http.post<{ content: string }>(`${this.baseUrl}/${tableId}/filter`, {
+    const params = new HttpParams().set('tableId', tableId);
+    return this.http.post<{ content: string }>(`${this.baseUrl}/filter`, {
       column,
       operator,
       value
-    });
+    }, { params });
   }
 
   /**
@@ -188,10 +194,11 @@ export class TableSearchService {
     column: string,
     descending: boolean = false
   ): Observable<{ content: string }> {
-    return this.http.post<{ content: string }>(`${this.baseUrl}/${tableId}/sort`, {
+    const params = new HttpParams().set('tableId', tableId);
+    return this.http.post<{ content: string }>(`${this.baseUrl}/sort`, {
       column,
       descending
-    });
+    }, { params });
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -203,9 +210,11 @@ export class TableSearchService {
    * Returns the serialized content and the resolved format name.
    */
   exportTable(tableId: string, format: string): Observable<{ content: string; format: string }> {
+    const params = new HttpParams().set('tableId', tableId);
     return this.http.post<{ content: string; format: string }>(
-      `${this.baseUrl}/${tableId}/export`,
-      { format }
+      `${this.baseUrl}/export`,
+      { format },
+      { params }
     );
   }
 }

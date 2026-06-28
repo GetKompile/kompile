@@ -122,6 +122,26 @@ public interface UnifiedCrawlService {
      */
     void registerRehydratedJob(UnifiedCrawlJob job);
 
+    /**
+     * Register a scheduler-generated alias (e.g. {@code "crawl-55ef8175"}) that maps to an
+     * internal job UUID. Callers that only know the scheduler ID can then resolve it to the
+     * UUID used by progress events, SSE emitters, and {@link #getJob(String)}.
+     *
+     * <p>The default is a no-op; implementations that maintain an alias map override this.</p>
+     */
+    default void registerJobIdAlias(String alias, String internalJobId) {}
+
+    /**
+     * Resolve a scheduler alias or external ID to the canonical internal job UUID.
+     * Returns {@code aliasOrInternalId} unchanged when no alias is registered for it
+     * (i.e., the input is already the internal UUID).
+     *
+     * <p>The default is an identity function; implementations with an alias map override.</p>
+     */
+    default String resolveJobId(String aliasOrInternalId) {
+        return aliasOrInternalId;
+    }
+
     /** List crawl jobs that have archived steps on disk and can be resumed (incl. after a restart). */
     List<CrawlStepArchiveService.ResumableCrawlJob> listResumableCrawlJobs();
 

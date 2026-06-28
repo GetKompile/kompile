@@ -34,6 +34,7 @@ import ai.kompile.knowledgegraph.resolution.SessionEntityState;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -45,21 +46,19 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
- * JPA-backed implementation of GraphRagService supporting LOCAL, GLOBAL, and HYBRID search.
- * <p>
- * <b>LOCAL</b>: Finds seed entities via text search, then hops outward along
- * relationships to collect context from the traversal neighborhood.
- * <p>
- * <b>GLOBAL</b>: Scans all entity nodes, builds connected component communities,
- * and ranks by edge count for importance.
- * <p>
- * <b>HYBRID</b>: Combines text/embedding search with multi-hop graph traversal.
- * Seed entities are found via search, then the graph is traversed outward for
- * configurable depth. Results are scored using a weighted combination of
- * search relevance and graph proximity (1/hop_distance).
+ * JPA-backed implementation of GraphRagService.
+ *
+ * <p><b>DISABLED</b> — the live {@code @Primary} matrix/vector store path does not populate
+ * the JPA graph tables this class reads.  Kept as a compile reference and fallback; only
+ * activated when {@code kompile.jpa.graph.enabled=true} is set explicitly.</p>
+ *
+ * @deprecated Use {@link ai.kompile.knowledgegraph.service.KnowledgeGraphService} via the
+ *     matrix-backed implementation.
  */
+@Deprecated
 @Service
 @ConditionalOnMissingBean(GraphRagService.class)
+@ConditionalOnProperty(name = "kompile.jpa.graph.enabled", havingValue = "true")
 @Slf4j
 public class JpaGraphRagService implements GraphRagService {
 

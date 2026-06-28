@@ -35,6 +35,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
 /**
@@ -192,23 +193,26 @@ public class GraphFocalViewController {
 
         try {
             // ── BFS expansion ─────────────────────────────────────────────────
-            // Collect all node ids in factSheet first (for fast membership checks)
-            List<GraphNode> allNodes = graphService.getNodesInFactSheet(factSheetId);
-            Set<String> factSheetNodeIds = new HashSet<>();
-            Map<String, GraphNode> nodeIndex = new HashMap<>();
-            for (GraphNode n : allNodes) {
-                factSheetNodeIds.add(n.getNodeId());
-                nodeIndex.put(n.getNodeId(), n);
-            }
+            // Lazy node index — nodes are loaded on first encounter rather than
+            // pre-loading the entire fact sheet (which could be tens of thousands
+            // of nodes for large graphs). Membership in the fact sheet is confirmed
+            // by checking node.getFactSheetId() when a node is first loaded.
+            Map<String, GraphNode> nodeIndex = new LinkedHashMap<>();
 
-            // BFS frontier
-            Set<String> visited     = new LinkedHashSet<>();
-            Set<String> frontier    = new LinkedHashSet<>();
+            // Seed nodes — load lazily and validate fact-sheet membership.
+            Set<String> visited  = new LinkedHashSet<>();
+            Set<String> frontier = new LinkedHashSet<>();
 
             for (String seedId : request.seedNodeIds()) {
-                if (factSheetNodeIds.contains(seedId)) {
-                    frontier.add(seedId);
-                    visited.add(seedId);
+                Optional<GraphNode> seedOpt = graphService.getNode(seedId);
+                if (seedOpt.isPresent()) {
+                    GraphNode seed = seedOpt.get();
+                    // Accept if the node is unscoped (legacy) or belongs to this fact sheet.
+                    if (seed.getFactSheetId() == null || seed.getFactSheetId().equals(factSheetId)) {
+                        nodeIndex.put(seedId, seed);
+                        frontier.add(seedId);
+                        visited.add(seedId);
+                    }
                 }
             }
 
@@ -235,16 +239,21 @@ public class GraphFocalViewController {
                             edgeIds.add(edge.getEdgeId());
                             qualifyingEdges.add(edge);
                         }
-                        // enqueue neighbors
+                        // enqueue neighbors — lazy load to confirm fact-sheet membership
                         String srcId = edge.getSourceNode() != null ? edge.getSourceNode().getNodeId() : null;
                         String tgtId = edge.getTargetNode() != null ? edge.getTargetNode().getNodeId() : null;
-                        if (srcId != null && factSheetNodeIds.contains(srcId) && !visited.contains(srcId)) {
-                            visited.add(srcId);
-                            nextFrontier.add(srcId);
-                        }
-                        if (tgtId != null && factSheetNodeIds.contains(tgtId) && !visited.contains(tgtId)) {
-                            visited.add(tgtId);
-                            nextFrontier.add(tgtId);
+                        for (String nbId : new String[]{srcId, tgtId}) {
+                            if (nbId != null && !visited.contains(nbId)) {
+                                Optional<GraphNode> nbOpt = graphService.getNode(nbId);
+                                if (nbOpt.isPresent()) {
+                                    GraphNode nb = nbOpt.get();
+                                    if (nb.getFactSheetId() == null || nb.getFactSheetId().equals(factSheetId)) {
+                                        visited.add(nbId);
+                                        nextFrontier.add(nbId);
+                                        nodeIndex.put(nbId, nb);
+                                    }
+                                }
+                            }
                         }
                     }
                 }

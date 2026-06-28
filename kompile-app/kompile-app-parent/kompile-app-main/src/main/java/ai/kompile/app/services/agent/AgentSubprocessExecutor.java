@@ -99,6 +99,19 @@ public class AgentSubprocessExecutor {
      * @param agentArgs       optional extra CLI arguments to pass through to the agent
      */
     public List<String> buildInteractiveCommand(AgentProvider agent, boolean skipPermissions, boolean injectMcpTools, List<String> agentArgs) {
+        return buildInteractiveCommand(agent, skipPermissions, injectMcpTools, agentArgs, null);
+    }
+
+    /**
+     * Variant that allows an explicit {@code modelOverride} to be used as the {@code --model} value
+     * (when non-blank), bypassing {@link AgentProvider#getModelName()}. This lets a warm process pool
+     * pin individual pre-spawned processes to <em>different</em> models (per-spawn round-robin), which
+     * is how free-model alternation is realised without a racy global model flip or pool invalidation.
+     *
+     * @param modelOverride explicit model id to pass via the agent's model flag; when null/blank the
+     *                      agent's own configured model (or the CLI default) is used instead
+     */
+    public List<String> buildInteractiveCommand(AgentProvider agent, boolean skipPermissions, boolean injectMcpTools, List<String> agentArgs, String modelOverride) {
         List<String> command = new ArrayList<>();
         command.add(agent.getCommand());
 
@@ -112,9 +125,11 @@ public class AgentSubprocessExecutor {
         }
 
         // Add model selection if a model is configured for this agent (e.g. "--model <model>").
-        // Left unset, the CLI uses its own default model.
+        // An explicit per-call override wins (used for free-model alternation); otherwise the agent's
+        // configured model; left unset, the CLI uses its own default model.
         String modelFlag = agent.getModelFlag();
-        String modelName = agent.getModelName();
+        String modelName = (modelOverride != null && !modelOverride.isBlank())
+                ? modelOverride.trim() : agent.getModelName();
         if (modelFlag != null && !modelFlag.isBlank() && modelName != null && !modelName.isBlank()) {
             command.add(modelFlag);
             command.add(modelName);

@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package ai.kompile.cli.common.util;
+package ai.kompile.utils;
 
 import java.lang.reflect.Method;
 import java.nio.file.Path;

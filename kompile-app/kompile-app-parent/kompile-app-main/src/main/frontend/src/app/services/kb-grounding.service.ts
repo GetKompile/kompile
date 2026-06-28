@@ -41,15 +41,25 @@ export interface VerifyRequest {
   factSheetId?: number | null;
 }
 
+export interface GroundingMeta {
+  factSheetId: number;
+  asOf: string;
+  stale: boolean;
+  stalenessBudgetMs: number;
+  kbVersion: number;
+  sessionId?: string;
+}
+
 export interface VerifyResponse {
-  atom: string;
   verdict: 'SUPPORTED' | 'REFUTED' | 'UNKNOWN';
   confidence: number;
-  band: StrengthBand;
-  opinion?: OpinionDto;
-  provenance?: string;
-  evidence?: string[];
-  computedAt?: string;
+  evidenceAtoms: string[];
+  activatedRules: string[];
+  derivationDepth: number;
+  sourceProvenance: string[];
+  calibratedConfidence: number;
+  strengthBand: StrengthBand;
+  meta: GroundingMeta;
 }
 
 export interface QueryRequest {
@@ -86,6 +96,8 @@ export interface ConfidenceBreakdownDto {
 
 export interface DerivationTreeNodeDto {
   atom: string;
+  /** Human-readable display label; present when the backend resolved the atom key to an entity title. */
+  title?: string;
   confidence: number;
   rule?: string;
   source?: string;
@@ -110,13 +122,40 @@ export interface ReasoningTrailDto {
   inferenceMode?: string;
   naturalLanguageSummary?: string;
   computedAt?: string;
+  stale?: boolean;
 }
 
 export interface ExplainResponse {
   atom: string;
+  verdict?: string;
+  confidence?: number;
+  summary?: string;
+  derivation?: string;
   trail?: ReasoningTrailDto;
-  derivation?: DerivationTreeNodeDto;
   naturalLanguageSummary?: string;
+  meta?: GroundingMeta;
+}
+
+// Unified explain endpoint — POST /api/explain — GROUNDING | HYBRID | CAUSAL modes
+export interface UnifiedExplainRequest {
+  target: string;
+  factSheetId?: number | null;
+  depth?: number;
+  mode?: 'GROUNDING' | 'HYBRID' | 'CAUSAL';
+  sessionId?: string;
+}
+
+export interface UnifiedExplainResponse {
+  targetId: string;
+  inferenceMode: string;
+  verdict?: string;
+  confidence: number;
+  naturalLanguageSummary?: string;
+  derivationTreeJson?: string;
+  evidence?: string[];
+  activatedRules?: string[];
+  computedAt?: string;
+  trail?: ReasoningTrailDto;
 }
 
 export interface AssertRequest {
@@ -144,6 +183,8 @@ export interface BatchVerifyResultSummary {
   confidence: number;
   evidenceCount: number;
   evaluatedAt: string;
+  calibratedConfidence?: number;
+  strengthBand?: StrengthBand;
 }
 export interface BatchVerifyResponse {
   results: Record<string, BatchVerifyResultSummary>;
@@ -170,6 +211,10 @@ export class KbGroundingService extends BaseService {
 
   explain(req: ExplainRequest): Observable<ExplainResponse> {
     return this.http.post<ExplainResponse>(`${this.base}/explain`, req);
+  }
+
+  unifiedExplain(req: UnifiedExplainRequest): Observable<UnifiedExplainResponse> {
+    return this.http.post<UnifiedExplainResponse>(`${this.backendUrl}/explain`, req);
   }
 
   assert(req: AssertRequest): Observable<AssertResponse> {

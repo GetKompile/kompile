@@ -98,8 +98,8 @@ class KGEmbeddingConfigServiceTest {
 
     @Test
     void updateConfig_replacesFullConfig_andReturnsUpdated() {
-        TrainConfig newTransE = new TrainConfig(64, 50, 0.005, 512, 2.0, 5);
-        TrainConfig newRotatE = new TrainConfig(64, 50, 0.0005, 256, 3.0, 128);
+        TrainConfig newTransE = new TrainConfig(64, 50, 0.005, 512, 2.0, 5, 10);
+        TrainConfig newRotatE = new TrainConfig(64, 50, 0.0005, 256, 3.0, 128, 10);
         GraphRAGConfig newGraphRAG = new GraphRAGConfig(true, 0.5, 0.5, 2, 10, 2L);
         Neo4jConfig newNeo4j = new Neo4jConfig(true, "bolt://db:7687", "admin", "secret");
 
@@ -115,7 +115,7 @@ class KGEmbeddingConfigServiceTest {
     @Test
     void updateTransEConfig_onlyUpdatesTransE_preservesOtherConfigs() {
         GraphRAGConfig originalGraphRAG = service.getConfig().graphrag();
-        TrainConfig newTransE = new TrainConfig(32, 10, 0.1, 128, 0.5, 2);
+        TrainConfig newTransE = new TrainConfig(32, 10, 0.1, 128, 0.5, 2, 10);
 
         KGEmbeddingConfig updated = service.updateTransEConfig(newTransE);
 
@@ -128,7 +128,7 @@ class KGEmbeddingConfigServiceTest {
 
     @Test
     void updateRotatEConfig_onlyUpdatesRotatE_preservesOtherConfigs() {
-        TrainConfig newRotatE = new TrainConfig(128, 200, 0.002, 1024, 12.0, 512);
+        TrainConfig newRotatE = new TrainConfig(128, 200, 0.002, 1024, 12.0, 512, 10);
         KGEmbeddingConfig updated = service.updateRotatEConfig(newRotatE);
 
         assertEquals(128, updated.rotate().embeddingDim());
@@ -159,7 +159,7 @@ class KGEmbeddingConfigServiceTest {
     @Test
     void resetToDefaults_restoresDefaultValues() {
         // Change something first
-        service.updateTransEConfig(new TrainConfig(999, 999, 9.9, 999, 9.9, 999));
+        service.updateTransEConfig(new TrainConfig(999, 999, 9.9, 999, 9.9, 999, 10));
 
         KGEmbeddingConfig reset = service.resetToDefaults();
         assertEquals(100, reset.transe().embeddingDim());
@@ -241,7 +241,7 @@ class KGEmbeddingConfigServiceTest {
     @Test
     void configIsPersisted_andReloadedOnNextInstance() throws Exception {
         // Update config with a distinctive value
-        TrainConfig updatedTransE = new TrainConfig(77, 77, 0.077, 777, 7.7, 77);
+        TrainConfig updatedTransE = new TrainConfig(77, 77, 0.077, 777, 7.7, 77, 10);
         service.updateTransEConfig(updatedTransE);
 
         // Create a new service instance pointing to same dir

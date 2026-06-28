@@ -21,6 +21,7 @@ import { throttleTime } from 'rxjs/operators';
 import { BaseService } from './base.service';
 import { ChatStorageService } from './chat-storage.service';
 import { AgentService } from './agent.service';
+import { ReasoningTrailDto } from './kb-grounding.service';
 import {
   AgentProvider,
   LocalAgentSession,
@@ -488,6 +489,16 @@ export class LocalAgentChatService extends BaseService {
                 this.sources$.next(sources);
                 if (this.currentStreamingMessage) {
                   this.currentStreamingMessage.sources = sources;
+                }
+                break;
+
+              case 'reasoning_trace':
+                console.debug('[LocalAgentChat] Reasoning trace received:', parsed);
+                if (this.currentStreamingMessage) {
+                  if (!this.currentStreamingMessage.reasoningTrails) {
+                    this.currentStreamingMessage.reasoningTrails = [];
+                  }
+                  this.currentStreamingMessage.reasoningTrails.push(parsed as ReasoningTrailDto);
                 }
                 break;
 

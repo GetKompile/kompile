@@ -18,6 +18,7 @@ import ai.kompile.core.graphrag.query.SearchType;
 import ai.kompile.graph.algorithms.service.GraphAlgorithmService;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
+import ai.kompile.knowledgegraph.domain.GraphProvenanceKeys;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -430,6 +431,25 @@ public class GraphTraversalTool {
                             m.put("title", e.getTitle());
                             m.put("type", e.getType());
                             m.put("description", GraphSearchTool.truncate(e.getDescription(), 200));
+                            if (e.getConfidence() != null) {
+                                m.put("confidence", e.getConfidence());
+                            }
+                            if (e.getTextUnits() != null && !e.getTextUnits().isEmpty()) {
+                                m.put("textUnits", e.getTextUnits());
+                            }
+                            Map<String, Object> entityMeta = e.getMetadata();
+                            if (entityMeta != null && !entityMeta.isEmpty()) {
+                                Map<String, Object> prov = new LinkedHashMap<>();
+                                for (String key : GraphProvenanceKeys.ALL) {
+                                    Object val = entityMeta.get(key);
+                                    if (val != null) {
+                                        prov.put(key.substring(1), val);
+                                    }
+                                }
+                                if (!prov.isEmpty()) {
+                                    m.put("provenance", prov);
+                                }
+                            }
                             return m;
                         })
                         .collect(Collectors.toList());
@@ -502,15 +522,36 @@ public class GraphTraversalTool {
                 );
             }
 
-            List<Map<String, Object>> pathNodes = path.stream()
-                    .map(n -> {
-                        Map<String, Object> m = new LinkedHashMap<>();
-                        m.put("nodeId", n.getNodeId());
-                        m.put("title", n.getTitle() != null ? n.getTitle() : "Untitled");
-                        m.put("type", n.getNodeType().name());
-                        return m;
-                    })
-                    .collect(Collectors.toList());
+            List<Map<String, Object>> pathNodes = new ArrayList<>();
+            for (int idx = 0; idx < path.size(); idx++) {
+                GraphNode n = path.get(idx);
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("nodeId", n.getNodeId());
+                m.put("title", n.getTitle() != null ? n.getTitle() : "Untitled");
+                m.put("type", n.getNodeType().name());
+                if (idx > 0) {
+                    GraphNode prev = path.get(idx - 1);
+                    try {
+                        GraphEdge pathEdge = graphService.findEdgeBetweenNodes(
+                                prev.getNodeId(), n.getNodeId());
+                        if (pathEdge == null) {
+                            Optional<GraphEdge> opt = graphService.findEdgeBetweenNodesBidirectional(
+                                    prev.getNodeId(), n.getNodeId());
+                            pathEdge = opt.orElse(null);
+                        }
+                        if (pathEdge != null) {
+                            Map<String, Object> em = new LinkedHashMap<>();
+                            em.put("edgeType", pathEdge.getEdgeType().name());
+                            em.put("weight", pathEdge.getWeight());
+                            em.put("description", GraphSearchTool.truncate(pathEdge.getDescription(), 150));
+                            m.put("incomingEdge", em);
+                        }
+                    } catch (Exception ignored) {
+                        // Edge lookup is best-effort; path node still included without edge detail
+                    }
+                }
+                pathNodes.add(m);
+            }
 
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("fromNodeId", input.fromNodeId());

@@ -14,6 +14,21 @@ import { Observable } from 'rxjs';
 import { BaseService } from './base.service';
 import { BayesianInferenceResult, BayesianQueryRequest, MebnQueryRequest, MebnTypeQueryRequest, MpeResult, SensitivityRequest, SensitivityResult, WhatIfRequest } from '../models/attribution-models';
 
+/** A parameterized MEBN random variable: name, entity-type signature, states, role. */
+export interface MebnRv { name: string; signature: string; states: string[]; role: string; }
+/** A directed parent→child edge inside a fragment with its learned noisy-OR strength. */
+export interface MebnEdge { parent: string; child: string; strength: number; }
+/** One MEBN fragment: variables by role, context constraints, and parent→child edges. */
+export interface MebnFragment {
+  name: string;
+  residentNodes: MebnRv[];
+  inputNodes: MebnRv[];
+  contexts: string[];
+  edges: MebnEdge[];
+}
+/** The MEBN theory structure: its fragments. */
+export interface MTheoryStructure { name: string; fragments: MebnFragment[]; }
+
 @Injectable({
   providedIn: 'root'
 })
@@ -120,6 +135,22 @@ export class BayesianService extends BaseService {
 
     return this.http.get<Record<string, any>>(
       `${this.backendUrl}${this.apiPath}/mebn/stats`, { params: params.set('nodeId', nodeId) }
+    );
+  }
+
+  /**
+   * Get the MEBN theory STRUCTURE — fragments with typed variables (signature, states, role),
+   * context constraints, and parent→child edges with learned strengths. No inference run.
+   */
+  mebnTheory(nodeId: string | null, maxDepth: number = 3, maxNodes: number = 100): Observable<MTheoryStructure> {
+    let params = new HttpParams()
+      .set('maxDepth', maxDepth.toString())
+      .set('maxNodes', maxNodes.toString());
+    if (nodeId) {
+      params = params.set('nodeId', nodeId);
+    }
+    return this.http.get<MTheoryStructure>(
+      `${this.backendUrl}${this.apiPath}/mebn/theory`, { params }
     );
   }
 

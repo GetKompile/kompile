@@ -67,6 +67,38 @@ describe('CrawlStepMonitorComponent', () => {
     expect(component.runStepRequested.emit).toHaveBeenCalledWith({ jobId: 'job-1', stepId: 'VECTOR_INDEXING' });
   });
 
+  describe('isStepRunNowEligible', () => {
+    it('returns true for all terminal states that allow re-run', () => {
+      ['COMPLETED', 'FAILED', 'ARCHIVED', 'DEFERRED'].forEach(s =>
+        expect(component.isStepRunNowEligible(s)).withContext(s).toBeTrue()
+      );
+    });
+    it('returns false for active or excluded states', () => {
+      ['RUNNING', 'PENDING', 'SKIPPED', undefined, ''].forEach(s =>
+        expect(component.isStepRunNowEligible(s)).withContext(String(s)).toBeFalse()
+      );
+    });
+  });
+
+  describe('getRunStepLabel', () => {
+    it('returns Retry for FAILED', () => expect(component.getRunStepLabel('FAILED')).toBe('Retry'));
+    it('returns Re-run for COMPLETED', () => expect(component.getRunStepLabel('COMPLETED')).toBe('Re-run'));
+    it('returns Run archived step for ARCHIVED', () => expect(component.getRunStepLabel('ARCHIVED')).toBe('Run archived step'));
+    it('returns Run now for DEFERRED', () => expect(component.getRunStepLabel('DEFERRED')).toBe('Run now'));
+  });
+
+  describe('runningStepIds input → isStepInProgress', () => {
+    it('reports in-progress when parent passes a matching stepId', () => {
+      component.runningStepIds = new Set(['GRAPH_EXTRACTION']);
+      expect(component.isStepInProgress('GRAPH_EXTRACTION')).toBeTrue();
+      expect(component.isStepInProgress('VECTOR_INDEXING')).toBeFalse();
+    });
+    it('reports not in-progress when the set is empty', () => {
+      component.runningStepIds = new Set();
+      expect(component.isStepInProgress('GRAPH_EXTRACTION')).toBeFalse();
+    });
+  });
+
   describe('worker-tagged (distributed) per-step scoping', () => {
     beforeEach(() => {
       component.job = {

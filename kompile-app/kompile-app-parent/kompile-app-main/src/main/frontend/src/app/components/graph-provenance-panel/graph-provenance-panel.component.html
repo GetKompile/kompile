@@ -40,6 +40,9 @@
         <div class="lineage muted" *ngIf="p.occurredAt"><strong>Occurred:</strong> {{ p.occurredAt }}</div>
         <div class="lineage muted" *ngIf="p.createdAt"><strong>Created:</strong> {{ p.createdAt }}</div>
 
+        <!-- Source citation: sourceName (sourceTitle), crawlRunId, basisType, provenance from node metadata -->
+        <app-source-citation [citation]="toCitation(p)" [compact]="false"></app-source-citation>
+
         <table class="prov-table" *ngIf="provEntries(p).length > 0">
           <tbody>
             <tr *ngFor="let e of provEntries(p)"><th>{{ e.key }}</th><td>{{ e.value }}</td></tr>

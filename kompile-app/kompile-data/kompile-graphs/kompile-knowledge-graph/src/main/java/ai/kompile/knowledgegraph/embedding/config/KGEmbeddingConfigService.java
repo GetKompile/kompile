@@ -18,6 +18,8 @@ package ai.kompile.knowledgegraph.embedding.config;
 
 import ai.kompile.cli.common.KompileHome;
 import ai.kompile.core.kgembedding.KGEmbeddingAlgorithm;
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -337,6 +339,10 @@ public class KGEmbeddingConfigService {
 
     /**
      * Training configuration for a KG embedding algorithm.
+     *
+     * <p>{@code warmStartEpochs}: when positive, the epoch count used for incremental
+     * warm-start training (prior embeddings present). Default 10 — much cheaper than
+     * a full cold-start run. Set 0 to use {@code epochs} even when warm-starting.</p>
      */
     public record TrainConfig(
             int embeddingDim,
@@ -344,14 +350,33 @@ public class KGEmbeddingConfigService {
             double learningRate,
             int batchSize,
             double margin,
-            int negativeSamples
+            int negativeSamples,
+            int warmStartEpochs
     ) {
+        /**
+         * Backward-compatible JSON deserializer: old config files that predate the
+         * {@code warmStartEpochs} field will get the default value of {@code 10}.
+         */
+        @JsonCreator
+        public static TrainConfig fromJson(
+                @JsonProperty("embeddingDim") int embeddingDim,
+                @JsonProperty("epochs") int epochs,
+                @JsonProperty("learningRate") double learningRate,
+                @JsonProperty("batchSize") int batchSize,
+                @JsonProperty("margin") double margin,
+                @JsonProperty("negativeSamples") int negativeSamples,
+                @JsonProperty("warmStartEpochs") Integer warmStartEpochs
+        ) {
+            return new TrainConfig(embeddingDim, epochs, learningRate, batchSize, margin,
+                    negativeSamples, warmStartEpochs != null ? warmStartEpochs : 10);
+        }
+
         public static TrainConfig defaultTransE() {
-            return new TrainConfig(100, 100, 0.01, 1024, 1.0, 10);
+            return new TrainConfig(100, 100, 0.01, 1024, 1.0, 10, 10);
         }
 
         public static TrainConfig defaultRotatE() {
-            return new TrainConfig(100, 100, 0.001, 512, 6.0, 256);
+            return new TrainConfig(100, 100, 0.001, 512, 6.0, 256, 10);
         }
     }
 

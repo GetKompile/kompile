@@ -402,7 +402,7 @@ export interface GraphFullscreenDialogData {
     }
 
     .detail-meta {
-      background: #f1f5f9;
+      background: var(--bg-body, #f1f5f9);
       padding: 10px;
       border-radius: 6px;
       font-size: 11px;

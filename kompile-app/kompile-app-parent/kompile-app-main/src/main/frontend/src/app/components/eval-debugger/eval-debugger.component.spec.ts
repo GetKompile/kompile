@@ -34,6 +34,7 @@ import { ManagedEvalService } from '../../services/managed-eval.service';
 import { FactSheetService } from '../../services/fact-sheet.service';
 import {
   EvalDebuggerStatus,
+  EvalRetrievedDoc,
   EvaluatorTypeInfo,
   TestCase,
   TestCaseResult,
@@ -75,7 +76,7 @@ const makeTestCaseResult = (overrides: Partial<TestCaseResult> = {}): TestCaseRe
   prompt: 'What is RAG?',
   expectedAnswer: 'RAG answer',
   actualAnswer: 'Retrieval Augmented Generation',
-  retrievedDocuments: ['doc1'],
+  retrievedDocuments: [{ text: 'doc1' }],
   success: true,
   passed: true,
   ragTimeMs: 100,

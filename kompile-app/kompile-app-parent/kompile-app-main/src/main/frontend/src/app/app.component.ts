@@ -27,7 +27,7 @@ import { ThemeService } from './services/theme.service';
 import { FactSheet, CreateFactSheetRequest, IngestProgressUpdate, IngestStatus } from './models/api-models';
 
 // Define a type for the possible tab values
-export type ActiveTabType = 'unifiedChat' | 'project' | 'projectStore' | 'sources' | 'tools' | 'developer' | 'kclaw' | 'enforcer';
+export type ActiveTabType = 'unifiedChat' | 'project' | 'sources' | 'tools' | 'developer' | 'kclaw' | 'enforcer' | 'grounding';
 
 @Component({
   standalone: false,
@@ -233,7 +233,7 @@ export class AppComponent implements OnInit, OnDestroy {
    * Safely casts the tab name to the ActiveTabType.
    */
   handleBannerNavigation(tabName: string): void {
-    const validTabs: ActiveTabType[] = ['unifiedChat', 'project', 'sources', 'tools', 'developer', 'kclaw'];
+    const validTabs: ActiveTabType[] = ['unifiedChat', 'project', 'sources', 'tools', 'developer', 'kclaw', 'grounding'];
     if (validTabs.includes(tabName as ActiveTabType)) {
       this.activeTab = tabName as ActiveTabType;
     }

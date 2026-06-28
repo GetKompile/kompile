@@ -36,4 +36,12 @@ public class LlmModelStatusResponse {
     private String message;
     private String decoderPath;
     private int maxContextLength;
+    /**
+     * Effective KV-cache / position bucket chosen at load time via
+     * {@link ai.kompile.utils.inference.InferenceBatchPlanner#bucketFor}.
+     * Requests whose (prompt + maxNewTokens) exceed this bucket will be
+     * rounded up to the next bucket or clamped to the model context window.
+     * 0 = not yet set (model not loaded or bucketing not applicable).
+     */
+    private int kvBucket;
 }

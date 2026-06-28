@@ -92,6 +92,12 @@
                   </span>
                 </div>
 
+                <app-source-citation
+                  [citation]="toCitation(testResult.metadata)"
+                  [compact]="true"
+                  style="display:block;margin-bottom:8px;">
+                </app-source-citation>
+
                 <div class="text-comparison">
                   <div class="text-block">
                     <h4>Original</h4>

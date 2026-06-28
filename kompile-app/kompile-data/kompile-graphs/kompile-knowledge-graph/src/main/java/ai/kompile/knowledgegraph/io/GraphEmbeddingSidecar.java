@@ -16,13 +16,9 @@
 package ai.kompile.knowledgegraph.io;
 
 import ai.kompile.core.kgembedding.KGEmbeddingAlgorithm;
-import ai.kompile.knowledgegraph.domain.EdgeType;
-import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
 import ai.kompile.knowledgegraph.embedding.util.INDArrayConverter;
-import ai.kompile.knowledgegraph.repository.GraphEdgeRepository;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.slf4j.Logger;
@@ -43,142 +39,126 @@ import java.util.function.Consumer;
 
 /**
  * Serializes a fact sheet's KG embeddings to a compact binary sidecar so they travel with a
- * cloned project (versioned via git-xet) rather than being recomputed. Structure (nodes/edges
- * + metadata/scoping) is handled by {@link GraphIOService} as diffable JSON; this covers only
- * the dense embedding vectors, which are BLOBs and don't belong in a text-diffable file.
+ * cloned project (versioned via git-xet) rather than being recomputed.
  *
- * <p>Two embedding families are preserved, because the project keeps embeddings in two places:</p>
+ * <p>Two embedding families are preserved:</p>
  * <ol>
- *   <li><b>Structural KGE</b> ({@code kgEmbedding}: TransE/RotatE) lives in the JPA
- *       {@code GraphNode}/{@code GraphEdge} tables, written by {@code KGEmbeddingStorageService}.
- *       Read here straight from the JPA repositories. Expensive and not recomputable from a single
- *       node's text, so it must travel.</li>
- *   <li><b>Live-store node vectors</b> — the text embeddings the @Primary matrix/vector store holds
- *       (computed by {@code MatrixGraphConstructor} as {@code embed(title + " " + description)}) and
- *       indexes for similarity search. Recomputable, but carrying them lets a freshly cloned project
- *       warm its vector index without re-embedding. Read/written through the store-agnostic
- *       {@link KnowledgeGraphService#exportNodeEmbeddings}/{@link KnowledgeGraphService#applyNodeEmbeddings}
- *       seam, so the matrix store re-indexes them on import.</li>
+ *   <li><b>Structural KGE</b> ({@code kgEmbedding}: TransE/RotatE) — stored in node metadata
+ *       inside the @Primary matrix/vector store via the {@link KnowledgeGraphService} seam.
+ *       Written by {@link ai.kompile.knowledgegraph.embedding.service.KGEmbeddingStorageService}.</li>
+ *   <li><b>Live-store node vectors</b> — the text embeddings the @Primary store holds for
+ *       similarity search. Read/written through
+ *       {@link KnowledgeGraphService#exportNodeEmbeddings}/{@link KnowledgeGraphService#applyNodeEmbeddings}.</li>
  * </ol>
- *
- * <p>Node embeddings are keyed by {@code (nodeType, externalId)} (node UUIDs regenerate on import);
- * relation embeddings are type-shared and keyed by {@code edgeType}.</p>
  *
  * <p>Binary layout ("KGE2"): {@code [int magic]} then three sections —
  * {@code [int jpaNodeCount]}×{@code [UTF nodeType][UTF externalId][UTF algorithm][long version][long updatedAtEpochMilli][int len][bytes]},
  * {@code [int edgeTypeCount]}×{@code [UTF edgeType][UTF algorithm][long version][int len][bytes]},
  * {@code [int liveNodeCount]}×{@code [UTF nodeType][UTF externalId][int len][bytes]}.
- * Legacy "KGE1" files (first two sections, node entries without the {@code updatedAtEpochMilli} slot) are still read. See
- * {@code docs/architecture/graph-serialization-storage-audit.md} (H-4).</p>
+ * Legacy "KGE1" files (first two sections, node entries without the {@code updatedAtEpochMilli} slot) are still read.</p>
  */
 @Service
 public class GraphEmbeddingSidecar {
 
     private static final Logger log = LoggerFactory.getLogger(GraphEmbeddingSidecar.class);
 
-    /** Legacy magic ("KGE1"): JPA node + edge sections only. */
+    /** Legacy magic ("KGE1"): structural-KGE node + edge sections only. */
     private static final int MAGIC_V1 = 0x4B474531;
-    /** Current magic ("KGE2"): adds a live-store (matrix/vector) node-embedding section. */
+    /** Current magic ("KGE2"): adds a live-store node-embedding section. */
     private static final int MAGIC_V2 = 0x4B474532;
 
-    private final GraphNodeRepository nodeRepository;
-    private final GraphEdgeRepository edgeRepository;
     private final INDArrayConverter converter;
 
     /**
-     * The @Primary live store, used to also carry the matrix/vector store's per-node vectors so a
-     * cloned project's similarity index is warm without recomputation. Optional — the JPA
-     * structural-KGE path works without it.
+     * The @Primary live store — provides both KGE metadata (TransE/RotatE) via the new seam
+     * methods and text embeddings via exportNodeEmbeddings/applyNodeEmbeddings.
+     * Optional to keep test seams simple.
      */
     @Autowired(required = false)
     private KnowledgeGraphService graphService;
 
     @Autowired
-    public GraphEmbeddingSidecar(GraphNodeRepository nodeRepository, GraphEdgeRepository edgeRepository) {
-        this(nodeRepository, edgeRepository, new INDArrayConverter());
+    public GraphEmbeddingSidecar() {
+        this(new INDArrayConverter());
     }
 
     /** Test seam: inject a converter so framing can be exercised without a live ND4J backend. */
-    GraphEmbeddingSidecar(GraphNodeRepository nodeRepository, GraphEdgeRepository edgeRepository,
-                          INDArrayConverter converter) {
-        this.nodeRepository = nodeRepository;
-        this.edgeRepository = edgeRepository;
+    GraphEmbeddingSidecar(INDArrayConverter converter) {
         this.converter = converter;
     }
 
     /** Test seam: also wire the live store so the matrix/vector node-embedding path can be exercised. */
-    GraphEmbeddingSidecar(GraphNodeRepository nodeRepository, GraphEdgeRepository edgeRepository,
-                          INDArrayConverter converter, KnowledgeGraphService graphService) {
-        this(nodeRepository, edgeRepository, converter);
+    GraphEmbeddingSidecar(INDArrayConverter converter, KnowledgeGraphService graphService) {
+        this(converter);
         this.graphService = graphService;
     }
 
     /**
-     * Serialize a fact sheet's node + relation embeddings (JPA structural KGE) plus the live
-     * store's per-node vectors.
+     * Serialize a fact sheet's structural KGE node embeddings (TransE/RotatE), edge-type embeddings,
+     * and live-store per-node text vectors.
      *
-     * @return the sidecar bytes, or {@code null} when the fact sheet has no embeddings at all
-     *         (so the caller can skip writing / delete a stale file).
+     * @return the sidecar bytes, or {@code null} when the fact sheet has no embeddings at all.
      */
     public byte[] export(Long factSheetId) {
-        if (factSheetId == null) {
+        if (factSheetId == null || graphService == null) {
             return null;
         }
-        List<GraphNode> nodes = nodeRepository.findByFactSheetIdAndKgEmbeddingNotNull(factSheetId);
-        // Relation embeddings are type-shared — keep one representative edge per type.
-        Map<EdgeType, GraphEdge> byType = new LinkedHashMap<>();
-        for (GraphEdge e : edgeRepository.findByFactSheetIdAndKgRelationEmbeddingNotNull(factSheetId)) {
-            if (e.getEdgeType() != null) {
-                byType.putIfAbsent(e.getEdgeType(), e);
-            }
-        }
-        // Live-store (matrix/vector) node embeddings, keyed by (nodeType, externalId) so they
-        // survive nodeId regeneration on import.
+
+        // Section 1: structural-KGE node embeddings (stored in node metadata via seam)
+        List<GraphNode> kgeNodes = graphService.findNodesWithKgEmbedding(factSheetId);
+
+        // Section 2: edge-type relation embeddings (keyed by EdgeType name)
+        Map<String, INDArray> edgeTypeEmbs = graphService.getEdgeTypeKgEmbeddings(factSheetId);
+        KGEmbeddingAlgorithm storedAlgo = graphService.getStoredKgAlgorithm(factSheetId);
+
+        // Section 3: live-store text embedding vectors
         Map<GraphNode, INDArray> liveNodes = collectLiveNodeEmbeddings(factSheetId);
 
-        if (nodes.isEmpty() && byType.isEmpty() && liveNodes.isEmpty()) {
+        if (kgeNodes.isEmpty() && edgeTypeEmbs.isEmpty() && liveNodes.isEmpty()) {
             return null;
         }
+
         ByteArrayOutputStream bos = new ByteArrayOutputStream();
         try (DataOutputStream out = new DataOutputStream(bos)) {
             out.writeInt(MAGIC_V2);
 
-            // Section 1: JPA structural-KGE node embeddings.
-            out.writeInt(nodes.size());
-            for (GraphNode n : nodes) {
-                byte[] emb = safeBytes(n.getKgEmbedding());
+            // Section 1: structural-KGE node embeddings
+            out.writeInt(kgeNodes.size());
+            for (GraphNode n : kgeNodes) {
+                INDArray emb = n.getKgEmbedding();
+                byte[] embBytes = safeBytes(emb);
                 out.writeUTF(n.getNodeType() == null ? NodeLevel.ENTITY.name() : n.getNodeType().name());
                 out.writeUTF(n.getExternalId() == null ? "" : n.getExternalId());
                 out.writeUTF(n.getKgEmbeddingAlgorithm() == null ? "" : n.getKgEmbeddingAlgorithm().name());
                 out.writeLong(n.getKgEmbeddingVersion() == null ? -1L : n.getKgEmbeddingVersion());
-                // [H-5] kgEmbeddingUpdatedAt — epoch milli, -1 when absent (KGE2 only).
                 out.writeLong(n.getKgEmbeddingUpdatedAt() == null ? -1L : n.getKgEmbeddingUpdatedAt().toEpochMilli());
-                out.writeInt(emb.length);
-                out.write(emb);
+                out.writeInt(embBytes.length);
+                out.write(embBytes);
             }
 
-            // Section 2: JPA relation embeddings (type-shared).
-            out.writeInt(byType.size());
-            for (Map.Entry<EdgeType, GraphEdge> entry : byType.entrySet()) {
-                GraphEdge edge = entry.getValue();
-                byte[] emb = safeBytes(edge.getKgRelationEmbedding());
-                out.writeUTF(entry.getKey().name());
-                out.writeUTF(edge.getKgEmbeddingAlgorithm() == null ? "" : edge.getKgEmbeddingAlgorithm().name());
-                out.writeLong(edge.getKgEmbeddingVersion() == null ? -1L : edge.getKgEmbeddingVersion());
-                out.writeInt(emb.length);
-                out.write(emb);
+            // Section 2: edge-type relation embeddings (type-shared)
+            out.writeInt(edgeTypeEmbs.size());
+            for (Map.Entry<String, INDArray> entry : edgeTypeEmbs.entrySet()) {
+                byte[] embBytes = safeBytes(entry.getValue());
+                out.writeUTF(entry.getKey());
+                out.writeUTF(storedAlgo == null ? "" : storedAlgo.name());
+                // Version not tracked per edge type — use -1 sentinel
+                out.writeLong(-1L);
+                out.writeInt(embBytes.length);
+                out.write(embBytes);
             }
 
-            // Section 3 (KGE2): live-store node embeddings (matrix/vector text vectors).
+            // Section 3 (KGE2): live-store node text embeddings
             out.writeInt(liveNodes.size());
             for (Map.Entry<GraphNode, INDArray> entry : liveNodes.entrySet()) {
                 GraphNode n = entry.getKey();
-                byte[] emb = safeBytes(entry.getValue());
+                byte[] embBytes = safeBytes(entry.getValue());
                 out.writeUTF(n.getNodeType() == null ? NodeLevel.ENTITY.name() : n.getNodeType().name());
                 out.writeUTF(n.getExternalId() == null ? "" : n.getExternalId());
-                out.writeInt(emb.length);
-                out.write(emb);
+                out.writeInt(embBytes.length);
+                out.write(embBytes);
             }
+
         } catch (IOException e) {
             log.warn("Failed to serialize embeddings for fact sheet {}: {}", factSheetId, e.getMessage());
             return null;
@@ -186,7 +166,7 @@ public class GraphEmbeddingSidecar {
         return bos.toByteArray();
     }
 
-    /** Map each fact-sheet node that the live store has an embedding for to its vector. */
+    /** Map each fact-sheet node that the live store has a text embedding for to its vector. */
     private Map<GraphNode, INDArray> collectLiveNodeEmbeddings(Long factSheetId) {
         Map<GraphNode, INDArray> result = new LinkedHashMap<>();
         if (graphService == null) {
@@ -218,13 +198,13 @@ public class GraphEmbeddingSidecar {
 
     /**
      * Reattach embeddings from a sidecar onto already-rehydrated nodes/edges of a fact sheet:
-     * JPA structural KGE onto the JPA rows, and live-store node vectors back into the matrix/vector
-     * store (which re-indexes them for similarity search).
+     * structural KGE back into node metadata via the seam, and live-store text vectors back into
+     * the matrix/vector store (which re-indexes them for similarity search).
      *
      * @return the number of node + edge embeddings applied
      */
     public int importInto(Long factSheetId, byte[] data) {
-        if (factSheetId == null || data == null || data.length == 0) {
+        if (factSheetId == null || data == null || data.length == 0 || graphService == null) {
             return 0;
         }
         int applied = 0;
@@ -235,69 +215,49 @@ public class GraphEmbeddingSidecar {
                 return 0;
             }
 
-            // Section 1: JPA structural-KGE node embeddings.
+            // Section 1: structural-KGE node embeddings
             int nodeCount = in.readInt();
             for (int i = 0; i < nodeCount; i++) {
                 String typeName = in.readUTF();
                 String externalId = in.readUTF();
                 String algoName = in.readUTF();
                 long version = in.readLong();
-                // [H-5] kgEmbeddingUpdatedAt slot exists only in KGE2; KGE1 files have none.
                 long updatedAtMs = (magic == MAGIC_V2) ? in.readLong() : -1L;
                 byte[] emb = readBlock(in);
 
-                GraphNode node = nodeRepository
-                        .findByExternalIdAndNodeTypeAndFactSheetId(externalId, parseLevel(typeName), factSheetId)
-                        .orElse(null);
-                if (node == null) {
-                    continue;
-                }
+                if (externalId.isEmpty()) continue;
                 INDArray vec = converter.convertToEntityAttribute(emb);
-                if (vec == null) {
-                    continue;
-                }
-                node.setKgEmbedding(vec);
-                applyAlgorithm(algoName, node::setKgEmbeddingAlgorithm);
-                if (version >= 0) {
-                    node.setKgEmbeddingVersion(version);
-                }
-                if (updatedAtMs >= 0) {
-                    node.setKgEmbeddingUpdatedAt(Instant.ofEpochMilli(updatedAtMs));
-                }
-                nodeRepository.save(node);
+                if (vec == null) continue;
+
+                NodeLevel level = parseLevel(typeName);
+                graphService.getNodeByExternalIdInFactSheet(externalId, level, factSheetId)
+                        .ifPresent(node -> {
+                            KGEmbeddingAlgorithm algo = parseAlgorithm(algoName);
+                            Instant updAt = updatedAtMs >= 0 ? Instant.ofEpochMilli(updatedAtMs) : null;
+                            long ver = version >= 0 ? version : 0L;
+                            graphService.storeNodeKgEmbedding(node.getNodeId(), vec, algo, ver, updAt);
+                        });
                 applied++;
             }
 
-            // Section 2: JPA relation embeddings.
+            // Section 2: edge-type relation embeddings
             int edgeTypeCount = in.readInt();
             for (int i = 0; i < edgeTypeCount; i++) {
-                String typeName = in.readUTF();
+                String edgeTypeName = in.readUTF();
                 String algoName = in.readUTF();
                 long version = in.readLong();
                 byte[] emb = readBlock(in);
 
-                EdgeType type;
-                try {
-                    type = EdgeType.valueOf(typeName);
-                } catch (IllegalArgumentException ex) {
-                    continue;
-                }
                 INDArray vec = converter.convertToEntityAttribute(emb);
-                if (vec == null) {
-                    continue;
-                }
-                for (GraphEdge edge : edgeRepository.findByFactSheetIdAndEdgeType(factSheetId, type)) {
-                    edge.setKgRelationEmbedding(vec);
-                    applyAlgorithm(algoName, edge::setKgEmbeddingAlgorithm);
-                    if (version >= 0) {
-                        edge.setKgEmbeddingVersion(version);
-                    }
-                    edgeRepository.save(edge);
-                    applied++;
-                }
+                if (vec == null) continue;
+
+                KGEmbeddingAlgorithm algo = parseAlgorithm(algoName);
+                long ver = version >= 0 ? version : 0L;
+                graphService.storeEdgeTypeKgEmbedding(edgeTypeName, vec, algo, ver, factSheetId);
+                applied++;
             }
 
-            // Section 3 (KGE2 only): live-store node embeddings → reattach + re-index.
+            // Section 3 (KGE2 only): live-store text node embeddings
             if (magic == MAGIC_V2) {
                 applied += importLiveNodeEmbeddings(factSheetId, in);
             }
@@ -347,14 +307,12 @@ public class GraphEmbeddingSidecar {
         return block;
     }
 
-    private static void applyAlgorithm(String algoName, Consumer<KGEmbeddingAlgorithm> setter) {
-        if (algoName == null || algoName.isEmpty()) {
-            return;
-        }
+    private static KGEmbeddingAlgorithm parseAlgorithm(String algoName) {
+        if (algoName == null || algoName.isEmpty()) return null;
         try {
-            setter.accept(KGEmbeddingAlgorithm.valueOf(algoName));
+            return KGEmbeddingAlgorithm.valueOf(algoName);
         } catch (IllegalArgumentException ignored) {
-            // Unknown/renamed algorithm — keep the vector, drop the label.
+            return null;
         }
     }
 

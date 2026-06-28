@@ -117,6 +117,12 @@ public class GrepTool implements CliTool {
 
         Path dir = searchPath.isEmpty() ? context.getWorkingDirectory() : context.resolvePath(searchPath);
 
+        // Load the .gitignore directory prunes for this search root. This skips huge ignored
+        // DATA directories (model builds, downloaded corpora, generated indices) that the static
+        // exclusion list below can't know about — without suppressing ignored file *types*
+        // (*.json, *.log), which --no-ignore deliberately keeps searchable.
+        SearchExclusions.GitignoreDirFilter gitFilter = SearchExclusions.loadGitignoreDirFilter(dir);
+
         // Try ripgrep first, fall back to grep
         List<String> cmd = new ArrayList<>();
         boolean useRg = isRipgrepAvailable();
@@ -160,6 +166,11 @@ public class GrepTool implements CliTool {
                 cmd.add("--glob");
                 cmd.add("!" + ex);
             }
+            // Project-specific git-ignored data directories (no hard-coded names).
+            for (String ex : gitFilter.excludeDirArgs()) {
+                cmd.add("--glob");
+                cmd.add("!" + ex);
+            }
             cmd.add("--max-count");
             cmd.add(String.valueOf(MAX_MATCHES));
             cmd.add(pattern);
@@ -192,6 +203,10 @@ public class GrepTool implements CliTool {
             // monorepo (every target/, node_modules/, native build trees) — measured >30s (timed out)
             // vs ~2s with these excludes — and the blocking read makes the MCP call return "No matches".
             for (String ex : SearchExclusions.DIRS) {
+                cmd.add("--exclude-dir=" + ex);
+            }
+            // Project-specific git-ignored data directories (no hard-coded names).
+            for (String ex : gitFilter.excludeDirArgs()) {
                 cmd.add("--exclude-dir=" + ex);
             }
             if ("files".equals(outputMode)) {

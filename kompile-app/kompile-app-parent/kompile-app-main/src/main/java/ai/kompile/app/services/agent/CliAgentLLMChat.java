@@ -18,7 +18,12 @@ package ai.kompile.app.services.agent;
 
 import ai.kompile.core.agent.AgentProvider;
 import ai.kompile.core.crawl.graph.AgentCallContext;
+import ai.kompile.core.crawl.graph.CrawlProgressEvent;
 import ai.kompile.core.llm.chat.LLMChat;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationEventPublisher;
+
+import java.util.stream.Collectors;
 import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -50,19 +55,20 @@ import jakarta.annotation.PreDestroy;
 import java.io.*;
 import java.net.URL;
 import java.nio.charset.Charset;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
 /**
  * LLMChat implementation that uses locally installed CLI agents (Claude Code, Codex, Gemini CLI).
  * <p>
  * This provides LLM capabilities using CLI-based agents when no API-based LLM is configured.
- * It executes the agent as a subprocess and captures the output.
+ * Extraction calls go through a warm pool of PERSISTENT INTERACTIVE agent sessions managed by
+ * {@link HeadlessInteractiveSessionPool}. No one-shot spawns; no {@code -p} flag.
  * </p>
  * <p>
  * Priority: Loaded after API-based LLMChat implementations but before NoOpLLMChat.
@@ -77,38 +83,50 @@ public class CliAgentLLMChat implements LLMChat {
     private static final Logger log = LoggerFactory.getLogger(CliAgentLLMChat.class);
     private static final int DEFAULT_TIMEOUT_SECONDS = 120;
     private static final int DEFAULT_POOL_SIZE = 8;
+    /** Default rebatch budget: models to try per opencode extraction turn before giving up. */
+    private static final int DEFAULT_MAX_MODEL_ATTEMPTS = 8;
     private static final int MAX_POOL_SIZE = 32;
 
     private final AgentRegistryService agentRegistryService;
     private final AgentSubprocessExecutor subprocessExecutor;
     private final ClaudeStreamParser streamParser;
+    private final CliAgentModelService cliAgentModelService;
+    private final HeadlessInteractiveSessionPool sessionPool;
+    /** opencode extraction transport: a managed {@code opencode serve} subprocess (clean structured
+     *  turns over HTTP). The PTY {@link #sessionPool} is the claude/stream-json transport and is NOT
+     *  used for opencode (opencode has no stream-json REPL; its TUI mangles JSON). */
+    private final OpencodeServeManager opencodeServeManager;
+    /** Scores extraction-output correctness and merges A/B outputs into a weighted consensus. */
+    private final ExtractionConsensusService consensusService;
     private final ObjectMapper objectMapper = JsonUtils.standardMapper();
+    /** Publishes model-routing/de-escalation decisions as {@link CrawlProgressEvent.EventType#DECISION}
+     *  so they stream into the crawl UI (live) and the per-job timeline (past jobs). Optional so unit
+     *  tests and non-Spring contexts still construct this service. */
+    @Autowired(required = false)
+    private ApplicationEventPublisher eventPublisher;
     private volatile AgentProvider cachedAgent;
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // PROCESS POOL — pre-spawns CLI agent processes to eliminate startup latency.
-    // Each pooled process is alive and waiting for stdin input.
-    // ═══════════════════════════════════════════════════════════════════════════
-    private final LinkedBlockingQueue<Process> processPool = new LinkedBlockingQueue<>();
-    private final ExecutorService poolReplenisher = Executors.newSingleThreadExecutor(r -> {
-        Thread t = new Thread(r, "cli-agent-pool-replenisher");
-        t.setDaemon(true);
-        return t;
-    });
-    private volatile List<String> poolCommand;
-    private volatile Map<String, String> poolEnvironment;
+    // ─── opencode free-model alternation (per-spawn round-robin; concurrency-safe) ───────────────
+    /** Round-robin cursor over the dynamic model list from {@link CliAgentModelService#selectExtractionModels}. */
+    private final AtomicInteger opencodeRotationCursor = new AtomicInteger(0);
+
     private volatile int targetPoolSize = DEFAULT_POOL_SIZE;
     private final AtomicBoolean poolInitialized = new AtomicBoolean(false);
-    /** In-flight processes (taken from pool or freshly spawned) — tracked so {@code @PreDestroy}
-     *  can force-kill them immediately instead of blocking on each call's wait at shutdown. */
-    private final Set<Process> activeProcesses = ConcurrentHashMap.newKeySet();
 
     public CliAgentLLMChat(AgentRegistryService agentRegistryService,
                            AgentSubprocessExecutor subprocessExecutor,
-                           ClaudeStreamParser streamParser) {
+                           ClaudeStreamParser streamParser,
+                           CliAgentModelService cliAgentModelService,
+                           HeadlessInteractiveSessionPool sessionPool,
+                           OpencodeServeManager opencodeServeManager,
+                           ExtractionConsensusService consensusService) {
+        this.consensusService = consensusService;
         this.agentRegistryService = agentRegistryService;
         this.subprocessExecutor = subprocessExecutor;
         this.streamParser = streamParser;
+        this.cliAgentModelService = cliAgentModelService;
+        this.sessionPool = sessionPool;
+        this.opencodeServeManager = opencodeServeManager;
 
         // Log initialization
         if (agentRegistryService.hasAvailableAgents()) {
@@ -166,6 +184,97 @@ public class CliAgentLLMChat implements LLMChat {
         return agentRegistryService.getDefaultAgent().orElse(null);
     }
 
+    /**
+     * Per-spawn dynamic model selection for opencode: queries {@link CliAgentModelService#selectExtractionModels}
+     * (which applies the active policy — providerAllow, excludeMarkers, and health de-escalation) and returns
+     * the next model in the resulting ordered list via round-robin, or {@code null} when the agent is not
+     * opencode or discovery returns nothing. Because each pre-spawned pool process can be pinned to a
+     * different model, a warm pool ends up holding a mix of healthy free models so concurrent extraction
+     * calls spread across them. Never returns a paid/excluded model.
+     */
+    private String nextRotationModel(AgentProvider agent) {
+        if (agent == null) return null;
+        String name = agent.getName() == null ? "" : agent.getName().toLowerCase(Locale.ROOT);
+        if (!name.contains("opencode")) return null;
+        List<String> all = cliAgentModelService.selectExtractionModels(agent.getName());
+        if (all.isEmpty()) return null;
+        // Rotate over HEALTHY models only — a benched model (known to return empty or hang) is NOT
+        // retried until its bench expires; this stops the rebatch loop burning 60s on a benched
+        // silent-429 hang every cycle. Fall back to the full list only when everything is benched.
+        List<String> healthy = all.stream()
+                .filter(cliAgentModelService::isModelHealthy)
+                .collect(Collectors.toList());
+        if (healthy.isEmpty()) {
+            return all.get(Math.floorMod(opencodeRotationCursor.getAndIncrement(), all.size()));
+        }
+        int tick = opencodeRotationCursor.getAndIncrement();
+        // Epsilon-greedy: mostly EXPLOIT proven models (known to return clean output on the real
+        // prompt) and only periodically EXPLORE a fresh one, so the crawl converges to what works
+        // instead of re-trying the many models that return empty/hang. When a proven model fails it
+        // is benched (removed from `healthy`), so the next attempt naturally falls through to explore.
+        List<String> proven = healthy.stream()
+                .filter(cliAgentModelService::isModelProven)
+                .collect(Collectors.toList());
+        int exploreEvery = readExploreEveryFromConfig();
+        boolean exploit = !proven.isEmpty() && (exploreEvery <= 0 || tick % exploreEvery != 0);
+        List<String> pool = exploit ? proven : healthy;
+        return pool.get(Math.floorMod(tick, pool.size()));
+    }
+
+    /**
+     * True when the agent is opencode — detected the same way as {@link #nextRotationModel} so the
+     * transport split and the model-rotation policy can never disagree. opencode extraction goes
+     * through {@link OpencodeServeManager} (managed {@code opencode serve} HTTP); all other agents
+     * use the PTY {@link HeadlessInteractiveSessionPool}.
+     */
+    private boolean isOpencodeAgent(AgentProvider agent) {
+        if (agent == null) return false;
+        String name = agent.getName() == null ? "" : agent.getName().toLowerCase(Locale.ROOT);
+        if (name.contains("opencode")) return true;
+        String command = agent.getCommand() == null ? "" : agent.getCommand().toLowerCase(Locale.ROOT);
+        return command.contains("opencode");
+    }
+
+    /**
+     * Publish a per-call routing/de-escalation decision so the crawl UI and per-job timeline show
+     * exactly which model handled each extraction turn, how long it took, what timeout it was given,
+     * and — on failure — the symptom and how long the model was benched. Reuses the existing
+     * {@link CrawlProgressEvent.EventType#DECISION} → SSE → UI pipeline. No-op outside a crawl context;
+     * the slf4j decision line in {@code executeAgent} still records every call regardless.
+     */
+    private void publishRoutingDecision(String jobId, AgentProvider agent, String model,
+                                        CliAgentModelService.ModelOutcome outcome,
+                                        int timeoutSeconds, long latencyMs, int responseChars) {
+        String modelLabel = (model != null && !model.isBlank()) ? model : "default";
+        long benchSec = (outcome == CliAgentModelService.ModelOutcome.OK)
+                ? 0L
+                : cliAgentModelService.getOutcomeBackoffMs().getOrDefault(outcome, 0L) / 1000;
+
+        // Stamp the decision on this thread so the crawl dispatcher (which holds the job) can attach a
+        // model-routing TuningDecision that surfaces in the crawl UI. This works even though the LLM
+        // call runs on the dispatcher's timeout executor: the dispatcher captures it via a context
+        // holder before clearing the pooled thread — see CrawlLlmDispatcher.callLlmWithTimeout.
+        AgentCallContext.setModelDecision(new AgentCallContext.ModelDecision(
+                modelLabel, outcome.name(), latencyMs, timeoutSeconds, benchSec, responseChars));
+
+        // Best-effort live SSE nudge when a job id is bound to this thread (non-crawl CLI calls);
+        // the crawl path surfaces via the dispatcher's TuningDecision above, not this event.
+        if (eventPublisher == null || jobId == null || jobId.isBlank()) {
+            return;
+        }
+        String message = (outcome == CliAgentModelService.ModelOutcome.OK)
+                ? String.format("extraction → %s · OK · %d chars · %dms (timeout %ds)",
+                        modelLabel, responseChars, latencyMs, timeoutSeconds)
+                : String.format("extraction → %s · %s · %dms (timeout %ds) → benched %ds, de-escalating",
+                        modelLabel, outcome, latencyMs, timeoutSeconds, benchSec);
+        try {
+            eventPublisher.publishEvent(new CrawlProgressEvent(
+                    this, jobId, null, CrawlProgressEvent.EventType.DECISION, message));
+        } catch (Exception e) {
+            log.debug("Failed to publish routing decision for job {}: {}", jobId, e.getMessage());
+        }
+    }
+
     @Override
     public ChatClientRequestSpec prompt() {
         return new CliAgentRequestSpec(this, null);
@@ -193,8 +302,8 @@ public class CliAgentLLMChat implements LLMChat {
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
-     * Lazily initialize the process pool on first use.
-     * Pre-spawns {@code targetPoolSize} processes that are alive and waiting for stdin.
+     * Lazily initialize the headless interactive session pool on first use.
+     * Pre-warms {@code targetPoolSize} persistent interactive agent sessions.
      */
     private void ensurePoolInitialized() {
         if (poolInitialized.compareAndSet(false, true)) {
@@ -204,71 +313,13 @@ public class CliAgentLLMChat implements LLMChat {
                 return;
             }
             targetPoolSize = readPoolSizeFromConfig();
-            poolCommand = subprocessExecutor.buildInteractiveCommand(agent, true, false);
-            poolEnvironment = agent.safeEnvironment();
-            log.info("Initializing CLI agent process pool: size={}, command={}", targetPoolSize, poolCommand);
-            poolReplenisher.submit(() -> {
-                int spawned = 0;
-                for (int i = 0; i < targetPoolSize; i++) {
-                    Process p = spawnPoolProcess();
-                    if (p != null) {
-                        processPool.offer(p);
-                        spawned++;
-                    }
-                }
-                log.info("Process pool pre-warmed with {}/{} processes", spawned, targetPoolSize);
-            });
+            log.info("Initializing headless interactive session pool: size={}, agent={}",
+                    targetPoolSize, agent.getName());
+            // Pre-warm the pool with one session per rotation model (or one if no rotation).
+            // Each session is pinned to a specific model so the pool holds a healthy mix.
+            String initialModel = nextRotationModel(agent);
+            sessionPool.scheduleReplenish(agent, initialModel, subprocessExecutor, targetPoolSize);
         }
-    }
-
-    private Process spawnPoolProcess() {
-        List<String> cmd = poolCommand;
-        Map<String, String> env = poolEnvironment;
-        if (cmd == null) return null;
-        try {
-            ProcessBuilder pb = new ProcessBuilder(cmd);
-            pb.redirectErrorStream(true);
-            if (env != null) {
-                pb.environment().putAll(env);
-            }
-            Process process = pb.start();
-            log.debug("Spawned pool process PID {}", process.pid());
-            return process;
-        } catch (Exception e) {
-            log.warn("Failed to spawn pool process: {}", e.getMessage());
-            return null;
-        }
-    }
-
-    private void replenishPool() {
-        int deficit = targetPoolSize - processPool.size();
-        if (deficit <= 0) return;
-        int spawned = 0;
-        for (int i = 0; i < deficit; i++) {
-            Process p = spawnPoolProcess();
-            if (p != null) {
-                processPool.offer(p);
-                spawned++;
-            }
-        }
-        if (spawned > 0) {
-            log.debug("Replenished pool with {} processes (total: {})", spawned, processPool.size());
-        }
-    }
-
-    /**
-     * Take a live process from the pool, discarding any dead ones.
-     * Returns null if pool is empty.
-     */
-    private Process takeFromPool() {
-        Process process;
-        while ((process = processPool.poll()) != null) {
-            if (process.isAlive()) {
-                return process;
-            }
-            log.debug("Discarding dead pool process PID {}", process.pid());
-        }
-        return null;
     }
 
     private int readPoolSizeFromConfig() {
@@ -304,21 +355,85 @@ public class CliAgentLLMChat implements LLMChat {
         return DEFAULT_TIMEOUT_SECONDS;
     }
 
+    /**
+     * Max number of models to try for a single opencode extraction turn before giving up (rebatch
+     * budget). Read from {@code cli-llm-config.json} key {@code maxModelAttempts} so it is tunable on
+     * the fly; defaults to {@link #DEFAULT_MAX_MODEL_ATTEMPTS}. Bounded to [1, 32] to cap worst-case
+     * latency when many models hang/return empty.
+     */
+    private int readMaxModelAttemptsFromConfig() {
+        try {
+            Path configPath = Path.of(
+                    System.getProperty("user.home"), ".kompile", "config", "cli-llm-config.json");
+            if (Files.exists(configPath)) {
+                JsonNode root = objectMapper.readTree(configPath.toFile());
+                if (root.has("maxModelAttempts")) {
+                    return Math.max(1, Math.min(32, root.get("maxModelAttempts").asInt(DEFAULT_MAX_MODEL_ATTEMPTS)));
+                }
+            }
+        } catch (Exception e) {
+            log.debug("Could not read maxModelAttempts from config: {}", e.getMessage());
+        }
+        return DEFAULT_MAX_MODEL_ATTEMPTS;
+    }
+
+    /**
+     * Number of DISTINCT models to run the same extraction prompt through for A/B weighted consensus.
+     * 1 (default) = single model, no A/B. >1 enables A/B: collect that many OK outputs from different
+     * models and merge them weighted by per-output correctness × cross-model agreement. Read from
+     * {@code cli-llm-config.json} key {@code abTestModelCount}; bounded to [1, 5].
+     */
+    private int readAbTestModelCountFromConfig() {
+        try {
+            Path configPath = Path.of(
+                    System.getProperty("user.home"), ".kompile", "config", "cli-llm-config.json");
+            if (Files.exists(configPath)) {
+                JsonNode root = objectMapper.readTree(configPath.toFile());
+                if (root.has("abTestModelCount")) {
+                    return Math.max(1, Math.min(5, root.get("abTestModelCount").asInt(1)));
+                }
+            }
+        } catch (Exception e) {
+            log.debug("Could not read abTestModelCount from config: {}", e.getMessage());
+        }
+        return 1;
+    }
+
+    /**
+     * Epsilon-greedy exploration cadence for opencode model rotation: every Nth pick EXPLORES a fresh
+     * (unproven) model instead of exploiting a proven one. Larger = exploit more (converge faster, less
+     * alternation); {@code <=0} = never explore once a proven model exists. Read from
+     * {@code cli-llm-config.json} key {@code modelExploreEvery}; default 7.
+     */
+    private int readExploreEveryFromConfig() {
+        try {
+            Path configPath = Path.of(
+                    System.getProperty("user.home"), ".kompile", "config", "cli-llm-config.json");
+            if (Files.exists(configPath)) {
+                JsonNode root = objectMapper.readTree(configPath.toFile());
+                if (root.has("modelExploreEvery")) {
+                    return root.get("modelExploreEvery").asInt(7);
+                }
+            }
+        } catch (Exception e) {
+            log.debug("Could not read modelExploreEvery from config: {}", e.getMessage());
+        }
+        return 7;
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
-    // RUNTIME STATUS — cheap, read-only, never spawns processes
+    // RUNTIME STATUS — cheap, read-only
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
-     * Snapshot of the CLI LLM agent pool state, safe to call at any time.
-     * All counts reflect live values from the concurrent data structures;
-     * no locks are taken and no processes are spawned.
+     * Snapshot of the CLI LLM agent session pool state, safe to call at any time.
      *
      * @param activeAgent  display name of the currently configured agent, or null if none
      * @param agentCommand raw CLI command (e.g. "opencode"), or null if none
      * @param poolSize     configured target pool size ({@code targetPoolSize})
-     * @param pooled       number of warm/idle processes currently in the pool
-     * @param inFlight     number of processes actively serving a call right now
-     * @param liveTotal    pooled + inFlight (the total subprocess count right now)
+     * @param pooled       number of warm/idle sessions currently in the headless pool
+     * @param inFlight     always 0 (sessions are borrowed exclusively; not tracked separately)
+     * @param liveTotal    pooled (+ any actively-borrowed sessions, which are not tracked here)
      */
     public record CliAgentRuntimeStatus(
             String activeAgent,
@@ -331,50 +446,26 @@ public class CliAgentLLMChat implements LLMChat {
 
     /**
      * Returns a cheap, null-safe snapshot of the current CLI LLM agent pool state.
-     * Returns zeros for all counts when the pool has never been initialized.
      */
     public CliAgentRuntimeStatus getRuntimeStatus() {
         AgentProvider agent = cachedAgent; // volatile read — no side-effects
         String agentDisplayName = agent != null ? agent.getDisplayName() : null;
         String agentCommand = agent != null ? agent.getCommand() : null;
-        int pooled = processPool.size();
-        int inFlight = activeProcesses.size();
+        int pooled = sessionPool.idleSize();
         return new CliAgentRuntimeStatus(
                 agentDisplayName,
                 agentCommand,
                 targetPoolSize,
                 pooled,
-                inFlight,
-                pooled + inFlight
+                0,
+                pooled
         );
     }
 
     @PreDestroy
     public void shutdown() {
-        log.info("Shutting down CLI agent process pool ({} pooled, {} in-flight)",
-                processPool.size(), activeProcesses.size());
-        poolReplenisher.shutdownNow();
-        // Force-kill in-flight calls first so caller threads blocked in waitFor() return at once.
-        for (Process inflight : activeProcesses) {
-            try {
-                if (inflight.isAlive()) {
-                    inflight.destroyForcibly();
-                }
-            } catch (Exception ignored) {
-                // best-effort
-            }
-        }
-        activeProcesses.clear();
-        Process p;
-        while ((p = processPool.poll()) != null) {
-            try {
-                if (p.isAlive()) {
-                    p.destroyForcibly();
-                }
-            } catch (Exception e) {
-                log.warn("Error destroying pooled agent process during shutdown: {}", e.getMessage());
-            }
-        }
+        log.info("Shutting down CliAgentLLMChat (headless session pool shutdown is handled by HeadlessInteractiveSessionPool)");
+        // HeadlessInteractiveSessionPool has its own @PreDestroy that terminates all sessions.
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -382,11 +473,27 @@ public class CliAgentLLMChat implements LLMChat {
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
-     * Execute the CLI agent with the given prompt.
-     * Takes a pre-spawned process from the pool when available, falling back to
-     * a fresh spawn on pool miss. The pool is replenished asynchronously after each use.
+     * Execute the CLI agent with the given prompt via a PERSISTENT INTERACTIVE session.
+     *
+     * <p>A warm session is borrowed from {@link HeadlessInteractiveSessionPool}, the prompt is
+     * written to its stdin, and the call blocks until the session's reader thread signals
+     * turn-complete (via {@link ClaudeStreamParser} for stream-json agents or a prompt-pattern
+     * for plain-text agents). The session is returned to the pool after the turn so it can
+     * serve the next extraction call without re-spawning.
+     *
+     * <p>On timeout or session failure the session is killed and a new one is spawned
+     * asynchronously to refill the pool. The pool size and per-call timeout are both
+     * read from {@code ~/.kompile/config/cli-llm-config.json} (same keys as before).
+     *
+     * <p>Model rotation (opencode free-model alternation) and health de-escalation via
+     * {@link CliAgentModelService} are fully preserved: the model used for each turn is
+     * the one the session was pinned to at spawn time; that model is reported back after
+     * the call for outcome recording.
      */
     String executeAgent(String userMessage, String systemMessage) {
+        // Capture the crawl job id the orchestrator stamped on this thread BEFORE clearing context,
+        // so routing/de-escalation decisions can be routed to the right job in the UI/timeline.
+        String crawlJobId = AgentCallContext.getJobId();
         // Reset any session id left on this (possibly pooled) thread by a previous call.
         AgentCallContext.clear();
         AgentProvider agent = getActiveAgent();
@@ -402,143 +509,99 @@ public class CliAgentLLMChat implements LLMChat {
             fullPrompt = userMessage;
         }
 
-        boolean useStreamJson = streamParser.supportsStreamJson(agent.getName());
-
-        // Ensure pool is initialized, then try to take a pre-spawned process
+        // Ensure the session pool is pre-warmed.
         ensurePoolInitialized();
 
-        Process process = null;
-        try {
-            process = takeFromPool();
-            if (process != null) {
-                log.info("CLI agent '{}' pool hit — reusing PID {}", agent.getName(), process.pid());
-            } else {
-                // Pool miss — spawn fresh
-                List<String> command = subprocessExecutor.buildInteractiveCommand(agent, true, false);
-                ProcessBuilder pb = new ProcessBuilder(command);
-                pb.redirectErrorStream(true);
-                pb.environment().putAll(agent.safeEnvironment());
-                process = pb.start();
-                log.info("CLI agent '{}' pool miss — spawned fresh PID {}", agent.getName(), process.pid());
-            }
+        int timeoutCeiling = readTimeoutFromConfig();
+        int poolSize = targetPoolSize;
+        boolean opencode = isOpencodeAgent(agent);
 
-            // Replenish pool asynchronously
-            poolReplenisher.submit(this::replenishPool);
+        // Rebatch-on-failure with model de-escalation: try successive HEALTHY models — each failure
+        // benches its model per-symptom (so the next attempt picks a different one) — until one returns
+        // a usable response or the attempt budget is exhausted. This converts the old "one model fails →
+        // batch dropped (0 entities)" into "converge to a working model within the batch". The first
+        // batch explores + benches the dead/slow models; once a model proves OK it is preferred by
+        // selectExtractionModels, so subsequent batches use it immediately. Non-opencode agents keep a
+        // single attempt (the PTY pool pins its own model).
+        int maxAttempts = opencode ? readMaxModelAttemptsFromConfig() : 1;
+        int abTargetCount = opencode ? readAbTestModelCountFromConfig() : 1; // 1 = single model (no A/B)
 
-            // Track this in-flight process so shutdown can force-kill it immediately.
-            activeProcesses.add(process);
+        // Collected OK outputs (scored for correctness) — 1 for normal mode, up to abTargetCount for A/B.
+        List<ExtractionConsensusService.ScoredExtraction> okOutputs = new ArrayList<>();
+        String lastContent = "";
+        String rotationModel;
+        CliAgentModelService.ModelOutcome outcome = CliAgentModelService.ModelOutcome.OK;
+        int callTimeoutSeconds = timeoutCeiling;
+        long latencyMs = 0L;
 
-            // Write prompt to stdin, then close stdin so the agent knows input is complete
-            try (BufferedWriter writer = new BufferedWriter(
-                    new OutputStreamWriter(process.getOutputStream(), StandardCharsets.UTF_8))) {
-                writer.write(fullPrompt);
-                writer.newLine();
-                writer.flush();
-            }
-            log.info("CLI agent '{}': wrote {} chars to stdin", agent.getName(), fullPrompt.length());
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            rotationModel = nextRotationModel(agent);
 
-            // Stream stdout directly — read every line as it arrives
-            StringBuilder textOutput = new StringBuilder();
-            try (BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
-                String rawLine;
-                while ((rawLine = reader.readLine()) != null) {
-                    // Strip TUI escape sequences that leak from agent subprocesses
-                    String line = ClaudeStreamParser.stripAnsi(rawLine);
-                    if (line.isBlank()) continue;
+            // Adaptive per-model timeout: an unproven model gets a short probe leash so a silent-429
+            // hang is benched in ~seconds rather than burning the full ceiling; a proven model gets a
+            // latency-scaled budget up to the ceiling. The ceiling applies when no model is pinned.
+            callTimeoutSeconds = (rotationModel != null)
+                    ? cliAgentModelService.adaptiveTimeoutSeconds(rotationModel, timeoutCeiling)
+                    : timeoutCeiling;
 
-                    if (line.trim().startsWith("{")) {
-                        try {
-                            JsonNode json = objectMapper.readTree(line);
-                            String type = json.has("type") ? json.get("type").asText() : null;
+            // Transport split: opencode → managed `opencode serve` HTTP subprocess (clean structured
+            // turns); everything else → the PTY headless interactive session pool.
+            long startMs = System.currentTimeMillis();
+            String rawContent = opencode
+                    ? opencodeServeManager.prompt(agent, rotationModel, fullPrompt, callTimeoutSeconds)
+                    : sessionPool.prompt(agent, rotationModel, subprocessExecutor,
+                            fullPrompt, callTimeoutSeconds, poolSize);
+            latencyMs = System.currentTimeMillis() - startMs;
 
-                            // Capture the agent chat session id when the CLI first reports it
-                            // (claude: system/init session_id; opencode/others: a session field).
-                            captureSessionId(json);
+            String content = rawContent == null ? "" : rawContent.trim();
+            boolean blank = content.isEmpty() || content.startsWith("Error:");
+            lastContent = content;
 
-                            // Claude stream-json: extract text from "assistant" events
-                            if ("result".equals(type)) {
-                                log.info("CLI agent '{}': stream result event received", agent.getName());
-                                break;
-                            } else if ("assistant".equals(type)) {
-                                JsonNode message = json.has("message") ? json.get("message") : json;
-                                if (message.has("content") && message.get("content").isArray()) {
-                                    for (JsonNode block : message.get("content")) {
-                                        if ("text".equals(block.path("type").asText("text"))
-                                                && block.has("text")) {
-                                            textOutput.append(block.get("text").asText());
-                                        }
-                                    }
-                                }
-                            }
-                            // opencode json: extract text from "text" events
-                            else if ("text".equals(type)) {
-                                JsonNode part = json.has("part") ? json.get("part") : null;
-                                if (part != null && part.has("text")) {
-                                    textOutput.append(part.get("text").asText());
-                                }
-                            }
-                        } catch (Exception e) {
-                            // Not valid JSON — treat as plain text
-                            textOutput.append(line).append('\n');
-                        }
-                    } else {
-                        textOutput.append(line).append('\n');
-                    }
+            // Classify the symptom and react: record latency on success (feeds the adaptive timeout),
+            // bench the model per-symptom on failure (quota=long, rate-limit/timeout=short, empty=medium).
+            outcome = cliAgentModelService.classifyOutcome(rawContent, blank);
+            double correctness = 0.0;
+            if (rotationModel != null) {
+                if (outcome == CliAgentModelService.ModelOutcome.OK) {
+                    cliAgentModelService.recordModelLatency(rotationModel, latencyMs);
+                    // Score the output's correctness (well-formed entities/relationships, not merely
+                    // non-empty) and record it so selection prefers models that produce GOOD output;
+                    // collect the scored output for the A/B weighted-consensus merge below.
+                    ExtractionConsensusService.ScoredExtraction scored =
+                            consensusService.score(rotationModel, rawContent);
+                    correctness = scored.correctness();
+                    cliAgentModelService.recordModelCorrectness(rotationModel, correctness);
+                    okOutputs.add(scored);
                 }
+                cliAgentModelService.recordModelOutcome(rotationModel, outcome);
             }
+            log.info("CLI agent '{}' attempt {}/{} model={} outcome={} correctness={} chars={} timeout={}s latency={}ms",
+                    agent.getName(), attempt, maxAttempts, rotationModel != null ? rotationModel : "default",
+                    outcome, String.format(Locale.ROOT, "%.2f", correctness), content.length(),
+                    callTimeoutSeconds, latencyMs);
 
-            // Wait for process exit with configurable timeout (cli-llm-config.json "timeoutSeconds")
-            int timeoutSeconds = readTimeoutFromConfig();
-            boolean exited = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
-            if (!exited) {
-                log.warn("CLI agent '{}' timed out after {}s, destroying", agent.getName(), timeoutSeconds);
-                process.destroyForcibly();
-            }
+            // Surface the routing/de-escalation decision to the crawl UI + per-job timeline.
+            publishRoutingDecision(crawlJobId, agent, rotationModel, outcome, callTimeoutSeconds, latencyMs, content.length());
 
-            String content = textOutput.toString().trim();
-            log.info("CLI agent '{}' response: {} chars (exit={})", agent.getName(), content.length(),
-                    exited ? process.exitValue() : "timeout");
-            return content;
+            if (rotationModel == null) {
+                break; // no model rotation to fall back on — single attempt
+            }
+            if (outcome == CliAgentModelService.ModelOutcome.OK && okOutputs.size() >= abTargetCount) {
+                break; // collected enough usable outputs (1 = first-OK-wins; >1 = A/B set complete)
+            }
+            // else: failed (model benched) OR still collecting A/B outputs — try the next healthy model
+        }
 
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            log.warn("CLI agent '{}' execution interrupted", agent.getName());
-            return "Error executing CLI agent: interrupted";
-        } catch (Exception e) {
-            log.error("Error executing CLI agent '{}': {}", agent.getName(), e.getMessage(), e);
-            return "Error executing CLI agent: " + e.getMessage();
-        } finally {
-            if (process != null) {
-                activeProcesses.remove(process);
-            }
+        // Produce the result: nothing usable → last raw content (the caller sees the failure);
+        // single OK → its raw JSON unchanged; multiple OK → weighted-consensus merge (entities and
+        // relationships weighted by each output's correctness × cross-model agreement).
+        if (okOutputs.isEmpty()) {
+            return lastContent;
         }
-    }
-
-    /**
-     * Capture the CLI agent's chat session id from a parsed stream-json event, if present,
-     * publishing it to {@link AgentCallContext} for the dispatcher to attach to the transcript.
-     * Only the first session id seen per call is kept.
-     */
-    private void captureSessionId(JsonNode json) {
-        if (AgentCallContext.getSessionId() != null) {
-            return;
+        if (okOutputs.size() == 1) {
+            return okOutputs.get(0).rawJson();
         }
-        for (String key : new String[]{"session_id", "sessionId", "sessionID"}) {
-            JsonNode v = json.get(key);
-            if (v != null && v.isTextual() && !v.asText().isBlank()) {
-                AgentCallContext.setSessionId(v.asText());
-                return;
-            }
-        }
-        JsonNode session = json.get("session");
-        if (session != null) {
-            if (session.isTextual() && !session.asText().isBlank()) {
-                AgentCallContext.setSessionId(session.asText());
-            } else if (session.isObject() && session.has("id") && session.get("id").isTextual()) {
-                AgentCallContext.setSessionId(session.get("id").asText());
-            }
-        }
+        return consensusService.merge(okOutputs);
     }
 
     // ========================================

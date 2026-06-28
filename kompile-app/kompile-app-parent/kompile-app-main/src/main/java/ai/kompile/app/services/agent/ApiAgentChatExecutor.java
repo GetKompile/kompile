@@ -18,8 +18,12 @@ package ai.kompile.app.services.agent;
 
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.core.agent.AgentProvider;
+import ai.kompile.core.citation.CitationDto;
 import ai.kompile.core.retrievers.RetrievedDoc;
+import ai.kompile.core.source.SourceMetadataConstants;
 import ai.kompile.app.web.dto.AgentChatRequest;
+import ai.kompile.knowledgegraph.citation.CitationSupport;
+import ai.kompile.knowledgegraph.domain.GraphProvenanceKeys;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -450,13 +454,95 @@ public class ApiAgentChatExecutor {
             source.put("index", index);
             source.put("id", doc.getId() != null ? doc.getId() : "doc-" + index);
             source.put("score", doc.getScore() != null ? doc.getScore() : 0.0);
+
+            // Source name extracted from metadata (parity with AgentChatService)
+            String sourceName = extractSourceName(doc);
+            source.put("sourceName", sourceName);
+
             String content = doc.getText();
             source.put("preview", content.length() > 300 ? content.substring(0, 300) + "..." : content);
             source.put("content", content.length() > 2000 ? content.substring(0, 2000) + "... [truncated]" : content);
+
+            // Safe metadata (string/number/boolean values only)
+            Map<String, Object> safeMetadata = new HashMap<>();
+            if (doc.getMetadata() != null) {
+                for (Map.Entry<String, Object> entry : doc.getMetadata().entrySet()) {
+                    if (entry.getValue() instanceof String
+                            || entry.getValue() instanceof Number
+                            || entry.getValue() instanceof Boolean) {
+                        safeMetadata.put(entry.getKey(), entry.getValue());
+                    }
+                }
+                source.put("metadata", safeMetadata);
+            }
+
+            // Uniform citation object
+            CitationDto citation = CitationSupport.from(doc.getMetadata(), doc.getScore(), null);
+            source.put("citation", citation);
+
+            // Graph linkage: nodeId for "View in knowledge graph", documentId for document navigation
+            String nodeId = extractMetadataString(doc.getMetadata(), "node_id", "nodeId", "externalId");
+            if (nodeId == null && doc.getId() != null && !doc.getId().startsWith("doc-")) {
+                nodeId = doc.getId();
+            }
+            if (nodeId != null) {
+                source.put("nodeId", nodeId);
+            }
+            String documentId = extractMetadataString(doc.getMetadata(),
+                    SourceMetadataConstants.SOURCE_ID,          // "source_id"
+                    GraphProvenanceKeys.SOURCE_DOCUMENT_ID);    // "_sourceDocumentId"
+            if (documentId == null && citation != null && citation.sourceId() != null) {
+                documentId = citation.sourceId();
+            }
+            if (documentId != null) {
+                source.put("documentId", documentId);
+            }
+
             sources.add(source);
             index++;
         }
         return sources;
+    }
+
+    /**
+     * Return the first non-blank string value found in {@code metadata} under any of
+     * the supplied keys, or {@code null} if none match.
+     */
+    private String extractMetadataString(Map<String, Object> metadata, String... keys) {
+        if (metadata == null) return null;
+        for (String key : keys) {
+            Object v = metadata.get(key);
+            if (v instanceof String s && !s.isBlank()) {
+                return s;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Extract a readable source name from document metadata.
+     */
+    private String extractSourceName(RetrievedDoc doc) {
+        if (doc.getMetadata() != null) {
+            String[] nameKeys = {"source", "file_name", "fileName", "title", "name", "path"};
+            for (String key : nameKeys) {
+                Object value = doc.getMetadata().get(key);
+                if (value instanceof String name && !name.isEmpty()) {
+                    if (name.contains("/") || name.contains("\\")) {
+                        return name.substring(Math.max(name.lastIndexOf('/'), name.lastIndexOf('\\')) + 1);
+                    }
+                    return name;
+                }
+            }
+        }
+        if (doc.getId() != null && !doc.getId().isEmpty()) {
+            String id = doc.getId();
+            if (id.contains("/") || id.contains("\\")) {
+                return id.substring(Math.max(id.lastIndexOf('/'), id.lastIndexOf('\\')) + 1);
+            }
+            return id.length() > 30 ? id.substring(0, 30) + "..." : id;
+        }
+        return "Document";
     }
 
     @jakarta.annotation.PreDestroy

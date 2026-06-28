@@ -23,7 +23,7 @@ import org.springframework.scheduling.annotation.EnableAsync;
         "ai.kompile.graphchangetracking",
         "ai.kompile.knowledgegraph"  // brings in IncrementalReasoningOrchestrator + KbGroundingService
 })
-@EnableAsync
+@EnableAsync(proxyTargetClass = true)
 public class GraphChangeTrackingAutoConfiguration {
 
     @Bean

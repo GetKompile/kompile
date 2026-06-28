@@ -70,7 +70,8 @@ class MatrixKnowledgeGraphServiceEdgeTest {
                 null, "desc", metaJson, null, 42L);
 
         ArgumentCaptor<Boolean> bidi = ArgumentCaptor.forClass(Boolean.class);
-        verify(graphStore).addEdge(eq(DEFAULT_GRAPH_ID), eq("a"), eq("b"), eq(1.0), anyString(),
+        // factSheetId 42 → segmented graph "factsheet_42"
+        verify(graphStore).addEdge(eq("factsheet_42"), eq("a"), eq("b"), eq(1.0), anyString(),
                 bidi.capture(), any(), any(), any());
         assertTrue(bidi.getValue(), "[M-3] imported bidirectional=true must override the HIERARCHICAL default");
         assertTrue(edge.getBidirectional());

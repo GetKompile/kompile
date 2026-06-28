@@ -43,8 +43,9 @@ public class PslController {
         int maxNodes = request.maxNodes() != null ? request.maxNodes() : 100;
         Map<String, Double> evidence = request.evidence() != null ? request.evidence() : Map.of();
 
+        List<String> seeds = request.seedNodeIds() != null ? request.seedNodeIds() : List.of();
         PslInferenceResult result = pslService.infer(
-                request.seedNodeIds(), evidence, maxDepth, maxNodes);
+                seeds, evidence, maxDepth, maxNodes);
         return ResponseEntity.ok(result);
     }
 
@@ -84,11 +85,12 @@ public class PslController {
     /** Program/grounding statistics for a subgraph without running inference. */
     @GetMapping("/stats")
     public ResponseEntity<Map<String, Object>> stats(
-            @RequestParam String nodeId,
+            @RequestParam(required = false) String nodeId,
             @RequestParam(defaultValue = "3") int maxDepth,
             @RequestParam(defaultValue = "100") int maxNodes) {
+        List<String> seeds = (nodeId == null || nodeId.isBlank()) ? List.of() : List.of(nodeId);
         Map<String, Object> stats = pslService.programStatistics(
-                List.of(nodeId), maxDepth, maxNodes);
+                seeds, maxDepth, maxNodes);
         return ResponseEntity.ok(stats);
     }
 

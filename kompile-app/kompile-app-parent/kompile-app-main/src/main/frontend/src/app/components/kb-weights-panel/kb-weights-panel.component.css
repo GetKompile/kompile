@@ -296,3 +296,243 @@ body.dark-theme .how-learned-body {
   background: #1e1e1e;
   border-top-color: #444;
 }
+
+/* ── Session management ─────────────────────────────────────────────────────── */
+.session-section {
+  margin: 8px 0 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-color, #e0e0e0);
+  border-radius: 8px;
+  background: var(--bg-surface, #fff);
+}
+
+.session-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.session-icon {
+  color: var(--accent-color, #1976d2);
+  font-size: 20px;
+  width: 20px;
+  height: 20px;
+}
+
+.session-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary, #212121);
+}
+
+.session-desc {
+  font-size: 12px;
+  color: var(--text-secondary, #666);
+  margin: 0 0 10px;
+  line-height: 1.5;
+}
+
+.session-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.session-feedback {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  margin-bottom: 10px;
+}
+
+.session-feedback-ok {
+  background: rgba(76, 175, 80, 0.10);
+  color: #2e7d32;
+  border-left: 3px solid #4CAF50;
+}
+
+.session-feedback-error {
+  background: rgba(244, 67, 54, 0.10);
+  color: #c62828;
+  border-left: 3px solid #F44336;
+}
+
+.confirm-box {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--border-color, #e0e0e0);
+  border-radius: 6px;
+  background: var(--bg-body, #fafafa);
+}
+
+.confirm-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+
+.warn-icon { color: #e65100; }
+
+.confirm-text {
+  font-size: 13px;
+  color: var(--text-primary, #333);
+  flex: 1;
+  min-width: 200px;
+}
+
+.inline-spinner {
+  display: inline-block;
+  vertical-align: middle;
+}
+
+/* ── Backups panel ──────────────────────────────────────────────────────────── */
+.backups-section {
+  margin-top: 4px;
+  margin-bottom: 4px;
+}
+
+.backups-card {
+  border: 1px solid var(--border-color, #e0e0e0);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.backups-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 14px;
+  background: var(--bg-body, #fafafa);
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  font-size: 14px;
+  color: var(--text-primary, #212121);
+  transition: background 0.15s;
+}
+
+.backups-toggle:hover {
+  background: var(--bg-hover, rgba(0, 0, 0, 0.04));
+}
+
+.backups-body {
+  padding: 12px 14px 14px;
+  background: var(--bg-surface, #fff);
+  border-top: 1px solid var(--border-color, #e0e0e0);
+}
+
+.backups-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.backup-tab-btn {
+  padding: 4px 14px;
+  border: 1px solid var(--border-color, #ccc);
+  border-radius: 16px;
+  background: transparent;
+  font-size: 13px;
+  cursor: pointer;
+  color: var(--text-secondary, #555);
+  transition: background 0.12s, color 0.12s;
+}
+
+.backup-tab-btn.active {
+  background: var(--accent-color, #1976d2);
+  color: #fff;
+  border-color: var(--accent-color, #1976d2);
+}
+
+.backup-tab-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.backups-controls {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.backup-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.backup-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 4px;
+  border-bottom: 1px solid var(--border-color, #f0f0f0);
+  font-size: 13px;
+  flex-wrap: wrap;
+}
+
+.backup-icon {
+  font-size: 16px;
+  width: 16px;
+  height: 16px;
+  color: var(--text-secondary, #888);
+  flex-shrink: 0;
+}
+
+.backup-id {
+  font-family: monospace;
+  font-size: 12px;
+  flex: 1;
+  color: var(--text-primary, #333);
+}
+
+.backup-count {
+  font-size: 12px;
+  color: var(--text-secondary, #888);
+  white-space: nowrap;
+}
+
+.inline-confirm {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.confirm-text-sm {
+  font-size: 12px;
+  color: var(--text-primary, #333);
+}
+
+body.dark-theme .session-section {
+  background: #1e1e1e;
+  border-color: #444;
+}
+
+body.dark-theme .session-title { color: #e0e0e0; }
+body.dark-theme .session-desc { color: #aaa; }
+body.dark-theme .confirm-box { background: #2a2a2a; border-color: #555; }
+body.dark-theme .confirm-text { color: #ccc; }
+
+body.dark-theme .session-feedback-ok { background: rgba(76,175,80,0.15); color: #81c784; }
+body.dark-theme .session-feedback-error { background: rgba(244,67,54,0.15); color: #ef9a9a; }
+
+body.dark-theme .backups-card { border-color: #444; }
+body.dark-theme .backups-toggle { background: #2a2a2a; color: #e0e0e0; }
+body.dark-theme .backups-toggle:hover { background: #333; }
+body.dark-theme .backups-body { background: #1e1e1e; border-top-color: #444; }
+body.dark-theme .backup-tab-btn { border-color: #555; color: #ccc; }
+body.dark-theme .backup-tab-btn.active { background: #1565c0; border-color: #1565c0; color: #fff; }
+body.dark-theme .backup-row { border-bottom-color: #333; }
+body.dark-theme .backup-id { color: #e0e0e0; }

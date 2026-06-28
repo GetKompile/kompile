@@ -10,11 +10,12 @@
 package ai.kompile.app.web.controllers.explain;
 
 import ai.kompile.event.attribution.service.EventAttributionService;
+import ai.kompile.event.attribution.service.PslReasoningService;
+import ai.kompile.event.attribution.service.BayesianNetworkService;
 import ai.kompile.graph.reasoning.domain.AttributionResult;
 import ai.kompile.graph.reasoning.fol.InferredFact;
 import ai.kompile.graph.reasoning.fol.grounding.VerifyResult;
 import ai.kompile.knowledgegraph.grounding.KbGroundingService;
-import ai.kompile.knowledgegraph.reasoning.KnowledgeGraphReasoningAdapter;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -40,8 +41,7 @@ import static org.mockito.Mockito.when;
  *
  * <p>Uses direct controller instantiation (no Spring context) with a real
  * {@link KbGroundingService} backed by in-memory stores. The
- * {@link KnowledgeGraphReasoningAdapter} is mocked because it depends on the full
- * {@link KnowledgeGraphService} store.</p>
+ * {@link KnowledgeGraphService} store is mocked.</p>
  */
 @ExtendWith(MockitoExtension.class)
 @DisplayName("ExplainController")
@@ -53,6 +53,12 @@ class ExplainControllerTest {
     @Mock
     private EventAttributionService attributionService;
 
+    @Mock
+    private PslReasoningService pslService;
+
+    @Mock
+    private BayesianNetworkService bayesianService;
+
     private KbGroundingService groundingService;
     private ExplainOrchestrator orchestrator;
     private ExplainController controller;
@@ -60,7 +66,6 @@ class ExplainControllerTest {
     @BeforeEach
     void setUp() {
         groundingService = new KbGroundingService();
-        KnowledgeGraphReasoningAdapter adapter = new KnowledgeGraphReasoningAdapter(kgService);
         // Default: empty attribution result (no chains) — overridden per causal tests where needed.
         // lenient() prevents UnnecessaryStubbingException in non-causal tests.
         lenient().when(attributionService.explain(any())).thenReturn(
@@ -68,7 +73,7 @@ class ExplainControllerTest {
                         .targetNodeId("default")
                         .computedAt(Instant.now())
                         .build());
-        orchestrator = new ExplainOrchestrator(groundingService, adapter, attributionService);
+        orchestrator = new ExplainOrchestrator(groundingService, kgService, attributionService, pslService, bayesianService);
         controller = new ExplainController(orchestrator, groundingService);
     }
 

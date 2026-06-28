@@ -21,6 +21,7 @@ import ai.kompile.knowledgegraph.matrix.algorithms.MatrixGraphAlgorithms;
 import ai.kompile.knowledgegraph.matrix.model.AdjacencyMatrixGraph;
 import ai.kompile.knowledgegraph.matrix.model.MatrixGraphNode;
 import org.nd4j.linalg.api.ndarray.INDArray;
+import org.nd4j.linalg.factory.Nd4j;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -113,7 +114,12 @@ public class CommunitySummaryService {
             byCommunity.computeIfAbsent(e.getValue(), x -> new ArrayList<>()).add(e.getKey());
         }
 
-        List<CommunityReport> reports = new ArrayList<>();
+        // First pass: build summaries for all qualifying communities (no embed yet).
+        // We collect (communityId, summary, memberIds) tuples and defer embedding so that
+        // all summaries can be sent to the subprocess in ONE embedBatch call rather than
+        // one embed() per community (each of which was a full IPC round-trip).
+        record PendingReport(int communityId, String summary, List<String> memberIds) {}
+        List<PendingReport> pending = new ArrayList<>();
         for (Map.Entry<Integer, List<String>> e : byCommunity.entrySet()) {
             List<String> memberIds = e.getValue();
             if (memberIds.size() < MIN_COMMUNITY_SIZE) {
@@ -121,14 +127,39 @@ public class CommunitySummaryService {
             }
             String digest = buildDigest(graph, memberIds);
             String summary = summarize(digest);
+            pending.add(new PendingReport(e.getKey(), summary, memberIds));
+        }
+
+        // Second pass: embed all summaries in a single batch call, then assemble CommunityReports.
+        // CommunityReport.summaryEmbedding is INDArray (public record — cannot change signature),
+        // so we wrap each float[] from embedBatch into an INDArray via Nd4j.create(float[]).
+        List<float[]> embeddingVectors = List.of();
+        if (embeddingModel != null && !pending.isEmpty()) {
+            List<String> summaryTexts = new ArrayList<>(pending.size());
+            for (PendingReport pr : pending) {
+                summaryTexts.add(pr.summary() != null ? pr.summary() : "");
+            }
+            try {
+                List<float[]> batch = embeddingModel.embedBatch(summaryTexts);
+                embeddingVectors = batch != null ? batch : List.of();
+            } catch (Exception ex) {
+                log.warn("Batch embedding of community summaries failed for graph {}: {}",
+                        graph.getGraphId(), ex.getMessage());
+            }
+        }
+
+        List<CommunityReport> reports = new ArrayList<>(pending.size());
+        for (int i = 0; i < pending.size(); i++) {
+            PendingReport pr = pending.get(i);
             INDArray emb = null;
-            if (embeddingModel != null && summary != null && !summary.isBlank()) {
-                INDArray e2 = embeddingModel.embed(summary);
-                if (e2 != null && !e2.isEmpty()) {
-                    emb = e2;
+            if (embeddingModel != null && pr.summary() != null && !pr.summary().isBlank()
+                    && i < embeddingVectors.size()) {
+                float[] vec = embeddingVectors.get(i);
+                if (vec != null && vec.length > 0) {
+                    emb = Nd4j.create(vec);
                 }
             }
-            reports.add(new CommunityReport(e.getKey(), summary, memberIds, emb));
+            reports.add(new CommunityReport(pr.communityId(), pr.summary(), pr.memberIds(), emb));
         }
         log.info("Built {} community reports for graph {} ({} nodes, {} communities detected)",
                 reports.size(), graph.getGraphId(), n, byCommunity.size());

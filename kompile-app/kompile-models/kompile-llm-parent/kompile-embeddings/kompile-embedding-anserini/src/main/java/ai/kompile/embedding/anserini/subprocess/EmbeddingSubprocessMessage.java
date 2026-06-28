@@ -58,7 +58,8 @@ import java.util.Map;
     @JsonSubTypes.Type(value = EmbeddingSubprocessMessage.PhaseTransition.class, name = "PHASE_TRANSITION"),
     @JsonSubTypes.Type(value = EmbeddingSubprocessMessage.Heartbeat.class, name = "HEARTBEAT"),
     @JsonSubTypes.Type(value = EmbeddingSubprocessMessage.Log.class, name = "LOG"),
-    @JsonSubTypes.Type(value = EmbeddingSubprocessMessage.Error.class, name = "ERROR")
+    @JsonSubTypes.Type(value = EmbeddingSubprocessMessage.Error.class, name = "ERROR"),
+    @JsonSubTypes.Type(value = EmbeddingSubprocessMessage.BatchResizeNotice.class, name = "BATCH_RESIZE_NOTICE")
 })
 public sealed interface EmbeddingSubprocessMessage
         permits EmbeddingSubprocessMessage.LoadModelRequest,
@@ -78,7 +79,8 @@ public sealed interface EmbeddingSubprocessMessage
                 EmbeddingSubprocessMessage.PhaseTransition,
                 EmbeddingSubprocessMessage.Heartbeat,
                 EmbeddingSubprocessMessage.Log,
-                EmbeddingSubprocessMessage.Error {
+                EmbeddingSubprocessMessage.Error,
+                EmbeddingSubprocessMessage.BatchResizeNotice {
 
     /** Message prefix used to distinguish protocol JSON from other stdout output */
     String MESSAGE_PREFIX = "EMBEDDING_MSG:";
@@ -95,6 +97,9 @@ public sealed interface EmbeddingSubprocessMessage
             String modelId,
             int optimalBatchSize,
             int maxBatchSize,
+            /** Absolute ceiling forwarded to {@code GenericDenseSameDiffEncoder.configureBatchSize()}.
+             *  0 means "use maxBatchSize as the ceiling" (safe default). */
+            int absoluteMaxBatchSize,
             Map<String, String> modelConfig  // Additional model configuration
     ) implements EmbeddingSubprocessMessage {}
 
@@ -307,6 +312,19 @@ public sealed interface EmbeddingSubprocessMessage
             String phase            // Phase where error occurred
     ) implements EmbeddingSubprocessMessage {}
 
+    /**
+     * Emitted by the subprocess encoder when a sub-batch is shrunk due to native-memory pressure.
+     * The parent process logs/surfaces this so operators can tune absoluteMaxBatchSize.
+     */
+    record BatchResizeNotice(
+            int oldBatch,           // Batch size before shrink
+            int newBatch,           // Batch size after shrink (>= 1)
+            String reason,          // Human-readable reason (e.g., "native memory pressure")
+            long physicalBytes,     // org.bytedeco.javacpp.Pointer.physicalBytes() at decision time
+            long maxPhysicalBytes,  // org.bytedeco.javacpp.Pointer.maxPhysicalBytes() at decision time
+            long timestamp          // Epoch milliseconds
+    ) implements EmbeddingSubprocessMessage {}
+
     // ═══════════════════════════════════════════════════════════════════════════════
     // SUPPORTING TYPES
     // ═══════════════════════════════════════════════════════════════════════════════
@@ -463,6 +481,12 @@ public sealed interface EmbeddingSubprocessMessage
 
     static Error error(String requestId, String message, String errorType, String phase) {
         return new Error(requestId, message, errorType, null, phase);
+    }
+
+    static BatchResizeNotice batchResizeNotice(int oldBatch, int newBatch, String reason,
+                                               long physicalBytes, long maxPhysicalBytes) {
+        return new BatchResizeNotice(oldBatch, newBatch, reason, physicalBytes, maxPhysicalBytes,
+                System.currentTimeMillis());
     }
 
     /**

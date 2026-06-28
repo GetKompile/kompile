@@ -16,7 +16,6 @@
 package ai.kompile.knowledgegraph.impl;
 
 import ai.kompile.knowledgegraph.domain.*;
-import ai.kompile.knowledgegraph.repository.EntityMentionRepository;
 import ai.kompile.knowledgegraph.service.*;
 import ai.kompile.knowledgegraph.service.EntityExtractionService.EntityType;
 import ai.kompile.knowledgegraph.service.EntityExtractionService.ExtractedEntity;
@@ -37,7 +36,6 @@ import java.util.stream.Collectors;
 @Slf4j
 public class GraphBuildingServiceImpl implements GraphBuildingService {
 
-    private EntityMentionRepository entityMentionRepository;
     private EntityExtractionService entityExtractionService;
     private KnowledgeGraphService knowledgeGraphService;
 
@@ -47,10 +45,8 @@ public class GraphBuildingServiceImpl implements GraphBuildingService {
 
     @Autowired
     public GraphBuildingServiceImpl(
-            EntityMentionRepository entityMentionRepository,
             EntityExtractionService entityExtractionService,
             KnowledgeGraphService knowledgeGraphService) {
-        this.entityMentionRepository = entityMentionRepository;
         this.entityExtractionService = entityExtractionService;
         this.knowledgeGraphService = knowledgeGraphService;
     }
@@ -181,22 +177,7 @@ public class GraphBuildingServiceImpl implements GraphBuildingService {
             String normalizedName = entityExtractionService.normalizeEntityName(entity.name());
             GraphNode entityNode = findOrCreateEntityNode(entity.name(), entity.type());
 
-            // Create entity mention
-            EntityMention mention = entityMentionRepository
-                .findByNodeAndEntityName(docNode, normalizedName)
-                .orElseGet(() -> EntityMention.builder()
-                    .node(docNode)
-                    .entityName(normalizedName)
-                    .entityType(entity.type())
-                    .mentionCount(0)
-                    .confidence(entity.confidence())
-                    .build());
-
-            mention.setMentionCount(mention.getMentionCount() + 1);
-            mention.setConfidence(Math.max(mention.getConfidence(), entity.confidence()));
-            entityMentionRepository.save(mention);
-
-            // Create edge from document to entity
+            // Create edge from document to entity (entity mentions are implicit from graph structure)
             if (!knowledgeGraphService.edgeExists(docNode.getNodeId(), entityNode.getNodeId())) {
                 knowledgeGraphService.createEdge(
                     docNode.getNodeId(),
@@ -258,18 +239,22 @@ public class GraphBuildingServiceImpl implements GraphBuildingService {
     }
 
     @Override
-    @Transactional
     public void clearGraph() {
-        log.warn("Clearing entire knowledge graph!");
-        entityMentionRepository.deleteAll();
-        // Delegating node/edge deletion to the service so it can clear its
-        // backing store (matrix or JPA) without direct repo access.
-        Map<String, Object> graphStats = knowledgeGraphService.getGraphStatistics();
-        log.info("Graph stats before clear: {}", graphStats);
-        // deleteByFactSheetId is per-fact-sheet; for a total clear we rely on
-        // the service's own deleteByFactSheetId=null path or just log a warning
-        // that the service should be extended for a full-graph clear.
-        log.info("Knowledge graph clear: delegated to backing store");
+        log.warn("Clearing entire knowledge graph — delegated to backing store");
+        // Log statistics before clear
+        try {
+            Map<String, Object> graphStats = knowledgeGraphService.getGraphStatistics();
+            log.info("Graph stats before clear: {}", graphStats);
+        } catch (Exception ignored) {}
+        // Full-graph clear: delete each fact sheet individually
+        for (Long factSheetId : knowledgeGraphService.findFactSheetIds()) {
+            try {
+                knowledgeGraphService.deleteByFactSheetId(factSheetId);
+                log.info("Cleared graph for factSheetId={}", factSheetId);
+            } catch (Exception e) {
+                log.warn("Failed to clear factSheetId={}: {}", factSheetId, e.getMessage());
+            }
+        }
     }
 
     @Override
@@ -279,7 +264,8 @@ public class GraphBuildingServiceImpl implements GraphBuildingService {
         // Delegate stats to the service's built-in statistics method
         Map<String, Object> serviceStats = knowledgeGraphService.getGraphStatistics();
         stats.putAll(serviceStats);
-        stats.put("totalEntityMentions", entityMentionRepository.count());
+        // EntityMention table is no longer populated; entity count from graph node count
+        stats.put("totalEntityMentions", knowledgeGraphService.countNodesByType(NodeLevel.ENTITY));
 
         // Derive per-type counts from service
         Map<String, Long> nodesByType = new HashMap<>();

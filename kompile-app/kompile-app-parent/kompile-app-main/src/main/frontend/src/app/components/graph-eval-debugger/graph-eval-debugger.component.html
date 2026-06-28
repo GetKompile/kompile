@@ -210,6 +210,9 @@
                   <span class="confidence" *ngIf="entity.confidence">
                     {{ formatPercent(entity.confidence) }}
                   </span>
+                  <app-source-citation [compact]="true"
+                                       [citation]="toCitation(entity)">
+                  </app-source-citation>
                 </div>
                 <div *ngIf="!result?.extractedGraph?.entities?.length" class="empty-state">
                   No entities extracted

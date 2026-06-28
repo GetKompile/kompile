@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+import { Citation } from './api-models';
+
 export interface GraphEvalStatus {
   extractionAvailable: boolean;
   evaluatorCount: number;
@@ -53,6 +55,8 @@ export interface GraphEntity {
   type: string;
   description?: string;
   confidence?: number;
+  /** Per-entity source provenance populated by the graph-eval backend. */
+  citation?: Citation;
 }
 
 export interface GraphRelationship {

@@ -74,13 +74,39 @@ public record ModelCapability(String modelId, int contextTokens, int maxOutputTo
     }
 
     /**
-     * Starting input-char budget: sized so the first call's input ≈ the model's entire output budget
-     * (in tokens). For entity-dense text this sits near the output-truncation boundary without grossly
-     * exceeding it; the yield-gated AIMD sizer ramps up when output has headroom and shrinks the moment
-     * a batch returns nothing (the truncation signal). Clamped to {@code [minInputChars, maxInputChars]}.
+     * Starting input-char budget for the AIMD sizer on the first extraction call.
+     *
+     * <p>For <b>small-context models</b> (contextTokens ≤ 200 000 — local, Ollama, Claude 3-series,
+     * GPT-4, etc.) we keep the original conservative heuristic: start ≈ the output budget in chars
+     * ({@code maxOutputTokens × CHARS_PER_TOKEN}). This sits near the output-truncation boundary
+     * without grossly exceeding it; the yield-gated AIMD sizer ramps up when there is headroom.</p>
+     *
+     * <p>For <b>large-context models</b> (contextTokens > 200 000 — GPT-4.1, Gemini 1.5/2.x,
+     * DeepSeek V4 / opencode-cli "deepseek-v4-flash-free", etc.) the output budget is
+     * {@code maxOutputTokens × 4 ≈ 32 768 chars}, which is only ~3 % of a 1 M-token window.
+     * Starting there means the AIMD ramp takes dozens of calls to reach a useful input size —
+     * on a small corpus it may never approach the ceiling. Instead, start at 10 % of
+     * {@code maxInputChars()} so the first wave immediately sends a large batch: for DeepSeek at
+     * 1 M tokens that is ~396 000 chars (≈ 99 k tokens), yielding rich extractions on the first
+     * call rather than ramping for many waves.</p>
+     *
+     * <p>Both paths are clamped to {@code [minInputChars, maxInputChars]} so they are always
+     * valid inputs for the sizer.</p>
      */
     public int initInputChars() {
-        long start = (long) maxOutputTokens * CHARS_PER_TOKEN;
+        // Large-context threshold: > 200 000 tokens (covers GPT-4.1/4.1-mini/nano, Gemini 1.5+/2.x,
+        // DeepSeek V4 ~1 M, etc.). Below this threshold, use the original output-budget heuristic.
+        final int LARGE_CONTEXT_TOKEN_THRESHOLD = 200_000;
+        long start;
+        if (contextTokens > LARGE_CONTEXT_TOKEN_THRESHOLD) {
+            // Start at 10 % of usable input chars so the first wave is immediately large.
+            // For DeepSeek 1 M / 8 192 output: maxInputChars = (1 000 000 - 8 192 - 512) * 4 ≈ 3 964 384.
+            // 10 % = 396 438 chars (≈ 99 k tokens), vs the old 32 768 chars (≈ 8 k tokens).
+            start = Math.max(1L, (long) (maxInputChars() * 0.10));
+        } else {
+            // Small-context / local: start ≈ the output budget to stay near the truncation boundary.
+            start = (long) maxOutputTokens * CHARS_PER_TOKEN;
+        }
         return (int) Math.max(minInputChars(), Math.min(maxInputChars(), start));
     }
 

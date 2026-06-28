@@ -16,6 +16,10 @@
 
 package ai.kompile.app.services;
 
+import ai.kompile.cli.common.util.JsonUtils;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -23,25 +27,30 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
-import jakarta.annotation.PostConstruct;
 import java.io.IOException;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Service that periodically cleans up old leak report files to prevent disk space issues.
+ * <p>
+ * Data configuration (directory, maxAgeDays, maxFiles, cleanupEnabled) is managed via
+ * {@code <dataDir>/config/maintenance-config.json}. When the file is absent the field
+ * defaults are used unchanged. The scheduling cron expression is still read from the
+ * Spring Environment via the {@code @Scheduled} EL expression so it can be overridden
+ * in application.properties without a JSON edit.
+ * </p>
  *
  * Configuration properties:
- * - kompile.lifecycle.cleanup.enabled: Enable/disable cleanup (default: true)
- * - kompile.lifecycle.cleanup.directory: Directory to clean (default: ./leak_reports)
- * - kompile.lifecycle.cleanup.max-age-days: Max age of files to keep (default: 7)
- * - kompile.lifecycle.cleanup.max-files: Max number of files to keep (default: 100)
+ * - kompile.lifecycle.cleanup.enabled: Enable/disable bean registration (default: true)
  * - kompile.lifecycle.cleanup.cron: Cron expression for cleanup schedule (default: daily at 2am)
  */
 @Service
@@ -53,25 +62,95 @@ import java.util.concurrent.atomic.AtomicLong;
 public class LeakReportCleanupService {
 
     private static final Logger logger = LoggerFactory.getLogger(LeakReportCleanupService.class);
+    private static final String CONFIG_FILENAME = "maintenance-config.json";
 
-    @Value("${kompile.lifecycle.cleanup.directory:./leak_reports}")
-    private String cleanupDirectory;
+    private final Path configFilePath;
+    private final ObjectMapper objectMapper;
 
-    @Value("${kompile.lifecycle.cleanup.max-age-days:7}")
-    private int maxAgeDays;
+    // ── Data config fields ────────────────────────────────────────────────────
+    // Defaults mirror the former @Value EL defaults; overridden at @PostConstruct
+    // time by values present in maintenance-config.json.
 
-    @Value("${kompile.lifecycle.cleanup.max-files:100}")
-    private int maxFiles;
-
+    private String cleanupDirectory = "./leak_reports";
+    private int maxAgeDays = 7;
+    private int maxFiles = 100;
     private volatile boolean cleanupEnabled = true;
 
+    public LeakReportCleanupService(
+            @Value("${kompile.data.dir:#{null}}") String dataDir) {
+        String effectiveDataDir = dataDir;
+        if (effectiveDataDir == null || effectiveDataDir.isBlank()) {
+            effectiveDataDir = System.getProperty("user.home") + "/.kompile";
+        }
+        this.objectMapper = JsonUtils.newStandardMapper();
+        this.configFilePath = Paths.get(effectiveDataDir, "config", CONFIG_FILENAME);
+        logger.info("LeakReportCleanupService initialized, config path: {}", configFilePath);
+    }
+
+    /**
+     * Overlays values from {@code maintenance-config.json} (when present) onto this
+     * instance, then logs the effective configuration. Never throws; missing or
+     * unreadable files fall back silently to field defaults.
+     */
     @PostConstruct
     public void init() {
+        if (Files.exists(configFilePath)) {
+            try {
+                String json = Files.readString(configFilePath);
+                Map<String, Object> map = objectMapper.readValue(
+                        json, new TypeReference<Map<String, Object>>() {});
+                if (map.containsKey("cleanupDirectory")) {
+                    this.cleanupDirectory = (String) map.get("cleanupDirectory");
+                }
+                if (map.containsKey("maxAgeDays")) {
+                    this.maxAgeDays = ((Number) map.get("maxAgeDays")).intValue();
+                }
+                if (map.containsKey("maxFiles")) {
+                    this.maxFiles = ((Number) map.get("maxFiles")).intValue();
+                }
+                if (map.containsKey("cleanupEnabled")) {
+                    this.cleanupEnabled = (Boolean) map.get("cleanupEnabled");
+                }
+                logger.info("Loaded maintenance config from {}: directory={}, maxAgeDays={}, maxFiles={}, enabled={}",
+                        configFilePath, cleanupDirectory, maxAgeDays, maxFiles, cleanupEnabled);
+            } catch (IOException e) {
+                logger.warn("Could not read maintenance config from {} — using defaults: {}",
+                        configFilePath, e.getMessage());
+            }
+        } else {
+            logger.info("No maintenance config found at {} — using defaults", configFilePath);
+        }
+
         logger.info("=== Leak Report Cleanup Service Initialized ===");
         logger.info("Cleanup directory: {}", cleanupDirectory);
         logger.info("Max file age: {} days", maxAgeDays);
         logger.info("Max files to keep: {}", maxFiles);
         logger.info("Cleanup runs daily at 2:00 AM");
+    }
+
+    /**
+     * Persists the current data-config fields to
+     * {@code <dataDir>/config/maintenance-config.json} as pretty-printed JSON.
+     * Parent directories are created when absent. Never throws.
+     */
+    public void persist() {
+        try {
+            Path parent = configFilePath.getParent();
+            if (!Files.exists(parent)) {
+                Files.createDirectories(parent);
+                logger.info("Created config directory: {}", parent);
+            }
+            Map<String, Object> data = new LinkedHashMap<>();
+            data.put("cleanupDirectory", cleanupDirectory);
+            data.put("maxAgeDays", maxAgeDays);
+            data.put("maxFiles", maxFiles);
+            data.put("cleanupEnabled", cleanupEnabled);
+            String json = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(data);
+            Files.writeString(configFilePath, json);
+            logger.info("Persisted maintenance config to {}", configFilePath);
+        } catch (IOException e) {
+            logger.error("Failed to persist maintenance config to {}: {}", configFilePath, e.getMessage(), e);
+        }
     }
 
     /**

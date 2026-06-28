@@ -99,7 +99,11 @@ public final class EventLogExtractor {
                 if (node == null) {
                     continue; // filtered out as an excluded level
                 }
-                events.add(new Event(caseId, classifier.activityOf(node), node.getOccurredAt(), nodeId, Map.of()));
+                String activity = classifier.activityOf(node);
+                if (activity == null) {
+                    continue; // classifier excluded this node (e.g. a spreadsheet structural type)
+                }
+                events.add(new Event(caseId, activity, node.getOccurredAt(), nodeId, Map.of()));
             }
             if (!events.isEmpty()) {
                 traces.add(new Trace(caseId, events));

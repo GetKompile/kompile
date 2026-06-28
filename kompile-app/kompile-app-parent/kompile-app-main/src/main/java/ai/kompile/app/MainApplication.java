@@ -18,8 +18,9 @@ package ai.kompile.app;
 
 import ai.kompile.app.config.Nd4jEnvironmentConfig;
 import ai.kompile.cli.common.util.JsonUtils;
-import ai.kompile.cli.common.util.NativeImageInfo;
+import ai.kompile.utils.NativeImageInfo;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.anserini.search.LuceneRuntimeConfig;
 import jakarta.annotation.PreDestroy;
 import org.nd4j.imports.converters.DifferentialFunctionClassHolder;
 import org.nd4j.linalg.factory.Nd4j;
@@ -73,8 +74,11 @@ public class MainApplication {
     private static final ObjectMapper OBJECT_MAPPER = JsonUtils.standardMapper();
 
     public static void main(String[] args) throws Exception {
-        // Disable Lucene MemorySegment-based MMapDirectory — Arena.ofShared is not supported in GraalVM native image
-        System.setProperty("org.apache.lucene.store.MMapDirectory.enableMemorySegments", "false");
+        // Pick Lucene's mmap provider for the runtime we're actually in (centralized auto-detect):
+        // the native-image-safe legacy MappedByteBuffer provider inside a GraalVM native image, the
+        // faster MemorySegment provider on a normal JVM. Both keep the index off-heap. Runs first,
+        // before any MMapDirectory is constructed.
+        LuceneRuntimeConfig.ensure();
 
         // Route to subprocess if --subprocess=TYPE flag is present.
         // This enables the unified native executable approach: a single binary

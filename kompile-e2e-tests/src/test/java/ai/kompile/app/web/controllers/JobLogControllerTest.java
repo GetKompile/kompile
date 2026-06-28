@@ -60,7 +60,7 @@ class JobLogControllerTest {
     void getLogsForJob_serviceDisabled_returnsDisabled() {
         when(jobLogService.isEnabled()).thenReturn(false);
 
-        ResponseEntity<?> resp = controller.getLogsForJob("t1", null, null, null, 0, 500);
+        ResponseEntity<?> resp = controller.getLogsForJob("t1", null, null, null, null, 0, 500);
 
         assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
         Map<?, ?> body = (Map<?, ?>) resp.getBody();
@@ -73,7 +73,7 @@ class JobLogControllerTest {
         when(jobLogService.getLogsForTask(eq("t1"), eq(0), eq(500))).thenReturn(page);
         when(jobLogService.getLogCountsByLevel("t1")).thenReturn(Map.of());
 
-        ResponseEntity<?> resp = controller.getLogsForJob("t1", null, null, null, 0, 500);
+        ResponseEntity<?> resp = controller.getLogsForJob("t1", null, null, null, null, 0, 500);
 
         assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
         @SuppressWarnings("unchecked")
@@ -90,7 +90,7 @@ class JobLogControllerTest {
         when(jobLogService.getLogsForTask(eq("t1"), eq(LogLevel.ERROR), eq(0), eq(500))).thenReturn(page);
         when(jobLogService.getLogCountsByLevel("t1")).thenReturn(Map.of());
 
-        ResponseEntity<?> resp = controller.getLogsForJob("t1", "ERROR", null, null, 0, 500);
+        ResponseEntity<?> resp = controller.getLogsForJob("t1", "ERROR", null, null, null, 0, 500);
 
         assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
         verify(jobLogService).getLogsForTask(eq("t1"), eq(LogLevel.ERROR), eq(0), eq(500));
@@ -102,7 +102,7 @@ class JobLogControllerTest {
         when(jobLogService.searchLogs(eq("t1"), eq("error"), eq(0), eq(500))).thenReturn(page);
         when(jobLogService.getLogCountsByLevel("t1")).thenReturn(Map.of());
 
-        ResponseEntity<?> resp = controller.getLogsForJob("t1", null, null, "error", 0, 500);
+        ResponseEntity<?> resp = controller.getLogsForJob("t1", null, null, null, "error", 0, 500);
 
         assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
         verify(jobLogService).searchLogs(eq("t1"), eq("error"), eq(0), eq(500));
@@ -110,7 +110,7 @@ class JobLogControllerTest {
 
     @Test
     void getLogsForJob_invalidLevel_returnsBadRequest() {
-        ResponseEntity<?> resp = controller.getLogsForJob("t1", "NOT_A_LEVEL", null, null, 0, 500);
+        ResponseEntity<?> resp = controller.getLogsForJob("t1", "NOT_A_LEVEL", null, null, null, 0, 500);
 
         assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
     }

@@ -242,8 +242,18 @@ public class AdjacencyMatrixGraph implements AutoCloseable {
         }
 
         node.setMatrixIndex(index);
-        node.setCreatedAt(System.currentTimeMillis());
-        node.setUpdatedAt(System.currentTimeMillis());
+        // Preserve timestamps that were already set — a node rehydrated from the vector store on
+        // startup carries its original createdAt/updatedAt via deserializeNodeFromMetadata. Stamping
+        // now() unconditionally reset EVERY node's createdAt to boot time on each restart, which made
+        // time-based pruning impossible (all nodes reported the same app-startup timestamp). Only
+        // stamp genuinely-new nodes (timestamp unset, <= 0).
+        long now = System.currentTimeMillis();
+        if (node.getCreatedAt() <= 0L) {
+            node.setCreatedAt(now);
+        }
+        if (node.getUpdatedAt() <= 0L) {
+            node.setUpdatedAt(now);
+        }
         nodeById.put(node.getNodeId(), node);
         indexToNodeId.put(index, node.getNodeId());
 

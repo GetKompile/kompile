@@ -31,7 +31,11 @@ import ai.kompile.core.crawl.graph.*;
 import ai.kompile.core.crawl.graph.archive.CrawlStepArchiveService;
 import ai.kompile.cli.common.logs.CrawlLogWriter;
 import ai.kompile.crawl.graph.CrawlPipelineStepRegistry;
+import ai.kompile.crawl.graph.GraphHydrationOrchestrator;
+import ai.kompile.crawl.graph.HydrationConfig;
+import ai.kompile.crawl.graph.HydrationResult;
 import ai.kompile.knowledgegraph.service.FactSheetGraphService;
+import ai.kompile.knowledgegraph.service.GraphEdgeComputationService;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
@@ -123,6 +127,12 @@ public class UnifiedCrawlController {
     @Autowired(required = false)
     private CrawlStepArchiveService crawlStepArchiveService;
 
+    @Autowired(required = false)
+    private GraphEdgeComputationService graphEdgeComputationService;
+
+    @Autowired(required = false)
+    private GraphHydrationOrchestrator hydrationOrchestrator;
+
     /** Resolved uploads directory for file-based crawl jobs */
     private Path uploadsPath;
 
@@ -210,6 +220,8 @@ public class UnifiedCrawlController {
 
                                         // Store mapping so both IDs resolve to the same job
                                         schedulerIdToJobId.put(ctx.jobId(), internalJobId);
+                                        // Also register in the service so SSE controller can resolve
+                                        unifiedCrawlService.registerJobIdAlias(ctx.jobId(), internalJobId);
 
                                         // Publish to job history using the INTERNAL job ID
                                         // so syncCrawlJobsToHistory() can find it consistently
@@ -560,6 +572,14 @@ public class UnifiedCrawlController {
                     UnifiedCrawlJob.ProgressSnapshot snapshot = job.toProgressSnapshot();
                     Map<String, Object> result = new LinkedHashMap<>();
                     result.put("jobId", snapshot.getJobId());
+                    result.put("internalJobId", snapshot.getJobId());
+                    // Expose the scheduler ID (e.g. "crawl-55ef8175") when this job was
+                    // submitted via the resource scheduler so the UI can correlate both forms.
+                    String schedulerJobId = schedulerIdToJobId.entrySet().stream()
+                            .filter(e -> snapshot.getJobId().equals(e.getValue()))
+                            .map(Map.Entry::getKey)
+                            .findFirst().orElse(null);
+                    if (schedulerJobId != null) result.put("schedulerJobId", schedulerJobId);
                     result.put("name", snapshot.getName());
                     result.put("factSheetId", job.getRequest() != null ? job.getRequest().getFactSheetId() : null);
                     result.put("status", snapshot.getStatus().name());
@@ -625,6 +645,21 @@ public class UnifiedCrawlController {
                     if (snapshot.getRecentEvents() != null && !snapshot.getRecentEvents().isEmpty()) {
                         result.put("recentEvents", snapshot.getRecentEvents());
                     }
+                    // Routing + optimization-decision + quota/degradation visibility (demanded EVERY job):
+                    // these were captured (CrawlLlmDispatcher.recordLlmCall + tuning/reroute hooks) and ARE
+                    // in toProgressSnapshot() but were never put into this map → invisible in the API/UI.
+                    result.put("llmCallsTotal", snapshot.getLlmCallsTotal());
+                    result.put("llmCallsSucceeded", snapshot.getLlmCallsSucceeded());
+                    result.put("llmCallsFailed", snapshot.getLlmCallsFailed());
+                    result.put("llmCallsTimedOut", snapshot.getLlmCallsTimedOut());
+                    result.put("llmCallsRateLimited", snapshot.getLlmCallsRateLimited());
+                    result.put("llmCallsCircuitBroken", snapshot.getLlmCallsCircuitBroken());
+                    result.put("backendsCoolingDown", snapshot.getBackendsCoolingDown());
+                    result.put("recentLlmCalls", snapshot.getRecentLlmCalls());
+                    result.put("backendStats", snapshot.getBackendStats());
+                    result.put("recentTuningDecisions", snapshot.getRecentTuningDecisions());
+                    result.put("recentRerouteEvents", snapshot.getRecentRerouteEvents());
+                    result.put("recentRetryEvents", snapshot.getRecentRetryEvents());
                     if (snapshot.getPipelineSteps() != null && !snapshot.getPipelineSteps().isEmpty()) {
                         result.put("pipelineSteps", snapshot.getPipelineSteps().stream()
                                 .map(this::pipelineStepMap)
@@ -937,22 +972,242 @@ public class UnifiedCrawlController {
                 "message", "Step archived"));
     }
 
-    /** Run a previously archived (or deferred) step now. */
+    /**
+     * Re-run any terminal pipeline step for a crawl job — ARCHIVED, DEFERRED, COMPLETED, or FAILED.
+     *
+     * <p>Dispatch logic (in priority order):
+     * <ol>
+     *   <li>If the step has an archive on disk ({@link UnifiedCrawlService#resumeArchivedStep} returns ≥ 0),
+     *       use that path (ARCHIVED / DEFERRED).</li>
+     *   <li>If the step is a graph-reasoning step (ENRICHMENT / DERIVATION / PRUNE_COMPACT /
+     *       ONTOLOGY_CONFORMANCE) and the orchestrator is available, re-run it directly against the
+     *       existing graph (no re-crawl). The factSheetId is resolved from the job's request, or
+     *       the active sheet when not present.</li>
+     *   <li>Otherwise return HTTP 422 with a clear message explaining why the step cannot be
+     *       re-run standalone — the UI disables the button and shows a tooltip.</li>
+     * </ol>
+     */
     @PostMapping("/jobs/{jobId}/steps/{stepId}/run")
-    public ResponseEntity<?> runArchivedStep(@PathVariable String jobId, @PathVariable String stepId) {
+    public ResponseEntity<?> runStep(@PathVariable String jobId, @PathVariable String stepId) {
         String resolvedId = schedulerIdToJobId.getOrDefault(jobId, jobId);
+        String normalizedStep = stepId.toUpperCase();
         try {
+            // 1. Try the archive-based resume path first (handles ARCHIVED / DEFERRED).
+            //    resumeArchivedStep already calls completePipelineStep on the in-memory job;
+            //    we still need to flush that updated state to persisted history.
             int processed = unifiedCrawlService.resumeArchivedStep(resolvedId, stepId);
-            if (processed < 0) {
-                return ResponseEntity.badRequest().body(Map.of(
-                        "error", "Step " + stepId + " is not archived/resumable for job " + jobId));
+            if (processed >= 0) {
+                String archiveMsg = "Step resumed from archive: " + processed + " item(s) processed";
+                persistStepResultToHistory(resolvedId, normalizedStep, archiveMsg, processed, -1);
+                return ResponseEntity.ok(Map.of("jobId", resolvedId, "stepId", stepId,
+                        "itemsProcessed", processed, "message", archiveMsg));
             }
-            return ResponseEntity.ok(Map.of("jobId", resolvedId, "stepId", stepId,
-                    "itemsProcessed", processed, "message", "Step resumed"));
+
+            // 2. Graph-reasoning steps: re-run directly against the existing graph (idempotent,
+            //    no archive required). Resolve factSheetId from the job request or the active sheet.
+            if (isGraphReasoningStep(normalizedStep)) {
+                if (hydrationOrchestrator == null) {
+                    return ResponseEntity.unprocessableEntity().body(Map.of(
+                            "error", "GraphHydrationOrchestrator not available — cannot re-run " + stepId + " standalone"));
+                }
+                Long factSheetId = resolveFactSheetId(resolvedId);
+                if (factSheetId == null) {
+                    return ResponseEntity.unprocessableEntity().body(Map.of(
+                            "error", "Cannot determine factSheetId for job " + jobId
+                                    + " — start a new crawl to associate a fact sheet"));
+                }
+                HydrationResult result = runHydrationStep(normalizedStep, factSheetId);
+                // Build a human-readable summary exposing all the counts so "0 derived" is explainable.
+                String hydrationMsg = normalizedStep + " re-run: derived=" + result.relationsDerived()
+                        + " materialized=" + result.factsMaterialized()
+                        + " retracted=" + result.retractedAtomCount()
+                        + " pruned=" + (result.factsRetractedPruned() + result.factsConfidencePruned())
+                        + " merges=" + result.mergesPerformed()
+                        + " orphans=" + result.orphansRemoved()
+                        + " stages=" + result.stagesRun()
+                        + " (factSheet=" + factSheetId + ")";
+                // Update in-memory step (if the job is still alive) and persist to history.
+                persistStepResultToHistory(resolvedId, normalizedStep, hydrationMsg,
+                        result.stagesRun(), result.totalFactsChanged());
+                return ResponseEntity.ok(Map.of(
+                        "jobId", resolvedId, "stepId", stepId,
+                        "stagesRun", result.stagesRun(),
+                        "relationsDerived", result.relationsDerived(),
+                        "factsMaterialized", result.factsMaterialized(),
+                        "message", hydrationMsg));
+            }
+
+            // 3. Step has no archive and is not a standalone-runnable reasoning step.
+            //    Inform the UI clearly so it can degrade the button to a tooltip.
+            CrawlPipelineStepRegistry.StepDescriptor descriptor = CrawlPipelineStepRegistry.get(normalizedStep);
+            if (descriptor != null && !descriptor.archivable()) {
+                return ResponseEntity.unprocessableEntity().body(Map.of(
+                        "error", "Step " + stepId + " cannot be re-run standalone "
+                                + "(document-level steps require a full crawl pass; "
+                                + "start a new crawl with enabledSteps=[" + stepId + "] to re-run it)"));
+            }
+            return ResponseEntity.badRequest().body(Map.of(
+                    "error", "Step " + stepId + " has no archive data and cannot be re-run standalone for job " + jobId));
         } catch (Exception e) {
-            log.error("Failed to resume step {} for job {}", stepId, resolvedId, e);
+            log.error("Failed to run step {} for job {}", stepId, resolvedId, e);
             return ResponseEntity.internalServerError().body(Map.of("error", String.valueOf(e.getMessage())));
         }
+    }
+
+    /**
+     * Persist a step re-run result back to the job's history snapshot so both the live
+     * and historical views reflect the new state.
+     *
+     * <p>Two cases:</p>
+     * <ol>
+     *   <li><b>Job still in memory</b> — update the matching {@link UnifiedCrawlJob.PipelineStepProgress}
+     *       directly (status=COMPLETED, completedItems, message), then call
+     *       {@link #buildJobDetailMap} + {@link IndexingJobHistoryService#updateAdditionalDetails}
+     *       to flush the full snapshot.</li>
+     *   <li><b>Job no longer in memory (past job)</b> — read the existing {@code additionalDetails} JSON
+     *       from {@link IndexingJobHistoryService}, patch the matching entry in the {@code pipelineSteps}
+     *       list, and write the updated JSON back.  The rest of the snapshot is left untouched.</li>
+     * </ol>
+     *
+     * @param resolvedId   internal job UUID
+     * @param normalizedStep step id in upper case
+     * @param message      human-readable result summary (shown in the history UI)
+     * @param completedItems number of items/stages completed (used when &gt;= 0)
+     * @param totalChanged total facts changed; -1 means "use completedItems as totalItems"
+     */
+    private void persistStepResultToHistory(String resolvedId, String normalizedStep,
+                                             String message, int completedItems, int totalChanged) {
+        if (jobHistoryService == null) {
+            return;
+        }
+        String historyTaskId = "crawl-" + resolvedId;
+        try {
+            // ── Case 1: job is still alive in memory ──────────────────────────────────
+            var optJob = unifiedCrawlService.getJob(resolvedId);
+            if (optJob.isPresent()) {
+                UnifiedCrawlJob job = optJob.get();
+                // Update the step's fields directly on the live PipelineStepProgress object.
+                for (UnifiedCrawlJob.PipelineStepProgress step : job.getPipelineSteps()) {
+                    if (normalizedStep.equalsIgnoreCase(step.getStepId())) {
+                        step.getStatus().set(UnifiedCrawlJob.PipelineStepStatus.COMPLETED);
+                        step.getCompletedItems().set(Math.max(0, completedItems));
+                        if (totalChanged >= 0) {
+                            step.getTotalItems().set(totalChanged);
+                        }
+                        step.getMessage().set(message);
+                        step.setCompletedAt(Instant.now());
+                        step.setLastUpdatedAt(Instant.now());
+                        if (step.getStartedAt() == null) {
+                            step.setStartedAt(step.getCompletedAt());
+                        }
+                        step.getProgressPercent().set(100);
+                        break;
+                    }
+                }
+                // Flush the full snapshot to history.
+                UnifiedCrawlJob.ProgressSnapshot snap = job.toProgressSnapshot();
+                Map<String, Object> fullSnapshot = buildJobDetailMap(job, snap);
+                String snapshotJson = objectMapper.writeValueAsString(fullSnapshot);
+                jobHistoryService.updateAdditionalDetails(historyTaskId, snapshotJson);
+                log.info("[Step re-run] Flushed updated step {} to history for in-memory job {}", normalizedStep, resolvedId);
+                return;
+            }
+
+            // ── Case 2: job is no longer in memory — patch the persisted JSON blob ───
+            var histOpt = jobHistoryService.getJob(historyTaskId);
+            if (histOpt.isEmpty()) {
+                log.debug("[Step re-run] No history record found for job {} — step result not persisted", resolvedId);
+                return;
+            }
+            String existing = histOpt.get().getAdditionalDetails();
+            if (existing == null || existing.isBlank()) {
+                log.debug("[Step re-run] History record for job {} has no additionalDetails — step result not persisted", resolvedId);
+                return;
+            }
+            @SuppressWarnings("unchecked")
+            Map<String, Object> snapshot = objectMapper.readValue(existing, Map.class);
+            // Patch the matching pipelineSteps entry.
+            Object stepsObj = snapshot.get("pipelineSteps");
+            if (stepsObj instanceof List<?> stepsList) {
+                boolean patched = false;
+                for (Object o : stepsList) {
+                    if (o instanceof Map<?, ?> raw) {
+                        @SuppressWarnings("unchecked")
+                        Map<String, Object> stepMap = (Map<String, Object>) raw;
+                        String sid = (String) stepMap.get("stepId");
+                        if (normalizedStep.equalsIgnoreCase(sid)) {
+                            stepMap.put("status", "COMPLETED");
+                            stepMap.put("completedItems", Math.max(0, completedItems));
+                            if (totalChanged >= 0) {
+                                stepMap.put("totalItems", totalChanged);
+                            }
+                            stepMap.put("message", message);
+                            stepMap.put("progressPercent", 100);
+                            stepMap.put("completedAt", Instant.now().toString());
+                            stepMap.put("lastUpdatedAt", Instant.now().toString());
+                            patched = true;
+                            break;
+                        }
+                    }
+                }
+                if (!patched) {
+                    log.debug("[Step re-run] Step {} not found in pipelineSteps for job {} — result not patched into history", normalizedStep, resolvedId);
+                }
+            }
+            String patchedJson = objectMapper.writeValueAsString(snapshot);
+            jobHistoryService.updateAdditionalDetails(historyTaskId, patchedJson);
+            log.info("[Step re-run] Patched step {} into persisted history for past job {}", normalizedStep, resolvedId);
+        } catch (Exception e) {
+            // Non-fatal: the re-run itself succeeded; only the history update failed.
+            log.warn("[Step re-run] Failed to persist step {} result to history for job {}: {}", normalizedStep, resolvedId, e.getMessage());
+        }
+    }
+
+    /** True for steps that can be re-run directly against the existing persisted graph. */
+    private static boolean isGraphReasoningStep(String normalizedStep) {
+        return "ENRICHMENT".equals(normalizedStep)
+                || "DERIVATION".equals(normalizedStep)
+                || "PRUNE_COMPACT".equals(normalizedStep)
+                || "PRUNE".equals(normalizedStep)
+                || "ONTOLOGY_CONFORMANCE".equals(normalizedStep);
+    }
+
+    /**
+     * Resolve a factSheetId for a job: first from the job's own request, then from the active sheet.
+     * Returns null if neither is available.
+     */
+    private Long resolveFactSheetId(String jobId) {
+        // Try active in-memory job first
+        for (UnifiedCrawlJob job : unifiedCrawlService.getAllJobs()) {
+            if (job.getJobId().equals(jobId) && job.getRequest() != null) {
+                Long fsId = job.getRequest().getFactSheetId();
+                if (fsId != null) {
+                    return fsId;
+                }
+            }
+        }
+        // Fall back to the active fact sheet
+        if (factSheetService != null) {
+            try {
+                return factSheetService.getActiveSheet().getId();
+            } catch (Exception e) {
+                log.debug("Could not resolve active fact sheet for step re-run: {}", e.getMessage());
+            }
+        }
+        return null;
+    }
+
+    /** Dispatch to the right hydration sub-method. */
+    private HydrationResult runHydrationStep(String normalizedStep, Long factSheetId) {
+        long fsId = factSheetId;
+        return switch (normalizedStep) {
+            case "ENRICHMENT"             -> hydrationOrchestrator.run(fsId, HydrationConfig.defaults(),
+                                                    (stage, msg) -> log.info("[Hydration] [{}]: {}", stage, msg));
+            case "DERIVATION"             -> hydrationOrchestrator.runDerivationOnly(fsId);
+            case "PRUNE_COMPACT", "PRUNE" -> hydrationOrchestrator.runPruneOnly(fsId);
+            case "ONTOLOGY_CONFORMANCE"   -> hydrationOrchestrator.runOntologyConformanceOnly(fsId);
+            default -> throw new IllegalArgumentException("Unknown hydration step: " + normalizedStep);
+        };
     }
 
     @PostMapping("/jobs/cleanup")
@@ -2274,6 +2529,59 @@ public class UnifiedCrawlController {
             types.add(typeInfo);
         }
         return ResponseEntity.ok(types);
+    }
+
+    /**
+     * Standalone edge re-computation for an existing fact-sheet graph, requiring no in-memory
+     * job object. Runs all three passes (shared-entity, name-based, embedding-similarity) directly
+     * through {@link GraphEdgeComputationService}. All passes are non-destructive (skip-if-exists).
+     *
+     * <p>The embedding-similarity pass is safe to call even when there are no embeddings in the
+     * vector store — it simply returns without creating edges. Model-readiness gating happens
+     * inside the service impl (no embeddings in the store → zero results, no error).</p>
+     *
+     * <p>Use this to re-trigger edge computation from any point — including after a restart where
+     * the original crawl job is no longer in memory.</p>
+     *
+     * @param factSheetId the fact-sheet whose graph edges should be (re-)computed
+     * @param minSimilarity optional minimum cosine similarity for embedding edges (default 0.7)
+     * @param maxEdgesPerNode optional max similarity edges per node (default 10)
+     */
+    @PostMapping("/graph/{factSheetId}/edge-computation")
+    public ResponseEntity<?> retriggerEdgeComputation(
+            @PathVariable Long factSheetId,
+            @RequestParam(defaultValue = "0.7") double minSimilarity,
+            @RequestParam(defaultValue = "10") int maxEdgesPerNode) {
+        if (graphEdgeComputationService == null) {
+            return ResponseEntity.status(503).body(Map.of(
+                    "error", "GraphEdgeComputationService not available in this deployment"));
+        }
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("factSheetId", factSheetId);
+        try {
+            graphEdgeComputationService.computeSharedEntityEdges(factSheetId, 1);
+            summary.put("sharedEntityEdges", "computed");
+        } catch (Exception e) {
+            log.warn("[EdgeRetrigger] Shared-entity edges failed for fact-sheet {}: {}", factSheetId, e.getMessage());
+            summary.put("sharedEntityEdges", "failed: " + e.getMessage());
+        }
+        try {
+            graphEdgeComputationService.computeNameBasedCrossDocEdges(factSheetId);
+            summary.put("nameBasedEdges", "computed");
+        } catch (Exception e) {
+            log.warn("[EdgeRetrigger] Name-based edges failed for fact-sheet {}: {}", factSheetId, e.getMessage());
+            summary.put("nameBasedEdges", "failed: " + e.getMessage());
+        }
+        try {
+            graphEdgeComputationService.computeEmbeddingSimilarityEdges(factSheetId, minSimilarity, maxEdgesPerNode);
+            summary.put("embeddingSimilarityEdges", "computed (minSimilarity=" + minSimilarity
+                    + ", maxEdgesPerNode=" + maxEdgesPerNode + ")");
+        } catch (Exception e) {
+            log.warn("[EdgeRetrigger] Embedding-similarity edges failed for fact-sheet {}: {}",
+                    factSheetId, e.getMessage());
+            summary.put("embeddingSimilarityEdges", "failed: " + e.getMessage());
+        }
+        return ResponseEntity.ok(summary);
     }
 
     private IngestPhase mapCrawlPhaseToIngestPhase(UnifiedCrawlJob.ProgressSnapshot snap) {

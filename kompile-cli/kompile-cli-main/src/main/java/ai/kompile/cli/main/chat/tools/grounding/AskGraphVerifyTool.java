@@ -21,6 +21,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.net.ConnectException;
 import java.time.Duration;
+import java.util.Map;
 
 /**
  * MCP tool: {@code ask_graph_verify}
@@ -49,7 +50,7 @@ public class AskGraphVerifyTool implements CliTool {
     public String description() {
         return "Verify a factual claim against the production knowledge base. " +
                 "Returns SUPPORTED, REFUTED, or UNKNOWN with a calibrated confidence " +
-                "score [0,1] and the evidence atom keys + activated rules that justify " +
+                "score [0,1] and the supporting evidence keys + activated rules that justify " +
                 "the verdict. Use this before accepting any LLM-generated claim as fact. " +
                 "Specify asOf for temporal point-in-time verification.";
     }
@@ -118,14 +119,19 @@ public class AskGraphVerifyTool implements CliTool {
             }
 
             JsonNode result = objectMapper.readTree(resp.body());
-            String verdict   = result.path("verdict").asText("UNKNOWN");
-            double conf      = result.path("confidence").asDouble(0.0);
-            JsonNode evidence = result.path("evidenceAtoms");
-            boolean stale    = result.path("meta").path("stale").asBoolean(false);
+            String verdict              = result.path("verdict").asText("UNKNOWN");
+            double conf                 = result.path("confidence").asDouble(0.0);
+            double calibratedConfidence = result.path("calibratedConfidence").asDouble(conf);
+            String strengthBand         = result.path("strengthBand").asText("");
+            JsonNode evidence           = result.path("evidenceAtoms");
+            boolean stale               = result.path("meta").path("stale").asBoolean(false);
 
             return ToolResult.success("ask_graph_verify: " + atom,
-                    formatVerifyResult(atom, verdict, conf, evidence, stale),
-                    java.util.Map.of("verdict", verdict, "confidence", conf, "stale", stale));
+                    formatVerifyResult(atom, verdict, conf, calibratedConfidence,
+                            strengthBand, evidence, stale),
+                    Map.of("verdict", verdict, "confidence", conf,
+                           "calibratedConfidence", calibratedConfidence,
+                           "strengthBand", strengthBand, "stale", stale));
 
         } catch (ConnectException e) {
             return ToolResult.error("Cannot connect to kompile-app. " + e.getMessage());
@@ -135,10 +141,15 @@ public class AskGraphVerifyTool implements CliTool {
     }
 
     private String formatVerifyResult(String atom, String verdict, double conf,
+                                       double calibratedConfidence, String strengthBand,
                                        JsonNode evidence, boolean stale) {
         StringBuilder sb = new StringBuilder();
         sb.append("**").append(verdict).append("** — ").append(atom);
         sb.append("\nConfidence: ").append(String.format("%.3f", conf));
+        sb.append("\nCalibrated confidence: ").append(String.format("%.3f", calibratedConfidence));
+        if (!strengthBand.isBlank()) {
+            sb.append("\nStrength band: ").append(strengthBand);
+        }
         if (evidence.isArray() && evidence.size() > 0) {
             sb.append("\nEvidence:");
             evidence.forEach(e -> sb.append("\n  - ").append(e.asText()));

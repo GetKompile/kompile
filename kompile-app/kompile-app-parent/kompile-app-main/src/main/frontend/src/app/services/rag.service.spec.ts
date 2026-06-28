@@ -47,14 +47,13 @@ describe('RagService', () => {
       const query: RagQuery = { query: 'What is Kompile?' };
       const mockResponse: RagResponse = {
         query: 'What is Kompile?',
-        answer: 'Kompile is an AI/ML platform.',
-        retrieved_contexts: []
+        answer: { answer: 'Kompile is an AI/ML platform.', retrievedDocs: [] }
       };
 
       service.queryRag(query).subscribe(response => {
         expect(response.query).toBe('What is Kompile?');
-        expect(response.answer).toBe('Kompile is an AI/ML platform.');
-        expect(response.retrieved_contexts).toEqual([]);
+        expect(response.answer.answer).toBe('Kompile is an AI/ML platform.');
+        expect(response.answer.retrievedDocs).toEqual([]);
       });
 
       const req = httpMock.expectOne(r => r.url.endsWith('/rag/query'));
@@ -72,27 +71,29 @@ describe('RagService', () => {
       expect(req.request.method).toBe('POST');
       expect(req.request.body.query).toBe('Tell me about embeddings');
       expect(req.request.body.maxResults).toBe(10);
-      req.flush({ query: 'Tell me about embeddings', answer: 'Embeddings are...', retrieved_contexts: [] });
+      req.flush({ query: 'Tell me about embeddings', answer: { answer: 'Embeddings are...', retrievedDocs: [] } });
     });
 
     it('should return response with retrieved contexts', () => {
       const query: RagQuery = { query: 'How does vector search work?', maxResults: 3 };
       const mockContexts: RetrievedContext[] = [
-        { document_id: 'doc-1', content: 'Vector search uses embeddings...', score: 0.92 },
-        { document_id: 'doc-2', content: 'Dense retrieval models...', score: 0.87 },
-        { document_id: 'doc-3', content: 'Lucene HNSW index...', score: 0.83 }
+        { id: 'doc-1', text: 'Vector search uses embeddings...', score: 0.92 },
+        { id: 'doc-2', text: 'Dense retrieval models...', score: 0.87 },
+        { id: 'doc-3', text: 'Lucene HNSW index...', score: 0.83 }
       ];
       const mockResponse: RagResponse = {
         query: 'How does vector search work?',
-        answer: 'Vector search works by embedding queries and documents into the same vector space.',
-        retrieved_contexts: mockContexts
+        answer: {
+          answer: 'Vector search works by embedding queries and documents into the same vector space.',
+          retrievedDocs: mockContexts
+        }
       };
 
       service.queryRag(query).subscribe(response => {
-        expect(response.retrieved_contexts.length).toBe(3);
-        expect(response.retrieved_contexts[0].document_id).toBe('doc-1');
-        expect(response.retrieved_contexts[0].score).toBe(0.92);
-        expect(response.retrieved_contexts[1].document_id).toBe('doc-2');
+        expect(response.answer.retrievedDocs!.length).toBe(3);
+        expect(response.answer.retrievedDocs![0].id).toBe('doc-1');
+        expect(response.answer.retrievedDocs![0].score).toBe(0.92);
+        expect(response.answer.retrievedDocs![1].id).toBe('doc-2');
       });
 
       const req = httpMock.expectOne(r => r.url.endsWith('/rag/query'));
@@ -103,13 +104,12 @@ describe('RagService', () => {
       const query: RagQuery = { query: 'anything' };
       const mockResponse: RagResponse = {
         query: 'anything',
-        answer: 'No relevant documents found.',
-        retrieved_contexts: []
+        answer: { answer: 'No relevant documents found.', retrievedDocs: [] }
       };
 
       service.queryRag(query).subscribe(response => {
-        expect(response.retrieved_contexts.length).toBe(0);
-        expect(response.answer).toBe('No relevant documents found.');
+        expect(response.answer.retrievedDocs!.length).toBe(0);
+        expect(response.answer.answer).toBe('No relevant documents found.');
       });
 
       const req = httpMock.expectOne(r => r.url.endsWith('/rag/query'));

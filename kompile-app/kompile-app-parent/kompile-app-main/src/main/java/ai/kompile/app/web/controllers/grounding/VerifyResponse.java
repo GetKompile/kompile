@@ -21,5 +21,9 @@ public record VerifyResponse(
         List<String> activatedRules,
         int derivationDepth,
         List<String> sourceProvenance,
+        /** Platt-scaled calibrated confidence in [0,1]. Equals {@code confidence} until calibration data is available. */
+        double calibratedConfidence,
+        /** Epistemic strength band: ESTABLISHED | HIGH | PROBABLE | SPECULATIVE | SUPPRESSED. */
+        String strengthBand,
         GroundingMeta meta
 ) {}

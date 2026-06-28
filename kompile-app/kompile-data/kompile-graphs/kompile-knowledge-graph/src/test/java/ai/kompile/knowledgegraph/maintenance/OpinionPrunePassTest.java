@@ -28,6 +28,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
@@ -56,13 +57,15 @@ class OpinionPrunePassTest {
     @Mock
     private KnowledgeGraphService knowledgeGraphService;
 
+    @InjectMocks
     private OpinionPrunePass pass;
     private static final Long FS = 42L;
     private static final PrunePolicy DEFAULT_POLICY = PrunePolicy.defaults();
 
     @BeforeEach
     void setUp() {
-        pass = new OpinionPrunePass(knowledgeGraphService);
+        // `pass` is created and field-injected by @InjectMocks (Mockito populates the @Autowired
+        // KnowledgeGraphService seam the same way Spring does on the live path).
         // Default: pruneEdges soft-deletes and reports the count back
         when(knowledgeGraphService.pruneEdges(anyCollection(), eq(true), eq(false)))
                 .thenAnswer(inv -> {

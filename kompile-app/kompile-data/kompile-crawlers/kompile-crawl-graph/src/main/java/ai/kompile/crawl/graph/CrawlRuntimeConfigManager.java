@@ -17,6 +17,8 @@
 package ai.kompile.crawl.graph;
 
 import ai.kompile.cli.common.KompileHome;
+import ai.kompile.core.crawl.graph.CliAgentAvailabilityAdapter;
+import ai.kompile.core.crawl.graph.GraphExtractionConfig;
 import ai.kompile.core.crawl.graph.UnifiedCrawlRequest;
 import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -33,6 +35,7 @@ import java.nio.file.Path;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -195,6 +198,11 @@ class CrawlRuntimeConfigManager {
         service.crawlGraphExtractionMaxCharsPerChunk = config.crawlGraphExtractionMaxCharsPerChunk;
         service.crawlGraphExtractionMaxCharsPerChunkVlm = config.crawlGraphExtractionMaxCharsPerChunkVlm;
         service.graphExtractionChunksPerPrompt = config.graphExtractionChunksPerPrompt;
+        service.crawlIncrementalByContentHash = config.crawlIncrementalByContentHash;
+        service.crawlForceFullRecrawl = config.crawlForceFullRecrawl;
+        service.crawlClearGraphBeforeRun = config.crawlClearGraphBeforeRun;
+        service.kgeAfterEnrichment = config.crawlKgeAfterEnrichment;
+        service.kgeBatchSize = config.crawlKgeBatchSize;
 
         if (memoryMonitor != null) {
             memoryMonitor.applyConfig(config.memoryWaitThresholdPercent, config.memoryCriticalThresholdPercent,
@@ -219,6 +227,8 @@ class CrawlRuntimeConfigManager {
             graphExtOrch.maxCharsPerChunk = config.crawlGraphExtractionMaxCharsPerChunk;
             graphExtOrch.maxCharsPerChunkVlm = config.crawlGraphExtractionMaxCharsPerChunkVlm;
             graphExtOrch.graphExtractionChunksPerPrompt = config.graphExtractionChunksPerPrompt;
+            graphExtOrch.maxRebatchDepth = config.crawlGraphExtractionMaxRebatchDepth;
+            graphExtOrch.wholesaleFailureThreshold = config.crawlGraphExtractionWholesaleFailureThreshold;
         }
 
         if (llmDispatcher != null) {
@@ -324,6 +334,87 @@ class CrawlRuntimeConfigManager {
             graphExtOrch.graphExtractionMaxItemsPerBatch =
                     Math.max(1, Math.min(4096, overrides.getGraphExtractionMaxItemsPerBatch()));
         }
+        if (overrides.getIncrementalByContentHash() != null) {
+            service.crawlIncrementalByContentHash = overrides.getIncrementalByContentHash();
+        }
+        if (overrides.getForceFullRecrawl() != null) {
+            service.crawlForceFullRecrawl = overrides.getForceFullRecrawl();
+        }
+        // [FIX-4] Per-request opt-in to clear the graph before running
+        if (overrides.getClearGraphBeforeRun() != null) {
+            service.crawlClearGraphBeforeRun = overrides.getClearGraphBeforeRun();
+        }
+    }
+
+    /**
+    /**
+     * Derive the per-call char budget from the primary extraction model's context window and apply
+     * it as the floor of {@code graphExtractionTargetCharsPerBatch} on the orchestrator.
+     *
+     * <p>Only fires when {@code graphConfig.getExtractionContextBudgetFraction()} is non-null and
+     * {@code > 0}. The computed chars are {@code max(existing, budgetChars)} so the budget is only
+     * ever raised, never reduced below the operator-configured static value.</p>
+     *
+     * @param graphConfig   extraction config from the request (may be null)
+     * @param llmDispatcher dispatcher holding the {@link CliAgentAvailabilityAdapter}
+     * @param graphExtOrch  orchestrator whose {@code graphExtractionTargetCharsPerBatch} is updated
+     * @return a human-readable detail string when the budget was updated, or {@code null} if skipped
+     */
+    String applyContextBudget(GraphExtractionConfig graphConfig,
+                              CrawlLlmDispatcher llmDispatcher,
+                              GraphExtractionOrchestrator graphExtOrch) {
+        if (llmDispatcher == null || llmDispatcher.cliAgentAvailability == null) return null;
+        if (graphExtOrch == null) return null;
+
+        double fraction = (graphConfig != null && graphConfig.getExtractionContextBudgetFraction() != null)
+                ? graphConfig.getExtractionContextBudgetFraction()
+                : 0.5; // default
+        if (fraction <= 0.0) return null; // disabled
+
+        double charsPerToken = (graphConfig != null && graphConfig.getExtractionCharsPerToken() != null)
+                ? graphConfig.getExtractionCharsPerToken()
+                : 3.5; // default
+
+        int budgetChars = llmDispatcher.cliAgentAvailability.contextBudgetChars(fraction, charsPerToken);
+        if (budgetChars <= 0) return null;
+
+        int before = graphExtOrch.graphExtractionTargetCharsPerBatch;
+        int after  = Math.max(before, budgetChars);
+        if (after != before) {
+            graphExtOrch.graphExtractionTargetCharsPerBatch = after;
+            log.info("BATCH_BUDGET: raised graphExtractionTargetCharsPerBatch {}→{} (fraction={}, charsPerToken={})",
+                    before, after, fraction, charsPerToken);
+        }
+        return "budgetChars=" + budgetChars + " fraction=" + fraction
+                + " charsPerToken=" + charsPerToken + " before=" + before + " after=" + after;
+    }
+
+    /**
+     * Push the per-crawl extraction model policy from a {@link GraphExtractionConfig} to the
+     * {@link CliAgentAvailabilityAdapter}, which delegates to {@code CliAgentModelService}.
+     *
+     * @param graphConfig   extraction config from the incoming request (may be null)
+     * @param llmDispatcher dispatcher that holds the wired {@link CliAgentAvailabilityAdapter}
+     */
+    void applyExtractionPolicy(GraphExtractionConfig graphConfig, CrawlLlmDispatcher llmDispatcher) {
+        if (llmDispatcher == null || llmDispatcher.cliAgentAvailability == null) return;
+        List<String> providerAllow  = graphConfig != null ? graphConfig.getExtractionModelProviderAllow()  : null;
+        List<String> excludeMarkers = graphConfig != null ? graphConfig.getExtractionModelExcludeMarkers() : null;
+        List<String> modelAllow     = graphConfig != null ? graphConfig.getExtractionModelAllow()          : null;
+        llmDispatcher.cliAgentAvailability.setActiveExtractionPolicy(providerAllow, excludeMarkers, modelAllow);
+        log.info("Applied extraction policy from GraphExtractionConfig: providerAllow={}, excludeMarkers={}, modelAllow={}",
+                providerAllow, excludeMarkers, modelAllow);
+
+        // Per-job/per-project fallback-executor overrides (paid-tier guardrails + timeout). Null
+        // fields inherit the global model-fallback-config.json default. Pushed every crawl so the
+        // override is always fresh from THIS job's config (no stale carry-over between crawls).
+        Boolean paidFallbackEnabled = graphConfig != null ? graphConfig.getExtractionPaidFallbackEnabled() : null;
+        Integer maxPaidCallsPerCrawl = graphConfig != null ? graphConfig.getExtractionMaxPaidCallsPerCrawl() : null;
+        Integer perCallTimeoutSeconds = graphConfig != null ? graphConfig.getExtractionPerCallTimeoutSeconds() : null;
+        llmDispatcher.cliAgentAvailability.setActiveExtractionFallbackOverride(
+                paidFallbackEnabled, maxPaidCallsPerCrawl, perCallTimeoutSeconds);
+        log.info("Applied extraction fallback override from GraphExtractionConfig: paidFallbackEnabled={}, maxPaidCallsPerCrawl={}, perCallTimeoutSeconds={}",
+                paidFallbackEnabled, maxPaidCallsPerCrawl, perCallTimeoutSeconds);
     }
 
     // ── CrawlRuntimeConfig ──────────────────────────────────────────────────
@@ -363,19 +454,125 @@ class CrawlRuntimeConfigManager {
         boolean costSortChunks = true;
         int llmCallTimeoutSeconds = 300;
         int graphExtractionBatchTimeoutSeconds = 2700;
-        // Configurable truncation limits for inline LLM extraction.
-        // Defaults equal the former hard-coded values; behaviour is unchanged unless set.
-        int crawlGraphExtractionMaxCharsPerChunk = 12_000;
-        int crawlGraphExtractionMaxCharsPerChunkVlm = 16_000;
+        // Per-chunk truncation ceiling for the inline-LLM path (extractGraphViaLlmDocument /
+        // extractGraphViaLlmChunkGroup). Raised from 12 000 / 16 000 to 50 000 / 60 000 chars so
+        // large-context CLI agents (e.g. opencode-cli / DeepSeek V4 at ~1 M tokens) can consume
+        // full document sections without being hard-capped at ~3 output-token-budget's worth of text.
+        // The old 12 000-char default was the primary cause of ~11.8 k-char/call on deepseek-v4:
+        // the inline path truncated each chunk to 12 000 chars and the charBudget allowed only a
+        // few chunks before the chunksPerPrompt or charBudget limit triggered a flush.
+        // Projects that deliberately want small chunks for local/small-context models can override
+        // crawlGraphExtractionMaxCharsPerChunk back to 12 000 in their project config.
+        int crawlGraphExtractionMaxCharsPerChunk = 50_000;
+        int crawlGraphExtractionMaxCharsPerChunkVlm = 60_000;
         // Number of chunks to group into a single LLM prompt. 1 = one-call-per-chunk (default).
         int graphExtractionChunksPerPrompt = 1;
         int circuitBreakerFailureThreshold = 5;
         int circuitBreakerCooldownSeconds = 60;
+        /**
+         * When true (default) each crawl skips files whose SHA-256 content hash
+         * matches the value recorded on the previous crawl — only new/changed files
+         * go through CONVERTING → CHUNKING → GRAPH_EXTRACTION → VECTOR_INDEXING.
+         * Global steps (ENTITY_RESOLUTION, EDGE_COMPUTATION, ENRICHMENT) still run
+         * over the full current graph regardless of this flag.
+         */
+        boolean crawlIncrementalByContentHash = true;
+        /**
+         * When true, bypass the content-hash skip for a single crawl run — every file
+         * is (re-)processed and the hash store is updated.  Intended for forced
+         * full re-crawls (e.g. after a schema change).  Does NOT clear the hash store.
+         */
+        boolean crawlForceFullRecrawl = false;
+        /**
+         * [FIX-4] When true (explicit opt-in only), clear the fact sheet's graph at the very
+         * start of the crawl (before LOADING) so the new crawl starts from a clean slate.
+         * Default is FALSE — re-runs MERGE/UPDATE the existing graph rather than wiping it,
+         * preserving accumulated enrichment, confidence, and opinion data.
+         *
+         * <p>This is a destructive operation; use it only when you need to completely replace
+         * the graph (e.g. after a schema change that makes old nodes/edges incompatible).</p>
+         */
+        boolean crawlClearGraphBeforeRun = false;
         // CLI-agent quota ledger (cross-job; both time-window and request/token caps)
         long cliQuotaWindowMs = 18_000_000L;   // 5 hours rolling exhaustion window
         long cliQuotaMinHealthyMs = 60_000L;   // hysteresis gap before backoff resets
         long cliMaxRequestsPerWindow = 0;      // 0 = no global request cap
         long cliMaxTokensPerWindow = 0;        // 0 = no global token cap
+        /**
+         * Maximum split depth for rebatch-on-failure in the inline-LLM extraction path.
+         * When a multi-chunk group fails (timeout/empty/parse-error), it is split in half and
+         * each half retried; halving repeats up to this many levels before a chunk is declared
+         * individually failed (size-1 is the terminal base case). Depth=4 → max 2^4=16 splits,
+         * so a failing group of 32 will recurse: 32→16→8→4→2→1, rescuing chunks that succeed
+         * in smaller context. Set to 0 to disable rebatching (pre-fix behaviour).
+         * Default: 4.
+         */
+        int crawlGraphExtractionMaxRebatchDepth = 4;
+        /**
+         * Wholesale-failure threshold for the finish-early guard in graph extraction.
+         * When (failed_chunks / total_chunks) ≥ this fraction AND entities extracted == 0,
+         * the crawl skips downstream semantic steps (ENTITY_RESOLUTION, EDGE_COMPUTATION,
+         * ENRICHMENT) that require semantic entities to be meaningful, marks the job
+         * FAILED/DEGRADED, and archives the failed chunks as a resumable GRAPH_EXTRACTION step.
+         * Range 0.0 (always skip downstream on any failure) to 1.0 (only skip when ALL chunks fail).
+         * Default: 1.0 — only skip when the extraction is a complete wholesale failure.
+         */
+        double crawlGraphExtractionWholesaleFailureThreshold = 1.0;
+        /**
+         * When true (default), automatically trigger async KGE embedding training after the
+         * ENRICHMENT step completes successfully. The training runs in a daemon background
+         * thread so it does not block the crawl pipeline. Set to false to skip KGE training
+         * after enrichment (e.g. for test crawls or when KGE is run on demand instead).
+         */
+        boolean crawlKgeAfterEnrichment = true;
+        /**
+         * Batch size for KGE (Knowledge Graph Embedding) training (triples per mini-batch).
+         * Overrides {@code KGEmbeddingConfig.TRANSE_DEFAULTS.batchSize()} when positive.
+         * Default: 256. Reduce to 64–128 on memory-constrained hosts; increase to 512–2048 on
+         * hosts with ample RAM/VRAM and large graphs.
+         */
+        int crawlKgeBatchSize = 256;
+        /**
+         * When true (default), heavy in-memory model operations (KGE training, embedding steps)
+         * are serialized through a single-permit semaphore so at most one runs at a time.
+         * Passthrough to {@code ResourceSchedulerConfig.serializedHeavyOps}; controlling it here
+         * lets a per-project config override the global setting without editing
+         * {@code resource-scheduler-config.json}.
+         * Ignored when no {@code HeavyMemoryCoordinator} bean is wired (older contexts).
+         */
+        boolean crawlSerializedHeavyOps = true;
+        /**
+         * Per-project absolute RAM floor (MB) passed through to the resource governor's OOM check.
+         * 0 means "use the global {@code governorRamFloorMb} from resource-scheduler-config.json".
+         * When positive, a DECISION event is published if the host drops below this floor and
+         * the KGE/embedding launch is deferred.
+         * Default: 0 (use global).
+         */
+        long crawlGovernorRamFloorMb = 0;
+        /**
+         * When true, the local-serving extraction tier (SameDiff-LLM or any bean with
+         * {@code getId()=="local-serving"}) is used side-by-side with the remote tier.
+         * Batches whose cost (chars) is {@code <= crawlLocalCostThresholdChars} are routed
+         * to the local tier; larger batches are routed to the remote tier.
+         * Default is false (all batches go to the existing remote path, identical behaviour).
+         */
+        boolean crawlLocalTierEnabled = false;
+        /**
+         * Cost ceiling (characters) for routing a batch to the local tier.
+         * A batch with {@code cost() <= threshold} goes LOCAL; {@code cost() > threshold}
+         * goes REMOTE. Only applied when {@code crawlLocalTierEnabled=true} and the local
+         * tier bean is present and {@code isAvailable()==true}.
+         * Default: 24 000 chars.
+         */
+        long crawlLocalCostThresholdChars = 24_000L;
+        /**
+         * Wave parallelism to use when the local tier is active. Overrides the remote-parallelism
+         * cap so local and remote batches can run concurrently without being bottlenecked by the
+         * remote-parallelism ceiling (typically 2). Only applied when
+         * {@code crawlLocalTierEnabled=true} and the local tier is present/available.
+         * Default: 4 (same as graphExtractionParallelism default).
+         */
+        int crawlSideBySideParallelism = 4;
 
         /** Serialize the effective values keyed by the same crawl* names {@link #from} reads. */
         Map<String, Object> toMap() {
@@ -415,6 +612,15 @@ class CrawlRuntimeConfigManager {
             m.put("crawlCliQuotaMinHealthyMs", cliQuotaMinHealthyMs);
             m.put("crawlCliMaxRequestsPerWindow", cliMaxRequestsPerWindow);
             m.put("crawlCliMaxTokensPerWindow", cliMaxTokensPerWindow);
+            m.put("crawlIncrementalByContentHash", crawlIncrementalByContentHash);
+            m.put("crawlForceFullRecrawl", crawlForceFullRecrawl);
+            m.put("crawlClearGraphBeforeRun", crawlClearGraphBeforeRun);
+            m.put("crawlGraphExtractionMaxRebatchDepth", crawlGraphExtractionMaxRebatchDepth);
+            m.put("crawlGraphExtractionWholesaleFailureThreshold", crawlGraphExtractionWholesaleFailureThreshold);
+            m.put("crawlKgeAfterEnrichment", crawlKgeAfterEnrichment);
+            m.put("crawlKgeBatchSize", crawlKgeBatchSize);
+            m.put("crawlSerializedHeavyOps", crawlSerializedHeavyOps);
+            m.put("crawlGovernorRamFloorMb", crawlGovernorRamFloorMb);
             return m;
         }
 
@@ -443,7 +649,11 @@ class CrawlRuntimeConfigManager {
             config.graphExtractionParallelism = intField(root, "crawlGraphExtractionParallelism", config.graphExtractionParallelism, 1, 32);
             config.graphExtractionRemoteParallelism = intField(root, "crawlGraphExtractionRemoteParallelism", config.graphExtractionRemoteParallelism, 1, 32);
             config.graphExtractionMaxItemsPerBatch = intField(root, "crawlGraphExtractionMaxItemsPerBatch", config.graphExtractionMaxItemsPerBatch, 1, 4096);
-            config.graphExtractionTargetCharsPerBatch = intField(root, "crawlGraphExtractionTargetCharsPerBatch", config.graphExtractionTargetCharsPerBatch, 1000, 500000);
+            // Upper bound raised from 500 000 → 4 000 000 chars to allow large-context models
+            // (e.g. DeepSeek V4 / opencode-cli at ~1 M tokens ≈ 4 M chars) to send batches that
+            // actually approach their context window. The orchestrator's AIMD sizer and the
+            // model-derived maxInputChars() cap further constrain the actual per-call budget.
+            config.graphExtractionTargetCharsPerBatch = intField(root, "crawlGraphExtractionTargetCharsPerBatch", config.graphExtractionTargetCharsPerBatch, 1000, 4_000_000);
             config.chunkingTargetCharsPerTask = intField(root, "crawlChunkingTargetCharsPerTask", config.chunkingTargetCharsPerTask, 1000, 2000000);
             config.vectorBatchSize = intField(root, "crawlVectorBatchSize", config.vectorBatchSize, 0, 4096);
             config.postProcessParallel = boolField(root, "crawlPostProcessParallel", config.postProcessParallel);
@@ -453,8 +663,11 @@ class CrawlRuntimeConfigManager {
             config.costSortChunks = boolField(root, "crawlCostSortChunks", config.costSortChunks);
             config.llmCallTimeoutSeconds = intField(root, "crawlLlmCallTimeoutSeconds", config.llmCallTimeoutSeconds, 10, 1800);
             config.graphExtractionBatchTimeoutSeconds = intField(root, "crawlGraphExtractionBatchTimeoutSeconds", config.graphExtractionBatchTimeoutSeconds, 60, 7200);
-            config.crawlGraphExtractionMaxCharsPerChunk = intField(root, "crawlGraphExtractionMaxCharsPerChunk", config.crawlGraphExtractionMaxCharsPerChunk, 500, 500_000);
-            config.crawlGraphExtractionMaxCharsPerChunkVlm = intField(root, "crawlGraphExtractionMaxCharsPerChunkVlm", config.crawlGraphExtractionMaxCharsPerChunkVlm, 500, 500_000);
+            // Upper bound raised from 500 000 → 2 000 000 chars so large-context CLI agents
+            // (deepseek-v4 / opencode-cli with ~1 M-token window) can receive full document sections
+            // without truncation at 12 000 chars (the old hard-coded default).
+            config.crawlGraphExtractionMaxCharsPerChunk = intField(root, "crawlGraphExtractionMaxCharsPerChunk", config.crawlGraphExtractionMaxCharsPerChunk, 500, 2_000_000);
+            config.crawlGraphExtractionMaxCharsPerChunkVlm = intField(root, "crawlGraphExtractionMaxCharsPerChunkVlm", config.crawlGraphExtractionMaxCharsPerChunkVlm, 500, 2_000_000);
             config.graphExtractionChunksPerPrompt = intField(root, "crawlGraphExtractionChunksPerPrompt", config.graphExtractionChunksPerPrompt, 1, 64);
             config.circuitBreakerFailureThreshold = intField(root, "crawlCircuitBreakerFailureThreshold", config.circuitBreakerFailureThreshold, 1, 50);
             config.circuitBreakerCooldownSeconds = intField(root, "crawlCircuitBreakerCooldownSeconds", config.circuitBreakerCooldownSeconds, 5, 600);
@@ -462,6 +675,20 @@ class CrawlRuntimeConfigManager {
             config.cliQuotaMinHealthyMs = longField(root, "crawlCliQuotaMinHealthyMs", config.cliQuotaMinHealthyMs, 0L, 3_600_000L);
             config.cliMaxRequestsPerWindow = longField(root, "crawlCliMaxRequestsPerWindow", config.cliMaxRequestsPerWindow, 0L, 1_000_000_000L);
             config.cliMaxTokensPerWindow = longField(root, "crawlCliMaxTokensPerWindow", config.cliMaxTokensPerWindow, 0L, 1_000_000_000_000L);
+            config.crawlIncrementalByContentHash = boolField(root, "crawlIncrementalByContentHash", config.crawlIncrementalByContentHash);
+            config.crawlForceFullRecrawl = boolField(root, "crawlForceFullRecrawl", config.crawlForceFullRecrawl);
+            config.crawlClearGraphBeforeRun = boolField(root, "crawlClearGraphBeforeRun", config.crawlClearGraphBeforeRun);
+            config.crawlGraphExtractionMaxRebatchDepth = intField(root, "crawlGraphExtractionMaxRebatchDepth", config.crawlGraphExtractionMaxRebatchDepth, 0, 8);
+            {
+                JsonNode n = root.get("crawlGraphExtractionWholesaleFailureThreshold");
+                if (n != null && n.isNumber()) {
+                    config.crawlGraphExtractionWholesaleFailureThreshold = Math.max(0.0, Math.min(1.0, n.asDouble()));
+                }
+            }
+            config.crawlKgeAfterEnrichment = boolField(root, "crawlKgeAfterEnrichment", config.crawlKgeAfterEnrichment);
+            config.crawlKgeBatchSize = intField(root, "crawlKgeBatchSize", config.crawlKgeBatchSize, 8, 65536);
+            config.crawlSerializedHeavyOps = boolField(root, "crawlSerializedHeavyOps", config.crawlSerializedHeavyOps);
+            config.crawlGovernorRamFloorMb = longField(root, "crawlGovernorRamFloorMb", config.crawlGovernorRamFloorMb, 0L, 1_048_576L);
             if (config.memoryCriticalThresholdPercent < config.memoryWaitThresholdPercent) {
                 config.memoryCriticalThresholdPercent = config.memoryWaitThresholdPercent;
             }

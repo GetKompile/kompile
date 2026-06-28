@@ -43,7 +43,7 @@ public class ModelStagingWiringConfiguration {
 
     private final StagingServiceConfigService stagingConfigService;
 
-    @Value("${kompile.staging.url:}")
+    @Value("${kompile.staging.url:http://localhost:8090}")
     private String stagingUrlProperty;
 
     @Value("${kompile.staging.api-key:}")

@@ -187,17 +187,13 @@ public class McpStdioCommand implements Callable<Integer> {
         PrintStream originalErr = System.err;
         System.setErr(stderrLogger.getPrintStream());
         try {
-            // Auto-detect kompile-app for tools that need the HTTP backend (RAG, GraphRAG).
-            // When launched via stdio (no --url), probe common ports so those tools work
-            // without requiring the user to pass --url explicitly.
-            if (baseUrl == null || baseUrl.isBlank()) {
-                String detected = ai.kompile.cli.main.chat.McpUrlResolver.resolveOnce(null, 0);
-                if (detected != null) {
-                    // Strip /mcp/sse suffix — tools need the base URL (e.g. http://localhost:8080)
-                    baseUrl = detected.replaceAll("/mcp/sse$", "");
-                    System.err.println("[MCP] Auto-detected kompile-app at " + baseUrl);
-                }
-            }
+            // NOTE: we intentionally do NOT probe for a kompile-app backend here. A blanket
+            // startup probe (4 ports x connect+read timeouts) added latency to EVERY stdio
+            // session — including local-only ones that only ever call grep/glob/read and never
+            // touch the HTTP backend. Detection is now lazy: the backend-dependent tools (RAG,
+            // GraphRAG, code_search, ask_graph*) resolve the URL on first use via
+            // KompileBackendClient, which caches the hit and rate-limits re-probes (30s
+            // cooldown) when nothing is listening. An explicit --url still seeds the URL below.
 
             // Auto-start daemon if needed, then bridge — collapses N MCP processes into one
             if (!noDaemon) {
@@ -1207,6 +1203,8 @@ public class McpStdioCommand implements Callable<Integer> {
         registerCliTool(tools, new ai.kompile.cli.main.chat.tools.grounding.AskGraphExplainTool(baseUrl, om), om, wd);
         registerCliTool(tools, new ai.kompile.cli.main.chat.tools.grounding.AskGraphAssertTool(baseUrl, om), om, wd);
         registerCliTool(tools, new ai.kompile.cli.main.chat.tools.grounding.AskGraphSubscribeTool(om), om, wd);
+        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.grounding.AskGraphMebnTool(baseUrl, om), om, wd);
+        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.grounding.GraphReasonTool(baseUrl, om), om, wd);
 
         // ── Process management ─────────────────────────────────────────────
         var procTool = new ai.kompile.cli.main.chat.tools.ProcessManagementTool(processManager);

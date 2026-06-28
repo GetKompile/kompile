@@ -74,8 +74,8 @@ public class InferredFactRow {
     @Column(name = "version", nullable = false)
     private long version;
 
-    /** Soft-truth value in [0, 1]. */
-    @Column(name = "value", nullable = false)
+    /** Soft-truth value in [0, 1]. ("value" is a reserved word in H2/SQL — quote it for portable DDL.) */
+    @Column(name = "`value`", nullable = false)
     private double value;
 
     /** Confidence score in [0, 1]. */

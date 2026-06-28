@@ -15,10 +15,11 @@
  */
 package ai.kompile.knowledgegraph.persistence;
 
+import ai.kompile.cli.common.KompileHome;
 import ai.kompile.graph.reasoning.learning.FileWeightStore;
+import ai.kompile.graph.reasoning.learning.WeightBackupInfo;
 import ai.kompile.graph.reasoning.learning.WeightStore;
 import ai.kompile.graph.reasoning.psl.PslRule;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.nio.file.Path;
@@ -41,16 +42,26 @@ import java.util.Set;
 @Component
 public class FileBackedWeightStore implements WeightStore {
 
-    @Value("${kompile.data.dir:}")
-    private String dataDir;
-
     private final FileWeightStore delegate;
     private final Path reasoningBase;
 
-    public FileBackedWeightStore(@Value("${kompile.data.dir:}") String dataDir) {
-        this.dataDir = dataDir;
-        Path base = resolveBase(dataDir);
+    public FileBackedWeightStore() {
+        Path base = KompileHome.resolvedProjectDirectory().toPath();
         this.reasoningBase = base.resolve("data").resolve("graph").resolve("reasoning");
+        this.delegate = new FileWeightStore(reasoningBase);
+    }
+
+    /**
+     * Construct with an explicit base directory instead of the resolved project home. Used by tests
+     * for {@code @TempDir} isolation (and any caller that manages its own reasoning directory).
+     *
+     * <p>The {@code baseDir} is treated as the Kompile project root (same role as the value
+     * returned by {@link KompileHome#resolvedProjectDirectory()} in the no-arg constructor).
+     * Files are therefore stored under {@code <baseDir>/data/graph/reasoning/}, mirroring the
+     * no-arg constructor's subdirectory convention exactly.
+     */
+    public FileBackedWeightStore(String baseDir) {
+        this.reasoningBase = Path.of(baseDir).resolve("data").resolve("graph").resolve("reasoning");
         this.delegate = new FileWeightStore(reasoningBase);
     }
 
@@ -91,6 +102,28 @@ public class FileBackedWeightStore implements WeightStore {
         return delegate.programIds();
     }
 
+    // ── Backup / reset delegation ──────────────────────────────────────────────
+
+    @Override
+    public String backup(String programId) {
+        return delegate.backup(programId);
+    }
+
+    @Override
+    public List<WeightBackupInfo> listBackups(String programId) {
+        return delegate.listBackups(programId);
+    }
+
+    @Override
+    public boolean restoreBackup(String programId, String backupId) {
+        return delegate.restoreBackup(programId, backupId);
+    }
+
+    @Override
+    public String reset(String programId, double defaultWeight) {
+        return delegate.reset(programId, defaultWeight);
+    }
+
     // ── Spring-aware helpers ──────────────────────────────────────────────────
 
     /**
@@ -125,11 +158,4 @@ public class FileBackedWeightStore implements WeightStore {
                 .resolve(sanitized + ".v" + version + ".json");
     }
 
-    // ── Helpers ───────────────────────────────────────────────────────────────
-
-    private static Path resolveBase(String dataDirValue) {
-        return (dataDirValue == null || dataDirValue.isBlank())
-                ? Path.of(System.getProperty("user.home"), ".kompile")
-                : Path.of(dataDirValue);
-    }
 }

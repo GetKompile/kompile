@@ -16,7 +16,7 @@
 
 package ai.kompile.app.config;
 
-import ai.kompile.cli.common.util.NativeImageInfo;
+import ai.kompile.utils.NativeImageInfo;
 import lombok.Getter;
 import lombok.Setter;
 import org.slf4j.Logger;

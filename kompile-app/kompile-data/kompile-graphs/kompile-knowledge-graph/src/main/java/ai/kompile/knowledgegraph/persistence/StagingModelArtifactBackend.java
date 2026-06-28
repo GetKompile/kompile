@@ -48,7 +48,7 @@ import java.util.List;
 @Component
 public class StagingModelArtifactBackend implements ModelArtifactBackend {
 
-    @Value("${kompile.staging.url:}")
+    @Value("${kompile.staging.url:http://localhost:8090}")
     private String stagingUrl;
 
     private final RestTemplate restTemplate = new RestTemplate();

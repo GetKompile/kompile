@@ -43,7 +43,8 @@ import { Subject, takeUntil } from 'rxjs';
 import { EvalDebuggerService } from '../../services/eval-debugger.service';
 import { ManagedEvalService } from '../../services/managed-eval.service';
 import { FactSheetService } from '../../services/fact-sheet.service';
-import { FactSheet } from '../../models/api-models';
+import { FactSheet, Citation } from '../../models/api-models';
+import { SourceCitationComponent } from '../source-citation/source-citation.component';
 import {
   EvalDebuggerStatus,
   EvaluatorTypeInfo,
@@ -86,7 +87,8 @@ import { EvalSuite, CreateTestCaseRequest } from '../../models/managed-eval.mode
     MatSnackBarModule,
     TextFieldModule,
     MatListModule,
-    MatButtonToggleModule
+    MatButtonToggleModule,
+    SourceCitationComponent
   ],
   templateUrl: './eval-debugger.component.html',
   styleUrls: ['./eval-debugger.component.scss']

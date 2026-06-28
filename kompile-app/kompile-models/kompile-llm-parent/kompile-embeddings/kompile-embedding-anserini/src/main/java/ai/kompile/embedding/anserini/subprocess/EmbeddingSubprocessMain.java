@@ -656,10 +656,23 @@ public class EmbeddingSubprocessMain {
             sendProgress("LOADING_MODEL", 50, "Configuring batch sizes", "Setting optimal=" + optimalBatchSize + ", max=" + maxBatchSize);
 
             if (encoder instanceof GenericDenseSameDiffEncoder denseEncoder) {
-                denseEncoder.configureBatchSize(optimalBatchSize, maxBatchSize, 8192, -1.0);
-                logger.info("Configured encoder batch sizes: optimal={}, max={}",
-                        optimalBatchSize, maxBatchSize);
-                sendLog("INFO", "ModelLoader", "Batch sizes configured: optimal=" + optimalBatchSize + ", max=" + maxBatchSize);
+                // Use the absoluteMaxBatchSize from the request (default 0 → falls back to maxBatchSize).
+                // The old hardcoded 8192 caused ~36GB native forward-pass activations and host OOM.
+                int absoluteMax = req.absoluteMaxBatchSize() > 0 ? req.absoluteMaxBatchSize() : maxBatchSize;
+                denseEncoder.configureBatchSize(optimalBatchSize, maxBatchSize, absoluteMax, -1.0);
+                logger.info("Configured encoder batch sizes: optimal={}, max={}, absoluteMax={}",
+                        optimalBatchSize, maxBatchSize, absoluteMax);
+                sendLog("INFO", "ModelLoader", "Batch sizes configured: optimal=" + optimalBatchSize
+                        + ", max=" + maxBatchSize + ", absoluteMax=" + absoluteMax);
+
+                // Register callback so native-memory-pressure resize decisions are forwarded
+                // over the subprocess stdout JSON protocol to the parent process.
+                denseEncoder.setBatchResizeListener((oldBatch, newBatch, reason, physBytes, maxPhysBytes) -> {
+                    logger.warn("EMBED_DECISION batchResize old={} new={} reason={} physicalBytes={} maxPhysicalBytes={}",
+                            oldBatch, newBatch, reason, physBytes, maxPhysBytes);
+                    sendMessage(EmbeddingSubprocessMessage.batchResizeNotice(
+                            oldBatch, newBatch, reason, physBytes, maxPhysBytes));
+                });
             }
 
             // Test the encoder and get dimensions
@@ -680,6 +693,20 @@ public class EmbeddingSubprocessMain {
             // and ensure the planner has seen representative shapes before real traffic.
             if (encoder instanceof GenericDenseSameDiffEncoder denseEncoder) {
                 warmupDspBuckets(denseEncoder);
+
+                // FIX C: Release transient activation buffers that accumulated during warmup.
+                // destroyAllWorkspacesForCurrentThread() reclaims per-thread ND4J workspaces
+                // (temporary tensors, activation scratch) WITHOUT touching the compiled DSP
+                // plan cache — plans are keyed by shape and live outside these workspaces.
+                // System.gc() encourages the JVM to release Java-side references to off-heap
+                // buffers so JavaCPP can deallocate them promptly.
+                try {
+                    Nd4j.getWorkspaceManager().destroyAllWorkspacesForCurrentThread();
+                    System.gc();
+                    sendLog("INFO", "DspWarmup", "Released post-warmup transient workspaces (plan cache intact)");
+                } catch (Exception e) {
+                    logger.debug("Post-warmup workspace cleanup skipped: {}", e.getMessage());
+                }
             }
 
             // Set model context on watchdog so OOM kill logs identify the model
@@ -810,13 +837,16 @@ public class EmbeddingSubprocessMain {
             }
 
             int outputCount = embeddings.size();
-            logger.info("Batch embedding complete: {} texts in {}ms ({} ms/text)",
-                    inputCount, totalTimeMs, inputCount == 0 ? 0 : totalTimeMs / inputCount);
 
-            // Update statistics
-            totalEmbeddingsProcessed.addAndGet(outputCount);
-            totalBatchesProcessed.incrementAndGet();
+            // Update statistics before logging so the running total is accurate
+            long runningTotal = totalEmbeddingsProcessed.addAndGet(outputCount);
+            long batchNum = totalBatchesProcessed.incrementAndGet();
             totalEmbedTimeMs.addAndGet(totalTimeMs);
+
+            // Single concise throughput line per batch — the only INFO per embed call.
+            double msPerText = inputCount == 0 ? 0.0 : (double) totalTimeMs / inputCount;
+            logger.info("EMBED_BATCH_DONE: {} texts in {}ms ({} ms/text) batch={} runningTotal={}",
+                    inputCount, totalTimeMs, String.format("%.1f", msPerText), batchNum, runningTotal);
 
             // Build metrics
             double textsPerSecond = totalTimeMs > 0 ? (outputCount * 1000.0 / totalTimeMs) : 0;
@@ -1303,56 +1333,82 @@ public class EmbeddingSubprocessMain {
     }
 
     /**
-     * Warmup DSP plans at key bucket sizes so the planner has pre-built
-     * execution plans for the most common RAG chunk lengths.
-     * Each bucket triggers one SLOT_BY_SLOT → FREEZE cycle (~<1s each on GPU).
-     * Buckets that fail warmup are logged as warnings — the plan will be built
-     * on-demand at first use instead.
+     * Warmup DSP plans at all (seq-bucket × batch-size) combinations that
+     * InferenceBatchPlanner can produce for real traffic.
+     *
+     * <h3>Why batch-size warmup matters (FIX 2)</h3>
+     * <p>SameDiff's {@code DynamicShapePlanExecutor} compiles one plan per unique input
+     * shape {@code [batchSize, seqLen]}.  The previous warmup only ran each seq-bucket
+     * with a single text (batch=1), so shapes [2,512], [4,512], [8,512] … were compiled
+     * on demand at inference time.  Each compilation "protects" ~674 model DataBuffers in
+     * the Java heap for the plan's lifetime; if the plan cache is cleared between calls
+     * (clearAllCaches path) every request triggers a fresh compile and the old set of
+     * DataBuffers becomes garbage faster than GC collects it → heap OOM at 4 g.
+     *
+     * <p>Running warmup for all {batchSize × bucket} combinations here pre-populates
+     * the plan cache so no on-demand compilation occurs during crawl embedding.
+     * Warmup failures are non-fatal: the plan is compiled on-demand at first use.
+     *
+     * <p>Seq buckets: 128, 256, 512 (covers typical RAG chunk sizes).
+     * Batch sizes: 1, 2, 4, 8, 16, 32, 64 (the powers-of-two that InferenceBatchPlanner
+     * naturally produces up to maxRows=64).
      */
     private static void warmupDspBuckets(GenericDenseSameDiffEncoder denseEncoder) {
-        // Target the buckets that cover typical RAG chunk sizes (200-500 tokens).
-        // We don't warmup 64 (too small to matter) or 1024+ (risk OOM on smaller GPUs).
         int[] warmupBuckets = {128, 256, 512};
+        // Reduced from {1,2,4,8,16,32,64} to {1,16,64}: 21 shapes → 9 shapes.
+        // Each warmed shape retains a DSP workspace forever; the 12 dropped shapes
+        // collectively held ~4-8 GB of permanent native RSS.  Non-warmed shapes
+        // cold-compile on first real use (one-time, acceptable latency).
+        // Retained: 1 (single-text, most common), 16 (small batches), 64 (max planner rows).
+        int[] warmupBatchSizes = {1, 16, 64};
 
-        sendLog("INFO", "DspWarmup", "Pre-warming DSP plans for " + warmupBuckets.length +
-                " bucket sizes: 128, 256, 512");
-        sendProgress("LOADING_MODEL", 85, "Warming DSP plans", "Pre-building execution plans...");
+        int totalPlans = warmupBuckets.length * warmupBatchSizes.length;
+        sendLog("INFO", "DspWarmup", "Pre-warming " + totalPlans + " DSP plans "
+                + "(seq buckets: 128,256,512 × batch sizes: 1,16,64)");
+        sendProgress("LOADING_MODEL", 85, "Warming DSP plans", "Pre-building " + totalPlans + " execution plans...");
 
-        for (int i = 0; i < warmupBuckets.length; i++) {
-            int bucket = warmupBuckets[i];
-            try {
-                int progressPct = 85 + ((i + 1) * 5); // 90, 95, 100 but capped below
+        int planIdx = 0;
+        for (int bucket : warmupBuckets) {
+            // Build dummy text long enough to tokenize to ~bucket tokens.
+            // Average English word → ~1.3 subword tokens, so ~bucket/1.3 words needed.
+            int wordCount = (int) (bucket / 1.3) + 10;
+            StringBuilder sb = new StringBuilder(wordCount * 8);
+            for (int w = 0; w < wordCount; w++) {
+                sb.append("warmup ");
+            }
+            String dummyText = sb.toString();
+
+            for (int batchSize : warmupBatchSizes) {
+                planIdx++;
+                int progressPct = 85 + (planIdx * 13 / totalPlans); // 85→98 range
                 sendProgress("LOADING_MODEL", Math.min(progressPct, 98),
-                        "Warming DSP plans", "Building plan for seq_len=" + bucket);
+                        "Warming DSP plans",
+                        "Plan " + planIdx + "/" + totalPlans + ": batch=" + batchSize + " seq=" + bucket);
 
-                // Generate dummy text that tokenizes to approximately `bucket` tokens.
-                // Average English word → ~1.3 subword tokens, so we need ~bucket/1.3 words.
-                // Using "warmup " (single token per word roughly) repeated.
-                int wordCount = (int) (bucket / 1.3) + 10;
-                StringBuilder sb = new StringBuilder(wordCount * 8);
-                for (int w = 0; w < wordCount; w++) {
-                    sb.append("warmup ");
-                }
-                String dummyText = sb.toString();
+                try {
+                    long start = System.currentTimeMillis();
+                    List<String> batch = new ArrayList<>(batchSize);
+                    for (int b = 0; b < batchSize; b++) {
+                        batch.add(dummyText);
+                    }
+                    List<float[]> results = denseEncoder.encodeBatch(batch);
+                    long elapsed = System.currentTimeMillis() - start;
 
-                long start = System.currentTimeMillis();
-                float[] result = denseEncoder.encode(dummyText);
-                long elapsed = System.currentTimeMillis() - start;
-
-                if (result != null && result.length > 0) {
-                    sendLog("INFO", "DspWarmup",
-                            "DSP plan warmed for bucket=" + bucket + " in " + elapsed + "ms");
-                } else {
+                    if (results != null && !results.isEmpty() && results.get(0) != null) {
+                        sendLog("INFO", "DspWarmup",
+                                "DSP plan ready: batch=" + batchSize + " seq=" + bucket + " (" + elapsed + "ms)");
+                    } else {
+                        sendLog("WARN", "DspWarmup",
+                                "Warmup returned empty for batch=" + batchSize + " seq=" + bucket);
+                    }
+                } catch (Exception e) {
                     sendLog("WARN", "DspWarmup",
-                            "Warmup returned empty result for bucket=" + bucket);
+                            "Warmup failed for batch=" + batchSize + " seq=" + bucket + ": " + e.getMessage());
+                    logger.warn("DSP warmup failed for batch={} seq={}: {}", batchSize, bucket, e.getMessage());
                 }
-            } catch (Exception e) {
-                sendLog("WARN", "DspWarmup",
-                        "Warmup failed for bucket=" + bucket + ": " + e.getMessage());
-                logger.warn("DSP warmup failed for bucket={}: {}", bucket, e.getMessage());
             }
         }
 
-        sendLog("INFO", "DspWarmup", "DSP bucket warmup complete");
+        sendLog("INFO", "DspWarmup", "DSP plan warmup complete (" + planIdx + " plans)");
     }
 }

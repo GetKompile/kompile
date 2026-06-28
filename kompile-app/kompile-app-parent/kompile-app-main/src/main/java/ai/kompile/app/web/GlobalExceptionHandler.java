@@ -47,6 +47,7 @@ import java.util.Map;
             "ai.kompile.app.web.controllers.grounding",
             "ai.kompile.knowledgegraph.grounding.controller",
             "ai.kompile.knowledgegraph.reasoning.controller",
+            "ai.kompile.knowledgegraph.learning",
             "ai.kompile.app.web.controllers.explain"
     })
 public class GlobalExceptionHandler {

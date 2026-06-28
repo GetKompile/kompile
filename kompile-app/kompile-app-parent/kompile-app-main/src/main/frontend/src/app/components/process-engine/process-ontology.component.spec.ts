@@ -40,7 +40,7 @@ function makeEntityType(overrides: Partial<EntityTypeDefinition> = {}): EntityTy
       { name: 'vendor', type: 'string', required: true, description: 'Vendor name' }
     ],
     rules: [
-      { name: 'amount-positive', type: 'constraint', severity: 'ERROR', expression: 'amount > 0' }
+      { name: 'amount-positive', severity: 'ERROR', expression: 'amount > 0' }
     ],
     ...overrides
   };
@@ -68,7 +68,7 @@ function makeOntologySchema(overrides: Partial<OntologySchema> = {}): OntologySc
       }
     ],
     globalRules: [
-      { name: 'cross-entity-check', type: 'cross-entity', severity: 'WARNING' }
+      { name: 'cross-entity-check', severity: 'WARNING' }
     ],
     metadata: { domain: 'finance' },
     ...overrides
@@ -84,8 +84,8 @@ describe('ProcessOntologyComponent', () => {
 
   const mockOntology = makeOntologySchema();
   const mockValidationRules: ValidationRule[] = [
-    { name: 'amount-positive', type: 'constraint', severity: 'ERROR', expression: 'amount > 0' },
-    { name: 'vendor-required', type: 'constraint', severity: 'WARNING', expression: 'vendor != null' }
+    { name: 'amount-positive', severity: 'ERROR', expression: 'amount > 0' },
+    { name: 'vendor-required', severity: 'WARNING', expression: 'vendor != null' }
   ];
 
   beforeEach(async () => {

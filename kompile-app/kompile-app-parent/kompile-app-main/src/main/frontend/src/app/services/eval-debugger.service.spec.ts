@@ -20,6 +20,7 @@ import { HttpClientTestingModule, HttpTestingController } from '@angular/common/
 import { EvalDebuggerService } from './eval-debugger.service';
 import {
   EvalDebuggerStatus,
+  EvalRetrievedDoc,
   EvaluatorTypeInfo,
   TestCase,
   TestCaseResult,
@@ -177,7 +178,7 @@ describe('EvalDebuggerService', () => {
         prompt: 'What is RAG?',
         expectedAnswer: 'Retrieval Augmented Generation',
         actualAnswer: 'RAG stands for Retrieval Augmented Generation',
-        retrievedDocuments: ['doc1', 'doc2'],
+        retrievedDocuments: [{ text: 'doc1' }, { text: 'doc2' }],
         success: true,
         passed: true,
         ragTimeMs: 120,

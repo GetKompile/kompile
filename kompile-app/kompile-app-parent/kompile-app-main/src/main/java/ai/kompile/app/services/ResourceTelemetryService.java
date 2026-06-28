@@ -101,6 +101,26 @@ public class ResourceTelemetryService {
         return s != null ? s : ResourceSnapshot.unavailable();
     }
 
+    /**
+     * Return total system RAM in megabytes as reported by the OS.
+     *
+     * <p>Used by the parent-side {@code SubprocessRssWatchdog} to compute the
+     * effective per-subprocess RSS limit from {@code subprocessMaxRssFraction}.
+     * Returns 0 when the OS bean is unavailable (non-Sun JVM).</p>
+     */
+    public long getSystemTotalRamMb() {
+        try {
+            if (ManagementFactory.getOperatingSystemMXBean()
+                    instanceof com.sun.management.OperatingSystemMXBean os) {
+                long total = os.getTotalMemorySize();
+                return total > 0 ? total / (1024L * 1024L) : 0L;
+            }
+        } catch (Throwable ignored) {
+            // fall through
+        }
+        return 0L;
+    }
+
     /** Force an immediate refresh (used by tests and on-demand status endpoints). */
     public ResourceSnapshot refreshNow() {
         poll();
@@ -156,8 +176,11 @@ public class ResourceTelemetryService {
             }
         }
 
+        long memAvailableBytes = readMemAvailableBytes();
+
         return new ResourceSnapshot(System.nanoTime(), cpuLoad, ramUsed, heapUsed, 0.0,
-                cpuPressure, ramPressure, heapPressure, PressureLevel.NOMINAL, gpus, gpuAvailable);
+                cpuPressure, ramPressure, heapPressure, PressureLevel.NOMINAL, gpus, gpuAvailable,
+                memAvailableBytes);
     }
 
     private long reservedBytesForDevice(int cudaRuntimeIndex) {

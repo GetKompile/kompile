@@ -409,6 +409,19 @@ public class PomModelBuilder {
         snapshots2.setEnabled(false);
         springReleases.setSnapshots(snapshots2);
         model.addRepository(springReleases);
+
+        // pty4j + its purejavacomm transitive dep (PTY-backed managed interactive sessions in
+        // kompile-app-main) are published to JetBrains' intellij-dependencies repo, NOT Maven
+        // Central (purejavacomm 0.0.11.1 is 404 on Central). Generated projects depend on
+        // app-main, so the uber build must declare this repo to resolve pty4j reproducibly.
+        Repository intellijDeps = new Repository();
+        intellijDeps.setId("intellij-dependencies");
+        intellijDeps.setName("JetBrains IntelliJ Dependencies");
+        intellijDeps.setUrl("https://cache-redirector.jetbrains.com/intellij-dependencies");
+        RepositoryPolicy intellijSnapshots = new RepositoryPolicy();
+        intellijSnapshots.setEnabled(false);
+        intellijDeps.setSnapshots(intellijSnapshots);
+        model.addRepository(intellijDeps);
     }
 
     // --- Helper methods ---

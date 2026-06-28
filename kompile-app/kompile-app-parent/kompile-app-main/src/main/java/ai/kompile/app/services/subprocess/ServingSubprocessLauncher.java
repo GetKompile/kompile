@@ -22,6 +22,7 @@ import ai.kompile.app.config.Nd4jEnvironmentConfig;
 import ai.kompile.app.config.SubprocessExecutableConfig;
 import ai.kompile.app.services.DeviceRoutingConfigService;
 import ai.kompile.app.services.Nd4jEnvironmentConfigService;
+import ai.kompile.app.subprocess.RestartableSubprocess;
 import ai.kompile.app.subprocess.ServingSubprocessArgs;
 import ai.kompile.app.subprocess.SubprocessBackendResolver;
 import ai.kompile.app.subprocess.SubprocessEnvironmentPropagator;
@@ -91,7 +92,7 @@ import java.util.jar.JarFile;
  * </ul>
  */
 @Service
-public class ServingSubprocessLauncher {
+public class ServingSubprocessLauncher implements RestartableSubprocess {
 
     private static final Logger logger = LoggerFactory.getLogger(ServingSubprocessLauncher.class);
 
@@ -247,6 +248,13 @@ public class ServingSubprocessLauncher {
     /** Scheduler job ID for the current serving session (null if not tracked). */
     private volatile String schedulerJobId;
 
+    // ── Last-loaded model args (needed by RestartableSubprocess.requestRestart) ──
+
+    /** Model id of the most recently loaded model; retained across stop/start for watchdog-triggered restarts. */
+    private volatile String lastModelId;
+    /** Model path of the most recently loaded model. */
+    private volatile String lastModelPath;
+
     // ── Runtime state ─────────────────────────────────────────────────────────
 
     /** The serving subprocess process handle — set on {@link #start()}, cleared on {@link #stop()}. */
@@ -325,6 +333,8 @@ public class ServingSubprocessLauncher {
             throw new IllegalArgumentException("modelId and modelPath are required — subprocess does not start empty");
         }
 
+        this.lastModelId = modelId;
+        this.lastModelPath = modelPath;
         logger.info("Starting LLM serving subprocess on port {} with model '{}' from {}...",
                 servingPort, modelId, modelPath);
 
@@ -382,9 +392,10 @@ public class ServingSubprocessLauncher {
         process = pb.start();
         running.set(true);
 
-        // Register with subprocess registry for lifecycle tracking
+        // Register with subprocess registry for lifecycle tracking and watchdog restart
         if (subprocessRegistry != null) {
             subprocessRegistry.register("serving", process, "serving");
+            subprocessRegistry.registerRestartHandler(getSubprocessId(), this);
         }
 
         // 6. Init log writer (non-fatal)
@@ -599,6 +610,51 @@ public class ServingSubprocessLauncher {
      */
     public int getServingPort() {
         return servingPort;
+    }
+
+    // ── RestartableSubprocess implementation ──────────────────────────────────
+
+    @Override
+    public String getSubprocessId() {
+        return "serving";
+    }
+
+    /**
+     * Request a watchdog-triggered restart of the serving subprocess.
+     *
+     * <p>Stops the current subprocess (if running) then restarts it with the
+     * last-loaded model. Runs on a daemon thread so the watchdog's scheduler
+     * thread is never blocked. This also fills the previously-missing restart
+     * gap in {@link ServingSubprocessLauncher}: until now, a crashed serving
+     * subprocess was never automatically recovered.</p>
+     *
+     * @param reason human-readable explanation from the watchdog
+     */
+    @Override
+    public void requestRestart(String reason) {
+        String mid = lastModelId;
+        String mpath = lastModelPath;
+        if (mid == null || mpath == null) {
+            logger.warn("Watchdog restart requested for serving subprocess but no model was previously loaded — destroying only (reason: {})", reason);
+            Process p = this.process;
+            if (p != null && p.isAlive()) {
+                p.destroyForcibly();
+            }
+            return;
+        }
+        logger.warn("Watchdog-triggered restart requested for serving subprocess: {} (model={})", reason, mid);
+        Thread t = new Thread(() -> {
+            try {
+                stop();
+                shuttingDown.set(false); // reset so start() is permitted
+                loadModel(mid, mpath, null);
+                logger.info("Serving subprocess successfully restarted by watchdog with model '{}'", mid);
+            } catch (Exception e) {
+                logger.error("Watchdog restart of serving subprocess failed: {}", e.getMessage(), e);
+            }
+        }, "serving-watchdog-restart");
+        t.setDaemon(true);
+        t.start();
     }
 
     // ── Internal helpers ──────────────────────────────────────────────────────

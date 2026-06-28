@@ -206,6 +206,7 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
   activeCrawlJobs: CrawlJobSummary[] = [];
   expandedCrawlJobs: Set<string> = new Set();
   expandedCrawlErrors: Set<string> = new Set();
+  stepActionInProgress: { [key: string]: boolean } = {};
 
   private crawlPollSubscription: Subscription | null = null;
   /** Global crawl SSE stream — drives live per-step updates in the inline monitor (not just the poll). */
@@ -1048,6 +1049,10 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
     const onSnapshot = (e: MessageEvent) => this.zone.run(() => this.mergeCrawlSnapshot(e));
     es.addEventListener('progress', onSnapshot as EventListener);
     es.addEventListener('started', onSnapshot as EventListener);
+    // Resource/model decisions (batch resizes, gate waits, KGE choices, OOM defers) carry an
+    // updated snapshot; merge it the same way as a progress event so the inline step-monitor
+    // shows recentTuningDecisions and RESOURCE_GATE/MODEL_ROUTING events immediately.
+    es.addEventListener('decision', onSnapshot as EventListener);
     es.addEventListener('completed', ((e: MessageEvent) => this.zone.run(() => {
       this.mergeCrawlSnapshot(e);
       this.loadActiveCrawlJobs(); // completed jobs drop out of the active list
@@ -1083,14 +1088,32 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
 
   /** The shared step monitor asks the host to run an archived/deferred step. */
   onRunStepRequested(event: { jobId: string; stepId: string }): void {
+    const key = `${event.jobId}:${event.stepId}`;
+    this.stepActionInProgress[key] = true;
     this.unifiedCrawlService.runStep(event.jobId, event.stepId).subscribe({
-      next: () => this.loadActiveCrawlJobs(),
+      next: () => {
+        this.stepActionInProgress[key] = false;
+        this.loadActiveCrawlJobs();
+      },
       error: (err: any) => {
+        this.stepActionInProgress[key] = false;
         this.snackBar.open(
           'Failed to run step ' + event.stepId + ': ' + (err.error?.error || err.message || err.statusText),
           'Dismiss', { duration: 5000 });
       }
     });
+  }
+
+  /** Builds the Set<string> of in-progress stepIds for a given jobId — passed to the step monitor. */
+  getRunningStepIds(jobId: string): Set<string> {
+    const s = new Set<string>();
+    const prefix = jobId + ':';
+    for (const key of Object.keys(this.stepActionInProgress)) {
+      if (this.stepActionInProgress[key] && key.startsWith(prefix)) {
+        s.add(key.slice(prefix.length));
+      }
+    }
+    return s;
   }
 
   toggleCrawlJobDetail(jobId: string): void {

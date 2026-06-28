@@ -16,29 +16,49 @@
 
 package ai.kompile.app.config;
 
+import ai.kompile.cli.common.util.JsonUtils;
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.annotation.PostConstruct;
 import lombok.Data;
-import org.springframework.boot.context.properties.ConfigurationProperties;
+import lombok.EqualsAndHashCode;
+import lombok.ToString;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+
 /**
- * Configuration properties for the periodic backup service.
+ * Managed-JSON configuration for the periodic backup service.
  * <p>
- * Supports backing up H2 databases and Lucene indexes with automatic cleanup.
+ * Configuration is loaded from {@code <dataDir>/config/backup-config.json} at
+ * startup and can be persisted back via {@link #persist()}. When the file is
+ * absent the class field defaults are used unchanged.
  * </p>
- *
- * <h3>Example configuration:</h3>
- * <pre>
- * kompile.backup.enabled=true
- * kompile.backup.backup-path=${user.home}/.kompile/backups
- * kompile.backup.fixed-rate-ms=21600000
- * kompile.backup.retention-days=7
- * kompile.backup.format=COMPRESSED
- * </pre>
  */
 @Data
 @Component
-@ConfigurationProperties(prefix = "kompile.backup")
+@JsonIgnoreProperties(ignoreUnknown = true)
 public class BackupProperties {
+
+    private static final Logger log = LoggerFactory.getLogger(BackupProperties.class);
+    private static final String CONFIG_FILENAME = "backup-config.json";
+
+    @JsonIgnore
+    @EqualsAndHashCode.Exclude
+    @ToString.Exclude
+    private final Path configFilePath;
+
+    @JsonIgnore
+    @EqualsAndHashCode.Exclude
+    @ToString.Exclude
+    private final ObjectMapper objectMapper;
 
     /**
      * Enable or disable the backup service.
@@ -100,6 +120,57 @@ public class BackupProperties {
      * Path to the text/keyword index directory.
      */
     private String textIndexPath = "./data/index";
+
+    public BackupProperties(@Value("${kompile.data.dir:#{null}}") String dataDir) {
+        String effectiveDataDir = dataDir;
+        if (effectiveDataDir == null || effectiveDataDir.isBlank()) {
+            effectiveDataDir = System.getProperty("user.home") + "/.kompile";
+        }
+        this.objectMapper = JsonUtils.newStandardMapper();
+        this.configFilePath = Paths.get(effectiveDataDir, "config", CONFIG_FILENAME);
+        log.info("BackupProperties initialized, config path: {}", configFilePath);
+    }
+
+    /**
+     * Loads the JSON config file on startup, overlaying values onto this instance.
+     * When the file is absent all field defaults are kept as-is. Never throws.
+     */
+    @PostConstruct
+    public void init() {
+        if (!Files.exists(configFilePath)) {
+            log.info("No backup config found at {} — using defaults", configFilePath);
+            return;
+        }
+        try {
+            String json = Files.readString(configFilePath);
+            // readerForUpdating calls setters on *this* for each present key;
+            // absent keys keep their existing (default) values.
+            objectMapper.readerForUpdating(this).readValue(json);
+            log.info("Loaded backup config from {}: enabled={}, backupPath={}, retentionDays={}",
+                    configFilePath, enabled, backupPath, retentionDays);
+        } catch (IOException e) {
+            log.warn("Could not read backup config from {} — using defaults: {}", configFilePath, e.getMessage());
+        }
+    }
+
+    /**
+     * Persists the current field values to {@code <dataDir>/config/backup-config.json}
+     * as pretty-printed JSON. Parent directories are created if absent.
+     */
+    public void persist() {
+        try {
+            Path parent = configFilePath.getParent();
+            if (!Files.exists(parent)) {
+                Files.createDirectories(parent);
+                log.info("Created config directory: {}", parent);
+            }
+            String json = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(this);
+            Files.writeString(configFilePath, json);
+            log.info("Persisted backup config to {}", configFilePath);
+        } catch (IOException e) {
+            log.error("Failed to persist backup config to {}: {}", configFilePath, e.getMessage(), e);
+        }
+    }
 
     /**
      * Backup format options.

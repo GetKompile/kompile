@@ -18,8 +18,13 @@
   align-items: center;
   gap: 8px;
   padding: 16px;
-  background: #ffebee;
+  background: rgba(198, 40, 40, 0.08);
   color: #c62828;
+}
+
+:host-context(body.dark-theme) .error-container {
+  background: rgba(239, 83, 80, 0.2);
+  color: #ef9a9a;
 }
 
 /* No Content State */
@@ -95,8 +100,12 @@
   font-weight: 500;
 }
 
+:host-context(body.dark-theme) .preview-text {
+  color: #64b5f6;
+}
+
 .preview-headers {
-  color: #757575;
+  color: var(--text-secondary, #757575);
   font-size: 0.875rem;
   padding-left: 32px;
 }
@@ -120,13 +129,19 @@
   padding: 12px 16px;
   text-align: left;
   font-weight: 600;
-  background: #e3f2fd;
+  background: rgba(25, 118, 210, 0.1);
   color: #1565c0;
   border-bottom: 2px solid #1976d2;
   position: sticky;
   top: 0;
   z-index: 1;
   white-space: nowrap;
+}
+
+:host-context(body.dark-theme) .table-header-cell {
+  background: rgba(25, 118, 210, 0.25);
+  color: #90caf9;
+  border-bottom-color: #1565c0;
 }
 
 .compact .table-header-cell {
@@ -147,7 +162,11 @@
 }
 
 .rendered-table.hover-enabled .table-row:hover {
-  background: #e3f2fd;
+  background: rgba(25, 118, 210, 0.08);
+}
+
+:host-context(body.dark-theme) .rendered-table.hover-enabled .table-row:hover {
+  background: rgba(25, 118, 210, 0.18);
 }
 
 /* Table Cells */
@@ -204,61 +223,42 @@
   }
 }
 
-/* Dark Mode Support (if using Angular Material dark theme) */
-:host-context(.dark-theme) .table-renderer-container {
-  background: #303030;
-  border-color: #424242;
+/* Dark Mode Support — uses body.dark-theme (ThemeService pattern) */
+:host-context(body.dark-theme) .table-renderer-container {
+  background: var(--bg-surface);
+  border-color: var(--border-color);
 }
 
-:host-context(.dark-theme) .table-header {
-  background: #424242;
-  border-color: #616161;
+:host-context(body.dark-theme) .table-header {
+  background: var(--bg-surface-elevated);
+  border-color: var(--border-color);
 }
 
-:host-context(.dark-theme) .table-header-cell {
-  background: #1565c0;
-  color: #ffffff;
-  border-color: #1976d2;
+:host-context(body.dark-theme) .table-row.even-row {
+  background: var(--bg-surface);
 }
 
-:host-context(.dark-theme) .table-row.even-row {
-  background: #424242;
+:host-context(body.dark-theme) .table-row.odd-row {
+  background: var(--bg-body);
 }
 
-:host-context(.dark-theme) .table-row.odd-row {
-  background: #303030;
+:host-context(body.dark-theme) .table-cell {
+  border-color: var(--border-color);
 }
 
-:host-context(.dark-theme) .table-cell {
-  border-color: #616161;
+:host-context(body.dark-theme) .no-content {
+  color: var(--text-tertiary);
 }
 
-:host-context(.dark-theme) .error-container {
-  background: #4e342e;
-  color: #ffab91;
+:host-context(body.dark-theme) .pagination-container {
+  background: var(--bg-surface-elevated);
+  border-color: var(--border-color);
 }
 
-:host-context(.dark-theme) .no-content {
-  color: #9e9e9e;
+:host-context(body.dark-theme) .page-info {
+  color: var(--text-secondary);
 }
 
-:host-context(.dark-theme) .pagination-container {
-  background: #424242;
-  border-color: #616161;
-}
-
-:host-context(.dark-theme) .page-info {
-  color: #bdbdbd;
-}
-
-:host-context(.dark-theme) .collapsed-preview:hover {
-  background: #424242;
-}
-
-:host-context(.dark-theme) .preview-text {
-  color: #64b5f6;
-}
-
-:host-context(.dark-theme) .preview-headers {
-  color: #9e9e9e;
+:host-context(body.dark-theme) .collapsed-preview:hover {
+  background: var(--bg-surface-elevated);
 }

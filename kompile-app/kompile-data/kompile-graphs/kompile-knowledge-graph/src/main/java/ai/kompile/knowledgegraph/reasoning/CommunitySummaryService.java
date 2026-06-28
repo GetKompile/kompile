@@ -45,7 +45,7 @@ import java.util.List;
  * HTTP cache headers or a higher-level cache as needed.
  */
 @Slf4j
-@Service
+@Service("reasoningCommunitySummaryService")
 public class CommunitySummaryService {
 
     /** Maximum member nodes included in the prompt digest to keep token cost bounded. */

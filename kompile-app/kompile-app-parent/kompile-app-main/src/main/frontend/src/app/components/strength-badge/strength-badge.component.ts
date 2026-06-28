@@ -65,7 +65,8 @@ export class StrengthBadgeComponent {
 
   get tooltip(): string {
     if (this.opinion) {
-      return `b=${this.opinion.belief.toFixed(2)} d=${this.opinion.disbelief.toFixed(2)} u=${this.opinion.uncertainty.toFixed(2)} E=${this.opinion.expectation.toFixed(2)}`;
+      return `belief ${this.opinion.belief.toFixed(2)} · disbelief ${this.opinion.disbelief.toFixed(2)}`
+        + ` · uncertainty ${this.opinion.uncertainty.toFixed(2)} · expected value ${this.opinion.expectation.toFixed(2)}`;
     }
     return this.bandLabel;
   }

@@ -1,0 +1,246 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~
+  ~  Licensed under the Apache License, Version 2.0 (the "License");
+  ~  you may not use this file except in compliance with the License.
+  ~  You may obtain a copy of the License at
+  ~
+  ~  http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~  Unless required by applicable law or agreed to in writing, software
+  ~   distributed under the License is distributed on an "AS IS" BASIS,
+  ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<div class="index-system-status-container">
+
+  <!-- Fallback Warning Banner -->
+  <div *ngIf="indexBrowserStatus?.isUsingFallbackIndex" class="status-warning-banner fallback-warning-banner">
+    <mat-icon class="fallback-warning-icon">warning</mat-icon>
+    <span>
+      <strong>Warning:</strong> Vector Store is using a temporary fallback index. The configured index path could not be
+      opened (likely due to lock file or permissions). Data will not be persisted.
+    </span>
+  </div>
+
+  <!-- System Status Section -->
+  <div class="status-section mat-elevation-z2" *ngIf="indexBrowserStatus || isLoadingStatus">
+    <div class="status-header">
+      <mat-icon [color]="getStatusColor()">info</mat-icon>
+      <h3>System Status</h3>
+      <button mat-icon-button (click)="loadStatus()" [disabled]="isLoadingStatus"
+              matTooltip="Refresh status" class="refresh-btn">
+        <mat-icon>refresh</mat-icon>
+      </button>
+    </div>
+
+    <div *ngIf="isLoadingStatus" class="status-loading">
+      <mat-progress-spinner diameter="24" mode="indeterminate"></mat-progress-spinner>
+      <span>Loading status...</span>
+    </div>
+
+    <div *ngIf="indexBrowserStatus && !isLoadingStatus" class="status-content">
+      <div class="status-message" [ngClass]="getStatusColor()">
+        <strong>{{ getStatusMessage() }}</strong>
+      </div>
+
+      <div class="status-details">
+        <!-- ═══════════════════════════════════════════════════════════════════ -->
+        <!-- KEYWORD INDEX STATUS -->
+        <!-- ═══════════════════════════════════════════════════════════════════ -->
+        <div class="index-status-section">
+          <h4 class="section-title"><mat-icon>text_snippet</mat-icon> Keyword Index</h4>
+
+          <div class="status-row">
+            <strong>Indexer:</strong>
+            <span class="implementation-name" [class.no-op]="indexBrowserStatus.isNoOpIndexer">
+              {{ indexBrowserStatus.indexerImplementation }}
+            </span>
+            <mat-icon *ngIf="indexBrowserStatus.isNoOpIndexer" class="warning-icon" color="warn">warning</mat-icon>
+          </div>
+
+          <div class="status-row">
+            <strong>Retriever:</strong>
+            <span class="implementation-name" [class.no-op]="indexBrowserStatus.isNoOpRetriever">
+              {{ indexBrowserStatus.retrieverImplementation }}
+            </span>
+            <mat-icon *ngIf="indexBrowserStatus.isNoOpRetriever" class="warning-icon" color="warn">warning</mat-icon>
+          </div>
+
+          <div class="status-row">
+            <strong>Available:</strong>
+            <span [class.text-success]="indexBrowserStatus.indexAvailable"
+              [class.text-error]="!indexBrowserStatus.indexAvailable">
+              {{ indexBrowserStatus.indexAvailable ? 'Yes' : 'No' }}
+            </span>
+          </div>
+
+          <div class="status-row" *ngIf="indexBrowserStatus.indexPath">
+            <strong>Path:</strong>
+            <span class="path-display" [matTooltip]="indexBrowserStatus.indexPath">{{ indexBrowserStatus.indexPath }}</span>
+          </div>
+
+          <div class="status-row">
+            <strong>Document Count:</strong>
+            <span class="count-badge">{{ indexBrowserStatus.approximateDocumentCount !== undefined && indexBrowserStatus.approximateDocumentCount !== null ? indexBrowserStatus.approximateDocumentCount : 0 }}</span>
+          </div>
+        </div>
+
+        <!-- ═══════════════════════════════════════════════════════════════════ -->
+        <!-- VECTOR STORE STATUS -->
+        <!-- ═══════════════════════════════════════════════════════════════════ -->
+        <div class="index-status-section vector-section">
+          <h4 class="section-title"><mat-icon>hub</mat-icon> Vector Store</h4>
+
+          <div class="status-row" *ngIf="indexBrowserStatus.vectorStoreImplementation">
+            <strong>Implementation:</strong>
+            <span class="implementation-name" [class.no-op]="indexBrowserStatus.isNoOpVectorStore">
+              {{ indexBrowserStatus.vectorStoreImplementation }}
+            </span>
+            <mat-icon *ngIf="indexBrowserStatus.isNoOpVectorStore" class="warning-icon" color="warn">warning</mat-icon>
+          </div>
+
+          <div class="status-row">
+            <strong>Available:</strong>
+            <span [class.text-success]="indexBrowserStatus.vectorStoreAvailable"
+              [class.text-error]="!indexBrowserStatus.vectorStoreAvailable">
+              {{ indexBrowserStatus.vectorStoreAvailable ? 'Yes' : 'No' }}
+            </span>
+          </div>
+
+          <div class="status-row">
+            <strong>Path:</strong>
+            <span class="path-display" [matTooltip]="indexBrowserStatus.vectorStorePath || 'Not configured'">
+              {{ indexBrowserStatus.vectorStorePath || 'Not configured' }}
+            </span>
+          </div>
+
+          <div class="status-row">
+            <strong>Vector Count:</strong>
+            <span class="count-badge">{{ indexBrowserStatus.approximateVectorCount !== undefined && indexBrowserStatus.approximateVectorCount !== -1 ? indexBrowserStatus.approximateVectorCount : 0 }}</span>
+          </div>
+
+          <div class="status-row" *ngIf="indexBrowserStatus.approximateTotalTokens">
+            <strong>Total Tokens:</strong>
+            <span class="count-badge token-count">{{ formatTokenCount(indexBrowserStatus.approximateTotalTokens) }}</span>
+          </div>
+        </div>
+
+        <!-- ═══════════════════════════════════════════════════════════════════ -->
+        <!-- ACTIVE MODEL STATUS (from Staging Manager) -->
+        <!-- ═══════════════════════════════════════════════════════════════════ -->
+        <div class="index-status-section model-section">
+          <h4 class="section-title"><mat-icon>memory</mat-icon> Active Model</h4>
+
+          <!-- Local Embedding Model -->
+          <div class="status-row" *ngIf="indexBrowserStatus.activeEmbeddingModel">
+            <strong>Embedding Model:</strong>
+            <span class="model-name active">
+              {{ indexBrowserStatus.activeEmbeddingModel }}
+            </span>
+            <span class="model-dim-badge" *ngIf="indexBrowserStatus.embeddingDimensions">
+              {{ indexBrowserStatus.embeddingDimensions }}d
+            </span>
+          </div>
+
+          <!-- Model Loading Progress -->
+          <div class="status-row model-loading-row" *ngIf="indexBrowserStatus.embeddingModelLoading">
+            <strong>Embedding Model:</strong>
+            <div class="model-loading-status">
+              <mat-spinner diameter="18" class="inline-spinner"></mat-spinner>
+              <span class="loading-phase-badge">{{ getLoadingPhaseDisplay(indexBrowserStatus.embeddingModelLoadingPhase) }}</span>
+              <span class="loading-message">{{ indexBrowserStatus.embeddingModelLoadingMessage || 'Initializing...' }}</span>
+            </div>
+          </div>
+
+          <!-- Model Not Initialized (and not loading) -->
+          <div class="status-row" *ngIf="!indexBrowserStatus.embeddingModelLoading && (!indexBrowserStatus.activeEmbeddingModel || indexBrowserStatus.embeddingModelInitialized === false)">
+            <strong>Embedding Model:</strong>
+            <span class="text-warning" *ngIf="indexBrowserStatus.embeddingModelWarning">
+              <mat-icon class="inline-icon status-icon-warning">warning</mat-icon>
+              {{ indexBrowserStatus.embeddingModelWarning }}
+            </span>
+            <span class="text-warning" *ngIf="!indexBrowserStatus.embeddingModelWarning">
+              Not loaded
+            </span>
+            <mat-spinner *ngIf="isPollingEmbeddingModel" diameter="16" class="inline-spinner" matTooltip="Checking for model initialization..."></mat-spinner>
+          </div>
+
+          <!-- Staging Service Connection -->
+          <div class="status-row">
+            <strong>Staging Service:</strong>
+            <span *ngIf="indexBrowserStatus.stagingServiceConfigured && indexBrowserStatus.stagingConnected"
+                  class="text-success">
+              <mat-icon class="inline-icon status-icon-connected">check_circle</mat-icon>
+              {{ indexBrowserStatus.stagingServiceName || 'Connected' }}
+            </span>
+            <span *ngIf="indexBrowserStatus.stagingServiceConfigured && !indexBrowserStatus.stagingConnected"
+                  class="text-warning">
+              <mat-icon class="inline-icon status-icon-warning">warning</mat-icon>
+              {{ indexBrowserStatus.stagingServiceName || 'Configured' }} (Disconnected)
+            </span>
+            <span *ngIf="!indexBrowserStatus.stagingServiceConfigured" class="text-muted">
+              Not configured
+            </span>
+          </div>
+
+          <!-- Active Encoder from Staging -->
+          <div class="status-row" *ngIf="indexBrowserStatus.stagingConnected && indexBrowserStatus.activeEncoder">
+            <strong>Active Encoder:</strong>
+            <span class="model-name active">
+              <mat-icon class="inline-icon model-active-icon">verified</mat-icon>
+              {{ indexBrowserStatus.activeEncoder }}
+            </span>
+          </div>
+
+          <!-- Active Cross-Encoder from Staging -->
+          <div class="status-row" *ngIf="indexBrowserStatus.stagingConnected && indexBrowserStatus.activeCrossEncoder">
+            <strong>Active Cross-Encoder:</strong>
+            <span class="model-name active">
+              <mat-icon class="inline-icon model-active-icon">verified</mat-icon>
+              {{ indexBrowserStatus.activeCrossEncoder }}
+            </span>
+          </div>
+
+          <!-- Active Sparse Encoder from Staging -->
+          <div class="status-row" *ngIf="indexBrowserStatus.stagingConnected && indexBrowserStatus.activeSparseEncoder">
+            <strong>Active Sparse Encoder:</strong>
+            <span class="model-name active">
+              <mat-icon class="inline-icon model-active-icon">verified</mat-icon>
+              {{ indexBrowserStatus.activeSparseEncoder }}
+            </span>
+          </div>
+
+          <!-- No active models from staging -->
+          <div class="status-row" *ngIf="indexBrowserStatus.stagingConnected && !indexBrowserStatus.activeEncoder && !indexBrowserStatus.activeCrossEncoder">
+            <span class="text-muted" style="font-style: italic;">
+              No active models in staging registry
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div *ngIf="indexBrowserStatus.warning" class="status-warning">
+        <mat-icon color="warn">warning</mat-icon>
+        <span>{{ indexBrowserStatus.warning }}</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Cross-Index Status Section -->
+  <div class="cross-index-section mat-elevation-z2">
+    <div class="section-header">
+      <mat-icon>compare_arrows</mat-icon>
+      <h3>Cross-Index Status</h3>
+      <span class="pending-badge" *ngIf="crossIndexPendingCount > 0">
+        {{ crossIndexPendingCount }} pending
+      </span>
+    </div>
+    <app-cross-index-status
+      [factSheetId]="activeFactSheetId">
+    </app-cross-index-status>
+  </div>
+
+</div>

@@ -16,6 +16,12 @@
 
 package ai.kompile.app.web.controllers;
 
+import ai.kompile.app.web.dto.reactagent.EvalSuiteDto;
+import ai.kompile.app.web.dto.reactagent.EvalTestCaseDto;
+import ai.kompile.app.web.dto.reactagent.EvaluationTypeDto;
+import ai.kompile.app.web.dto.reactagent.FactSheetMetricsDto;
+import ai.kompile.app.web.dto.reactagent.ReActConfigDto;
+import ai.kompile.app.web.dto.reactagent.StatusDto;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -56,7 +62,7 @@ class ReActAgentConfigControllerTest {
 
     @Test
     void getConfig_returnsConfigWithDefaults() {
-        ResponseEntity<ReActAgentConfigController.ReActConfigDto> resp = controller.getConfig();
+        ResponseEntity<ReActConfigDto> resp = controller.getConfig();
 
         assertEquals(HttpStatus.OK, resp.getStatusCode());
         assertNotNull(resp.getBody());
@@ -68,7 +74,7 @@ class ReActAgentConfigControllerTest {
 
     @Test
     void getStatus_returnsStatus() {
-        ResponseEntity<ReActAgentConfigController.StatusDto> resp = controller.getStatus();
+        ResponseEntity<StatusDto> resp = controller.getStatus();
 
         assertEquals(HttpStatus.OK, resp.getStatusCode());
         assertNotNull(resp.getBody());
@@ -80,13 +86,13 @@ class ReActAgentConfigControllerTest {
 
     @Test
     void createTestCase_assignsIdAndReturns200() {
-        ReActAgentConfigController.EvalTestCaseDto tc = ReActAgentConfigController.EvalTestCaseDto.builder()
+        EvalTestCaseDto tc = EvalTestCaseDto.builder()
                 .name("My Test")
                 .query("What is X?")
                 .factSheetId(1L)
                 .build();
 
-        ResponseEntity<ReActAgentConfigController.EvalTestCaseDto> resp = controller.createTestCase(tc);
+        ResponseEntity<EvalTestCaseDto> resp = controller.createTestCase(tc);
 
         assertEquals(HttpStatus.OK, resp.getStatusCode());
         assertNotNull(resp.getBody().getId());
@@ -95,12 +101,12 @@ class ReActAgentConfigControllerTest {
 
     @Test
     void createTestCase_withProvidedId_keepsId() {
-        ReActAgentConfigController.EvalTestCaseDto tc = ReActAgentConfigController.EvalTestCaseDto.builder()
+        EvalTestCaseDto tc = EvalTestCaseDto.builder()
                 .id("custom-id")
                 .name("My Test")
                 .build();
 
-        ResponseEntity<ReActAgentConfigController.EvalTestCaseDto> resp = controller.createTestCase(tc);
+        ResponseEntity<EvalTestCaseDto> resp = controller.createTestCase(tc);
 
         assertEquals(HttpStatus.OK, resp.getStatusCode());
         assertEquals("custom-id", resp.getBody().getId());
@@ -110,12 +116,12 @@ class ReActAgentConfigControllerTest {
 
     @Test
     void getAllTestCases_noFilter_returnsAll() {
-        controller.createTestCase(ReActAgentConfigController.EvalTestCaseDto.builder()
+        controller.createTestCase(EvalTestCaseDto.builder()
                 .name("TC1").factSheetId(1L).build());
-        controller.createTestCase(ReActAgentConfigController.EvalTestCaseDto.builder()
+        controller.createTestCase(EvalTestCaseDto.builder()
                 .name("TC2").factSheetId(2L).build());
 
-        ResponseEntity<List<ReActAgentConfigController.EvalTestCaseDto>> resp =
+        ResponseEntity<List<EvalTestCaseDto>> resp =
                 controller.getAllTestCases(null, null);
 
         assertEquals(HttpStatus.OK, resp.getStatusCode());
@@ -124,12 +130,12 @@ class ReActAgentConfigControllerTest {
 
     @Test
     void getAllTestCases_withFactSheetId_filtersById() {
-        controller.createTestCase(ReActAgentConfigController.EvalTestCaseDto.builder()
+        controller.createTestCase(EvalTestCaseDto.builder()
                 .name("TC1").factSheetId(1L).build());
-        controller.createTestCase(ReActAgentConfigController.EvalTestCaseDto.builder()
+        controller.createTestCase(EvalTestCaseDto.builder()
                 .name("TC2").factSheetId(99L).build());
 
-        ResponseEntity<List<ReActAgentConfigController.EvalTestCaseDto>> resp =
+        ResponseEntity<List<EvalTestCaseDto>> resp =
                 controller.getAllTestCases(1L, null);
 
         assertEquals(HttpStatus.OK, resp.getStatusCode());
@@ -140,10 +146,10 @@ class ReActAgentConfigControllerTest {
 
     @Test
     void getTestCase_found_returns200() {
-        ReActAgentConfigController.EvalTestCaseDto created = controller.createTestCase(
-                ReActAgentConfigController.EvalTestCaseDto.builder().name("TC").build()).getBody();
+        EvalTestCaseDto created = controller.createTestCase(
+                EvalTestCaseDto.builder().name("TC").build()).getBody();
 
-        ResponseEntity<ReActAgentConfigController.EvalTestCaseDto> resp =
+        ResponseEntity<EvalTestCaseDto> resp =
                 controller.getTestCase(created.getId());
 
         assertEquals(HttpStatus.OK, resp.getStatusCode());
@@ -152,7 +158,7 @@ class ReActAgentConfigControllerTest {
 
     @Test
     void getTestCase_notFound_returns404() {
-        ResponseEntity<ReActAgentConfigController.EvalTestCaseDto> resp =
+        ResponseEntity<EvalTestCaseDto> resp =
                 controller.getTestCase("nonexistent");
 
         assertEquals(HttpStatus.NOT_FOUND, resp.getStatusCode());
@@ -162,13 +168,13 @@ class ReActAgentConfigControllerTest {
 
     @Test
     void updateTestCase_found_updates() {
-        ReActAgentConfigController.EvalTestCaseDto created = controller.createTestCase(
-                ReActAgentConfigController.EvalTestCaseDto.builder().name("Old").build()).getBody();
+        EvalTestCaseDto created = controller.createTestCase(
+                EvalTestCaseDto.builder().name("Old").build()).getBody();
 
-        ReActAgentConfigController.EvalTestCaseDto update =
-                ReActAgentConfigController.EvalTestCaseDto.builder().name("New").build();
+        EvalTestCaseDto update =
+                EvalTestCaseDto.builder().name("New").build();
 
-        ResponseEntity<ReActAgentConfigController.EvalTestCaseDto> resp =
+        ResponseEntity<EvalTestCaseDto> resp =
                 controller.updateTestCase(created.getId(), update);
 
         assertEquals(HttpStatus.OK, resp.getStatusCode());
@@ -177,10 +183,10 @@ class ReActAgentConfigControllerTest {
 
     @Test
     void updateTestCase_notFound_returns404() {
-        ReActAgentConfigController.EvalTestCaseDto update =
-                ReActAgentConfigController.EvalTestCaseDto.builder().name("New").build();
+        EvalTestCaseDto update =
+                EvalTestCaseDto.builder().name("New").build();
 
-        ResponseEntity<ReActAgentConfigController.EvalTestCaseDto> resp =
+        ResponseEntity<EvalTestCaseDto> resp =
                 controller.updateTestCase("nonexistent", update);
 
         assertEquals(HttpStatus.NOT_FOUND, resp.getStatusCode());
@@ -190,8 +196,8 @@ class ReActAgentConfigControllerTest {
 
     @Test
     void deleteTestCase_removes() {
-        ReActAgentConfigController.EvalTestCaseDto created = controller.createTestCase(
-                ReActAgentConfigController.EvalTestCaseDto.builder().name("TC").build()).getBody();
+        EvalTestCaseDto created = controller.createTestCase(
+                EvalTestCaseDto.builder().name("TC").build()).getBody();
 
         ResponseEntity<Void> resp = controller.deleteTestCase(created.getId());
 
@@ -203,10 +209,10 @@ class ReActAgentConfigControllerTest {
 
     @Test
     void createSuite_assignsIdAndReturns200() {
-        ReActAgentConfigController.EvalSuiteDto suite =
-                ReActAgentConfigController.EvalSuiteDto.builder().name("Suite A").build();
+        EvalSuiteDto suite =
+                EvalSuiteDto.builder().name("Suite A").build();
 
-        ResponseEntity<ReActAgentConfigController.EvalSuiteDto> resp = controller.createSuite(suite);
+        ResponseEntity<EvalSuiteDto> resp = controller.createSuite(suite);
 
         assertEquals(HttpStatus.OK, resp.getStatusCode());
         assertNotNull(resp.getBody().getId());
@@ -216,12 +222,12 @@ class ReActAgentConfigControllerTest {
 
     @Test
     void addTestCaseToSuite_addsMembership() {
-        ReActAgentConfigController.EvalSuiteDto suite = controller.createSuite(
-                ReActAgentConfigController.EvalSuiteDto.builder().name("Suite").build()).getBody();
-        ReActAgentConfigController.EvalTestCaseDto tc = controller.createTestCase(
-                ReActAgentConfigController.EvalTestCaseDto.builder().name("TC").build()).getBody();
+        EvalSuiteDto suite = controller.createSuite(
+                EvalSuiteDto.builder().name("Suite").build()).getBody();
+        EvalTestCaseDto tc = controller.createTestCase(
+                EvalTestCaseDto.builder().name("TC").build()).getBody();
 
-        ResponseEntity<ReActAgentConfigController.EvalSuiteDto> resp =
+        ResponseEntity<EvalSuiteDto> resp =
                 controller.addTestCaseToSuite(suite.getId(), tc.getId());
 
         assertEquals(HttpStatus.OK, resp.getStatusCode());
@@ -230,10 +236,10 @@ class ReActAgentConfigControllerTest {
 
     @Test
     void addTestCaseToSuite_suiteNotFound_returns404() {
-        ReActAgentConfigController.EvalTestCaseDto tc = controller.createTestCase(
-                ReActAgentConfigController.EvalTestCaseDto.builder().name("TC").build()).getBody();
+        EvalTestCaseDto tc = controller.createTestCase(
+                EvalTestCaseDto.builder().name("TC").build()).getBody();
 
-        ResponseEntity<ReActAgentConfigController.EvalSuiteDto> resp =
+        ResponseEntity<EvalSuiteDto> resp =
                 controller.addTestCaseToSuite("nonexistent", tc.getId());
 
         assertEquals(HttpStatus.NOT_FOUND, resp.getStatusCode());
@@ -241,10 +247,10 @@ class ReActAgentConfigControllerTest {
 
     @Test
     void addTestCaseToSuite_testCaseNotFound_returns400() {
-        ReActAgentConfigController.EvalSuiteDto suite = controller.createSuite(
-                ReActAgentConfigController.EvalSuiteDto.builder().name("Suite").build()).getBody();
+        EvalSuiteDto suite = controller.createSuite(
+                EvalSuiteDto.builder().name("Suite").build()).getBody();
 
-        ResponseEntity<ReActAgentConfigController.EvalSuiteDto> resp =
+        ResponseEntity<EvalSuiteDto> resp =
                 controller.addTestCaseToSuite(suite.getId(), "nonexistent-tc");
 
         assertEquals(HttpStatus.BAD_REQUEST, resp.getStatusCode());
@@ -254,7 +260,7 @@ class ReActAgentConfigControllerTest {
 
     @Test
     void getEvaluationTypes_returnsNonEmptyList() {
-        ResponseEntity<List<ReActAgentConfigController.EvaluationTypeDto>> resp =
+        ResponseEntity<List<EvaluationTypeDto>> resp =
                 controller.getEvaluationTypes();
 
         assertEquals(HttpStatus.OK, resp.getStatusCode());
@@ -267,7 +273,7 @@ class ReActAgentConfigControllerTest {
 
     @Test
     void getMetricsForFactSheet_returnsMetrics() {
-        ResponseEntity<ReActAgentConfigController.FactSheetMetricsDto> resp =
+        ResponseEntity<FactSheetMetricsDto> resp =
                 controller.getMetricsForFactSheet(1L);
 
         assertEquals(HttpStatus.OK, resp.getStatusCode());

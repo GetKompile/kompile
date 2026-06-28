@@ -589,6 +589,24 @@
       </div>
     </div>
 
+    <!-- Per-step retry panel (shown when unified-crawl step data is available for this history job) -->
+    <div class="detail-card full-width steps-retry-card" *ngIf="selectedJobSteps && selectedJobSteps.length > 0">
+      <div class="card-header">
+        <h4>
+          <span class="material-icons">schema</span>
+          Pipeline Steps — Re-run
+        </h4>
+        <span class="badge">{{ selectedJobSteps.length }} step(s)</span>
+      </div>
+      <app-crawl-step-monitor
+        [steps]="selectedJobSteps"
+        [jobId]="getCrawlJobIdFromTaskId(selectedJob.taskId) || ''"
+        [isJobRunning]="false"
+        [runningStepIds]="getRunningStepIds(getCrawlJobIdFromTaskId(selectedJob.taskId) || '')"
+        (runStepRequested)="runHistoryStep($event.jobId, $event.stepId)">
+      </app-crawl-step-monitor>
+    </div>
+
     <!-- Events Log -->
     <div class="detail-card full-width events-card">
       <div class="card-header">

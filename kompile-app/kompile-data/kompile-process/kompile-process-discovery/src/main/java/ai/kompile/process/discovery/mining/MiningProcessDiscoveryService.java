@@ -164,6 +164,29 @@ public class MiningProcessDiscoveryService {
                 "Mined process (fact sheet " + factSheetId + ")",
                 kbGroundingService, calibrator, factSheetId);
 
+        // Resolve node IDs → human-readable titles on every step (additive; empty list = unresolved)
+        if (suggestion.getPhases() != null) {
+            for (ProcessSuggestion.SuggestedPhase phase : suggestion.getPhases()) {
+                if (phase.getSteps() == null) continue;
+                for (ProcessSuggestion.SuggestedStep step : phase.getSteps()) {
+                    if (step.getGraphNodeIds() != null && !step.getGraphNodeIds().isEmpty()) {
+                        List<String> titles = new java.util.ArrayList<>();
+                        for (String id : step.getGraphNodeIds()) {
+                            titles.add(resolveNodeTitle(id));
+                        }
+                        step.setGraphNodeTitles(titles);
+                    }
+                    if (step.getLineageRef() != null && step.getLineageRef().getBasisNodeIds() != null) {
+                        List<String> titles = new java.util.ArrayList<>();
+                        for (String id : step.getLineageRef().getBasisNodeIds()) {
+                            titles.add(resolveNodeTitle(id));
+                        }
+                        step.getLineageRef().setBasisNodeTitles(titles);
+                    }
+                }
+            }
+        }
+
         // Apply role bindings via ConjunctiveQueryEngine-backed extractor
         if (kbGroundingService != null) {
             suggestion.getPhases().forEach(phase ->
@@ -188,7 +211,16 @@ public class MiningProcessDiscoveryService {
                         .score(dep.dependency())
                         .build());
             }
-            suggestion.getStructuredEvidence().addAll(causalEvidence);
+            // getStructuredEvidence() may be immutable or null depending on how the suggestion factory
+            // built it (e.g. Stream.toList()), so merge into a fresh mutable list instead of addAll-ing
+            // onto it — addAll on an immutable list threw UnsupportedOperationException whenever causal
+            // dependencies existed, 500-ing the whole mining endpoint.
+            List<ProcessSuggestion.StructuredEvidence> mergedEvidence = new java.util.ArrayList<>();
+            if (suggestion.getStructuredEvidence() != null) {
+                mergedEvidence.addAll(suggestion.getStructuredEvidence());
+            }
+            mergedEvidence.addAll(causalEvidence);
+            suggestion.setStructuredEvidence(mergedEvidence);
         }
 
         // Persist mined rules to <dataDir>/rules/<factSheetId>-mined.psl (+ lineage + index + audit)
@@ -238,8 +270,15 @@ public class MiningProcessDiscoveryService {
                 causalPairs.add(dep.from() + " -> " + dep.to() +
                         " [" + dep.type().name() + " dep=" + String.format("%.3f", dep.dependency()) + "]");
             }
+            List<String> basisIds = new java.util.ArrayList<>(
+                    suggestion.getSourceGraphNodeIds() != null ? suggestion.getSourceGraphNodeIds() : List.of());
+            List<String> basisTitles = new java.util.ArrayList<>();
+            for (String id : basisIds) {
+                basisTitles.add(resolveNodeTitle(id));
+            }
             ProcessSuggestion.ProcessLineage lineage = ProcessSuggestion.ProcessLineage.builder()
-                    .basisNodeIds(new java.util.ArrayList<>(suggestion.getSourceGraphNodeIds()))
+                    .basisNodeIds(basisIds)
+                    .basisNodeTitles(basisTitles)
                     .supportingRuleTexts(new java.util.ArrayList<>(ruleTexts))
                     .causalActivityPairs(causalPairs)
                     .derivationMethod("PROCESS_MINING")
@@ -409,5 +448,15 @@ public class MiningProcessDiscoveryService {
         ProcessSuggestion suggestion = discoverForFactSheet(factSheetId, noiseThreshold, anchorType);
         if (suggestion == null) return null;
         return ProcessBpmnExporter.export(suggestion);
+    }
+
+    /**
+     * Resolves a raw graph node ID to its human-readable title, falling back to the raw ID
+     * when the node is not found or has no title set.
+     */
+    private String resolveNodeTitle(String nodeId) {
+        return graph.getNode(nodeId)
+                .map(n -> n.getTitle() != null && !n.getTitle().isBlank() ? n.getTitle() : nodeId)
+                .orElse(nodeId);
     }
 }

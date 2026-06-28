@@ -30,7 +30,7 @@ import java.util.Set;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Unit tests for the 5 {@code ask_graph_*} MCP tools.
+ * Unit tests for the 6 {@code ask_graph_*} MCP tools.
  *
  * <p>Tests focus on:
  * <ul>
@@ -39,6 +39,7 @@ import static org.junit.jupiter.api.Assertions.*;
  *   <li>Missing-required-param guard (no backend needed)</li>
  *   <li>Backend-unavailable error path (no actual HTTP)</li>
  *   <li>ask_graph_subscribe always returns not-implemented</li>
+ *   <li>ask_graph_mebn formatter correctness (no backend needed)</li>
  * </ul>
  */
 @DisplayName("ask_graph_* MCP Tools")
@@ -63,6 +64,7 @@ class AskGraphToolsTest {
         perms.setUserOverride("ask_graph_explain",   PermissionService.PermissionLevel.ALLOW);
         perms.setUserOverride("ask_graph_assert",    PermissionService.PermissionLevel.ALLOW);
         perms.setUserOverride("ask_graph_subscribe", PermissionService.PermissionLevel.ALLOW);
+        perms.setUserOverride("ask_graph_mebn",      PermissionService.PermissionLevel.ALLOW);
         ToolRegistry registry = new ToolRegistry(om);
         ctx = new ToolContext("test-session", agent, perms, Paths.get("."), registry);
     }
@@ -294,6 +296,151 @@ class AskGraphToolsTest {
             ObjectNode params = om.createObjectNode();
             ToolResult result = tool.execute(params, ctx);
             assertTrue(result.isError());
+        }
+    }
+
+    // ── ask_graph_mebn ────────────────────────────────────────────────────────────
+
+    @Nested
+    @DisplayName("ask_graph_mebn")
+    class MebnTool {
+
+        private AskGraphMebnTool tool;
+
+        @BeforeEach
+        void setUp() {
+            // null baseUrl → backend not available
+            tool = new AskGraphMebnTool(null, om);
+        }
+
+        @Test
+        @DisplayName("id and permissionKey are correct")
+        void metadata() {
+            assertEquals("ask_graph_mebn", tool.id());
+            assertEquals("ask_graph_mebn", tool.permissionKey());
+            assertEquals(McpToolAnnotations.READ_ONLY, tool.mcpAnnotations());
+        }
+
+        @Test
+        @DisplayName("parameterSchema has 'nodeId' as required")
+        void schemaHasNodeIdRequired() {
+            var schema = tool.parameterSchema();
+            assertTrue(schema.path("required").toString().contains("nodeId"),
+                    "nodeId must appear in required array");
+            assertNotNull(schema.path("properties").path("nodeId"));
+            assertNotNull(schema.path("properties").path("maxDepth"));
+            assertNotNull(schema.path("properties").path("maxNodes"));
+        }
+
+        @Test
+        @DisplayName("missing nodeId returns error")
+        void missingNodeId_returnsError() throws Exception {
+            ObjectNode params = om.createObjectNode(); // no nodeId
+            ToolResult result = tool.execute(params, ctx);
+            assertTrue(result.isError(), "Expected error when nodeId is missing");
+            assertTrue(result.getOutput().contains("nodeId"));
+        }
+
+        @Test
+        @DisplayName("blank nodeId returns error")
+        void blankNodeId_returnsError() throws Exception {
+            ObjectNode params = om.createObjectNode();
+            params.put("nodeId", "   ");
+            ToolResult result = tool.execute(params, ctx);
+            assertTrue(result.isError(), "Expected error for blank nodeId");
+        }
+
+        @Test
+        @DisplayName("backend unavailable returns descriptive error")
+        void backendUnavailable_returnsError() throws Exception {
+            ObjectNode params = om.createObjectNode();
+            params.put("nodeId", "node_42");
+            ToolResult result = tool.execute(params, ctx);
+            assertTrue(result.isError(), "Expected error when kompile-app not running");
+            assertTrue(result.getOutput().contains("kompile-app"),
+                    "Error should mention kompile-app");
+        }
+
+        @Test
+        @DisplayName("formatter: empty posteriors produces no-variables message")
+        void formatter_emptyPosteriors() {
+            var posteriors      = om.createObjectNode();
+            var priors          = om.createObjectNode();
+            var variableToTitle = om.createObjectNode();
+            var mebnMeta        = om.createObjectNode();
+
+            String output = tool.formatMebnResult("node_42", posteriors, priors,
+                    variableToTitle, mebnMeta, 0, 12L);
+
+            assertTrue(output.contains("node_42"), "output must include the anchor nodeId");
+            assertTrue(output.contains("No variables"), "empty graph must say no variables");
+        }
+
+        @Test
+        @DisplayName("formatter: top-N variables sorted by belief update, meta rendered")
+        void formatter_variablesSortedAndMetaRendered() throws Exception {
+            // var_a: prior=0.5, posterior=0.9 → delta=+0.4 (biggest)
+            // var_b: prior=0.5, posterior=0.6 → delta=+0.1
+            ObjectNode posteriors = om.createObjectNode();
+            posteriors.put("var_a", 0.9);
+            posteriors.put("var_b", 0.6);
+
+            ObjectNode priors = om.createObjectNode();
+            priors.put("var_a", 0.5);
+            priors.put("var_b", 0.5);
+
+            ObjectNode titles = om.createObjectNode();
+            titles.put("var_a", "Risk Score A");
+            titles.put("var_b", "Influence B");
+
+            ObjectNode mebnMeta = om.createObjectNode();
+            ObjectNode metaA    = om.createObjectNode();
+            metaA.put("entityType", "PERSON");
+            metaA.put("mfragName", "RiskMFrag");
+            metaA.put("nodeRole", "RESIDENT");
+            mebnMeta.set("var_a", metaA);
+
+            String output = tool.formatMebnResult("node_42", posteriors, priors,
+                    titles, mebnMeta, 2, 50L);
+
+            // var_a appears first (largest delta)
+            int posA = output.indexOf("Risk Score A");
+            int posB = output.indexOf("Influence B");
+            assertTrue(posA >= 0, "var_a title must appear");
+            assertTrue(posB >= 0, "var_b title must appear");
+            assertTrue(posA < posB, "var_a (highest delta) must appear before var_b");
+
+            // prior → posterior and delta present
+            assertTrue(output.contains("prior=0.500"), "prior value must be formatted");
+            assertTrue(output.contains("posterior=0.900"), "posterior value must be formatted");
+            assertTrue(output.contains("Δ+"), "positive delta indicator must appear");
+
+            // MEBN meta fields for var_a (mfrag= renamed to group= to avoid jargon)
+            assertTrue(output.contains("entityType=PERSON"), "entityType must appear");
+            assertTrue(output.contains("group=RiskMFrag"), "mfragName must appear as group=");
+            assertTrue(output.contains("role=RESIDENT"), "nodeRole must appear");
+        }
+
+        @Test
+        @DisplayName("formatter: truncation notice when variables exceed MAX_VARIABLES_DISPLAY")
+        void formatter_truncationNotice() throws Exception {
+            ObjectNode posteriors = om.createObjectNode();
+            ObjectNode priors     = om.createObjectNode();
+            ObjectNode titles     = om.createObjectNode();
+            // insert MAX_VARIABLES_DISPLAY + 2 variables
+            for (int i = 0; i < AskGraphMebnTool.MAX_VARIABLES_DISPLAY + 2; i++) {
+                String key = "var_" + i;
+                posteriors.put(key, 0.5 + i * 0.01);
+                priors.put(key, 0.5);
+                titles.put(key, "Variable " + i);
+            }
+            int total = AskGraphMebnTool.MAX_VARIABLES_DISPLAY + 2;
+
+            String output = tool.formatMebnResult("node_X", posteriors, priors,
+                    titles, om.createObjectNode(), total, 100L);
+
+            assertTrue(output.contains("more variable"),
+                    "truncation notice must appear when variables exceed cap");
         }
     }
 }

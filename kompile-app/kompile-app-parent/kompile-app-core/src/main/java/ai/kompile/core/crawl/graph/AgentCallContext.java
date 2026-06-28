@@ -40,8 +40,35 @@ public final class AgentCallContext {
 
     private static final ThreadLocal<String> SESSION_ID = new ThreadLocal<>();
     private static final ThreadLocal<String> JOB_ID = new ThreadLocal<>();
+    private static final ThreadLocal<ModelDecision> MODEL_DECISION = new ThreadLocal<>();
 
     private AgentCallContext() {
+    }
+
+    /**
+     * The per-call model-routing decision the CLI-agent LLM made on this thread: which model handled
+     * the turn, the classified outcome/symptom, its latency, the (adaptive) timeout it was given, and —
+     * on failure — how long the model was benched. Stamped by {@code CliAgentLLMChat} and read by
+     * {@code CrawlLlmDispatcher} so it can attach a model-routing TuningDecision to the crawl job
+     * (surfaced in the crawl UI) without threading an extra return value through {@link
+     * ai.kompile.core.llm.chat.LLMChat}.
+     */
+    public record ModelDecision(String model, String outcome, long latencyMs,
+                                int timeoutSeconds, long benchSeconds, int responseChars) {
+    }
+
+    /** Publish the model-routing decision for the current thread (null clears it). */
+    public static void setModelDecision(ModelDecision decision) {
+        if (decision == null) {
+            MODEL_DECISION.remove();
+        } else {
+            MODEL_DECISION.set(decision);
+        }
+    }
+
+    /** The model-routing decision published on the current thread, or {@code null} if none. */
+    public static ModelDecision getModelDecision() {
+        return MODEL_DECISION.get();
     }
 
     /** Publish the session id for the current thread (a blank/null value clears it). */
@@ -82,5 +109,6 @@ public final class AgentCallContext {
     public static void clear() {
         SESSION_ID.remove();
         JOB_ID.remove();
+        MODEL_DECISION.remove();
     }
 }

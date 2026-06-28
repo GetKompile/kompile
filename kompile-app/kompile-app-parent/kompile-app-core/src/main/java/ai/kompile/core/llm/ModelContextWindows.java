@@ -17,16 +17,23 @@
 package ai.kompile.core.llm;
 
 import java.util.Map;
+import java.util.Optional;
 
 /**
- * Static lookup of model names to context window sizes (in tokens)
- * and capability flags (vision support).
- * Used to auto-detect the appropriate context window and model
- * capabilities when the user hasn't explicitly configured them.
+ * Lookup of model names to context window sizes (in tokens) and capability flags (vision support),
+ * used to auto-detect the appropriate context window and model capabilities when the user hasn't
+ * explicitly configured them.
+ *
+ * <p><b>Dynamic-first.</b> Every lookup consults {@link CliModelCatalog} first — the real per-model
+ * metadata read live from the CLI agents' own models.dev catalogs on disk (context window, output
+ * ceiling, vision, cost). The static {@link #MODEL_SPECS} table below is only a <em>last-resort
+ * fallback</em> for environments where no CLI catalog file is present (offline/library boots). New
+ * models, refreshed limits, and provider changes are therefore picked up automatically with no code
+ * change — nothing here needs editing when a CLI ships a new model.</p>
  *
  * <p>Lives in app-core so it is reachable by every module that needs real model limits — both the
  * CLI chat layer and the crawl graph-extraction batch budgeter (which sizes per-call input from a
- * model's true context window and output ceiling).</p>
+ * model's true context window and output ceiling, i.e. the extraction scheduler).</p>
  */
 public final class ModelContextWindows {
 
@@ -58,6 +65,16 @@ public final class ModelContextWindows {
             entry("gpt-4-turbo", 128_000, 4_096, true),
             entry("gpt-4", 8_192, 4_096, false),
             entry("gpt-3.5-turbo", 16_385, 4_096, false),
+            // GPT-5 family — metadata observed from the model registries exposed by current
+            // agent CLIs. Provider-specific OpenCode limits are resolved live by the CLI resume
+            // path; these entries cover bare Codex/OpenAI model IDs.
+            entry("gpt-5.5", 1_050_000, 128_000, true),
+            entry("gpt-5.4", 400_000, 128_000, true),
+            entry("gpt-5.3", 400_000, 128_000, true),
+            entry("gpt-5.2", 400_000, 128_000, true),
+            entry("gpt-5.1", 400_000, 128_000, true),
+            entry("gpt-5-codex", 400_000, 128_000, true),
+            entry("gpt-5", 400_000, 128_000, true),
             entry("o4-mini", 200_000, 100_000, true),
             entry("o3", 200_000, 100_000, true),
             entry("o3-mini", 200_000, 65_536, false),
@@ -75,10 +92,14 @@ public final class ModelContextWindows {
             entry("deepseek-chat", 64_000, 8_192, false),
             entry("deepseek-coder", 64_000, 8_192, false),
             entry("deepseek-reasoner", 64_000, 8_192, false),
-            // DeepSeek V4 (e.g. opencode's "deepseek-v4-flash-free") — ~1M-token context.
-            // Prefix-matches "deepseek-v4-*" so the graph-extraction batcher budgets per-call input
-            // from the true ~1M window instead of the 128k DEFAULT_CONTEXT_WINDOW fallback.
-            entry("deepseek-v4", 1_000_000, 8_192, false),
+            // DeepSeek V4 family. Provider-specific OpenCode limits are resolved live by the
+            // CLI resume path; these are fallback values for bare model IDs or unavailable live
+            // metadata. The free model is smaller than the paid flash/pro variants.
+            entry("deepseek-v4-flash-free", 200_000, 128_000, false),
+            entry("deepseek-v4-flash", 1_000_000, 384_000, false),
+            entry("deepseek-v4-pro", 1_000_000, 384_000, false),
+            // Prefix catch-all for any other deepseek-v4-* variant.
+            entry("deepseek-v4", 1_000_000, 384_000, false),
 
             // Groq (hosted models) — text only
             entry("llama-3.3-70b-versatile", 128_000, 32_768, false),
@@ -110,6 +131,9 @@ public final class ModelContextWindows {
      */
     public static int getContextWindow(String model) {
         if (model == null || model.isBlank()) return DEFAULT_CONTEXT_WINDOW;
+        // DYNAMIC first: real per-model metadata from the CLI's on-disk models.dev catalog.
+        Optional<Integer> dynamic = CliModelCatalog.contextWindow(model);
+        if (dynamic.isPresent()) return dynamic.get();
         ModelSpec spec = resolve(model);
         return spec != null ? spec.contextWindow : DEFAULT_CONTEXT_WINDOW;
     }
@@ -121,13 +145,17 @@ public final class ModelContextWindows {
      */
     public static int getMaxOutputTokens(String model) {
         if (model == null || model.isBlank()) return DEFAULT_MAX_OUTPUT_TOKENS;
+        // DYNAMIC first: real per-model metadata from the CLI's on-disk models.dev catalog.
+        Optional<Integer> dynamic = CliModelCatalog.maxOutputTokens(model);
+        if (dynamic.isPresent()) return dynamic.get();
         ModelSpec spec = resolve(model);
         return spec != null ? spec.maxOutputTokens : DEFAULT_MAX_OUTPUT_TOKENS;
     }
 
-    /** True if {@code model} is a known model (has an explicit spec), false if it would fall to defaults. */
+    /** True if {@code model} is a known model (in the live CLI catalog or the static fallback table). */
     public static boolean isKnown(String model) {
-        return model != null && !model.isBlank() && resolve(model) != null;
+        if (model == null || model.isBlank()) return false;
+        return CliModelCatalog.lookup(model).isPresent() || resolve(model) != null;
     }
 
     /**
@@ -139,6 +167,9 @@ public final class ModelContextWindows {
      */
     public static boolean supportsVision(String model) {
         if (model == null || model.isBlank()) return false;
+        // DYNAMIC first: real per-model metadata from the CLI's on-disk models.dev catalog.
+        Optional<Boolean> dynamic = CliModelCatalog.supportsVision(model);
+        if (dynamic.isPresent()) return dynamic.get();
         ModelSpec spec = resolve(model);
         return spec != null && spec.supportsVision;
     }

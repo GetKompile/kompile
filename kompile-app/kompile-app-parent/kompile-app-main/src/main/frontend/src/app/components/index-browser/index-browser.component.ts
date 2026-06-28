@@ -61,7 +61,8 @@ import {
   SourceListResponse,
   formatFileSize,
   getSourceViewModeIcon,
-  FactSheet
+  FactSheet,
+  Citation
 } from '../../models/api-models';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { CdkTextareaAutosize } from '@angular/cdk/text-field';
@@ -1505,6 +1506,24 @@ export class IndexBrowserComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   objectKeys = Object.keys;
+
+  toCitation(metadata: any, score?: number): Citation | null {
+    if (!metadata) return null;
+    const c: Citation = {};
+    const sid = metadata['_sourceDocumentId'] || metadata['source_id'];
+    if (sid) c.sourceId = String(sid);
+    const sname = metadata['_sourceName'] || metadata['_sourceFileName'];
+    if (sname) c.sourceName = String(sname);
+    if (metadata['_crawlRunId']) c.crawlRunId = String(metadata['_crawlRunId']);
+    if (metadata['_basisType']) c.basisType = String(metadata['_basisType']);
+    if (metadata['page_number'] != null) c.pageNumber = Number(metadata['page_number']);
+    if (metadata['chunk_index'] != null) c.chunkIndex = Number(metadata['chunk_index']);
+    if (score != null) c.score = score;
+    if (metadata['confidence'] != null) c.confidence = Number(metadata['confidence']);
+    if (metadata['provenance'] && typeof metadata['provenance'] === 'object') c.provenance = metadata['provenance'];
+    if (!c.sourceId && !c.sourceName && !c.basisType && c.score == null && c.confidence == null) return null;
+    return c;
+  }
 
   // Format threshold value for slider display
   formatThreshold(value: number): string {

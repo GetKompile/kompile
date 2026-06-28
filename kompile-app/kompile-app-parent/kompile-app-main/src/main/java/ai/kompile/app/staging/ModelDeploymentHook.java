@@ -17,18 +17,20 @@ package ai.kompile.app.staging;
 
 import ai.kompile.app.project.ProjectBackendService;
 import ai.kompile.knowledgegraph.staging.ModelTrainedEvent;
-import ai.kompile.modelmanager.registry.ModelMetadata;
 import ai.kompile.modelmanager.registry.ModelType;
-import ai.kompile.staging.staging.GraphScopedDeployService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.event.EventListener;
 import org.springframework.lang.Nullable;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
+import org.springframework.web.client.RestTemplate;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
  * Bridges the grounding-cascade / KGE training pipeline to the model-staging registry.
@@ -41,27 +43,33 @@ import java.nio.file.Path;
  *       — after a successful KGE training run</li>
  * </ul>
  *
- * <p>On receipt, it calls
- * {@link GraphScopedDeployService#deploy(String, String, String, ModelType, Path, ModelMetadata)}
- * to stage and immediately activate the artifact in the model registry, scoped to the
- * current project ({@code projectId}) and the trained fact-sheet ({@code graphId}).</p>
+ * <p>On receipt it POSTs a deploy request to the STAGING SERVER's HTTP API:
+ * {@code POST {kompile.staging.url}/api/staging/graph/{projectId}/{graphId}/deploy}
+ * which stages + activates the artifact in the model registry, scoped to the current
+ * project and trained fact-sheet.
  *
- * <h3>No circular dependency</h3>
- * {@code kompile-knowledge-graph} publishes {@link ModelTrainedEvent} but does NOT depend
- * on {@code kompile-model-staging}. This class lives in {@code kompile-app-main}, which
- * already depends on both modules, so there is no cycle.
+ * <h3>No model-staging on the classpath</h3>
+ * The staging server is a SEPARATE process (default :8090). app-main reaches it over HTTP —
+ * exactly like {@link ai.kompile.app.services.agent.KompileLocalModelService} and the staging
+ * lifecycle services do — so {@code kompile-model-staging} is NOT (and must never be) a
+ * dependency of {@code kompile-app-main}. Bundling it would drag its {@code @SpringBootApplication},
+ * controllers, and Angular UI into the app.
  *
  * <h3>Failure isolation</h3>
- * All staging operations are wrapped in a try/catch. A failure to stage does NOT propagate
- * back to the cascade or training job — the trained weights remain on disk even if deployment
- * fails (e.g. because model-staging is not configured).
+ * The POST is wrapped in try/catch. If the staging server is down or unreachable, the failure is
+ * logged and swallowed — the trained artifact remains on disk and the cascade/training job is
+ * unaffected.
  */
 @Component
 public class ModelDeploymentHook {
 
     private static final Logger log = LoggerFactory.getLogger(ModelDeploymentHook.class);
 
-    private final GraphScopedDeployService deployService;
+    /** Base URL of the staging server (separate subprocess). Same key used across app-main. */
+    @Value("${kompile.staging.url:http://localhost:8090}")
+    private String stagingUrl;
+
+    private final RestTemplate restTemplate = new RestTemplate();
 
     /**
      * Optional: project backend service for resolving the current projectId.
@@ -70,17 +78,15 @@ public class ModelDeploymentHook {
     @Nullable
     private final ProjectBackendService projectBackendService;
 
-    public ModelDeploymentHook(GraphScopedDeployService deployService,
-                               @Nullable ProjectBackendService projectBackendService) {
-        this.deployService = deployService;
+    public ModelDeploymentHook(@Nullable ProjectBackendService projectBackendService) {
         this.projectBackendService = projectBackendService;
     }
 
     /**
-     * Handle a {@link ModelTrainedEvent} by staging and activating the artifact.
+     * Handle a {@link ModelTrainedEvent} by POSTing a deploy request to the staging server.
      *
-     * <p>Runs {@link Async asynchronously} to avoid blocking the cascade thread while
-     * the registry I/O completes. If the artifact file does not exist or deployment fails,
+     * <p>Runs {@link Async asynchronously} so the cascade thread is never blocked on network I/O.
+     * If the model type is unknown, the artifact is missing, or the staging server is unreachable,
      * the error is logged and swallowed.</p>
      *
      * @param event the training completion event
@@ -88,45 +94,46 @@ public class ModelDeploymentHook {
     @Async
     @EventListener
     public void onModelTrained(ModelTrainedEvent event) {
-        String modelType = event.getModelType();
+        String modelType   = event.getModelType();
         long   factSheetId = event.getFactSheetId();
         Path   artifactPath = event.getArtifactPath();
         String baseModelId  = event.getBaseModelId();
 
-        // Resolve ModelType enum from the string tag
-        ModelType type;
+        // Validate the model-type tag early (PSL / MEBN / KGE) — staging re-validates server-side.
         try {
-            type = resolveModelType(modelType);
+            resolveModelType(modelType);
         } catch (IllegalArgumentException e) {
             log.warn("ModelDeploymentHook: unknown model type '{}' in event for factSheet={} — skipping",
                     modelType, factSheetId);
             return;
         }
 
-        // Guard: artifact must exist before we try to stage it
+        // Guard: artifact must exist before we ask staging to deploy it
         if (artifactPath == null || !Files.exists(artifactPath)) {
             log.warn("ModelDeploymentHook: artifact path {} does not exist for {} factSheet={} — skipping",
                     artifactPath, modelType, factSheetId);
             return;
         }
 
-        // Resolve project ID — fall back to "default" if no open project
         String projectId = resolveProjectId();
         String graphId   = String.valueOf(factSheetId);
 
-        // Build minimal metadata
-        ModelMetadata metadata = ModelMetadata.builder()
-                .sourceOrigin("cascade-auto-deploy")
-                .build();
+        // POST to the staging SERVER over HTTP — app-main never bundles kompile-model-staging.
+        String url = stagingUrl + "/api/staging/graph/" + projectId + "/" + graphId + "/deploy";
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("modelId", baseModelId);
+        body.put("type", modelType);
+        body.put("artifactPath", artifactPath.toAbsolutePath().toString());
+        body.put("description", "cascade-auto-deploy");
 
         try {
-            deployService.deploy(baseModelId, projectId, graphId, type, artifactPath, metadata);
-            log.info("ModelDeploymentHook: staged+activated {} model '{}' for project={} graph={} (artifact={})",
-                    modelType, baseModelId, projectId, graphId, artifactPath.getFileName());
+            restTemplate.postForObject(url, body, Map.class);
+            log.info("ModelDeploymentHook: staged+activated {} model '{}' for project={} graph={} via staging {} (artifact={})",
+                    modelType, baseModelId, projectId, graphId, stagingUrl, artifactPath.getFileName());
         } catch (Exception e) {
-            log.warn("ModelDeploymentHook: failed to deploy {} model for factSheet={} — {} (training succeeded; artifact remains on disk at {})",
-                    modelType, factSheetId, e.getMessage(), artifactPath);
-            // Intentionally swallowed — cascade must not fail due to staging errors
+            log.warn("ModelDeploymentHook: deploy POST to staging {} failed for {} factSheet={} — {} (training succeeded; artifact remains on disk at {})",
+                    stagingUrl, modelType, factSheetId, e.getMessage(), artifactPath);
+            // Intentionally swallowed — training/cascade must not fail because staging is down or not running.
         }
     }
 

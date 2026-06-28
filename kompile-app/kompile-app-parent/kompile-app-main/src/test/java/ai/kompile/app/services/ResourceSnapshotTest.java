@@ -43,7 +43,7 @@ class ResourceSnapshotTest {
                 List.of(
                         new GpuSnapshot(0, 100, 1000, 0, 0.40, PressureLevel.ELEVATED),
                         new GpuSnapshot(1, 50, 1000, 0, 0.93, PressureLevel.CRITICAL)),
-                true);
+                true, -1L);
         assertEquals(0.93, s.worstGpuUsedFraction(), 1e-9);
         assertEquals(PressureLevel.CRITICAL, s.worstGpuPressure());
     }

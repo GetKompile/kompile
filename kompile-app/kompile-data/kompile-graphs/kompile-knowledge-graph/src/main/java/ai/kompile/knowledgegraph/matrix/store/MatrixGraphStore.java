@@ -78,6 +78,22 @@ public interface MatrixGraphStore {
     List<String> listGraphs();
 
     /**
+     * Cheap, in-memory enumeration of currently-loaded graph IDs (the in-memory graph-cache keys
+     * after eager rehydration). Hot-path helpers that fan out across every per-fact-sheet graph
+     * (cross-graph node/edge lookups, global aggregation) use this instead of {@link #listGraphs()},
+     * which scans the entire vector index page-by-page and is far too expensive to call per node/edge.
+     *
+     * <p>Defaults to {@link #listGraphs()} for stores without an in-memory cache; the vector-store
+     * implementation overrides it to return its cache keys (complete once startup rehydration runs).</p>
+     *
+     * @return the set of loaded graph IDs (never null)
+     */
+    default java.util.Set<String> getLoadedGraphIds() {
+        List<String> ids = listGraphs();
+        return ids == null ? java.util.Set.of() : new java.util.LinkedHashSet<>(ids);
+    }
+
+    /**
      * Lists all graph IDs for a specific fact sheet.
      *
      * @param factSheetId The fact sheet ID
@@ -105,6 +121,20 @@ public interface MatrixGraphStore {
      * @param node    The updated node
      */
     void updateNode(String graphId, MatrixGraphNode node);
+
+    /**
+     * Updates a node's struct/metadata WITHOUT re-embedding, reusing the node's existing vector.
+     * Use when the embedding-relevant text (title/description) is unchanged — e.g. a metadata-only
+     * update such as stashing extracted graph JSON on a DOCUMENT node. Avoids a full per-node
+     * re-embed (the costly 1-text-at-a-time path). The default delegates to {@link #updateNode}
+     * (which re-embeds) for stores that do not separate the two.
+     *
+     * @param graphId The graph ID
+     * @param node    The updated node (title/description unchanged from the stored version)
+     */
+    default void updateNodeMetadata(String graphId, MatrixGraphNode node) {
+        updateNode(graphId, node);
+    }
 
     /**
      * Removes a node from a graph.
@@ -283,6 +313,19 @@ public interface MatrixGraphStore {
      * Flushes any pending changes to persistent storage.
      */
     void flush();
+
+    /**
+     * Blocks until all pending async sentence-embedding tasks (dispatched by
+     * {@link ai.kompile.core.embeddings.VectorStore#add}) have completed and their
+     * documents are committed to the store.
+     *
+     * <p>Must be called before {@link #updateNodeMetadata} when the caller cannot guarantee
+     * that all sentence embeddings are already present in the adjacency-matrix cache; otherwise
+     * {@code updateNodeMetadata} will fall back to a re-embed (the slow per-node path).
+     * The default is a no-op; {@link VectorStoreMatrixGraphStore} delegates to
+     * {@link ai.kompile.core.embeddings.VectorStore#awaitPendingEmbeddings()}.</p>
+     */
+    default void awaitPendingEmbeddings() {}
 
     // ═══════════════════════════════════════════════════════════════════════════
     // STATISTICS

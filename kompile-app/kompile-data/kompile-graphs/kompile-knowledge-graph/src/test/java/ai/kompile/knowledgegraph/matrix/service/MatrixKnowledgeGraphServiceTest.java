@@ -22,6 +22,7 @@ import ai.kompile.knowledgegraph.domain.NodeLevel;
 import ai.kompile.knowledgegraph.matrix.model.AdjacencyMatrixGraph;
 import ai.kompile.knowledgegraph.matrix.model.MatrixGraphNode;
 import ai.kompile.knowledgegraph.matrix.store.MatrixGraphStore;
+import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -59,8 +60,12 @@ class MatrixKnowledgeGraphServiceTest {
     void setUp() {
         service = new MatrixKnowledgeGraphService(graphStore, new ObjectMapper());
 
-        // Common stub: loadGraph and node lookups return empty by default
-        when(graphStore.loadGraph(DEFAULT_GRAPH_ID)).thenReturn(Optional.of(matrixGraph));
+        // Per-fact-sheet segmentation: cross-graph helpers enumerate loaded graph ids. Default to the
+        // single legacy graph so non-scoped tests behave as before; scoped tests stub their own ids.
+        when(graphStore.getLoadedGraphIds()).thenReturn(new LinkedHashSet<>(List.of(DEFAULT_GRAPH_ID)));
+
+        // Common stub: any graph id resolves to the single mock graph (per-fact-sheet ids included).
+        when(graphStore.loadGraph(anyString())).thenReturn(Optional.of(matrixGraph));
         when(matrixGraph.getNodeById()).thenReturn(new HashMap<>());
         when(matrixGraph.getAdjacencyMatrices()).thenReturn(new HashMap<>());
         when(matrixGraph.getAllNodes()).thenReturn(Collections.emptyList());
@@ -86,11 +91,53 @@ class MatrixKnowledgeGraphServiceTest {
                 "source_ext-1".equals(n.getNodeId()) && "SOURCE".equals(n.getNodeType())));
     }
 
+    // ─── createNodesBatch (bulk node-creation fast path) ──────────────────────
+
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void createNodesBatchWritesAllNodesInOneBatchCall() {
+        List<KnowledgeGraphService.NodeSpec> specs = List.of(
+                new KnowledgeGraphService.NodeSpec(NodeLevel.TABLE, "wb:B.xlsx/sheet:S1", "S1", null,
+                        new HashMap<>(Map.of("rowCount", 3))),
+                new KnowledgeGraphService.NodeSpec(NodeLevel.ENTITY, "wb:B.xlsx/cell:S1!A1", "A1", "cell A1",
+                        new HashMap<>(Map.of("cell_reference", "S1!A1"))),
+                new KnowledgeGraphService.NodeSpec(NodeLevel.ENTITY, "wb:B.xlsx/cell:S1!A2", "A2", null,
+                        new HashMap<>()));
+
+        List<GraphNode> created = service.createNodesBatch(specs, 7L);
+
+        // Exactly ONE batched store write — NOT three per-node addNode calls (the whole point)
+        // factSheetId 7 → segmented graph "factsheet_7"
+        ArgumentCaptor<List<MatrixGraphNode>> captor = ArgumentCaptor.forClass(List.class);
+        verify(graphStore, times(1)).addNodesBatch(eq("factsheet_7"), captor.capture());
+        verify(graphStore, never()).addNode(eq("factsheet_7"), any());
+
+        List<MatrixGraphNode> written = captor.getValue();
+        assertEquals(3, written.size());
+        // Deterministic IDs (type_externalId) — identical scheme to createNode
+        assertEquals("table_wb:B.xlsx/sheet:S1", written.get(0).getNodeId());
+        assertEquals("entity_wb:B.xlsx/cell:S1!A1", written.get(1).getNodeId());
+        assertEquals("TABLE", written.get(0).getNodeType());
+        assertEquals(7L, written.get(0).getFactSheetId());
+
+        // Returned GraphNodes preserve order and carry the minted IDs
+        assertEquals(3, created.size());
+        assertEquals("table_wb:B.xlsx/sheet:S1", created.get(0).getNodeId());
+        assertEquals("entity_wb:B.xlsx/cell:S1!A2", created.get(2).getNodeId());
+    }
+
+    @Test
+    void createNodesBatchEmptyInputSkipsStoreEntirely() {
+        List<GraphNode> created = service.createNodesBatch(List.of(), 1L);
+        assertTrue(created.isEmpty());
+        verify(graphStore, never()).addNodesBatch(anyString(), any());
+    }
+
     // ─── Semantic relationType surfacing ──────────────────────────────────────
 
     @Test
     void getEdgesInFactSheetSurfacesSemanticRelationType() {
-        MatrixGraphNode node = MatrixGraphNode.builder().nodeId("n1").factSheetId(1L).build();
+        MatrixGraphNode node = MatrixGraphNode.builder().nodeId("n1").nodeType("ENTITY").factSheetId(1L).build();
         when(matrixGraph.getAllNodes()).thenReturn(List.of(node));
         when(matrixGraph.getEdgeTypes()).thenReturn(new LinkedHashSet<>(List.of("WORKS_AT", "RELATED_TO")));
         when(matrixGraph.getNeighbors("n1", "WORKS_AT")).thenReturn(List.of(Map.entry("n2", 0.9)));
@@ -116,7 +163,7 @@ class MatrixKnowledgeGraphServiceTest {
         // The edge is keyed by the structural type "USER_DEFINED" but carries an explicit relation
         // field "WORKS_AT". The key heuristic could never derive "WORKS_AT" from "USER_DEFINED", so a
         // correct result proves the first-class relationType field is read authoritatively.
-        MatrixGraphNode node = MatrixGraphNode.builder().nodeId("n1").factSheetId(1L).build();
+        MatrixGraphNode node = MatrixGraphNode.builder().nodeId("n1").nodeType("ENTITY").factSheetId(1L).build();
         when(matrixGraph.getAllNodes()).thenReturn(List.of(node));
         when(matrixGraph.getEdgeTypes()).thenReturn(new LinkedHashSet<>(List.of("USER_DEFINED")));
         when(matrixGraph.getNeighbors("n1", "USER_DEFINED")).thenReturn(List.of(Map.entry("n2", 0.9)));
@@ -348,9 +395,10 @@ class MatrixKnowledgeGraphServiceTest {
                 null, null, 42L);
 
         // [M-7] Verify 9-arg addEdge is called so confidence/description fields are passed through.
-        verify(graphStore).addEdge(eq(DEFAULT_GRAPH_ID), eq("src"), eq("tgt"),
+        // factSheetId 42 → segmented graph "factsheet_42".
+        verify(graphStore).addEdge(eq("factsheet_42"), eq("src"), eq("tgt"),
                 anyDouble(), eq("VERSION_OF"), eq(true), eq("VERSION_OF"), isNull(), eq("Version edge"));
-        verify(graphStore).addEdge(eq(DEFAULT_GRAPH_ID), eq("src"), eq("tgt"),
+        verify(graphStore).addEdge(eq("factsheet_42"), eq("src"), eq("tgt"),
                 anyDouble(), eq("REFERENCES_DATA"), eq(true), eq("REFERENCES_DATA"), isNull(), eq("Reference edge"));
         assertEquals(EdgeType.USER_DEFINED, version.getEdgeType());
         assertEquals("VERSION_OF", version.getRelationType());
@@ -568,10 +616,10 @@ class MatrixKnowledgeGraphServiceTest {
         MatrixGraphNode docOrphan = matrixNode("doc_orphan", "DOCUMENT", 1L);
         MatrixGraphNode tableOrphan = matrixNode("table_orphan", "TABLE", 1L);
         MatrixGraphNode otherFactSheet = matrixNode("entity_other", "ENTITY", 2L);
-        when(graphStore.getAllNodes(DEFAULT_GRAPH_ID)).thenReturn(List.of(
+        when(graphStore.getAllNodes("factsheet_1")).thenReturn(List.of(
                 entityOrphan, entityLinked, docOrphan, tableOrphan, otherFactSheet));
         // Only entity_linked has edges; every other node in fact sheet 1 is degree 0.
-        when(graphStore.getEdges(DEFAULT_GRAPH_ID, "entity_linked", null))
+        when(graphStore.getEdges("factsheet_1", "entity_linked", null))
                 .thenReturn(List.of(Map.entry("some_target", 1.0)));
 
         // Default (single-arg) stays ENTITY-only so the OrphanPruner auto-prune policy is unchanged.

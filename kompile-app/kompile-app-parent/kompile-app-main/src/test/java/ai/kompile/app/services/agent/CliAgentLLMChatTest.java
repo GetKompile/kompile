@@ -36,12 +36,25 @@ class CliAgentLLMChatTest {
     @Mock
     private ClaudeStreamParser streamParser;
 
+    @Mock
+    private CliAgentModelService cliAgentModelService;
+
+    @Mock
+    private HeadlessInteractiveSessionPool sessionPool;
+
+    @Mock
+    private OpencodeServeManager opencodeServeManager;
+
+    @Mock
+    private ExtractionConsensusService consensusService;
+
     private CliAgentLLMChat chat;
 
     @BeforeEach
     void setUp() {
         when(agentRegistryService.hasAvailableAgents()).thenReturn(false);
-        chat = new CliAgentLLMChat(agentRegistryService, subprocessExecutor, streamParser);
+        chat = new CliAgentLLMChat(agentRegistryService, subprocessExecutor, streamParser,
+                cliAgentModelService, sessionPool, opencodeServeManager, consensusService);
     }
 
     @Test

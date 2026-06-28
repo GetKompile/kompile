@@ -158,6 +158,9 @@ public class ProcessSuggestion {
         /** For EXCEL_COMPUTE: the graph node IDs containing the spreadsheet */
         @Builder.Default
         private List<String> graphNodeIds = new ArrayList<>();
+        /** Human-readable titles corresponding 1:1 with {@code graphNodeIds} (empty when unresolved). */
+        @Builder.Default
+        private List<String> graphNodeTitles = new ArrayList<>();
         /** Input mapping: runData keys this step reads */
         @Builder.Default
         private Map<String, String> inputMapping = Map.of();
@@ -205,6 +208,9 @@ public class ProcessSuggestion {
         /** Graph node IDs that are the factual basis for this process/step. */
         @Builder.Default
         private List<String> basisNodeIds = new ArrayList<>();
+        /** Human-readable titles corresponding 1:1 with {@code basisNodeIds} (empty when unresolved). */
+        @Builder.Default
+        private List<String> basisNodeTitles = new ArrayList<>();
         /** PSL rule texts (from MinedRuleLineage) that support this process/step. */
         @Builder.Default
         private List<String> supportingRuleTexts = new ArrayList<>();

@@ -48,6 +48,24 @@ class ResumeToolCommandTest {
         assertFalse(args.contains("--full-auto"));
     }
 
+    @Test
+    void opencodeNativeResumeDoesNotAppendRunOnlyPermissionBypassFlag() throws Exception {
+        ConversationExporter.ExportResult exportResult = new ConversationExporter.ExportResult(
+                "resume-session",
+                "opencode",
+                tempDir.resolve("session.json"),
+                "opencode --session resume-session",
+                tempDir);
+
+        List<String> args = buildAgentResumeCommand("opencode", exportResult);
+
+        assertTrue(args.contains("opencode"));
+        assertTrue(args.contains("--session"));
+        assertTrue(args.contains("resume-session"));
+        assertFalse(args.contains("--dangerously-skip-permissions"),
+                "OpenCode TUI resume does not support --dangerously-skip-permissions");
+    }
+
     private List<String> buildAgentResumeCommand(String agent,
                                                  ConversationExporter.ExportResult exportResult) throws Exception {
         ResumeTool tool = new ResumeTool(null, null, null, null, null, new ConversationReader());

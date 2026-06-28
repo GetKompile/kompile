@@ -92,17 +92,25 @@ class CrawlTextConversionService {
     List<Document> convertDocumentText(List<Document> documents, UnifiedCrawlJob job) {
         if (documents == null || documents.isEmpty()) return List.of();
 
+        documentTracker.recordEvent(job, "CONVERTING", "INFO",
+                "Starting text conversion of " + documents.size() + " document(s)", null);
+
         // Text normalization is pure CPU regex work with no shared state.
         // Use parallelStream for batches >= 10 — regex normalization is CPU-heavy
         // enough that fork-join overhead is amortized even at small batch sizes.
         if (documents.size() >= 10) {
+            int total = documents.size();
+            // Emit per-doc if ≤50, else every 2% (at least 1)
+            int emitEvery = total <= 50 ? 1 : Math.max(1, total / 50);
             AtomicInteger counter = new AtomicInteger(0);
             List<Document> converted = documents.parallelStream()
                     .map(doc -> {
                         int idx = counter.incrementAndGet();
-                        if (idx % 100 == 0) {
+                        if (idx == 1 || idx % emitEvery == 0) {
+                            String shortName = docShortName(doc);
+                            String contentType = docContentType(doc);
                             documentTracker.recordEvent(job, "CONVERTING", "INFO",
-                                    "Converted " + idx + "/" + documents.size() + " document(s)", null);
+                                    "Converting " + idx + "/" + total + ": " + shortName + " (" + contentType + ")", null);
                         }
                         String text = doc.getText();
                         if (text == null) return null;
@@ -120,7 +128,7 @@ class CrawlTextConversionService {
                     .filter(Objects::nonNull)
                     .collect(Collectors.toList());
             documentTracker.recordEvent(job, "CONVERTING", "INFO",
-                    "Text conversion complete", converted.size() + " document(s)");
+                    "Text conversion complete: " + converted.size() + "/" + documents.size() + " document(s) retained (non-blank)", null);
             return converted;
         }
 
@@ -128,10 +136,14 @@ class CrawlTextConversionService {
         List<Document> converted = new ArrayList<>(documents.size());
         for (int i = 0; i < documents.size(); i++) {
             Document doc = documents.get(i);
-            if (i % 25 == 0) {
-                documentTracker.recordEvent(job, "CONVERTING", "INFO",
-                        "Converted " + i + "/" + documents.size() + " document(s)", null);
-            }
+            String shortName = docShortName(doc);
+            String contentType = docContentType(doc);
+            documentTracker.recordEvent(job, "CONVERTING", "INFO",
+                    "Converting " + (i + 1) + "/" + documents.size() + ": " + shortName + " (" + contentType + ")", null);
+            pipelineStepTracker.updatePipelineStep(job, "CONVERTING",
+                    UnifiedCrawlJob.PipelineStepStatus.RUNNING,
+                    i, documents.size(), 0, 0, 0, 0, shortName,
+                    "Converting " + (i + 1) + "/" + documents.size() + ": " + shortName);
             String text = doc.getText();
             if (text == null) continue;
 
@@ -149,8 +161,31 @@ class CrawlTextConversionService {
             converted.add(convertedDoc);
         }
         documentTracker.recordEvent(job, "CONVERTING", "INFO",
-                "Text conversion complete", converted.size() + " document(s)");
+                "Text conversion complete: " + converted.size() + "/" + documents.size() + " document(s) retained (non-blank)", null);
         return converted;
+    }
+
+    private static String docShortName(Document doc) {
+        if (doc == null) return "unknown";
+        Map<String, Object> meta = doc.getMetadata();
+        if (meta == null) return "unknown";
+        for (String key : new String[]{"source_filename", "fileName", "source_path", "source"}) {
+            Object val = meta.get(key);
+            if (val instanceof String s && !s.isBlank()) {
+                int slash = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\'));
+                return slash >= 0 && slash < s.length() - 1 ? s.substring(slash + 1) : s;
+            }
+        }
+        return "unknown";
+    }
+
+    private static String docContentType(Document doc) {
+        if (doc == null) return "text";
+        Map<String, Object> meta = doc.getMetadata();
+        if (meta == null) return "text";
+        Object val = meta.get("content_type");
+        if (!(val instanceof String s) || s.isBlank()) val = meta.get("documentType");
+        return val instanceof String s && !s.isBlank() ? s : "text";
     }
 
     /**

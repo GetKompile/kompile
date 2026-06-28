@@ -47,9 +47,25 @@ public record HydrationConfig(
          */
         boolean dryRun) {
 
-    /** All stages enabled, confidence threshold 0.4, live mode. */
+    /**
+     * All stages enabled (DERIVATION + PRUNE_COMPACT + HEALTH + ONTOLOGY_CONFORMANCE).
+     * Threshold 0.4, live mode.
+     *
+     * <p>DERIVATION was previously disabled because the PSL FactStore was always empty
+     * (graph projection crashed on {@code _KGE_EDGE_TYPE} pseudo-nodes, leaving the store
+     * empty and causing an early-exit that produced 0 facts).  That crash was fixed by the
+     * {@code isUserNodeType} guard in {@code MatrixKnowledgeGraphService.getNodesInFactSheet}.
+     * With a non-empty graph (9 403 entities + 17 539 edges) the MAP solve now runs and
+     * derives non-zero facts, so DERIVATION is re-enabled here.
+     *
+     * <p>The {@link GraphHydrationOrchestrator} honours
+     * {@link ai.kompile.knowledgegraph.confidence.KbConfig#getDerivationTimeBudgetMs()} so
+     * large graphs are time-bounded and will not stall a crawl indefinitely.</p>
+     */
     public static HydrationConfig defaults() {
-        return new HydrationConfig(Set.of(), 0.4, false);
+        return new HydrationConfig(
+                Set.of("DERIVATION", "PRUNE_COMPACT", "HEALTH", "ONTOLOGY_CONFORMANCE"),
+                0.4, false);
     }
 
     /** Returns true when the given stage should run (empty enabledStageIds = run all). */

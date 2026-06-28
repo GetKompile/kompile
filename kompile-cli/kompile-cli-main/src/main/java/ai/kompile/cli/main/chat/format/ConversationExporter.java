@@ -139,6 +139,115 @@ public class ConversationExporter {
     }
 
     /**
+     * Resolve the model ID that will be associated with an exported native session.
+     * Used by callers that need to size a transcript before calling {@link #exportToAgent}.
+     */
+    public static String resolveTargetModelId(String agent, String sourceAgent, Path workingDirectory) {
+        return resolveTargetModel(agent, sourceAgent, workingDirectory).modelId();
+    }
+
+    /**
+     * Resolve the provider/model pair that will be associated with an exported native session.
+     * OpenCode uses dynamic provider resolution, so callers that need live model metadata need
+     * both values rather than only the model ID.
+     */
+    public static ResolvedTargetModel resolveTargetModel(String agent, String sourceAgent, Path workingDirectory) {
+        String target = agent != null ? agent.toLowerCase() : "";
+        Path effectiveWorkingDirectory = normalizeWorkingDirectory(workingDirectory);
+        return switch (target) {
+            case "claude-code", "claude" ->
+                    new ResolvedTargetModel("anthropic",
+                            resolveConfiguredClaudeModel().orElse("claude-sonnet-4-20250514"));
+            case "codex" ->
+                    new ResolvedTargetModel("openai",
+                            resolveConfiguredCodexModel().orElse("gpt-4o"));
+            case "qwen" -> new ResolvedTargetModel("openrouter", "qwen/qwen3-coder");
+            case "opencode" -> {
+                ProviderModel pm = resolveProviderModel(sourceAgent, effectiveWorkingDirectory);
+                yield new ResolvedTargetModel(pm.providerId(), pm.modelId());
+            }
+            case "gemini" -> new ResolvedTargetModel("google", "gemini-2.5-pro");
+            default -> new ResolvedTargetModel(null, null);
+        };
+    }
+
+    public record ResolvedTargetModel(String providerId, String modelId) {}
+
+    private static java.util.Optional<String> resolveConfiguredClaudeModel() {
+        String configured = firstNonBlank(
+                System.getProperty("kompile.claude.model"),
+                System.getenv("CLAUDE_MODEL"));
+        return configured == null ? java.util.Optional.empty() : java.util.Optional.of(configured);
+    }
+
+    private static java.util.Optional<String> resolveConfiguredCodexModel() {
+        String configured = firstNonBlank(
+                System.getProperty("kompile.codex.model"),
+                System.getenv("CODEX_MODEL"));
+        if (configured != null) {
+            return java.util.Optional.of(configured);
+        }
+
+        Path configPath = codexConfigPath();
+        if (configPath == null || !Files.exists(configPath)) {
+            return java.util.Optional.empty();
+        }
+        try {
+            for (String line : Files.readAllLines(configPath, StandardCharsets.UTF_8)) {
+                String model = parseTomlStringValue(line, "model");
+                if (model != null) {
+                    return java.util.Optional.of(model);
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return java.util.Optional.empty();
+    }
+
+    private static Path codexConfigPath() {
+        String explicit = firstNonBlank(System.getProperty("kompile.codex.config"), System.getenv("CODEX_CONFIG"));
+        if (explicit != null) {
+            return Paths.get(explicit);
+        }
+        String codexHome = firstNonBlank(System.getenv("CODEX_HOME"));
+        if (codexHome != null) {
+            return Paths.get(codexHome, "config.toml");
+        }
+        return Paths.get(System.getProperty("user.home"), ".codex", "config.toml");
+    }
+
+    private static String parseTomlStringValue(String line, String key) {
+        if (line == null) return null;
+        String trimmed = line.trim();
+        if (trimmed.isEmpty() || trimmed.startsWith("#") || !trimmed.startsWith(key)) return null;
+
+        int equals = trimmed.indexOf('=');
+        if (equals < 0 || !trimmed.substring(0, equals).trim().equals(key)) return null;
+
+        String value = trimmed.substring(equals + 1).trim();
+        int comment = value.indexOf('#');
+        if (comment >= 0) {
+            value = value.substring(0, comment).trim();
+        }
+        if ((value.startsWith("\"") && value.endsWith("\""))
+                || (value.startsWith("'") && value.endsWith("'"))) {
+            value = value.substring(1, value.length() - 1);
+        }
+        value = value.trim();
+        return value.isEmpty() ? null : value;
+    }
+
+    private static String firstNonBlank(String... values) {
+        if (values == null) return null;
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value.trim();
+            }
+        }
+        return null;
+    }
+
+    /**
      * Resolves the best provider/model pair for importing INTO OpenCode.
      * Uses dynamic discovery: reads OpenCode's auth.json and message history
      * to find actually authenticated providers, then maps the source agent
@@ -1060,8 +1169,8 @@ public class ConversationExporter {
         // writes all messages to the DB and file storage. Calling it again would create
         // duplicate messages with different UUIDs, causing every turn to appear twice.
 
-        // Return result - use -s without --continue (--continue causes hang on imported sessions)
-        String resumeCommand = "opencode -s " + sessId;
+        // Return result - use --session without --continue (--continue causes hang on imported sessions)
+        String resumeCommand = "opencode --session " + sessId;
 
         Path sessionPath = Paths.get(homeDir, ".local/share/opencode/storage/session/" + storedProjectId + "/" + sessId + ".json");
         return new ExportResult(sessId, "opencode", sessionPath, resumeCommand, workingDirectory);

@@ -1,0 +1,1031 @@
+<h2 mat-dialog-title class="launcher-title">
+  <mat-icon>travel_explore</mat-icon>
+  New Crawl
+</h2>
+
+<mat-dialog-content class="launcher-content">
+  <p class="launcher-subtitle">
+    Crawl multiple sources and automatically build a knowledge graph + vector index. Every option the
+    pipeline supports is available below — sensible defaults are pre-filled, so you only need to add a source.
+  </p>
+
+  <!-- ── General ─────────────────────────────────────────────────────────── -->
+  <div class="launcher-section">
+    <div class="form-row">
+      <mat-form-field appearance="outline" class="grow">
+        <mat-label>Job Name</mat-label>
+        <input matInput [(ngModel)]="jobName" placeholder="e.g., Company Knowledge Base">
+      </mat-form-field>
+      <mat-form-field appearance="outline" class="narrow">
+        <mat-label>Max Validation Retries</mat-label>
+        <input matInput type="number" [(ngModel)]="maxValidationRetries" min="0" max="10"
+               matTooltip="Per-document validation retries before it is marked permanently failed">
+      </mat-form-field>
+    </div>
+
+    <div class="target-sheet" *ngIf="activeFactSheet">
+      <mat-icon>folder_special</mat-icon>
+      <span>Target fact sheet: <strong>{{ activeFactSheet.name }}</strong></span>
+    </div>
+    <div class="extraction-agent" *ngIf="extractionAgentLabel">
+      <mat-icon inline>smart_toy</mat-icon>
+      <span>Extraction agent: {{ extractionAgentLabel }}</span>
+    </div>
+  </div>
+
+  <!-- ── Sources (always visible — required) ─────────────────────────────── -->
+  <div class="launcher-section">
+    <h3 class="section-heading">
+      <mat-icon>source</mat-icon> Sources
+      <button mat-icon-button color="primary" (click)="addSource()" matTooltip="Add source">
+        <mat-icon>add_circle</mat-icon>
+      </button>
+    </h3>
+
+    <div *ngFor="let source of sources; let i = index" class="source-card">
+      <mat-expansion-panel [expanded]="i === sources.length - 1">
+        <mat-expansion-panel-header>
+          <mat-panel-title>
+            <mat-icon class="source-icon">{{ getSourceIcon(source.sourceType) }}</mat-icon>
+            {{ source.label || 'Source ' + (i + 1) }}
+          </mat-panel-title>
+          <mat-panel-description>
+            {{ source.sourceType || 'Not configured' }}
+            <span *ngIf="source.pathOrUrl"> &mdash; {{ source.pathOrUrl | slice:0:40 }}</span>
+          </mat-panel-description>
+        </mat-expansion-panel-header>
+
+        <div class="source-form">
+          <div class="form-row">
+            <mat-form-field appearance="outline">
+              <mat-label>Label</mat-label>
+              <input matInput [(ngModel)]="source.label" placeholder="e.g., Project docs">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Source Type</mat-label>
+              <mat-select [(ngModel)]="source.sourceType">
+                <mat-option *ngFor="let st of availableSourceTypes" [value]="st.type" [disabled]="!st.available">
+                  {{ st.displayName }}
+                  <span *ngIf="!st.available" class="unavailable">(not available)</span>
+                </mat-option>
+              </mat-select>
+            </mat-form-field>
+          </div>
+
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Path or URL</mat-label>
+            <input matInput [(ngModel)]="source.pathOrUrl" placeholder="e.g., /data/docs or https://example.com">
+          </mat-form-field>
+
+          <div class="form-row">
+            <mat-form-field appearance="outline">
+              <mat-label>Max Depth</mat-label>
+              <input matInput type="number" [(ngModel)]="source.maxDepth" min="0" max="10">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Max Documents (0 = unlimited)</mat-label>
+              <input matInput type="number" [(ngModel)]="source.maxDocuments" min="0">
+            </mat-form-field>
+          </div>
+
+          <div class="form-row">
+            <app-chip-list-input class="grow" label="Include Patterns (globs)" [items]="source.includePatterns"
+                                 placeholder="e.g., **/*.pdf"></app-chip-list-input>
+            <app-chip-list-input class="grow" label="Exclude Patterns (globs)" [items]="source.excludePatterns"
+                                 placeholder="e.g., **/node_modules/**"></app-chip-list-input>
+          </div>
+          <app-chip-list-input label="Allowed Content Types (MIME)" [items]="source.allowedContentTypes"
+                               placeholder="e.g., application/pdf"></app-chip-list-input>
+
+          <app-key-value-editor label="Crawler Properties" [rows]="source.propertyRows"
+                                keyPlaceholder="e.g., crawlerId" valuePlaceholder="e.g., filesystem"
+                                addLabel="Add property"></app-key-value-editor>
+
+          <button mat-button color="warn" (click)="removeSource(i)">
+            <mat-icon>delete</mat-icon> Remove Source
+          </button>
+        </div>
+      </mat-expansion-panel>
+    </div>
+
+    <div *ngIf="sources.length === 0" class="empty-state">
+      <mat-icon>source</mat-icon>
+      <p>No sources added yet. Click + to add a source.</p>
+    </div>
+  </div>
+
+  <!-- ── Configuration accordion ─────────────────────────────────────────── -->
+  <mat-accordion multi="true" class="config-accordion">
+
+    <!-- Graph Extraction -->
+    <mat-expansion-panel expanded="true">
+      <mat-expansion-panel-header>
+        <mat-panel-title><mat-icon>hub</mat-icon> Graph Extraction</mat-panel-title>
+        <mat-panel-description>{{ graphEnabled ? 'Enabled' : 'Disabled' }}</mat-panel-description>
+      </mat-expansion-panel-header>
+
+      <mat-slide-toggle [(ngModel)]="graphEnabled" color="primary">Extract a knowledge graph</mat-slide-toggle>
+
+      <div *ngIf="graphEnabled" class="settings-section">
+        <div class="form-row">
+          <mat-form-field appearance="outline">
+            <mat-label>LLM Provider</mat-label>
+            <mat-select [(ngModel)]="graphLlmProvider" (selectionChange)="onGraphLlmProviderChange()">
+              <mat-option value="default">Default</mat-option>
+              <mat-option *ngFor="let p of graphModelProviders" [value]="p.id">{{ p.name }}</mat-option>
+            </mat-select>
+          </mat-form-field>
+          <mat-form-field appearance="outline">
+            <mat-label>Model Name (optional)</mat-label>
+            <mat-select *ngIf="graphAvailableModels.length > 0" [(ngModel)]="graphModelName">
+              <mat-option value="">None (provider default)</mat-option>
+              <mat-option *ngFor="let m of graphAvailableModels" [value]="m.id">{{ m.name || m.id }}</mat-option>
+            </mat-select>
+            <input *ngIf="graphAvailableModels.length === 0" matInput [(ngModel)]="graphModelName"
+                   placeholder="Leave blank for provider default">
+          </mat-form-field>
+        </div>
+
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Schema Preset</mat-label>
+          <input matInput [(ngModel)]="graphSchemaPresetId" placeholder="fpna-cpg-channel-v1">
+        </mat-form-field>
+
+        <app-chip-list-input label="Entity Types" [items]="graphEntityTypes"
+                             placeholder="e.g., PERSON, ORGANIZATION"
+                             hint="Empty = extract all discovered types"></app-chip-list-input>
+        <app-chip-list-input label="Relationship Types (optional)" [items]="graphRelTypes"
+                             placeholder="e.g., WORKS_AT, DEPENDS_ON"></app-chip-list-input>
+
+        <div class="form-row">
+          <mat-form-field appearance="outline">
+            <mat-label>Schema Mode</mat-label>
+            <mat-select [(ngModel)]="graphSchemaMode">
+              <mat-option value="NONE">None</mat-option>
+              <mat-option value="LENIENT">Lenient</mat-option>
+              <mat-option value="STRICT">Strict</mat-option>
+            </mat-select>
+          </mat-form-field>
+          <mat-form-field appearance="outline">
+            <mat-label>Min Confidence</mat-label>
+            <input matInput type="number" [(ngModel)]="graphMinConfidence" min="0" max="1" step="0.05">
+          </mat-form-field>
+        </div>
+
+        <div class="form-row">
+          <mat-form-field appearance="outline">
+            <mat-label>Temperature</mat-label>
+            <input matInput type="number" [(ngModel)]="graphTemperature" min="0" max="2" step="0.1"
+                   matTooltip="Lower = more deterministic extraction">
+          </mat-form-field>
+          <mat-form-field appearance="outline">
+            <mat-label>Max Tokens</mat-label>
+            <input matInput type="number" [(ngModel)]="graphMaxTokens" min="0" step="256">
+          </mat-form-field>
+        </div>
+
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Custom Extraction Prompt (optional)</mat-label>
+          <textarea matInput rows="3" [(ngModel)]="graphCustomPrompt"
+                    placeholder="Overrides the default extraction prompt when set"></textarea>
+        </mat-form-field>
+
+        <div class="form-row">
+          <app-chip-list-input class="grow" label="Model Provider Allow-list" [items]="graphModelProviderAllow"
+                               placeholder="e.g., opencode" hint="Empty = all providers"></app-chip-list-input>
+          <app-chip-list-input class="grow" label="Model Exclude Markers" [items]="graphModelExcludeMarkers"
+                               placeholder="e.g., claude" hint="Empty keeps the default claude,codex exclusion"></app-chip-list-input>
+        </div>
+
+        <mat-slide-toggle [(ngModel)]="graphEntityResolution" color="primary">
+          Entity Resolution (merge duplicates across sources)
+        </mat-slide-toggle>
+
+        <div *ngIf="graphEntityResolution" class="form-row er-row">
+          <mat-form-field appearance="outline">
+            <mat-label>Resolution Threshold</mat-label>
+            <input matInput type="number" [(ngModel)]="graphEntityResolutionSimilarityThreshold" min="0" max="1" step="0.01">
+          </mat-form-field>
+          <mat-slide-toggle [(ngModel)]="graphEntityResolutionUseEmbeddings" color="primary">Use Embeddings</mat-slide-toggle>
+          <mat-form-field appearance="outline">
+            <mat-label>Embedding Threshold</mat-label>
+            <input matInput type="number" [(ngModel)]="graphEntityResolutionEmbeddingThreshold" min="0" max="1" step="0.01">
+          </mat-form-field>
+        </div>
+      </div>
+    </mat-expansion-panel>
+
+    <!-- Vector Indexing -->
+    <mat-expansion-panel expanded="true">
+      <mat-expansion-panel-header>
+        <mat-panel-title><mat-icon>memory</mat-icon> Vector Indexing</mat-panel-title>
+        <mat-panel-description>{{ indexEnabled ? 'Enabled' : 'Disabled' }}</mat-panel-description>
+      </mat-expansion-panel-header>
+
+      <mat-slide-toggle [(ngModel)]="indexEnabled" color="primary">Embed &amp; index chunks for vector search</mat-slide-toggle>
+
+      <div *ngIf="indexEnabled" class="settings-section">
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Collection Name</mat-label>
+          <input matInput [(ngModel)]="indexCollectionName" placeholder="e.g., my-knowledge-base">
+        </mat-form-field>
+        <div class="form-row">
+          <mat-form-field appearance="outline">
+            <mat-label>Chunker (optional)</mat-label>
+            <input matInput [(ngModel)]="chunkerName" placeholder="Leave blank for default">
+          </mat-form-field>
+          <mat-form-field appearance="outline">
+            <mat-label>Chunk Size (tokens, 0 = default)</mat-label>
+            <input matInput type="number" [(ngModel)]="chunkSize" min="0">
+          </mat-form-field>
+          <mat-form-field appearance="outline">
+            <mat-label>Chunk Overlap (tokens, 0 = default)</mat-label>
+            <input matInput type="number" [(ngModel)]="chunkOverlap" min="0">
+          </mat-form-field>
+        </div>
+        <div class="form-row">
+          <mat-form-field appearance="outline">
+            <mat-label>Embedding Batch Size (0 = auto)</mat-label>
+            <input matInput type="number" [(ngModel)]="embeddingBatchSize" min="0">
+          </mat-form-field>
+          <mat-form-field appearance="outline">
+            <mat-label>Max Embedding Batch (0 = model max)</mat-label>
+            <input matInput type="number" [(ngModel)]="maxEmbeddingBatchSize" min="0">
+          </mat-form-field>
+        </div>
+        <mat-slide-toggle [(ngModel)]="adaptiveBatching" color="primary">Adaptive batching under memory pressure</mat-slide-toggle>
+      </div>
+    </mat-expansion-panel>
+
+    <!-- Processing Routes -->
+    <mat-expansion-panel>
+      <mat-expansion-panel-header>
+        <mat-panel-title><mat-icon>alt_route</mat-icon> Processing Routes</mat-panel-title>
+        <mat-panel-description>{{ processingRouteEnabled ? 'Custom' : 'Defaults' }}</mat-panel-description>
+      </mat-expansion-panel-header>
+
+      <mat-slide-toggle [(ngModel)]="processingRouteEnabled" color="primary">Override processing routes</mat-slide-toggle>
+
+      <div *ngIf="processingRouteEnabled" class="settings-section">
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>PDF Routing Mode</mat-label>
+          <mat-select [(ngModel)]="pdfRoutingMode">
+            <mat-option value="AUTO">Auto — classify PDFs, text-only to cheap parser, images to VLM</mat-option>
+            <mat-option value="FORCE_VLM">Force VLM — all PDFs through VLM pipeline</mat-option>
+            <mat-option value="FORCE_TEXT">Force Text — all PDFs through text extraction only</mat-option>
+            <mat-option value="DISABLED">Disabled — no PDF-specific routing</mat-option>
+          </mat-select>
+        </mat-form-field>
+
+        <div class="form-row">
+          <mat-form-field appearance="outline">
+            <mat-label>VLM Model ID (optional)</mat-label>
+            <input matInput [(ngModel)]="vlmModelId" placeholder="Leave blank for default VLM">
+          </mat-form-field>
+          <mat-form-field appearance="outline">
+            <mat-label>Text Threshold (chars/page, 0 = default)</mat-label>
+            <input matInput type="number" [(ngModel)]="textThresholdCharsPerPage" min="0"
+                   matTooltip="Below this many extractable chars per page a PDF is treated as image-only">
+          </mat-form-field>
+        </div>
+
+        <mat-slide-toggle [(ngModel)]="extractTablesFromTextPdfs" color="primary">
+          Extract tables from text PDFs (via Tabula)
+        </mat-slide-toggle>
+
+        <mat-slide-toggle [(ngModel)]="fallbackEnabled" color="primary" class="fallback-toggle">
+          Enable capacity-based fallback routing
+        </mat-slide-toggle>
+
+        <div *ngIf="fallbackEnabled" class="backends-section">
+          <p class="hint-text">
+            When local model capacity is exhausted, requests fall back through this chain.
+            Lower priority number = preferred backend.
+          </p>
+          <div *ngFor="let backend of backends; let i = index" class="backend-row">
+            <mat-form-field appearance="outline">
+              <mat-label>Backend ID</mat-label>
+              <input matInput [(ngModel)]="backend.id" placeholder="e.g., local-vlm">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Type</mat-label>
+              <mat-select [(ngModel)]="backend.type">
+                <mat-option value="LOCAL_MODEL">Local Model</mat-option>
+                <mat-option value="CLI_AGENT">CLI Agent</mat-option>
+                <mat-option value="API_AGENT">API Agent</mat-option>
+              </mat-select>
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Priority</mat-label>
+              <input matInput type="number" [(ngModel)]="backend.priority" min="1">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Max Concurrent</mat-label>
+              <input matInput type="number" [(ngModel)]="backend.maxConcurrent" min="0">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Rate Limit (rpm)</mat-label>
+              <input matInput type="number" [(ngModel)]="backend.requestsPerMinute" min="0">
+            </mat-form-field>
+            <mat-form-field appearance="outline" *ngIf="backend.type === 'CLI_AGENT'">
+              <mat-label>Agent Name</mat-label>
+              <input matInput [(ngModel)]="backend.agentName" placeholder="e.g., claude-cli">
+            </mat-form-field>
+            <mat-form-field appearance="outline" *ngIf="backend.type === 'API_AGENT'">
+              <mat-label>Endpoint URL</mat-label>
+              <input matInput [(ngModel)]="backend.endpointUrl" placeholder="e.g., https://api.openai.com/v1">
+            </mat-form-field>
+            <mat-form-field appearance="outline" *ngIf="backend.type === 'API_AGENT'">
+              <mat-label>Model</mat-label>
+              <input matInput [(ngModel)]="backend.modelName" placeholder="e.g., gpt-4o">
+            </mat-form-field>
+            <button mat-icon-button color="warn" (click)="removeBackend(i)" aria-label="Remove backend">
+              <mat-icon>delete</mat-icon>
+            </button>
+          </div>
+          <button mat-stroked-button color="primary" (click)="addBackend()">
+            <mat-icon>add</mat-icon> Add Backend
+          </button>
+        </div>
+      </div>
+    </mat-expansion-panel>
+
+    <!-- Preprocessing -->
+    <mat-expansion-panel>
+      <mat-expansion-panel-header>
+        <mat-panel-title><mat-icon>tune</mat-icon> Document Preprocessing</mat-panel-title>
+        <mat-panel-description>{{ preprocessingEnabled ? 'Enabled' : 'Off' }}</mat-panel-description>
+      </mat-expansion-panel-header>
+
+      <mat-slide-toggle [(ngModel)]="preprocessingEnabled" color="primary">
+        Run preprocessing pipeline
+      </mat-slide-toggle>
+      <p class="hint-text">
+        Requires the <strong>PREPROCESSING</strong> pipeline step to be set to Run below. Each sub-step is
+        applied only when its own toggle is on.
+      </p>
+
+      <div *ngIf="preprocessingEnabled" class="settings-section">
+        <div class="form-row">
+          <mat-form-field appearance="outline">
+            <mat-label>LLM Provider (for LLM-backed steps)</mat-label>
+            <input matInput [(ngModel)]="ppLlmProvider" placeholder="default">
+          </mat-form-field>
+          <mat-form-field appearance="outline">
+            <mat-label>LLM Model (optional)</mat-label>
+            <input matInput [(ngModel)]="ppLlmModelName" placeholder="provider default">
+          </mat-form-field>
+          <mat-form-field appearance="outline">
+            <mat-label>Parallelism (0 = default)</mat-label>
+            <input matInput type="number" [(ngModel)]="ppParallelism" min="0">
+          </mat-form-field>
+        </div>
+
+        <!-- Translation -->
+        <div class="pp-step">
+          <mat-slide-toggle [(ngModel)]="tEnabled" color="primary">Translation</mat-slide-toggle>
+          <div *ngIf="tEnabled" class="pp-step-body">
+            <div class="form-row">
+              <mat-form-field appearance="outline">
+                <mat-label>Target Language</mat-label>
+                <input matInput [(ngModel)]="tTargetLanguage" placeholder="en">
+              </mat-form-field>
+              <mat-form-field appearance="outline">
+                <mat-label>Source Language (optional)</mat-label>
+                <input matInput [(ngModel)]="tSourceLanguage" placeholder="auto-detect">
+              </mat-form-field>
+              <mat-form-field appearance="outline">
+                <mat-label>Detection Confidence</mat-label>
+                <input matInput type="number" [(ngModel)]="tDetectionConfidenceThreshold" min="0" max="1" step="0.05">
+              </mat-form-field>
+            </div>
+            <div class="form-row">
+              <mat-form-field appearance="outline">
+                <mat-label>Max Chars / Request</mat-label>
+                <input matInput type="number" [(ngModel)]="tMaxCharsPerRequest" min="0">
+              </mat-form-field>
+              <mat-form-field appearance="outline">
+                <mat-label>Domain Hint (optional)</mat-label>
+                <input matInput [(ngModel)]="tDomainHint" placeholder="e.g., legal, medical">
+              </mat-form-field>
+            </div>
+            <app-chip-list-input label="Preserve Terms (untranslated)" [items]="tPreserveTerms"
+                                 placeholder="brand / product names"></app-chip-list-input>
+            <mat-form-field appearance="outline" class="full-width">
+              <mat-label>Custom Instructions (optional)</mat-label>
+              <input matInput [(ngModel)]="tCustomInstructions">
+            </mat-form-field>
+            <div class="toggle-row">
+              <mat-slide-toggle [(ngModel)]="tPreserveOriginal" color="primary">Preserve original in metadata</mat-slide-toggle>
+              <mat-slide-toggle [(ngModel)]="tDualIndex" color="primary">Dual-index original + translation</mat-slide-toggle>
+            </div>
+          </div>
+        </div>
+
+        <!-- Language detection -->
+        <div class="pp-step">
+          <mat-slide-toggle [(ngModel)]="ldEnabled" color="primary">Language Detection</mat-slide-toggle>
+          <div *ngIf="ldEnabled" class="pp-step-body">
+            <div class="form-row">
+              <mat-form-field appearance="outline">
+                <mat-label>Min Text Length</mat-label>
+                <input matInput type="number" [(ngModel)]="ldMinTextLength" min="0">
+              </mat-form-field>
+              <mat-form-field appearance="outline">
+                <mat-label>Force Language (optional)</mat-label>
+                <input matInput [(ngModel)]="ldForceLanguage" placeholder="skip detection">
+              </mat-form-field>
+            </div>
+            <mat-slide-toggle [(ngModel)]="ldLlmFallback" color="primary">LLM fallback for short/ambiguous text</mat-slide-toggle>
+          </div>
+        </div>
+
+        <!-- Unicode normalization -->
+        <div class="pp-step">
+          <mat-slide-toggle [(ngModel)]="unEnabled" color="primary">Unicode Normalization</mat-slide-toggle>
+          <div *ngIf="unEnabled" class="pp-step-body">
+            <mat-form-field appearance="outline">
+              <mat-label>Form</mat-label>
+              <mat-select [(ngModel)]="unForm">
+                <mat-option value="NFC">NFC</mat-option>
+                <mat-option value="NFD">NFD</mat-option>
+                <mat-option value="NFKC">NFKC</mat-option>
+                <mat-option value="NFKD">NFKD</mat-option>
+              </mat-select>
+            </mat-form-field>
+            <div class="toggle-row">
+              <mat-slide-toggle [(ngModel)]="unFixMojibake" color="primary">Fix mojibake</mat-slide-toggle>
+              <mat-slide-toggle [(ngModel)]="unStandardizeTypography" color="primary">Standardize typography</mat-slide-toggle>
+            </div>
+          </div>
+        </div>
+
+        <!-- Script transliteration -->
+        <div class="pp-step">
+          <mat-slide-toggle [(ngModel)]="stEnabled" color="primary">Script Transliteration</mat-slide-toggle>
+          <div *ngIf="stEnabled" class="pp-step-body">
+            <div class="form-row">
+              <mat-form-field appearance="outline">
+                <mat-label>Target Script</mat-label>
+                <input matInput [(ngModel)]="stTargetScript" placeholder="Latin">
+              </mat-form-field>
+              <mat-form-field appearance="outline">
+                <mat-label>Source Script (optional)</mat-label>
+                <input matInput [(ngModel)]="stSourceScript" placeholder="auto-detect">
+              </mat-form-field>
+            </div>
+            <mat-slide-toggle [(ngModel)]="stPreserveOriginal" color="primary">Preserve original script in metadata</mat-slide-toggle>
+          </div>
+        </div>
+
+        <!-- PII redaction -->
+        <div class="pp-step">
+          <mat-slide-toggle [(ngModel)]="piiEnabled" color="primary">PII Redaction</mat-slide-toggle>
+          <div *ngIf="piiEnabled" class="pp-step-body">
+            <app-chip-list-input label="Entity Types" [items]="piiEntityTypes"
+                                 placeholder="PERSON, EMAIL, PHONE, SSN"></app-chip-list-input>
+            <mat-form-field appearance="outline">
+              <mat-label>Replacement Strategy</mat-label>
+              <mat-select [(ngModel)]="piiReplacementStrategy">
+                <mat-option value="TYPE_TAG">Type tag ([PERSON])</mat-option>
+                <mat-option value="MASK">Mask ([REDACTED])</mat-option>
+                <mat-option value="HASH">Hash</mat-option>
+                <mat-option value="REMOVE">Remove</mat-option>
+              </mat-select>
+            </mat-form-field>
+            <div class="toggle-row">
+              <mat-slide-toggle [(ngModel)]="piiUseLlm" color="primary">Use LLM for unstructured PII</mat-slide-toggle>
+              <mat-slide-toggle [(ngModel)]="piiLogCounts" color="primary">Log redaction counts</mat-slide-toggle>
+            </div>
+          </div>
+        </div>
+
+        <!-- Boilerplate removal -->
+        <div class="pp-step">
+          <mat-slide-toggle [(ngModel)]="brEnabled" color="primary">Boilerplate Removal</mat-slide-toggle>
+          <div *ngIf="brEnabled" class="pp-step-body">
+            <div class="toggle-row">
+              <mat-slide-toggle [(ngModel)]="brRemoveWeb" color="primary">Web boilerplate</mat-slide-toggle>
+              <mat-slide-toggle [(ngModel)]="brRemoveEmailSig" color="primary">Email signatures</mat-slide-toggle>
+              <mat-slide-toggle [(ngModel)]="brRemoveLegal" color="primary">Legal disclaimers</mat-slide-toggle>
+            </div>
+            <app-chip-list-input label="Custom Patterns (regex)" [items]="brCustomPatterns"></app-chip-list-input>
+            <mat-form-field appearance="outline">
+              <mat-label>Min Remaining Chars</mat-label>
+              <input matInput type="number" [(ngModel)]="brMinRemainingChars" min="0">
+            </mat-form-field>
+          </div>
+        </div>
+
+        <!-- Deduplication -->
+        <div class="pp-step">
+          <mat-slide-toggle [(ngModel)]="dedupEnabled" color="primary">Deduplication</mat-slide-toggle>
+          <div *ngIf="dedupEnabled" class="pp-step-body">
+            <div class="form-row">
+              <mat-form-field appearance="outline">
+                <mat-label>Similarity Threshold</mat-label>
+                <input matInput type="number" [(ngModel)]="dedupSimilarityThreshold" min="0" max="1" step="0.01">
+              </mat-form-field>
+              <mat-form-field appearance="outline">
+                <mat-label>Strategy</mat-label>
+                <mat-select [(ngModel)]="dedupStrategy">
+                  <mat-option value="KEEP_FIRST">Keep first</mat-option>
+                  <mat-option value="KEEP_LONGEST">Keep longest</mat-option>
+                  <mat-option value="KEEP_NEWEST">Keep newest</mat-option>
+                  <mat-option value="MERGE_METADATA">Merge metadata</mat-option>
+                </mat-select>
+              </mat-form-field>
+              <mat-form-field appearance="outline">
+                <mat-label>Algorithm</mat-label>
+                <mat-select [(ngModel)]="dedupAlgorithm">
+                  <mat-option value="SIMHASH">SimHash</mat-option>
+                  <mat-option value="MINHASH">MinHash</mat-option>
+                  <mat-option value="EXACT_HASH">Exact hash</mat-option>
+                </mat-select>
+              </mat-form-field>
+            </div>
+            <mat-slide-toggle [(ngModel)]="dedupTrackRelations" color="primary">Track duplicate relationships</mat-slide-toggle>
+          </div>
+        </div>
+
+        <!-- Date/number normalization -->
+        <div class="pp-step">
+          <mat-slide-toggle [(ngModel)]="dnEnabled" color="primary">Date/Number Normalization</mat-slide-toggle>
+          <div *ngIf="dnEnabled" class="pp-step-body">
+            <div class="form-row">
+              <mat-form-field appearance="outline">
+                <mat-label>Date Format</mat-label>
+                <mat-select [(ngModel)]="dnDateFormat">
+                  <mat-option value="ISO8601">ISO 8601</mat-option>
+                  <mat-option value="US">US</mat-option>
+                  <mat-option value="EU">EU</mat-option>
+                </mat-select>
+              </mat-form-field>
+              <mat-form-field appearance="outline">
+                <mat-label>Number Locale</mat-label>
+                <input matInput [(ngModel)]="dnNumberLocale" placeholder="en-US">
+              </mat-form-field>
+            </div>
+            <div class="toggle-row">
+              <mat-slide-toggle [(ngModel)]="dnNormalizeCurrency" color="primary">Normalize currency</mat-slide-toggle>
+              <mat-slide-toggle [(ngModel)]="dnNormalizeUnits" color="primary">Normalize units</mat-slide-toggle>
+            </div>
+          </div>
+        </div>
+
+        <!-- Terminology standardization -->
+        <div class="pp-step">
+          <mat-slide-toggle [(ngModel)]="tsEnabled" color="primary">Terminology Standardization</mat-slide-toggle>
+          <div *ngIf="tsEnabled" class="pp-step-body">
+            <app-key-value-editor label="Glossary (variant → canonical)" [rows]="tsGlossary"
+                                  keyLabel="Variant" valueLabel="Canonical"
+                                  keyPlaceholder="e.g., ML" valuePlaceholder="e.g., machine learning"
+                                  addLabel="Add term"></app-key-value-editor>
+            <mat-form-field appearance="outline" class="full-width">
+              <mat-label>Glossary File (optional path)</mat-label>
+              <input matInput [(ngModel)]="tsGlossaryFile">
+            </mat-form-field>
+            <div class="toggle-row">
+              <mat-slide-toggle [(ngModel)]="tsCaseSensitive" color="primary">Case sensitive</mat-slide-toggle>
+              <mat-slide-toggle [(ngModel)]="tsExpandAbbreviations" color="primary">Expand abbreviations</mat-slide-toggle>
+              <mat-slide-toggle [(ngModel)]="tsContextAware" color="primary">LLM disambiguation</mat-slide-toggle>
+            </div>
+          </div>
+        </div>
+      </div>
+    </mat-expansion-panel>
+
+    <!-- Graph Enrichment (hydration) -->
+    <mat-expansion-panel>
+      <mat-expansion-panel-header>
+        <mat-panel-title><mat-icon>auto_fix_high</mat-icon> Graph Enrichment</mat-panel-title>
+        <mat-panel-description>{{ hydrationCustomize ? 'Custom' : 'All stages' }}</mat-panel-description>
+      </mat-expansion-panel-header>
+
+      <mat-slide-toggle [(ngModel)]="hydrationCustomize" color="primary">Customize enrichment stages</mat-slide-toggle>
+      <p class="hint-text">Post-extraction hydration: derivation → prune/compact → health. Defaults run all stages.</p>
+
+      <div *ngIf="hydrationCustomize" class="settings-section">
+        <div class="toggle-row">
+          <mat-slide-toggle [(ngModel)]="hydrationDerivation" color="primary">Derivation</mat-slide-toggle>
+          <mat-slide-toggle [(ngModel)]="hydrationPruneCompact" color="primary">Prune &amp; Compact</mat-slide-toggle>
+          <mat-slide-toggle [(ngModel)]="hydrationHealth" color="primary">Health</mat-slide-toggle>
+        </div>
+        <div class="form-row">
+          <mat-form-field appearance="outline">
+            <mat-label>Confidence Prune Threshold</mat-label>
+            <input matInput type="number" [(ngModel)]="hydrationConfidencePruneThreshold" min="0" max="1" step="0.05">
+          </mat-form-field>
+          <mat-slide-toggle [(ngModel)]="hydrationDryRun" color="primary">Dry run (no writes)</mat-slide-toggle>
+        </div>
+      </div>
+    </mat-expansion-panel>
+
+    <!-- Runtime / Performance Tuning -->
+    <mat-expansion-panel>
+      <mat-expansion-panel-header>
+        <mat-panel-title><mat-icon>speed</mat-icon> Runtime &amp; Performance Tuning</mat-panel-title>
+        <mat-panel-description>{{ runtimeTuningEnabled ? 'Overridden' : 'Auto' }}</mat-panel-description>
+      </mat-expansion-panel-header>
+
+      <mat-slide-toggle [(ngModel)]="runtimeTuningEnabled" color="primary">Override runtime tuning</mat-slide-toggle>
+      <p class="hint-text">Leave blank fields empty to use the global/auto value. Only set values are sent.</p>
+
+      <div *ngIf="runtimeTuningEnabled" class="settings-section">
+        <div class="form-row">
+          <mat-form-field appearance="outline">
+            <mat-label>Graph Extraction Parallelism</mat-label>
+            <input matInput type="number" [(ngModel)]="rtGraphExtractionParallelism" min="1" max="32">
+          </mat-form-field>
+          <mat-form-field appearance="outline">
+            <mat-label>Remote Extraction Parallelism</mat-label>
+            <input matInput type="number" [(ngModel)]="rtGraphExtractionRemoteParallelism" min="1" max="32">
+          </mat-form-field>
+        </div>
+        <div class="form-row">
+          <mat-form-field appearance="outline">
+            <mat-label>Extraction Batch Size</mat-label>
+            <input matInput type="number" [(ngModel)]="rtGraphExtractionBatchSize" min="1">
+          </mat-form-field>
+          <mat-form-field appearance="outline">
+            <mat-label>Target Chars / Batch</mat-label>
+            <input matInput type="number" [(ngModel)]="rtGraphExtractionTargetCharsPerBatch" min="1">
+          </mat-form-field>
+          <mat-form-field appearance="outline">
+            <mat-label>Max Items / Batch</mat-label>
+            <input matInput type="number" [(ngModel)]="rtGraphExtractionMaxItemsPerBatch" min="1">
+          </mat-form-field>
+        </div>
+        <div class="form-row">
+          <mat-form-field appearance="outline">
+            <mat-label>LLM Call Timeout (s)</mat-label>
+            <input matInput type="number" [(ngModel)]="rtLlmCallTimeoutSeconds" min="1">
+          </mat-form-field>
+          <mat-form-field appearance="outline">
+            <mat-label>Extraction Batch Timeout (s)</mat-label>
+            <input matInput type="number" [(ngModel)]="rtGraphExtractionBatchTimeoutSeconds" min="1">
+          </mat-form-field>
+        </div>
+        <div class="form-row">
+          <mat-form-field appearance="outline">
+            <mat-label>Source Load Parallelism</mat-label>
+            <input matInput type="number" [(ngModel)]="rtSourceLoadParallelism" min="1" max="32">
+          </mat-form-field>
+          <mat-form-field appearance="outline">
+            <mat-label>Chunking Parallelism</mat-label>
+            <input matInput type="number" [(ngModel)]="rtChunkingParallelism" min="1" max="32">
+          </mat-form-field>
+        </div>
+        <div class="form-row">
+          <mat-form-field appearance="outline">
+            <mat-label>Entity Resolution Batch Size</mat-label>
+            <input matInput type="number" [(ngModel)]="rtEntityResolutionBatchSize" min="1">
+          </mat-form-field>
+          <mat-form-field appearance="outline">
+            <mat-label>Edge Computation Parallelism</mat-label>
+            <input matInput type="number" [(ngModel)]="rtEdgeComputationParallelism" min="1" max="32">
+          </mat-form-field>
+        </div>
+        <div class="form-row">
+          <mat-form-field appearance="outline">
+            <mat-label>Vector Indexing Parallelism</mat-label>
+            <input matInput type="number" [(ngModel)]="rtVectorIndexingParallelism" min="1" max="32">
+          </mat-form-field>
+          <mat-form-field appearance="outline">
+            <mat-label>Vector Batch Size (0 = auto)</mat-label>
+            <input matInput type="number" [(ngModel)]="rtVectorBatchSize" min="0">
+          </mat-form-field>
+        </div>
+
+        <div class="form-row">
+          <mat-form-field appearance="outline">
+            <mat-label>Cost-sort Chunks</mat-label>
+            <mat-select [(ngModel)]="rtCostSortChunks">
+              <mat-option value="default">Default</mat-option>
+              <mat-option value="on">Enabled</mat-option>
+              <mat-option value="off">Disabled</mat-option>
+            </mat-select>
+          </mat-form-field>
+          <mat-form-field appearance="outline">
+            <mat-label>Parallel Vector + Graph</mat-label>
+            <mat-select [(ngModel)]="rtParallelVectorAndGraph">
+              <mat-option value="default">Default</mat-option>
+              <mat-option value="on">Enabled</mat-option>
+              <mat-option value="off">Disabled</mat-option>
+            </mat-select>
+          </mat-form-field>
+        </div>
+        <div class="form-row">
+          <mat-form-field appearance="outline">
+            <mat-label>Incremental by Content Hash</mat-label>
+            <mat-select [(ngModel)]="rtIncrementalByContentHash">
+              <mat-option value="default">Default</mat-option>
+              <mat-option value="on">Enabled</mat-option>
+              <mat-option value="off">Disabled</mat-option>
+            </mat-select>
+          </mat-form-field>
+          <mat-form-field appearance="outline">
+            <mat-label>Force Full Re-crawl</mat-label>
+            <mat-select [(ngModel)]="rtForceFullRecrawl">
+              <mat-option value="default">Default</mat-option>
+              <mat-option value="on">Enabled</mat-option>
+              <mat-option value="off">Disabled</mat-option>
+            </mat-select>
+          </mat-form-field>
+          <mat-form-field appearance="outline">
+            <mat-label>Clear Graph Before Run</mat-label>
+            <mat-select [(ngModel)]="rtClearGraphBeforeRun"
+                        matTooltip="Destructive: clears the fact sheet's graph before LOADING">
+              <mat-option value="default">Default</mat-option>
+              <mat-option value="on">Enabled (destructive)</mat-option>
+              <mat-option value="off">Disabled</mat-option>
+            </mat-select>
+          </mat-form-field>
+        </div>
+        <div class="warn-text" *ngIf="rtClearGraphBeforeRun === 'on'">
+          <mat-icon inline>warning</mat-icon>
+          The fact sheet's existing graph will be cleared before this crawl runs.
+        </div>
+      </div>
+    </mat-expansion-panel>
+
+    <!-- Pipeline Steps -->
+    <mat-expansion-panel *ngIf="stepCatalog.length > 0">
+      <mat-expansion-panel-header>
+        <mat-panel-title><mat-icon>account_tree</mat-icon> Pipeline Steps</mat-panel-title>
+        <mat-panel-description>Run / Archive / Skip</mat-panel-description>
+      </mat-expansion-panel-header>
+
+      <p class="hint-text">Foundational steps always run. For optional steps, choose Run, Archive (skip now, run later), or Skip.</p>
+      <div class="step-selection-grid">
+        <div *ngFor="let step of stepCatalog" class="step-selection-row"
+             [class.step-selection-foundational]="step.foundational"
+             [class.step-selection-blocked]="!step.foundational && isStepDependencyBlocked(step)">
+          <mat-icon class="step-sel-icon">{{ getStepTypeIcon(step.stepType) }}</mat-icon>
+          <div class="step-sel-info">
+            <span class="step-sel-name">{{ step.displayName }}</span>
+            <span class="step-sel-type" [class]="getStepTypeClass(step.stepType)">{{ step.stepType }}</span>
+            <span *ngIf="step.dependsOn.length > 0" class="step-sel-deps">depends on: {{ step.dependsOn.join(', ') }}</span>
+          </div>
+          <div class="step-sel-controls">
+            <ng-container *ngIf="step.foundational">
+              <span class="step-sel-locked"><mat-icon inline>lock</mat-icon> Run (required)</span>
+            </ng-container>
+            <ng-container *ngIf="!step.foundational">
+              <button mat-stroked-button
+                      [class.step-sel-active]="stepSelections[step.id] === 'run'"
+                      [disabled]="isStepDependencyBlocked(step)"
+                      (click)="setStepSelection(step.id, 'run')">Run</button>
+              <button mat-stroked-button *ngIf="step.archivable"
+                      [class.step-sel-active-archive]="stepSelections[step.id] === 'archive'"
+                      [disabled]="isStepDependencyBlocked(step)"
+                      (click)="setStepSelection(step.id, 'archive')">Archive</button>
+              <button mat-stroked-button
+                      [class.step-sel-active-skip]="stepSelections[step.id] === 'skip' || isStepDependencyBlocked(step)"
+                      (click)="setStepSelection(step.id, 'skip')">Skip</button>
+            </ng-container>
+          </div>
+        </div>
+      </div>
+    </mat-expansion-panel>
+
+    <!-- Advanced: custom ingest pipelines + routing -->
+    <mat-expansion-panel>
+      <mat-expansion-panel-header>
+        <mat-panel-title><mat-icon>schema</mat-icon> Custom Ingest Pipelines</mat-panel-title>
+        <mat-panel-description>
+          {{ pipelines.length || 0 }} pipeline(s), {{ routeRules.length || 0 }} rule(s)
+        </mat-panel-description>
+      </mat-expansion-panel-header>
+
+      <p class="hint-text">
+        Power-user routing: define named ingest pipelines and the rules that direct content to them.
+        Leave empty to use the system defaults (driven by Processing Routes above).
+      </p>
+
+      <mat-form-field appearance="outline" class="full-width">
+        <mat-label>Default Pipeline ID (optional)</mat-label>
+        <input matInput [(ngModel)]="defaultPipelineId" placeholder="Pipeline used when no route rule matches">
+      </mat-form-field>
+
+      <!-- Pipeline definitions -->
+      <h4 class="subsection-heading">
+        Pipeline Definitions
+        <button mat-icon-button color="primary" (click)="addPipeline()" matTooltip="Add pipeline">
+          <mat-icon>add_circle</mat-icon>
+        </button>
+      </h4>
+      <div *ngFor="let pipeline of pipelines; let i = index" class="nested-card">
+        <mat-expansion-panel [expanded]="i === pipelines.length - 1">
+          <mat-expansion-panel-header>
+            <mat-panel-title><mat-icon>conveyor_belt</mat-icon> {{ pipeline.pipelineId || 'Pipeline ' + (i + 1) }}</mat-panel-title>
+            <mat-panel-description>{{ pipeline.pipelineType }}</mat-panel-description>
+          </mat-expansion-panel-header>
+
+          <div class="form-row">
+            <mat-form-field appearance="outline">
+              <mat-label>Pipeline ID *</mat-label>
+              <input matInput [(ngModel)]="pipeline.pipelineId" placeholder="e.g., pdf-vlm">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Display Name</mat-label>
+              <input matInput [(ngModel)]="pipeline.displayName" placeholder="e.g., PDF via VLM">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Pipeline Type</mat-label>
+              <mat-select [(ngModel)]="pipeline.pipelineType">
+                <mat-option *ngFor="let pt of pipelineTypes" [value]="pt">{{ pt }}</mat-option>
+              </mat-select>
+            </mat-form-field>
+          </div>
+          <div class="form-row">
+            <mat-form-field appearance="outline">
+              <mat-label>Loader (optional)</mat-label>
+              <input matInput [(ngModel)]="pipeline.loaderName" placeholder="auto-detect">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Chunker (optional)</mat-label>
+              <input matInput [(ngModel)]="pipeline.chunkerName" placeholder="default">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Embedding Model (optional)</mat-label>
+              <input matInput [(ngModel)]="pipeline.embeddingModelName" placeholder="default">
+            </mat-form-field>
+          </div>
+          <div class="form-row">
+            <mat-form-field appearance="outline">
+              <mat-label>Language (optional)</mat-label>
+              <input matInput [(ngModel)]="pipeline.language" placeholder="e.g., en">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Chunk Size</mat-label>
+              <input matInput type="number" [(ngModel)]="pipeline.chunkSize" min="0">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Chunk Overlap</mat-label>
+              <input matInput type="number" [(ngModel)]="pipeline.chunkOverlap" min="0">
+            </mat-form-field>
+          </div>
+          <div class="form-row">
+            <mat-form-field appearance="outline">
+              <mat-label>Processing Mode</mat-label>
+              <mat-select [(ngModel)]="pipeline.processingMode">
+                <mat-option value="">Default</mat-option>
+                <mat-option value="INPROCESS">In-process</mat-option>
+                <mat-option value="SUBPROCESS">Subprocess</mat-option>
+                <mat-option value="AUTO">Auto</mat-option>
+              </mat-select>
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Collection Name (optional)</mat-label>
+              <input matInput [(ngModel)]="pipeline.collectionName">
+            </mat-form-field>
+          </div>
+          <div class="toggle-row">
+            <mat-slide-toggle [(ngModel)]="pipeline.keywordOnly" color="primary">Keyword-only (no embeddings)</mat-slide-toggle>
+            <mat-slide-toggle [(ngModel)]="pipeline.enableVlm" color="primary">Enable VLM</mat-slide-toggle>
+            <mat-slide-toggle [(ngModel)]="pipeline.enableGraphExtraction" color="primary">Graph extraction</mat-slide-toggle>
+          </div>
+
+          <div class="nested-subhead">Graph extraction overrides (optional)</div>
+          <app-chip-list-input label="Entity Types" [items]="pipeline.extractionEntityTypes"></app-chip-list-input>
+          <app-chip-list-input label="Relationship Types" [items]="pipeline.extractionRelationshipTypes"></app-chip-list-input>
+          <div class="form-row">
+            <mat-form-field appearance="outline">
+              <mat-label>Extraction LLM Provider</mat-label>
+              <input matInput [(ngModel)]="pipeline.extractionLlmProvider" placeholder="job default">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Extraction Model</mat-label>
+              <input matInput [(ngModel)]="pipeline.extractionModelName" placeholder="provider default">
+            </mat-form-field>
+          </div>
+          <div class="form-row">
+            <mat-form-field appearance="outline">
+              <mat-label>Extraction Temperature</mat-label>
+              <input matInput type="number" [(ngModel)]="pipeline.extractionTemperature" min="0" max="2" step="0.1">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Extraction Max Tokens</mat-label>
+              <input matInput type="number" [(ngModel)]="pipeline.extractionMaxTokens" min="0">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Max Chunk Chars</mat-label>
+              <input matInput type="number" [(ngModel)]="pipeline.maxChunkChars" min="0">
+            </mat-form-field>
+          </div>
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Extraction Prompt Template (optional)</mat-label>
+            <textarea matInput rows="2" [(ngModel)]="pipeline.extractionPromptTemplate"></textarea>
+          </mat-form-field>
+
+          <app-key-value-editor label="Pipeline Options" [rows]="pipeline.options"
+                                keyPlaceholder="e.g., vlmModel" valuePlaceholder="e.g., qwen2-vl"
+                                addLabel="Add option"></app-key-value-editor>
+
+          <button mat-button color="warn" (click)="removePipeline(i)">
+            <mat-icon>delete</mat-icon> Remove Pipeline
+          </button>
+        </mat-expansion-panel>
+      </div>
+
+      <!-- Content route rules -->
+      <h4 class="subsection-heading">
+        Content Route Rules
+        <button mat-icon-button color="primary" (click)="addRouteRule()" matTooltip="Add route rule">
+          <mat-icon>add_circle</mat-icon>
+        </button>
+      </h4>
+      <div *ngFor="let rule of routeRules; let i = index" class="nested-card">
+        <mat-expansion-panel [expanded]="i === routeRules.length - 1">
+          <mat-expansion-panel-header>
+            <mat-panel-title><mat-icon>rule</mat-icon> → {{ rule.pipelineId || 'Rule ' + (i + 1) }}</mat-panel-title>
+            <mat-panel-description>priority {{ rule.priority }}</mat-panel-description>
+          </mat-expansion-panel-header>
+
+          <div class="form-row">
+            <mat-form-field appearance="outline">
+              <mat-label>Target Pipeline ID *</mat-label>
+              <input matInput [(ngModel)]="rule.pipelineId" placeholder="e.g., pdf-vlm">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Priority (lower = first)</mat-label>
+              <input matInput type="number" [(ngModel)]="rule.priority" min="0">
+            </mat-form-field>
+          </div>
+          <p class="hint-text">All set conditions must match (AND). Leave a condition empty to ignore it.</p>
+          <app-chip-list-input label="Content Types (MIME)" [items]="rule.contentTypes"
+                               placeholder="e.g., application/pdf"></app-chip-list-input>
+          <app-chip-list-input label="File Extensions" [items]="rule.fileExtensions"
+                               placeholder="e.g., .pdf"></app-chip-list-input>
+          <app-chip-list-input label="URL/Path Patterns (regex)" [items]="rule.urlPatterns"></app-chip-list-input>
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Source Types</mat-label>
+            <mat-select [(ngModel)]="rule.sourceTypes" multiple>
+              <mat-option *ngFor="let st of availableSourceTypes" [value]="st.type">{{ st.displayName }}</mat-option>
+            </mat-select>
+          </mat-form-field>
+          <div class="form-row">
+            <mat-form-field appearance="outline">
+              <mat-label>Min Size (bytes)</mat-label>
+              <input matInput type="number" [(ngModel)]="rule.minSizeBytes" min="0">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Max Size (bytes)</mat-label>
+              <input matInput type="number" [(ngModel)]="rule.maxSizeBytes" min="0">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Min Pages</mat-label>
+              <input matInput type="number" [(ngModel)]="rule.minPages" min="0">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Max Pages</mat-label>
+              <input matInput type="number" [(ngModel)]="rule.maxPages" min="0">
+            </mat-form-field>
+          </div>
+          <app-chip-list-input label="Languages" [items]="rule.languages" placeholder="e.g., de, fr"></app-chip-list-input>
+          <mat-form-field appearance="outline">
+            <mat-label>Min Language Confidence</mat-label>
+            <input matInput type="number" [(ngModel)]="rule.minLanguageConfidence" min="0" max="1" step="0.05">
+          </mat-form-field>
+          <app-chip-list-input label="Tags" [items]="rule.tags"></app-chip-list-input>
+          <app-chip-list-input label="Content Patterns (regex)" [items]="rule.contentPatterns"></app-chip-list-input>
+          <app-key-value-editor label="Metadata Matchers (key → regex)" [rows]="rule.metadataMatchers"
+                                keyLabel="Metadata Key" valueLabel="Regex" addLabel="Add matcher"></app-key-value-editor>
+
+          <button mat-button color="warn" (click)="removeRouteRule(i)">
+            <mat-icon>delete</mat-icon> Remove Rule
+          </button>
+        </mat-expansion-panel>
+      </div>
+    </mat-expansion-panel>
+
+    <!-- Model Fallback Settings (global config governing extraction failover) -->
+    <mat-expansion-panel>
+      <mat-expansion-panel-header>
+        <mat-panel-title><mat-icon>alt_route</mat-icon> Model Fallback Settings</mat-panel-title>
+        <mat-panel-description>Automatic agent/model failover on timeout or throttle</mat-panel-description>
+      </mat-expansion-panel-header>
+      <app-model-fallback-panel></app-model-fallback-panel>
+    </mat-expansion-panel>
+
+  </mat-accordion>
+</mat-dialog-content>
+
+<div class="launcher-error" *ngIf="error">
+  <mat-icon inline>error</mat-icon> {{ error }}
+</div>
+
+<mat-dialog-actions class="launcher-actions">
+  <mat-slide-toggle *ngIf="clusterWorkerCount > 0" [(ngModel)]="distributeAcrossWorkers" color="primary"
+                    class="distribute-toggle"
+                    matTooltip="Fan the sources across the {{ clusterWorkerCount }} live cluster worker(s); progress merges into one job in the Crawlers panel.">
+    Distribute across {{ clusterWorkerCount }} worker{{ clusterWorkerCount === 1 ? '' : 's' }}
+  </mat-slide-toggle>
+  <span class="actions-spacer"></span>
+  <button mat-button (click)="cancel()">Cancel</button>
+  <button mat-raised-button color="primary" [disabled]="sources.length === 0" (click)="start()">
+    <mat-icon>{{ distributeAcrossWorkers && clusterWorkerCount > 0 ? 'hub' : 'play_arrow' }}</mat-icon>
+    {{ distributeAcrossWorkers && clusterWorkerCount > 0 ? 'Start Distributed Crawl' : 'Start Crawl' }}
+  </button>
+</mat-dialog-actions>

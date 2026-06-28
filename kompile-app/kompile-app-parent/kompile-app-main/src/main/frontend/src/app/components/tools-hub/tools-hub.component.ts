@@ -20,7 +20,6 @@ import { Subject } from 'rxjs';
 import { takeUntil } from 'rxjs/operators';
 
 export type ToolsSubTab =
-  | 'indexBrowser'
   | 'mcp'
   | 'orchestrator'
   | 'chunkManager'
@@ -32,13 +31,14 @@ export type ToolsSubTab =
   | 'workflows'
   | 'computeGraph'
   | 'crawlers'
-  | 'crawlWorkers'
-  | 'codeProjects';
+  | 'codeProjects'
+  | 'indexBrowser';
 
 const KNOWN_TABS: ToolsSubTab[] = [
-  'indexBrowser', 'mcp', 'orchestrator', 'chunkManager', 'knowledgeGraph',
+  'mcp', 'orchestrator', 'chunkManager', 'knowledgeGraph',
   'backup', 'prompts', 'pipelines', 'processEngine',
-  'workflows', 'computeGraph', 'crawlers', 'crawlWorkers', 'codeProjects'
+  'workflows', 'computeGraph', 'crawlers', 'codeProjects',
+  'indexBrowser'
 ];
 
 @Component({
@@ -48,7 +48,7 @@ const KNOWN_TABS: ToolsSubTab[] = [
   styleUrls: ['./tools-hub.component.css']
 })
 export class ToolsHubComponent implements OnInit, OnDestroy {
-  activeSubTab: ToolsSubTab = 'indexBrowser';
+  activeSubTab: ToolsSubTab = 'mcp';
 
   private destroy$ = new Subject<void>();
   private readonly hashChangeListener = () => this.applySubTabFromLocation();

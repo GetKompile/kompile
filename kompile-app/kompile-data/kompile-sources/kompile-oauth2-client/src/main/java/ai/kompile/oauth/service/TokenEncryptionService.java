@@ -52,7 +52,7 @@ public class TokenEncryptionService {
     private static final int GCM_TAG_LENGTH = 128;
     private static final int AES_KEY_SIZE = 256;
 
-    @Value("${kompile.oauth.encryption-key:}")
+    @Value("${kompile.oauth.encryption-key:${KOMPILE_OAUTH_KEY:}}")
     private String configuredKey;
 
     @Value("${kompile.data.dir:${user.home}/.kompile}")

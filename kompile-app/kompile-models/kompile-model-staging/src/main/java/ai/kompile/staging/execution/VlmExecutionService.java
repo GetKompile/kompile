@@ -21,6 +21,9 @@ import ai.kompile.modelmanager.registry.ModelType;
 import ai.kompile.modelmanager.registry.RegistryService;
 import ai.kompile.staging.config.StagingSettingsService;
 import ai.kompile.staging.web.dto.*;
+import ai.kompile.utils.inference.InferenceBatchPlanner;
+import org.nd4j.common.config.ND4JSystemProperties;
+import org.eclipse.deeplearning4j.llm.config.ModelConfig;
 import org.eclipse.deeplearning4j.llm.generation.GenerationResult;
 import org.eclipse.deeplearning4j.vlm.model.VisionLanguageModel;
 import org.eclipse.deeplearning4j.vlm.output.DocTagsParser;
@@ -55,6 +58,23 @@ public class VlmExecutionService {
 
     /** Auto-unload delay after last use (default 5 minutes) */
     private static final long AUTO_UNLOAD_DELAY_MS = 5 * 60 * 1000L;
+
+    // Shared system-property keys for KV-bucket / memory-ceiling config.
+    // Same keys as LlmExecutionService so a single JVM launch flag covers both.
+    private static final String SEQ_BUCKETS_PROP = "kompile.llm.seqBuckets";
+    private static final String SEQ_BUCKETS_DEFAULT = "256,512,1024,2048,4096";
+    private static final String SAFETY_FRACTION_PROP = "kompile.llm.memorySafetyFraction";
+    private static final double SAFETY_FRACTION_DEFAULT = 0.5;
+    private static final String ACTIVATION_FACTOR_PROP = "kompile.llm.activationFactor";
+    private static final double ACTIVATION_FACTOR_DEFAULT = 16.0;
+
+    /**
+     * Advisory KV-bucket computed after VLM load from the model's own maxKvLen /
+     * ModelConfig metadata. This is informational only — the VisionLanguageModel
+     * fixes its KV length at construction time and exposes no setter; the value
+     * here documents what the next load should target via kompile.llm.seqBuckets.
+     */
+    private volatile int advisoryVlmKvBucket = 0;
 
     @Autowired
     private RegistryService registryService;
@@ -231,6 +251,13 @@ public class VlmExecutionService {
             long elapsed = System.currentTimeMillis() - start;
             modelStatus = "ready";
 
+            // Compute advisory KV bucket from the model's own metadata.
+            // VisionLanguageModel fixes its KV length at construction; we cannot
+            // retroactively change it, so this is informational for operators
+            // tuning kompile.llm.seqBuckets before the next load.
+            int advisoryBucket = computeAdvisoryVlmKvBucket(vlmModel);
+            this.advisoryVlmKvBucket = advisoryBucket;
+
             result.put("success", true);
             result.put("message", "VLM model loaded from " + format + " in " + elapsed + "ms");
             result.put("modelId", modelSetId);
@@ -238,8 +265,10 @@ public class VlmExecutionService {
             result.put("format", format);
             result.put("loadTimeMs", elapsed);
             result.put("modelDir", modelDir.getAbsolutePath());
+            result.put("advisoryKvBucket", advisoryBucket);
 
-            log.info("VLM model loaded: {} ({}) in {}ms", modelSetId, format, elapsed);
+            log.info("VLM model loaded: {} ({}) in {}ms, maxKvLen={}, advisoryKvBucket={}",
+                    modelSetId, format, elapsed, vlmModel.getMaxKvLen(), advisoryBucket);
 
             // Notify main app to reload VLM
             if (stagingSettingsService != null) {
@@ -293,6 +322,10 @@ public class VlmExecutionService {
         status.put("status", modelStatus);
         status.put("activeModelId", activeModelId);
         status.put("modelLoaded", vlmModel != null);
+        if (vlmModel != null) {
+            status.put("maxKvLen", vlmModel.getMaxKvLen());
+            status.put("advisoryKvBucket", advisoryVlmKvBucket);
+        }
         return status;
     }
 
@@ -731,6 +764,7 @@ public class VlmExecutionService {
             }
             vlmModel = null;
         }
+        advisoryVlmKvBucket = 0;
     }
 
     /**
@@ -834,6 +868,109 @@ public class VlmExecutionService {
         } else {
             log.info("{}: not found", label);
         }
+    }
+
+    /**
+     * Compute the advisory KV-bucket for a loaded VisionLanguageModel.
+     *
+     * <p>VisionLanguageModel fixes its {@code maxKvLen} at construction time and exposes
+     * no setter, so the computed value here cannot be applied retroactively. It is logged
+     * and returned so operators can tune {@code kompile.llm.seqBuckets} before the next
+     * load to align the chosen KV length with a DSP-plan-reusable bucket.</p>
+     */
+    private int computeAdvisoryVlmKvBucket(VisionLanguageModel model) {
+        try {
+            int[] seqBuckets = parseSeqBuckets();
+            double safetyFraction = parseDoubleProperty(SAFETY_FRACTION_PROP, SAFETY_FRACTION_DEFAULT);
+            double activationFactor = parseDoubleProperty(ACTIVATION_FACTOR_PROP, ACTIVATION_FACTOR_DEFAULT);
+
+            // Prefer the model's own loaded KV length; fall back to ModelConfig metadata.
+            int maxKvLen = model.getMaxKvLen();
+            int hiddenSize = 0;
+            ModelConfig cfg = model.getConfig();
+            if (cfg != null) {
+                if (maxKvLen <= 0 && cfg.getMaxPositionEmbeddings() != null) {
+                    maxKvLen = cfg.getMaxPositionEmbeddings();
+                }
+                if (cfg.getHiddenSize() != null) {
+                    hiddenSize = cfg.getHiddenSize();
+                }
+            }
+            int contextWindow = maxKvLen > 0 ? maxKvLen : 2048;
+
+            int bucketedContext = InferenceBatchPlanner.bucketFor(contextWindow, seqBuckets, contextWindow);
+
+            // Clamp by memory ceiling if available.
+            int memoryClamped = bucketedContext;
+            if (hiddenSize > 0) {
+                String maxPhysicalProp = System.getProperty(ND4JSystemProperties.JAVACPP_MEMORY_MAX_PHYSICAL_BYTES);
+                long maxPhysicalBytes = InferenceBatchPlanner.parseByteSize(maxPhysicalProp);
+                if (maxPhysicalBytes > 0) {
+                    long memTokenBudget = InferenceBatchPlanner.estimateMaxBatchTokens(
+                            maxPhysicalBytes, hiddenSize, 4, safetyFraction, activationFactor, contextWindow);
+                    int memCapContext = (int) Math.min(memTokenBudget, contextWindow);
+                    int memCappedBucket = InferenceBatchPlanner.bucketFor(memCapContext, seqBuckets, contextWindow);
+                    memoryClamped = Math.min(bucketedContext, memCappedBucket);
+                } else if (maxPhysicalProp != null && !maxPhysicalProp.isBlank()) {
+                    log.warn("Could not parse org.bytedeco.javacpp.maxphysicalbytes='{}', skipping VLM memory clamp", maxPhysicalProp);
+                }
+            }
+
+            log.info("VLM advisory KV bucket: {} (modelMaxKvLen={}, hiddenSize={}, seqBuckets={})",
+                    memoryClamped, maxKvLen, hiddenSize, Arrays.toString(seqBuckets));
+            return memoryClamped;
+        } catch (Exception e) {
+            log.warn("Failed to compute advisory VLM KV bucket", e);
+            return 0;
+        }
+    }
+
+    private static int[] parseSeqBuckets() {
+        String raw = System.getProperty(SEQ_BUCKETS_PROP, SEQ_BUCKETS_DEFAULT);
+        String[] parts = raw.split(",");
+        List<Integer> list = new ArrayList<>();
+        for (String part : parts) {
+            String trimmed = part.trim();
+            if (!trimmed.isEmpty()) {
+                try {
+                    int v = Integer.parseInt(trimmed);
+                    if (v > 0) {
+                        list.add(v);
+                    }
+                } catch (NumberFormatException ignored) {
+                    log.warn("Ignoring invalid seq bucket value '{}' in {}", trimmed, SEQ_BUCKETS_PROP);
+                }
+            }
+        }
+        if (list.isEmpty()) {
+            return new int[]{256, 512, 1024, 2048, 4096};
+        }
+        int[] result = new int[list.size()];
+        for (int i = 0; i < list.size(); i++) {
+            result[i] = list.get(i);
+        }
+        return result;
+    }
+
+    private static double parseDoubleProperty(String key, double defaultValue) {
+        String raw = System.getProperty(key);
+        if (raw == null || raw.isBlank()) {
+            return defaultValue;
+        }
+        try {
+            return Double.parseDouble(raw.trim());
+        } catch (NumberFormatException e) {
+            log.warn("Could not parse system property {}='{}', using default {}", key, raw, defaultValue);
+            return defaultValue;
+        }
+    }
+
+    /**
+     * Get the advisory KV bucket computed at load time for the active VLM model.
+     * Returns 0 when no model is loaded.
+     */
+    public int getAdvisoryVlmKvBucket() {
+        return advisoryVlmKvBucket;
     }
 
     /**

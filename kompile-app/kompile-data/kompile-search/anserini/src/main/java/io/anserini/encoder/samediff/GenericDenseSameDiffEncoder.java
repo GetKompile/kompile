@@ -17,24 +17,56 @@
 package io.anserini.encoder.samediff;
 
 import ai.kompile.modelmanager.ModelConstants;
+import ai.kompile.utils.inference.InferenceBatchPlanner;
+import org.nd4j.common.config.ND4JSystemProperties;
 import io.anserini.encoder.samediff.tokenizer.SamediffBertTokenizerPreProcessor;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.jetbrains.annotations.NotNull;
-import org.nd4j.linalg.api.buffer.DataType;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
 import org.nd4j.linalg.indexing.NDArrayIndex;
 import org.nd4j.linalg.ops.transforms.Transforms;
 
+import org.bytedeco.javacpp.Pointer;
+
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
     private static final Logger LOG = LogManager.getLogger(GenericDenseSameDiffEncoder.class);
+
+    /**
+     * Listener notified when the encoder shrinks a sub-batch due to native-memory pressure.
+     * Implemented by the subprocess main class to forward decisions over the stdout protocol.
+     */
+    @FunctionalInterface
+    public interface BatchResizeListener {
+        /**
+         * @param oldBatch        batch size before shrink
+         * @param newBatch        batch size after shrink
+         * @param reason          human-readable reason
+         * @param physicalBytes   {@code org.bytedeco.javacpp.Pointer.physicalBytes()} at decision time
+         * @param maxPhysicalBytes {@code org.bytedeco.javacpp.Pointer.maxPhysicalBytes()} at decision time
+         */
+        void onBatchResize(int oldBatch, int newBatch, String reason, long physicalBytes, long maxPhysicalBytes);
+    }
+
+    /** Optional listener set by the subprocess to forward decisions over the protocol. */
+    private volatile BatchResizeListener batchResizeListener;
+
+    /**
+     * Register a listener for native-memory-pressure batch-resize decisions.
+     * Called by {@code EmbeddingSubprocessMain} after the encoder is created.
+     */
+    public void setBatchResizeListener(BatchResizeListener listener) {
+        this.batchResizeListener = listener;
+    }
 
     public static final boolean DEFAULT_DO_LOWERCASE_AND_STRIP_ACCENTS = true;
     public static final int DEFAULT_MAX_SEQUENCE_LENGTH = 512;
@@ -249,21 +281,25 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
             // Test for existence of each standard input in the model and provide if needed
             for (String inputName : modelInputs) {
                 if (isInputIdsInput(inputName)) {
-                    // CRITICAL: Create 2D array directly to avoid intermediate array leak from castTo()
-                    INDArray inputIds = Nd4j.createFromArray(new long[][]{encoding.inputIds});
+                    // Use Nd4j.create (not createFromArray) to avoid the constant-buffer cache path.
+                    // createFromArray routes through the ND4J constant allocator whose buffers are
+                    // not freed by arr.close() if the InferenceSession retains them in
+                    // externalPlaceholderBuffers. Nd4j.create produces regular heap-backed buffers
+                    // that are correctly freed when closed.
+                    INDArray inputIds = Nd4j.create(new long[][]{encoding.inputIds});
                     placeholderMap.put(inputName, inputIds);
                     LOG.info("[{}] SHAPE CREATE: input_ids '{}' -> shape={}, dtype={}, first5={}",
                             this.modelIdentifier, inputName,
                             Arrays.toString(inputIds.shape()), inputIds.dataType(),
                             Arrays.toString(Arrays.copyOf(encoding.inputIds, Math.min(5, encoding.inputIds.length))));
                 } else if (isAttentionMaskInput(inputName)) {
-                    INDArray attentionMask = Nd4j.createFromArray(new long[][]{encoding.attentionMask});
+                    INDArray attentionMask = Nd4j.create(new long[][]{encoding.attentionMask});
                     placeholderMap.put(inputName, attentionMask);
                     LOG.info("[{}] SHAPE CREATE: attention_mask '{}' -> shape={}, dtype={}",
                             this.modelIdentifier, inputName,
                             Arrays.toString(attentionMask.shape()), attentionMask.dataType());
                 } else if (isTokenTypeIdsInput(inputName)) {
-                    INDArray tokenTypeIds = Nd4j.createFromArray(new long[][]{encoding.tokenTypeIds});
+                    INDArray tokenTypeIds = Nd4j.create(new long[][]{encoding.tokenTypeIds});
                     placeholderMap.put(inputName, tokenTypeIds);
                     LOG.info("[{}] SHAPE CREATE: token_type_ids '{}' -> shape={}, dtype={}",
                             this.modelIdentifier, inputName,
@@ -396,6 +432,14 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
             long postProcessTimeNanos = postProcessEnd - postProcessStart;
             // Null check for AtomicLong fields - they may be null during super() constructor validation
             if (totalPostProcessTimeNanos != null) totalPostProcessTimeNanos.addAndGet(postProcessTimeNanos);
+
+            // MEMORY FIX: Clear InferenceSession.nodeValueOutputs AFTER extraction.
+            // processOutputTensor() copies all values to a heap float[] via toFloatVector()
+            // so no INDArray created during this forward pass is still needed.
+            // Clearing HERE (not before extraction) avoids the "closed before call" error
+            // that occurred when the session clear freed activation buffers that
+            // processOutputTensor still needed to read.
+            clearSessionCaches();
 
             // Increment total calls and maybe report stats
             long callCount = totalEncodeCalls != null ? totalEncodeCalls.incrementAndGet() : 0;
@@ -792,6 +836,26 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
     private static final int REFERENCE_SEQ_LENGTH = 512;
     private static final int ABSOLUTE_MIN_BATCH_SIZE = 1;
 
+    /**
+     * Maximum fraction of JavaCPP {@code maxPhysicalBytes} that may be in use
+     * before a sub-batch is considered unsafe to run at the current size.
+     * If native pressure exceeds this fraction the sub-batch is halved and retried.
+     * Read from system property {@code kompile.encoder.nativeMemSafetyFraction}; default 0.75.
+     */
+    private static final double NATIVE_MEM_SAFETY_FRACTION;
+
+    static {
+        double fraction;
+        try {
+            fraction = Double.parseDouble(
+                    System.getProperty("kompile.encoder.nativeMemSafetyFraction", "0.75"));
+            if (fraction <= 0.0 || fraction >= 1.0) fraction = 0.75;
+        } catch (NumberFormatException e) {
+            fraction = 0.75;
+        }
+        NATIVE_MEM_SAFETY_FRACTION = fraction;
+    }
+
     // Static defaults (used as initial values, can be overridden per-instance)
     private static final int DEFAULT_BASE_OPTIMAL_BATCH_SIZE;
     private static final int DEFAULT_BASE_MAX_BATCH_SIZE;
@@ -1040,6 +1104,15 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
         long totalStartTime = System.currentTimeMillis();
         int numTexts = texts.size();
 
+        // NOTE: seq-length bucketing (variable padToMaxLength) was reverted — it produced variable
+        // SameDiff input shapes, which churned DSP plans and triggered a C++ "stale buffer"
+        // use-after-free in DynamicShapePlanExecutor (encodeFromTokenized). The tokenizer keeps its
+        // default fixed-maxLength padding (one stable shape) so DSP plans/buffers stay valid; the
+        // shared planner below still batches ROWS for throughput, just at a stable seq length.
+        if (this.tokenizerPreProcessor != null && !this.tokenizerPreProcessor.isPadToMaxLength()) {
+            this.tokenizerPreProcessor.setPadToMaxLength(true);
+        }
+
         // Step 1: Tokenize all texts and track sequence lengths with original indices
         List<IndexedEncoding> indexedEncodings = new java.util.ArrayList<>(numTexts);
         int maxSeqLength = 0;
@@ -1068,139 +1141,160 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
         LOG.debug("[{}] Tokenization: {}ms, minSeq={}, maxSeq={}, avgSeq={}",
                 modelIdentifier, tokenizeTime, minSeqLength, maxSeqLength, String.format("%.1f", avgSeqLength));
 
-        // Step 2: Sort by sequence length to minimize padding waste
-        indexedEncodings.sort((a, b) -> Integer.compare(a.seqLength, b.seqLength));
-
-        // Calculate padding cost for metrics
-        int unsortedPaddingCost = numTexts * maxSeqLength;
-        int sortedPaddingCost = 0;
-
-        // Step 3: Calculate optimal batch size based on average sequence length
-        int avgBasedOptimal = calculateOptimalBatchSize((int) avgSeqLength);
-
-        // Step 4: Check if single batch is sufficient
-        if (numTexts <= avgBasedOptimal) {
-            int actualMaxSeq = indexedEncodings.get(numTexts - 1).seqLength;
-
-            List<String> sortedTexts = new java.util.ArrayList<>(numTexts);
-            List<SamediffBertTokenizerPreProcessor.BertEncoding> sortedEncodings = new java.util.ArrayList<>(numTexts);
-            for (IndexedEncoding ie : indexedEncodings) {
-                sortedTexts.add(ie.text);
-                sortedEncodings.add(ie.encoding);
-            }
-
-            List<float[]> sortedResults = encodeSingleInferenceBatchFromEncodings(sortedTexts, sortedEncodings, actualMaxSeq);
-
-            if (sortedResults == null && batchInferenceSupported) {
-                LOG.warn("[{}] Batch inference failed - falling back to sequential", modelIdentifier);
-                batchInferenceSupported = false;
-                sortedResults = encodeSequentialFromEncodings(sortedTexts, sortedEncodings);
-            }
-
-            if (sortedResults == null) return null;
-
-            // Reorder results back to original order
-            float[][] reorderedResults = new float[numTexts][];
-            for (int i = 0; i < numTexts; i++) {
-                reorderedResults[indexedEncodings.get(i).originalIndex] = sortedResults.get(i);
-            }
-
-            long totalTime = System.currentTimeMillis() - totalStartTime;
-            LOG.debug("[{}] Single batch: {} texts in {}ms ({} ms/text)",
-                    modelIdentifier, numTexts, totalTime, String.format("%.2f", (double)totalTime / numTexts));
-
-            return java.util.Arrays.asList(reorderedResults);
+        // Plan token-budgeted, bucket-padded micro-batches via the shared planner. A "batch" is a
+        // group of items whose padded shape (rows x seqBucket) fits a bounded native-memory budget
+        // while reusing a small set of DSP plans — NOT an opaque item count. Token lengths are real
+        // (padToMaxLength was disabled above), so short FP&A cells pad to a small bucket, not 512.
+        int[] tokenLengths = new int[numTexts];
+        SamediffBertTokenizerPreProcessor.BertEncoding[] encByIndex =
+                new SamediffBertTokenizerPreProcessor.BertEncoding[numTexts];
+        for (IndexedEncoding ie : indexedEncodings) {
+            tokenLengths[ie.originalIndex] = ie.seqLength;
+            encByIndex[ie.originalIndex] = ie.encoding;
         }
 
-        // Step 5: Adaptive sub-batch processing with length-aware grouping
+        InferenceBatchPlanner.Budget budget = buildEmbeddingBatchBudget();
+        List<InferenceBatchPlanner.Batch> plannedBatches = InferenceBatchPlanner.plan(tokenLengths, budget);
+
         float[][] reorderedResults = new float[numTexts][];
         long embeddingStartTime = System.currentTimeMillis();
-        int processedCount = 0;
-        int subBatchNum = 0;
-
-        while (processedCount < numTexts) {
+        int batchNum = 0;
+        for (InferenceBatchPlanner.Batch batch : plannedBatches) {
             if (Thread.currentThread().isInterrupted()) {
-                LOG.info("[{}] Sub-batch processing interrupted at {}/{}", modelIdentifier, processedCount, numTexts);
+                LOG.info("[{}] Batch processing interrupted at batch {}/{}",
+                        modelIdentifier, batchNum, plannedBatches.size());
                 return null;
             }
-
-            int remaining = numTexts - processedCount;
-
-            // Sample max sequence length and calculate optimal batch size
-            int sampleEnd = Math.min(processedCount + 32, numTexts);
-            int sampleMaxSeq = indexedEncodings.get(sampleEnd - 1).seqLength;
-            int optimalForSample = calculateOptimalBatchSize(sampleMaxSeq);
-
-            int subBatchSize = Math.min(optimalForSample, remaining);
-            int subBatchMaxSeq = indexedEncodings.get(processedCount + subBatchSize - 1).seqLength;
-            int refinedOptimal = calculateOptimalBatchSize(subBatchMaxSeq);
-
-            // Expand batch if more items fit at this sequence length
-            while (subBatchSize < remaining && subBatchSize < refinedOptimal) {
-                int nextIdx = processedCount + subBatchSize;
-                int nextSeqLen = indexedEncodings.get(nextIdx).seqLength;
-                int newOptimal = calculateOptimalBatchSize(nextSeqLen);
-                if (subBatchSize + 1 <= newOptimal) {
-                    subBatchSize++;
-                    subBatchMaxSeq = nextSeqLen;
-                    refinedOptimal = newOptimal;
-                } else {
-                    break;
-                }
+            int[] idxs = batch.itemIndices();
+            int bucket = batch.seqBucket();
+            List<String> subTexts = new java.util.ArrayList<>(idxs.length);
+            List<SamediffBertTokenizerPreProcessor.BertEncoding> subEncodings =
+                    new java.util.ArrayList<>(idxs.length);
+            for (int idx : idxs) {
+                subTexts.add(texts.get(idx));
+                subEncodings.add(encByIndex[idx]);
             }
+            batchNum++;
 
-            sortedPaddingCost += subBatchSize * subBatchMaxSeq;
-            subBatchNum++;
+            LOG.debug("[{}] Batch {}/{}: {} texts x {} tok bucket ({} padded tokens)",
+                    modelIdentifier, batchNum, plannedBatches.size(), idxs.length, bucket, batch.tokens());
 
-            // Extract sub-batch
-            List<String> subTexts = new java.util.ArrayList<>(subBatchSize);
-            List<SamediffBertTokenizerPreProcessor.BertEncoding> subEncodings = new java.util.ArrayList<>(subBatchSize);
-            List<Integer> subOriginalIndices = new java.util.ArrayList<>(subBatchSize);
-
-            for (int i = 0; i < subBatchSize; i++) {
-                IndexedEncoding ie = indexedEncodings.get(processedCount + i);
-                subTexts.add(ie.text);
-                subEncodings.add(ie.encoding);
-                subOriginalIndices.add(ie.originalIndex);
-            }
-
-            LOG.debug("[{}] Sub-batch {}: {} texts, seqRange=[{}-{}]",
-                    modelIdentifier, subBatchNum, subBatchSize,
-                    indexedEncodings.get(processedCount).seqLength, subBatchMaxSeq);
-
-            List<float[]> subResults = encodeSingleInferenceBatchFromEncodings(subTexts, subEncodings, subBatchMaxSeq);
+            List<float[]> subResults = encodeSingleInferenceBatchFromEncodings(subTexts, subEncodings, bucket);
 
             if (subResults == null) {
                 if (Thread.currentThread().isInterrupted()) return null;
 
                 if (SameDiffEncoder.isFailFastOnError()) {
-                    String errMsg = String.format("Sub-batch %d failed", subBatchNum);
+                    String errMsg = String.format("Batch %d failed", batchNum);
                     LOG.error("[{}] {}", modelIdentifier, errMsg);
-                    throw new SameDiffEncoder.EncodingException(modelIdentifier, "sub-batch encoding", errMsg, null);
+                    throw new SameDiffEncoder.EncodingException(modelIdentifier, "batch encoding", errMsg, null);
                 }
 
-                LOG.warn("[{}] Sub-batch {} failed - using sequential", modelIdentifier, subBatchNum);
+                LOG.warn("[{}] Batch {} failed - using sequential", modelIdentifier, batchNum);
                 subResults = encodeSequentialFromEncodings(subTexts, subEncodings);
                 if (subResults == null) return null;
             }
 
-            for (int i = 0; i < subBatchSize; i++) {
-                reorderedResults[subOriginalIndices.get(i)] = subResults.get(i);
+            for (int i = 0; i < idxs.length; i++) {
+                reorderedResults[idxs[i]] = subResults.get(i);
             }
-
-            processedCount += subBatchSize;
         }
 
         long totalTime = System.currentTimeMillis() - totalStartTime;
         long embeddingTime = System.currentTimeMillis() - embeddingStartTime;
-        double paddingSavings = unsortedPaddingCost > 0
-                ? (1.0 - (double) sortedPaddingCost / unsortedPaddingCost) * 100.0 : 0.0;
-
-        LOG.info("[{}] {} sub-batches: {} texts in {}ms (tokenize={}ms, embed={}ms, {} texts/sec, padding saved: {}%)",
-                modelIdentifier, subBatchNum, numTexts, totalTime, tokenizeTime, embeddingTime,
-                String.format("%.1f", numTexts * 1000.0 / totalTime), String.format("%.1f", paddingSavings));
+        LOG.info("[{}] {} token-budgeted batches: {} texts in {}ms (tokenize={}ms, embed={}ms, {} texts/sec, budget={} tok)",
+                modelIdentifier, plannedBatches.size(), numTexts, totalTime, tokenizeTime, embeddingTime,
+                String.format("%.1f", numTexts * 1000.0 / Math.max(1, totalTime)), budget.maxBatchTokens());
 
         return java.util.Arrays.asList(reorderedResults);
+    }
+
+    /**
+     * Build the shared {@link InferenceBatchPlanner.Budget} for embedding batches from this model's
+     * geometry and the subprocess native-memory ceiling. Every knob is configurable via system
+     * properties — nothing is hardcoded; reactive OOM handling in the inference path remains the
+     * backstop if the estimate proves optimistic.
+     */
+    private InferenceBatchPlanner.Budget buildEmbeddingBatchBudget() {
+        int seqHardCap = resolveSeqHardCap();
+        int[] buckets = parseSeqBuckets(
+                System.getProperty("kompile.encoder.seqBuckets", "64,128,256,512"), seqHardCap);
+        long maxBatchTokens = Long.getLong("kompile.encoder.batch.maxTokens", 0L);
+        if (maxBatchTokens <= 0L) {
+            long memCeil = readNativeMemoryCeilingBytes();
+            double safety = parseDoubleProp("kompile.encoder.nativeMemSafetyFraction", 0.75);
+            double activation = parseDoubleProp("kompile.encoder.activationFactor", 16.0);
+            int hidden = Math.max(1, getEmbeddingDimension());
+            maxBatchTokens = InferenceBatchPlanner.estimateMaxBatchTokens(
+                    memCeil, hidden, 4, safety, activation, seqHardCap);
+        }
+        int maxRows = this.instanceAbsoluteMaxBatchSize > 0 ? this.instanceAbsoluteMaxBatchSize : 0;
+        return InferenceBatchPlanner.Budget.builder()
+                .seqHardCap(seqHardCap)
+                .seqBuckets(buckets)
+                .maxBatchTokens(maxBatchTokens)
+                .maxRows(maxRows)
+                .build();
+    }
+
+    private int resolveSeqHardCap() {
+        if (this.tokenizerPreProcessor != null && this.tokenizerPreProcessor.getMaxLength() > 0) {
+            return this.tokenizerPreProcessor.getMaxLength();
+        }
+        return DEFAULT_MAX_SEQUENCE_LENGTH;
+    }
+
+    private static double parseDoubleProp(String key, double def) {
+        try {
+            String v = System.getProperty(key);
+            return v != null ? Double.parseDouble(v.trim()) : def;
+        } catch (NumberFormatException e) {
+            return def;
+        }
+    }
+
+    private static int[] parseSeqBuckets(String csv, int seqHardCap) {
+        if (csv == null || csv.isBlank()) {
+            return new int[]{seqHardCap};
+        }
+        String[] parts = csv.split(",");
+        List<Integer> vals = new java.util.ArrayList<>(parts.length);
+        for (String p : parts) {
+            try {
+                int v = Integer.parseInt(p.trim());
+                if (v > 0) {
+                    vals.add(v);
+                }
+            } catch (NumberFormatException ignored) {
+                // skip malformed bucket entries
+            }
+        }
+        if (vals.isEmpty()) {
+            return new int[]{seqHardCap};
+        }
+        int[] out = new int[vals.size()];
+        for (int i = 0; i < out.length; i++) {
+            out[i] = vals.get(i);
+        }
+        return out;
+    }
+
+    /**
+     * Native off-heap ceiling for this subprocess, parsed from the JavaCPP system properties the
+     * launcher sets (e.g. {@code -Dorg.bytedeco.javacpp.maxphysicalbytes=49152m}); falls back to a
+     * heap-derived figure when unset.
+     */
+    private static long readNativeMemoryCeilingBytes() {
+        long v = InferenceBatchPlanner.parseByteSize(
+                System.getProperty(ND4JSystemProperties.JAVACPP_MEMORY_MAX_PHYSICAL_BYTES));
+        if (v <= 0) {
+            v = InferenceBatchPlanner.parseByteSize(
+                    System.getProperty(ND4JSystemProperties.JAVACPP_MEMORY_MAX_BYTES));
+        }
+        if (v <= 0) {
+            v = Math.max(2L << 30, Runtime.getRuntime().maxMemory());
+        }
+        return v;
     }
 
     /**
@@ -1217,8 +1311,72 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
     }
 
     /**
+     * Check whether the current native-memory usage is above the safety threshold.
+     *
+     * @return {@code true} if {@code Pointer.physicalBytes() / Pointer.maxPhysicalBytes() >= NATIVE_MEM_SAFETY_FRACTION}
+     *         and maxPhysicalBytes is positive.  Returns {@code false} if the JVM has no cap set.
+     */
+    private boolean isNativeMemoryPressureHigh() {
+        try {
+            long maxPhysBytes = Pointer.maxPhysicalBytes();
+            if (maxPhysBytes <= 0) return false;  // No cap set — cannot detect pressure
+            long physBytes = Pointer.physicalBytes();
+            return physBytes >= (long) (maxPhysBytes * NATIVE_MEM_SAFETY_FRACTION);
+        } catch (Exception e) {
+            LOG.debug("[{}] Could not read JavaCPP physical bytes: {}", modelIdentifier, e.getMessage());
+            return false;
+        }
+    }
+
+    /** True if a throwable (or its cause chain) is a native out-of-memory we should free + split + retry on. */
+    private static boolean isNativeOomException(Throwable e) {
+        for (Throwable t = e; t != null; t = t.getCause()) {
+            if (t instanceof OutOfMemoryError) {
+                return true;
+            }
+            String m = t.getMessage();
+            if (m != null) {
+                String lm = m.toLowerCase(Locale.ROOT);
+                if (lm.contains("physical memory") || lm.contains("cannot allocate")
+                        || lm.contains("maxphysicalbytes") || lm.contains("out of memory")
+                        || lm.contains("bad_alloc")) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Notify the listener (if registered) and log the resize decision.
+     */
+    private void notifyBatchResize(int oldBatch, int newBatch, String reason) {
+        long physBytes = 0, maxPhysBytes = 0;
+        try {
+            physBytes = Pointer.physicalBytes();
+            maxPhysBytes = Pointer.maxPhysicalBytes();
+        } catch (Exception ignored) {}
+        LOG.warn("[{}] EMBED_DECISION batchResize old={} new={} reason={} physicalBytes={} maxPhysicalBytes={}",
+                modelIdentifier, oldBatch, newBatch, reason, physBytes, maxPhysBytes);
+        BatchResizeListener listener = this.batchResizeListener;
+        if (listener != null) {
+            try {
+                listener.onBatchResize(oldBatch, newBatch, reason, physBytes, maxPhysBytes);
+            } catch (Exception e) {
+                LOG.debug("[{}] BatchResizeListener threw: {}", modelIdentifier, e.getMessage());
+            }
+        }
+    }
+
+    /**
      * Encode a batch using pre-computed tokenizations.
      * Avoids re-tokenizing when dynamic batching has already tokenized the texts.
+     *
+     * <p>Includes a native-memory-pressure backoff guard: before each forward pass
+     * {@link Pointer#physicalBytes()} is checked against {@link Pointer#maxPhysicalBytes()}.
+     * If usage exceeds {@link #NATIVE_MEM_SAFETY_FRACTION} the sub-batch is halved and retried
+     * down to size 1.  At size 1, if pressure is still above the threshold a recoverable
+     * {@link OutOfMemoryError} is thrown rather than crashing the host.
      *
      * @param texts Original texts (for logging)
      * @param encodings Pre-computed tokenizations
@@ -1234,6 +1392,12 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
 
         int batchSize = encodings.size();
 
+        // Native-memory safety is handled REACTIVELY (see the catch/retry at the end of this method):
+        // we attempt the batch and, only if the forward pass actually hits the JavaCPP native cap, do we
+        // free + split + retry down to size 1. No predictive soft-threshold rejection — the model's
+        // resident footprint dominates physicalBytes(), so an absolute-fraction check falsely trips and
+        // would reject even a single irreducible chunk (which is exactly what broke embedding before).
+
         // Create padded arrays
         long[][] batchInputIds = new long[batchSize][maxSeqLength];
         long[][] batchAttentionMask = new long[batchSize][maxSeqLength];
@@ -1243,7 +1407,9 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
         int[] passageTokenCounts = new int[batchSize];
         for (int i = 0; i < batchSize; i++) {
             SamediffBertTokenizerPreProcessor.BertEncoding enc = encodings.get(i);
-            int seqLen = enc.inputIds.length;
+            // Clamp to the batch bucket: the planner guarantees bucket >= real length, but this
+            // keeps the copy in-bounds even if an oversized encoding ever slips through.
+            int seqLen = Math.min(enc.inputIds.length, maxSeqLength);
             totalTokens += seqLen;
             passageTokenCounts[i] = seqLen;
             System.arraycopy(enc.inputIds, 0, batchInputIds[i], 0, seqLen);
@@ -1261,26 +1427,31 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
 
         Map<String, INDArray> placeholderMap = new HashMap<>();
         Map<String, INDArray> outputMap = null;
-        List<float[]> results = new java.util.ArrayList<>(batchSize);
+        List<float[]> results = new ArrayList<>(batchSize);
+        boolean nativeOom = false;
 
         try {
             // ========== SHAPE LOGGING: Batch Input Array Creation ==========
             LOG.info("[{}] SHAPE BATCH CREATE: Creating batch arrays for {} texts, maxSeqLen={}, totalTokens={}",
                     this.modelIdentifier, batchSize, maxSeqLength, totalTokens);
 
+            // MEMORY FIX (1/2): Use Nd4j.create (not createFromArray) for per-batch input arrays.
+            // createFromArray routes through the constant-buffer allocator; those buffers are
+            // retained by InferenceSession.externalPlaceholderBuffers even after arr.close().
+            // Nd4j.create produces regular native buffers that close() correctly frees.
             for (String inputName : this.inputTensorNamesForModel) {
                 if (isInputIdsInput(inputName)) {
-                    INDArray arr = Nd4j.createFromArray(batchInputIds);
+                    INDArray arr = Nd4j.create(batchInputIds);
                     placeholderMap.put(inputName, arr);
                     LOG.info("[{}] SHAPE BATCH CREATE: input_ids '{}' -> shape={}, dtype={}",
                             this.modelIdentifier, inputName, Arrays.toString(arr.shape()), arr.dataType());
                 } else if (isAttentionMaskInput(inputName)) {
-                    INDArray arr = Nd4j.createFromArray(batchAttentionMask);
+                    INDArray arr = Nd4j.create(batchAttentionMask);
                     placeholderMap.put(inputName, arr);
                     LOG.info("[{}] SHAPE BATCH CREATE: attention_mask '{}' -> shape={}, dtype={}",
                             this.modelIdentifier, inputName, Arrays.toString(arr.shape()), arr.dataType());
                 } else if (isTokenTypeIdsInput(inputName)) {
-                    INDArray arr = Nd4j.createFromArray(batchTokenTypeIds);
+                    INDArray arr = Nd4j.create(batchTokenTypeIds);
                     placeholderMap.put(inputName, arr);
                     LOG.info("[{}] SHAPE BATCH CREATE: token_type_ids '{}' -> shape={}, dtype={}",
                             this.modelIdentifier, inputName, Arrays.toString(arr.shape()), arr.dataType());
@@ -1289,6 +1460,7 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
 
             if (Thread.currentThread().isInterrupted()) return null;
 
+            // (native-memory safety handled reactively in the catch/retry below — no predictive throw)
             String outputTensorName = this.outputTensorNamesFromModel.get(0);
 
             // ========== SHAPE LOGGING: Pre-Inference Summary ==========
@@ -1325,8 +1497,30 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
                 return null;
             }
 
-            // Use vectorized extraction for all embeddings at once
+            // Extract embeddings to heap float[] before clearing session caches.
+            // extractAllEmbeddings copies all values via getFloat(i,j) / System.arraycopy
+            // into new float[] arrays (plain Java heap). These do NOT reference native
+            // memory and are therefore safe after clearSessionCaches() runs.
             List<float[]> extracted = extractAllEmbeddings(batchOutput, batchSize);
+
+            if (extracted == null) {
+                LOG.warn("[{}] Vectorized extraction failed, falling back to sequential", modelIdentifier);
+                for (int i = 0; i < batchSize; i++) {
+                    try {
+                        results.add(extractSingleEmbedding(batchOutput, i));
+                    } catch (Exception e) {
+                        LOG.warn("[{}] Failed to extract embedding {}: {}", modelIdentifier, i, e.getMessage());
+                        results.add(null);
+                    }
+                }
+                extracted = results;
+            }
+
+            // MEMORY FIX: Clear InferenceSession.nodeValueOutputs AFTER extraction.
+            // At this point all embeddings are in heap float[] arrays. Clearing the session
+            // releases the ~47 MB of intermediate activation SDValues accumulated per forward
+            // pass without touching any buffer that extraction still needed.
+            clearSessionCaches();
 
             // Update BatchInfo with timing after inference completes
             long totalTimeMs = System.currentTimeMillis() - batchStartMs;
@@ -1336,28 +1530,25 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
                     new long[]{batchSize, maxSeqLength}, new long[]{batchSize, getEmbeddingDimension()},
                     "COMPLETE", batchStartMs, 0, 0, 0, totalTimeMs, 0, totalTimeMs, tokensPerSec, chunksPerSec);
 
-            if (extracted == null) {
-                LOG.warn("[{}] Vectorized extraction failed, falling back to sequential", modelIdentifier);
-                // Fallback to sequential extraction
-                for (int i = 0; i < batchSize; i++) {
-                    try {
-                        results.add(extractSingleEmbedding(batchOutput, i));
-                    } catch (Exception e) {
-                        LOG.warn("[{}] Failed to extract embedding {}: {}", modelIdentifier, i, e.getMessage());
-                        results.add(null);
-                    }
-                }
-                return results;
-            }
             return extracted;
 
+        } catch (OutOfMemoryError oomErr) {
+            nativeOom = true;
+            LOG.warn("[{}] Native OOM during forward pass at batchSize={} — will free, split and retry. ({})",
+                    modelIdentifier, batchSize, oomErr.getMessage());
         } catch (Exception e) {
             if (Thread.currentThread().isInterrupted()) return null;
-            LOG.error("[{}] Error in batch from encodings: {}", modelIdentifier, e.getMessage(), e);
-            if (SameDiffEncoder.isFailFastOnError()) {
-                throw new SameDiffEncoder.EncodingException(modelIdentifier, "batch from encodings", e.getMessage(), e);
+            if (isNativeOomException(e)) {
+                nativeOom = true;
+                LOG.warn("[{}] Native memory limit hit during forward pass at batchSize={} — will free, split and retry. ({})",
+                        modelIdentifier, batchSize, e.getMessage());
+            } else {
+                LOG.error("[{}] Error in batch from encodings: {}", modelIdentifier, e.getMessage(), e);
+                if (SameDiffEncoder.isFailFastOnError()) {
+                    throw new SameDiffEncoder.EncodingException(modelIdentifier, "batch from encodings", e.getMessage(), e);
+                }
+                return null;
             }
-            return null;
         } finally {
             for (INDArray arr : placeholderMap.values()) {
                 if (arr != null) try { arr.close(); } catch (Exception ignored) {}
@@ -1368,6 +1559,39 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
                 }
             }
         }
+
+        // ===== REACTIVE NATIVE-OOM RECOVERY =====
+        // The per-batch arrays were freed by the finally above. Free native memory, then split the batch
+        // and retry down to size 1. Only reached when the forward pass ACTUALLY exhausted the native cap —
+        // never a host crash, never a predictive pre-rejection.
+        if (nativeOom) {
+            try { Nd4j.getMemoryManager().invokeGc(); } catch (Throwable ignored) {}
+            if (batchSize > 1) {
+                int half = Math.max(1, batchSize / 2);
+                notifyBatchResize(batchSize, half, "native OOM — split and retry");
+                List<float[]> combined = new ArrayList<>(batchSize);
+                int offset = 0;
+                while (offset < batchSize) {
+                    int chunk = Math.min(half, batchSize - offset);
+                    List<String> chunkTexts = texts.subList(offset, offset + chunk);
+                    List<SamediffBertTokenizerPreProcessor.BertEncoding> chunkEncodings = encodings.subList(offset, offset + chunk);
+                    int chunkMaxSeq = 0;
+                    for (SamediffBertTokenizerPreProcessor.BertEncoding e : chunkEncodings) {
+                        chunkMaxSeq = Math.max(chunkMaxSeq, e.inputIds.length);
+                    }
+                    List<float[]> chunkResults = encodeSingleInferenceBatchFromEncodings(chunkTexts, chunkEncodings, chunkMaxSeq);
+                    if (chunkResults == null) return null;
+                    combined.addAll(chunkResults);
+                    offset += chunk;
+                }
+                return combined;
+            }
+            LOG.error("[{}] Native OOM even at batchSize=1 — the model's resident size plus one sample exceed the "
+                    + "native cap. Skipping this chunk. Raise kompile.embedding.anserini.subprocessMaxPhysicalMb.",
+                    modelIdentifier);
+            return null;
+        }
+        return results; // unreachable: every try path returns; OOM paths handled above
     }
 
     /**
@@ -1444,19 +1668,20 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
             LOG.info("[{}] SHAPE SINGLE_BATCH CREATE: Creating tensors for {} texts, maxLen={}, totalTokens={}",
                     this.modelIdentifier, batchSize, maxLen, totalTokens);
 
+            // MEMORY FIX: Use Nd4j.create (not createFromArray) to avoid constant-buffer path.
             for (String inputName : this.inputTensorNamesForModel) {
                 if (isInputIdsInput(inputName)) {
-                    INDArray arr = Nd4j.createFromArray(batchInputIds);
+                    INDArray arr = Nd4j.create(batchInputIds);
                     placeholderMap.put(inputName, arr);
                     LOG.info("[{}] SHAPE SINGLE_BATCH CREATE: input_ids '{}' -> shape={}, dtype={}",
                             this.modelIdentifier, inputName, Arrays.toString(arr.shape()), arr.dataType());
                 } else if (isAttentionMaskInput(inputName)) {
-                    INDArray arr = Nd4j.createFromArray(batchAttentionMask);
+                    INDArray arr = Nd4j.create(batchAttentionMask);
                     placeholderMap.put(inputName, arr);
                     LOG.info("[{}] SHAPE SINGLE_BATCH CREATE: attention_mask '{}' -> shape={}, dtype={}",
                             this.modelIdentifier, inputName, Arrays.toString(arr.shape()), arr.dataType());
                 } else if (isTokenTypeIdsInput(inputName)) {
-                    INDArray arr = Nd4j.createFromArray(batchTokenTypeIds);
+                    INDArray arr = Nd4j.create(batchTokenTypeIds);
                     placeholderMap.put(inputName, arr);
                     LOG.info("[{}] SHAPE SINGLE_BATCH CREATE: token_type_ids '{}' -> shape={}, dtype={}",
                             this.modelIdentifier, inputName, Arrays.toString(arr.shape()), arr.dataType());
@@ -1520,11 +1745,12 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
 
             long extractStart = System.nanoTime();
 
-            // Use vectorized extraction for all embeddings at once
+            // Extract embeddings to heap float[] BEFORE clearing session caches.
+            // extractAllEmbeddings copies all values into new float[] (plain Java heap).
+            // These survive clearSessionCaches() because they hold no native pointers.
             List<float[]> extracted = extractAllEmbeddings(batchOutput, batchSize);
             if (extracted == null) {
                 LOG.warn("[{}] Vectorized extraction failed, falling back to sequential", modelIdentifier);
-                // Fallback to sequential extraction
                 for (int i = 0; i < batchSize; i++) {
                     try {
                         results.add(extractSingleEmbedding(batchOutput, i));
@@ -1538,6 +1764,13 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
             }
 
             long extractEnd = System.nanoTime();
+
+            // MEMORY FIX: Clear InferenceSession.nodeValueOutputs AFTER extraction.
+            // All embeddings are now in heap float[] arrays. Clearing the session releases
+            // the ~47 MB of intermediate activation SDValues per batch without touching
+            // any buffer that extraction still needed.
+            clearSessionCaches();
+
             long extractTimeMs = (extractEnd - extractStart) / 1_000_000;
 
             // Calculate totals and throughput

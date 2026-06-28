@@ -17,8 +17,11 @@ package ai.kompile.knowledgegraph.embedding.adapter;
 
 import ai.kompile.core.kgembedding.KGEmbeddingModel;
 import ai.kompile.core.kgembedding.Triple;
+import org.nd4j.linalg.api.ndarray.INDArray;
 
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Storage-agnostic bridge between the KG-embedding (TransE/RotatE) training pipeline and a concrete
@@ -55,4 +58,32 @@ public interface KgEmbeddingGraphAdapter {
      * @return number of graph elements updated
      */
     int storeEmbeddings(KGEmbeddingModel model, Long factSheetId, Long version);
+
+    /**
+     * Reads back previously persisted KGE entity embeddings for the fact sheet.
+     *
+     * <p>Returns an empty map when no embeddings have been persisted yet (first-ever crawl),
+     * which is the cold-start signal: the caller should fall back to random init + full epochs.
+     * The default implementation returns empty — override in concrete adapters that support
+     * warm-start read-back (currently {@link MatrixKgEmbeddingGraphAdapter}).</p>
+     *
+     * @param factSheetId fact sheet to read embeddings for
+     * @return map from entity ID to its {@link INDArray} vector; never {@code null}
+     */
+    default Map<String, INDArray> loadEmbeddings(Long factSheetId) {
+        return Collections.emptyMap();
+    }
+
+    /**
+     * Reads back previously persisted KGE <em>relation</em> embeddings for the fact sheet.
+     *
+     * <p>Returns an empty map on the first-ever crawl (cold start) or when the adapter does
+     * not support relation warm-start. Never throws — cold-start is always the safe fallback.</p>
+     *
+     * @param factSheetId fact sheet to read relation embeddings for
+     * @return map from relation type to its {@link INDArray} vector; never {@code null}
+     */
+    default Map<String, INDArray> loadRelationEmbeddings(Long factSheetId) {
+        return Collections.emptyMap();
+    }
 }

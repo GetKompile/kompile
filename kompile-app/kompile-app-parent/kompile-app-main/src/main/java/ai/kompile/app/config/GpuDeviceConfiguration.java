@@ -100,10 +100,31 @@ public class GpuDeviceConfiguration {
     /**
      * Ensure VLM is routed to the largest GPU if device routing is available.
      * Only sets this up if no VLM route is already configured.
+     *
+     * <p>On CPU-only hosts (no GPUs discovered by nvidia-smi) this method is a
+     * no-op: device routing is left disabled so no CUDA device ID is injected into
+     * the embedding subprocess command. A stale {@code device-routing-config.json}
+     * may still have {@code enabled=true} with an embedding→cuda route from a
+     * previous GPU run; those routes are harmless while routing is disabled, and
+     * they are ignored by {@link DeviceRoutingAutoConfiguration} when
+     * {@link DeviceRoutingConfigService#isEnabled()} returns false.</p>
      */
     private void ensureVlmDeviceRouting() {
         if (deviceRoutingConfigService == null) {
             log.debug("DeviceRoutingConfigService not available — skipping VLM device routing setup");
+            return;
+        }
+
+        // CPU-only host: no GPU devices discovered — do NOT enable device routing.
+        // Enabling it would cause DeviceRoutingAutoConfiguration to apply any stale
+        // cuda route from device-routing-config.json (e.g. "embedding→cuda:0"),
+        // which injects "-Dnd4j.environment.cudaCurrentDevice=0" into the embedding
+        // subprocess even though CUDA_VISIBLE_DEVICES=-1. That causes the subprocess
+        // to waste time probing for CUDA before falling back to CPU, and logs the
+        // confusing "overriding CUDA device to 0 for embedding subprocess" message.
+        List<GpuDevice> discoveredDevices = gpuResourceManager.getDevices();
+        if (discoveredDevices.isEmpty()) {
+            log.info("No GPU devices discovered — skipping device routing setup (CPU-only host)");
             return;
         }
 

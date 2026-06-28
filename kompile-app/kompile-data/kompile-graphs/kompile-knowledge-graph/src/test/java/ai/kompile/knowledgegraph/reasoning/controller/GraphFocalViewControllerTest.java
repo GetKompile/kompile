@@ -33,6 +33,7 @@ import org.springframework.http.ResponseEntity;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -244,14 +245,13 @@ class GraphFocalViewControllerTest {
                 .weight(1.0)
                 .build();
 
-        when(graphService.getNodesInFactSheet(FS_ID))
-                .thenReturn(List.of(seed, neighbor, farAway));
+        // buildSubgraph now loads nodes lazily via getNode(id), not via getNodesInFactSheet.
+        when(graphService.getNode("seed-1")).thenReturn(Optional.of(seed));
+        when(graphService.getNode("neighbor-1")).thenReturn(Optional.of(neighbor));
         when(graphService.getEdgesForNodeInFactSheet("seed-1", FS_ID))
                 .thenReturn(List.of(seedEdge));
         when(graphService.getEdgesForNodeInFactSheet("neighbor-1", FS_ID))
-                .thenReturn(List.of()); // neighbor has no further edges
-        when(graphService.getEdgesForNodeInFactSheet("far-1", FS_ID))
-                .thenReturn(List.of());
+                .thenReturn(List.of()); // neighbor has no further edges at radius 1
 
         SubgraphRequest req = new SubgraphRequest(List.of("seed-1"), 1, null, 0.0);
         ResponseEntity<?> response = controller.buildSubgraph(FS_ID, req);
@@ -283,8 +283,8 @@ class GraphFocalViewControllerTest {
                 .weight(0.2)  // below floor
                 .build();
 
-        when(graphService.getNodesInFactSheet(FS_ID))
-                .thenReturn(List.of(seed, neighbor));
+        // buildSubgraph now loads seeds lazily via getNode(id), not via getNodesInFactSheet.
+        when(graphService.getNode("seed-2")).thenReturn(Optional.of(seed));
         when(graphService.getEdgesForNodeInFactSheet("seed-2", FS_ID))
                 .thenReturn(List.of(lowConfEdge));
 
@@ -374,7 +374,8 @@ class GraphFocalViewControllerTest {
 
     @Test
     void buildSubgraph_serviceThrows_returns503() {
-        when(graphService.getNodesInFactSheet(anyLong()))
+        // buildSubgraph now calls getNode(seedId) first; throw there to exercise the 503 path.
+        when(graphService.getNode(anyString()))
                 .thenThrow(new RuntimeException("DB unavailable"));
 
         SubgraphRequest req = new SubgraphRequest(List.of("seed-6"), 2, null, 0.0);

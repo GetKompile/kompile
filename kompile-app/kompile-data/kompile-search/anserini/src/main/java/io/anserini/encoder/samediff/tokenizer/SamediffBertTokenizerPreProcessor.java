@@ -32,11 +32,25 @@ public class SamediffBertTokenizerPreProcessor implements AutoCloseable {
     private final HuggingFaceTokenizer tokenizer;
     private final boolean addSpecialTokens;
     private final int maxLength;
+    /**
+     * When true (default) {@link #encode} pads every result to {@link #maxLength}. When false it
+     * returns the real (truncated-to-maxLength) token length with no padding, so callers can pad
+     * each micro-batch to a small DSP-friendly sequence bucket instead of one fixed maximum.
+     */
+    private volatile boolean padToMaxLength = true;
     private final SamediffBertVocabulary vocabulary; // Maintain vocabulary access
 
     public static final String CLS_TOKEN = "[CLS]";
     public static final String SEP_TOKEN = "[SEP]";
     public static final String PAD_TOKEN = "[PAD]";
+
+    /**
+     * Per-text token diagnostics print one or two stderr lines for every encoded text,
+     * which floods crawl/embedding logs. Off by default; enable on demand with
+     * {@code -Dkompile.embedding.tokenizerDiag=true} (no recompile/hardcode required).
+     */
+    private static final boolean TOKENIZER_DIAG =
+            Boolean.getBoolean("kompile.embedding.tokenizerDiag");
 
     /**
      * Legacy constructor that accepts a SamediffBertVocabulary (for backward compatibility)
@@ -412,8 +426,8 @@ public class SamediffBertTokenizerPreProcessor implements AutoCloseable {
         // Use the Rust tokenizer to encode the text
         int[] tokenIds = tokenizer.encode(text, addSpecialTokens).getIds();
 
-        // DIAGNOSTIC: Log actual token IDs from Rust tokenizer
-        if (tokenIds.length > 0 && tokenIds.length <= 20) {
+        // DIAGNOSTIC: Log actual token IDs from Rust tokenizer (opt-in; see TOKENIZER_DIAG)
+        if (TOKENIZER_DIAG && tokenIds.length > 0 && tokenIds.length <= 20) {
             StringBuilder sb = new StringBuilder("[TokenizerDiag] Text='").append(text).append("' -> TokenIDs=[");
             for (int i = 0; i < tokenIds.length; i++) {
                 if (i > 0) sb.append(", ");
@@ -429,19 +443,24 @@ public class SamediffBertTokenizerPreProcessor implements AutoCloseable {
             sb.append("]");
             System.err.println(sb.toString());
             System.err.flush();
-        } else if (tokenIds.length > 20) {
+        } else if (TOKENIZER_DIAG && tokenIds.length > 20) {
             System.err.println("[TokenizerDiag] Text='" + text + "' -> " + tokenIds.length + " tokens, first 5: " +
                 tokenIds[0] + ", " + tokenIds[1] + ", " + tokenIds[2] + ", " + tokenIds[3] + ", " + tokenIds[4]);
             System.err.flush();
         }
 
-        // Handle max length truncation and padding
-        int actualLength = maxLength > 0 ? maxLength : tokenIds.length;
+        // Handle max length truncation and (optional) padding.
+        // Always truncate to maxLength when set. Pad to maxLength only when padToMaxLength is true;
+        // otherwise return the real (truncated) length so the caller can pad each micro-batch to a
+        // small DSP-friendly sequence bucket rather than a fixed 512 (which wastes compute/memory).
+        int cap = maxLength > 0 ? maxLength : tokenIds.length;
+        int realLength = Math.min(tokenIds.length, cap);
+        int actualLength = padToMaxLength ? cap : realLength;
         long[] inputIds = new long[actualLength];
         long[] attentionMask = new long[actualLength];
         long[] tokenTypeIds = new long[actualLength];
 
-        // Copy token IDs up to max length
+        // Copy token IDs up to the active length
         int copyLength = Math.min(tokenIds.length, actualLength);
         for (int i = 0; i < copyLength; i++) {
             inputIds[i] = tokenIds[i];
@@ -449,11 +468,11 @@ public class SamediffBertTokenizerPreProcessor implements AutoCloseable {
             tokenTypeIds[i] = 0L;
         }
 
-        // If we have max length and need to ensure proper BERT format
-        if (maxLength > 0 && copyLength < actualLength) {
+        // Fill the remainder with PAD tokens only when fixed-width padding is enabled
+        if (padToMaxLength && copyLength < actualLength) {
             // Get PAD token ID from vocabulary
             long padTokenId = vocabulary.getTokenId(PAD_TOKEN);
-            
+
             // Fill remaining positions with PAD tokens
             for (int i = copyLength; i < actualLength; i++) {
                 inputIds[i] = padTokenId;
@@ -463,6 +482,24 @@ public class SamediffBertTokenizerPreProcessor implements AutoCloseable {
         }
 
         return new BertEncoding(inputIds, attentionMask, tokenTypeIds);
+    }
+
+    /**
+     * Controls whether {@link #encode} pads results to {@link #maxLength}. Set false to enable
+     * length-bucketed micro-batching (the caller pads each batch to its own bucket). Default true.
+     */
+    public void setPadToMaxLength(boolean padToMaxLength) {
+        this.padToMaxLength = padToMaxLength;
+    }
+
+    /** Whether {@link #encode} currently pads to {@link #maxLength}. */
+    public boolean isPadToMaxLength() {
+        return padToMaxLength;
+    }
+
+    /** The configured maximum/truncation sequence length (0 means no limit). */
+    public int getMaxLength() {
+        return maxLength;
     }
 
     /**

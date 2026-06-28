@@ -80,5 +80,14 @@ public enum EdgeType {
      * Multiple identifiers → one product (vendor/format variants); one identifier
      * → multiple products (a recycled / reassigned code).
      */
-    RESOLVES_TO
+    RESOLVES_TO,
+
+    /**
+     * A member ENTITY node is a known alias of a canonical cross-document name hub.
+     * Source = member ENTITY node; target = {@link NodeLevel#ALIAS} hub node.
+     * Weight = 1.0. Created during cross-doc star-topology edge computation by
+     * {@code GraphEdgeComputationServiceImpl}. The hub is keyed by the normalized
+     * bucket value (name, email, userId, etc.) and is stable across re-crawls.
+     */
+    ALIAS_OF
 }

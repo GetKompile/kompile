@@ -21,6 +21,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
 import java.io.PrintStream;
+import ai.kompile.cli.main.chat.tools.SearchExclusions;
+
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.time.Instant;
@@ -1303,11 +1305,16 @@ public class LocalCodeIndexer {
     private List<Path> collectSourceFiles(Path root, Set<String> includes,
                                            Set<String> excludes) throws IOException {
         List<Path> files = new ArrayList<>();
+        SearchExclusions.GitignoreDirFilter gitFilter = SearchExclusions.loadGitignoreDirFilter(root);
         Files.walkFileTree(root, new SimpleFileVisitor<>() {
             @Override
             public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
                 String dirName = dir.getFileName().toString();
                 if (IGNORED_DIRS.contains(dirName)) return FileVisitResult.SKIP_SUBTREE;
+                // Project-specific git-ignored data directories (no hard-coded names).
+                if (gitFilter.isIgnoredDir(root.relativize(dir).toString(), dirName)) {
+                    return FileVisitResult.SKIP_SUBTREE;
+                }
                 if (!excludes.isEmpty() && matchesAny(dir.toString(), excludes)) {
                     return FileVisitResult.SKIP_SUBTREE;
                 }

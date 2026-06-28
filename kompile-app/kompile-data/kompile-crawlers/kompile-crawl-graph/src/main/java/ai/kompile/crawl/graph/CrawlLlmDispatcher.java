@@ -18,9 +18,11 @@ package ai.kompile.crawl.graph;
 
 import ai.kompile.core.agent.CliAgentRunner;
 import ai.kompile.core.crawl.graph.AgentCallContext;
+import ai.kompile.core.crawl.graph.CliAgentAvailabilityAdapter;
 import ai.kompile.core.crawl.graph.LlmTranscriptLogger;
 import ai.kompile.core.crawl.graph.ProcessingCapacityTracker;
 import ai.kompile.core.crawl.graph.ProcessingRouteConfig;
+import ai.kompile.core.crawl.graph.ResourceGovernorAdapter;
 import ai.kompile.core.crawl.graph.TokenBudgetTracker;
 import ai.kompile.core.crawl.graph.UnifiedCrawlJob;
 import ai.kompile.core.llm.chat.LLMChat;
@@ -81,6 +83,29 @@ class CrawlLlmDispatcher {
     /** Optional cluster-wide backend breaker (Phase 4); null on a single node → {@link ClusterBackendHealth#NOOP}. */
     @Autowired(required = false)
     private ClusterBackendHealth clusterBackendHealth;
+
+    /**
+     * Optional hardware-budget signal from the resource governor. When present, heavy LOCAL_MODEL
+     * and API_AGENT backends are skipped/deprioritized under memory pressure so CLI backends that
+     * do not consume local GPU/RAM are preferred. Null in test slices → safe no-op via default methods.
+     */
+    @Autowired(required = false)
+    private ResourceGovernorAdapter resourceGovernor;
+
+    /**
+     * Optional CLI-agent availability and model-list bridge. When present, CLI_AGENT backends
+     * are skipped when the agent is unavailable or quota-exhausted at the OS level, and opencode
+     * model alternation uses the live model list. Null in test slices → safe no-op via defaults.
+     */
+    @Autowired(required = false)
+    CliAgentAvailabilityAdapter cliAgentAvailability;
+
+    /**
+     * Per-job round-robin index for opencode model alternation.
+     * Keyed by jobId; incremented on every CLI call for opencode-cli backends so successive
+     * extraction batches rotate through all available free models.
+     */
+    private final ConcurrentHashMap<String, AtomicInteger> opencodeModelIndex = new ConcurrentHashMap<>();
 
     // ---- Configurable timeouts (synced from CrawlRuntimeConfigManager) ----
 
@@ -157,7 +182,7 @@ class CrawlLlmDispatcher {
 
         // Capacity-aware backend selection with circuit breaker
         Optional<ProcessingRouteConfig.ProcessingBackend> selected =
-                selectBackendWithCircuitBreaker(taskType, routeConfig);
+                selectBackendWithCircuitBreaker(taskType, routeConfig, job);
 
         if (selected.isEmpty()) {
             // All backends at capacity or circuit-broken — try the default LLM as last resort
@@ -287,15 +312,18 @@ class CrawlLlmDispatcher {
         long startNanos = System.nanoTime();
         int timeoutSec = llmCallTimeoutSeconds;
         final String[] sessionHolder = new String[1];
+        final AgentCallContext.ModelDecision[] decisionHolder = new AgentCallContext.ModelDecision[1];
         try {
             CompletableFuture<String> future = CompletableFuture.supplyAsync(
                     () -> {
                         try {
                             return llmChat.prompt(prompt).call().content();
                         } finally {
-                            // Capture the agent session id on the SAME thread that ran the call
-                            // (the LLMChat interface can't return it), then clear the pooled thread.
+                            // Capture the agent session id AND the model-routing decision on the SAME
+                            // thread that ran the call (the LLMChat interface can't return them), then
+                            // clear the pooled thread.
                             sessionHolder[0] = AgentCallContext.getSessionId();
+                            decisionHolder[0] = AgentCallContext.getModelDecision();
                             AgentCallContext.clear();
                         }
                     },
@@ -304,6 +332,8 @@ class CrawlLlmDispatcher {
             long latencyMs = (System.nanoTime() - startNanos) / 1_000_000L;
             recordTokenUsage(job, backendId, prompt, response);
             boolean success = response != null && !response.isBlank();
+            // Surface which model handled the turn (+ symptom/latency/timeout/bench) in the crawl UI.
+            recordModelRoutingDecision(job, decisionHolder[0]);
             // Bridge the captured session id onto this caller thread so recordLlmCall picks it up.
             AgentCallContext.setSessionId(sessionHolder[0]);
             try {
@@ -338,6 +368,40 @@ class CrawlLlmDispatcher {
             recordLlmCall(job, backendId, taskType, latencyMs, prompt, null,
                     false, false, false, false, "UNKNOWN", "Interrupted");
             return null;
+        }
+    }
+
+    /**
+     * Record a model-routing decision — which model handled the extraction turn, its classified
+     * symptom, latency, the adaptive timeout it was given, and (on failure) how long it was benched —
+     * as a {@link UnifiedCrawlJob.TuningDecision} so it surfaces in the crawl UI's per-job decision
+     * timeline alongside the batch-size / resource decisions. Captured from the LLM call thread via
+     * {@link AgentCallContext}; no-op when no decision was stamped (e.g. non-opencode backends).
+     */
+    private void recordModelRoutingDecision(UnifiedCrawlJob job, AgentCallContext.ModelDecision decision) {
+        if (job == null || decision == null || decision.model() == null) {
+            return;
+        }
+        boolean ok = "OK".equals(decision.outcome());
+        String detail = ok
+                ? String.format("%s · OK · %d chars · %dms (timeout %ds)",
+                        decision.model(), decision.responseChars(), decision.latencyMs(), decision.timeoutSeconds())
+                : String.format("%s · %s · %dms (timeout %ds) → benched %ds, de-escalating",
+                        decision.model(), decision.outcome(), decision.latencyMs(),
+                        decision.timeoutSeconds(), decision.benchSeconds());
+        try {
+            job.recordTuningDecision(UnifiedCrawlJob.TuningDecision.builder()
+                    .timestamp(Instant.now())
+                    .stage("MODEL_ROUTING")
+                    .oldValue(0).newValue(0)
+                    .direction(ok ? "USE" : "DEESCALATE")
+                    .reason(ok ? "model_ok" : decision.outcome().toLowerCase(java.util.Locale.ROOT))
+                    .detail(detail)
+                    .memoryPercent(job.getMemoryUsagePercent().get())
+                    .build());
+            log.info("[Job {}] MODEL_ROUTING decision: {}", job.getJobId(), detail);
+        } catch (Exception e) {
+            log.debug("[Job {}] Failed to record model-routing decision: {}", job.getJobId(), e.getMessage());
         }
     }
 
@@ -647,34 +711,171 @@ class CrawlLlmDispatcher {
     }
 
     private Optional<ProcessingRouteConfig.ProcessingBackend> selectBackendWithCircuitBreaker(
-            String taskType, ProcessingRouteConfig routeConfig) {
+            String taskType, ProcessingRouteConfig routeConfig, UnifiedCrawlJob job) {
+        // ── ResourceGovernor memory gate ────────────────────────────────────────
+        // When the host is under heavy memory pressure, skip LOCAL_MODEL and API_AGENT backends
+        // (they require local GPU/heap) and prefer CLI backends that run out-of-process.
+        boolean memoryThrottled = resourceGovernor != null && resourceGovernor.shouldThrottleHeavyMemory();
+        String memPressureReason = memoryThrottled && resourceGovernor != null
+                ? resourceGovernor.memoryPressureReason() : null;
+        if (memoryThrottled) {
+            log.debug("[Job {}] Memory pressure throttle active ({}): skipping LOCAL_MODEL/API_AGENT backends",
+                    job != null ? job.getJobId() : "?", memPressureReason);
+        }
+
         // First try normal selection
         Optional<ProcessingRouteConfig.ProcessingBackend> selected =
                 processingCapacityTracker.selectBackend(taskType, routeConfig);
         if (selected.isPresent()) {
-            CircuitBreaker cb = getCircuitBreaker(selected.get().getId());
-            boolean open = isBackendOpen(selected.get().getId()); // local OR cluster-wide (Phase 4)
-            if (!open && !cliQuotaExhausted(selected.get())) {
+            ProcessingRouteConfig.ProcessingBackend candidate = selected.get();
+            CircuitBreaker cb = getCircuitBreaker(candidate.getId());
+            boolean open = isBackendOpen(candidate.getId()); // local OR cluster-wide (Phase 4)
+            boolean cliUnavailable = isCliAgentUnavailable(candidate);
+            boolean memorySkip = memoryThrottled && isLocalOrApiBackend(candidate);
+            if (!open && !cliQuotaExhausted(candidate) && !cliUnavailable && !memorySkip) {
+                // Selected backend is usable; apply opencode model alternation if applicable
+                maybeAlternateOpencodeModel(candidate, job, "selected");
                 return selected;
             }
-            // Selected backend is circuit-broken (local or cluster) or CLI-quota-exhausted, try others
-            log.debug("Selected backend '{}' unavailable ({}), trying alternatives",
-                    selected.get().getId(),
-                    open ? cb.getStateDescription() : "cli quota exhausted");
+            // Selected backend cannot be used — log why and try alternatives
+            String skipReason = open ? cb.getStateDescription()
+                    : cliUnavailable ? "cli agent unavailable"
+                    : memorySkip ? "memory-throttled (prefers CLI)"
+                    : "cli quota exhausted";
+            log.debug("[Job {}] Selected backend '{}' unavailable ({}), trying alternatives",
+                    job != null ? job.getJobId() : "?", candidate.getId(), skipReason);
+            if (job != null && (memorySkip || cliUnavailable)) {
+                job.recordTuningDecision(UnifiedCrawlJob.TuningDecision.builder()
+                        .timestamp(Instant.now())
+                        .stage("LLM_ROUTING")
+                        .oldValue(0).newValue(0)
+                        .direction("SKIP")
+                        .reason(memorySkip ? "memory_pressure" : "cli_unavailable")
+                        .detail("Skipped backend '" + candidate.getId() + "': " + skipReason
+                                + (memPressureReason != null ? " [" + memPressureReason + "]" : ""))
+                        .memoryPercent(job.getMemoryUsagePercent().get())
+                        .build());
+            }
         }
 
-        // Try each backend in priority order, skipping circuit-broken and quota-exhausted ones
+        // Try each backend in priority order, skipping circuit-broken, quota-exhausted,
+        // unavailable CLI agents, and memory-throttled local/API backends.
+        ProcessingRouteConfig.ProcessingBackend chosenFallback = null;
+        List<String> skippedIds = new ArrayList<>();
         if (routeConfig.getBackends() != null) {
             for (ProcessingRouteConfig.ProcessingBackend backend : routeConfig.getBackends()) {
                 if (!backend.isEnabled()) continue;
-                if (isBackendOpen(backend.getId())) continue;
-                if (cliQuotaExhausted(backend)) continue;
+                if (isBackendOpen(backend.getId())) { skippedIds.add(backend.getId() + "(breaker)"); continue; }
+                if (cliQuotaExhausted(backend)) { skippedIds.add(backend.getId() + "(quota)"); continue; }
+                if (isCliAgentUnavailable(backend)) { skippedIds.add(backend.getId() + "(unavailable)"); continue; }
+                if (memoryThrottled && isLocalOrApiBackend(backend)) {
+                    skippedIds.add(backend.getId() + "(mem-throttle)");
+                    continue;
+                }
                 if (processingCapacityTracker.canAccept(backend.getId(), taskType)) {
-                    return Optional.of(backend);
+                    chosenFallback = backend;
+                    break;
                 }
             }
         }
+        if (chosenFallback != null) {
+            if (job != null && (!skippedIds.isEmpty() || memoryThrottled)) {
+                String detail = "Routed to '" + chosenFallback.getId() + "'"
+                        + (skippedIds.isEmpty() ? "" : "; skipped: " + String.join(", ", skippedIds))
+                        + (memPressureReason != null ? " [" + memPressureReason + "]" : "");
+                job.recordTuningDecision(UnifiedCrawlJob.TuningDecision.builder()
+                        .timestamp(Instant.now())
+                        .stage("LLM_ROUTING")
+                        .oldValue(0).newValue(0)
+                        .direction("REROUTE")
+                        .reason(memoryThrottled ? "memory_pressure" : "backend_skip")
+                        .detail(detail)
+                        .memoryPercent(job.getMemoryUsagePercent().get())
+                        .build());
+                log.info("[Job {}] LLM routing decision: {}", job.getJobId(), detail);
+            }
+            maybeAlternateOpencodeModel(chosenFallback, job, "fallback");
+            return Optional.of(chosenFallback);
+        }
         return Optional.empty();
+    }
+
+    /**
+     * True when a backend is a LOCAL_MODEL or API_AGENT (consumes local GPU/heap resources).
+     * CLI_AGENT backends run out-of-process and are preferred under memory pressure.
+     */
+    private boolean isLocalOrApiBackend(ProcessingRouteConfig.ProcessingBackend backend) {
+        return backend.getType() == ProcessingRouteConfig.ProcessingBackendType.LOCAL_MODEL
+                || backend.getType() == ProcessingRouteConfig.ProcessingBackendType.API_AGENT;
+    }
+
+    /**
+     * True when a CLI_AGENT backend's underlying agent is reported unavailable by the
+     * {@link CliAgentAvailabilityAdapter}. Non-CLI backends always return false.
+     */
+    private boolean isCliAgentUnavailable(ProcessingRouteConfig.ProcessingBackend backend) {
+        if (backend.getType() != ProcessingRouteConfig.ProcessingBackendType.CLI_AGENT) return false;
+        if (cliAgentAvailability == null) return false;
+        String agentName = backend.getAgentName();
+        return agentName != null && !cliAgentAvailability.isAvailable(agentName);
+    }
+
+    /**
+     * For opencode-cli backends: rotate through available free models across consecutive calls
+     * (round-robin per job). claude/codex backends are excluded from extraction per mandate.
+     * A DECISION record is emitted when the model actually changes.
+     */
+    private void maybeAlternateOpencodeModel(ProcessingRouteConfig.ProcessingBackend backend,
+                                              UnifiedCrawlJob job, String selectionContext) {
+        if (cliAgentAvailability == null || job == null) return;
+        if (backend.getType() != ProcessingRouteConfig.ProcessingBackendType.CLI_AGENT) return;
+        String agentName = backend.getAgentName();
+        if (agentName == null) return;
+        String lower = agentName.toLowerCase(java.util.Locale.ROOT);
+        // Only alternate for opencode; never touch claude or codex (paid agents, must not be used for extraction)
+        if (!lower.contains("opencode")) return;
+        if (lower.contains("claude") || lower.contains("codex")) return;
+
+        List<String> models = cliAgentAvailability.availableModels(agentName);
+        if (models == null || models.isEmpty()) return;
+        // Free-only: never alternate onto paid/flagship models (hard mandate — only free opencode models
+        // alternate). Mirrors the rotation filter in CliAgentLLMChat so decision records reflect reality.
+        models = models.stream()
+                .filter(m -> {
+                    String l = m.toLowerCase(java.util.Locale.ROOT);
+                    return !(l.contains("claude") || l.contains("codex") || l.contains("gpt")
+                            || l.contains("opus") || l.contains("sonnet") || l.contains("-pro"));
+                })
+                .collect(java.util.stream.Collectors.toList());
+        if (models.isEmpty()) return;
+
+        AtomicInteger idx = opencodeModelIndex.computeIfAbsent(job.getJobId(), k -> new AtomicInteger(0));
+        int next = idx.getAndIncrement() % models.size();
+        String targetModel = models.get(next);
+        String currentModel = cliAgentAvailability.currentModel(agentName);
+        if (targetModel.equals(currentModel)) return;
+
+        boolean switched = cliAgentAvailability.setModel(agentName, targetModel);
+        if (switched) {
+            String detail = "opencode model alternation (" + selectionContext + "): "
+                    + (currentModel != null ? currentModel : "?") + " → " + targetModel
+                    + " (round-robin " + next + "/" + models.size() + ", job=" + job.getJobId() + ")";
+            log.info("[Job {}] {}", job.getJobId(), detail);
+            job.recordTuningDecision(UnifiedCrawlJob.TuningDecision.builder()
+                    .timestamp(Instant.now())
+                    .stage("LLM_MODEL_ALTERNATION")
+                    .oldValue(0).newValue(next)
+                    .direction("ROTATE")
+                    .reason("opencode_round_robin")
+                    .detail(detail)
+                    .memoryPercent(job.getMemoryUsagePercent().get())
+                    .build());
+        }
+    }
+
+    /** Remove the per-job opencode alternation index when a job finishes. */
+    void clearOpencodeModelIndex(String jobId) {
+        opencodeModelIndex.remove(jobId);
     }
 
     /**

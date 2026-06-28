@@ -21,7 +21,7 @@ import { MatSnackBar } from '@angular/material/snack-bar';
 import { Subject } from 'rxjs';
 import { takeUntil } from 'rxjs/operators';
 import { WebSocketService } from '../../services/websocket.service';
-import { ModelStatusUpdate } from '../../models/api-models';
+import { ModelStatusUpdate, Citation } from '../../models/api-models';
 
 interface RagStatus {
   keywordRetriever: { class: string; available: boolean };
@@ -49,6 +49,7 @@ interface GraphRagInfo {
 interface GraphRagEntity {
   name: string;
   type?: string;
+  confidence?: number;
   properties?: Record<string, any>;
 }
 
@@ -83,6 +84,7 @@ interface GraphRagQueryResponse {
   relationships?: GraphRagRelationship[];
   communities?: GraphRagCommunity[];
   sourceChunks?: string[];
+  sourceChunkRefs?: Citation[];
 }
 
 interface RerankerParam {
@@ -766,6 +768,22 @@ export class RagTesterComponent implements OnInit, OnDestroy {
       case 'mmr': return 'diversity_3';
       default: return 'sort';
     }
+  }
+
+  /** Map a SearchHit to a Citation for <app-source-citation>. */
+  toCitation(hit: SearchHit): Citation {
+    const m: Record<string, any> = hit.metadata || {};
+    return {
+      sourceId: m['_sourceDocumentId'] || m['source_id'] || hit.id,
+      sourceName: m['sourceName'] || m['source_name'] || undefined,
+      pageNumber: m['page_number'] != null ? Number(m['page_number']) : undefined,
+      chunkIndex: m['chunk_index'] != null ? Number(m['chunk_index']) : undefined,
+      score: hit.score,
+      crawlRunId: m['_crawlRunId'] || undefined,
+      basisType: m['_basisType'] || undefined,
+      sourceUrl: m['sourceUrl'] || m['source_url'] || undefined,
+      provenance: undefined
+    };
   }
 
   private showSnackbar(message: string, isError: boolean = false): void {

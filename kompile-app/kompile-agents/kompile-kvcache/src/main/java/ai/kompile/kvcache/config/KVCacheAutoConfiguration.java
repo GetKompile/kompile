@@ -8,7 +8,6 @@ import ai.kompile.kvcache.service.KVCachePrefixService;
 import ai.kompile.kvcache.service.KVCacheStatisticsCollector;
 import ai.kompile.kvcache.service.PriorityEvictionPolicy;
 import ai.kompile.kvcache.service.ContentHashPrefixIndex;
-import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -18,7 +17,6 @@ import org.springframework.context.annotation.Configuration;
  * Config is persisted to ~/.kompile/kvcache/config.json for survival across restarts.
  */
 @Configuration(proxyBeanMethods = false)
-@EnableConfigurationProperties(KVCacheProperties.class)
 public class KVCacheAutoConfiguration {
 
     @Bean

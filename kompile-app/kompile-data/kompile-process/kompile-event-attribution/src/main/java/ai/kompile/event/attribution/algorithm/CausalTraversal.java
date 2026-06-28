@@ -323,6 +323,9 @@ public class CausalTraversal {
             // A barcode resolving to a product is an identity association, not a
             // causal link — treat it as a (weak) correlation.
             case RESOLVES_TO -> CausalEdgeType.CORRELATES_WITH;
+            // A cross-doc alias membership edge (entity → name hub) is an identity
+            // association — treat as a weak correlation for causal analysis.
+            case ALIAS_OF -> CausalEdgeType.CORRELATES_WITH;
         };
     }
 

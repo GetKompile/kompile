@@ -54,6 +54,38 @@ interface AuditEvent {
   actor?: string;
 }
 
+interface WeightBackupInfo {
+  backupId: string;
+  programId: string;
+  timestamp: string;
+  versionAt: number;
+  entryCount: number;
+}
+
+interface BackupResult {
+  backupId: string | null;
+  message: string | null;
+}
+
+interface ResetResult {
+  programId: string;
+  backupId: string | null;
+  message: string | null;
+}
+
+interface NewSessionResult {
+  programId: string;
+  factSheetId: number;
+  pslBackupId: string | null;
+  mebnBackupId: string | null;
+  message: string | null;
+}
+
+interface OperationResult {
+  success: boolean;
+  message: string;
+}
+
 @Component({
   selector: 'app-kb-weights-panel',
   standalone: true,
@@ -332,6 +364,207 @@ interface AuditEvent {
           </table>
         </div>
 
+        <!-- ── Session Management ──────────────────────────────────────────── -->
+        <mat-divider class="section-div"></mat-divider>
+        <div class="session-section">
+          <div class="session-header">
+            <mat-icon class="session-icon">model_training</mat-icon>
+            <h4 class="session-title">Weight-Model Session</h4>
+          </div>
+          <p class="session-desc">
+            Start a new training session to reset PSL rule weights and MEBN edge strengths to their
+            cold-start defaults (PSL: config default, MEBN: 0.5 uniform prior). The current weights
+            are automatically backed up before any reset — you can restore them from the Backups panel
+            below.
+          </p>
+
+          <!-- Feedback row -->
+          <div *ngIf="sessionFeedback" class="session-feedback"
+               [class.session-feedback-error]="sessionFeedbackIsError"
+               [class.session-feedback-ok]="!sessionFeedbackIsError">
+            <mat-icon>{{ sessionFeedbackIsError ? 'error_outline' : 'check_circle' }}</mat-icon>
+            <span>{{ sessionFeedback }}</span>
+          </div>
+
+          <div class="session-actions">
+            <!-- New session button -->
+            <button mat-raised-button color="warn"
+                    *ngIf="!confirmingNewSession"
+                    (click)="requestNewSession()"
+                    [disabled]="sessionBusy || factSheetId == null"
+                    matTooltip="{{ factSheetId == null ? 'Select a fact sheet first' : 'Back up + reinit all weights for a fresh training run' }}">
+              <mat-icon>restart_alt</mat-icon>
+              New Training Session
+            </button>
+
+            <!-- Confirm dialog (inline) -->
+            <div *ngIf="confirmingNewSession" class="confirm-box">
+              <mat-icon class="confirm-icon warn-icon">warning</mat-icon>
+              <span class="confirm-text">
+                This will <strong>reset all PSL and MEBN weights</strong> to cold-start defaults for
+                <em>{{ selectedProgram }}</em> / fact sheet {{ factSheetId }}. Current weights will be
+                backed up automatically. Continue?
+              </span>
+              <button mat-raised-button color="warn"
+                      [disabled]="sessionBusy"
+                      (click)="confirmNewSession()">
+                <mat-spinner *ngIf="sessionBusy" diameter="16" class="inline-spinner"></mat-spinner>
+                <mat-icon *ngIf="!sessionBusy">check</mat-icon>
+                {{ sessionBusy ? 'Resetting…' : 'Yes, reset' }}
+              </button>
+              <button mat-button (click)="cancelNewSession()" [disabled]="sessionBusy">Cancel</button>
+            </div>
+
+            <!-- PSL-only reset -->
+            <button mat-stroked-button
+                    *ngIf="!confirmingPslReset"
+                    (click)="requestPslReset()"
+                    [disabled]="sessionBusy"
+                    matTooltip="Back up + reset PSL rule weights only">
+              <mat-icon>restart_alt</mat-icon>
+              Reset PSL Only
+            </button>
+            <div *ngIf="confirmingPslReset" class="confirm-box">
+              <mat-icon class="confirm-icon warn-icon">warning</mat-icon>
+              <span class="confirm-text">Reset PSL weights for <em>{{ selectedProgram }}</em> to defaults?</span>
+              <button mat-raised-button color="warn" [disabled]="sessionBusy" (click)="confirmPslReset()">
+                <mat-spinner *ngIf="sessionBusy" diameter="16" class="inline-spinner"></mat-spinner>
+                {{ sessionBusy ? 'Resetting…' : 'Yes' }}
+              </button>
+              <button mat-button (click)="cancelPslReset()" [disabled]="sessionBusy">Cancel</button>
+            </div>
+
+            <!-- MEBN-only reset -->
+            <button mat-stroked-button
+                    *ngIf="!confirmingMebnReset && factSheetId != null"
+                    (click)="requestMebnReset()"
+                    [disabled]="sessionBusy"
+                    matTooltip="Back up + reset MEBN edge strengths only">
+              <mat-icon>restart_alt</mat-icon>
+              Reset MEBN Only
+            </button>
+            <div *ngIf="confirmingMebnReset" class="confirm-box">
+              <mat-icon class="confirm-icon warn-icon">warning</mat-icon>
+              <span class="confirm-text">Reset MEBN edge strengths for fact sheet {{ factSheetId }} to 0.5?</span>
+              <button mat-raised-button color="warn" [disabled]="sessionBusy" (click)="confirmMebnReset()">
+                <mat-spinner *ngIf="sessionBusy" diameter="16" class="inline-spinner"></mat-spinner>
+                {{ sessionBusy ? 'Resetting…' : 'Yes' }}
+              </button>
+              <button mat-button (click)="cancelMebnReset()" [disabled]="sessionBusy">Cancel</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── Backups ────────────────────────────────────────────────────── -->
+        <div class="backups-section">
+          <div class="backups-card">
+            <button class="backups-toggle" (click)="backupsExpanded = !backupsExpanded"
+                    [attr.aria-expanded]="backupsExpanded">
+              <mat-icon class="conf-toggle-icon">{{ backupsExpanded ? 'expand_less' : 'expand_more' }}</mat-icon>
+              <span class="conf-model-title">Backups</span>
+              <span class="conf-model-subtitle">Snapshots taken before each reset — click to restore</span>
+              <mat-spinner *ngIf="loadingBackups" diameter="14" class="conf-spinner"></mat-spinner>
+            </button>
+
+            <div class="backups-body" *ngIf="backupsExpanded">
+              <div class="backups-tabs">
+                <button class="backup-tab-btn" [class.active]="backupTab === 'psl'" (click)="setBackupTab('psl')">PSL</button>
+                <button class="backup-tab-btn" [class.active]="backupTab === 'mebn'" (click)="setBackupTab('mebn')"
+                        [disabled]="factSheetId == null">MEBN</button>
+              </div>
+
+              <div *ngIf="backupFeedback" class="session-feedback"
+                   [class.session-feedback-error]="backupFeedbackIsError"
+                   [class.session-feedback-ok]="!backupFeedbackIsError">
+                <mat-icon>{{ backupFeedbackIsError ? 'error_outline' : 'check_circle' }}</mat-icon>
+                <span>{{ backupFeedback }}</span>
+              </div>
+
+              <!-- PSL backups -->
+              <div *ngIf="backupTab === 'psl'">
+                <div class="backups-controls">
+                  <button mat-stroked-button (click)="loadPslBackups()" [disabled]="loadingBackups">
+                    <mat-icon>refresh</mat-icon> Refresh
+                  </button>
+                  <button mat-stroked-button (click)="triggerPslBackup()" [disabled]="sessionBusy">
+                    <mat-icon>save</mat-icon> Backup Now
+                  </button>
+                </div>
+                <div *ngIf="loadingBackups" class="spinner-row">
+                  <mat-spinner diameter="20"></mat-spinner>
+                  <span>Loading PSL backups…</span>
+                </div>
+                <div *ngIf="!loadingBackups && pslBackups.length === 0" class="empty-row">
+                  <mat-icon>info_outline</mat-icon>
+                  <span>No PSL backups yet.</span>
+                </div>
+                <div *ngIf="!loadingBackups && pslBackups.length > 0" class="backup-list">
+                  <div *ngFor="let b of pslBackups" class="backup-row">
+                    <mat-icon class="backup-icon">inventory_2</mat-icon>
+                    <span class="backup-id">{{ b.backupId }}</span>
+                    <span class="backup-count">{{ b.entryCount }} rules</span>
+                    <button mat-icon-button matTooltip="Restore this backup"
+                            [disabled]="sessionBusy || confirmingRestoreId === b.backupId"
+                            (click)="requestRestore('psl', b.backupId)">
+                      <mat-icon>restore</mat-icon>
+                    </button>
+                    <div *ngIf="confirmingRestoreId === b.backupId" class="inline-confirm">
+                      <span class="confirm-text-sm">Restore weights from {{ b.backupId }}?</span>
+                      <button mat-raised-button color="primary" [disabled]="sessionBusy"
+                              (click)="confirmRestore('psl', b.backupId)">
+                        <mat-spinner *ngIf="sessionBusy" diameter="14" class="inline-spinner"></mat-spinner>
+                        {{ sessionBusy ? '…' : 'Restore' }}
+                      </button>
+                      <button mat-button (click)="cancelRestore()" [disabled]="sessionBusy">Cancel</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- MEBN backups -->
+              <div *ngIf="backupTab === 'mebn' && factSheetId != null">
+                <div class="backups-controls">
+                  <button mat-stroked-button (click)="loadMebnBackups()" [disabled]="loadingBackups">
+                    <mat-icon>refresh</mat-icon> Refresh
+                  </button>
+                  <button mat-stroked-button (click)="triggerMebnBackup()" [disabled]="sessionBusy">
+                    <mat-icon>save</mat-icon> Backup Now
+                  </button>
+                </div>
+                <div *ngIf="loadingBackups" class="spinner-row">
+                  <mat-spinner diameter="20"></mat-spinner>
+                  <span>Loading MEBN backups…</span>
+                </div>
+                <div *ngIf="!loadingBackups && mebnBackups.length === 0" class="empty-row">
+                  <mat-icon>info_outline</mat-icon>
+                  <span>No MEBN backups yet.</span>
+                </div>
+                <div *ngIf="!loadingBackups && mebnBackups.length > 0" class="backup-list">
+                  <div *ngFor="let b of mebnBackups" class="backup-row">
+                    <mat-icon class="backup-icon">inventory_2</mat-icon>
+                    <span class="backup-id">{{ b.backupId }}</span>
+                    <span class="backup-count">{{ b.entryCount }} edges</span>
+                    <button mat-icon-button matTooltip="Restore this backup"
+                            [disabled]="sessionBusy || confirmingRestoreId === b.backupId"
+                            (click)="requestRestore('mebn', b.backupId)">
+                      <mat-icon>restore</mat-icon>
+                    </button>
+                    <div *ngIf="confirmingRestoreId === b.backupId" class="inline-confirm">
+                      <span class="confirm-text-sm">Restore MEBN weights from {{ b.backupId }}?</span>
+                      <button mat-raised-button color="primary" [disabled]="sessionBusy"
+                              (click)="confirmRestore('mebn', b.backupId)">
+                        <mat-spinner *ngIf="sessionBusy" diameter="14" class="inline-spinner"></mat-spinner>
+                        {{ sessionBusy ? '…' : 'Restore' }}
+                      </button>
+                      <button mat-button (click)="cancelRestore()" [disabled]="sessionBusy">Cancel</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <mat-divider *ngIf="weightRows.length > 0 || tuningHistory.length > 0" class="section-div"></mat-divider>
 
         <!-- WEIGHT_TUNED audit history -->
@@ -398,6 +631,25 @@ export class KbWeightsPanelComponent extends BaseService implements OnInit, OnCh
   kbConfig: KbConfig | null = null;
   loadingKbConfig = false;
   kbConfigError: string | null = null;
+
+  // ── Session management state ────────────────────────────────────────────────
+  sessionBusy = false;
+  sessionFeedback: string | null = null;
+  sessionFeedbackIsError = false;
+
+  confirmingNewSession = false;
+  confirmingPslReset = false;
+  confirmingMebnReset = false;
+
+  // ── Backup panel state ──────────────────────────────────────────────────────
+  backupsExpanded = false;
+  backupTab: 'psl' | 'mebn' = 'psl';
+  loadingBackups = false;
+  backupFeedback: string | null = null;
+  backupFeedbackIsError = false;
+  pslBackups: WeightBackupInfo[] = [];
+  mebnBackups: WeightBackupInfo[] = [];
+  confirmingRestoreId: string | null = null;
 
   constructor(private http: HttpClient, private kbConfigService: KbConfigService) {
     super();
@@ -510,6 +762,225 @@ export class KbWeightsPanelComponent extends BaseService implements OnInit, OnCh
     });
   }
 
+  // ── Session management ────────────────────────────────────────────────────
+
+  requestNewSession(): void {
+    this.confirmingNewSession = true;
+    this.confirmingPslReset = false;
+    this.confirmingMebnReset = false;
+    this.clearSessionFeedback();
+  }
+
+  cancelNewSession(): void { this.confirmingNewSession = false; }
+
+  confirmNewSession(): void {
+    if (this.factSheetId == null) return;
+    this.sessionBusy = true;
+    const params = new HttpParams()
+      .set('programId', this.selectedProgram)
+      .set('factSheetId', String(this.factSheetId));
+    this.http.post<NewSessionResult>(`${this.backendUrl}/kb/weights/session/new`, null, { params }).subscribe({
+      next: (result) => {
+        this.sessionBusy = false;
+        this.confirmingNewSession = false;
+        if (result.message) {
+          this.setSessionFeedback(result.message, true);
+        } else {
+          const pslMsg = result.pslBackupId ? `PSL backed up (${result.pslBackupId})` : 'PSL had no weights';
+          const mebnMsg = result.mebnBackupId ? `MEBN backed up (${result.mebnBackupId})` : 'MEBN had no weights';
+          this.setSessionFeedback(`New session started. ${pslMsg}; ${mebnMsg}.`, false);
+        }
+        this.loadWeights();
+        this.loadMebnWeights();
+      },
+      error: (err) => {
+        this.sessionBusy = false;
+        this.confirmingNewSession = false;
+        this.setSessionFeedback(err?.error?.message || err?.message || 'Reset failed', true);
+      },
+    });
+  }
+
+  requestPslReset(): void {
+    this.confirmingPslReset = true;
+    this.confirmingNewSession = false;
+    this.confirmingMebnReset = false;
+    this.clearSessionFeedback();
+  }
+
+  cancelPslReset(): void { this.confirmingPslReset = false; }
+
+  confirmPslReset(): void {
+    this.sessionBusy = true;
+    const params = new HttpParams().set('programId', this.selectedProgram);
+    this.http.post<ResetResult>(`${this.backendUrl}/kb/weights/reset`, null, { params }).subscribe({
+      next: (result) => {
+        this.sessionBusy = false;
+        this.confirmingPslReset = false;
+        const msg = result.backupId
+          ? `PSL weights reset. Backup: ${result.backupId}`
+          : 'PSL weights reset (no prior weights existed).';
+        this.setSessionFeedback(msg, false);
+        this.loadWeights();
+      },
+      error: (err) => {
+        this.sessionBusy = false;
+        this.confirmingPslReset = false;
+        this.setSessionFeedback(err?.error?.message || err?.message || 'PSL reset failed', true);
+      },
+    });
+  }
+
+  requestMebnReset(): void {
+    this.confirmingMebnReset = true;
+    this.confirmingNewSession = false;
+    this.confirmingPslReset = false;
+    this.clearSessionFeedback();
+  }
+
+  cancelMebnReset(): void { this.confirmingMebnReset = false; }
+
+  confirmMebnReset(): void {
+    if (this.factSheetId == null) return;
+    this.sessionBusy = true;
+    this.http.post<ResetResult>(`${this.backendUrl}/kb/weights/mebn/${this.factSheetId}/reset`, null).subscribe({
+      next: (result) => {
+        this.sessionBusy = false;
+        this.confirmingMebnReset = false;
+        const msg = result.backupId
+          ? `MEBN weights reset. Backup: ${result.backupId}`
+          : 'MEBN weights reset (no prior weights existed).';
+        this.setSessionFeedback(msg, false);
+        this.loadMebnWeights();
+      },
+      error: (err) => {
+        this.sessionBusy = false;
+        this.confirmingMebnReset = false;
+        this.setSessionFeedback(err?.error?.message || err?.message || 'MEBN reset failed', true);
+      },
+    });
+  }
+
+  // ── Backups panel ─────────────────────────────────────────────────────────
+
+  setBackupTab(tab: 'psl' | 'mebn'): void {
+    this.backupTab = tab;
+    this.confirmingRestoreId = null;
+    this.clearBackupFeedback();
+    if (tab === 'psl') {
+      this.loadPslBackups();
+    } else if (tab === 'mebn' && this.factSheetId != null) {
+      this.loadMebnBackups();
+    }
+  }
+
+  loadPslBackups(): void {
+    this.loadingBackups = true;
+    const params = new HttpParams().set('programId', this.selectedProgram);
+    this.http.get<WeightBackupInfo[]>(`${this.backendUrl}/kb/weights/backups`, { params }).subscribe({
+      next: (backups) => {
+        this.loadingBackups = false;
+        this.pslBackups = backups || [];
+      },
+      error: () => {
+        this.loadingBackups = false;
+        this.pslBackups = [];
+      },
+    });
+  }
+
+  loadMebnBackups(): void {
+    if (this.factSheetId == null) return;
+    this.loadingBackups = true;
+    this.http.get<WeightBackupInfo[]>(`${this.backendUrl}/kb/weights/mebn/${this.factSheetId}/backups`).subscribe({
+      next: (backups) => {
+        this.loadingBackups = false;
+        this.mebnBackups = backups || [];
+      },
+      error: () => {
+        this.loadingBackups = false;
+        this.mebnBackups = [];
+      },
+    });
+  }
+
+  triggerPslBackup(): void {
+    this.sessionBusy = true;
+    this.clearBackupFeedback();
+    const params = new HttpParams().set('programId', this.selectedProgram);
+    this.http.post<BackupResult>(`${this.backendUrl}/kb/weights/backup`, null, { params }).subscribe({
+      next: (result) => {
+        this.sessionBusy = false;
+        if (result.backupId) {
+          this.setBackupFeedback(`PSL backup created: ${result.backupId}`, false);
+          this.loadPslBackups();
+        } else {
+          this.setBackupFeedback(result.message || 'Nothing to back up', true);
+        }
+      },
+      error: (err) => {
+        this.sessionBusy = false;
+        this.setBackupFeedback(err?.error?.message || 'Backup failed', true);
+      },
+    });
+  }
+
+  triggerMebnBackup(): void {
+    if (this.factSheetId == null) return;
+    this.sessionBusy = true;
+    this.clearBackupFeedback();
+    this.http.post<BackupResult>(`${this.backendUrl}/kb/weights/mebn/${this.factSheetId}/backup`, null).subscribe({
+      next: (result) => {
+        this.sessionBusy = false;
+        if (result.backupId) {
+          this.setBackupFeedback(`MEBN backup created: ${result.backupId}`, false);
+          this.loadMebnBackups();
+        } else {
+          this.setBackupFeedback(result.message || 'Nothing to back up', true);
+        }
+      },
+      error: (err) => {
+        this.sessionBusy = false;
+        this.setBackupFeedback(err?.error?.message || 'MEBN backup failed', true);
+      },
+    });
+  }
+
+  requestRestore(type: 'psl' | 'mebn', backupId: string): void {
+    this.confirmingRestoreId = backupId;
+    this.clearBackupFeedback();
+  }
+
+  cancelRestore(): void { this.confirmingRestoreId = null; }
+
+  confirmRestore(type: 'psl' | 'mebn', backupId: string): void {
+    this.sessionBusy = true;
+    const url = type === 'psl'
+      ? `${this.backendUrl}/kb/weights/restore`
+      : `${this.backendUrl}/kb/weights/mebn/${this.factSheetId}/restore`;
+    const params = type === 'psl'
+      ? new HttpParams().set('programId', this.selectedProgram).set('backupId', backupId)
+      : new HttpParams().set('backupId', backupId);
+    this.http.post<{ success: boolean; message: string }>(url, null, { params }).subscribe({
+      next: (result) => {
+        this.sessionBusy = false;
+        this.confirmingRestoreId = null;
+        this.setBackupFeedback(result.message || 'Restored.', !result.success);
+        if (result.success) {
+          if (type === 'psl') { this.loadWeights(); this.loadPslBackups(); }
+          else { this.loadMebnWeights(); this.loadMebnBackups(); }
+        }
+      },
+      error: (err) => {
+        this.sessionBusy = false;
+        this.confirmingRestoreId = null;
+        this.setBackupFeedback(err?.error?.message || 'Restore failed', true);
+      },
+    });
+  }
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
+
   weightBarPct(w: number): number {
     return Math.min(100, Math.max(0, Math.abs(w) * 100));
   }
@@ -545,5 +1016,25 @@ export class KbWeightsPanelComponent extends BaseService implements OnInit, OnCh
         }
       },
     });
+  }
+
+  private setSessionFeedback(msg: string, isError: boolean): void {
+    this.sessionFeedback = msg;
+    this.sessionFeedbackIsError = isError;
+    setTimeout(() => { this.sessionFeedback = null; }, 8000);
+  }
+
+  private clearSessionFeedback(): void {
+    this.sessionFeedback = null;
+  }
+
+  private setBackupFeedback(msg: string, isError: boolean): void {
+    this.backupFeedback = msg;
+    this.backupFeedbackIsError = isError;
+    setTimeout(() => { this.backupFeedback = null; }, 8000);
+  }
+
+  private clearBackupFeedback(): void {
+    this.backupFeedback = null;
   }
 }

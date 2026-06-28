@@ -18,7 +18,6 @@ package ai.kompile.app.services;
 
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -45,13 +44,12 @@ import static org.mockito.Mockito.*;
 class TableGraphNodeServiceTest {
 
     @Mock private KnowledgeGraphService knowledgeGraphService;
-    @Mock private GraphNodeRepository graphNodeRepository;
 
     private TableGraphNodeService service;
 
     @BeforeEach
     void setUp() {
-        service = new TableGraphNodeService(knowledgeGraphService, graphNodeRepository);
+        service = new TableGraphNodeService(knowledgeGraphService);
 
         // Mock createTableNode to return a valid node
         when(knowledgeGraphService.createTableNode(
@@ -63,14 +61,14 @@ class TableGraphNodeServiceTest {
                         .title("TestTable")
                         .build());
 
-        // Default: findByExternalIdAndNodeType returns a DOCUMENT node for common paths
+        // Default: getNodeByExternalId returns a DOCUMENT node for common paths
         GraphNode defaultDoc = GraphNode.builder()
                 .nodeId("doc-uuid-1")
                 .externalId("/data/report.xlsx")
                 .nodeType(NodeLevel.DOCUMENT)
                 .title("report.xlsx")
                 .build();
-        when(graphNodeRepository.findByExternalIdAndNodeType(anyString(), eq(NodeLevel.DOCUMENT)))
+        when(knowledgeGraphService.getNodeByExternalId(anyString(), eq(NodeLevel.DOCUMENT)))
                 .thenReturn(Optional.of(defaultDoc));
     }
 
@@ -147,7 +145,7 @@ class TableGraphNodeServiceTest {
                 .nodeType(NodeLevel.DOCUMENT)
                 .title("report.xlsx")
                 .build();
-        when(graphNodeRepository.findByExternalIdAndNodeType(eq("/data/report.xlsx"), eq(NodeLevel.DOCUMENT)))
+        when(knowledgeGraphService.getNodeByExternalId(eq("/data/report.xlsx"), eq(NodeLevel.DOCUMENT)))
                 .thenReturn(Optional.of(existingDoc));
 
         Map<String, Object> meta = new HashMap<>();

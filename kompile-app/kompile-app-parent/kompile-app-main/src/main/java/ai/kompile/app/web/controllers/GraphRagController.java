@@ -115,6 +115,7 @@ public class GraphRagController {
             response.put("relationships", result.getRelationships() != null ? result.getRelationships() : List.of());
             response.put("communities", result.getCommunities() != null ? result.getCommunities() : List.of());
             response.put("sourceChunks", result.getSourceChunks() != null ? result.getSourceChunks() : List.of());
+            response.put("sourceChunkRefs", result.getSourceChunkRefs() != null ? result.getSourceChunkRefs() : List.of());
 
             return ResponseEntity.ok(response);
 

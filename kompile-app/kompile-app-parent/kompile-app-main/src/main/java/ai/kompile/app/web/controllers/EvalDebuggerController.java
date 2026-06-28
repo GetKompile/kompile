@@ -16,12 +16,14 @@
 
 package ai.kompile.app.web.controllers;
 
+import ai.kompile.core.citation.CitationDto;
 import ai.kompile.core.evaluation.*;
 import ai.kompile.core.llm.chat.LLMChat;
 import ai.kompile.core.rag.RagQuery;
 import ai.kompile.core.rag.RagResult;
 import ai.kompile.core.rag.RagService;
 import ai.kompile.core.retrievers.RetrievedDoc;
+import ai.kompile.knowledgegraph.citation.CitationSupport;
 import ai.kompile.orchestrator.api.LlmProvider;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -354,7 +356,12 @@ public class EvalDebuggerController {
                     judgeRequest.setQuery(request.getPrompt());
                     judgeRequest.setExpectedAnswer(request.getExpectedAnswer());
                     judgeRequest.setActualAnswer(automatedResult.getActualAnswer());
-                    judgeRequest.setRetrievedDocuments(automatedResult.getRetrievedDocuments());
+                    judgeRequest.setRetrievedDocuments(
+                            automatedResult.getRetrievedDocuments() != null
+                                    ? automatedResult.getRetrievedDocuments().stream()
+                                            .map(EvalRetrievedDoc::text)
+                                            .collect(Collectors.toList())
+                                    : List.of());
 
                     ResponseEntity<LlmJudgeResult> judgeResponse = runLlmJudge(judgeRequest);
                     if (judgeResponse.getBody() != null && judgeResponse.getBody().isSuccess()) {
@@ -708,12 +715,15 @@ public class EvalDebuggerController {
         RagResult ragResult = ragService.answerQuery(query);
         long ragTimeMs = System.currentTimeMillis() - startTime;
 
-        // Extract retrieved document contents
-        List<String> retrievedDocs = new ArrayList<>();
+        // Extract retrieved document contents, preserving source citations
+        List<EvalRetrievedDoc> retrievedDocs = new ArrayList<>();
+        List<String> retrievedTexts = new ArrayList<>();
         if (ragResult.getRetrievedDocs() != null) {
-            retrievedDocs = ragResult.getRetrievedDocs().stream()
-                    .map(RetrievedDoc::getText)
-                    .collect(Collectors.toList());
+            for (RetrievedDoc doc : ragResult.getRetrievedDocs()) {
+                CitationDto citation = CitationSupport.from(doc.getMetadata(), doc.getScore(), null);
+                retrievedDocs.add(new EvalRetrievedDoc(doc.getText(), citation));
+                retrievedTexts.add(doc.getText());
+            }
         }
 
         // Build result
@@ -745,14 +755,14 @@ public class EvalDebuggerController {
                     report = evaluationService.evaluate(
                             testCase.getPrompt(),
                             ragResult.getAnswer(),
-                            retrievedDocs,
+                            retrievedTexts,
                             types,
                             context);
                 } else {
                     report = evaluationService.evaluate(
                             testCase.getPrompt(),
                             ragResult.getAnswer(),
-                            retrievedDocs,
+                            retrievedTexts,
                             context);
                 }
 

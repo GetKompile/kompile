@@ -18,6 +18,7 @@ package ai.kompile.staging.staging;
 
 import ai.kompile.modelmanager.registry.RegistryService;
 import ai.kompile.staging.conversion.ConversionService;
+import ai.kompile.core.staging.StagingModelInfo;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -75,7 +76,7 @@ class StagingServiceGgufIT {
 
         StagingModelInfo terminal = waitForTerminal(stagingService, modelId, 30_000L);
 
-        assertEquals(StagingStatus.FAILED, terminal.getStatus(),
+        assertEquals(ai.kompile.core.staging.StagingStatus.FAILED, terminal.getStatus(),
                 "Expected corrupted GGUF to fail staging. Final state: " + terminal);
 
         String error = terminal.getError();

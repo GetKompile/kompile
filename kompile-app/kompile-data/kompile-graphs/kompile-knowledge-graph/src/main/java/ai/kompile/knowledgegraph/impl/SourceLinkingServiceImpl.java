@@ -16,7 +16,6 @@
 package ai.kompile.knowledgegraph.impl;
 
 import ai.kompile.knowledgegraph.domain.*;
-import ai.kompile.knowledgegraph.repository.EntityMentionRepository;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import ai.kompile.knowledgegraph.service.SourceLinkingService;
 import lombok.extern.slf4j.Slf4j;
@@ -34,14 +33,10 @@ import java.util.stream.Collectors;
 @Slf4j
 public class SourceLinkingServiceImpl implements SourceLinkingService {
 
-    private EntityMentionRepository entityMentionRepository;
     private KnowledgeGraphService knowledgeGraphService;
 
     @Autowired
-    public SourceLinkingServiceImpl(
-            EntityMentionRepository entityMentionRepository,
-            KnowledgeGraphService knowledgeGraphService) {
-        this.entityMentionRepository = entityMentionRepository;
+    public SourceLinkingServiceImpl(KnowledgeGraphService knowledgeGraphService) {
         this.knowledgeGraphService = knowledgeGraphService;
     }
 
@@ -367,7 +362,9 @@ public class SourceLinkingServiceImpl implements SourceLinkingService {
 
         Set<String> concepts = new HashSet<>();
         for (GraphNode doc : documents) {
-            List<EntityMention> mentions = entityMentionRepository.findByNode(doc);
+            // Use the store-agnostic seam — MatrixKnowledgeGraphService derives these
+            // from ENTITY nodes whose _sourceDocumentId points to this document node.
+            List<EntityMention> mentions = knowledgeGraphService.getEntityMentionsForNode(doc);
             for (EntityMention mention : mentions) {
                 if (mention.getFactSheetId() == null || mention.getFactSheetId().equals(factSheetId)) {
                     concepts.add(mention.getEntityName());
@@ -445,16 +442,16 @@ public class SourceLinkingServiceImpl implements SourceLinkingService {
 
         log.info("Linking nodes by term '{}' (normalized: '{}')", term, normalizedTerm);
 
-        // Find all nodes with this term
+        // Find all nodes with this term via the store-agnostic seam.
+        // MatrixKnowledgeGraphService.getNodesWithEntity scans ENTITY nodes by normalized title.
         List<GraphNode> nodesWithTerm;
         if (factSheetId != null) {
-            nodesWithTerm = entityMentionRepository.findByEntityNameAndFactSheet(normalizedTerm, factSheetId)
-                .stream()
-                .map(EntityMention::getNode)
+            nodesWithTerm = knowledgeGraphService.getNodesWithEntity(normalizedTerm).stream()
+                .filter(n -> factSheetId.equals(n.getFactSheetId()))
                 .distinct()
                 .collect(Collectors.toList());
         } else {
-            nodesWithTerm = entityMentionRepository.findNodesWithEntity(normalizedTerm);
+            nodesWithTerm = knowledgeGraphService.getNodesWithEntity(normalizedTerm);
         }
 
         if (nodesWithTerm.size() < 2) {
@@ -564,15 +561,13 @@ public class SourceLinkingServiceImpl implements SourceLinkingService {
         List<GraphNode> nodes;
 
         if (factSheetId != null) {
-            nodes = entityMentionRepository.findByEntityNameAndFactSheet(normalizedTerm, factSheetId)
-                .stream()
-                .map(EntityMention::getNode)
+            nodes = knowledgeGraphService.getNodesWithEntity(normalizedTerm).stream()
+                .filter(n -> factSheetId.equals(n.getFactSheetId()))
                 .distinct()
                 .limit(limit)
                 .collect(Collectors.toList());
         } else {
-            nodes = entityMentionRepository.findNodesWithEntity(normalizedTerm)
-                .stream()
+            nodes = knowledgeGraphService.getNodesWithEntity(normalizedTerm).stream()
                 .limit(limit)
                 .collect(Collectors.toList());
         }
@@ -584,31 +579,31 @@ public class SourceLinkingServiceImpl implements SourceLinkingService {
 
     @Override
     public List<Map<String, Object>> getAllTerms(Long factSheetId, int limit) {
-        List<Object[]> topEntities;
+        // Derive term frequency by scanning ENTITY nodes — works on both JPA and matrix paths.
+        List<GraphNode> entityNodes = factSheetId != null
+                ? knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY)
+                : knowledgeGraphService.getNodesByType(NodeLevel.ENTITY);
 
-        if (factSheetId != null) {
-            topEntities = entityMentionRepository.findTopEntitiesByFactSheet(
-                factSheetId,
-                org.springframework.data.domain.PageRequest.of(0, limit)
-            );
-        } else {
-            topEntities = entityMentionRepository.findTopEntities(
-                org.springframework.data.domain.PageRequest.of(0, limit)
-            );
+        Map<String, Long> counts = new LinkedHashMap<>();
+        for (GraphNode n : entityNodes) {
+            if (n.getTitle() != null && !n.getTitle().isBlank()) {
+                String name = normalizeTerm(n.getTitle());
+                if (!name.isBlank()) counts.merge(name, 1L, Long::sum);
+            }
         }
 
-        return topEntities.stream()
-            .map(row -> Map.<String, Object>of(
-                "term", row[0],
-                "count", row[1]
-            ))
+        return counts.entrySet().stream()
+            .sorted(Map.Entry.<String, Long>comparingByValue().reversed())
+            .limit(limit)
+            .map(e -> Map.<String, Object>of("term", e.getKey(), "count", e.getValue()))
             .collect(Collectors.toList());
     }
 
     @Override
     public List<String> getSharedTerms(String nodeId1, String nodeId2, Long factSheetId) {
-        List<String> terms1 = entityMentionRepository.findEntitiesByNodeId(nodeId1);
-        List<String> terms2 = entityMentionRepository.findEntitiesByNodeId(nodeId2);
+        // Use store-agnostic getEntityNamesForNode — works on both JPA and matrix paths.
+        List<String> terms1 = knowledgeGraphService.getEntityNamesForNode(nodeId1);
+        List<String> terms2 = knowledgeGraphService.getEntityNamesForNode(nodeId2);
 
         Set<String> shared = new HashSet<>(terms1);
         shared.retainAll(new HashSet<>(terms2));
@@ -626,7 +621,10 @@ public class SourceLinkingServiceImpl implements SourceLinkingService {
     }
 
     private void createEntityMentionIfNotExists(GraphNode node, String normalizedTerm, String entityType) {
-        Optional<EntityMention> existing = entityMentionRepository.findByNodeAndEntityName(node, normalizedTerm);
+        // Use the store-agnostic seam: findEntityMention is Optional.empty() on the matrix path
+        // (no persistent mention table), and saveEntityMention is a no-op on matrix — both are
+        // correct since matrix-path mentions are derived on-the-fly from ENTITY node metadata.
+        Optional<EntityMention> existing = knowledgeGraphService.findEntityMention(node, normalizedTerm);
         if (existing.isEmpty()) {
             EntityMention mention = EntityMention.builder()
                 .node(node)
@@ -635,7 +633,7 @@ public class SourceLinkingServiceImpl implements SourceLinkingService {
                 .mentionCount(1)
                 .confidence(1.0)
                 .build();
-            entityMentionRepository.save(mention);
+            knowledgeGraphService.saveEntityMention(mention);
         }
     }
 }

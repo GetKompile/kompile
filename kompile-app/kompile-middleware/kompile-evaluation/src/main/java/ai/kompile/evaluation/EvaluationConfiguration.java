@@ -23,7 +23,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -33,7 +32,6 @@ import java.util.List;
  * Configuration for evaluation beans.
  */
 @Configuration(proxyBeanMethods = false)
-@EnableConfigurationProperties(EvaluationProperties.class)
 @ConditionalOnClass(name = "ai.kompile.evaluation.EvaluationConfiguration")
 @ConditionalOnProperty(name = "kompile.evaluation.enabled", havingValue = "true", matchIfMissing = false)
 public class EvaluationConfiguration {

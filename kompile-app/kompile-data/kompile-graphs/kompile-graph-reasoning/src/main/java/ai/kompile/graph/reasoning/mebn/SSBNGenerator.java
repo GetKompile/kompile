@@ -59,6 +59,17 @@ public class SSBNGenerator {
     private final double defaultLeakProbability;
     private final int maxRecursionDepth;
 
+    /**
+     * Observed/finding assignments: maps a grounded variable name (e.g. "isActive(alice)") to
+     * the name of the observed state (e.g. "TRUE").
+     *
+     * <p>Per Mahoney &amp; Laskey (UAI 1998) and Laskey (2008 Def. 4): a finding node is
+     * deterministic — its CPT is a point mass at the observed state — and its parents are
+     * <em>not</em> instantiated during SSBN construction.  Upward expansion terminates at
+     * every finding node.</p>
+     */
+    private Map<String, String> findings = new LinkedHashMap<>();
+
     public SSBNGenerator(MTheory mTheory, KnowledgeBase kb) {
         this(mTheory, kb, NoisyOrCpt.DEFAULT_LEAK, DEFAULT_MAX_RECURSION_DEPTH);
     }
@@ -108,7 +119,20 @@ public class SSBNGenerator {
 
     /**
      * Generate an SSBN focused on answering a specific query.
-     * Only includes MFrags reachable from the query variable's home MFrag.
+     *
+     * <p>Steps:</p>
+     * <ol>
+     *   <li>Restrict expansion to MFrags reachable from the query RV's home MFrag
+     *       (existing MFrag-level BFS).</li>
+     *   <li>Expand those MFrags with finding-termination (nodes registered via
+     *       {@link #withFindings} are deterministic leaves; their parents are not
+     *       instantiated).</li>
+     *   <li>Apply <b>Bayes-Ball ancestral-set pruning</b> on the grounded network:
+     *       keep only the ancestors of (query nodes ∪ evidence/finding nodes), plus
+     *       those nodes themselves.  Barren nodes — nodes with no path to any query
+     *       or evidence node — are removed.  This implements the standard relevance
+     *       criterion from Santos &amp; Carvalho (2016) and Shachter (1998).</li>
+     * </ol>
      *
      * @param queryRvName the random variable being queried
      * @return a minimal SSBN sufficient for the query
@@ -132,8 +156,48 @@ public class SSBNGenerator {
 
         buildAllCpts(network, parentBindings, distributionModes, sourceMFragMap);
 
+        // ── Bayes-Ball ancestral-set pruning ────────────────────────────────────
+        // Collect grounded query nodes: all nodes whose variable name matches
+        // the query RV name (propositional) or starts with "rvName(" (relational).
+        Set<String> queryVars = new LinkedHashSet<>();
+        for (BayesianNode n : network.getNodes()) {
+            String v = n.getVariableName();
+            if (v.equals(queryRvName) || v.startsWith(queryRvName + "(")) {
+                queryVars.add(v);
+            }
+        }
+
+        if (!queryVars.isEmpty()) {
+            Set<String> evidenceVars = new LinkedHashSet<>(findings.keySet());
+            Set<String> relevant = BayesBallRelevanceFilter.ancestralRelevant(
+                    network, queryVars, evidenceVars);
+            int before = network.size();
+            if (relevant.size() < before) {
+                log.info("Bayes-Ball pruning for query '{}': {} → {} nodes (removed {} barren/irrelevant)",
+                        queryRvName, before, relevant.size(), before - relevant.size());
+                network = BayesBallRelevanceFilter.prune(network, relevant);
+            }
+        }
+
         log.info("Query-focused SSBN generated for '{}': {}", queryRvName, network.getStatistics());
         return network;
+    }
+
+    /**
+     * Register observed values (findings) that terminate upward expansion.
+     *
+     * <p>Each entry maps a <em>grounded</em> variable name (e.g. {@code "isActive(alice)"})
+     * to the observed state name (e.g. {@code "TRUE"}).  During SSBN construction the
+     * named node is added as a deterministic leaf: its CPT becomes a point mass at the
+     * observed state and its parents are NOT instantiated (Mahoney &amp; Laskey UAI 1998;
+     * Laskey 2008 Def. 4).</p>
+     *
+     * @param findings map of groundedVariableName → observedStateName
+     * @return this (builder style)
+     */
+    public SSBNGenerator withFindings(Map<String, String> findings) {
+        this.findings = new LinkedHashMap<>(findings);
+        return this;
     }
 
     public int getMaxRecursionDepth() {
@@ -248,6 +312,27 @@ public class SSBNGenerator {
             List<String> entityArgs = resolveEntityArgs(rv, grounding);
 
             String groundedName = rv.ground(entityArgs);
+
+            // ── FINDING / EVIDENCE TERMINATION (Mahoney & Laskey UAI 1998; Laskey 2008 Def. 4) ──
+            // A finding node has an observed value.  It is added as a deterministic leaf and
+            // its parents are NOT instantiated — upward expansion terminates here.
+            if (findings.containsKey(groundedName)) {
+                if (!createdVariables.contains(groundedName)) {
+                    String kgNodeId = entityArgs.isEmpty() ? groundedName : entityArgs.get(0);
+                    BayesianNode bnNode = new BayesianNode(groundedName, kgNodeId,
+                            rv.getName() + "(" + String.join(",", entityArgs) + ")",
+                            rv.getStates());
+                    network.addNode(bnNode);
+                    createdVariables.add(groundedName);
+                    sourceMFragMap.putIfAbsent(groundedName, mfrag);
+                }
+                // Always (re-)stamp as FINDING: another MFrag may have created this node
+                // earlier with CONTEXTUAL mode (via the "ensure parent exists" block).
+                // The home MFrag's processing must win and override it.
+                distributionModes.put(groundedName, DistributionMode.FINDING);
+                // Do NOT wire parents — finding terminates upward expansion
+                continue;
+            }
 
             if (!createdVariables.contains(groundedName)) {
                 String kgNodeId = entityArgs.isEmpty() ? groundedName : entityArgs.get(0);
@@ -406,7 +491,27 @@ public class SSBNGenerator {
             String varName = node.getVariableName();
             DistributionMode mode = distributionModes.getOrDefault(varName, DistributionMode.CONTEXTUAL);
 
-            if (mode == DistributionMode.DEFAULT) {
+            if (mode == DistributionMode.FINDING) {
+                // ── FINDING / EVIDENCE NODE ──────────────────────────────────────────────
+                // Point-mass CPT at the observed state (Mahoney & Laskey UAI 1998).
+                // This node has no parents in the SSBN (expansion was terminated), so its
+                // CPT is a single-variable prior factor with P(observedState)=1.0.
+                String observedState = findings.get(varName);
+                int obsIdx = 0; // default to first state if state name is missing/unknown
+                if (observedState != null) {
+                    try {
+                        obsIdx = node.getStateIndex(observedState);
+                    } catch (IllegalArgumentException e) {
+                        log.warn("Finding '{}' references unknown state '{}' for variable '{}'; defaulting to index 0",
+                                varName, observedState, varName);
+                    }
+                }
+                int card = node.getCardinality();
+                double[] probs = new double[card]; // all zeros
+                probs[obsIdx] = 1.0;
+                node.setCpt(new Factor(List.of(varName), new int[]{card}, probs));
+
+            } else if (mode == DistributionMode.DEFAULT) {
                 // --- GAP 1: use the MFrag's defaultDistribution ---
                 List<ParentBinding> parents = parentBindings.getOrDefault(varName, List.of());
                 // Look up the source MFrag via the dedicated map (handles the root/no-parents case)
@@ -544,7 +649,12 @@ public class SSBNGenerator {
         /** Context constraints failed — use the MFrag's default distribution (or uniform prior). */
         DEFAULT,
         /** Recursive chain node — uses transition probability from parent. */
-        RECURSIVE
+        RECURSIVE,
+        /**
+         * Observed/finding node (Mahoney &amp; Laskey UAI 1998; Laskey 2008 Def. 4).
+         * CPT is a point mass at the observed state; parents are NOT instantiated.
+         */
+        FINDING
     }
 
     /**

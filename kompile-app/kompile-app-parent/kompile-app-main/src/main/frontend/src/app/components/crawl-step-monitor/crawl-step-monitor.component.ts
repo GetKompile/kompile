@@ -108,8 +108,15 @@ export class CrawlStepMonitorComponent {
   /** Compact mode (fact-sheet inline) trims the embedded transcript viewer + document table. */
   @Input() compact = false;
 
-  /** Emitted when the user clicks "Run now" on an archived/deferred step. */
+  /** Emitted when the user clicks a retry/re-run button on any terminal step. */
   @Output() runStepRequested = new EventEmitter<{ jobId: string; stepId: string }>();
+
+  /**
+   * Optional parent-controlled set of stepIds currently being re-run (in-flight HTTP calls).
+   * When provided, the corresponding button is disabled and shows a spinner.
+   * If omitted the component falls back to its own local tracking (cleared on next runStep call).
+   */
+  @Input() runningStepIds: Set<string> = new Set<string>();
 
   /** Expanded steps (multiple may be open). Per-instance so jobs never collide. */
   expandedSteps = new Set<string>();
@@ -123,6 +130,15 @@ export class CrawlStepMonitorComponent {
       this.expandedSteps.delete(stepId);
     } else {
       this.expandedSteps.add(stepId);
+      // Auto-open the LLM transcript when expanding an LLM/GRAPH step in the full view, so the
+      // transcript is visible by default instead of hidden behind a second click + a badge dot.
+      // (Compact fact-sheet cards stay collapsed so they aren't blown out.)
+      if (!this.compact) {
+        const step = this.steps?.find(s => s.stepId === stepId);
+        if (step && this.isLlmStep(step)) {
+          this.transcriptsOpen.add(stepId);
+        }
+      }
     }
   }
 
@@ -144,6 +160,10 @@ export class CrawlStepMonitorComponent {
 
   runStep(stepId: string): void {
     this.runStepRequested.emit({ jobId: this.jobId, stepId });
+  }
+
+  isStepInProgress(stepId: string): boolean {
+    return this.runningStepIds.has(stepId);
   }
 
   trackByStepId(_i: number, step: PipelineStepProgress): string {
@@ -173,9 +193,30 @@ export class CrawlStepMonitorComponent {
     return 'step-' + (status || 'pending').toLowerCase();
   }
 
+  /**
+   * True for every terminal state where the user can request a re-run.
+   * RUNNING/PENDING → no button (step is already active or not yet reached).
+   * SKIPPED → no button (step was intentionally excluded from the plan).
+   */
   isStepRunNowEligible(status: string | undefined): boolean {
     const s = (status || '').toUpperCase();
-    return s === 'ARCHIVED' || s === 'DEFERRED';
+    return s === 'COMPLETED' || s === 'FAILED' || s === 'ARCHIVED' || s === 'DEFERRED';
+  }
+
+  /** Human label for the run button, derived purely from status — NO hardcoded step ids. */
+  getRunStepLabel(status: string | undefined): string {
+    const s = (status || '').toUpperCase();
+    if (s === 'FAILED')   return 'Retry';
+    if (s === 'COMPLETED') return 'Re-run';
+    if (s === 'ARCHIVED')  return 'Run archived step';
+    return 'Run now'; // DEFERRED + any other eligible state
+  }
+
+  /** Icon for the run button. */
+  getRunStepIcon(status: string | undefined): string {
+    const s = (status || '').toUpperCase();
+    if (s === 'FAILED') return 'replay';
+    return 'play_circle';
   }
 
   /** Steps that drive the LLM graph extractor / embedding batch sizers (own the tuning telemetry). */
@@ -342,14 +383,17 @@ export class CrawlStepMonitorComponent {
       'RULE_GRAPH_PREP':        ['GRAPH_PREP'],
       'GRAPH_PREP':             ['GRAPH_PREP'],
       'CHUNKING':               ['CHUNKING'],
-      'GRAPH_EXTRACTION':       ['GRAPH_EXTRACTION'],
+      // GRAPH_EXTRACTION owns MODEL_ROUTING decisions (KGE backend selection) and may gate on
+      // RESOURCE_GATE events (heavy-memory OOM-floor defers).
+      'GRAPH_EXTRACTION':       ['GRAPH_EXTRACTION', 'MODEL_ROUTING', 'RESOURCE_GATE'],
       'CRAWL_SURFACE':          ['CRAWL_SURFACE'],
       'SURFACING':              ['CRAWL_SURFACE'],
       'ENTITY_RESOLUTION':      ['ENTITY_RESOLUTION'],
       'GRAPH_EDGE_CLEANUP':     ['EDGE_COMPUTATION'],
       'EDGE_COMPUTATION':       ['EDGE_COMPUTATION'],
-      'EMBEDDING':              ['EMBEDDING', 'VECTOR_INDEXING', 'INDEXING'],
-      'VECTOR_INDEXING':        ['EMBEDDING', 'VECTOR_INDEXING', 'INDEXING'],
+      // EMBEDDING owns RESOURCE_GATE events (memory-pressure batch resizes, gate waits).
+      'EMBEDDING':              ['EMBEDDING', 'VECTOR_INDEXING', 'INDEXING', 'RESOURCE_GATE'],
+      'VECTOR_INDEXING':        ['EMBEDDING', 'VECTOR_INDEXING', 'INDEXING', 'RESOURCE_GATE'],
       'ENRICHMENT':             ['ENRICHMENT'],
     };
     const phases = phaseMap[base] || [base];
@@ -371,6 +415,35 @@ export class CrawlStepMonitorComponent {
     return this.getStepEvents(step).filter(e => {
       const l = (e.level || '').toUpperCase();
       return l === 'ERROR' || l === 'WARN';
+    });
+  }
+
+  /**
+   * Resource & model-routing decision events for a step: RESOURCE_GATE events (memory-pressure
+   * gate waits, OOM-floor defers, embedding batch resizes) and MODEL_ROUTING events (KGE backend
+   * selection). These are surfaced separately from the general activity log so they stand out in
+   * real time when a 'decision' SSE event triggers a snapshot refresh.
+   */
+  getStepResourceEvents(step: PipelineStepProgress): CrawlStageEvent[] {
+    const events = this.job?.recentEvents;
+    if (!events) return [];
+    // Match any event whose phase is RESOURCE_GATE or MODEL_ROUTING, regardless of step — these
+    // are job-level concerns but we attach them to the step that triggered them (EMBEDDING /
+    // GRAPH_EXTRACTION) via the phase-map. We also check the step's own phases for consistency.
+    const phases = this.stepIdToPhases(step.stepId);
+    return events.filter(e => {
+      const phase = (e.phase || '').toUpperCase();
+      return (phase === 'RESOURCE_GATE' || phase === 'MODEL_ROUTING') && phases.includes(phase);
+    });
+  }
+
+  /** Memory-triggered tuning decisions for a step (subset of getStepTuningDecisions filtered by
+   *  memory_critical / memory_pressure / heap_critical / heap_recovered / emergency reasons). */
+  getStepMemoryDecisions(step: PipelineStepProgress): TuningDecision[] {
+    return this.getStepTuningDecisions(step).filter(d => {
+      const r = (d.reason || '').toLowerCase();
+      return r.includes('memory') || r.includes('heap') || r.includes('emergency')
+          || r.includes('oom') || r.includes('gate');
     });
   }
 

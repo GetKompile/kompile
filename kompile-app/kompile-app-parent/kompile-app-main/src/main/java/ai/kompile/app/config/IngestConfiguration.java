@@ -132,13 +132,13 @@ public class IngestConfiguration {
      * improving embedding throughput. Default: 1000 chars for good balance
      * between retrieval granularity and batch efficiency.</p>
      */
-    private int defaultChunkSize = 1000;
+    private int defaultChunkSize = 2000;
 
     /**
      * Default overlap between chunks in characters.
      * 10% of chunk size is recommended for context preservation.
      */
-    private int defaultChunkOverlap = 100;
+    private int defaultChunkOverlap = 200;
 
     /**
      * Default chunking strategy.
@@ -170,7 +170,8 @@ public class IngestConfiguration {
     /**
      * Directory for storing processing state files for resume support.
      */
-    private String stateDirectory = System.getProperty("user.home") + "/.kompile/state";
+    // Per-project: resolve under -Dkompile.data.dir (set by the app/start scripts), else the global home.
+    private String stateDirectory = System.getProperty("kompile.data.dir", System.getProperty("user.home") + "/.kompile") + "/state";
 
     // ========== Pipeline Threading Settings ==========
 

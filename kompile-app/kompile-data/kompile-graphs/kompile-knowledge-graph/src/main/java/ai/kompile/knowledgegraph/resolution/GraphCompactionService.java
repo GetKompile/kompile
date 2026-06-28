@@ -18,7 +18,6 @@ package ai.kompile.knowledgegraph.resolution;
 import ai.kompile.cli.common.KompileHome;
 import ai.kompile.core.embeddings.EmbeddingModel;
 import ai.kompile.knowledgegraph.domain.*;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.databind.JsonNode;
 import ai.kompile.cli.common.util.JsonUtils;
@@ -69,6 +68,13 @@ public class GraphCompactionService {
     private static final int DEFAULT_MAX_TOTAL_RESOLUTION_CANDIDATES = 50_000;
     private static final int DEFAULT_MAX_CROSS_TYPE_RESOLUTION_CANDIDATES = 10_000;
     private static final int DEFAULT_MAX_NORMALIZED_TITLE_FREQUENCY = 200;
+    /**
+     * Page size for chunked entity-node loading during ENTITY_RESOLUTION (Fix 2).
+     * Only this many {@link GraphNode} wrapper objects are held in one go, so the
+     * heap impact during compaction is bounded even for very large fact-sheet crawls.
+     * Configurable via {@code -Dkompile.compaction.entityLoadChunkSize}.
+     */
+    private static final int DEFAULT_ENTITY_LOAD_CHUNK_SIZE = 1_000;
     private static final Pattern SUFFIX_PATTERN = Pattern.compile(
             "\\b(Inc\\.?|Corp\\.?|Corporation|Ltd\\.?|Limited|LLC|Co\\.?|Company|Group|Plc\\.?)$",
             Pattern.CASE_INSENSITIVE
@@ -270,9 +276,6 @@ public class GraphCompactionService {
     @Autowired(required = false)
     private EmbeddingModel embeddingModel;
 
-    @Autowired(required = false)
-    private GraphNodeRepository nodeRepository;
-
     private int embeddingCacheSize = 128;
 
     private int embeddingNativeMemoryThresholdPercent = 80;
@@ -427,61 +430,76 @@ public class GraphCompactionService {
         embeddingMatchingDisabledForRun.set(false);
         nativeEmbeddingsTouchedForRun.set(false);
         try {
-            List<GraphNode> entityNodes = loadEntityNodes(factSheetId);
+            // Fix 2 — chunked entity loading: for fact-sheet-scoped crawls load entity nodes
+            // in bounded pages so the full list is never materialised all at once on top of the
+            // already-large in-heap AdjacencyMatrixGraph (observed peak ~31g with 32g limit).
+            // Entity-type correction and generic-artifact filtering are applied per chunk so
+            // filtered-out nodes can be GC'd immediately rather than held until the full load
+            // completes.  The null-factSheetId (legacy all-graph) path is unchanged.
+            int chunkSize = Integer.getInteger("kompile.compaction.entityLoadChunkSize",
+                    DEFAULT_ENTITY_LOAD_CHUNK_SIZE);
+            BlockingResult blockingResult = (factSheetId != null)
+                    ? buildEntityBlocksChunked(factSheetId, config, chunkSize)
+                    : buildEntityBlocksFromList(loadEntityNodes(null), config);
 
-            if (entityNodes.size() < 2) {
+            int totalEntityNodes = blockingResult.totalEntityNodes();
+            int skippedGenericArtifacts = blockingResult.skippedGenericArtifacts();
+            Map<String, List<GraphNode>> blocks = blockingResult.blocks();
+            int resolvableCount = blocks.values().stream().mapToInt(List::size).sum();
+
+            if (totalEntityNodes < 2) {
                 notifyProgress(config, new CompactionProgress(
                         "COMPLETED",
-                        entityNodes.size(),
-                        Math.max(1, entityNodes.size()),
+                        totalEntityNodes,
+                        Math.max(1, totalEntityNodes),
                         null,
                         0,
                         0,
                         "Compaction skipped: fewer than two entity nodes",
-                        entityNodes.size(),
+                        totalEntityNodes,
                         0,
                         System.currentTimeMillis() - start));
                 return CompactionResult.empty();
             }
 
             log.info("Starting graph compaction on {} ENTITY nodes (factSheetId={}, threshold={})",
-                    entityNodes.size(), factSheetId, config.similarityThreshold());
+                    totalEntityNodes, factSheetId, config.similarityThreshold());
 
-            // Phase 0: Entity type correction pre-pass (optional)
-            if (config.entityTypeCorrection()) {
-                correctEntityTypes(entityNodes);
-            }
-
-            // Phase 1: filter generic artifacts and block by narrow resolution keys.
-            ResolutionInput resolutionInput = prepareResolutionInput(entityNodes, config);
-            List<GraphNode> resolvableNodes = resolutionInput.nodes();
-            Map<String, List<GraphNode>> blocks = blockByResolutionKey(resolvableNodes, config);
+            // Phase 0 + 1 are now integrated into buildEntityBlocksChunked / buildEntityBlocksFromList.
 
             notifyProgress(config, new CompactionProgress(
                     "LOADED",
                     0,
-                    entityNodes.size(),
+                    totalEntityNodes,
                     null,
                     0,
                     blocks.size(),
-                    "Loaded " + entityNodes.size() + " entity nodes for compaction ("
-                            + resolvableNodes.size() + " resolvable, "
-                            + resolutionInput.skippedGenericArtifacts() + " generic artifact(s) skipped)",
-                    resolutionInput.skippedGenericArtifacts(),
+                    "Loaded " + totalEntityNodes + " entity nodes for compaction ("
+                            + resolvableCount + " resolvable, "
+                            + skippedGenericArtifacts + " generic artifact(s) skipped)",
+                    skippedGenericArtifacts,
                     0,
                     System.currentTimeMillis() - start));
 
-            if (resolvableNodes.size() < 2 || blocks.isEmpty()) {
+            // P3 diagnostic: log the resolvable-node count and skip reason after the generic filter.
+            // This makes it possible to distinguish "all entities are generic spreadsheet artifacts"
+            // (0 merges expected) from "named entities present but not matching" (bug to fix).
+            log.info("Graph compaction (factSheetId={}): total={} entity nodes, resolvable={} after generic filter "
+                            + "(skipped {} generic artifacts: CELL/TABLE/EMAIL/etc.), blocks={}",
+                    factSheetId, totalEntityNodes, resolvableCount,
+                    skippedGenericArtifacts, blocks.size());
+
+            if (resolvableCount < 2 || blocks.isEmpty()) {
                 log.info("No resolvable entity pairs after filtering generic artifacts");
                 notifyProgress(config, new CompactionProgress(
                         "COMPLETED",
-                        entityNodes.size(),
-                        entityNodes.size(),
+                        totalEntityNodes,
+                        totalEntityNodes,
                         null,
                         0,
                         Math.max(1, blocks.size()),
                         "Compaction complete: no resolvable entity pairs found",
-                        entityNodes.size(),
+                        totalEntityNodes,
                         0,
                         System.currentTimeMillis() - start));
                 return CompactionResult.empty();
@@ -560,7 +578,7 @@ public class GraphCompactionService {
                         blocks.size(),
                         blocks.size(),
                         "Compaction complete: no merge candidates found",
-                        entityNodes.size(),
+                        totalEntityNodes,
                         0,
                         System.currentTimeMillis() - start));
                 return CompactionResult.empty();
@@ -568,6 +586,13 @@ public class GraphCompactionService {
 
             log.info("Found {} merge candidates across {} type blocks",
                     allCandidates.size(), blocks.size());
+
+            // Flatten the blocks map to a single list for connected-component BFS.
+            // These are the same GraphNode objects already referenced by the blocks map
+            // (no duplication), just a flat view for the nodeMap lookup.
+            List<GraphNode> resolvableNodes = blocks.values().stream()
+                    .flatMap(List::stream)
+                    .collect(Collectors.toList());
 
             // Phase 3: Build connected components from match edges
             List<List<GraphNode>> components = findConnectedComponents(allCandidates, resolvableNodes);
@@ -579,7 +604,7 @@ public class GraphCompactionService {
                     blocks.size(),
                     blocks.size(),
                     "Found " + components.size() + " merge component(s)",
-                    entityNodes.size(),
+                    totalEntityNodes,
                     allCandidates.size(),
                     System.currentTimeMillis() - start));
 
@@ -615,7 +640,7 @@ public class GraphCompactionService {
                             "Merging component " + componentIndex + "/" + totalComponents
                                     + " (" + entitiesMerged + " entities merged, "
                                     + edgesRedirected + " edges redirected)",
-                            entityNodes.size(),
+                            totalEntityNodes,
                             allCandidates.size(),
                             now - start));
                 }
@@ -628,20 +653,20 @@ public class GraphCompactionService {
                     decisions.size(), entitiesMerged, edgesRedirected, elapsed);
             notifyProgress(config, new CompactionProgress(
                     "COMPLETED",
-                    entityNodes.size(),
-                    entityNodes.size(),
+                    totalEntityNodes,
+                    totalEntityNodes,
                     null,
                     blocks.size(),
                     blocks.size(),
                     "Compaction complete: " + entitiesMerged + " entities merged, "
                             + edgesRedirected + " edges redirected",
-                    entityNodes.size(),
+                    totalEntityNodes,
                     allCandidates.size(),
                     elapsed));
 
             return new CompactionResult(
-                    entityNodes.size(),
-                    entityNodes.size() - entitiesMerged,
+                    totalEntityNodes,
+                    totalEntityNodes - entitiesMerged,
                     entitiesMerged,
                     edgesRedirected,
                     decisions.size(),
@@ -709,15 +734,20 @@ public class GraphCompactionService {
     /**
      * Preview merge candidates without executing merges within one fact sheet.
      * A null factSheetId preserves the legacy all-graph behavior.
+     * Uses the same chunked entity-node loading as {@link #compact} (Fix 2).
      */
     public List<MatchCandidate> previewCandidates(Long factSheetId, CompactionConfig config) {
         refreshRuntimeConfig();
-        List<GraphNode> entityNodes = loadEntityNodes(factSheetId);
-        if (entityNodes.size() < 2) return List.of();
+        int chunkSize = Integer.getInteger("kompile.compaction.entityLoadChunkSize",
+                DEFAULT_ENTITY_LOAD_CHUNK_SIZE);
+        BlockingResult blockingResult = (factSheetId != null)
+                ? buildEntityBlocksChunked(factSheetId, config, chunkSize)
+                : buildEntityBlocksFromList(loadEntityNodes(null), config);
 
+        if (blockingResult.totalEntityNodes() < 2) return List.of();
+
+        Map<String, List<GraphNode>> blocks = blockingResult.blocks();
         try {
-            ResolutionInput resolutionInput = prepareResolutionInput(entityNodes, config);
-            Map<String, List<GraphNode>> blocks = blockByResolutionKey(resolutionInput.nodes(), config);
             List<MatchCandidate> allCandidates = new ArrayList<>();
             Set<String> candidatePairKeys = new HashSet<>();
             for (Map.Entry<String, List<GraphNode>> block : blocks.entrySet()) {
@@ -742,10 +772,80 @@ public class GraphCompactionService {
     }
 
     private List<GraphNode> loadEntityNodes(Long factSheetId) {
-        if (factSheetId != null && nodeRepository != null) {
-            return nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.ENTITY);
+        if (factSheetId != null) {
+            // Matrix/vector store path: use the store-agnostic fact-sheet-scoped method so
+            // resolution only touches entities from this crawl, not the entire global graph.
+            List<GraphNode> nodes = knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY);
+            log.debug("loadEntityNodes: {} ENTITY nodes for factSheet={}", nodes.size(), factSheetId);
+            return nodes;
         }
+        // No fact-sheet scope: return all ENTITY nodes up to 100k limit
         return knowledgeGraphService.searchNodes("", NodeLevel.ENTITY, 100_000);
+    }
+
+    /**
+     * Build entity-type blocks by loading ENTITY nodes in bounded chunks (Fix 2 — heap reduction).
+     *
+     * <p>Instead of materialising all entity nodes at once ({@code loadEntityNodes} +
+     * {@code prepareResolutionInput} + {@code blockByResolutionKey} holding three data
+     * structures simultaneously), this method loads one page of {@code chunkSize} nodes at
+     * a time, applies entity-type correction and generic-artifact filtering per chunk, and
+     * adds surviving nodes directly to the blocks map.  Each chunk object list goes out of
+     * scope at the end of the loop iteration so filtered-out nodes can be GC'd without
+     * waiting for the whole load to finish.</p>
+     *
+     * <p>Peak heap = one chunk ({@code chunkSize} {@link GraphNode} objects) + the
+     * accumulated {@code blocks} map (only the nodes that passed the generic filter).</p>
+     *
+     * @param factSheetId the fact sheet to scope (must not be null)
+     * @param config      compaction config for generic-artifact filtering and type correction
+     * @param chunkSize   number of entity nodes to load per page
+     */
+    private BlockingResult buildEntityBlocksChunked(Long factSheetId, CompactionConfig config,
+                                                    int chunkSize) {
+        Map<String, List<GraphNode>> blocks = new LinkedHashMap<>();
+        int totalLoaded = 0;
+        int totalSkipped = 0;
+        int offset = 0;
+        while (true) {
+            List<GraphNode> chunk = knowledgeGraphService.getEntityNodesInFactSheetPage(
+                    factSheetId, offset, chunkSize);
+            if (chunk.isEmpty()) break;
+            totalLoaded += chunk.size();
+
+            // Per-chunk entity type correction (same logic as the full-list pass in compact()).
+            if (config != null && config.entityTypeCorrection()) {
+                correctEntityTypes(chunk);
+            }
+            // Filter generics and block — only surviving nodes are retained.
+            ResolutionInput chunkInput = prepareResolutionInput(chunk, config);
+            totalSkipped += chunkInput.skippedGenericArtifacts();
+            for (GraphNode node : chunkInput.nodes()) {
+                String key = extractEntityType(node);
+                blocks.computeIfAbsent(key, k -> new ArrayList<>()).add(node);
+            }
+            // chunk exits scope here; GC can reclaim nodes that didn't survive filtering.
+            if (chunk.size() < chunkSize) break;
+            offset += chunk.size();
+        }
+        log.debug("buildEntityBlocksChunked: factSheetId={} loaded={} skipped={} blocks={}",
+                factSheetId, totalLoaded, totalSkipped, blocks.size());
+        return new BlockingResult(totalLoaded, totalSkipped, blocks);
+    }
+
+    /**
+     * Build entity-type blocks from an already-materialised list (used for the
+     * {@code factSheetId == null} / legacy all-graph path in {@link #compact} and
+     * {@link #previewCandidates}).
+     */
+    private BlockingResult buildEntityBlocksFromList(List<GraphNode> entityNodes,
+                                                     CompactionConfig config) {
+        if (config != null && config.entityTypeCorrection()) {
+            correctEntityTypes(entityNodes);
+        }
+        ResolutionInput resolutionInput = prepareResolutionInput(entityNodes, config);
+        Map<String, List<GraphNode>> blocks = blockByResolutionKey(resolutionInput.nodes(), config);
+        return new BlockingResult(entityNodes.size(), resolutionInput.skippedGenericArtifacts(), blocks);
     }
 
     /**
@@ -1219,6 +1319,19 @@ public class GraphCompactionService {
                 List<GraphNode> blockB = blocks.get(blockKeyB);
                 log.info("Cross-type matching: {} ({}) × {} ({})",
                         blockKeyA, blockA.size(), blockKeyB, blockB.size());
+
+                // Pre-compute embeddings for both blocks before pair-scoring to avoid
+                // per-pair embedBatch(1-2 items) calls (causes EMBED_BATCH_DONE: 1 texts)
+                if (embeddingModel != null) {
+                    List<GraphNode> combined = new ArrayList<>(blockA.size() + blockB.size());
+                    combined.addAll(blockA);
+                    combined.addAll(blockB);
+                    try {
+                        precomputeBlockEmbeddings(combined, effectiveEmbeddingBatchSize(64), config);
+                    } catch (Exception e) {
+                        log.warn("Cross-type embedding precomputation failed ({}), will fall back to per-pair", e.getMessage());
+                    }
+                }
 
                 for (GraphNode a : blockA) {
                     checkInterrupted();
@@ -3011,6 +3124,17 @@ public class GraphCompactionService {
     record ResolutionInput(
             List<GraphNode> nodes,
             int skippedGenericArtifacts
+    ) {}
+
+    /**
+     * Intermediate result of chunked entity-node loading for compaction (Fix 2).
+     * Holds the pre-built entity-type blocks and the counts needed for progress tracking,
+     * replacing the old {@code List<GraphNode> entityNodes} + {@code ResolutionInput} pair.
+     */
+    record BlockingResult(
+            int totalEntityNodes,
+            int skippedGenericArtifacts,
+            Map<String, List<GraphNode>> blocks
     ) {}
 
     /**

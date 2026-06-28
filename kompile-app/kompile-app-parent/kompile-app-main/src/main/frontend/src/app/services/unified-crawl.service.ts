@@ -50,6 +50,10 @@ export interface GraphExtractionConfig {
   entityResolutionEmbeddingThreshold?: number;
   minConfidence?: number;
   customPrompt?: string;
+  /** Whitelist of provider prefixes allowed for the extraction model (e.g. ["opencode"]). Empty = all. */
+  extractionModelProviderAllow?: string[];
+  /** Substrings that disqualify a model id from extraction (case-insensitive). Replaces the default ["claude","codex"]. */
+  extractionModelExcludeMarkers?: string[];
 }
 
 export interface VectorIndexConfig {
@@ -153,6 +157,30 @@ export interface DeduplicationConfig {
   trackDuplicateRelations?: boolean;
 }
 
+export interface ScriptTransliterationConfig {
+  enabled: boolean;
+  targetScript?: string;
+  sourceScript?: string;
+  preserveOriginal?: boolean;
+}
+
+export interface DateNumberNormalizationConfig {
+  enabled: boolean;
+  dateFormat?: string;
+  numberLocale?: string;
+  normalizeCurrency?: boolean;
+  normalizeUnits?: boolean;
+}
+
+export interface TerminologyStandardizationConfig {
+  enabled: boolean;
+  glossary?: { [variant: string]: string };
+  glossaryFile?: string;
+  caseSensitive?: boolean;
+  expandAbbreviations?: boolean;
+  contextAwareDisambiguation?: boolean;
+}
+
 export interface PreprocessingConfig {
   enabled: boolean;
   llmProvider?: string;
@@ -161,21 +189,70 @@ export interface PreprocessingConfig {
   translation?: TranslationConfig;
   languageDetection?: LanguageDetectionConfig;
   unicodeNormalization?: UnicodeNormalizationConfig;
+  scriptTransliteration?: ScriptTransliterationConfig;
   piiRedaction?: PiiRedactionConfig;
   boilerplateRemoval?: BoilerplateRemovalConfig;
   deduplication?: DeduplicationConfig;
+  dateNumberNormalization?: DateNumberNormalizationConfig;
+  terminologyStandardization?: TerminologyStandardizationConfig;
+}
+
+/** Per-request runtime overrides — any set field overrides the corresponding global config value. */
+export interface RuntimeConfig {
+  graphExtractionParallelism?: number;
+  graphExtractionBatchSize?: number;
+  graphExtractionTargetCharsPerBatch?: number;
+  sourceLoadParallelism?: number;
+  chunkingParallelism?: number;
+  vectorBatchSize?: number;
+  costSortChunks?: boolean;
+  entityResolutionBatchSize?: number;
+  edgeComputationParallelism?: number;
+  vectorIndexingParallelism?: number;
+  parallelVectorAndGraph?: boolean;
+  llmCallTimeoutSeconds?: number;
+  graphExtractionBatchTimeoutSeconds?: number;
+  graphExtractionRemoteParallelism?: number;
+  graphExtractionMaxItemsPerBatch?: number;
+  /** null = global setting, true/false = per-crawl override of incremental content-hash skipping */
+  incrementalByContentHash?: boolean;
+  /** true = force a full re-crawl for this request regardless of the global flag */
+  forceFullRecrawl?: boolean;
+  /** true = clear the fact sheet's graph at the very start of this crawl (destructive opt-in) */
+  clearGraphBeforeRun?: boolean;
+}
+
+/** ENRICHMENT-step graph hydration config (DERIVATION → PRUNE_COMPACT → HEALTH). */
+export interface HydrationConfig {
+  /** Stage IDs to execute. Empty = run all. Valid: DERIVATION, PRUNE_COMPACT, HEALTH. */
+  enabledStageIds?: string[];
+  /** Confidence threshold for pruning low-confidence inferred edges (0.0–1.0, default 0.4). */
+  confidencePruneThreshold?: number;
+  /** When true, stages execute without writing (dry-run). */
+  dryRun?: boolean;
 }
 
 export interface UnifiedCrawlRequest {
   name: string;
   factSheetId?: number | null;
+  factSheetName?: string;
   sources: UnifiedCrawlSource[];
   graphExtraction?: GraphExtractionConfig;
   vectorIndex?: VectorIndexConfig;
   processingRoute?: ProcessingRouteConfig;
   preprocessing?: PreprocessingConfig;
+  hydration?: HydrationConfig;
+  runtimeConfig?: RuntimeConfig;
   enabledSteps?: string[];
   archivedSteps?: string[];
+  /** Max validation retries per document before marking it permanently failed (default 2). */
+  maxValidationRetries?: number;
+  /** Default pipeline ID when no content route rule matches (null = system default). */
+  defaultPipelineId?: string;
+  /** Named ingest pipeline definitions (advanced; raw IngestPipelineDefinition[]). Empty = defaults. */
+  pipelines?: any[];
+  /** Content routing rules directing sources to pipelines (advanced; raw ContentRouteRule[]). Empty = defaults. */
+  routeRules?: any[];
   /** Present only for distributed crawls (POST /distributed-crawl/start): the coordinator partitions sources. */
   distribution?: DistributionConfig;
 }

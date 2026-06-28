@@ -117,31 +117,9 @@ public class ApplicationPropertiesWriter {
         File appPropsFile = new File(resourcesDir, "application.properties");
 
         try (FileWriter writer = new FileWriter(appPropsFile)) {
-            writeApplicationPropertiesHeaderCustom(writer, pomProperties);
-
-            if (includeVectorstorePgvector || includeEmbeddingPostgresml || includePgmlIndexer) {
-                writeDatabaseConfiguration(writer);
-                writeSchemaManagementConfiguration(writer);
-            }
-            writeAutoConfigurationExclusions(writer);
-            writeProviderEnablementFlags(writer);
-
-            writeStructuralCustom(writer, pomProperties);
-
-            writer.write("\n# --- Runtime Model Cache Configuration ---\n");
-            writer.write("# Your application will attempt to load models from a central cache.\n");
-            writer.write("# Set the " + ModelConstants.ENV_KOMPILE_MODEL_CACHE_DIR
-                    + " environment variable to specify the cache location.\n");
-            String defaultCachePath = Paths
-                    .get(System.getProperty("user.home"), ModelConstants.DEFAULT_KOMPILE_MODEL_CACHE_SUBDIR)
-                    .toAbsolutePath().toString().replace("\\", "\\\\");
-            writer.write("# If not set, it defaults to: " + defaultCachePath + "\n");
-            writer.write("# RagPomGenerator used this cache path during generation: "
-                    + modelManager.getBaseCachePath().toAbsolutePath().toString().replace("\\", "\\\\") + "\n");
-            writer.write("kompile.model.cache.path=${" + ModelConstants.ENV_KOMPILE_MODEL_CACHE_DIR + ":"
-                    + modelManager.getBaseCachePath().toAbsolutePath().toString().replace("\\", "\\\\") + "}\n\n");
-
-            writeConfigurationTemplate(writer);
+            writer.write("# Intentionally empty.\n");
+            writer.write("# Framework bootstrap is supplied by app-main's KompileBootstrapEnvironmentPostProcessor;\n");
+            writer.write("# all kompile config is managed JSON under config/*.json.\n");
         }
         System.out.println("Generated application.properties: " + appPropsFile.getAbsolutePath());
     }

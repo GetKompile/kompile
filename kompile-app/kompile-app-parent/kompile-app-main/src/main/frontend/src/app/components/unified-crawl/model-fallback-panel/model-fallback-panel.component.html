@@ -1,0 +1,140 @@
+<div class="fallback-panel">
+
+  <!-- Loading spinner -->
+  <div *ngIf="loading" class="loading-overlay">
+    <mat-spinner diameter="32"></mat-spinner>
+  </div>
+
+  <div *ngIf="!loading">
+
+    <!-- Enable toggle -->
+    <div class="panel-toggle-row">
+      <mat-slide-toggle [(ngModel)]="config.enabled" color="primary">
+        Enable model fallback
+      </mat-slide-toggle>
+      <span class="hint-text" matTooltip="When enabled, timed-out or throttled calls automatically retry on the next agent/model in the chain">
+        <mat-icon class="hint-icon">info_outline</mat-icon>
+      </span>
+    </div>
+
+    <mat-divider class="section-divider"></mat-divider>
+
+    <!-- Timeout and attempt settings -->
+    <div class="form-row">
+      <mat-form-field appearance="outline">
+        <mat-label>Per-call timeout (seconds)</mat-label>
+        <input matInput type="number" [(ngModel)]="config.perCallTimeoutSeconds" min="1" max="3600"
+               matTooltip="Maximum seconds to wait for a single LLM call before treating it as a timeout">
+      </mat-form-field>
+
+      <mat-form-field appearance="outline">
+        <mat-label>Max attempts</mat-label>
+        <input matInput type="number" [(ngModel)]="config.maxAttempts" min="1" max="20"
+               matTooltip="Maximum total attempts across the entire fallback chain before giving up">
+      </mat-form-field>
+    </div>
+
+    <div class="form-row">
+      <mat-form-field appearance="outline">
+        <mat-label>Throttle backoff (seconds)</mat-label>
+        <input matInput type="number" [(ngModel)]="config.throttleBackoffSeconds" min="0" max="3600"
+               matTooltip="Seconds to wait before retrying when a throttle signal is detected">
+      </mat-form-field>
+
+      <mat-form-field appearance="outline">
+        <mat-label>Consecutive timeouts before switch</mat-label>
+        <input matInput type="number" [(ngModel)]="config.consecutiveTimeoutsBeforeSwitch" min="1" max="20"
+               matTooltip="How many consecutive timeouts on an agent trigger switching to the next one in the chain">
+      </mat-form-field>
+    </div>
+
+    <mat-divider class="section-divider"></mat-divider>
+
+    <!-- Fallback chain -->
+    <div class="chain-header">
+      <h4>Fallback Chain</h4>
+      <p class="hint-text">
+        When a call times out or throttles, the system tries the next agent/model in order.
+        Empty model = use agent's current selection.
+      </p>
+    </div>
+
+    <div *ngIf="config.fallbackChain.length === 0" class="empty-chain">
+      <mat-icon>low_priority</mat-icon>
+      <span>No fallback entries. Add one below to enable the chain.</span>
+    </div>
+
+    <div class="chain-list">
+      <div *ngFor="let entry of config.fallbackChain; let i = index; trackBy: trackByIndex"
+           class="chain-entry">
+
+        <div class="chain-entry-order">
+          <span class="chain-index">{{ i + 1 }}</span>
+          <div class="chain-reorder-buttons">
+            <button mat-icon-button class="reorder-btn"
+                    [disabled]="i === 0"
+                    (click)="moveEntryUp(i)"
+                    matTooltip="Move up">
+              <mat-icon>arrow_upward</mat-icon>
+            </button>
+            <button mat-icon-button class="reorder-btn"
+                    [disabled]="i === config.fallbackChain.length - 1"
+                    (click)="moveEntryDown(i)"
+                    matTooltip="Move down">
+              <mat-icon>arrow_downward</mat-icon>
+            </button>
+          </div>
+        </div>
+
+        <mat-form-field appearance="outline" class="chain-agent-field">
+          <mat-label>Agent</mat-label>
+          <mat-select [(ngModel)]="entry.agentName" (selectionChange)="onAgentChanged(entry)">
+            <mat-option value="">-- Select agent --</mat-option>
+            <mat-option *ngFor="let agent of availableAgents" [value]="agent.agentName"
+                        [disabled]="!agent.available">
+              {{ agent.displayName || agent.agentName }}
+              <span *ngIf="!agent.available" class="unavailable-tag"> (unavailable)</span>
+            </mat-option>
+          </mat-select>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" class="chain-model-field">
+          <mat-label>Model (optional)</mat-label>
+          <mat-select [(ngModel)]="entry.modelId">
+            <mat-option value="">-- Use agent default --</mat-option>
+            <mat-option *ngFor="let model of getAvailableModelsForAgent(entry.agentName)"
+                        [value]="model">
+              {{ model }}
+            </mat-option>
+          </mat-select>
+        </mat-form-field>
+
+        <button mat-icon-button color="warn" class="remove-btn"
+                (click)="removeChainEntry(i)"
+                matTooltip="Remove this entry">
+          <mat-icon>delete</mat-icon>
+        </button>
+
+      </div>
+    </div>
+
+    <button mat-stroked-button color="primary" class="add-entry-btn" (click)="addChainEntry()">
+      <mat-icon>add</mat-icon> Add Entry
+    </button>
+
+    <mat-divider class="section-divider"></mat-divider>
+
+    <!-- Save button -->
+    <div class="panel-actions">
+      <button mat-raised-button color="primary" [disabled]="saving" (click)="saveConfig()">
+        <mat-icon>save</mat-icon>
+        {{ saving ? 'Saving...' : 'Save' }}
+      </button>
+      <button mat-button (click)="loadConfig()" [disabled]="loading || saving">
+        <mat-icon>refresh</mat-icon> Reload
+      </button>
+    </div>
+
+  </div>
+
+</div>

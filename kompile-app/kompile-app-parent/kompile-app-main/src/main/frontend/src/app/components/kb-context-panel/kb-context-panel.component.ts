@@ -11,6 +11,8 @@
 import { Component, Input, OnChanges, SimpleChanges, Output, EventEmitter, OnDestroy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
+import { Citation } from '../../models/api-models';
+import { SourceCitationComponent } from '../source-citation/source-citation.component';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
@@ -50,7 +52,8 @@ import { D3Node } from '../../models/graph-models';
     MatSliderModule,
     MatSnackBarModule,
     StrengthBadgeComponent,
-    ReasoningTrailComponent
+    ReasoningTrailComponent,
+    SourceCitationComponent
   ],
   template: `
     <div class="kb-context-panel">
@@ -86,10 +89,10 @@ import { D3Node } from '../../models/graph-models';
         </div>
 
         <!-- Evidence atoms -->
-        <div class="evidence-section" *ngIf="verifyResult?.evidence && verifyResult!.evidence!.length">
+        <div class="evidence-section" *ngIf="verifyResult?.evidenceAtoms && verifyResult!.evidenceAtoms!.length">
           <span class="section-label">Evidence</span>
           <mat-chip-set>
-            <mat-chip *ngFor="let ev of verifyResult!.evidence!.slice(0, 5)" class="evidence-chip">
+            <mat-chip *ngFor="let ev of verifyResult!.evidenceAtoms!.slice(0, 5)" class="evidence-chip">
               {{ ev.length > 50 ? (ev | slice:0:50) + '...' : ev }}
             </mat-chip>
           </mat-chip-set>
@@ -103,6 +106,11 @@ import { D3Node } from '../../models/graph-models';
             <span class="prov-meta" *ngIf="crawlRunId">Crawl: {{ crawlRunId | slice:0:12 }}...</span>
             <span class="prov-meta" *ngIf="extractedAt">Changed: {{ extractedAt | slice:0:10 }}</span>
           </div>
+        </div>
+
+        <!-- Source citation from node metadata -->
+        <div class="node-citation-section" *ngIf="node.metadata">
+          <app-source-citation [citation]="toCitation(node.metadata)" [compact]="true"></app-source-citation>
         </div>
 
         <!-- Action buttons -->
@@ -143,6 +151,7 @@ import { D3Node } from '../../models/graph-models';
           <app-reasoning-trail
             [trail]="trail"
             [loading]="trailLoading"
+            [stale]="!!(verifyResult?.meta?.stale)"
             mode="compact">
           </app-reasoning-trail>
         </div>
@@ -154,6 +163,8 @@ import { D3Node } from '../../models/graph-models';
 export class KbContextPanelComponent implements OnChanges, OnDestroy {
   @Input() node: D3Node | null = null;
   @Input() factSheetId: number | null = null;
+  /** Pass selectedTabIndex === 0 from the host so auto-verify is gated on panel visibility. */
+  @Input() isActive: boolean = false;
 
   @Output() onGround = new EventEmitter<string>();
 
@@ -171,6 +182,10 @@ export class KbContextPanelComponent implements OnChanges, OnDestroy {
 
   private destroy$ = new Subject<void>();
   private whySubject$ = new Subject<string>();
+  /** Feeds the debounced + cancel-in-flight auto-verify pipeline. */
+  private autoVerify$ = new Subject<D3Node>();
+  /** Per-node cache keyed by `nodeId_factSheetId`. Manual Verify bypasses and refreshes. */
+  private verifyCache = new Map<string, VerifyResponse>();
 
   constructor(
     private kbGrounding: KbGroundingService,
@@ -195,23 +210,73 @@ export class KbContextPanelComponent implements OnChanges, OnDestroy {
         this.snackBar.open('Explain failed: ' + (err.error?.message || err.message || 'Unknown error'), 'Dismiss', { duration: 3000 });
       }
     });
+
+    // Debounced + cancel-in-flight auto-verify pipeline.
+    // debounceTime(400): rapid node clicks collapse into a single request.
+    // switchMap: cancels the in-flight HTTP call when a newer node arrives.
+    this.autoVerify$.pipe(
+      debounceTime(400),
+      switchMap(node => {
+        const atom = node.id || node.label || node.title || '';
+        this.verifyLoading = true;
+        this.verifyError = null;
+        return this.kbGrounding.verify({ atom, factSheetId: this.factSheetId });
+      }),
+      takeUntil(this.destroy$)
+    ).subscribe({
+      next: resp => {
+        this.verifyLoading = false;
+        this.verifyResult = resp;
+        if (this.node) {
+          this.verifyCache.set(this.cacheKey(this.node), resp);
+        }
+      },
+      error: err => {
+        this.verifyLoading = false;
+        this.verifyError = err.error?.message || 'Verify failed';
+      }
+    });
   }
 
   ngOnChanges(changes: SimpleChanges): void {
+    // Node changed: check cache first; if not cached, only auto-verify when panel is visible.
     if (changes['node']) {
-      this.verifyResult = null;
       this.verifyError = null;
       this.trail = null;
       this.showCorrect = false;
       if (this.node) {
-        this.onVerify();
+        const cached = this.verifyCache.get(this.cacheKey(this.node));
+        if (cached) {
+          // Instant cache hit — no HTTP round-trip.
+          this.verifyResult = cached;
+          this.verifyLoading = false;
+        } else {
+          this.verifyResult = null;
+          if (this.isActive) {
+            // Panel is the active tab — push through the debounce + switchMap pipeline.
+            this.autoVerify$.next(this.node);
+          }
+          // else: panel is hidden; deferred until isActive flips true (handled below).
+        }
+      } else {
+        this.verifyResult = null;
       }
+    }
+
+    // Panel just became visible with an un-verified node — trigger now.
+    if (changes['isActive'] && this.isActive && this.node && !this.verifyResult && !this.verifyLoading) {
+      this.autoVerify$.next(this.node);
     }
   }
 
   ngOnDestroy(): void {
     this.destroy$.next();
     this.destroy$.complete();
+  }
+
+  /** Stable cache key: nodeId + factSheetId (different sheets must not share results). */
+  private cacheKey(node: D3Node): string {
+    return `${node.id}_${this.factSheetId ?? ''}`;
   }
 
   get band(): StrengthBand {
@@ -241,19 +306,49 @@ export class KbContextPanelComponent implements OnChanges, OnDestroy {
     return meta?.['_extractedAt'] ?? null;
   }
 
+  toCitation(meta: Record<string, any>): Citation {
+    const prov: Record<string, any> = {};
+    if (meta['provenance'] && typeof meta['provenance'] === 'object') {
+      Object.assign(prov, meta['provenance']);
+    }
+    if (meta['_extractedAt']) {
+      prov['extractedAt'] = meta['_extractedAt'];
+    }
+    return {
+      sourceId: meta['_sourceDocumentId'] ?? undefined,
+      crawlRunId: meta['_crawlRunId'] ?? undefined,
+      basisType: meta['_basisType'] ?? undefined,
+      pageNumber: meta['page_number'] != null ? Number(meta['page_number']) : undefined,
+      chunkIndex: meta['chunk_index'] != null ? Number(meta['chunk_index']) : undefined,
+      confidence: meta['confidence'] != null ? Number(meta['confidence']) : undefined,
+      provenance: Object.keys(prov).length ? prov : undefined
+    };
+  }
+
+  /**
+   * Manual Verify button: force-fresh (clears cache entry), immediate HTTP call.
+   * Staleness guard: ignores the response if the user has already moved to a different node.
+   */
   onVerify(): void {
     if (!this.node) return;
+    const node = this.node;
+    const key = this.cacheKey(node);
+    this.verifyCache.delete(key);
     this.verifyLoading = true;
     this.verifyError = null;
-    const atom = this.node.id || this.node.label || this.node.title || '';
+    const atom = node.id || node.label || node.title || '';
     this.kbGrounding.verify({ atom, factSheetId: this.factSheetId })
       .pipe(takeUntil(this.destroy$))
       .subscribe({
         next: resp => {
+          // Discard if the user has moved to a different node since this request started.
+          if (this.node?.id !== node.id) return;
           this.verifyLoading = false;
           this.verifyResult = resp;
+          this.verifyCache.set(key, resp);
         },
         error: err => {
+          if (this.node?.id !== node.id) return;
           this.verifyLoading = false;
           this.verifyError = err.error?.message || 'Verify failed';
         }
@@ -295,7 +390,7 @@ export class KbContextPanelComponent implements OnChanges, OnDestroy {
       question: resp.atom,
       confidence: this.verifyResult?.confidence ?? 0,
       naturalLanguageSummary: resp.naturalLanguageSummary,
-      derivationTree: resp.derivation,
+      derivationTree: resp.derivation ? JSON.parse(resp.derivation) : undefined,
       evidence: [],
       activatedRules: [],
       inferenceMode: 'UNKNOWN'

@@ -19,11 +19,14 @@ package ai.kompile.crawl.graph;
 import ai.kompile.core.crawl.graph.UnifiedCrawlRequest;
 import ai.kompile.crawl.graph.ontology.OntologyConformanceTagger;
 import ai.kompile.graph.reasoning.confidence.StrengthBand;
+import ai.kompile.knowledgegraph.confidence.KbConfig;
+import ai.kompile.knowledgegraph.confidence.KbConfigManager;
 import ai.kompile.knowledgegraph.maintenance.HealthSetpoints;
 import ai.kompile.knowledgegraph.maintenance.PruneCompactOrchestrator;
 import ai.kompile.knowledgegraph.maintenance.PruneCompactResult;
 import ai.kompile.knowledgegraph.reasoning.FactPromotionTracker;
 import ai.kompile.knowledgegraph.reasoning.IncrementalReasoningOrchestrator;
+import ai.kompile.knowledgegraph.reasoning.MebnTheoryRegistrationService;
 import ai.kompile.knowledgegraph.reasoning.RegroundResult;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -80,6 +83,17 @@ class GraphHydrationOrchestratorTest {
     @Mock
     private OntologyConformanceTagger ontologyConformanceTagger;
 
+    @Mock
+    private MebnTheoryRegistrationService mebnRegistrationService;
+
+    /**
+     * Used only by the flag-ON MEBN tests; NOT injected in setUp() so all other tests
+     * continue to use kbConfigManager=null → KbConfig.defaults() →
+     * mebnTheoryRegistrationOnCrawlEnabled=false.
+     */
+    @Mock
+    private KbConfigManager kbConfigManager;
+
     private GraphHydrationOrchestrator orchestrator;
 
     @BeforeEach
@@ -89,6 +103,10 @@ class GraphHydrationOrchestratorTest {
         ReflectionTestUtils.setField(orchestrator, "pruneCompactOrchestrator", pruneCompactOrchestrator);
         ReflectionTestUtils.setField(orchestrator, "promotionTracker", promotionTracker);
         ReflectionTestUtils.setField(orchestrator, "ontologyConformanceTagger", ontologyConformanceTagger);
+        // mebnRegistrationService is wired but kbConfigManager is NOT, so kbCfg() returns
+        // KbConfig.defaults() where mebnTheoryRegistrationOnCrawlEnabled=false — registration
+        // is never triggered in the baseline test suite.
+        ReflectionTestUtils.setField(orchestrator, "mebnRegistrationService", mebnRegistrationService);
 
         // Default stubs for FactPromotionTracker aggregate queries so existing tests don't fail.
         // Individual learning-metrics tests override these with specific counts.
@@ -688,5 +706,91 @@ class GraphHydrationOrchestratorTest {
         assertThat(stages).contains(GraphHydrationOrchestrator.STAGE_HEALTH);
         // The ONTOLOGY_CONFORMANCE skip callback was emitted
         assertThat(stages).contains(GraphHydrationOrchestrator.STAGE_ONTOLOGY_CONFORMANCE);
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────────
+    // 14. MEBN MTheory registration: gated by kbMebnTheoryRegistrationOnCrawlEnabled
+    // ──────────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Flag OFF (default): {@code kbConfigManager} is NOT injected → {@code kbCfg()} returns
+     * {@link KbConfig#defaults()} where {@code mebnTheoryRegistrationOnCrawlEnabled=false}.
+     * {@link MebnTheoryRegistrationService#registerMTheoryForFactSheet} must never be called.
+     */
+    @Test
+    void mebnRegistration_flagOff_default_neverCalled() {
+        // kbConfigManager deliberately NOT injected — defaults used (flag=false)
+        when(reasoningOrchestrator.runFullReground(40L))
+                .thenReturn(new RegroundResult(1, "run-mebn-off", Set.of()));
+        when(pruneCompactOrchestrator.run(anyLong(), anySet(), anyString(), anyBoolean(), any()))
+                .thenReturn(PruneCompactResult.of(0, 0, 0, 0, 0, null, false));
+
+        orchestrator.run(40L, HydrationConfig.defaults(), (s, m) -> {});
+
+        verify(mebnRegistrationService, never()).registerMTheoryForFactSheet(anyLong());
+        // Reground ran normally
+        verify(reasoningOrchestrator, times(1)).runFullReground(40L);
+    }
+
+    /**
+     * Flag ON: inject a {@link KbConfigManager} returning a config with
+     * {@code mebnTheoryRegistrationOnCrawlEnabled=true}.
+     * {@link MebnTheoryRegistrationService#registerMTheoryForFactSheet} must be called exactly
+     * once, and it must precede {@link IncrementalReasoningOrchestrator#runFullReground} (the
+     * Mockito InOrder verifies the ordering).
+     */
+    @Test
+    void mebnRegistration_flagOn_calledOnceBeforeReground() {
+        KbConfig enabledConfig = KbConfig.defaults();
+        enabledConfig.setMebnTheoryRegistrationOnCrawlEnabled(true);
+        when(kbConfigManager.current()).thenReturn(enabledConfig);
+        ReflectionTestUtils.setField(orchestrator, "kbConfigManager", kbConfigManager);
+
+        when(mebnRegistrationService.registerMTheoryForFactSheet(41L)).thenReturn(3);
+        when(reasoningOrchestrator.runFullReground(41L))
+                .thenReturn(new RegroundResult(2, "run-mebn-on", Set.of()));
+        when(pruneCompactOrchestrator.run(anyLong(), anySet(), anyString(), anyBoolean(), any()))
+                .thenReturn(PruneCompactResult.of(0, 0, 0, 0, 0, null, false));
+
+        orchestrator.run(41L, HydrationConfig.defaults(), (s, m) -> {});
+
+        // Registration was called exactly once with the correct factSheetId
+        verify(mebnRegistrationService, times(1)).registerMTheoryForFactSheet(41L);
+        // Reground ran — the theory is now registered so STEP 9 will fire inside it
+        verify(reasoningOrchestrator, times(1)).runFullReground(41L);
+        // Order: registration MUST precede reground
+        org.mockito.InOrder order = org.mockito.Mockito.inOrder(mebnRegistrationService, reasoningOrchestrator);
+        order.verify(mebnRegistrationService).registerMTheoryForFactSheet(41L);
+        order.verify(reasoningOrchestrator).runFullReground(41L);
+    }
+
+    /**
+     * Flag ON, but {@link MebnTheoryRegistrationService#registerMTheoryForFactSheet} throws.
+     * The exception must be swallowed; the derivation (and all subsequent stages) must still run.
+     */
+    @Test
+    void mebnRegistration_throws_doesNotAbortCrawl() {
+        KbConfig enabledConfig = KbConfig.defaults();
+        enabledConfig.setMebnTheoryRegistrationOnCrawlEnabled(true);
+        when(kbConfigManager.current()).thenReturn(enabledConfig);
+        ReflectionTestUtils.setField(orchestrator, "kbConfigManager", kbConfigManager);
+
+        when(mebnRegistrationService.registerMTheoryForFactSheet(42L))
+                .thenThrow(new RuntimeException("SSBN grounding OOM"));
+        when(reasoningOrchestrator.runFullReground(42L))
+                .thenReturn(new RegroundResult(5, "run-mebn-ex", Set.of()));
+        when(pruneCompactOrchestrator.run(anyLong(), anySet(), anyString(), anyBoolean(), any()))
+                .thenReturn(PruneCompactResult.of(0, 0, 0, 0, 0, null, false));
+
+        // Pipeline must not throw despite the registration failure
+        HydrationResult result = assertDoesNotThrow(() ->
+                orchestrator.run(42L, HydrationConfig.defaults(), (s, m) -> {}));
+
+        // Reground still ran — derivation was not aborted
+        verify(reasoningOrchestrator, times(1)).runFullReground(42L);
+        // Derivation succeeded: versions from reground are captured
+        assertEquals(5, result.relationsDerived());
+        // All 4 stages completed (DERIVATION + PRUNE_COMPACT + ONTOLOGY_CONFORMANCE + HEALTH)
+        assertEquals(4, result.stagesRun());
     }
 }

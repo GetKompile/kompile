@@ -10,6 +10,7 @@
   <mat-card class="start-crawl-card">
     <mat-card-header>
       <mat-card-title>Start New Crawl</mat-card-title>
+      <mat-card-subtitle>Quick crawl from a seed, or open the full crawl-to-graph launcher for every option</mat-card-subtitle>
     </mat-card-header>
     <mat-card-content>
       <div class="form-row">
@@ -43,9 +44,16 @@
     </mat-card-content>
     <mat-card-actions>
       <button mat-raised-button color="primary"
+              [disabled]="isLoading"
+              (click)="openLauncher()"
+              matTooltip="Full crawl-to-graph: sources, graph extraction, vector index, preprocessing, enrichment, runtime tuning, custom pipelines & routing">
+        <mat-icon>travel_explore</mat-icon> New Crawl-to-Graph…
+      </button>
+      <button mat-stroked-button color="primary"
               [disabled]="isLoading || !seed.trim()"
-              (click)="startCrawl()">
-        <mat-icon>play_arrow</mat-icon> Start Crawl
+              (click)="startCrawl()"
+              matTooltip="Quick web/directory crawl from the seed above">
+        <mat-icon>play_arrow</mat-icon> Quick Crawl
       </button>
     </mat-card-actions>
   </mat-card>
@@ -68,12 +76,17 @@
       <app-resource-strip></app-resource-strip>
       <div *ngIf="jobs.length === 0" class="no-jobs">No crawl jobs found.</div>
 
-      <div *ngFor="let job of jobs" class="job-row">
+      <div *ngFor="let job of jobs; trackBy: trackByJobId" class="job-row">
         <div class="job-header">
           <mat-chip [color]="getStatusColor(job.status)">{{ job.status }}</mat-chip>
           <mat-chip *ngIf="hasPartialCompletion(job)" class="partial-chip"
                     [matTooltip]="'Completed — some steps were intentionally skipped/archived: ' + stepStatusSummary(job)">
             Partial
+          </mat-chip>
+          <mat-chip *ngIf="hasResumableSteps(job)" class="resumable-chip"
+                    [matTooltip]="resumableStepCount(job) + ' step(s) can be resumed — open Steps to run them'">
+            <mat-icon>replay</mat-icon>
+            {{ resumableStepCount(job) }} resumable
           </mat-chip>
           <mat-chip *ngIf="job.resumedFromCheckpoint" class="resumed-chip"
                     [matTooltip]="'Resumed from checkpoint' + (job.resumedUrlCount ? ' (' + job.resumedUrlCount + ' URLs already visited)' : '')">
@@ -216,6 +229,7 @@
             [jobId]="job.jobId"
             [taskId]="getCrawlerHistoryTaskId(job)"
             [isJobRunning]="isJobActive(job.status)"
+            [runningStepIds]="getRunningStepIds(job.jobId)"
             (runStepRequested)="runStep($event.jobId, $event.stepId)">
           </app-crawl-step-monitor>
         </div>

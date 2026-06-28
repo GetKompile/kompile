@@ -79,7 +79,7 @@ class GpuToCpuMigrationServiceTest {
                 ? List.of(new GpuSnapshot(0, 0L, 1000L, 0L, 0.9, gpu))
                 : List.of();
         return new ResourceSnapshot(0L, 0.5, 0.5, 0.5, 0.0,
-                cpu, ram, PressureLevel.NOMINAL, PressureLevel.NOMINAL, gpus, gpuAvail);
+                cpu, ram, PressureLevel.NOMINAL, PressureLevel.NOMINAL, gpus, gpuAvail, -1L);
     }
 
     /** Worst-GPU under HIGH VRAM pressure with the host CPU/RAM healthy. */

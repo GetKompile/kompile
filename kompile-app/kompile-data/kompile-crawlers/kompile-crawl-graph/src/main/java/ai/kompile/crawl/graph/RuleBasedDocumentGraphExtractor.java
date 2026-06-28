@@ -258,10 +258,12 @@ class RuleBasedDocumentGraphExtractor {
                     try {
                         String entityType = graphPersistenceHelper.safeEntityType(entity.type());
                         Map<String, Object> entityMeta = new LinkedHashMap<>();
-                        entityMeta.put("entity_type", entity.type());
+                        entityMeta.put("entity_type", entityType);
                         entityMeta.put(GraphConstants.META_SOURCE, jobId);
                         if (sourcePath != null) entityMeta.put(GraphConstants.META_SOURCE_PATH, sourcePath);
                         if (entity.properties() != null) entityMeta.putAll(entity.properties());
+                        // Re-assert after properties merge so LLM can't overwrite with a junk value.
+                        entityMeta.put("entity_type", entityType);
 
                         final Long eFsId = factSheetId;
                         GraphNode node;

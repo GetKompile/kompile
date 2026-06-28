@@ -118,8 +118,8 @@
             </span>
 
             <!-- Rule text (truncated until expanded) -->
-            <span class="rule-text" [class.truncated]="!isExpanded(i)">
-              {{ rule.ruleText }}
+            <span class="rule-text" [class.truncated]="!isExpanded(i)" [matTooltip]="rule.ruleText">
+              {{ rule.displayText || rule.ruleText }}
             </span>
 
             <!-- Weight bar + value -->

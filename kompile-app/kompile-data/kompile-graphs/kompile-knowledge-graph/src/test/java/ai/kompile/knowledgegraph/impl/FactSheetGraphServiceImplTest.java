@@ -57,8 +57,8 @@ class FactSheetGraphServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        service = new FactSheetGraphServiceImpl(nodeRepository, edgeRepository,
-                entityMentionRepository, knowledgeGraphService, conceptExtractor, sourceLinkingService);
+        // 3-arg constructor: (KnowledgeGraphService, ConceptExtractor, SourceLinkingService)
+        service = new FactSheetGraphServiceImpl(knowledgeGraphService, conceptExtractor, sourceLinkingService);
     }
 
     private GraphNode stubNode(String nodeId, String title, NodeLevel type) {
@@ -101,19 +101,17 @@ class FactSheetGraphServiceImplTest {
 
     @Test
     void buildGraphFromIndex_sync_returnsCompletedStatus() {
-        when(nodeRepository.findSourcesByFactSheet(1L)).thenReturn(List.of());
-        when(nodeRepository.findByFactSheetId(1L)).thenReturn(List.of());
+        // impl calls knowledgeGraphService.getNodesByTypeInFactSheet for SOURCE nodes
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(1L, NodeLevel.SOURCE)).thenReturn(List.of());
         when(sourceLinkingService.linkAllSources(eq(1L), any())).thenReturn(
                 new LinkingResult(0, 0, 0, 0, List.of(), Map.of()));
+        // impl calls knowledgeGraphService.countActiveNodes after build
+        when(knowledgeGraphService.countActiveNodes(1L)).thenReturn(0L);
         // getGraphStatistics dependencies
         for (NodeLevel level : NodeLevel.values()) {
-            when(nodeRepository.countByFactSheetIdAndNodeType(1L, level)).thenReturn(0L);
+            when(knowledgeGraphService.countNodesByTypeInFactSheet(1L, level)).thenReturn(0L);
         }
-        for (EdgeType type : EdgeType.values()) {
-            when(edgeRepository.countByFactSheetIdAndEdgeType(1L, type)).thenReturn(0L);
-        }
-        when(entityMentionRepository.countDistinctEntitiesByFactSheet(1L)).thenReturn(0L);
-        when(entityMentionRepository.findTopEntitiesByFactSheet(eq(1L), any())).thenReturn(List.of());
+        when(knowledgeGraphService.getGraphStatistics()).thenReturn(Map.of());
         when(sourceLinkingService.getConnectivitySummary(1L)).thenReturn(Map.of());
 
         GraphBuildStatus status = service.buildGraphFromIndex(1L, syncBuildConfig());
@@ -131,36 +129,35 @@ class FactSheetGraphServiceImplTest {
                 .externalId("doc1").description("Test content for extraction")
                 .contentPreview("Preview").build();
 
-        when(nodeRepository.findSourcesByFactSheet(1L)).thenReturn(List.of(source));
-        when(nodeRepository.findBySourceIdAndType("src1", NodeLevel.DOCUMENT)).thenReturn(List.of(doc));
-        when(nodeRepository.findByFactSheetId(1L)).thenReturn(List.of(source, doc));
+        // impl calls knowledgeGraphService.getNodesByTypeInFactSheet for SOURCE nodes
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(1L, NodeLevel.SOURCE)).thenReturn(List.of(source));
+        // impl calls knowledgeGraphService.getChildren for documents under this source
+        when(knowledgeGraphService.getChildren("src1")).thenReturn(List.of(doc));
+
+        // processIndexedDocument: look up source node, doc node, create them via seam
+        when(knowledgeGraphService.getNodeByExternalId("src1", NodeLevel.SOURCE, 1L))
+                .thenReturn(Optional.of(source));
+        when(knowledgeGraphService.getNodeByExternalId("doc1", NodeLevel.DOCUMENT, 1L))
+                .thenReturn(Optional.of(doc));
 
         // Concept extraction returns empty
         when(conceptExtractor.extractConcepts(any(), any())).thenReturn(
                 new ExtractionResult(List.of(), List.of(), Map.of()));
 
-        // processIndexedDocument needs these
-        when(nodeRepository.findByExternalIdAndNodeTypeAndFactSheetId(any(), any(), eq(1L)))
-                .thenReturn(Optional.empty());
-        GraphNode savedNode = stubNode("saved", "Saved", NodeLevel.DOCUMENT);
-        when(nodeRepository.save(any())).thenReturn(savedNode);
-
-        // rebuildConceptEdges
-        when(entityMentionRepository.findNodePairsWithSharedEntitiesByFactSheet(eq(1L), anyInt()))
+        // rebuildConceptEdges delegates to knowledgeGraphService
+        when(knowledgeGraphService.findNodePairsWithSharedEntitiesInFactSheet(eq(1L), anyInt()))
                 .thenReturn(List.of());
         // linkAllSources
         when(sourceLinkingService.linkAllSources(eq(1L), any())).thenReturn(
                 new LinkingResult(0, 0, 0, 0, List.of(), Map.of()));
+        // countActiveNodes after build
+        when(knowledgeGraphService.countActiveNodes(1L)).thenReturn(2L);
 
         // getGraphStatistics
         for (NodeLevel level : NodeLevel.values()) {
-            when(nodeRepository.countByFactSheetIdAndNodeType(1L, level)).thenReturn(0L);
+            when(knowledgeGraphService.countNodesByTypeInFactSheet(1L, level)).thenReturn(0L);
         }
-        for (EdgeType type : EdgeType.values()) {
-            when(edgeRepository.countByFactSheetIdAndEdgeType(1L, type)).thenReturn(0L);
-        }
-        when(entityMentionRepository.countDistinctEntitiesByFactSheet(1L)).thenReturn(0L);
-        when(entityMentionRepository.findTopEntitiesByFactSheet(eq(1L), any())).thenReturn(List.of());
+        when(knowledgeGraphService.getGraphStatistics()).thenReturn(Map.of());
         when(sourceLinkingService.getConnectivitySummary(1L)).thenReturn(Map.of());
 
         GraphBuildStatus status = service.buildGraphFromIndex(1L, syncBuildConfig());
@@ -177,18 +174,14 @@ class FactSheetGraphServiceImplTest {
 
     @Test
     void getBuildStatus_afterBuild_returnsStatus() {
-        when(nodeRepository.findSourcesByFactSheet(1L)).thenReturn(List.of());
-        when(nodeRepository.findByFactSheetId(1L)).thenReturn(List.of());
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(1L, NodeLevel.SOURCE)).thenReturn(List.of());
         when(sourceLinkingService.linkAllSources(eq(1L), any())).thenReturn(
                 new LinkingResult(0, 0, 0, 0, List.of(), Map.of()));
+        when(knowledgeGraphService.countActiveNodes(1L)).thenReturn(0L);
         for (NodeLevel level : NodeLevel.values()) {
-            when(nodeRepository.countByFactSheetIdAndNodeType(1L, level)).thenReturn(0L);
+            when(knowledgeGraphService.countNodesByTypeInFactSheet(1L, level)).thenReturn(0L);
         }
-        for (EdgeType type : EdgeType.values()) {
-            when(edgeRepository.countByFactSheetIdAndEdgeType(1L, type)).thenReturn(0L);
-        }
-        when(entityMentionRepository.countDistinctEntitiesByFactSheet(1L)).thenReturn(0L);
-        when(entityMentionRepository.findTopEntitiesByFactSheet(eq(1L), any())).thenReturn(List.of());
+        when(knowledgeGraphService.getGraphStatistics()).thenReturn(Map.of());
         when(sourceLinkingService.getConnectivitySummary(1L)).thenReturn(Map.of());
 
         GraphBuildStatus status = service.buildGraphFromIndex(1L, syncBuildConfig());
@@ -251,22 +244,18 @@ class FactSheetGraphServiceImplTest {
     void getVisualizationData_filtersEdgesWithMissingEndpoints() {
         GraphNode n1 = stubNode("n1", "N1", NodeLevel.SOURCE);
         GraphNode n2 = stubNode("n2", "N2", NodeLevel.DOCUMENT);
-        // n2 not in the returned node set (maxNodes=1 only gets SOURCE)
-        Page<GraphNode> sourcePage = new PageImpl<>(List.of(n1));
 
-        when(nodeRepository.findByFactSheetIdAndNodeType(eq(1L), eq(NodeLevel.SOURCE), any(PageRequest.class)))
-                .thenReturn(sourcePage);
-        when(nodeRepository.findByFactSheetIdAndNodeType(eq(1L), eq(NodeLevel.DOCUMENT), any(PageRequest.class)))
-                .thenReturn(new PageImpl<>(List.of()));
-        when(nodeRepository.findByFactSheetIdAndNodeType(eq(1L), eq(NodeLevel.ENTITY), any(PageRequest.class)))
-                .thenReturn(new PageImpl<>(List.of()));
+        // impl reads via knowledgeGraphService — with maxNodes=1 only n1 (SOURCE priority) is in the set
+        when(knowledgeGraphService.getNodesInFactSheet(1L)).thenReturn(List.of(n1, n2));
 
         GraphEdge edge = stubEdge("e1", n1, n2, EdgeType.HIERARCHICAL, 1.0);
-        when(edgeRepository.findByFactSheetId(1L)).thenReturn(List.of(edge));
+        when(knowledgeGraphService.getEdgesInFactSheet(1L)).thenReturn(List.of(edge));
 
+        // maxNodes=1 → only n1 (SOURCE has highest priority) is retained;
+        // edge references n2 which is dropped, so 0 edges after filtering
         GraphVisualizationData viz = service.getVisualizationData(1L, 1, 50);
 
-        // Edge should be filtered because n2 is not in the node set
+        // Edge should be filtered because n2 is not in the limited node set
         assertEquals(0, viz.edges().size());
     }
 
@@ -274,39 +263,19 @@ class FactSheetGraphServiceImplTest {
 
     @Test
     void getGraphStatistics_returnsNodeAndEdgeCounts() {
-        when(nodeRepository.countByFactSheetIdAndNodeType(1L, NodeLevel.SOURCE)).thenReturn(3L);
-        when(nodeRepository.countByFactSheetIdAndNodeType(1L, NodeLevel.DOCUMENT)).thenReturn(10L);
-        // All other NodeLevel types return 0
-        for (NodeLevel level : NodeLevel.values()) {
-            if (level != NodeLevel.SOURCE && level != NodeLevel.DOCUMENT) {
-                when(nodeRepository.countByFactSheetIdAndNodeType(1L, level)).thenReturn(0L);
-            }
-        }
-
-        when(edgeRepository.countByFactSheetIdAndEdgeType(1L, EdgeType.HIERARCHICAL)).thenReturn(10L);
-        for (EdgeType type : EdgeType.values()) {
-            if (type != EdgeType.HIERARCHICAL) {
-                when(edgeRepository.countByFactSheetIdAndEdgeType(1L, type)).thenReturn(0L);
-            }
-        }
-
-        when(entityMentionRepository.countDistinctEntitiesByFactSheet(1L)).thenReturn(42L);
-        List<Object[]> topConceptRows = new ArrayList<>();
-        topConceptRows.add(new Object[]{"kubernetes", 15L});
-        when(entityMentionRepository.findTopEntitiesByFactSheet(eq(1L), any()))
-                .thenReturn(topConceptRows);
-        when(sourceLinkingService.getConnectivitySummary(1L)).thenReturn(Map.of("totalSources", 3));
-
-        // Vector store is the source of truth: per-type node counts come from knowledgeGraphService,
-        // and edge counts are read from the global graph statistics (edges_<type> keys).
+        // Vector store is the SINGLE SOURCE OF TRUTH: all counts come from knowledgeGraphService
         when(knowledgeGraphService.countNodesByTypeInFactSheet(1L, NodeLevel.SOURCE)).thenReturn(3L);
         when(knowledgeGraphService.countNodesByTypeInFactSheet(1L, NodeLevel.DOCUMENT)).thenReturn(10L);
+        when(knowledgeGraphService.countNodesByTypeInFactSheet(1L, NodeLevel.ENTITY)).thenReturn(42L);
         for (NodeLevel lvl : NodeLevel.values()) {
-            if (lvl != NodeLevel.SOURCE && lvl != NodeLevel.DOCUMENT) {
+            if (lvl != NodeLevel.SOURCE && lvl != NodeLevel.DOCUMENT && lvl != NodeLevel.ENTITY) {
                 when(knowledgeGraphService.countNodesByTypeInFactSheet(1L, lvl)).thenReturn(0L);
             }
         }
         when(knowledgeGraphService.getGraphStatistics()).thenReturn(Map.of("edges_hierarchical", 10L));
+        // getNodesByTypeInFactSheet for topConcepts
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(1L, NodeLevel.ENTITY)).thenReturn(List.of());
+        when(sourceLinkingService.getConnectivitySummary(1L)).thenReturn(Map.of("totalSources", 3));
 
         Map<String, Object> stats = service.getGraphStatistics(1L);
 
@@ -314,8 +283,9 @@ class FactSheetGraphServiceImplTest {
         Map<String, Long> nodesByType = (Map<String, Long>) stats.get("nodesByType");
         assertEquals(3L, nodesByType.get("SOURCE"));
         assertEquals(10L, nodesByType.get("DOCUMENT"));
-        assertFalse(nodesByType.containsKey("ENTITY")); // count was 0
+        assertFalse(nodesByType.containsKey("SNIPPET")); // count was 0
 
+        // distinctConcepts = ENTITY count from knowledgeGraphService
         assertEquals(42L, stats.get("distinctConcepts"));
     }
 
@@ -323,21 +293,19 @@ class FactSheetGraphServiceImplTest {
 
     @Test
     void clearGraph_deletesAllComponents() {
-        // Vector store is the source of truth: clearGraph counts nodes via the matrix service,
-        // deletes them via deleteByFactSheetId, and removes the JPA entity mentions.
+        // Vector store is the SINGLE SOURCE OF TRUTH: clearGraph counts nodes via the matrix service
+        // and deletes via deleteByFactSheetId. No entityMentionRepository calls.
         when(knowledgeGraphService.countNodesByTypeInFactSheet(1L, NodeLevel.SOURCE)).thenReturn(20L);
         for (NodeLevel level : NodeLevel.values()) {
             if (level != NodeLevel.SOURCE) {
                 when(knowledgeGraphService.countNodesByTypeInFactSheet(1L, level)).thenReturn(0L);
             }
         }
-        when(entityMentionRepository.deleteByFactSheetId(1L)).thenReturn(5);
 
         int deleted = service.clearGraph(1L);
 
-        assertEquals(25, deleted); // 20 vector-store nodes + 5 entity mentions
+        assertEquals(20, deleted); // 20 vector-store nodes counted before deletion
         verify(knowledgeGraphService).deleteByFactSheetId(1L);
-        verify(entityMentionRepository).deleteByFactSheetId(1L);
     }
 
     // ─── getRunningJobs ───────────────────────────────────────────────
@@ -362,16 +330,15 @@ class FactSheetGraphServiceImplTest {
 
     @Test
     void processIndexedDocument_withConcepts_createsEntitiesAndEdges() {
-        // Source node lookup
+        // Source node lookup via knowledgeGraphService seam
         GraphNode sourceNode = stubNode("src1", "Source", NodeLevel.SOURCE);
-        when(nodeRepository.findByExternalIdAndNodeTypeAndFactSheetId("src1", NodeLevel.SOURCE, 1L))
+        when(knowledgeGraphService.getNodeByExternalId("src1", NodeLevel.SOURCE, 1L))
                 .thenReturn(Optional.of(sourceNode));
 
-        // Document node creation
-        when(nodeRepository.findByExternalIdAndNodeTypeAndFactSheetId("doc1", NodeLevel.DOCUMENT, 1L))
-                .thenReturn(Optional.empty());
+        // Document node lookup via knowledgeGraphService seam
         GraphNode docNode = stubNode("doc1-saved", "Test Doc", NodeLevel.DOCUMENT);
-        when(nodeRepository.save(any(GraphNode.class))).thenReturn(docNode);
+        when(knowledgeGraphService.getNodeByExternalId("doc1", NodeLevel.DOCUMENT, 1L))
+                .thenReturn(Optional.of(docNode));
 
         // Concept extraction
         ExtractedConcept concept = new ExtractedConcept("Kubernetes", "kubernetes",
@@ -380,48 +347,49 @@ class FactSheetGraphServiceImplTest {
                 List.of(concept), List.of(), Map.of());
         when(conceptExtractor.extractConcepts(any(), any())).thenReturn(extractionResult);
 
-        // Entity node creation
+        // Entity node lookup via knowledgeGraphService seam
         GraphNode entityNode = stubNode("entity-k8s", "Kubernetes", NodeLevel.ENTITY);
-        when(nodeRepository.findByExternalIdAndNodeTypeAndFactSheetId("kubernetes", NodeLevel.ENTITY, 1L))
+        when(knowledgeGraphService.getNodeByExternalId("kubernetes", NodeLevel.ENTITY, 1L))
                 .thenReturn(Optional.of(entityNode));
 
-        // Entity mention
-        when(entityMentionRepository.findByNodeAndEntityNameAndFactSheet(docNode, "kubernetes", 1L))
-                .thenReturn(Optional.empty());
-
-        // Edge checking
-        when(edgeRepository.findEdgeBetweenNodesInFactSheet(any(), any(), eq(1L))).thenReturn(Optional.empty());
+        // Edge checking via knowledgeGraphService seam
+        when(knowledgeGraphService.edgeExists("doc1-saved", "entity-k8s")).thenReturn(false);
 
         int count = service.processIndexedDocument(1L, "doc1", "Kubernetes orchestrates containers",
                 Map.of("title", "Test Doc"), "src1", syncBuildConfig());
 
         // minConceptConfidence is 50, concept confidence is 0.9 (90%), should be counted
         assertEquals(1, count);
-        verify(entityMentionRepository).save(any(EntityMention.class));
+        verify(knowledgeGraphService).createEdge(eq("doc1-saved"), eq("entity-k8s"),
+                eq(EdgeType.SHARED_ENTITY), anyDouble(), anyString());
     }
 
     @Test
     void processIndexedDocument_noSource_skipsHierarchicalEdge() {
-        // No source
-        when(nodeRepository.findByExternalIdAndNodeTypeAndFactSheetId("doc1", NodeLevel.DOCUMENT, 1L))
-                .thenReturn(Optional.empty());
+        // No source (sourceId=null) — doc created via knowledgeGraphService
         GraphNode docNode = stubNode("doc1-saved", "Doc", NodeLevel.DOCUMENT);
-        when(nodeRepository.save(any(GraphNode.class))).thenReturn(docNode);
+        when(knowledgeGraphService.getNodeByExternalId("doc1", NodeLevel.DOCUMENT, 1L))
+                .thenReturn(Optional.empty());
+        when(knowledgeGraphService.createDocumentNode(isNull(), eq("doc1"), anyString(), any()))
+                .thenReturn(docNode);
 
         when(conceptExtractor.extractConcepts(any(), any())).thenReturn(
                 new ExtractionResult(List.of(), List.of(), Map.of()));
 
         service.processIndexedDocument(1L, "doc1", "content", Map.of(), null, syncBuildConfig());
 
-        // No hierarchical edge since source is null
-        verify(edgeRepository, never()).save(any(GraphEdge.class));
+        // No hierarchical edge since source is null — impl checks config.includeHierarchicalEdges()
+        // AND sourceNode != null, so with null source no hierarchical edge is created
+        verify(knowledgeGraphService, never()).createEdge(any(), any(), eq(EdgeType.HIERARCHICAL),
+                anyDouble(), anyString());
     }
 
     // ─── rebuildConceptEdges ──────────────────────────────────────────
 
     @Test
     void rebuildConceptEdges_noPairs_returnsZero() {
-        when(entityMentionRepository.findNodePairsWithSharedEntitiesByFactSheet(1L, 2))
+        // impl delegates to knowledgeGraphService.findNodePairsWithSharedEntitiesInFactSheet
+        when(knowledgeGraphService.findNodePairsWithSharedEntitiesInFactSheet(1L, 2))
                 .thenReturn(List.of());
 
         assertEquals(0, service.rebuildConceptEdges(1L, 2));
@@ -429,38 +397,29 @@ class FactSheetGraphServiceImplTest {
 
     @Test
     void rebuildConceptEdges_withPairs_createsEdges() {
-        GraphNode n1 = stubNode("n1", "N1", NodeLevel.DOCUMENT);
-        GraphNode n2 = stubNode("n2", "N2", NodeLevel.DOCUMENT);
-        when(nodeRepository.findById(1L)).thenReturn(Optional.of(n1));
-        when(nodeRepository.findById(2L)).thenReturn(Optional.of(n2));
-
-        Object[] pair = new Object[]{1L, 2L, 5L};
+        // impl expects String nodeId pairs from the matrix store
+        Object[] pair = new Object[]{"n1", "n2", 5L};
         List<Object[]> pairs = new ArrayList<>();
         pairs.add(pair);
-        when(entityMentionRepository.findNodePairsWithSharedEntitiesByFactSheet(1L, 2))
+        when(knowledgeGraphService.findNodePairsWithSharedEntitiesInFactSheet(1L, 2))
                 .thenReturn(pairs);
-        when(edgeRepository.findEdgeBetweenNodesInFactSheet("n1", "n2", 1L)).thenReturn(Optional.empty());
+        when(knowledgeGraphService.edgeExists("n1", "n2")).thenReturn(false);
 
         int created = service.rebuildConceptEdges(1L, 2);
 
         assertEquals(1, created);
-        verify(edgeRepository).save(any(GraphEdge.class));
+        verify(knowledgeGraphService).createEdge(eq("n1"), eq("n2"),
+                eq(EdgeType.SHARED_ENTITY), anyDouble(), anyString());
     }
 
     @Test
     void rebuildConceptEdges_existingEdge_skips() {
-        GraphNode n1 = stubNode("n1", "N1", NodeLevel.DOCUMENT);
-        GraphNode n2 = stubNode("n2", "N2", NodeLevel.DOCUMENT);
-        when(nodeRepository.findById(1L)).thenReturn(Optional.of(n1));
-        when(nodeRepository.findById(2L)).thenReturn(Optional.of(n2));
-
-        Object[] pair = new Object[]{1L, 2L, 5L};
+        Object[] pair = new Object[]{"n1", "n2", 5L};
         List<Object[]> pairs = new ArrayList<>();
         pairs.add(pair);
-        when(entityMentionRepository.findNodePairsWithSharedEntitiesByFactSheet(1L, 2))
+        when(knowledgeGraphService.findNodePairsWithSharedEntitiesInFactSheet(1L, 2))
                 .thenReturn(pairs);
-        when(edgeRepository.findEdgeBetweenNodesInFactSheet("n1", "n2", 1L))
-                .thenReturn(Optional.of(mock(GraphEdge.class)));
+        when(knowledgeGraphService.edgeExists("n1", "n2")).thenReturn(true);
 
         assertEquals(0, service.rebuildConceptEdges(1L, 2));
     }
@@ -469,22 +428,21 @@ class FactSheetGraphServiceImplTest {
 
     @Test
     void getTopConcepts_returnsFormattedList() {
-        Object[] row = new Object[]{"kubernetes", 15L};
-        List<Object[]> rows = new ArrayList<>();
-        rows.add(row);
-        when(entityMentionRepository.findTopEntitiesByFactSheet(eq(1L), any()))
-                .thenReturn(rows);
+        // impl reads ENTITY nodes from knowledgeGraphService.getNodesByTypeInFactSheet
+        GraphNode entityNode = stubNode("e1", "kubernetes", NodeLevel.ENTITY);
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(1L, NodeLevel.ENTITY))
+                .thenReturn(List.of(entityNode));
 
         List<Map<String, Object>> result = service.getTopConcepts(1L, 10);
 
         assertEquals(1, result.size());
         assertEquals("kubernetes", result.get(0).get("name"));
-        assertEquals(15L, result.get(0).get("totalMentions"));
+        assertEquals(1L, result.get(0).get("totalMentions"));
     }
 
     @Test
     void getTopConcepts_empty_returnsEmptyList() {
-        when(entityMentionRepository.findTopEntitiesByFactSheet(eq(1L), any())).thenReturn(List.of());
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(1L, NodeLevel.ENTITY)).thenReturn(List.of());
 
         List<Map<String, Object>> result = service.getTopConcepts(1L, 10);
 
@@ -510,7 +468,7 @@ class FactSheetGraphServiceImplTest {
 
     @Test
     void getRelatedDocuments_nodeNotFound_returnsEmpty() {
-        when(nodeRepository.findByNodeId("missing")).thenReturn(Optional.empty());
+        when(knowledgeGraphService.getNode("missing")).thenReturn(Optional.empty());
 
         List<Map<String, Object>> result = service.getRelatedDocuments(1L, "missing", 1, 10);
 
@@ -520,8 +478,9 @@ class FactSheetGraphServiceImplTest {
     @Test
     void getRelatedDocuments_noConcepts_returnsEmpty() {
         GraphNode doc = stubNode("d1", "Doc", NodeLevel.DOCUMENT);
-        when(nodeRepository.findByNodeId("d1")).thenReturn(Optional.of(doc));
-        when(entityMentionRepository.findEntitiesByNodeId("d1")).thenReturn(List.of());
+        when(knowledgeGraphService.getNode("d1")).thenReturn(Optional.of(doc));
+        // impl calls knowledgeGraphService.getEntityNamesForNode(documentNodeId)
+        when(knowledgeGraphService.getEntityNamesForNode("d1")).thenReturn(List.of());
 
         List<Map<String, Object>> result = service.getRelatedDocuments(1L, "d1", 1, 10);
 
@@ -532,17 +491,15 @@ class FactSheetGraphServiceImplTest {
     void getRelatedDocuments_withSharedConcepts_returnsRelated() {
         GraphNode doc1 = stubNode("d1", "Doc1", NodeLevel.DOCUMENT);
         GraphNode doc2 = stubNode("d2", "Doc2", NodeLevel.DOCUMENT);
-        // Vector store is the source of truth: node lookups go through knowledgeGraphService.
         when(knowledgeGraphService.getNode("d1")).thenReturn(Optional.of(doc1));
         when(knowledgeGraphService.getNode("d2")).thenReturn(Optional.of(doc2));
 
-        when(entityMentionRepository.findEntitiesByNodeId("d1")).thenReturn(List.of("kubernetes", "docker"));
+        // impl calls knowledgeGraphService.getEntityNamesForNode(documentNodeId)
+        when(knowledgeGraphService.getEntityNamesForNode("d1")).thenReturn(List.of("kubernetes", "docker"));
 
-        // kubernetes is shared with d2
-        EntityMention mention = mock(EntityMention.class);
-        when(mention.getNode()).thenReturn(doc2);
-        when(entityMentionRepository.findByEntityNameAndFactSheet("kubernetes", 1L)).thenReturn(List.of(mention));
-        when(entityMentionRepository.findByEntityNameAndFactSheet("docker", 1L)).thenReturn(List.of());
+        // impl calls knowledgeGraphService.getNodesWithEntity(concept) for each concept
+        when(knowledgeGraphService.getNodesWithEntity("kubernetes")).thenReturn(List.of(doc2));
+        when(knowledgeGraphService.getNodesWithEntity("docker")).thenReturn(List.of());
 
         List<Map<String, Object>> result = service.getRelatedDocuments(1L, "d1", 1, 10);
 

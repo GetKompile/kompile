@@ -24,15 +24,24 @@ import ai.kompile.knowledgegraph.repository.GraphEdgeRepository;
 import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import java.util.Optional;
 
 /**
  * JPA-based graph storage implementation.
- * Stores graph nodes and edges in the local database using Spring Data JPA.
+ *
+ * <p><b>DISABLED</b> — the live matrix/vector store path does not populate the JPA graph tables
+ * this class reads/writes. Kept as a compile reference; only activated when
+ * {@code kompile.jpa.graph.enabled=true}.</p>
+ *
+ * @deprecated Use {@link ai.kompile.knowledgegraph.service.KnowledgeGraphService} via the
+ *     matrix-backed seam.
  */
+@Deprecated
 @Component
+@ConditionalOnProperty(name = "kompile.jpa.graph.enabled", havingValue = "true")
 @RequiredArgsConstructor
 @Slf4j
 public class JpaGraphStorage implements GraphStorageStrategy {

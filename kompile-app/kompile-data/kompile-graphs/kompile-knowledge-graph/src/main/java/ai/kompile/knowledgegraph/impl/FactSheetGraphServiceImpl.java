@@ -16,12 +16,10 @@
 package ai.kompile.knowledgegraph.impl;
 
 import ai.kompile.knowledgegraph.domain.*;
-import ai.kompile.knowledgegraph.repository.*;
 import ai.kompile.knowledgegraph.service.*;
 import ai.kompile.knowledgegraph.service.ConceptExtractor.*;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.data.domain.PageRequest;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -37,9 +35,6 @@ import java.util.stream.Collectors;
 @Slf4j
 public class FactSheetGraphServiceImpl implements FactSheetGraphService {
 
-    private GraphNodeRepository nodeRepository;
-    private GraphEdgeRepository edgeRepository;
-    private EntityMentionRepository entityMentionRepository;
     private KnowledgeGraphService knowledgeGraphService;
     private ConceptExtractor conceptExtractor;
     private SourceLinkingService sourceLinkingService;
@@ -58,15 +53,9 @@ public class FactSheetGraphServiceImpl implements FactSheetGraphService {
 
     @Autowired
     public FactSheetGraphServiceImpl(
-            GraphNodeRepository nodeRepository,
-            GraphEdgeRepository edgeRepository,
-            EntityMentionRepository entityMentionRepository,
             KnowledgeGraphService knowledgeGraphService,
             ConceptExtractor conceptExtractor,
             SourceLinkingService sourceLinkingService) {
-        this.nodeRepository = nodeRepository;
-        this.edgeRepository = edgeRepository;
-        this.entityMentionRepository = entityMentionRepository;
         this.knowledgeGraphService = knowledgeGraphService;
         this.conceptExtractor = conceptExtractor;
         this.sourceLinkingService = sourceLinkingService;
@@ -141,10 +130,12 @@ public class FactSheetGraphServiceImpl implements FactSheetGraphService {
     @Override
     public GraphVisualizationData getVisualizationData(Long factSheetId, int maxNodes, int maxEdges) {
         // Vector store is the SINGLE SOURCE OF TRUTH — read all nodes via the matrix service.
-        List<GraphNode> nodes = new ArrayList<>(knowledgeGraphService.getNodesInFactSheet(factSheetId));
+        List<GraphNode> allNodes = new ArrayList<>(knowledgeGraphService.getNodesInFactSheet(factSheetId));
+        int totalAvailableNodes = allNodes.size();
+        List<GraphNode> nodes;
 
-        // Apply maxNodes limit preserving type priority: SOURCE > DOCUMENT > ENTITY > others
-        if (maxNodes > 0 && nodes.size() > maxNodes) {
+        // maxNodes <= 0 means unlimited — apply limit only when explicitly requested
+        if (maxNodes > 0 && totalAvailableNodes > maxNodes) {
             int[] typeOrder = new int[NodeLevel.values().length];
             for (NodeLevel lvl : NodeLevel.values()) {
                 typeOrder[lvl.ordinal()] = switch (lvl) {
@@ -156,21 +147,28 @@ public class FactSheetGraphServiceImpl implements FactSheetGraphService {
                     case SNIPPET -> 5;
                     case ATTACHMENT -> 6;
                     case IDENTIFIER -> 7;
+                    case ALIAS -> 8;
                 };
             }
-            nodes = nodes.stream()
+            nodes = allNodes.stream()
                     .sorted(Comparator.comparingInt(n -> typeOrder[n.getNodeType().ordinal()]))
                     .limit(maxNodes)
                     .collect(Collectors.toList());
+        } else {
+            nodes = allNodes;
         }
 
         // Collect edges between visible nodes from the vector store.
+        List<GraphEdge> allEdges = knowledgeGraphService.getEdgesInFactSheet(factSheetId).stream()
+                .filter(e -> e.getSourceNode() != null && e.getTargetNode() != null)
+                .collect(Collectors.toList());
+        int totalAvailableEdges = allEdges.size();
         Set<String> nodeIds = nodes.stream().map(GraphNode::getNodeId).collect(Collectors.toSet());
-        List<GraphEdge> edges = knowledgeGraphService.getEdgesInFactSheet(factSheetId).stream()
-                .filter(e -> e.getSourceNode() != null && e.getTargetNode() != null
-                        && nodeIds.contains(e.getSourceNode().getNodeId())
+        List<GraphEdge> edges = allEdges.stream()
+                .filter(e -> nodeIds.contains(e.getSourceNode().getNodeId())
                         && nodeIds.contains(e.getTargetNode().getNodeId()))
                 .collect(Collectors.toList());
+        // maxEdges <= 0 means unlimited
         if (maxEdges > 0 && edges.size() > maxEdges) {
             edges = edges.subList(0, maxEdges);
         }
@@ -184,13 +182,17 @@ public class FactSheetGraphServiceImpl implements FactSheetGraphService {
             .map(this::edgeToD3Format)
             .collect(Collectors.toList());
 
-        Map<String, Object> metadata = Map.of(
-            "factSheetId", factSheetId,
-            "totalNodes", nodes.size(),
-            "totalEdges", edgeData.size(),
-            "nodeTypes", countByNodeType(nodes),
-            "edgeTypes", countByEdgeType(edges)
-        );
+        // Include totalAvailable so the UI can show "showing N of M" when bounded
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("factSheetId", factSheetId);
+        metadata.put("totalNodes", nodes.size());
+        metadata.put("totalEdges", edgeData.size());
+        metadata.put("totalAvailableNodes", totalAvailableNodes);
+        metadata.put("totalAvailableEdges", totalAvailableEdges);
+        metadata.put("bounded", (maxNodes > 0 && nodes.size() < totalAvailableNodes)
+                || (maxEdges > 0 && edgeData.size() < totalAvailableEdges));
+        metadata.put("nodeTypes", countByNodeType(nodes));
+        metadata.put("edgeTypes", countByEdgeType(edges));
 
         return new GraphVisualizationData(nodeData, edgeData, metadata);
     }
@@ -268,26 +270,19 @@ public class FactSheetGraphServiceImpl implements FactSheetGraphService {
         stats.put("relationshipTypeCounts", edgesByType);
         stats.put("totalEdges", totalEdges);
 
-        // Entity statistics — null-guarded
-        long distinctConcepts = 0;
-        if (entityMentionRepository != null && factSheetId != null) {
-            try {
-                distinctConcepts = entityMentionRepository.countDistinctEntitiesByFactSheet(factSheetId);
-            } catch (Exception e) {
-                log.warn("Failed to count distinct entities for factSheetId={}: {}", factSheetId, e.getMessage());
-            }
-        }
+        // Entity statistics — count ENTITY nodes as distinct concepts
+        long distinctConcepts = nodesByType.getOrDefault("ENTITY", 0L);
         stats.put("distinctConcepts", distinctConcepts);
 
-        // Top concepts — null-guarded
+        // Top concepts — derive from top ENTITY nodes in the graph
         List<Map<String, Object>> topConceptsList = Collections.emptyList();
-        if (entityMentionRepository != null && factSheetId != null) {
+        if (knowledgeGraphService != null && factSheetId != null) {
             try {
-                List<Object[]> topConcepts = entityMentionRepository.findTopEntitiesByFactSheet(
-                        factSheetId, PageRequest.of(0, 10));
-                topConceptsList = topConcepts.stream()
-                        .filter(arr -> arr != null && arr.length >= 2 && arr[0] != null && arr[1] != null)
-                        .map(arr -> Map.<String, Object>of("name", arr[0], "count", arr[1]))
+                topConceptsList = knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY)
+                        .stream()
+                        .limit(10)
+                        .filter(n -> n.getTitle() != null)
+                        .map(n -> Map.<String, Object>of("name", n.getTitle(), "count", 1L))
                         .collect(Collectors.toList());
             } catch (Exception e) {
                 log.warn("Failed to fetch top concepts for factSheetId={}: {}", factSheetId, e.getMessage());
@@ -325,21 +320,9 @@ public class FactSheetGraphServiceImpl implements FactSheetGraphService {
         // Vector store is the SINGLE SOURCE OF TRUTH — delete via matrix service.
         knowledgeGraphService.deleteByFactSheetId(factSheetId);
 
-        // Also clean up JPA entity mentions (which are still persisted there)
-        int mentionsDeleted = 0;
-        if (entityMentionRepository != null) {
-            try {
-                mentionsDeleted = entityMentionRepository.deleteByFactSheetId(factSheetId);
-            } catch (Exception e) {
-                log.warn("Failed to delete entity mentions for factSheetId={}: {}", factSheetId, e.getMessage());
-            }
-        }
-
         int nodesDeleted = (int) nodesBefore;
-        log.info("Cleared graph for fact sheet {}: ~{} nodes deleted, {} mentions deleted",
-            factSheetId, nodesDeleted, mentionsDeleted);
-
-        return nodesDeleted + mentionsDeleted;
+        log.info("Cleared graph for fact sheet {}: ~{} nodes deleted", factSheetId, nodesDeleted);
+        return nodesDeleted;
     }
 
     @Override
@@ -360,97 +343,52 @@ public class FactSheetGraphServiceImpl implements FactSheetGraphService {
             return 0;
         }
 
-        // Get or create source node
+        // Get or create source node via seam
         final GraphNode sourceNode;
         if (sourceId != null) {
-            sourceNode = nodeRepository.findByExternalIdAndNodeTypeAndFactSheetId(
-                sourceId, NodeLevel.SOURCE, factSheetId)
-                .orElseGet(() -> createSourceNode(factSheetId, sourceId, metadata));
+            String sourceTitle = metadata != null && metadata.get("title") != null
+                    ? metadata.get("title").toString() : sourceId;
+            String sourceType = metadata != null && metadata.get("sourceType") != null
+                    ? metadata.get("sourceType").toString() : "UNKNOWN";
+            sourceNode = knowledgeGraphService.getNodeByExternalId(sourceId, NodeLevel.SOURCE, factSheetId)
+                    .orElseGet(() -> knowledgeGraphService.createOrUpdateSourceNode(
+                            sourceId, sourceTitle, sourceType, null, metadata));
         } else {
             sourceNode = null;
         }
 
-        // Get or create document node
+        // Get or create document node via seam
         String title = metadata != null && metadata.get("title") != null ?
             metadata.get("title").toString() : documentId;
-
-        GraphNode docNode = nodeRepository.findByExternalIdAndNodeTypeAndFactSheetId(
-            documentId, NodeLevel.DOCUMENT, factSheetId)
-            .orElseGet(() -> {
-                GraphNode node = GraphNode.builder()
-                    .nodeId(UUID.randomUUID().toString())
-                    .nodeType(NodeLevel.DOCUMENT)
-                    .externalId(documentId)
-                    .title(title)
-                    .description(content.length() > 500 ? content.substring(0, 500) + "..." : content)
-                    .contentPreview(content.length() > 200 ? content.substring(0, 200) + "..." : content)
-                    .parent(sourceNode)
-                    .sourceNode(sourceNode)
-                    .factSheetId(factSheetId)
-                    .build();
-                return nodeRepository.save(node);
-            });
+        GraphNode docNode = knowledgeGraphService.getNodeByExternalId(documentId, NodeLevel.DOCUMENT, factSheetId)
+                .orElseGet(() -> knowledgeGraphService.createDocumentNode(sourceNode, documentId, title, metadata));
 
         // Extract concepts
         ExtractionResult result = conceptExtractor.extractConcepts(content, config.extractionConfig());
 
-        // Create entity nodes and mentions for each concept
+        // Create entity nodes and edges for each concept
         int conceptsAdded = 0;
         for (ExtractedConcept concept : result.concepts()) {
             if (concept.confidence() * 100 >= config.minConceptConfidence()) {
-                // Find or create entity node
+                // Find or create entity node via seam
                 GraphNode entityNode = findOrCreateEntityNode(factSheetId, concept);
 
-                // Create entity mention
-                EntityMention mention = entityMentionRepository
-                    .findByNodeAndEntityNameAndFactSheet(docNode, concept.normalizedName(), factSheetId)
-                    .orElseGet(() -> EntityMention.builder()
-                        .node(docNode)
-                        .entityName(concept.normalizedName())
-                        .entityType(concept.category())
-                        .mentionCount(0)
-                        .confidence(concept.confidence())
-                        .factSheetId(factSheetId)
-                        .build());
-
-                mention.setMentionCount(mention.getMentionCount() + concept.frequency());
-                mention.setConfidence(Math.max(mention.getConfidence(), concept.confidence()));
-                mention.setContextJson(concept.context());
-                entityMentionRepository.save(mention);
-
-                // Create edge from document to entity (if not exists)
-                if (edgeRepository.findEdgeBetweenNodesInFactSheet(
-                        docNode.getNodeId(), entityNode.getNodeId(), factSheetId).isEmpty()) {
-                    GraphEdge edge = GraphEdge.builder()
-                        .edgeId(UUID.randomUUID().toString())
-                        .sourceNode(docNode)
-                        .targetNode(entityNode)
-                        .edgeType(EdgeType.SHARED_ENTITY)
-                        .weight(concept.confidence())
-                        .description("Document contains concept: " + concept.name())
-                        .factSheetId(factSheetId)
-                        .build();
-                    edgeRepository.save(edge);
+                // Create edge from document to entity (if not exists) via seam
+                if (!knowledgeGraphService.edgeExists(docNode.getNodeId(), entityNode.getNodeId())) {
+                    knowledgeGraphService.createEdge(docNode.getNodeId(), entityNode.getNodeId(),
+                            EdgeType.SHARED_ENTITY, concept.confidence(),
+                            "Document contains concept: " + concept.name());
                 }
 
                 conceptsAdded++;
             }
         }
 
-        // Create hierarchical edge if source exists
+        // Create hierarchical edge if source exists via seam
         if (sourceNode != null && config.includeHierarchicalEdges()) {
-            if (edgeRepository.findEdgeBetweenNodesInFactSheet(
-                    sourceNode.getNodeId(), docNode.getNodeId(), factSheetId).isEmpty()) {
-                GraphEdge edge = GraphEdge.builder()
-                    .edgeId(UUID.randomUUID().toString())
-                    .sourceNode(sourceNode)
-                    .targetNode(docNode)
-                    .edgeType(EdgeType.HIERARCHICAL)
-                    .weight(1.0)
-                    .description("Contains document")
-                    .factSheetId(factSheetId)
-                    .build();
-                edgeRepository.save(edge);
+            if (!knowledgeGraphService.edgeExists(sourceNode.getNodeId(), docNode.getNodeId())) {
+                knowledgeGraphService.createEdge(sourceNode.getNodeId(), docNode.getNodeId(),
+                        EdgeType.HIERARCHICAL, 1.0, "Contains document");
             }
         }
 
@@ -462,38 +400,20 @@ public class FactSheetGraphServiceImpl implements FactSheetGraphService {
     public int rebuildConceptEdges(Long factSheetId, int minSharedConcepts) {
         int edgesCreated = 0;
 
-        // Find all document pairs with shared concepts
-        List<Object[]> pairs = entityMentionRepository.findNodePairsWithSharedEntitiesByFactSheet(
-            factSheetId, minSharedConcepts);
+        // Find document pairs with shared entities via the seam
+        List<Object[]> pairs = knowledgeGraphService.findNodePairsWithSharedEntitiesInFactSheet(
+                factSheetId, minSharedConcepts);
 
         for (Object[] pair : pairs) {
-            Long node1Id = (Long) pair[0];
-            Long node2Id = (Long) pair[1];
-            Long sharedCount = (Long) pair[2];
+            // Matrix store returns nodeId strings; skip non-String elements
+            if (!(pair[0] instanceof String n1Id) || !(pair[1] instanceof String n2Id)) continue;
+            Long sharedCount = pair[2] instanceof Number n ? n.longValue() : 1L;
 
-            GraphNode node1 = nodeRepository.findById(node1Id).orElse(null);
-            GraphNode node2 = nodeRepository.findById(node2Id).orElse(null);
-
-            if (node1 != null && node2 != null) {
-                // Check if edge exists
-                if (edgeRepository.findEdgeBetweenNodesInFactSheet(
-                        node1.getNodeId(), node2.getNodeId(), factSheetId).isEmpty()) {
-
-                    double weight = Math.min(1.0, sharedCount / 10.0);
-
-                    GraphEdge edge = GraphEdge.builder()
-                        .edgeId(UUID.randomUUID().toString())
-                        .sourceNode(node1)
-                        .targetNode(node2)
-                        .edgeType(EdgeType.SHARED_ENTITY)
-                        .weight(weight)
-                        .description("Shares " + sharedCount + " concepts")
-                        .bidirectional(true)
-                        .factSheetId(factSheetId)
-                        .build();
-                    edgeRepository.save(edge);
-                    edgesCreated++;
-                }
+            if (!knowledgeGraphService.edgeExists(n1Id, n2Id)) {
+                double weight = Math.min(1.0, sharedCount / 10.0);
+                knowledgeGraphService.createEdge(n1Id, n2Id, EdgeType.SHARED_ENTITY, weight,
+                        "Shares " + sharedCount + " concepts");
+                edgesCreated++;
             }
         }
 
@@ -503,17 +423,18 @@ public class FactSheetGraphServiceImpl implements FactSheetGraphService {
 
     @Override
     public List<Map<String, Object>> getTopConcepts(Long factSheetId, int limit) {
-        List<Object[]> topConcepts = entityMentionRepository.findTopEntitiesByFactSheet(
-            factSheetId, PageRequest.of(0, limit));
-
-        return topConcepts.stream()
-            .map(arr -> {
-                Map<String, Object> concept = new HashMap<>();
-                concept.put("name", arr[0]);
-                concept.put("totalMentions", arr[1]);
-                return concept;
-            })
-            .collect(Collectors.toList());
+        // Return top ENTITY nodes as concepts — EntityMention table is no longer populated
+        return knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY)
+                .stream()
+                .limit(limit)
+                .filter(n -> n.getTitle() != null)
+                .map(n -> {
+                    Map<String, Object> concept = new HashMap<>();
+                    concept.put("name", n.getTitle());
+                    concept.put("totalMentions", 1L);
+                    return concept;
+                })
+                .collect(Collectors.toList());
     }
 
     @Override
@@ -533,21 +454,19 @@ public class FactSheetGraphServiceImpl implements FactSheetGraphService {
             return List.of();
         }
 
-        // Get concepts in this document
-        List<String> docConcepts = entityMentionRepository.findEntitiesByNodeId(documentNodeId);
+        // Use entity names from the seam
+        List<String> docConcepts = knowledgeGraphService.getEntityNamesForNode(documentNodeId);
         if (docConcepts.isEmpty()) {
             return List.of();
         }
 
-        // Find other documents that share concepts
+        // Find other documents sharing entity names via graph neighbor traversal
         Map<String, Integer> relatedDocs = new HashMap<>();
         for (String concept : docConcepts) {
-            List<EntityMention> mentions = entityMentionRepository.findByEntityNameAndFactSheet(
-                concept, factSheetId);
-            for (EntityMention mention : mentions) {
-                if (!mention.getNode().getNodeId().equals(documentNodeId) &&
-                    mention.getNode().getNodeType() == NodeLevel.DOCUMENT) {
-                    relatedDocs.merge(mention.getNode().getNodeId(), 1, Integer::sum);
+            List<GraphNode> nodesWithEntity = knowledgeGraphService.getNodesWithEntity(concept);
+            for (GraphNode node : nodesWithEntity) {
+                if (!node.getNodeId().equals(documentNodeId) && node.getNodeType() == NodeLevel.DOCUMENT) {
+                    relatedDocs.merge(node.getNodeId(), 1, Integer::sum);
                 }
             }
         }
@@ -587,8 +506,8 @@ public class FactSheetGraphServiceImpl implements FactSheetGraphService {
         try {
             updateStatus(jobId, factSheetId, "RUNNING", 0, 0, 0, 0, 0, null);
 
-            // Get all source nodes for this fact sheet
-            List<GraphNode> sources = nodeRepository.findSourcesByFactSheet(factSheetId);
+            // Get all source nodes for this fact sheet via seam
+            List<GraphNode> sources = knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.SOURCE);
 
             // If no sources exist yet, we need external data
             // This service works with existing graph nodes - actual document ingestion
@@ -603,9 +522,11 @@ public class FactSheetGraphServiceImpl implements FactSheetGraphService {
                     break;
                 }
 
-                // Get documents for this source
-                List<GraphNode> documents = nodeRepository.findBySourceIdAndType(
-                    source.getNodeId(), NodeLevel.DOCUMENT);
+                // Get documents for this source via seam
+                List<GraphNode> documents = knowledgeGraphService.getChildren(source.getNodeId())
+                        .stream()
+                        .filter(n -> n.getNodeType() == NodeLevel.DOCUMENT)
+                        .collect(Collectors.toList());
 
                 if (config.maxDocumentsToProcess() > 0) {
                     documents = documents.stream()
@@ -654,8 +575,8 @@ public class FactSheetGraphServiceImpl implements FactSheetGraphService {
                 edgesCreated += linkResult.linksCreated();
             }
 
-            // Count created nodes
-            nodesCreated = nodeRepository.findByFactSheetId(factSheetId).size();
+            // Count created nodes via seam
+            nodesCreated = (int) knowledgeGraphService.countActiveNodes(factSheetId);
 
             String finalStatus = cancelledJobs.contains(jobId) ? "CANCELLED" : "COMPLETED";
             updateStatus(jobId, factSheetId, finalStatus, totalDocs, processedDocs,
@@ -716,38 +637,12 @@ public class FactSheetGraphServiceImpl implements FactSheetGraphService {
         }
     }
 
-    private GraphNode createSourceNode(Long factSheetId, String sourceId, Map<String, Object> metadata) {
-        String title = metadata != null && metadata.get("title") != null ?
-            metadata.get("title").toString() : sourceId;
-        String sourceType = metadata != null && metadata.get("sourceType") != null ?
-            metadata.get("sourceType").toString() : "UNKNOWN";
-
-        GraphNode node = GraphNode.builder()
-            .nodeId(UUID.randomUUID().toString())
-            .nodeType(NodeLevel.SOURCE)
-            .externalId(sourceId)
-            .title(title)
-            .sourceType(sourceType)
-            .factSheetId(factSheetId)
-            .build();
-        return nodeRepository.save(node);
-    }
-
-    @Transactional
     protected GraphNode findOrCreateEntityNode(Long factSheetId, ExtractedConcept concept) {
-        return nodeRepository.findByExternalIdAndNodeTypeAndFactSheetId(
-            concept.normalizedName(), NodeLevel.ENTITY, factSheetId)
-            .orElseGet(() -> {
-                GraphNode entityNode = GraphNode.builder()
-                    .nodeId(UUID.randomUUID().toString())
-                    .nodeType(NodeLevel.ENTITY)
-                    .externalId(concept.normalizedName())
-                    .title(concept.name())
-                    .description("Concept type: " + concept.category())
-                    .factSheetId(factSheetId)
-                    .build();
-                return nodeRepository.save(entityNode);
-            });
+        return knowledgeGraphService.getNodeByExternalId(concept.normalizedName(), NodeLevel.ENTITY, factSheetId)
+                .orElseGet(() -> knowledgeGraphService.createNode(NodeLevel.ENTITY, concept.normalizedName(),
+                        concept.name(), "Concept type: " + concept.category(),
+                        Map.of("entity_type", concept.category() != null ? concept.category() : ""),
+                        factSheetId));
     }
 
     private Map<String, Object> nodeToD3Format(GraphNode node) {

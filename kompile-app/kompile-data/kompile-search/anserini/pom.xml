@@ -321,6 +321,12 @@
       <artifactId>kompile-model-manager</artifactId>
       <version>${project.version}</version>
     </dependency>
+    <!-- Shared pure-JDK utilities (e.g. NativeImageInfo for runtime native-image detection). -->
+    <dependency>
+      <groupId>ai.kompile</groupId>
+      <artifactId>kompile-utils</artifactId>
+      <version>${project.version}</version>
+    </dependency>
     <dependency>
       <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>samediff-import-onnx</artifactId>

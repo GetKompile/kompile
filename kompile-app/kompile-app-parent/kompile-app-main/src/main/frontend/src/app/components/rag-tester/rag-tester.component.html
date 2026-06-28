@@ -134,11 +134,13 @@
               <div class="hit-header" (click)="toggleHitExpansion('keyword-' + i)">
                 <div class="hit-meta">
                   <span class="hit-index">#{{ i + 1 }}</span>
+                  <span class="hit-id hit-id-mono" title="{{ hit.id }}">{{ hit.id | slice:0:12 }}…</span>
                   <span class="hit-score">Score: {{ formatScore(hit.score) }}</span>
                   <span class="hit-length">{{ hit.contentLength }} chars</span>
                 </div>
                 <mat-icon>{{ isHitExpanded('keyword-' + i) ? 'expand_less' : 'expand_more' }}</mat-icon>
               </div>
+              <app-source-citation [citation]="toCitation(hit)" [compact]="true"></app-source-citation>
 
               <div class="hit-preview" *ngIf="!isHitExpanded('keyword-' + i)">
                 {{ hit.preview }}
@@ -178,11 +180,13 @@
               <div class="hit-header" (click)="toggleHitExpansion('semantic-' + i)">
                 <div class="hit-meta">
                   <span class="hit-index">#{{ i + 1 }}</span>
+                  <span class="hit-id hit-id-mono" title="{{ hit.id }}">{{ hit.id | slice:0:12 }}…</span>
                   <span class="hit-score">Score: {{ formatScore(hit.score) }}</span>
                   <span class="hit-length">{{ hit.contentLength }} chars</span>
                 </div>
                 <mat-icon>{{ isHitExpanded('semantic-' + i) ? 'expand_less' : 'expand_more' }}</mat-icon>
               </div>
+              <app-source-citation [citation]="toCitation(hit)" [compact]="true"></app-source-citation>
 
               <div class="hit-preview" *ngIf="!isHitExpanded('semantic-' + i)">
                 {{ hit.preview }}
@@ -231,6 +235,7 @@
           <div class="hit-header" (click)="toggleHitExpansion('hybrid-' + i)">
             <div class="hit-meta">
               <span class="hit-index">#{{ i + 1 }}</span>
+              <span class="hit-id hit-id-mono" title="{{ hit.id }}">{{ hit.id | slice:0:12 }}…</span>
               <span class="hit-score">Score: {{ formatScore(hit.score) }}</span>
               <span class="hit-length">{{ hit.contentLength }} chars</span>
               <mat-chip-set class="source-badges">
@@ -241,6 +246,7 @@
             </div>
             <mat-icon>{{ isHitExpanded('hybrid-' + i) ? 'expand_less' : 'expand_more' }}</mat-icon>
           </div>
+          <app-source-citation [citation]="toCitation(hit)" [compact]="true"></app-source-citation>
 
           <div class="hit-preview" *ngIf="!isHitExpanded('hybrid-' + i)">
             {{ hit.preview }}
@@ -420,11 +426,13 @@
               <div class="hit-header" (click)="toggleHitExpansion('initial-' + i)">
                 <div class="hit-meta">
                   <span class="hit-index">#{{ i + 1 }}</span>
+                  <span class="hit-id hit-id-mono" title="{{ hit.id }}">{{ hit.id | slice:0:12 }}…</span>
                   <span class="hit-score">Score: {{ formatScore(hit.score) }}</span>
                   <span class="hit-length">{{ hit.contentLength }} chars</span>
                 </div>
                 <mat-icon>{{ isHitExpanded('initial-' + i) ? 'expand_less' : 'expand_more' }}</mat-icon>
               </div>
+              <app-source-citation [citation]="toCitation(hit)" [compact]="true"></app-source-citation>
 
               <div class="hit-preview" *ngIf="!isHitExpanded('initial-' + i)">
                 {{ hit.preview }}
@@ -461,6 +469,7 @@
               <div class="hit-header" (click)="toggleHitExpansion('reranked-' + i)">
                 <div class="hit-meta">
                   <span class="hit-index">#{{ hit.newRank }}</span>
+                  <span class="hit-id hit-id-mono" title="{{ hit.id }}">{{ hit.id | slice:0:12 }}…</span>
                   <span class="hit-score">Score: {{ formatScore(hit.score) }}</span>
                   <span class="rank-change" [ngClass]="getRankChangeClass(hit.rankChange)">
                     <mat-icon class="rank-icon">{{ getRankChangeIcon(hit.rankChange) }}</mat-icon>
@@ -470,6 +479,7 @@
                 </div>
                 <mat-icon>{{ isHitExpanded('reranked-' + i) ? 'expand_less' : 'expand_more' }}</mat-icon>
               </div>
+              <app-source-citation [citation]="toCitation(hit)" [compact]="true"></app-source-citation>
 
               <div class="hit-preview" *ngIf="!isHitExpanded('reranked-' + i)">
                 {{ hit.preview }}
@@ -625,6 +635,7 @@
               <div class="graph-entity" *ngFor="let entity of graphRagResponse.entities">
                 <span class="entity-name">{{ entity.name }}</span>
                 <span class="entity-type" *ngIf="entity.type">{{ entity.type }}</span>
+                <span class="entity-confidence meta-chip" *ngIf="entity.confidence != null">conf {{ (entity.confidence * 100).toFixed(0) }}%</span>
               </div>
             </div>
           </mat-expansion-panel>
@@ -665,6 +676,19 @@
             </mat-expansion-panel-header>
             <div class="source-chunks">
               <pre *ngFor="let chunk of graphRagResponse.sourceChunks" class="source-chunk">{{ chunk }}</pre>
+            </div>
+          </mat-expansion-panel>
+
+          <!-- Source Chunk Citations (structured) -->
+          <mat-expansion-panel *ngIf="graphRagResponse.sourceChunkRefs?.length">
+            <mat-expansion-panel-header>
+              <mat-panel-title><mat-icon>link</mat-icon> Source Citations ({{ graphRagResponse.sourceChunkRefs!.length }})</mat-panel-title>
+            </mat-expansion-panel-header>
+            <div class="source-chunk-refs">
+              <div *ngFor="let ref of graphRagResponse.sourceChunkRefs; let i = index" class="source-chunk-ref-item">
+                <span class="source-chunk-ref-index">[{{ i + 1 }}]</span>
+                <app-source-citation [citation]="ref" [compact]="false"></app-source-citation>
+              </div>
             </div>
           </mat-expansion-panel>
         </div>

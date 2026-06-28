@@ -17,6 +17,8 @@
 package ai.kompile.modelmanager;
 
 import java.io.File;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -40,6 +42,39 @@ public class ModelConstants {
     public static final String OPENNLP_MODEL_BASE_URL = "https://dlcdn.apache.org/opennlp/models/ud-models-1.2/";
     public static final String DEFAULT_KOMPILE_MODEL_CACHE_SUBDIR = ".kompile/models";
     public static final String ENV_KOMPILE_MODEL_CACHE_DIR = "KOMPILE_MODEL_CACHE_DIR";
+
+    /**
+     * Resolves the base model-cache directory with per-project awareness. This is the single
+     * source of truth for "where do model artifacts live"; all model managers/downloaders should
+     * route through it rather than hard-coding {@code ~/.kompile/models}.
+     *
+     * <p>Priority:
+     * <ol>
+     *   <li>{@code KOMPILE_MODEL_CACHE_DIR} environment variable — explicit override, always wins.</li>
+     *   <li>{@code -Dkompile.data.dir=<projectDir>} system property (an active project) →
+     *       {@code <projectDir>/data/models}, so a project's models live with the project and are
+     *       versioned/cleared alongside its other {@code data/} artifacts rather than leaking into
+     *       the global home. The global home ({@code ~/.kompile}) is explicitly excluded so it keeps
+     *       its flat {@code ~/.kompile/models} layout.</li>
+     *   <li>{@code ~/.kompile/models} — global fallback when no project context is present
+     *       (e.g. a bare CLI invocation).</li>
+     * </ol>
+     */
+    public static Path resolveBaseModelCacheDir() {
+        String env = System.getenv(ENV_KOMPILE_MODEL_CACHE_DIR);
+        if (env != null && !env.trim().isEmpty()) {
+            return Paths.get(env.trim());
+        }
+        String dataDir = System.getProperty("kompile.data.dir");
+        if (dataDir != null && !dataDir.isBlank()) {
+            Path dataRoot = Paths.get(dataDir).toAbsolutePath().normalize();
+            Path globalHome = Paths.get(System.getProperty("user.home"), ".kompile").toAbsolutePath().normalize();
+            if (!dataRoot.equals(globalHome)) {
+                return dataRoot.resolve("data").resolve("models");
+            }
+        }
+        return Paths.get(System.getProperty("user.home"), DEFAULT_KOMPILE_MODEL_CACHE_SUBDIR);
+    }
     private static final Map<String, String> LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_REMOTE_FILENAME_MAP;
     private static final Map<String, String> LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_LOCAL_FILENAME_MAP;
 

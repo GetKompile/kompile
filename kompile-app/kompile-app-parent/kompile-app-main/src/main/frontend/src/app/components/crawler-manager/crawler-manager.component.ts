@@ -27,9 +27,11 @@ import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatChipsModule } from '@angular/material/chips';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { MatSlideToggleModule } from '@angular/material/slide-toggle';
+import { MatDialog, MatDialogModule } from '@angular/material/dialog';
 import { JobLogViewerComponent } from '../job-history/job-log-viewer/job-log-viewer.component';
 import { ResourceStripComponent } from '../resource-strip/resource-strip.component';
 import { CrawlStepMonitorComponent } from '../crawl-step-monitor/crawl-step-monitor.component';
+import { CrawlLauncherDialogComponent, CrawlLauncherResult } from '../unified-crawl/crawl-launcher-dialog/crawl-launcher-dialog.component';
 
 import {
   CrawlerService,
@@ -39,11 +41,11 @@ import {
   CrawlStepInfo,
   StartCrawlRequest
 } from '../../services/crawler.service';
-import { UnifiedCrawlService, JobDetail } from '../../services/unified-crawl.service';
+import { UnifiedCrawlService, JobDetail, UnifiedCrawlRequest } from '../../services/unified-crawl.service';
 import { DistributedCrawlService } from '../../services/distributed-crawl.service';
 import { WebSocketService } from '../../services/websocket.service';
 import { GraphExtractionService, GraphExtractionConfig } from '../../services/graph-extraction.service';
-import { Subscription, forkJoin, of } from 'rxjs';
+import { Observable, Subscription, forkJoin, of } from 'rxjs';
 import { catchError } from 'rxjs/operators';
 
 @Component({
@@ -62,6 +64,7 @@ import { catchError } from 'rxjs/operators';
     MatChipsModule,
     MatTooltipModule,
     MatSlideToggleModule,
+    MatDialogModule,
     JobLogViewerComponent,
     ResourceStripComponent,
     CrawlStepMonitorComponent
@@ -76,6 +79,7 @@ export class CrawlerManagerComponent implements OnInit, OnDestroy {
   jobs: CrawlJobSummary[] = [];
   isLoading = false;
   errorMessage: string | null = null;
+  stepActionInProgress: { [key: string]: boolean } = {};
 
   // New crawl form
   seed = '';
@@ -109,6 +113,7 @@ export class CrawlerManagerComponent implements OnInit, OnDestroy {
     private cdr: ChangeDetectorRef,
     private wsService: WebSocketService,
     private graphExtractionService: GraphExtractionService,
+    private dialog: MatDialog,
     private zone: NgZone
   ) {}
 
@@ -182,6 +187,10 @@ export class CrawlerManagerComponent implements OnInit, OnDestroy {
 
     es.addEventListener('started', liveRefresh);
     es.addEventListener('progress', liveRefresh);
+    // Resource/model decisions (batch resizes, gate waits, KGE choices, OOM defers) arrive as
+    // 'decision' events; they carry an updated snapshot so we refresh the list the same way as
+    // a regular progress tick.
+    es.addEventListener('decision', liveRefresh);
     es.addEventListener('completed', terminalRefresh);
     es.addEventListener('error', (e: any) => {
       // Browser transport hiccups fire 'error' with no data (auto-reconnect); our server ERROR event
@@ -275,7 +284,15 @@ export class CrawlerManagerComponent implements OnInit, OnDestroy {
           totalWorkers: s.totalWorkers,
           completedWorkers: s.completedWorkers
         } as any));
-        this.jobs = [...mappedDistributed, ...mappedUnified, ...crawlerJobs];
+        // Merge into existing job objects by id so Angular's ngFor trackBy keeps the same component
+        // instances alive and the crawl-step-monitor expand state persists across every refresh.
+        const freshAll = [...mappedDistributed, ...mappedUnified, ...crawlerJobs];
+        const byId = new Map(this.jobs.map(j => [j.jobId, j]));
+        this.jobs = freshAll.map(fresh => {
+          const existing = byId.get(fresh.jobId);
+          if (existing) { Object.assign(existing, fresh); return existing; }
+          return fresh;
+        });
         // Keep the open steps panel's rich detail (retries/tuning/transcripts) fresh — this runs on
         // both the 5s poll and the SSE-triggered refresh, so the monitor updates in near real time.
         this.refreshRichJob();
@@ -311,6 +328,56 @@ export class CrawlerManagerComponent implements OnInit, OnDestroy {
         this.cdr.markForCheck();
       },
       error: (err) => {
+        this.isLoading = false;
+        this.errorMessage = 'Failed to start crawl: ' + (err.error?.error || err.message || err.statusText);
+        this.cdr.markForCheck();
+      }
+    });
+  }
+
+  /**
+   * Open the full crawl-to-graph launcher modal (sources, graph extraction, vector indexing,
+   * preprocessing, enrichment, runtime tuning, custom pipelines/routing). On submit, start the
+   * assembled unified crawl — the new job then appears in the merged jobs list below.
+   */
+  openLauncher(): void {
+    const ref = this.dialog.open(CrawlLauncherDialogComponent, {
+      width: '960px',
+      maxWidth: '96vw',
+      maxHeight: '92vh',
+      autoFocus: false,
+      restoreFocus: false,
+      panelClass: 'crawl-launcher-dialog-panel',
+      data: { seedPath: this.seed.trim() || undefined }
+    });
+    ref.afterClosed().subscribe((result: CrawlLauncherResult | undefined) => {
+      if (result && result.request) {
+        this.startUnifiedCrawl(result.request, result.distribute);
+      }
+    });
+  }
+
+  /** Submit a fully-assembled unified crawl request — locally, or fanned across the live cluster. */
+  private startUnifiedCrawl(request: UnifiedCrawlRequest, distribute: boolean): void {
+    this.isLoading = true;
+    this.errorMessage = null;
+    this.cdr.markForCheck();
+
+    if (distribute) {
+      request.distribution = { partitionStrategy: 'PER_SOURCE', mergeResults: true };
+    }
+    const start$: Observable<any> = distribute
+      ? this.distributedCrawlService.startDistributed(request)
+      : this.unifiedCrawlService.startJob(request);
+
+    start$.subscribe({
+      next: () => {
+        this.isLoading = false;
+        this.seed = '';
+        this.loadJobs();
+        this.cdr.markForCheck();
+      },
+      error: (err: any) => {
         this.isLoading = false;
         this.errorMessage = 'Failed to start crawl: ' + (err.error?.error || err.message || err.statusText);
         this.cdr.markForCheck();
@@ -409,7 +476,14 @@ export class CrawlerManagerComponent implements OnInit, OnDestroy {
   }
 
   getCrawlerHistoryTaskId(job: CrawlJobSummary): string {
-    return job.historyTaskId || `crawler-${job.jobId}`;
+    // Logs persist under "crawl-<internalJobId>" (stable durable id). Prefer the server-provided
+    // historyTaskId; otherwise build from the internal id — NOT the public jobId (which already carries
+    // a "crawl-" prefix → "crawl-crawl-…" and has no persisted logs). Strip an existing prefix so the
+    // fallback is never double-prefixed.
+    if (job.historyTaskId) { return job.historyTaskId; }
+    const raw = job.internalJobId || job.jobId || '';
+    const id = raw.startsWith('crawl-') ? raw.substring('crawl-'.length) : raw;
+    return `crawl-${id}`;
   }
 
   toggleLogs(jobId: string): void {
@@ -458,6 +532,23 @@ export class CrawlerManagerComponent implements OnInit, OnDestroy {
     return (job.pipelineSteps || []).some(s => s.status === 'SKIPPED' || s.status === 'ARCHIVED');
   }
 
+  /** True when a non-active job has ARCHIVED or DEFERRED steps that can be resumed. */
+  hasResumableSteps(job: CrawlJobSummary): boolean {
+    if (this.isJobActive(job.status)) return false;
+    return (job.pipelineSteps || []).some(s => {
+      const st = (s.status || '').toUpperCase();
+      return st === 'ARCHIVED' || st === 'DEFERRED';
+    });
+  }
+
+  /** Count of ARCHIVED+DEFERRED steps for a job. */
+  resumableStepCount(job: CrawlJobSummary): number {
+    return (job.pipelineSteps || []).filter(s => {
+      const st = (s.status || '').toUpperCase();
+      return st === 'ARCHIVED' || st === 'DEFERRED';
+    }).length;
+  }
+
   /** Short "N ran · M skipped · K archived · F failed" summary of the step plan. */
   stepStatusSummary(job: CrawlJobSummary): string {
     const steps = job.pipelineSteps || [];
@@ -472,15 +563,35 @@ export class CrawlerManagerComponent implements OnInit, OnDestroy {
     return parts.join(' · ');
   }
 
-  /** Run an ARCHIVED/DEFERRED step now (e.g. kick off batched embeddings on demand). */
+  /** Run any terminal step now (Retry/Re-run/Run archived/Run deferred). */
   runStep(jobId: string, stepId: string): void {
+    const key = `${jobId}:${stepId}`;
+    this.stepActionInProgress[key] = true;
+    this.cdr.markForCheck();
     this.unifiedCrawlService.runStep(jobId, stepId).subscribe({
-      next: () => this.loadJobs(),
+      next: () => {
+        this.stepActionInProgress[key] = false;
+        this.loadJobs();
+        this.cdr.markForCheck();
+      },
       error: (err: any) => {
+        this.stepActionInProgress[key] = false;
         this.errorMessage = 'Failed to run step ' + stepId + ': ' + (err.error?.error || err.message || err.statusText);
         this.cdr.markForCheck();
       }
     });
+  }
+
+  /** Builds the Set<string> of in-progress stepIds for a given jobId — passed to the step monitor. */
+  getRunningStepIds(jobId: string): Set<string> {
+    const s = new Set<string>();
+    const prefix = jobId + ':';
+    for (const key of Object.keys(this.stepActionInProgress)) {
+      if (this.stepActionInProgress[key] && key.startsWith(prefix)) {
+        s.add(key.slice(prefix.length));
+      }
+    }
+    return s;
   }
 
   // ─── Rich detail for the expanded steps panel (drives the shared monitor) ────
@@ -521,5 +632,9 @@ export class CrawlerManagerComponent implements OnInit, OnDestroy {
     const rich = this.getRichJob(job);
     if (rich?.pipelineSteps?.length) return rich.pipelineSteps;
     return this.getJobSteps(job);
+  }
+
+  trackByJobId(_i: number, job: CrawlJobSummary): string {
+    return job.jobId;
   }
 }

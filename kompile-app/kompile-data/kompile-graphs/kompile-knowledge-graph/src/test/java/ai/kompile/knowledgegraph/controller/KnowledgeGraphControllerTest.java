@@ -428,10 +428,11 @@ class KnowledgeGraphControllerTest {
 
     @Test
     void listWeights_withSourceId_delegatesToService() {
+        // SourceWeight with no sourceNode → SourceWeightView.from() returns null fields (safe)
         SourceWeight sw = new SourceWeight();
         when(weightingService.getAllWeightsForSource("src-1")).thenReturn(List.of(sw));
 
-        ResponseEntity<List<SourceWeight>> resp = controller.listWeights("src-1");
+        ResponseEntity<List<SourceWeightView>> resp = controller.listWeights("src-1");
 
         assertEquals(HttpStatus.OK, resp.getStatusCode());
         assertEquals(1, resp.getBody().size());
@@ -439,12 +440,17 @@ class KnowledgeGraphControllerTest {
     }
 
     @Test
-    void listWeights_withoutSourceId_returnsEmpty() {
-        ResponseEntity<List<SourceWeight>> resp = controller.listWeights(null);
+    void listWeights_withoutSourceId_delegatesToService() {
+        SourceWeightView view = new SourceWeightView(null, "node-1", "Source A", "PDF",
+                null, null, 1.0, 1.0, null, null, null, true);
+        when(weightingService.listAllSourcesWithWeights()).thenReturn(List.of(view));
+
+        ResponseEntity<List<SourceWeightView>> resp = controller.listWeights(null);
 
         assertEquals(HttpStatus.OK, resp.getStatusCode());
-        assertTrue(resp.getBody().isEmpty());
-        verifyNoInteractions(weightingService);
+        assertEquals(1, resp.getBody().size());
+        assertEquals("node-1", resp.getBody().get(0).sourceNodeId());
+        verify(weightingService).listAllSourcesWithWeights();
     }
 
     // --- getWeight ---

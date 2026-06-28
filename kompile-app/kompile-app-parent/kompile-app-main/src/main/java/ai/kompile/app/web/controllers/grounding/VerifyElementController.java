@@ -9,6 +9,7 @@
  */
 package ai.kompile.app.web.controllers.grounding;
 
+import ai.kompile.knowledgegraph.reasoning.TraceHumanizer;
 import ai.kompile.graph.reasoning.confidence.StrengthBand;
 import ai.kompile.graph.reasoning.fol.grounding.DerivationTree;
 import ai.kompile.graph.reasoning.fol.grounding.GroundedElement;
@@ -20,12 +21,15 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
+import org.springframework.lang.Nullable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Verify-element endpoint — POST /api/grounding/verify-element.
@@ -49,6 +53,15 @@ public class VerifyElementController {
 
     private final KbGroundingService groundingService;
     private final PlattCalibrator calibrator;
+
+    /**
+     * Optional: humanizes atom keys + rule strings in the derivation tree so the
+     * {@code StrengthBadge}/{@code ReasoningTrail} UI shows entity titles, not raw PSL.
+     * Null-safe — falls back to the raw tree JSON in plain-lib test contexts.
+     */
+    @Nullable
+    @Autowired(required = false)
+    private TraceHumanizer traceHumanizer;
 
     @Autowired
     public VerifyElementController(KbGroundingService groundingService) {
@@ -110,7 +123,30 @@ public class VerifyElementController {
         log.debug("POST /api/grounding/verify-element atom='{}' factSheet={} verdict={} band={}",
                 req.atomKey(), factSheetId, verifyResult.status(), band);
 
-        return ResponseEntity.ok(GroundedElementResponse.from(grounded, tree, factSheetId));
+        // Humanize the derivation tree (atom keys → entity titles, PSL rules → readable form)
+        // when available, matching the /api/kb-grounding/explain endpoint. Falls back to raw JSON.
+        String treeJson;
+        if (tree == null) {
+            treeJson = null;
+        } else if (traceHumanizer != null) {
+            List<String> treeRules = new ArrayList<>();
+            collectRuleStrings(tree, treeRules);
+            treeJson = tree.toJsonWithTitlesAndRules(
+                    traceHumanizer.buildAtomKeyToTitle(tree.allAtomKeys()),
+                    traceHumanizer.buildRuleMap(treeRules));
+        } else {
+            treeJson = tree.toJson();
+        }
+
+        return ResponseEntity.ok(GroundedElementResponse.from(grounded, treeJson, factSheetId));
+    }
+
+    /** Collect all non-null ruleApplied strings from a derivation tree (BFS). */
+    private static void collectRuleStrings(DerivationTree tree, List<String> acc) {
+        if (tree.ruleApplied() != null) acc.add(tree.ruleApplied());
+        for (DerivationTree child : tree.children()) {
+            collectRuleStrings(child, acc);
+        }
     }
 
     // ── Request / Response DTOs ──────────────────────────────────────────────────
@@ -167,7 +203,7 @@ public class VerifyElementController {
             Instant evaluatedAt
     ) {
         static GroundedElementResponse from(GroundedElement<String> g,
-                                            DerivationTree tree,
+                                            String derivationTreeJson,
                                             long factSheetId) {
             return new GroundedElementResponse(
                     g.element(),
@@ -177,7 +213,7 @@ public class VerifyElementController {
                     g.calibratedConfidence(),
                     g.band().name(),
                     g.trailRef(),
-                    tree != null ? tree.toJson() : null,
+                    derivationTreeJson,
                     g.evidence().size(),
                     g.generatorId(),
                     factSheetId,

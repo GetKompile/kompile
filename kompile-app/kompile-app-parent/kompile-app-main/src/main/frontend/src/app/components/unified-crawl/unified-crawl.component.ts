@@ -39,25 +39,19 @@ import { MatDividerModule } from '@angular/material/divider';
 import { MatSnackBarModule, MatSnackBar } from '@angular/material/snack-bar';
 import { MatTabsModule } from '@angular/material/tabs';
 import { MatBadgeModule } from '@angular/material/badge';
+import { MatDialog, MatDialogModule } from '@angular/material/dialog';
 
 import {
   UnifiedCrawlService,
-  UnifiedCrawlSource,
-  VectorIndexConfig,
   UnifiedCrawlRequest,
-  ProcessingRouteConfig,
-  ProcessingBackend,
-  CapacitySnapshot,
   JobSummary,
   JobDetail,
-  PipelineStepProgress,
   DocumentGraphProgress,
   AvailableSourceType,
   SubprocessEvent,
   SubprocessStatistics,
   PipelineStepCatalogEntry,
-  ResumableJobEntry,
-  CrawlStageEvent
+  ResumableJobEntry
 } from '../../services/unified-crawl.service';
 import { JobLogViewerComponent } from '../job-history/job-log-viewer/job-log-viewer.component';
 import { ResourceStripComponent } from '../resource-strip/resource-strip.component';
@@ -68,8 +62,7 @@ import { FactSheet } from '../../models/api-models';
 import { GraphExtractionService, ModelProvider, GraphExtractionConfig } from '../../services/graph-extraction.service';
 import { WebSocketService } from '../../services/websocket.service';
 import { DistributedCrawlService } from '../../services/distributed-crawl.service';
-
-type EditableUnifiedCrawlSource = UnifiedCrawlSource & { propertiesJson?: string };
+import { CrawlLauncherDialogComponent, CrawlLauncherDialogData, CrawlLauncherResult } from './crawl-launcher-dialog/crawl-launcher-dialog.component';
 
 @Component({
   selector: 'app-unified-crawl',
@@ -81,7 +74,7 @@ type EditableUnifiedCrawlSource = UnifiedCrawlSource & { propertiesJson?: string
     MatFormFieldModule, MatInputModule, MatSelectModule,
     MatSlideToggleModule, MatChipsModule, MatProgressBarModule,
     MatExpansionModule, MatTooltipModule, MatDividerModule,
-    MatSnackBarModule, MatTabsModule, MatBadgeModule,
+    MatSnackBarModule, MatTabsModule, MatBadgeModule, MatDialogModule,
     JobLogViewerComponent,
     ResourceStripComponent,
     CrawlStepMonitorComponent
@@ -97,44 +90,13 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
 
   activeTab = 0;
 
-  // New job form
-  jobName = '';
-  sources: EditableUnifiedCrawlSource[] = [];
+  // Catalogs loaded once and handed to the launcher modal (avoids duplicate fetches in the dialog).
   availableSourceTypes: AvailableSourceType[] = [];
   isStarting = false;
 
-  // Distributed crawl — when a cluster has live workers, the start form offers to fan the sources
+  // Distributed crawl — when a cluster has live workers, the launcher offers to fan the sources
   // across them (POST /distributed-crawl/start) instead of running locally.
-  distributeAcrossWorkers = false;
   clusterWorkerCount = 0;
-
-  // Graph extraction
-  graphEnabled = true;
-  graphLlmProvider = 'default';
-  graphModelName = '';
-  graphSchemaPresetId = 'fpna-cpg-channel-v1';
-  graphEntityTypesStr = 'PERSON, ORGANIZATION, CONCEPT, TECHNOLOGY';
-  graphRelTypesStr = '';
-  graphSchemaMode = 'LENIENT';
-  graphMinConfidence = 0.5;
-  graphEntityResolution = true;
-  graphEntityResolutionSimilarityThreshold = 0.85;
-  graphEntityResolutionUseEmbeddings = true;
-  graphEntityResolutionEmbeddingThreshold = 0.88;
-
-  // Vector index
-  indexEnabled = true;
-  indexCollectionName = '';
-  embeddingBatchSize = 0;
-  maxEmbeddingBatchSize = 0;
-  adaptiveBatching = true;
-
-  // Processing routes
-  processingRouteEnabled = false;
-  pdfRoutingMode: 'AUTO' | 'FORCE_VLM' | 'FORCE_TEXT' | 'DISABLED' = 'AUTO';
-  extractTablesFromTextPdfs = true;
-  fallbackEnabled = false;
-  backends: any[] = [];
 
   // Jobs
   jobs: JobSummary[] = [];
@@ -149,9 +111,8 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
   subprocessEvents: SubprocessEvent[] = [];
   subprocessStats: SubprocessStatistics | null = null;
 
-  // Dynamic model providers
+  // Dynamic model providers (loaded once; passed to the launcher modal)
   graphModelProviders: ModelProvider[] = [];
-  graphAvailableModels: { id: string; name: string }[] = [];
   /** LLM / CLI-agent model that performs entity & graph extraction, e.g. "opencode-cli / default". */
   extractionAgentLabel: string | null = null;
 
@@ -178,16 +139,12 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
   // Retry state
   retryInProgress = false;
 
-  // Step catalog + per-step selection for start form ('run' | 'archive' | 'skip')
+  // Step catalog (loaded once; per-step run/archive/skip selection happens in the launcher modal)
   stepCatalog: PipelineStepCatalogEntry[] = [];
-  stepSelections: { [stepId: string]: 'run' | 'archive' | 'skip' } = {};
 
   // Resumable jobs
   resumableJobs: ResumableJobEntry[] = [];
   stepActionInProgress: { [key: string]: boolean } = {};
-
-  // Per-step accordion expansion state (stepId → expanded)
-  expandedSteps: Set<string> = new Set<string>();
 
   constructor(
     private crawlService: UnifiedCrawlService,
@@ -196,6 +153,7 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
     private jobLogService: JobLogService,
     private wsService: WebSocketService,
     private distributedCrawlService: DistributedCrawlService,
+    private dialog: MatDialog,
     private snackBar: MatSnackBar,
     private cdr: ChangeDetectorRef,
     private router: Router,
@@ -248,7 +206,6 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
       this.graphExtractionService.getModelProviders().subscribe({
         next: (providers) => {
           this.graphModelProviders = providers;
-          this.onGraphLlmProviderChange();
           this.cdr.markForCheck();
         },
         error: (err) => { console.error('Failed to load graph model providers:', err.message); }
@@ -269,17 +226,6 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
         error: () => { /* non-fatal: leave the label hidden */ }
       })
     );
-  }
-
-  onGraphLlmProviderChange() {
-    this.graphAvailableModels = [];
-    if (this.graphLlmProvider && this.graphLlmProvider !== 'default') {
-      const provider = this.graphModelProviders.find(p => p.id === this.graphLlmProvider);
-      if (provider && provider.models && provider.models.length > 0) {
-        this.graphAvailableModels = provider.models;
-      }
-    }
-    this.cdr.markForCheck();
   }
 
   handleSchedulerEvent(event: any) {
@@ -417,8 +363,16 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
     this.subscriptions.add(
       this.crawlService.listJobs().subscribe({
         next: (jobs) => {
-          this.jobs = jobs;
-          this.activeJobCount = jobs.filter(j => j.status === 'RUNNING' || j.status === 'PENDING').length;
+          // Merge into existing job objects by id so Angular's ngFor trackBy keeps the same component
+          // instances alive and the crawl-step-monitor expand state (expandedSteps / transcriptsOpen)
+          // is preserved across every SSE-triggered refresh.
+          const byId = new Map(this.jobs.map(j => [j.jobId, j]));
+          this.jobs = jobs.map(fresh => {
+            const existing = byId.get(fresh.jobId);
+            if (existing) { Object.assign(existing, fresh); return existing; }
+            return fresh;
+          });
+          this.activeJobCount = this.jobs.filter(j => j.status === 'RUNNING' || j.status === 'PENDING').length;
           this.cdr.markForCheck();
         },
         error: (err) => { console.error('Failed to load crawl jobs:', err.message); }
@@ -426,120 +380,66 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
     );
   }
 
-  addSource() {
-    this.sources.push({
-      label: '',
-      sourceType: 'DIRECTORY',
-      pathOrUrl: '',
-      maxDepth: 3,
-      maxDocuments: 0
-    });
+  trackByJobId(_i: number, job: JobSummary): string {
+    return job.jobId;
   }
 
-  removeSource(index: number) {
-    this.sources.splice(index, 1);
-  }
-
-  addBackend() {
-    this.backends.push({
-      id: '',
-      type: 'LOCAL_MODEL',
-      priority: (this.backends.length + 1) * 10,
-      maxConcurrent: 1,
-      requestsPerMinute: 0,
-      enabled: true
-    });
-  }
-
-  removeBackend(index: number) {
-    this.backends.splice(index, 1);
-  }
-
-  /** Count live cluster workers so the form can offer to distribute the crawl. Best-effort; failure = local-only. */
+  /** Count live cluster workers so the launcher can offer to distribute the crawl. Best-effort; failure = local-only. */
   loadClusterWorkers() {
     this.subscriptions.add(
       this.distributedCrawlService.liveWorkers().subscribe({
         next: (workers) => {
           this.clusterWorkerCount = Array.isArray(workers) ? workers.length : 0;
-          if (this.clusterWorkerCount === 0) {
-            this.distributeAcrossWorkers = false;
-          }
           this.cdr.markForCheck();
         },
         error: () => {
           this.clusterWorkerCount = 0;
-          this.distributeAcrossWorkers = false;
           this.cdr.markForCheck();
         }
       })
     );
   }
 
-  startJob() {
-    if (this.sources.length === 0) return;
-    this.isStarting = true;
-
-    let requestSources: UnifiedCrawlSource[];
-    try {
-      requestSources = this.sources.map(source => this.toRequestSource(source));
-    } catch (err: any) {
-      this.isStarting = false;
-      this.snackBar.open(err.message || 'Invalid source properties JSON', 'Dismiss', { duration: 5000 });
-      this.cdr.markForCheck();
-      return;
-    }
-
-    // Compute enabled/archived step arrays from selections (omit foundational — always run)
-    const enabledSteps: string[] = [];
-    const archivedSteps: string[] = [];
-    for (const step of this.stepCatalog) {
-      if (step.foundational) continue;
-      const sel = this.stepSelections[step.id] || 'run';
-      if (sel === 'run') {
-        enabledSteps.push(step.id);
-      } else if (sel === 'archive') {
-        archivedSteps.push(step.id);
-      }
-      // 'skip' → omitted from both arrays
-    }
-
-    const request: UnifiedCrawlRequest = {
-      name: this.jobName || 'Unified crawl',
-      factSheetId: this.activeFactSheet?.id || null,
-      sources: requestSources,
-      enabledSteps: enabledSteps.length > 0 ? enabledSteps : undefined,
-      archivedSteps: archivedSteps.length > 0 ? archivedSteps : undefined,
-      graphExtraction: {
-        enabled: this.graphEnabled,
-        schemaPresetId: this.graphSchemaPresetId || undefined,
-        entityTypes: this.parseCommaSeparated(this.graphEntityTypesStr),
-        relationshipTypes: this.parseCommaSeparated(this.graphRelTypesStr),
-        llmProvider: this.graphLlmProvider,
-        modelName: this.graphModelName || undefined,
-        schemaMode: this.graphSchemaMode,
-        minConfidence: this.graphMinConfidence,
-        entityResolution: this.graphEntityResolution,
-        entityResolutionSimilarityThreshold: this.graphEntityResolutionSimilarityThreshold,
-        entityResolutionUseEmbeddings: this.graphEntityResolutionUseEmbeddings,
-        entityResolutionEmbeddingThreshold: this.graphEntityResolutionEmbeddingThreshold
-      },
-      vectorIndex: {
-        enabled: this.indexEnabled,
-        collectionName: this.indexCollectionName || undefined,
-        embeddingBatchSize: this.embeddingBatchSize > 0 ? this.embeddingBatchSize : undefined,
-        maxEmbeddingBatchSize: this.maxEmbeddingBatchSize > 0 ? this.maxEmbeddingBatchSize : undefined,
-        adaptiveBatching: this.adaptiveBatching
-      },
-      processingRoute: this.processingRouteEnabled ? {
-        pdfRoutingMode: this.pdfRoutingMode,
-        fallbackEnabled: this.fallbackEnabled,
-        extractTablesFromTextPdfs: this.extractTablesFromTextPdfs,
-        backends: this.fallbackEnabled ? this.backends : undefined
-      } : undefined
+  /**
+   * Open the full-surface crawl launcher modal. The dialog assembles a complete
+   * {@link UnifiedCrawlRequest} from every supported parameter and returns it (plus a distribute
+   * flag); the host then starts the job locally or fans it across the live cluster.
+   */
+  launchCrawl() {
+    const data: CrawlLauncherDialogData = {
+      sourceTypes: this.availableSourceTypes,
+      graphModelProviders: this.graphModelProviders,
+      stepCatalog: this.stepCatalog,
+      clusterWorkerCount: this.clusterWorkerCount,
+      activeFactSheet: this.activeFactSheet,
+      extractionAgentLabel: this.extractionAgentLabel
     };
+    const ref = this.dialog.open(CrawlLauncherDialogComponent, {
+      width: '960px',
+      maxWidth: '96vw',
+      maxHeight: '92vh',
+      autoFocus: false,
+      restoreFocus: false,
+      panelClass: 'crawl-launcher-dialog-panel',
+      data
+    });
+    this.subscriptions.add(
+      ref.afterClosed().subscribe((result: CrawlLauncherResult | undefined) => {
+        if (result && result.request) {
+          this.startJob(result.request, result.distribute);
+        }
+      })
+    );
+  }
+
+  /** Start an assembled crawl request — locally, or fanned across the live cluster when requested. */
+  startJob(request: UnifiedCrawlRequest, distribute: boolean) {
+    if (!request.sources || request.sources.length === 0) return;
+    this.isStarting = true;
+    this.cdr.markForCheck();
 
     // Distribute across cluster workers when requested + a cluster is live; otherwise run locally.
-    const distributed = this.distributeAcrossWorkers && this.clusterWorkerCount > 0;
+    const distributed = distribute && this.clusterWorkerCount > 0;
     if (distributed) {
       request.distribution = { partitionStrategy: 'PER_SOURCE', mergeResults: true };
     }
@@ -558,7 +458,7 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
               + `track it in the Crawlers panel`, 'OK', { duration: 5000 });
           } else {
             this.snackBar.open(`Job started: ${resp.jobId.substring(0, 8)}...`, 'OK', { duration: 3000 });
-            this.activeTab = 1; // Switch to jobs tab (local jobs only; distributed sessions live in Crawlers)
+            this.activeTab = 0; // Switch to the jobs tab (local jobs only; distributed sessions live in Crawlers)
           }
           this.refreshJobs();
           this.cdr.markForCheck();
@@ -572,40 +472,15 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
     );
   }
 
-  private toRequestSource(source: EditableUnifiedCrawlSource): UnifiedCrawlSource {
-    const { propertiesJson, ...payload } = source;
-    const parsedProperties = this.parsePropertiesJson(propertiesJson);
-    const properties = {
-      ...(payload.properties || {}),
-      ...(parsedProperties || {})
-    };
-    return {
-      ...payload,
-      properties: Object.keys(properties).length > 0 ? properties : undefined
-    };
-  }
-
-  private parsePropertiesJson(propertiesJson?: string): { [key: string]: any } | undefined {
-    if (!propertiesJson || !propertiesJson.trim()) {
-      return undefined;
-    }
-    const parsed = JSON.parse(propertiesJson);
-    if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') {
-      throw new Error('Source properties JSON must be an object');
-    }
-    return parsed;
-  }
-
   selectJob(jobId: string) {
-    // Clear live transcript feed and step expansion state when switching jobs
+    // Clear live transcript feed when switching jobs
     this.liveTranscripts = [];
-    this.expandedSteps.clear();
     this.disconnectJobStream();
     this.subscriptions.add(
       this.crawlService.getJob(jobId).subscribe({
         next: (detail) => {
           this.selectedJob = detail;
-          this.activeTab = 2; // Switch to detail tab
+          this.activeTab = 1; // Switch to the Job Detail tab
           this.refreshSubprocessEvents();
           this.refreshLiveTranscripts();
           this.connectJobStream(jobId);
@@ -617,7 +492,7 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
             this.crawlService.getJobFromHistory(jobId).subscribe({
               next: (detail) => {
                 this.selectedJob = detail;
-                this.activeTab = 2;
+                this.activeTab = 1;
                 this.cdr.markForCheck();
               },
               error: () => this.snackBar.open('Failed to load job details', 'Dismiss', { duration: 3000 })
@@ -634,7 +509,17 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
     if (this.selectedJob.fromHistory) return;
     this.subscriptions.add(
       this.crawlService.getJob(this.selectedJob.jobId).subscribe({
-        next: (detail) => { this.selectedJob = detail; this.cdr.markForCheck(); },
+        next: (detail) => {
+          // Merge into the existing object so its reference stays stable across polls. Replacing it
+          // wholesale every SSE tick tore down + rebuilt the entire detail subtree (collapsing any
+          // expanded step panels — the "fidgety, won't-stay-expanded" flicker). Mirrors the jobs-list merge.
+          if (this.selectedJob && this.selectedJob.jobId === detail.jobId) {
+            Object.assign(this.selectedJob, detail);
+          } else {
+            this.selectedJob = detail;
+          }
+          this.cdr.markForCheck();
+        },
         error: (err) => { console.error('Failed to load selected job:', err.message); }
       })
     );
@@ -678,6 +563,10 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
 
     es.addEventListener('started', liveRefresh);
     es.addEventListener('progress', liveRefresh);
+    // Resource/model decisions (batch resizes, gate waits, KGE choices, OOM defers) arrive as
+    // 'decision' events; the snapshot they carry has updated recentTuningDecisions/recentEvents so
+    // we trigger the same live refresh as a progress tick so the step-monitor updates immediately.
+    es.addEventListener('decision', liveRefresh);
     es.addEventListener('completed', terminalRefresh);
     es.addEventListener('error', (e: any) => {
       // The browser fires 'error' for transport hiccups (no data; EventSource auto-reconnects); our
@@ -701,7 +590,8 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
           // If the selectedJob doesn't already have graph data from the detail endpoint,
           // merge live stats into selectedJob.graph so the template can display them.
           if (this.selectedJob && !this.selectedJob.graph && stats) {
-            this.selectedJob = { ...this.selectedJob, graph: { ...stats, live: true } };
+            // Mutate in place — replacing selectedJob here also collapsed expanded panels.
+            this.selectedJob.graph = { ...stats, live: true };
           }
           this.cdr.markForCheck();
         },
@@ -781,7 +671,8 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
   }
 
   navigateToKnowledgeGraph() {
-    this.router.navigate(['/tools'], { queryParams: { tab: 'indexBrowser' } });
+    // Index Browser moved to Developer hub > Management section (tab index 2)
+    this.router.navigate(['/developer'], { queryParams: { tab: 2 } });
   }
 
   cancelJob(jobId: string) {
@@ -878,11 +769,6 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
     return Object.entries(obj).sort((a, b) => (b[1] as number) - (a[1] as number));
   }
 
-  getVisiblePipelineSteps(steps: PipelineStepProgress[] | undefined): PipelineStepProgress[] {
-    if (!steps || steps.length === 0) return [];
-    return steps.filter(step => step.status !== 'SKIPPED').slice(0, 9);
-  }
-
   getVisibleDocumentProgress(documents: DocumentGraphProgress[] | undefined): DocumentGraphProgress[] {
     if (!documents || documents.length === 0) return [];
     // Filter by status if set
@@ -943,34 +829,17 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
     return 'doc-' + (status || 'unknown').toLowerCase();
   }
 
-  getStepTypeIcon(stepType: string | undefined): string {
-    const normalized = (stepType || '').toUpperCase();
-    if (normalized.includes('IO')) return 'folder_open';
-    if (normalized.includes('CPU')) return 'settings_suggest';
-    if (normalized.includes('LLM')) return 'psychology';
-    if (normalized.includes('GRAPH_CONSTRUCTOR')) return 'account_tree';
-    if (normalized.includes('GRAPH')) return 'hub';
-    if (normalized.includes('EMBEDDING')) return 'memory';
-    if (normalized.includes('PIPELINE')) return 'schema';
-    return 'schema';
-  }
-
-  getStepTypeClass(stepType: string | undefined): string {
-    return 'type-' + (stepType || 'pipeline').toLowerCase().replace(/_/g, '-');
-  }
-
-  getStepStatusClass(status: string | undefined): string {
-    const s = (status || 'pending').toLowerCase();
-    return 'step-' + s;
-  }
-
-  isStepRunNowEligible(status: string | undefined): boolean {
-    const s = (status || '').toUpperCase();
-    return s === 'ARCHIVED' || s === 'DEFERRED';
-  }
-
   getCrawlHistoryTaskId(jobId: string): string {
-    return `crawl-${jobId}`;
+    // Crawl logs persist under "crawl-<internalJobId>" (the stable durable id), NOT the public
+    // scheduler jobId. Using `crawl-${jobId}` produced a non-existent id (the jobId already carries a
+    // "crawl-" prefix → "crawl-crawl-…", and it's the wrong id anyway), so the per-step log/transcript
+    // viewer queried a task with zero logs → "No logs found / adjust your filters". Resolve the internal
+    // id from the selected job when it matches; otherwise strip any existing "crawl-" prefix so we never
+    // emit a double-prefixed id.
+    const sj = this.selectedJob as { jobId?: string; internalJobId?: string } | null | undefined;
+    const internal = sj && (sj.jobId === jobId || sj.internalJobId === jobId) ? sj.internalJobId : undefined;
+    const resolved = internal || (jobId && jobId.startsWith('crawl-') ? jobId.substring('crawl-'.length) : jobId);
+    return `crawl-${resolved}`;
   }
 
   isCrawlJobRunning(status: string): boolean {
@@ -1104,15 +973,6 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
     return `${seconds}s`;
   }
 
-  /** Get throughput for a pipeline step as items/sec or items/min */
-  getStepThroughput(step: PipelineStepProgress): string {
-    if (!step.elapsedMs || step.elapsedMs < 1000 || step.completedItems <= 0) return '';
-    const rate = step.completedItems / (step.elapsedMs / 1000);
-    if (rate >= 1) return `${rate.toFixed(1)}/s`;
-    const perMin = rate * 60;
-    return `${perMin.toFixed(1)}/min`;
-  }
-
   /** Format event timestamp as relative time */
   formatEventTime(timestamp: string): string {
     if (!timestamp) return '';
@@ -1191,12 +1051,6 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
       this.crawlService.getStepCatalog().subscribe({
         next: (catalog) => {
           this.stepCatalog = catalog;
-          // Default every step to 'run'
-          const sel: { [id: string]: 'run' | 'archive' | 'skip' } = {};
-          for (const s of catalog) {
-            sel[s.id] = 'run';
-          }
-          this.stepSelections = sel;
           this.cdr.markForCheck();
         },
         error: (err) => { console.error('Failed to load step catalog:', err.message); }
@@ -1214,27 +1068,6 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
         error: (err) => { console.error('Failed to load resumable jobs:', err.message); }
       })
     );
-  }
-
-  setStepSelection(stepId: string, value: 'run' | 'archive' | 'skip') {
-    this.stepSelections[stepId] = value;
-    // Dependency cascade: if this step is now skip/archive, force all dependents that list it to skip
-    for (const step of this.stepCatalog) {
-      if (step.dependsOn.includes(stepId) && value !== 'run') {
-        if (this.stepSelections[step.id] === 'run') {
-          this.stepSelections[step.id] = 'skip';
-        }
-      }
-    }
-    this.cdr.markForCheck();
-  }
-
-  isStepDependencyBlocked(step: PipelineStepCatalogEntry): boolean {
-    // A step is blocked (forced-skip) when any of its dependencies is set to skip/archive
-    return step.dependsOn.some(depId => {
-      const sel = this.stepSelections[depId];
-      return sel === 'skip' || sel === 'archive';
-    });
   }
 
   runStep(jobId: string, stepId: string) {
@@ -1297,64 +1130,16 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
     return !!this.stepActionInProgress[`${jobId}:${stepId}`];
   }
 
-  private parseCommaSeparated(str: string): string[] {
-    if (!str || !str.trim()) return [];
-    return str.split(',').map(s => s.trim()).filter(s => s.length > 0);
-  }
-
-  // ─── Step accordion ───────────────────────────────────────────────────────
-
-  /** Toggle a single step's expanded state (multiple steps may be open). */
-  toggleStepExpanded(stepId: string): void {
-    if (this.expandedSteps.has(stepId)) {
-      this.expandedSteps.delete(stepId);
-    } else {
-      this.expandedSteps.add(stepId);
+  /** Builds the Set<string> of in-progress stepIds for a given jobId — passed to the step monitor. */
+  getRunningStepIds(jobId: string): Set<string> {
+    const s = new Set<string>();
+    const prefix = jobId + ':';
+    for (const key of Object.keys(this.stepActionInProgress)) {
+      if (this.stepActionInProgress[key] && key.startsWith(prefix)) {
+        s.add(key.slice(prefix.length));
+      }
     }
-    this.cdr.markForCheck();
+    return s;
   }
 
-  isStepExpanded(stepId: string): boolean {
-    return this.expandedSteps.has(stepId);
-  }
-
-  /**
-   * Map a pipeline step's stepId to the set of phase strings that appear in
-   * recentEvents / documentProgress for that step.
-   * Falls back to the stepId itself so novel phases still work.
-   */
-  stepIdToPhases(stepId: string): string[] {
-    const upper = (stepId || '').toUpperCase();
-    const phaseMap: { [key: string]: string[] } = {
-      'SOURCE_LOADING':        ['LOADING'],
-      'SOURCE_DISCOVERY':      ['DISCOVERING'],
-      'TEXT_CONVERSION':       ['CONVERTING'],
-      'DOCUMENT_PREPROCESSING':['OCR_PROCESSING', 'CONVERTING'],
-      'CONTENT_ROUTING':       ['ROUTING'],
-      'RULE_GRAPH_PREP':       ['GRAPH_PREP'],
-      'CHUNKING':              ['CHUNKING'],
-      'GRAPH_EXTRACTION':      ['GRAPH_EXTRACTION'],
-      'CRAWL_SURFACE':         ['CRAWL_SURFACE'],
-      'ENTITY_RESOLUTION':     ['ENTITY_RESOLUTION'],
-      'GRAPH_EDGE_CLEANUP':    ['EDGE_COMPUTATION'],
-      'EMBEDDING':             ['EMBEDDING', 'VECTOR_INDEXING', 'INDEXING'],
-    };
-    return phaseMap[upper] || [upper];
-  }
-
-  /** Activity log entries (recentEvents) filtered to the phases of a step. */
-  getStepEvents(step: PipelineStepProgress): CrawlStageEvent[] {
-    if (!this.selectedJob?.recentEvents) return [];
-    const phases = this.stepIdToPhases(step.stepId);
-    return this.selectedJob.recentEvents.filter(e => phases.includes((e.phase || '').toUpperCase()));
-  }
-
-  /** Document progress entries currently in the given step's phase(s). */
-  getStepDocuments(step: PipelineStepProgress): DocumentGraphProgress[] {
-    if (!this.selectedJob?.documentProgress) return [];
-    const phases = this.stepIdToPhases(step.stepId);
-    return this.selectedJob.documentProgress.filter(d =>
-      phases.includes((d.phase || '').toUpperCase())
-    );
-  }
 }

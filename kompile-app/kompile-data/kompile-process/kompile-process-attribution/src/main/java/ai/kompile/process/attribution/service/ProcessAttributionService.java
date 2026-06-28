@@ -377,8 +377,8 @@ public class ProcessAttributionService {
                             .severity(AlertSeverity.MEDIUM)
                             .alertType("RISK_ASSESSMENT")
                             .title("Potential risk in step: " + step.getName())
-                            .explanation("Forward prediction from graph node " + nodeId +
-                                    " shows " + riskyPredictions.size() + " potential downstream events")
+                            .explanation("Forward prediction from \"" + nodeLabel(nodeId) +
+                                    "\" shows " + riskyPredictions.size() + " potential downstream events")
                             .predictions(riskyPredictions)
                             .confidence(riskyPredictions.stream()
                                     .mapToDouble(PredictedEvent::getProbability).average().orElse(0))
@@ -772,7 +772,7 @@ public class ProcessAttributionService {
                 .title("Step '" + step.getName() + "' failed — root cause: " + topRootCause)
                 .explanation(result.getSynthesizedExplanation() != null
                         ? result.getSynthesizedExplanation()
-                        : "Found " + result.getChains().size() + " causal chains from KG node " + nodeId)
+                        : "Found " + result.getChains().size() + " causal chains from \"" + nodeLabel(nodeId) + "\"")
                 .causalChains(result.getChains())
                 .confidence(result.getChains().isEmpty() ? 0.0 :
                         result.getChains().get(0).getOverallConfidence())
@@ -932,5 +932,15 @@ public class ProcessAttributionService {
         if (score >= 0.4) return AlertSeverity.MEDIUM;
         if (score >= 0.2) return AlertSeverity.LOW;
         return AlertSeverity.INFO;
+    }
+
+    /**
+     * Resolves a raw graph node ID to its human-readable title, falling back to the raw ID
+     * when the node is not found or has no title.
+     */
+    private String nodeLabel(String nodeId) {
+        return graphService.getNode(nodeId)
+                .map(n -> n.getTitle() != null ? n.getTitle() : nodeId)
+                .orElse(nodeId);
     }
 }

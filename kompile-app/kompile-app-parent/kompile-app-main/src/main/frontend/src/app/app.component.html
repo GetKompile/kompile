@@ -90,9 +90,6 @@
     <a mat-tab-link (click)="activeTab = 'project'" [active]="activeTab === 'project'">
       Project
     </a>
-    <a mat-tab-link (click)="activeTab = 'projectStore'" [active]="activeTab === 'projectStore'">
-      Project Store
-    </a>
     <a mat-tab-link (click)="activeTab = 'sources'" [active]="activeTab === 'sources'" class="fact-sheets-tab">
       Fact Sheets
       <span class="active-jobs-badge" *ngIf="activeJobsCount > 0" [title]="getActiveJobsSummary()">
@@ -107,7 +104,10 @@
       Developer
     </a>
     <a mat-tab-link (click)="activeTab = 'kclaw'" [active]="activeTab === 'kclaw'">
-      KClaw
+      Agents
+    </a>
+    <a mat-tab-link (click)="activeTab = 'grounding'" [active]="activeTab === 'grounding'">
+      Grounding
     </a>
     <a mat-tab-link (click)="activeTab = 'enforcer'" [active]="activeTab === 'enforcer'">
       Enforcer
@@ -125,8 +125,6 @@
       </div>
       <div *ngIf="activeTab === 'project'">
         <app-project-manager></app-project-manager>
-      </div>
-      <div *ngIf="activeTab === 'projectStore'">
         <app-project-store-panel></app-project-store-panel>
       </div>
       <div *ngIf="activeTab === 'sources'">
@@ -143,6 +141,9 @@
       </div>
       <div *ngIf="activeTab === 'enforcer'">
         <app-enforcer-hub></app-enforcer-hub>
+      </div>
+      <div *ngIf="activeTab === 'grounding'">
+        <app-grounding-console-panel></app-grounding-console-panel>
       </div>
     </main>
   </div>

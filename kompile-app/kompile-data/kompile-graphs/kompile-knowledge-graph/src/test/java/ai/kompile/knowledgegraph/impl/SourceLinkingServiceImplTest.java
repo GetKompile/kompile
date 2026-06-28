@@ -17,7 +17,6 @@
 package ai.kompile.knowledgegraph.impl;
 
 import ai.kompile.knowledgegraph.domain.*;
-import ai.kompile.knowledgegraph.repository.*;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import ai.kompile.knowledgegraph.service.SourceLinkingService.*;
 import org.junit.jupiter.api.BeforeEach;
@@ -25,7 +24,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.data.domain.PageRequest;
 
 import java.util.*;
 
@@ -37,22 +35,24 @@ import static org.mockito.Mockito.*;
  * Tests for {@link SourceLinkingServiceImpl} — shared concept linking, embedding similarity,
  * combined linking, manual links, removal, connectivity analysis, term-based linking,
  * and isolated/most-connected source discovery.
+ *
+ * Note: SourceLinkingServiceImpl constructor is 1-arg (KnowledgeGraphService only).
+ * All entity-mention lookups go through KnowledgeGraphService seam methods:
+ *   getEntityMentionsForNode, getNodesWithEntity, getEntityNamesForNode,
+ *   findEntityMention, saveEntityMention.
  */
 @ExtendWith(MockitoExtension.class)
 @org.mockito.junit.jupiter.MockitoSettings(strictness = org.mockito.quality.Strictness.LENIENT)
 class SourceLinkingServiceImplTest {
 
-    // entityMentionRepository is still injected by the impl (for findByNode,
-    // findByEntityNameAndFactSheet, findNodesWithEntity, findByNodeAndEntityName, save, etc.)
-    @Mock private EntityMentionRepository entityMentionRepository;
     @Mock private KnowledgeGraphService knowledgeGraphService;
 
     private SourceLinkingServiceImpl service;
 
     @BeforeEach
     void setUp() {
-        service = new SourceLinkingServiceImpl(
-                entityMentionRepository, knowledgeGraphService);
+        // Constructor is 1-arg — only KnowledgeGraphService
+        service = new SourceLinkingServiceImpl(knowledgeGraphService);
     }
 
     private GraphNode stubSource(String nodeId, String title) {
@@ -67,6 +67,14 @@ class SourceLinkingServiceImplTest {
         return GraphNode.builder()
                 .nodeId(nodeId)
                 .nodeType(NodeLevel.DOCUMENT)
+                .build();
+    }
+
+    private GraphNode stubDocNode(String nodeId, Long factSheetId) {
+        return GraphNode.builder()
+                .nodeId(nodeId)
+                .nodeType(NodeLevel.DOCUMENT)
+                .factSheetId(factSheetId)
                 .build();
     }
 
@@ -112,11 +120,10 @@ class SourceLinkingServiceImplTest {
     void linkSourcesBySharedConcepts_noSharedConcepts_noLinksCreated() {
         GraphNode s1 = stubSource("s1", "Source1");
         GraphNode s2 = stubSource("s2", "Source2");
-        // impl calls knowledgeGraphService.getSourcesInFactSheet
         when(knowledgeGraphService.getSourcesInFactSheet(1L)).thenReturn(List.of(s1, s2));
 
         // impl calls knowledgeGraphService.getChildren(sourceNodeId) for each source
-        // filtering for DOCUMENT type — returning empty means 0 concepts
+        // then knowledgeGraphService.getEntityMentionsForNode(doc) for each child document
         when(knowledgeGraphService.getChildren("s1")).thenReturn(List.of());
         when(knowledgeGraphService.getChildren("s2")).thenReturn(List.of());
 
@@ -135,11 +142,12 @@ class SourceLinkingServiceImplTest {
         // Source1 has one document with concepts A, B, C, D
         GraphNode doc1 = stubDocNode("d1");
         when(knowledgeGraphService.getChildren("s1")).thenReturn(List.of(doc1));
+        // impl calls knowledgeGraphService.getEntityMentionsForNode(doc) — NOT entityMentionRepository.findByNode
         EntityMention m1 = stubMention(doc1, "conceptA", 1L);
         EntityMention m2 = stubMention(doc1, "conceptB", 1L);
         EntityMention m3 = stubMention(doc1, "conceptC", 1L);
         EntityMention m4 = stubMention(doc1, "conceptD", 1L);
-        when(entityMentionRepository.findByNode(doc1)).thenReturn(List.of(m1, m2, m3, m4));
+        when(knowledgeGraphService.getEntityMentionsForNode(doc1)).thenReturn(List.of(m1, m2, m3, m4));
 
         // Source2 has one document with concepts A, B, C, E
         GraphNode doc2 = stubDocNode("d2");
@@ -148,7 +156,7 @@ class SourceLinkingServiceImplTest {
         EntityMention m6 = stubMention(doc2, "conceptB", 1L);
         EntityMention m7 = stubMention(doc2, "conceptC", 1L);
         EntityMention m8 = stubMention(doc2, "conceptE", 1L);
-        when(entityMentionRepository.findByNode(doc2)).thenReturn(List.of(m5, m6, m7, m8));
+        when(knowledgeGraphService.getEntityMentionsForNode(doc2)).thenReturn(List.of(m5, m6, m7, m8));
 
         // impl checks knowledgeGraphService.edgeExistsInFactSheet (both directions)
         when(knowledgeGraphService.edgeExistsInFactSheet("s1", "s2", 1L)).thenReturn(false);
@@ -166,7 +174,6 @@ class SourceLinkingServiceImplTest {
         assertEquals(2, result.sourcesAnalyzed());
         assertEquals(1, result.linksCreated());
         assertEquals(1, result.links().size());
-        // No edgeRepository.save — the service's createEdgeWithMetadata is the write path
         verify(knowledgeGraphService).createEdgeWithMetadata(
                 eq("s1"), eq("s2"), any(EdgeType.class), anyDouble(),
                 isNull(), anyString(), anyString(), isNull(), eq(1L));
@@ -180,12 +187,12 @@ class SourceLinkingServiceImplTest {
 
         GraphNode doc1 = stubDocNode("d1");
         when(knowledgeGraphService.getChildren("s1")).thenReturn(List.of(doc1));
-        when(entityMentionRepository.findByNode(doc1)).thenReturn(List.of(
+        when(knowledgeGraphService.getEntityMentionsForNode(doc1)).thenReturn(List.of(
                 stubMention(doc1, "a", 1L), stubMention(doc1, "b", 1L), stubMention(doc1, "c", 1L)));
 
         GraphNode doc2 = stubDocNode("d2");
         when(knowledgeGraphService.getChildren("s2")).thenReturn(List.of(doc2));
-        when(entityMentionRepository.findByNode(doc2)).thenReturn(List.of(
+        when(knowledgeGraphService.getEntityMentionsForNode(doc2)).thenReturn(List.of(
                 stubMention(doc2, "a", 1L), stubMention(doc2, "b", 1L), stubMention(doc2, "c", 1L)));
 
         // Edge already exists in forward direction
@@ -206,12 +213,12 @@ class SourceLinkingServiceImplTest {
 
         GraphNode doc1 = stubDocNode("d1");
         when(knowledgeGraphService.getChildren("s1")).thenReturn(List.of(doc1));
-        when(entityMentionRepository.findByNode(doc1)).thenReturn(List.of(
+        when(knowledgeGraphService.getEntityMentionsForNode(doc1)).thenReturn(List.of(
                 stubMention(doc1, "x", 1L), stubMention(doc1, "y", 1L), stubMention(doc1, "z", 1L)));
 
         GraphNode doc2 = stubDocNode("d2");
         when(knowledgeGraphService.getChildren("s2")).thenReturn(List.of(doc2));
-        when(entityMentionRepository.findByNode(doc2)).thenReturn(List.of(
+        when(knowledgeGraphService.getEntityMentionsForNode(doc2)).thenReturn(List.of(
                 stubMention(doc2, "x", 1L), stubMention(doc2, "y", 1L), stubMention(doc2, "z", 1L)));
 
         when(knowledgeGraphService.edgeExistsInFactSheet(any(), any(), eq(1L))).thenReturn(false);
@@ -334,8 +341,6 @@ class SourceLinkingServiceImplTest {
         when(knowledgeGraphService.getNode("s1")).thenReturn(Optional.of(s1));
         when(knowledgeGraphService.getNode("s2")).thenReturn(Optional.of(s2));
 
-        // impl calls knowledgeGraphService.createEdgeWithMetadata(...)
-        // description=null → impl uses "Manual link" as the description arg
         GraphEdge createdEdge = mock(GraphEdge.class);
         when(knowledgeGraphService.createEdgeWithMetadata(
                 eq("s1"), eq("s2"), eq(EdgeType.USER_DEFINED), eq(0.9),
@@ -348,8 +353,6 @@ class SourceLinkingServiceImplTest {
         assertEquals("s2", link.sourceId2());
         assertEquals("USER_DEFINED", link.linkType());
         assertEquals(0.9, link.strength());
-        // The impl no longer calls edge.setFactSheetId/setBidirectional/edgeRepository.save;
-        // the write is entirely inside createEdgeWithMetadata
         verify(knowledgeGraphService).createEdgeWithMetadata(
                 eq("s1"), eq("s2"), eq(EdgeType.USER_DEFINED), eq(0.9),
                 isNull(), eq("Manual link"), isNull(), isNull(), eq(1L));
@@ -400,23 +403,19 @@ class SourceLinkingServiceImplTest {
         String edgeId = "edge-id-fwd";
         when(edge.getEdgeId()).thenReturn(edgeId);
 
-        // impl calls knowledgeGraphService.findEdgeBetweenNodes(s1, s2)
         when(knowledgeGraphService.findEdgeBetweenNodes("s1", "s2")).thenReturn(edge);
 
         assertTrue(service.removeLink(1L, "s1", "s2"));
-        // impl calls knowledgeGraphService.deleteEdge(edge.getEdgeId())
         verify(knowledgeGraphService).deleteEdge(edgeId);
     }
 
     @Test
     void removeLink_reverseDirection_removesAndReturnsTrue() {
-        // forward direction returns null
         when(knowledgeGraphService.findEdgeBetweenNodes("s1", "s2")).thenReturn(null);
 
         GraphEdge edge = mock(GraphEdge.class);
         String edgeId = "edge-id-rev";
         when(edge.getEdgeId()).thenReturn(edgeId);
-        // reverse direction returns the edge
         when(knowledgeGraphService.findEdgeBetweenNodes("s2", "s1")).thenReturn(edge);
 
         assertTrue(service.removeLink(1L, "s1", "s2"));
@@ -503,7 +502,6 @@ class SourceLinkingServiceImplTest {
         GraphNode s3 = stubSource("s3", "S3");
         when(knowledgeGraphService.getSourcesInFactSheet(1L)).thenReturn(List.of(s1, s2, s3));
 
-        // s2 has 2 connections (appears as source in e1 and as source in e2)
         GraphEdge e1 = stubEdge(s1, s2, EdgeType.CROSS_SOURCE, 0.8);
         GraphEdge e2 = stubEdge(s2, s3, EdgeType.CROSS_SOURCE, 0.7);
         when(knowledgeGraphService.getEdgesInFactSheet(1L)).thenReturn(List.of(e1, e2));
@@ -550,10 +548,11 @@ class SourceLinkingServiceImplTest {
 
     @Test
     void linkNodesByTerm_lessThan2Nodes_returnsInsufficientMessage() {
-        GraphNode n1 = stubDocNode("n1");
-        EntityMention m1 = stubMention(n1, "kubernetes", 1L);
-        when(entityMentionRepository.findByEntityNameAndFactSheet("kubernetes", 1L))
-                .thenReturn(List.of(m1));
+        // impl calls knowledgeGraphService.getNodesWithEntity(normalizedTerm) filtered by factSheetId
+        // NOT entityMentionRepository.findByEntityNameAndFactSheet
+        GraphNode n1 = stubDocNode("n1", 1L);
+        when(knowledgeGraphService.getNodesWithEntity("kubernetes"))
+                .thenReturn(List.of(n1));
 
         TermLinkingResult result = service.linkNodesByTerm("Kubernetes", 1L, null, null);
 
@@ -564,24 +563,22 @@ class SourceLinkingServiceImplTest {
 
     @Test
     void linkNodesByTerm_multipleNodes_createsPairwiseEdges() {
-        GraphNode n1 = stubDocNode("n1");
-        GraphNode n2 = stubDocNode("n2");
-        GraphNode n3 = stubDocNode("n3");
+        GraphNode n1 = stubDocNode("n1", 1L);
+        GraphNode n2 = stubDocNode("n2", 1L);
+        GraphNode n3 = stubDocNode("n3", 1L);
 
-        EntityMention m1 = stubMention(n1, "kubernetes", 1L);
-        EntityMention m2 = stubMention(n2, "kubernetes", 1L);
-        EntityMention m3 = stubMention(n3, "kubernetes", 1L);
-        when(entityMentionRepository.findByEntityNameAndFactSheet("kubernetes", 1L))
-                .thenReturn(List.of(m1, m2, m3));
+        // impl calls knowledgeGraphService.getNodesWithEntity(normalizedTerm) filtered by factSheetId
+        when(knowledgeGraphService.getNodesWithEntity("kubernetes"))
+                .thenReturn(List.of(n1, n2, n3));
 
-        // findEdgeBetweenNodesBidirectional is a default method that calls
-        // findEdgeBetweenNodes(a,b) then findEdgeBetweenNodes(b,a); stub the primitives
-        when(knowledgeGraphService.findEdgeBetweenNodes(any(), any())).thenReturn(null);
+        // impl uses findEdgeBetweenNodesBidirectional (Optional) — not edgeRepository
+        when(knowledgeGraphService.findEdgeBetweenNodesBidirectional(any(), any()))
+                .thenReturn(Optional.empty());
 
         GraphEdge edge = mock(GraphEdge.class);
         when(knowledgeGraphService.createEdgeWithMetadata(
                 any(), any(), any(EdgeType.class), anyDouble(),
-                isNull(), anyString(), anyString(), isNull(), isNull()))
+                isNull(), anyString(), anyString(), isNull(), eq(1L)))
                 .thenReturn(edge);
 
         TermLinkingResult result = service.linkNodesByTerm("Kubernetes", 1L, null, null);
@@ -592,12 +589,14 @@ class SourceLinkingServiceImplTest {
 
     @Test
     void linkNodesByTerm_defaultsEdgeTypeAndWeight() {
-        GraphNode n1 = stubDocNode("n1");
-        GraphNode n2 = stubDocNode("n2");
-        when(entityMentionRepository.findByEntityNameAndFactSheet("test", 1L))
-                .thenReturn(List.of(stubMention(n1, "test", 1L), stubMention(n2, "test", 1L)));
+        GraphNode n1 = stubDocNode("n1", 1L);
+        GraphNode n2 = stubDocNode("n2", 1L);
+        when(knowledgeGraphService.getNodesWithEntity("test"))
+                .thenReturn(List.of(n1, n2));
 
-        // No existing edge in either direction (findEdgeBetweenNodesBidirectional defaults to empty).
+        when(knowledgeGraphService.findEdgeBetweenNodesBidirectional(any(), any()))
+                .thenReturn(Optional.empty());
+
         GraphEdge edge = mock(GraphEdge.class);
         when(knowledgeGraphService.createEdgeWithMetadata(
                 any(), any(), eq(EdgeType.SHARED_ENTITY), eq(0.7),
@@ -606,7 +605,6 @@ class SourceLinkingServiceImplTest {
 
         service.linkNodesByTerm("Test!", 1L, null, null);
 
-        // verify createEdgeWithMetadata was called with SHARED_ENTITY and weight 0.7 (factSheetId 1L)
         verify(knowledgeGraphService).createEdgeWithMetadata(
                 any(), any(), eq(EdgeType.SHARED_ENTITY), eq(0.7),
                 isNull(), anyString(), anyString(), isNull(), eq(1L));
@@ -614,15 +612,14 @@ class SourceLinkingServiceImplTest {
 
     @Test
     void linkNodesByTerm_existingEdge_skips() {
-        GraphNode n1 = stubDocNode("n1");
-        GraphNode n2 = stubDocNode("n2");
-        when(entityMentionRepository.findByEntityNameAndFactSheet("test", 1L))
-                .thenReturn(List.of(stubMention(n1, "test", 1L), stubMention(n2, "test", 1L)));
+        GraphNode n1 = stubDocNode("n1", 1L);
+        GraphNode n2 = stubDocNode("n2", 1L);
+        when(knowledgeGraphService.getNodesWithEntity("test"))
+                .thenReturn(List.of(n1, n2));
 
-        // An existing edge (either direction) must short-circuit and skip creation. Stub the
-        // bidirectional method directly — Mockito does not run interface default-method bodies.
+        // An existing edge (either direction) must short-circuit and skip creation.
         when(knowledgeGraphService.findEdgeBetweenNodesBidirectional(any(), any()))
-                .thenReturn(java.util.Optional.of(mock(GraphEdge.class)));
+                .thenReturn(Optional.of(mock(GraphEdge.class)));
 
         TermLinkingResult result = service.linkNodesByTerm("Test", 1L, null, null);
 
@@ -647,7 +644,7 @@ class SourceLinkingServiceImplTest {
     @Test
     void linkNodesByTerms_processeEachTerm() {
         // Each term finds < 2 nodes, so no links created but result per term
-        when(entityMentionRepository.findByEntityNameAndFactSheet(any(), eq(1L))).thenReturn(List.of());
+        when(knowledgeGraphService.getNodesWithEntity(any())).thenReturn(List.of());
 
         List<TermLinkingResult> results = service.linkNodesByTerms(
                 List.of("alpha", "beta"), 1L, null, null);
@@ -661,28 +658,25 @@ class SourceLinkingServiceImplTest {
     void createTermBasedRelation_createsEdgeAndMentions() {
         GraphNode s = stubSource("s1", "Source1");
         GraphNode t = stubSource("t1", "Target1");
-        // impl calls knowledgeGraphService.getNode(nodeId)
         when(knowledgeGraphService.getNode("s1")).thenReturn(Optional.of(s));
         when(knowledgeGraphService.getNode("t1")).thenReturn(Optional.of(t));
 
-        // impl calls knowledgeGraphService.createEdgeWithMetadata with:
-        // label="Test-Term", description="Custom desc", metaJson=["testtterm"], factSheetId=null
+        // impl calls knowledgeGraphService.createEdgeWithMetadata
         GraphEdge edge = mock(GraphEdge.class);
         when(knowledgeGraphService.createEdgeWithMetadata(
                 eq("s1"), eq("t1"), eq(EdgeType.USER_DEFINED), eq(0.8),
                 eq("Test-Term"), eq("Custom desc"), anyString(), isNull(), isNull()))
                 .thenReturn(edge);
 
-        // impl calls entityMentionRepository.findByNodeAndEntityName for both nodes
-        when(entityMentionRepository.findByNodeAndEntityName(any(), any())).thenReturn(Optional.empty());
+        // impl calls knowledgeGraphService.findEntityMention for both nodes (NOT entityMentionRepository)
+        when(knowledgeGraphService.findEntityMention(any(), any())).thenReturn(Optional.empty());
 
         SourceLink link = service.createTermBasedRelation("s1", "t1", "Test-Term", "Custom desc", 0.8, true);
 
         assertEquals("USER_DEFINED", link.linkType());
         assertEquals(0.8, link.strength());
-        // Entity mentions saved for both nodes
-        verify(entityMentionRepository, times(2)).save(any(EntityMention.class));
-        // Verify createEdgeWithMetadata was called (not the old createEdge + edge setters)
+        // Entity mentions saved via knowledgeGraphService.saveEntityMention for both nodes
+        verify(knowledgeGraphService, times(2)).saveEntityMention(any(EntityMention.class));
         verify(knowledgeGraphService).createEdgeWithMetadata(
                 eq("s1"), eq("t1"), eq(EdgeType.USER_DEFINED), eq(0.8),
                 eq("Test-Term"), eq("Custom desc"), anyString(), isNull(), isNull());
@@ -709,7 +703,7 @@ class SourceLinkingServiceImplTest {
                 eq("s1"), eq("t1"), eq(EdgeType.USER_DEFINED), eq(0.7),
                 eq("concept"), contains("Related by"), anyString(), isNull(), isNull()))
                 .thenReturn(edge);
-        when(entityMentionRepository.findByNodeAndEntityName(any(), any())).thenReturn(Optional.empty());
+        when(knowledgeGraphService.findEntityMention(any(), any())).thenReturn(Optional.empty());
 
         SourceLink link = service.createTermBasedRelation("s1", "t1", "concept", null, 0.7, false);
 
@@ -732,10 +726,10 @@ class SourceLinkingServiceImplTest {
 
     @Test
     void findNodesWithTerm_withFactSheetId_filtersCorrectly() {
-        GraphNode n1 = stubDocNode("n1");
-        EntityMention m = stubMention(n1, "kubernetes", 1L);
-        when(entityMentionRepository.findByEntityNameAndFactSheet("kubernetes", 1L))
-                .thenReturn(List.of(m));
+        // impl calls knowledgeGraphService.getNodesWithEntity(normalizedTerm) filtered by factSheetId
+        GraphNode n1 = stubDocNode("n1", 1L);
+        when(knowledgeGraphService.getNodesWithEntity("kubernetes"))
+                .thenReturn(List.of(n1));
 
         List<String> result = service.findNodesWithTerm("Kubernetes", 1L, 10);
 
@@ -745,8 +739,9 @@ class SourceLinkingServiceImplTest {
 
     @Test
     void findNodesWithTerm_nullFactSheetId_searchesGlobally() {
-        GraphNode n1 = stubDocNode("n1");
-        when(entityMentionRepository.findNodesWithEntity("test")).thenReturn(List.of(n1));
+        // impl calls knowledgeGraphService.getNodesWithEntity globally when factSheetId=null
+        GraphNode n1 = stubDocNode("n1", 1L);
+        when(knowledgeGraphService.getNodesWithEntity("test")).thenReturn(List.of(n1));
 
         List<String> result = service.findNodesWithTerm("test", null, 10);
 
@@ -757,11 +752,20 @@ class SourceLinkingServiceImplTest {
 
     @Test
     void getAllTerms_withFactSheetId_returnsTerms() {
-        Object[] row = new Object[]{"kubernetes", 5L};
-        List<Object[]> rows = new ArrayList<>();
-        rows.add(row);
-        when(entityMentionRepository.findTopEntitiesByFactSheet(eq(1L), any(PageRequest.class)))
-                .thenReturn(rows);
+        // impl calls knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, ENTITY)
+        // and counts occurrences of each normalized title — NOT entityMentionRepository
+        GraphNode e1 = GraphNode.builder().nodeId("e1").nodeType(NodeLevel.ENTITY)
+                .title("kubernetes").factSheetId(1L).build();
+        GraphNode e2 = GraphNode.builder().nodeId("e2").nodeType(NodeLevel.ENTITY)
+                .title("kubernetes").factSheetId(1L).build();
+        GraphNode e3 = GraphNode.builder().nodeId("e3").nodeType(NodeLevel.ENTITY)
+                .title("kubernetes").factSheetId(1L).build();
+        GraphNode e4 = GraphNode.builder().nodeId("e4").nodeType(NodeLevel.ENTITY)
+                .title("kubernetes").factSheetId(1L).build();
+        GraphNode e5 = GraphNode.builder().nodeId("e5").nodeType(NodeLevel.ENTITY)
+                .title("kubernetes").factSheetId(1L).build();
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(1L, NodeLevel.ENTITY))
+                .thenReturn(List.of(e1, e2, e3, e4, e5));
 
         List<Map<String, Object>> result = service.getAllTerms(1L, 10);
 
@@ -772,25 +776,31 @@ class SourceLinkingServiceImplTest {
 
     @Test
     void getAllTerms_nullFactSheetId_returnsGlobalTerms() {
-        Object[] row = new Object[]{"docker", 3L};
-        List<Object[]> rows = new ArrayList<>();
-        rows.add(row);
-        when(entityMentionRepository.findTopEntities(any(PageRequest.class)))
-                .thenReturn(rows);
+        // impl calls knowledgeGraphService.getNodesByType(ENTITY) globally
+        GraphNode e1 = GraphNode.builder().nodeId("e1").nodeType(NodeLevel.ENTITY)
+                .title("docker").build();
+        GraphNode e2 = GraphNode.builder().nodeId("e2").nodeType(NodeLevel.ENTITY)
+                .title("docker").build();
+        GraphNode e3 = GraphNode.builder().nodeId("e3").nodeType(NodeLevel.ENTITY)
+                .title("docker").build();
+        when(knowledgeGraphService.getNodesByType(NodeLevel.ENTITY))
+                .thenReturn(List.of(e1, e2, e3));
 
         List<Map<String, Object>> result = service.getAllTerms(null, 10);
 
         assertEquals(1, result.size());
         assertEquals("docker", result.get(0).get("term"));
+        assertEquals(3L, result.get(0).get("count"));
     }
 
     // ─── getSharedTerms ──────────────────────────────────────────────
 
     @Test
     void getSharedTerms_returnsIntersection() {
-        when(entityMentionRepository.findEntitiesByNodeId("n1"))
+        // impl calls knowledgeGraphService.getEntityNamesForNode(nodeId) — NOT entityMentionRepository
+        when(knowledgeGraphService.getEntityNamesForNode("n1"))
                 .thenReturn(List.of("alpha", "beta", "gamma"));
-        when(entityMentionRepository.findEntitiesByNodeId("n2"))
+        when(knowledgeGraphService.getEntityNamesForNode("n2"))
                 .thenReturn(List.of("beta", "gamma", "delta"));
 
         List<String> shared = service.getSharedTerms("n1", "n2", 1L);
@@ -802,8 +812,8 @@ class SourceLinkingServiceImplTest {
 
     @Test
     void getSharedTerms_noOverlap_returnsEmpty() {
-        when(entityMentionRepository.findEntitiesByNodeId("n1")).thenReturn(List.of("alpha"));
-        when(entityMentionRepository.findEntitiesByNodeId("n2")).thenReturn(List.of("beta"));
+        when(knowledgeGraphService.getEntityNamesForNode("n1")).thenReturn(List.of("alpha"));
+        when(knowledgeGraphService.getEntityNamesForNode("n2")).thenReturn(List.of("beta"));
 
         List<String> shared = service.getSharedTerms("n1", "n2", 1L);
 

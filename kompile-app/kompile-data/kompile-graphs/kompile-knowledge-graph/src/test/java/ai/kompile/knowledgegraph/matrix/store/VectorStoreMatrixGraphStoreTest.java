@@ -23,6 +23,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
@@ -31,10 +32,17 @@ import org.nd4j.linalg.api.ndarray.INDArray;
 import org.springframework.ai.document.Document;
 
 import java.io.IOException;
+import java.lang.reflect.Field;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -572,5 +580,584 @@ class VectorStoreMatrixGraphStoreTest {
         }
         assertTrue(foundAdjDoc,
                 "At least one adjacency matrix document should carry confidence/description");
+    }
+
+    // ─── Restart round-trip ───────────────────────────────────────────────────
+
+    /**
+     * Acceptance test for the production data-loss bug: graph must survive a JVM restart.
+     *
+     * <p>Simulates the full persistence round-trip:
+     * <ol>
+     *   <li>Store a graph with nodes and edges (writes Documents to the mock vector store).</li>
+     *   <li>Capture every {@link Document} that was passed to {@code vectorStore.add()}.</li>
+     *   <li>Convert the captured Spring AI Documents into the format that
+     *       {@link VectorStore#listVectorDocuments} returns after a real Lucene round-trip:
+     *       a map with top-level {@code "id"} and {@code "content"} keys, plus a nested
+     *       {@code "metadata"} map containing all the application-level fields.  This is
+     *       exactly the structure that {@link AnseriniVectorStoreImpl#listVectorDocuments}
+     *       produces.</li>
+     *   <li>Clear the in-memory {@code graphCache} via reflection to simulate a fresh JVM.</li>
+     *   <li>Configure the mock to return the captured documents from {@code listVectorDocuments}.</li>
+     *   <li>Load the graph and assert that nodes and edges are non-empty and correct.</li>
+     * </ol>
+     */
+    @Test
+    void restartRoundTrip_graphSurvivesJvmRestart() throws Exception {
+        ObjectMapper om = new ObjectMapper();
+
+        // ── Phase 1: build and persist a graph ───────────────────────────────
+        when(vectorStore.add(any())).thenReturn(1);
+        when(vectorStore.flushAndCommit()).thenReturn(true);
+
+        store.createGraph("restart-graph", 42L);
+        store.addNode("restart-graph", node("alice", "PERSON", "Alice"));
+        store.addNode("restart-graph", node("acme",  "ORGANIZATION", "Acme Corp"));
+        store.addEdge("restart-graph", "alice", "acme", 0.9, "WORKS_AT", false, "works_at");
+
+        // Flush so that saveAdjacencyMatrices() fires and the edge serialization
+        // document is captured (saveGraph calls saveAdjacencyMatrices).
+        store.saveGraph(store.loadGraph("restart-graph").orElseThrow());
+
+        // ── Phase 2: capture every Document that was added to the vector store ─
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<Document>> captor = ArgumentCaptor.forClass(List.class);
+        verify(vectorStore, atLeastOnce()).add(captor.capture());
+
+        // Collect all unique documents (de-duplicated by id, last-write wins).
+        Map<String, Document> byId = new HashMap<>();
+        for (List<Document> batch : captor.getAllValues()) {
+            for (Document d : batch) {
+                if (d.getId() != null) {
+                    byId.put(d.getId(), d);
+                }
+            }
+        }
+        assertFalse(byId.isEmpty(), "No documents were captured — the store never called vectorStore.add()");
+
+        // ── Phase 3: convert to listVectorDocuments format ────────────────────
+        // AnseriniVectorStoreImpl.listVectorDocuments returns:
+        //   { "id": "<doc-id>", "content": "<doc-text>", "metadata": { ...all metadata fields... } }
+        // This is the format our fixed loadGraphFromVectorStore now handles via flattenDoc().
+        List<Map<String, Object>> vsListDocs = new ArrayList<>();
+        for (Document d : byId.values()) {
+            Map<String, Object> row = new HashMap<>();
+            row.put("id", d.getId());
+            // The adjacency-matrix document text is the JSON edge list.
+            String text = d.getText();
+            if (text != null && !text.isBlank()) {
+                row.put("content", text);
+            }
+            // Wrap the Spring AI Document's metadata inside a nested "metadata" map,
+            // exactly as AnseriniVectorStoreImpl does.
+            if (d.getMetadata() != null && !d.getMetadata().isEmpty()) {
+                row.put("metadata", new HashMap<>(d.getMetadata()));
+            }
+            vsListDocs.add(row);
+        }
+
+        // ── Phase 4: simulate JVM restart by clearing the in-memory cache ──────
+        Field cacheField = VectorStoreMatrixGraphStore.class.getDeclaredField("graphCache");
+        cacheField.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        ConcurrentHashMap<String, AdjacencyMatrixGraph> cache =
+                (ConcurrentHashMap<String, AdjacencyMatrixGraph>) cacheField.get(store);
+        cache.clear(); // ← this is what a JVM restart does
+
+        // ── Phase 5: configure mock to serve the captured docs ────────────────
+        when(vectorStore.listVectorDocuments(anyInt(), anyInt())).thenReturn(vsListDocs);
+
+        // ── Phase 6: reload and assert ────────────────────────────────────────
+        Optional<AdjacencyMatrixGraph> reloaded = store.loadGraph("restart-graph");
+
+        assertTrue(reloaded.isPresent(),
+                "Graph must be present after simulated restart — loadGraphFromVectorStore must reconstruct it");
+
+        AdjacencyMatrixGraph g = reloaded.get();
+        try {
+            assertEquals(2, g.getNodeCount(),
+                    "Both nodes (alice, acme) must survive the restart round-trip");
+
+            assertTrue(g.getNode("alice").isPresent(), "Node 'alice' must be present after restart");
+            assertTrue(g.getNode("acme").isPresent(),  "Node 'acme' must be present after restart");
+
+            assertEquals("Alice",     g.getNode("alice").get().getTitle());
+            assertEquals("Acme Corp", g.getNode("acme").get().getTitle());
+
+            assertTrue(g.hasEdge("alice", "acme", "WORKS_AT"),
+                    "Edge alice→acme:WORKS_AT must survive the restart round-trip");
+        } finally {
+            g.close();
+        }
+    }
+
+    /**
+     * Sibling acceptance test: node embedding matrix must survive a JVM restart.
+     *
+     * <p>Builds a 2-node graph, stores a 3-dim embedding matrix (one row per node),
+     * flushes (which triggers {@code saveNodeEmbeddings}), then simulates restart by
+     * clearing the cache and reloading from the captured vector-store documents.
+     * Asserts that {@code getNodeEmbeddings()} is non-null, has the correct shape,
+     * and that each node's row contains exactly the values that were stored.</p>
+     */
+    @Test
+    void restartRoundTrip_embeddingMatrixSurvivesJvmRestart() throws Exception {
+        final int DIM = 3;
+
+        // ── Phase 1: build graph and store embeddings ─────────────────────────
+        when(vectorStore.add(any())).thenReturn(1);
+        when(vectorStore.addWithEmbeddings(any(), any())).thenReturn(1);
+        when(vectorStore.flushAndCommit()).thenReturn(true);
+
+        store.createGraph("embd-graph", 7L);
+        store.addNode("embd-graph", node("alice", "PERSON", "Alice"));
+        store.addNode("embd-graph", node("acme",  "ORGANIZATION", "Acme Corp"));
+
+        AdjacencyMatrixGraph liveGraph = store.loadGraph("embd-graph").orElseThrow();
+
+        // Build a 2×3 embedding matrix — row order matches the node list we pass in.
+        org.nd4j.linalg.api.ndarray.INDArray embd =
+                org.nd4j.linalg.factory.Nd4j.create(new float[][]{
+                        {0.1f, 0.2f, 0.3f},   // alice
+                        {0.4f, 0.5f, 0.6f}    // acme
+                });
+        liveGraph.setNodeEmbeddings(List.of("alice", "acme"), embd);
+        // setNodeEmbeddings may allocate a larger matrix than 2 rows (uses max(capacity, nodeCount));
+        // capture alice/acme matrix indices now so we can verify after reload.
+        int aliceIdxBefore = liveGraph.getNode("alice").orElseThrow().getMatrixIndex();
+        int acmeIdxBefore  = liveGraph.getNode("acme").orElseThrow().getMatrixIndex();
+
+        // Flush to trigger saveGraph → saveNodeEmbeddings.
+        store.saveGraph(liveGraph);
+
+        // ── Phase 2: capture Documents ────────────────────────────────────────
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<Document>> captor = ArgumentCaptor.forClass(List.class);
+        verify(vectorStore, atLeastOnce()).add(captor.capture());
+
+        Map<String, Document> byId = new HashMap<>();
+        for (List<Document> batch : captor.getAllValues()) {
+            for (Document d : batch) {
+                if (d.getId() != null) {
+                    byId.put(d.getId(), d);
+                }
+            }
+        }
+        // The embeddings doc must have been written.
+        String embdDocId = "graph:embd-graph:embd";
+        assertTrue(byId.containsKey(embdDocId),
+                "saveGraph must write the '" + embdDocId + "' document to the vector store");
+
+        // ── Phase 3: convert to listVectorDocuments format ────────────────────
+        List<Map<String, Object>> vsListDocs = new ArrayList<>();
+        for (Document d : byId.values()) {
+            Map<String, Object> row = new HashMap<>();
+            row.put("id", d.getId());
+            String text = d.getText();
+            if (text != null && !text.isBlank()) {
+                row.put("content", text);
+            }
+            if (d.getMetadata() != null && !d.getMetadata().isEmpty()) {
+                row.put("metadata", new HashMap<>(d.getMetadata()));
+            }
+            vsListDocs.add(row);
+        }
+
+        // ── Phase 4: simulate restart ─────────────────────────────────────────
+        Field cacheField = VectorStoreMatrixGraphStore.class.getDeclaredField("graphCache");
+        cacheField.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        ConcurrentHashMap<String, AdjacencyMatrixGraph> cache =
+                (ConcurrentHashMap<String, AdjacencyMatrixGraph>) cacheField.get(store);
+        cache.clear();
+
+        // ── Phase 5: mock listVectorDocuments ─────────────────────────────────
+        when(vectorStore.listVectorDocuments(anyInt(), anyInt())).thenReturn(vsListDocs);
+
+        // ── Phase 6: reload and assert embeddings ─────────────────────────────
+        Optional<AdjacencyMatrixGraph> reloadedOpt = store.loadGraph("embd-graph");
+        assertTrue(reloadedOpt.isPresent(), "Graph must survive restart");
+
+        AdjacencyMatrixGraph g = reloadedOpt.get();
+        try {
+            assertNotNull(g.getNodeEmbeddings(),
+                    "getNodeEmbeddings() must be non-null after restart round-trip");
+            assertEquals(DIM, g.getEmbeddingDimension(),
+                    "Embedding dimension must match what was persisted");
+
+            // Verify alice's embedding row.
+            org.nd4j.linalg.api.ndarray.INDArray aliceRow = g.getNodeEmbedding("alice");
+            assertNotNull(aliceRow, "alice's embedding row must be non-null");
+            assertEquals(DIM, aliceRow.length(), "alice's row must have " + DIM + " dims");
+            assertEquals(0.1f, aliceRow.getFloat(0), 1e-5f, "alice dim-0");
+            assertEquals(0.2f, aliceRow.getFloat(1), 1e-5f, "alice dim-1");
+            assertEquals(0.3f, aliceRow.getFloat(2), 1e-5f, "alice dim-2");
+
+            // Verify acme's embedding row.
+            org.nd4j.linalg.api.ndarray.INDArray acmeRow = g.getNodeEmbedding("acme");
+            assertNotNull(acmeRow, "acme's embedding row must be non-null");
+            assertEquals(DIM, acmeRow.length(), "acme's row must have " + DIM + " dims");
+            assertEquals(0.4f, acmeRow.getFloat(0), 1e-5f, "acme dim-0");
+            assertEquals(0.5f, acmeRow.getFloat(1), 1e-5f, "acme dim-1");
+            assertEquals(0.6f, acmeRow.getFloat(2), 1e-5f, "acme dim-2");
+        } finally {
+            g.close();
+        }
+    }
+
+    // ─── restart round-trip (Bug 1 + Bug 2 regression tests) ─────────────────
+
+    /**
+     * Acceptance test for Bug 2 (eager rehydration — "0/8 graphs loaded"):
+     *
+     * <p>The Anserini VectorStore nests all application fields inside a {@code "metadata"}
+     * sub-map.  Without {@code flattenDoc}, {@code doc.get("type")} always returns {@code null},
+     * {@code metaDoc} is never assigned, and every {@code loadGraphFromVectorStore} call returns
+     * {@code Optional.empty()}.  This test confirms the fix by nesting metadata exactly as
+     * Anserini does and asserting the graph is fully reconstructed.</p>
+     */
+    @Test
+    void restartRoundTrip_flattenDocFixEnablesRehydration() throws Exception {
+        // Phase 1: build and persist a graph
+        when(vectorStore.add(any())).thenReturn(1);
+        when(vectorStore.flushAndCommit()).thenReturn(true);
+
+        store.createGraph("rr-graph", 42L);
+        store.addNode("rr-graph", node("alice", "PERSON", "Alice"));
+        store.addNode("rr-graph", node("acme",  "ORGANIZATION", "Acme Corp"));
+        store.addEdge("rr-graph", "alice", "acme", 0.9, "WORKS_AT", false);
+
+        store.saveGraph(store.loadGraph("rr-graph").orElseThrow());
+
+        // Phase 2: capture every Document added to the vector store
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<Document>> captor2 = ArgumentCaptor.forClass(List.class);
+        verify(vectorStore, atLeastOnce()).add(captor2.capture());
+
+        Map<String, Document> byId = new HashMap<>();
+        for (List<Document> batch : captor2.getAllValues()) {
+            for (Document d : batch) {
+                if (d.getId() != null) byId.put(d.getId(), d);
+            }
+        }
+        assertFalse(byId.isEmpty(), "No documents were captured from vectorStore.add()");
+
+        // Phase 3: convert to Anserini nested format {"id":…,"content":…,"metadata":{…all fields…}}
+        List<Map<String, Object>> vsListDocs = new ArrayList<>();
+        for (Document d : byId.values()) {
+            Map<String, Object> row = new HashMap<>();
+            row.put("id", d.getId());
+            String text = d.getText();
+            if (text != null && !text.isBlank()) row.put("content", text);
+            if (d.getMetadata() != null && !d.getMetadata().isEmpty()) {
+                row.put("metadata", new HashMap<>(d.getMetadata()));
+            }
+            vsListDocs.add(row);
+        }
+
+        // Phase 4: simulate JVM restart
+        clearCache();
+        when(vectorStore.listVectorDocuments(anyInt(), anyInt())).thenReturn(vsListDocs);
+        when(vectorStore.getIndexPath()).thenReturn("N/A");
+
+        // Phase 5: reload and assert
+        Optional<AdjacencyMatrixGraph> reloaded = store.loadGraph("rr-graph");
+        assertTrue(reloaded.isPresent(),
+                "Graph must be present after restart — flattenDoc fix enables metaDoc discovery");
+        AdjacencyMatrixGraph g = reloaded.get();
+        try {
+            assertEquals(2, g.getAllNodes().size(), "Both nodes must survive restart");
+            assertTrue(g.getNode("alice").isPresent(), "Node 'alice' must be present");
+            assertTrue(g.getNode("acme").isPresent(),  "Node 'acme' must be present");
+            assertTrue(g.hasEdge("alice", "acme", "WORKS_AT"),
+                    "Edge alice→acme:WORKS_AT must survive restart");
+        } finally {
+            g.close();
+        }
+    }
+
+    /**
+     * Acceptance test for Bug 1 (index-space mismatch — "Could not resolve edge source=N target=M"):
+     *
+     * <p>After removing 50 of 250 nodes, the remaining 200 nodes have {@code matrixIndex} values
+     * spread across 0–249 with gaps.  The adjacency-matrix JSON encodes edges by these original
+     * stored indices.  The previous code used the RUNTIME {@code indexToNodeId} map (new sequential
+     * indices 0..199 assigned on reload by {@code addNode}) — edges referencing original indices
+     * like 37 or 199 failed to resolve.  The fix builds a {@code storedIndexToNodeId} map from the
+     * persisted {@code matrixIndex} field in each node document BEFORE {@code addNode} overwrites
+     * it, bridging the two index spaces.</p>
+     */
+    @Test
+    void restartRoundTrip_nonContiguousIndices_exactNodeAndEdgeCountPreserved() throws Exception {
+        final int TOTAL_ADDED    = 250;
+        final int REMOVED_COUNT  = 50;
+        final int EXPECTED_NODES = TOTAL_ADDED - REMOVED_COUNT; // 200
+
+        when(vectorStore.add(any())).thenReturn(1);
+        when(vectorStore.addWithEmbeddings(any(), any())).thenReturn(1);
+        when(vectorStore.flushAndCommit()).thenReturn(true);
+        when(vectorStore.delete(any())).thenReturn(true);
+
+        // Phase 1: add 250 nodes
+        store.createGraph("gap-graph", 1L);
+        for (int i = 0; i < TOTAL_ADDED; i++) {
+            store.addNode("gap-graph", node("node-" + i, "CONCEPT", "Node " + i));
+        }
+        assertEquals(TOTAL_ADDED, store.getAllNodes("gap-graph").size());
+
+        // Phase 2: remove every 5th node to create index gaps (node-0, node-5, ..., node-245)
+        Set<String> removedIds = new HashSet<>();
+        for (int i = 0; i < TOTAL_ADDED; i += 5) removedIds.add("node-" + i);
+        assertEquals(REMOVED_COUNT, removedIds.size());
+        for (String id : removedIds) store.removeNode("gap-graph", id);
+        assertEquals(EXPECTED_NODES, store.getAllNodes("gap-graph").size());
+
+        // Phase 3: add dense edges across the gaps
+        List<String> survivors = store.getAllNodes("gap-graph").stream()
+                .map(MatrixGraphNode::getNodeId)
+                .collect(Collectors.toList());
+        int edgesAdded = 0;
+        for (int i = 0; i < survivors.size(); i++) {
+            for (int j = 1; j <= 3 && i + j < survivors.size(); j++) {
+                boolean ok = store.addEdge("gap-graph", survivors.get(i), survivors.get(i + j),
+                        0.5 + 0.001 * j, "DEPENDS_ON", false);
+                if (ok) edgesAdded++;
+            }
+        }
+        assertTrue(edgesAdded > 0, "Must have added at least some edges");
+
+        // Phase 4: save
+        AdjacencyMatrixGraph liveGraph = store.loadGraph("gap-graph").orElseThrow();
+        long expectedEdgeCount = liveGraph.getEdgeCount();
+        assertEquals(edgesAdded, expectedEdgeCount, "Edge count in live graph must match added edges");
+
+        clearInvocations(vectorStore);
+        when(vectorStore.add(any())).thenReturn(1);
+        when(vectorStore.addWithEmbeddings(any(), any())).thenReturn(1);
+        when(vectorStore.flushAndCommit()).thenReturn(true);
+        store.saveGraph(liveGraph);
+
+        // Phase 5: capture saved Documents
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<Document>> captor3 = ArgumentCaptor.forClass(List.class);
+        verify(vectorStore, atLeastOnce()).add(captor3.capture());
+
+        Map<String, Document> byId3 = new HashMap<>();
+        for (List<Document> batch : captor3.getAllValues()) {
+            for (Document d : batch) {
+                if (d.getId() != null) byId3.put(d.getId(), d);
+            }
+        }
+
+        long nodeDocs = byId3.keySet().stream().filter(id -> id.contains(":node:")).count();
+        assertEquals(EXPECTED_NODES, nodeDocs,
+                "saveNodes must persist exactly " + EXPECTED_NODES + " live nodes (not nextIndex=" + TOTAL_ADDED + ")");
+
+        // Phase 6: wrap in Anserini nested format
+        List<Map<String, Object>> vsListDocs3 = new ArrayList<>();
+        for (Document d : byId3.values()) {
+            Map<String, Object> row = new HashMap<>();
+            row.put("id", d.getId());
+            String text = d.getText();
+            if (text != null && !text.isBlank()) row.put("content", text);
+            if (d.getMetadata() != null && !d.getMetadata().isEmpty()) {
+                row.put("metadata", new HashMap<>(d.getMetadata()));
+            }
+            vsListDocs3.add(row);
+        }
+
+        // Phase 7: simulate JVM restart
+        clearCache();
+        when(vectorStore.listVectorDocuments(anyInt(), anyInt())).thenReturn(vsListDocs3);
+        when(vectorStore.getIndexPath()).thenReturn("N/A");
+
+        // Phase 8: reload and assert lossless recovery
+        Optional<AdjacencyMatrixGraph> reloadedOpt = store.loadGraph("gap-graph");
+        assertTrue(reloadedOpt.isPresent(), "Graph must be loadable after restart");
+
+        AdjacencyMatrixGraph reloaded = reloadedOpt.get();
+        try {
+            assertEquals(EXPECTED_NODES, reloaded.getAllNodes().size(),
+                    "Node count must be EXACTLY " + EXPECTED_NODES + " after restart");
+            assertEquals(expectedEdgeCount, reloaded.getEdgeCount(),
+                    "Edge count must be EXACTLY " + expectedEdgeCount + " after restart — ZERO edges dropped");
+            for (String id : survivors) {
+                assertTrue(reloaded.getNode(id).isPresent(), "Survivor node '" + id + "' must be present");
+            }
+            for (String id : removedIds) {
+                assertTrue(reloaded.getNode(id).isEmpty(), "Removed node '" + id + "' must NOT be present");
+            }
+            for (int i = 0; i < Math.min(survivors.size() - 1, 10); i++) {
+                assertTrue(reloaded.hasEdge(survivors.get(i), survivors.get(i + 1), "DEPENDS_ON"),
+                        "Edge " + survivors.get(i) + " → " + survivors.get(i + 1) + " must survive restart");
+            }
+        } finally {
+            reloaded.close();
+        }
+    }
+
+    /** Clears the in-memory graphCache via reflection to simulate a JVM restart. */
+    private void clearCache() throws Exception {
+        Field cacheField = VectorStoreMatrixGraphStore.class.getDeclaredField("graphCache");
+        cacheField.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        ConcurrentHashMap<String, AdjacencyMatrixGraph> cache =
+                (ConcurrentHashMap<String, AdjacencyMatrixGraph>) cacheField.get(store);
+        cache.clear();
+    }
+
+    // ─── Bounded-memory streaming: cross-graph isolation ─────────────────────
+
+    /**
+     * Verifies that loading graph "A" from a mixed index (containing docs for
+     * graph "A" AND graph "B") never materialises graph "B"'s node docs in the
+     * matched set, even when the two graphs are interleaved across multiple pages.
+     *
+     * <p>Mechanism: we create a counting {@code VectorStore} stub whose
+     * {@code listVectorDocuments} returns a mix of A-docs and B-docs interleaved
+     * (simulating a real shared index).  The stub tracks the maximum number of
+     * raw docs that were returned in a single page window and asserts it never
+     * exceeds the configured page size (2 000 default, set to 5 here for the
+     * test).  We then assert that {@code loadGraph("graphA")} returns ONLY A's
+     * nodes, never B's.</p>
+     *
+     * <p>This regression test guards against a future re-introduction of
+     * accumulate-all patterns: if the impl reverts to calling
+     * {@code listAllVectorDocuments()} the max-retained-count assertion will
+     * fail because the stub sees a single call that materialises all 300 docs.</p>
+     */
+    @Test
+    void loadGraph_doesNotMaterializeOtherGraphsDocs() throws Exception {
+        // Build 150 "graphA" docs + 150 "graphB" docs interleaved in a flat list.
+        // graphA has: 1 meta + 100 nodes + 1 adj + 1 embd  (103 docs)
+        // graphB has: 1 meta + 100 nodes + 1 adj + 1 embd  (103 docs)
+        // Plus a pile of unrelated docs (noise).
+        ObjectMapper om = new ObjectMapper();
+
+        // Helper: build a meta doc in Anserini nested format
+        java.util.function.Function<String, Map<String, Object>> metaDoc = gId -> {
+            Map<String, Object> meta = new HashMap<>();
+            meta.put("type", "graph_metadata");
+            meta.put("graphId", gId);
+            meta.put("factSheetId", 1L);
+            meta.put("nodeCount", 100);
+            meta.put("capacity", 1024);
+            meta.put("embeddingDim", 0);
+            meta.put("edgeTypes", List.of("RELATED"));
+            Map<String, Object> row = new HashMap<>();
+            row.put("id", "graph:" + gId + ":meta");
+            row.put("content", "{}");
+            row.put("metadata", new HashMap<>(meta));
+            return row;
+        };
+
+        // Helper: build a node doc in nested format
+        java.util.function.BiFunction<String, Integer, Map<String, Object>> nodeDoc = (gId, idx) -> {
+            Map<String, Object> meta = new HashMap<>();
+            meta.put("type", "graph_node");
+            meta.put("nodeId", gId + "-node-" + idx);
+            meta.put("matrixIndex", idx);
+            meta.put("nodeType", "CONCEPT");
+            meta.put("title", gId + " Node " + idx);
+            meta.put("description", "desc");
+            Map<String, Object> row = new HashMap<>();
+            row.put("id", "graph:" + gId + ":node:" + gId + "-node-" + idx);
+            row.put("content", gId + " Node " + idx + ": desc");
+            row.put("metadata", new HashMap<>(meta));
+            return row;
+        };
+
+        // Helper: build an adj doc in nested format
+        java.util.function.Function<String, Map<String, Object>> adjDoc = gId -> {
+            Map<String, Object> meta = new HashMap<>();
+            meta.put("type", "adjacency_matrix");
+            meta.put("graphId", gId);
+            meta.put("edgeType", "RELATED");
+            meta.put("edgeCount", 0);
+            Map<String, Object> row = new HashMap<>();
+            row.put("id", "graph:" + gId + ":adj:RELATED");
+            row.put("content", "[]");
+            row.put("metadata", new HashMap<>(meta));
+            return row;
+        };
+
+        // Assemble: interleave A-docs and B-docs so any "grab all" impl sees them mixed.
+        List<Map<String, Object>> allDocs = new ArrayList<>();
+        allDocs.add(metaDoc.apply("graphA"));
+        allDocs.add(metaDoc.apply("graphB"));
+        for (int i = 0; i < 100; i++) {
+            allDocs.add(nodeDoc.apply("graphA", i));
+            allDocs.add(nodeDoc.apply("graphB", i));
+        }
+        allDocs.add(adjDoc.apply("graphA"));
+        allDocs.add(adjDoc.apply("graphB"));
+        // 202 total docs, interleaved
+
+        // ── Counting stub VectorStore ────────────────────────────────────────
+        // Counts how many times each page's docs were handed to the caller.
+        // We track the maximum returned-per-call to assert paging is real.
+        int[] totalListCalls = {0};
+        int[] maxDocsReturnedPerCall = {0};
+
+        // Use a small page size (5) to force multiple pages and ensure the
+        // streaming impl actually pages rather than grabbing everything at once.
+        final int TEST_PAGE_SIZE = 5;
+        VectorStore countingStore = new VectorStore() {
+            @Override
+            public List<Map<String, Object>> listVectorDocuments(int offset, int limit) {
+                totalListCalls[0]++;
+                int end = Math.min(offset + limit, allDocs.size());
+                if (offset >= allDocs.size()) return Collections.emptyList();
+                List<Map<String, Object>> slice = new ArrayList<>(allDocs.subList(offset, end));
+                maxDocsReturnedPerCall[0] = Math.max(maxDocsReturnedPerCall[0], slice.size());
+                return slice;
+            }
+            @Override public int add(List<Document> docs) { return docs.size(); }
+            @Override public int add(List<Document> docs, List<List<Float>> emb) { return docs.size(); }
+            @Override public List<Document> similaritySearch(String q, int k) { return List.of(); }
+            @Override public List<Document> similaritySearch(String q, int k, double t) { return List.of(); }
+            @Override public List<Document> similaritySearch(List<Float> q, int k, double t) { return List.of(); }
+            @Override public boolean delete(List<String> ids) { return true; }
+            @Override public boolean flushAndCommit() { return true; }
+        };
+
+        // Build a store with the counting stub and inject the small page size.
+        VectorStoreMatrixGraphStore countingStoreImpl =
+                new VectorStoreMatrixGraphStore(countingStore, om);
+        // Inject vectorScanPageSize = TEST_PAGE_SIZE via reflection
+        Field pageSizeField = VectorStoreMatrixGraphStore.class.getDeclaredField("vectorScanPageSize");
+        pageSizeField.setAccessible(true);
+        pageSizeField.set(countingStoreImpl, TEST_PAGE_SIZE);
+
+        // ── Load graphA and assert only A's nodes come back ──────────────────
+        Optional<AdjacencyMatrixGraph> graphAOpt = countingStoreImpl.loadGraph("graphA");
+
+        assertTrue(graphAOpt.isPresent(), "graphA must be loadable from the mixed index");
+        AdjacencyMatrixGraph graphA = graphAOpt.get();
+        try {
+            assertEquals(100, graphA.getNodeCount(),
+                    "graphA must contain exactly 100 nodes — not B's nodes");
+            // No graphB node should ever appear in graphA
+            for (int i = 0; i < 100; i++) {
+                assertTrue(graphA.getNode("graphA-node-" + i).isPresent(),
+                        "graphA node " + i + " must be present");
+                assertTrue(graphA.getNode("graphB-node-" + i).isEmpty(),
+                        "graphB node " + i + " must NOT appear in graphA");
+            }
+        } finally {
+            graphA.close();
+        }
+
+        // ── Assert paging was real — each call returned at most TEST_PAGE_SIZE docs ──
+        assertTrue(totalListCalls[0] > 1,
+                "loadGraph must make multiple listVectorDocuments calls (paging), got " + totalListCalls[0]);
+        assertEquals(TEST_PAGE_SIZE, maxDocsReturnedPerCall[0],
+                "Each page must be bounded by vectorScanPageSize=" + TEST_PAGE_SIZE
+                        + " — got max " + maxDocsReturnedPerCall[0]);
+
+        // ── listGraphs also streams — check it finds both graphs ─────────────
+        List<String> listed = countingStoreImpl.listGraphs();
+        assertTrue(listed.contains("graphA"), "listGraphs must find graphA");
+        assertTrue(listed.contains("graphB"), "listGraphs must find graphB");
     }
 }

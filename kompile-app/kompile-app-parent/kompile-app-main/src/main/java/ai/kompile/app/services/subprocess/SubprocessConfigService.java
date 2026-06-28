@@ -20,7 +20,7 @@ import ai.kompile.app.config.KompileServerConstants;
 import ai.kompile.app.services.ServerPortService;
 import ai.kompile.cli.common.KompileHome;
 import ai.kompile.cli.common.util.JsonUtils;
-import ai.kompile.cli.common.util.NativeImageInfo;
+import ai.kompile.utils.NativeImageInfo;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;

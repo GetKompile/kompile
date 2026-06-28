@@ -627,7 +627,7 @@ class GraphPersistenceHelper {
     }
 
     String safeEntityType(String type) {
-        return type != null && !type.isBlank() ? type : "entity";
+        return GraphConstants.normalizeEntityType(type);
     }
 
     /**

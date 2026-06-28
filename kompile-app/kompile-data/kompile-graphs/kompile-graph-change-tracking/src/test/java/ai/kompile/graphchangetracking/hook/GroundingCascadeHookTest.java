@@ -59,8 +59,8 @@ class GroundingCascadeHookTest {
     void onChangesetCompleted_nullFactSheetId_noException() {
         GraphChangesetCompletedEvent event = new GraphChangesetCompletedEvent(
                 this, "cs-001", 3, 0, 0, 2, 0, null);
-        // Should not throw; hook logs and returns
-        hook.onChangesetCompleted(event);
+        // Should not throw; the event listener logs and returns (delegates to the hook)
+        new GroundingCascadeEventListener(hook).onChangesetCompleted(event);
     }
 
     @Test
@@ -116,7 +116,7 @@ class GroundingCascadeHookTest {
 
         AgentFactAssertedEvent event = new AgentFactAssertedEvent(
                 this, FS, "trusts(Alice, Bob)", 0.8, "sess-abc");
-        trackingHook.onAgentFactAsserted(event);
+        new GroundingCascadeEventListener(trackingHook).onAgentFactAsserted(event);
 
         boolean done = latch.await(5, TimeUnit.SECONDS);
         assertTrue(done, "Agent-assert cascade must complete within 5 seconds");

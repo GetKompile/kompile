@@ -27,6 +27,8 @@ import { MatTooltipModule } from '@angular/material/tooltip';
 import { MatTableModule } from '@angular/material/table';
 
 import { BaseService } from '../../services/base.service';
+import { Citation } from '../../models/api-models';
+import { SourceCitationComponent } from '../source-citation/source-citation.component';
 
 export interface FactTierRow {
   atomKey: string;
@@ -38,6 +40,14 @@ export interface FactTierRow {
   validFrom: number | null;
   /** Epoch millis when this fact ceased to be valid. Null = still valid / unbounded. */
   validTo: number | null;
+  /** Basis type from _basisType in provenanceJson; null when not recorded. */
+  basisType?: string | null;
+  /** Crawl run/job identifier from _crawlRunId in provenanceJson; null when not recorded. */
+  crawlRunId?: string | null;
+  /** Source document identifier from _sourceDocumentId in provenanceJson; null when not recorded. */
+  sourceDocumentId?: string | null;
+  /** Human-readable label for atomKey (entity titles); falls back to atomKey. */
+  displayLabel?: string | null;
 }
 
 interface TierChip {
@@ -81,6 +91,7 @@ export const SPECULATIVE_SATURATION_THRESHOLD = 0.8;
     MatChipsModule,
     MatTooltipModule,
     MatTableModule,
+    SourceCitationComponent,
   ],
   template: `
     <mat-card class="facts-tier-card">
@@ -208,7 +219,7 @@ export const SPECULATIVE_SATURATION_THRESHOLD = 0.8;
         <table mat-table [dataSource]="rows" *ngIf="!loading && !error && rows.length > 0" class="facts-table">
           <ng-container matColumnDef="atomKey">
             <th mat-header-cell *matHeaderCellDef>Atom Key</th>
-            <td mat-cell *matCellDef="let row" class="atom-key-cell" [matTooltip]="row.atomKey">{{ row.atomKey }}</td>
+            <td mat-cell *matCellDef="let row" class="atom-key-cell" [matTooltip]="row.atomKey">{{ row.displayLabel || row.atomKey }}</td>
           </ng-container>
 
           <ng-container matColumnDef="band">
@@ -220,7 +231,12 @@ export const SPECULATIVE_SATURATION_THRESHOLD = 0.8;
 
           <ng-container matColumnDef="confidence">
             <th mat-header-cell *matHeaderCellDef>Confidence</th>
-            <td mat-cell *matCellDef="let row">{{ row.confidence | number:'1.3-3' }}</td>
+            <td mat-cell *matCellDef="let row">
+              {{ row.confidence | number:'1.3-3' }}
+              <app-source-citation [compact]="true"
+                                   [citation]="toCitation(row)">
+              </app-source-citation>
+            </td>
           </ng-container>
 
           <ng-container matColumnDef="promotionStatus">
@@ -431,6 +447,16 @@ export class FactsByTierPanelComponent extends BaseService implements OnInit, On
 
   bandColor(band: string): string {
     return this.BAND_COLORS[band] ?? '#9E9E9E';
+  }
+
+  /** Map a FactTierRow to the Citation shape expected by <app-source-citation>. */
+  toCitation(row: FactTierRow): Citation {
+    return {
+      sourceId:   row.sourceDocumentId ?? undefined,
+      crawlRunId: row.crawlRunId ?? undefined,
+      basisType:  row.basisType ?? undefined,
+      confidence: row.confidence,
+    };
   }
 
   /**

@@ -12,6 +12,9 @@ package ai.kompile.event.attribution.controller;
 import ai.kompile.graph.reasoning.domain.BayesianInferenceResult;
 import ai.kompile.graph.reasoning.domain.MpeResult;
 import ai.kompile.graph.reasoning.domain.SensitivityResult;
+import ai.kompile.graph.reasoning.mebn.MFrag;
+import ai.kompile.graph.reasoning.mebn.MTheory;
+import ai.kompile.graph.reasoning.mebn.RandomVariable;
 import ai.kompile.event.attribution.service.BayesianNetworkService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
@@ -98,11 +101,12 @@ public class BayesianNetworkController {
      */
     @GetMapping("/network/stats")
     public ResponseEntity<Map<String, Object>> networkStats(
-            @RequestParam String nodeId,
+            @RequestParam(required = false) String nodeId,
             @RequestParam(defaultValue = "3") int maxDepth,
             @RequestParam(defaultValue = "100") int maxNodes) {
+        List<String> seeds = (nodeId == null || nodeId.isBlank()) ? List.of() : List.of(nodeId);
         Map<String, Object> stats = bayesianService.getNetworkStatistics(
-                List.of(nodeId), maxDepth, maxNodes);
+                seeds, maxDepth, maxNodes);
         return ResponseEntity.ok(stats);
     }
 
@@ -144,11 +148,12 @@ public class BayesianNetworkController {
      */
     @GetMapping("/mebn/stats")
     public ResponseEntity<Map<String, Object>> mebnStats(
-            @RequestParam String nodeId,
+            @RequestParam(required = false) String nodeId,
             @RequestParam(defaultValue = "3") int maxDepth,
             @RequestParam(defaultValue = "100") int maxNodes) {
+        List<String> seeds = (nodeId == null || nodeId.isBlank()) ? List.of() : List.of(nodeId);
         Map<String, Object> stats = bayesianService.getMebnStatistics(
-                List.of(nodeId), maxDepth, maxNodes);
+                seeds, maxDepth, maxNodes);
         return ResponseEntity.ok(stats);
     }
 
@@ -159,12 +164,29 @@ public class BayesianNetworkController {
      */
     @GetMapping("/mebn/structure")
     public ResponseEntity<BayesianInferenceResult> mebnStructure(
-            @RequestParam String nodeId,
+            @RequestParam(required = false) String nodeId,
             @RequestParam(defaultValue = "3") int maxDepth,
             @RequestParam(defaultValue = "100") int maxNodes) {
+        List<String> seeds = (nodeId == null || nodeId.isBlank()) ? List.of() : List.of(nodeId);
         BayesianInferenceResult result = bayesianService.queryMebnFromKg(
-                List.of(nodeId), Map.of(), maxDepth, maxNodes);
+                seeds, Map.of(), maxDepth, maxNodes);
         return ResponseEntity.ok(result);
+    }
+
+    /**
+     * Get the MEBN theory STRUCTURE — fragments, their typed resident/input variables
+     * (name, entity-type signature, states, role), context constraints, and parent→child
+     * edges with learned strengths. Surfaces the rich fragment relationships for the UI,
+     * with no inference run.
+     */
+    @GetMapping("/mebn/theory")
+    public ResponseEntity<MTheoryStructureDto> mebnTheory(
+            @RequestParam(required = false) String nodeId,
+            @RequestParam(defaultValue = "3") int maxDepth,
+            @RequestParam(defaultValue = "100") int maxNodes) {
+        List<String> seeds = (nodeId == null || nodeId.isBlank()) ? List.of() : List.of(nodeId);
+        MTheory theory = bayesianService.buildMebnTheory(seeds, maxDepth, maxNodes);
+        return ResponseEntity.ok(MTheoryStructureDto.from(theory));
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -311,4 +333,46 @@ public class BayesianNetworkController {
             Integer maxDepth,
             Integer maxNodes
     ) {}
+
+    // ─── MEBN theory-structure response DTOs ────────────────────────────────
+
+    /** A serialized MEBN theory: its fragments and their structure. */
+    record MTheoryStructureDto(String name, List<MFragDto> fragments) {
+        static MTheoryStructureDto from(MTheory t) {
+            return new MTheoryStructureDto(
+                    t.getName(),
+                    t.getMFrags().stream().map(MFragDto::from).toList());
+        }
+    }
+
+    /** One MEBN fragment: variables by role, context constraints, and parent→child edges. */
+    record MFragDto(String name, List<RvDto> residentNodes, List<RvDto> inputNodes,
+                    List<String> contexts, List<EdgeDto> edges) {
+        static MFragDto from(MFrag f) {
+            return new MFragDto(
+                    f.getName(),
+                    f.getResidentNodes().stream().map(RvDto::from).toList(),
+                    f.getInputNodes().stream().map(RvDto::from).toList(),
+                    f.getContextConstraints().stream().map(Object::toString).toList(),
+                    f.getEdgeStrengths().entrySet().stream()
+                            .map(e -> EdgeDto.parse(e.getKey(), e.getValue())).toList());
+        }
+    }
+
+    /** A parameterized random variable: name, entity-type signature, states, and MEBN role. */
+    record RvDto(String name, String signature, List<String> states, String role) {
+        static RvDto from(RandomVariable rv) {
+            return new RvDto(rv.getName(), rv.toString(), rv.getStates(), rv.getRole().name());
+        }
+    }
+
+    /** A directed parent→child edge inside a fragment with its learned noisy-OR strength. */
+    record EdgeDto(String parent, String child, double strength) {
+        static EdgeDto parse(String key, double strength) {
+            int idx = key.indexOf("->");
+            String p = idx >= 0 ? key.substring(0, idx).trim() : key;
+            String c = idx >= 0 ? key.substring(idx + 2).trim() : "";
+            return new EdgeDto(p, c, strength);
+        }
+    }
 }

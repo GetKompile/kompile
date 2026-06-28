@@ -19,6 +19,7 @@ import { MatTooltipModule } from '@angular/material/tooltip';
 import { MatExpansionModule } from '@angular/material/expansion';
 import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 import { ProcessEngineService } from '../../services/process-engine.service';
+import { GraphService } from '../../services/graph.service';
 import { MebnVariableMeta } from '../../models/attribution-models';
 
 interface StructuredEvidence {
@@ -136,7 +137,7 @@ interface ProcessSuggestion {
                 <mat-chip *ngFor="let nodeId of suggestion.sourceGraphNodeIds" class="source-node-chip"
                           [matTooltip]="nodeId">
                   <mat-icon class="chip-icon">hub</mat-icon>
-                  {{ nodeId | slice:0:20 }}
+                  {{ (graphNodeLabels[nodeId] || nodeId) | slice:0:20 }}
                 </mat-chip>
               </div>
             </div>
@@ -147,7 +148,7 @@ interface ProcessSuggestion {
               <div class="posteriors-grid">
                 <div class="posterior-item" *ngFor="let entry of getPosteriorEntries(suggestion)">
                   <div class="posterior-header">
-                    <span class="posterior-label" [matTooltip]="entry.nodeId">{{ entry.nodeId | slice:0:24 }}</span>
+                    <span class="posterior-label" [matTooltip]="entry.nodeId">{{ (graphNodeLabels[entry.nodeId] || entry.nodeId) | slice:0:24 }}</span>
                     <span class="posterior-values">
                       <span class="prior-value" *ngIf="entry.prior !== undefined"
                             matTooltip="Prior">{{ (entry.prior * 100) | number:'1.1-1' }}%</span>
@@ -249,7 +250,7 @@ interface ProcessSuggestion {
                     <div class="posteriors-grid">
                       <div class="posterior-item" *ngFor="let entry of getPosteriorEntries(child)">
                         <div class="posterior-header">
-                          <span class="posterior-label" [matTooltip]="entry.nodeId">{{ entry.nodeId | slice:0:20 }}</span>
+                          <span class="posterior-label" [matTooltip]="entry.nodeId">{{ (graphNodeLabels[entry.nodeId] || entry.nodeId) | slice:0:20 }}</span>
                           <span class="posterior-values">
                             <span class="prior-value" *ngIf="entry.prior !== undefined"
                                   matTooltip="Prior">{{ (entry.prior * 100) | number:'1.1-1' }}%</span>
@@ -445,9 +446,12 @@ interface ProcessSuggestion {
 export class ProcessDiscoverySuggestionsComponent implements OnInit {
   suggestions: ProcessSuggestion[] = [];
   loading = false;
+  /** nodeId → human title, resolved lazily so chips/posteriors show names not raw node ids. */
+  graphNodeLabels: Record<string, string> = {};
 
   constructor(
     private processEngineService: ProcessEngineService,
+    private graphService: GraphService,
     private snackBar: MatSnackBar
   ) {}
 
@@ -461,12 +465,40 @@ export class ProcessDiscoverySuggestionsComponent implements OnInit {
       next: (response) => {
         this.suggestions = response.suggestions || [];
         this.loading = false;
+        this.resolveNodeLabels();
       },
       error: () => {
         this.suggestions = [];
         this.loading = false;
       }
     });
+  }
+
+  /**
+   * Resolve the raw graph node ids referenced by suggestions (source nodes + Bayesian posterior
+   * keys, including child suggestions) to human titles via the graph store, so the UI shows readable
+   * names ("Trade & promo discounts") instead of raw ids ("entity_tbl:excel:…cell:R1C2"). Falls back
+   * to the raw id when a node has no title; budget-capped to bound lookups.
+   */
+  private resolveNodeLabels(): void {
+    const ids = new Set<string>();
+    const collect = (s: any) => {
+      if (!s) { return; }
+      (s.sourceGraphNodeIds || []).forEach((id: string) => ids.add(id));
+      Object.keys(s.bayesianPosteriors || {}).forEach((id) => ids.add(id));
+      (s.childSuggestions || []).forEach(collect);
+    };
+    this.suggestions.forEach(collect);
+
+    let budget = 80;
+    for (const id of ids) {
+      if (budget-- <= 0) { break; }
+      if (this.graphNodeLabels[id]) { continue; }
+      this.graphService.getNode(id).subscribe({
+        next: (node: any) => { if (node && node.title) { this.graphNodeLabels[id] = node.title; } },
+        error: () => { /* node may not exist; keep raw id */ }
+      });
+    }
   }
 
   runDiscovery(): void {

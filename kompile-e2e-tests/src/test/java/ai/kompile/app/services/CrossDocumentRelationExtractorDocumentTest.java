@@ -20,7 +20,6 @@ import ai.kompile.knowledgegraph.domain.EdgeProvenance;
 import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -50,7 +49,7 @@ import static org.mockito.Mockito.*;
  * </ul>
  *
  * <p>Each test uses only synthetic metadata — no real datasets are required.
- * Mockito stubs {@link GraphNodeRepository} and {@link KnowledgeGraphService} so the
+ * Mockito stubs {@link KnowledgeGraphService} so the
  * extractor can resolve node IDs and record edges without a database.
  */
 @ExtendWith(MockitoExtension.class)
@@ -60,14 +59,11 @@ class CrossDocumentRelationExtractorDocumentTest {
     @Mock
     private KnowledgeGraphService knowledgeGraphService;
 
-    @Mock
-    private GraphNodeRepository graphNodeRepository;
-
     private CrossDocumentRelationExtractor extractor;
 
     @BeforeEach
     void setUp() {
-        extractor = new CrossDocumentRelationExtractor(knowledgeGraphService, graphNodeRepository);
+        extractor = new CrossDocumentRelationExtractor(knowledgeGraphService);
         // Default: no edges exist yet; createEdgeWithMetadata returns null (void mock is fine)
         when(knowledgeGraphService.edgeExists(anyString(), anyString())).thenReturn(false);
     }
@@ -99,10 +95,9 @@ class CrossDocumentRelationExtractorDocumentTest {
         String sourcePath = "/uploads/" + fileName;
         GraphNode node = new GraphNode();
         node.setNodeId(nodeId);
-        when(graphNodeRepository.findByExternalIdAndNodeType(eq(sourcePath), eq(NodeLevel.DOCUMENT)))
+        when(knowledgeGraphService.getNodeByExternalId(eq(sourcePath), eq(NodeLevel.DOCUMENT)))
                 .thenReturn(Optional.of(node));
-        when(graphNodeRepository.findByExternalIdAndNodeTypeAndFactSheetId(
-                eq(sourcePath), eq(NodeLevel.DOCUMENT), anyLong()))
+        when(knowledgeGraphService.getNodeByExternalIdInFactSheet(eq(sourcePath), eq(NodeLevel.DOCUMENT), anyLong()))
                 .thenReturn(Optional.of(node));
     }
 
@@ -226,19 +221,19 @@ class CrossDocumentRelationExtractorDocumentTest {
         // Register stubs using the actual source paths
         GraphNode annoNode = new GraphNode();
         annoNode.setNodeId("node-index-anno");
-        when(graphNodeRepository.findByExternalIdAndNodeType(
+        when(knowledgeGraphService.getNodeByExternalId(
                 eq("/uploads/index_annotations.pdf"), eq(NodeLevel.DOCUMENT)))
                 .thenReturn(Optional.of(annoNode));
-        when(graphNodeRepository.findByExternalIdAndNodeTypeAndFactSheetId(
+        when(knowledgeGraphService.getNodeByExternalIdInFactSheet(
                 eq("/uploads/index_annotations.pdf"), eq(NodeLevel.DOCUMENT), anyLong()))
                 .thenReturn(Optional.of(annoNode));
 
         GraphNode targetNode = new GraphNode();
         targetNode.setNodeId("node-budget-report");
-        when(graphNodeRepository.findByExternalIdAndNodeType(
+        when(knowledgeGraphService.getNodeByExternalId(
                 eq("/uploads/budget report.xlsx"), eq(NodeLevel.DOCUMENT)))
                 .thenReturn(Optional.of(targetNode));
-        when(graphNodeRepository.findByExternalIdAndNodeTypeAndFactSheetId(
+        when(knowledgeGraphService.getNodeByExternalIdInFactSheet(
                 eq("/uploads/budget report.xlsx"), eq(NodeLevel.DOCUMENT), anyLong()))
                 .thenReturn(Optional.of(targetNode));
 
@@ -486,10 +481,10 @@ class CrossDocumentRelationExtractorDocumentTest {
 
         GraphNode annoNode = new GraphNode();
         annoNode.setNodeId("node-anno");
-        when(graphNodeRepository.findByExternalIdAndNodeType(
+        when(knowledgeGraphService.getNodeByExternalId(
                 eq("/uploads/index_anno.pdf"), eq(NodeLevel.DOCUMENT)))
                 .thenReturn(Optional.of(annoNode));
-        when(graphNodeRepository.findByExternalIdAndNodeTypeAndFactSheetId(
+        when(knowledgeGraphService.getNodeByExternalIdInFactSheet(
                 eq("/uploads/index_anno.pdf"), eq(NodeLevel.DOCUMENT), anyLong()))
                 .thenReturn(Optional.of(annoNode));
 

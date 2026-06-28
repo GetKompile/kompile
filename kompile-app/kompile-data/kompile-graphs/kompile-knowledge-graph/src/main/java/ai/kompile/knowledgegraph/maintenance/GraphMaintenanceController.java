@@ -23,6 +23,7 @@ import ai.kompile.knowledgegraph.service.GraphDataPatchService;
 import ai.kompile.knowledgegraph.service.GraphDataPatchService.PatchRequest;
 import ai.kompile.knowledgegraph.service.GraphDataPatchService.PatchResult;
 import ai.kompile.knowledgegraph.service.GraphEdgeComputationService;
+import ai.kompile.core.graphrag.GraphConstants;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -360,6 +361,60 @@ public class GraphMaintenanceController {
         return ResponseEntity.ok(result);
     }
 
+    // ── Normalize entity types (clean junk entity_type values in place) ────────
+
+    @PostMapping("/normalize-entity-types")
+    public ResponseEntity<Map<String, Object>> normalizeEntityTypes(
+            @RequestParam(required = false) Long factSheetId) {
+        return doNormalizeEntityTypes(factSheetId, false);
+    }
+
+    @PostMapping("/normalize-entity-types/preview")
+    public ResponseEntity<Map<String, Object>> normalizeEntityTypesPreview(
+            @RequestParam(required = false) Long factSheetId) {
+        return doNormalizeEntityTypes(factSheetId, true);
+    }
+
+    /**
+     * One-time data migration: rewrites already-persisted node {@code entity_type} values through
+     * {@link GraphConstants#normalizeEntityType} so junk like {@code entity_entity_number} (crawled
+     * before the source-side normalization) becomes {@code entity_number} in the STORED graph — not
+     * just in the process-view display. Idempotent (re-running normalizes nothing new); the
+     * {@code /preview} variant reports what would change without writing. Scope to one fact sheet via
+     * {@code ?factSheetId=}, else scans all nodes.
+     */
+    private ResponseEntity<Map<String, Object>> doNormalizeEntityTypes(Long factSheetId, boolean dryRun) {
+        List<GraphNode> nodes = factSheetId != null
+                ? knowledgeGraphService.getNodesInFactSheet(factSheetId)
+                : knowledgeGraphService.getAllNodes(100_000);
+
+        int normalizedCount = 0;
+        List<Map<String, String>> sample = new ArrayList<>();
+        for (GraphNode n : nodes) {
+            String current = extractEntityType(n);
+            if (current == null || current.isBlank()) continue;
+            String normalized = GraphConstants.normalizeEntityType(current);
+            if (normalized.equals(current)) continue; // already clean — skip
+            normalizedCount++;
+            if (sample.size() < 200) {
+                sample.add(Map.of("nodeId", n.getNodeId(), "title", deriveTitle(n),
+                        "oldType", current, "newType", normalized));
+            }
+            if (!dryRun) {
+                setEntityType(n, normalized);
+                knowledgeGraphService.saveNode(n);
+            }
+        }
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("dryRun", dryRun);
+        result.put("factSheetId", factSheetId);
+        result.put("scanned", nodes.size());
+        result.put("normalizedCount", normalizedCount);
+        result.put("sample", sample);
+        return ResponseEntity.ok(result);
+    }
+
     // ── Labels ───────────────────────────────────────────────────────────────
 
     @GetMapping("/labels")
@@ -649,6 +704,28 @@ public class GraphMaintenanceController {
         }
 
         return ResponseEntity.ok(result);
+    }
+
+    /**
+     * Collapse the legacy O(k²) clique cross-doc SHARED_ENTITY edges and recompute them as a STAR
+     * (the fixed topology) — the main lever for shrinking the graph (703k clique edges of 1.27M).
+     * Numbers-first: call with {@code dryRun=true} to see how many would change before committing.
+     *
+     * <p>Example: {@code POST /api/graph/maintenance/rebuild-cross-doc-edges?factSheetId=1&dryRun=true}</p>
+     */
+    @PostMapping("/rebuild-cross-doc-edges")
+    public ResponseEntity<Map<String, Object>> rebuildCrossDocEdges(
+            @RequestParam(required = false) Long factSheetId,
+            @RequestParam(required = false, defaultValue = "false") boolean dryRun) {
+        if (graphEdgeComputationService == null) {
+            return ResponseEntity.status(503).body(Map.of("error", "GraphEdgeComputationService not available"));
+        }
+        try {
+            return ResponseEntity.ok(graphEdgeComputationService.rebuildCrossDocEdges(factSheetId, dryRun));
+        } catch (Exception e) {
+            log.warn("rebuild-cross-doc-edges failed (factSheetId={}): {}", factSheetId, e.getMessage());
+            return ResponseEntity.status(500).body(Map.of("error", e.getMessage() == null ? "failed" : e.getMessage()));
+        }
     }
 
     // ── Request DTOs ─────────────────────────────────────────────────────────

@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { Component, OnInit, OnDestroy, OnChanges, SimpleChanges, Input } from '@angular/core';
+import { Component, OnInit, OnDestroy, OnChanges, SimpleChanges, Input, ViewChild } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { MatCardModule } from '@angular/material/card';
@@ -38,20 +38,23 @@ import { MatDialog, MatDialogModule } from '@angular/material/dialog';
 import { MatRadioModule } from '@angular/material/radio';
 import { HttpClient } from '@angular/common/http';
 import { Subject, Subscription, takeUntil, debounceTime, interval, filter, of } from 'rxjs';
-import { catchError } from 'rxjs/operators';
+import { catchError, switchMap } from 'rxjs/operators';
 import { ConfirmDialogComponent, ConfirmDialogData } from '../confirm-dialog/confirm-dialog.component';
 import { BayesianPanelComponent } from './bayesian-panel.component';
 import { MarkdownRendererComponent } from '../markdown-renderer/markdown-renderer.component';
 import { TableRendererComponent } from '../table-renderer/table-renderer.component';
 import { KbContextPanelComponent } from '../kb-context-panel/kb-context-panel.component';
 import { SourceLinkingPanelComponent } from './source-linking-panel.component';
+import { SourceCitationComponent } from '../source-citation/source-citation.component';
+import { ReasoningTrailComponent } from '../reasoning-trail/reasoning-trail.component';
 
 import { GraphCanvasComponent } from './graph-canvas.component';
 import { GraphService, GraphBuildStatus, FactSheetGraphStatistics } from '../../services/graph.service';
 import { SourceWeightService } from '../../services/source-weight.service';
 import { AttributionService } from '../../services/attribution.service';
-import { KbGroundingService, StrengthBand, confidenceToStrengthBand } from '../../services/kb-grounding.service';
+import { KbGroundingService, StrengthBand, confidenceToStrengthBand, ReasoningTrailDto, UnifiedExplainRequest } from '../../services/kb-grounding.service';
 import { AttributionResult, PredictionResult } from '../../models/attribution-models';
+import { Citation } from '../../models/api-models';
 import {
   D3VisualizationData,
   D3Node,
@@ -100,7 +103,9 @@ import {
     MarkdownRendererComponent,
     TableRendererComponent,
     KbContextPanelComponent,
-    SourceLinkingPanelComponent
+    SourceLinkingPanelComponent,
+    SourceCitationComponent,
+    ReasoningTrailComponent
   ],
   template: `
     <div class="graph-visualizer">
@@ -235,6 +240,7 @@ import {
         <div class="canvas-container">
           <mat-spinner *ngIf="loading" diameter="50"></mat-spinner>
           <app-graph-canvas
+            #graphCanvas
             *ngIf="!loading"
             [data]="graphData"
             [forceConfig]="forceConfig"
@@ -243,6 +249,7 @@ import {
             [posteriorOverlay]="posteriorOverlay"
             [priorOverlay]="priorOverlay"
             [mebnMfragMap]="mebnMfragMap"
+            [findingNodeMap]="findingNodeMap"
             [influenceOverlayActive]="influenceOverlayActive"
             [strengthOverlayEnabled]="strengthOverlayEnabled"
             [strengthBandMap]="strengthBandMap"
@@ -268,6 +275,7 @@ import {
                 <app-kb-context-panel
                   [node]="selectedNode"
                   [factSheetId]="factSheetId"
+                  [isActive]="selectedTabIndex === 0"
                   (onGround)="selectedTabIndex = 6">
                 </app-kb-context-panel>
               </div>
@@ -459,10 +467,16 @@ import {
                                 </span>
                               </div>
                               <div *ngIf="hop.evidence && hop.evidence.length > 0" class="hop-evidence">
-                                <span *ngFor="let ev of hop.evidence" class="evidence-chip"
-                                      [matTooltip]="ev.summary || ''">
-                                  {{formatEvidenceType(ev.evidenceType)}} ({{(ev.strength * 100).toFixed(0)}}%)
-                                </span>
+                                <div *ngFor="let ev of hop.evidence" class="evidence-item">
+                                  <span class="evidence-chip"
+                                        [matTooltip]="ev.summary || ''">
+                                    {{formatEvidenceType(ev.evidenceType)}} ({{(ev.strength * 100).toFixed(0)}}%)
+                                  </span>
+                                  <app-source-citation
+                                    [citation]="toCitation(ev.metadata, ev.sourceReference)"
+                                    [compact]="true">
+                                  </app-source-citation>
+                                </div>
                               </div>
                             </div>
                           </div>
@@ -512,10 +526,18 @@ import {
                           </div>
                         </div>
 
-                        <button mat-stroked-button (click)="attributionResult = null" class="attr-reset">
+                        <button mat-stroked-button (click)="attributionResult = null; explainTrail = null" class="attr-reset">
                           <mat-icon>refresh</mat-icon> Reset
                         </button>
                       </div>
+
+                      <!-- Reasoning Trail — unified /api/explain (HYBRID), shown below causal attribution -->
+                      <app-reasoning-trail
+                        *ngIf="explainTrail || explainTrailLoading"
+                        [trail]="explainTrail"
+                        [loading]="explainTrailLoading"
+                        mode="full">
+                      </app-reasoning-trail>
                     </div>
                   </mat-expansion-panel>
 
@@ -734,7 +756,7 @@ import {
                     *ngFor="let type of allNodeTypes"
                     [checked]="filter.nodeTypes.includes(type)"
                     (change)="toggleNodeTypeFilter(type)">
-                    {{type}}
+                    {{type}}<span class="type-count" *ngIf="nodeTypeCounts[type]"> ({{nodeTypeCounts[type] | number}})</span>
                   </mat-checkbox>
                 </div>
 
@@ -744,7 +766,7 @@ import {
                     *ngFor="let type of allEdgeTypes"
                     [checked]="filter.edgeTypes.includes(type)"
                     (change)="toggleEdgeTypeFilter(type)">
-                    {{formatEdgeType(type)}}
+                    {{formatEdgeType(type)}}<span class="type-count" *ngIf="edgeTypeCounts[type]"> ({{edgeTypeCounts[type] | number}})</span>
                   </mat-checkbox>
                 </div>
 
@@ -755,10 +777,13 @@ import {
                 <span class="slider-label">{{maxDepth}} levels</span>
 
                 <h4>Max Nodes</h4>
-                <mat-slider min="25" max="500" step="25" discrete>
-                  <input matSliderThumb [(ngModel)]="maxNodes" (ngModelChange)="onMaxNodesChange()">
-                </mat-slider>
-                <span class="slider-label">{{maxNodes}} nodes</span>
+                <div class="max-nodes-control">
+                  <mat-slider min="0" max="10000" step="500" discrete>
+                    <input matSliderThumb [(ngModel)]="maxNodes" (ngModelChange)="onMaxNodesChange()">
+                  </mat-slider>
+                  <span class="slider-label">{{maxNodes === 0 ? 'All (unlimited)' : maxNodes + ' nodes'}}</span>
+                </div>
+                <p class="hint">Set to 0 for unlimited. Large graphs may be slow to render.</p>
 
                 <h4>Time Range</h4>
                 <mat-checkbox
@@ -904,37 +929,103 @@ import {
             <mat-tab label="Weights">
               <div class="panel-content">
                 <h4>Source Weights</h4>
-                <p class="hint">Adjust weights to influence search relevance</p>
+                <p class="hint">Per-source multipliers applied at retrieval time. A weight of 1.0 is neutral; higher values boost results from that source.</p>
 
+                <!-- Preview Query -->
                 <div class="weight-preview">
                   <mat-form-field appearance="outline" class="full-width">
                     <mat-label>Preview Query</mat-label>
-                    <input matInput [(ngModel)]="previewQuery" placeholder="Enter a query to preview weights">
+                    <input matInput [(ngModel)]="previewQuery"
+                           placeholder="Enter a query to see how weights rank sources"
+                           (keyup.enter)="previewQuery && !previewLoading && previewWeights()">
                   </mat-form-field>
-                  <button mat-raised-button color="primary" (click)="previewWeights()" [disabled]="!previewQuery">
+                  <button mat-raised-button color="primary"
+                          (click)="previewWeights()"
+                          [disabled]="!previewQuery || previewLoading">
+                    <mat-spinner *ngIf="previewLoading" diameter="16" style="display:inline-block;margin-right:6px"></mat-spinner>
                     Preview
                   </button>
                 </div>
 
+                <!-- Preview Results -->
                 <div *ngIf="weightPreview" class="weight-results">
-                  <h5>Weighted Sources</h5>
-                  <div *ngFor="let sw of weightPreview.sourceWeights" class="weight-item">
-                    <span class="source-name">{{sw.sourceName}}</span>
-                    <span class="source-weight">{{sw.weight | number:'1.2-2'}}</span>
+                  <div class="weight-results-header">
+                    <h5>Weighted Sources for "{{weightPreview.query}}"</h5>
+                    <button mat-icon-button (click)="weightPreview = null" matTooltip="Clear preview">
+                      <mat-icon style="font-size:16px">close</mat-icon>
+                    </button>
                   </div>
+                  <div *ngFor="let sw of weightPreview.sourceWeights" class="weight-item">
+                    <div class="weight-item-left">
+                      <span class="source-name">{{sw.sourceName || sw.sourceId}}</span>
+                      <div class="weight-breakdown">
+                        <span *ngIf="sw.sourceType" class="source-type-badge">{{sw.sourceType}}</span>
+                        <span *ngIf="sw.relevance != null" class="rel-chip"
+                              matTooltip="Semantic relevance of this source to your query">
+                          rel {{sw.relevance * 100 | number:'1.0-0'}}%
+                        </span>
+                        <span class="wt-chip" matTooltip="Configured source weight">×wt {{sw.weight | number:'1.1-1'}}</span>
+                      </div>
+                    </div>
+                    <div class="weight-item-right">
+                      <div class="weight-bar-wrap">
+                        <div class="weight-bar" [style.width.%]="((sw.score != null ? sw.score : sw.weight) / 3) * 100"></div>
+                      </div>
+                      <span class="source-weight" matTooltip="Final ranking score">{{(sw.score != null ? sw.score : sw.weight) | number:'1.2-2'}}</span>
+                      <button mat-icon-button class="feedback-btn" matTooltip="This source was helpful"
+                              (click)="submitSourceFeedback(sw.sourceId, true)">
+                        <mat-icon style="font-size:16px;color:#22c55e">thumb_up</mat-icon>
+                      </button>
+                      <button mat-icon-button class="feedback-btn" matTooltip="This source was not helpful"
+                              (click)="submitSourceFeedback(sw.sourceId, false)">
+                        <mat-icon style="font-size:16px;color:#ef4444">thumb_down</mat-icon>
+                      </button>
+                    </div>
+                  </div>
+                  <p *ngIf="weightPreview.note" class="weight-note">
+                    <mat-icon style="font-size:14px;vertical-align:middle;margin-right:4px">info_outline</mat-icon>
+                    {{weightPreview.note}}
+                  </p>
                 </div>
 
-                <mat-expansion-panel>
+                <!-- Configure Weights -->
+                <mat-expansion-panel [expanded]="sourceWeights.length > 0">
                   <mat-expansion-panel-header>
-                    <mat-panel-title>Configure Weights</mat-panel-title>
+                    <mat-panel-title>
+                      Configure Weights
+                      <span *ngIf="sourceWeights.length" class="badge-count">{{sourceWeights.length}}</span>
+                    </mat-panel-title>
+                    <mat-panel-description *ngIf="!weightsLoading && sourceWeights.length === 0">
+                      No sources indexed yet
+                    </mat-panel-description>
                   </mat-expansion-panel-header>
+
+                  <div *ngIf="weightsLoading" class="weights-loading">
+                    <mat-spinner diameter="24"></mat-spinner>
+                    <span>Loading sources…</span>
+                  </div>
+
+                  <div *ngIf="!weightsLoading && sourceWeights.length === 0" class="weights-empty">
+                    <mat-icon>source</mat-icon>
+                    <p>No indexed sources found. Run a crawl first, then come back here to tune weights.</p>
+                  </div>
+
                   <div *ngFor="let weight of sourceWeights" class="weight-config">
-                    <span class="weight-source">{{weight.sourceName || weight.sourceNodeId}}</span>
-                    <mat-slider min="0" max="3" step="0.1">
+                    <div class="weight-source-info">
+                      <span class="weight-source">{{weight.sourceName || weight.sourceNodeId}}</span>
+                      <span *ngIf="weight.sourceType" class="source-type-badge">{{weight.sourceType}}</span>
+                    </div>
+                    <mat-slider min="0" max="3" step="0.1" class="weight-slider">
                       <input matSliderThumb [ngModel]="weight.baseWeight"
                              (ngModelChange)="updateWeight(weight.sourceNodeId, $event)">
                     </mat-slider>
                     <span class="weight-value">{{weight.baseWeight | number:'1.1-1'}}</span>
+                  </div>
+
+                  <div *ngIf="!weightsLoading && sourceWeights.length > 0" class="weights-actions">
+                    <button mat-stroked-button (click)="loadSourceWeights()">
+                      <mat-icon>refresh</mat-icon> Refresh
+                    </button>
                   </div>
                 </mat-expansion-panel>
               </div>
@@ -991,7 +1082,8 @@ import {
                   [nodeId]="selectedNode?.id || null"
                   (posteriorOverlayChanged)="onPosteriorOverlayChanged($event)"
                   (priorOverlayChanged)="onPriorOverlayChanged($event)"
-                  (mebnMfragMapChanged)="onMebnMfragMapChanged($event)">
+                  (mebnMfragMapChanged)="onMebnMfragMapChanged($event)"
+                  (findingNodesChanged)="onFindingNodesChanged($event)">
                 </app-bayesian-panel>
               </div>
             </mat-tab>
@@ -1011,11 +1103,21 @@ import {
       <div class="stats-bar" *ngIf="graphData">
         <span class="stat">
           <mat-icon>scatter_plot</mat-icon>
-          {{graphData.nodes.length}} nodes
+          <ng-container *ngIf="totalAvailableNodes !== null && totalAvailableNodes > graphData.nodes.length; else allNodes">
+            showing {{graphData.nodes.length | number}} of {{totalAvailableNodes | number}} nodes
+          </ng-container>
+          <ng-template #allNodes>{{graphData.nodes.length | number}} nodes</ng-template>
         </span>
         <span class="stat">
           <mat-icon>timeline</mat-icon>
-          {{graphData.links.length}} edges
+          <ng-container *ngIf="totalAvailableEdges !== null && totalAvailableEdges > graphData.links.length; else allEdges">
+            showing {{graphData.links.length | number}} of {{totalAvailableEdges | number}} edges
+          </ng-container>
+          <ng-template #allEdges>{{graphData.links.length | number}} edges</ng-template>
+        </span>
+        <span class="stat stat-bounded-warn" *ngIf="totalAvailableNodes !== null && totalAvailableNodes > graphData.nodes.length">
+          <mat-icon>info_outline</mat-icon>
+          Graph is bounded — increase Max Nodes in Filter tab to see more
         </span>
       </div>
     </div>
@@ -1267,6 +1369,12 @@ import {
       font-size: 13px;
     }
 
+    .type-count {
+      color: var(--text-tertiary, #8792a2);
+      font-size: 12px;
+      font-weight: 500;
+    }
+
     .slider-label {
       margin-left: 12px;
       color: var(--text-secondary, #697386);
@@ -1328,6 +1436,20 @@ import {
       margin-top: 16px;
     }
 
+    .weight-results-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+
+    .weight-results-header h5 {
+      margin: 0;
+      color: var(--text-secondary, #697386);
+      font-size: 12px;
+      font-weight: 600;
+    }
+
     .weight-results h5 {
       margin: 0 0 10px;
       color: var(--text-secondary, #697386);
@@ -1338,35 +1460,141 @@ import {
     .weight-item {
       display: flex;
       justify-content: space-between;
-      padding: 10px 12px;
+      align-items: center;
+      padding: 8px 12px;
       background: var(--bg-surface, #f8fafc);
       border-radius: 8px;
       margin-bottom: 6px;
       border: 1px solid var(--border-color, #e3e8ee);
+      gap: 8px;
+    }
+
+    .weight-item-left {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      flex: 1;
+      min-width: 0;
+    }
+
+    .weight-item-right {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+
+    .weight-bar-wrap {
+      width: 60px;
+      height: 6px;
+      background: var(--border-color, #e3e8ee);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+
+    .weight-bar {
+      height: 100%;
+      background: #22c55e;
+      border-radius: 3px;
+      transition: width 0.3s;
+    }
+
+    .source-type-badge {
+      display: inline-block;
+      padding: 1px 6px;
+      background: var(--bg-surface, #f1f5f9);
+      border: 1px solid var(--border-color, #e3e8ee);
+      border-radius: 4px;
+      font-size: 10px;
+      color: var(--text-secondary, #697386);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .weight-breakdown {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+
+    .rel-chip {
+      display: inline-block;
+      padding: 1px 6px;
+      background: rgba(59, 130, 246, 0.12);
+      border: 1px solid rgba(59, 130, 246, 0.35);
+      border-radius: 4px;
+      font-size: 10px;
+      color: #2563eb;
+      white-space: nowrap;
+    }
+
+    .wt-chip {
+      display: inline-block;
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-size: 10px;
+      color: var(--text-secondary, #697386);
+      white-space: nowrap;
+    }
+
+    .feedback-btn {
+      width: 28px;
+      height: 28px;
+      line-height: 28px;
+    }
+
+    .weight-note {
+      margin-top: 10px;
+      font-size: 11px;
+      color: var(--text-secondary, #697386);
+      display: flex;
+      align-items: flex-start;
+      gap: 4px;
     }
 
     .source-name {
       color: var(--text-primary, #1a1f36);
       font-size: 13px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
     .source-weight {
       color: #22c55e;
       font-weight: 600;
       font-size: 13px;
+      min-width: 34px;
+      text-align: right;
     }
 
     .weight-config {
       display: flex;
       align-items: center;
-      gap: 10px;
+      gap: 8px;
       margin-bottom: 10px;
+    }
+
+    .weight-source-info {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      flex: 1;
+      min-width: 0;
     }
 
     .weight-source {
       flex: 1;
       font-size: 13px;
       color: var(--text-primary, #1a1f36);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .weight-slider {
+      flex: 1;
     }
 
     .weight-value {
@@ -1374,6 +1602,58 @@ import {
       text-align: right;
       font-weight: 600;
       color: var(--text-secondary, #697386);
+    }
+
+    .weights-loading {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 16px 0;
+      color: var(--text-secondary, #697386);
+      font-size: 13px;
+    }
+
+    .weights-empty {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+      padding: 24px 16px;
+      text-align: center;
+      color: var(--text-secondary, #697386);
+    }
+
+    .weights-empty mat-icon {
+      font-size: 36px;
+      width: 36px;
+      height: 36px;
+      opacity: 0.4;
+    }
+
+    .weights-empty p {
+      font-size: 12px;
+      margin: 0;
+    }
+
+    .weights-actions {
+      margin-top: 12px;
+      display: flex;
+      gap: 8px;
+    }
+
+    .badge-count {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 18px;
+      height: 18px;
+      background: var(--primary-color, #635bff);
+      color: #fff;
+      border-radius: 9px;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 0 5px;
+      margin-left: 6px;
     }
 
     .force-control {
@@ -1407,6 +1687,8 @@ import {
       background: var(--bg-surface, #ffffff);
       border-top: 1px solid var(--border-color, #e3e8ee);
       flex-shrink: 0;
+      flex-wrap: wrap;
+      align-items: center;
     }
 
     .stat {
@@ -1422,6 +1704,25 @@ import {
       width: 16px;
       height: 16px;
       color: var(--text-tertiary, #8792a2);
+    }
+
+    .stat-bounded-warn {
+      color: var(--warn, #f59e0b);
+      font-size: 12px;
+    }
+
+    .stat-bounded-warn mat-icon {
+      color: var(--warn, #f59e0b);
+    }
+
+    .max-nodes-control {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .max-nodes-control mat-slider {
+      flex: 1;
     }
 
     /* Link Mode Banner */
@@ -2100,6 +2401,10 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
   private destroy$ = new Subject<void>();
   private searchSubject = new Subject<string>();
   private buildPollSubscription: Subscription | null = null;
+  /** Auto-refresh the graph while it's actively changing (e.g. during a crawl writing to it). */
+  autoRefresh = true;
+  private lastGraphSignature = '';
+  private lastQuery: string | undefined = undefined;
 
   // Fact sheet inputs
   @Input() factSheetId: number | null = null;
@@ -2119,6 +2424,8 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
   posteriorOverlay: Record<string, number> | null = null;
   priorOverlay: Record<string, number> | null = null;
   mebnMfragMap: Record<string, string> | null = null;  // nodeId -> mfragName
+  /** nodeId → true for SSBN evidence/finding nodes; drives orange highlight in canvas */
+  findingNodeMap: Record<string, boolean> | null = null;
   influenceOverlayActive = false;  // true when posteriorOverlay contains influence scores
 
   // Phase-2 KB overlay state
@@ -2166,6 +2473,10 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
   predictionLoading = false;
   predictionError: string | null = null;
 
+  // Unified explain trail (POST /api/explain, HYBRID mode)
+  explainTrail: ReasoningTrailDto | null = null;
+  explainTrailLoading = false;
+
   // Link mode state
   linkSourceNode: D3Node | null = null;
 
@@ -2189,7 +2500,14 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
   // Filters
   searchQuery = '';
   maxDepth = 2;
-  maxNodes = 100;
+  /** 0 = unlimited (show the full graph). A positive value caps and triggers a "showing N of M" banner. Default 500 prevents loading multi-MB payloads on first open. */
+  maxNodes = 500;
+  /** Total nodes/edges available in the store (from backend metadata). Used for the "showing N of M" display. */
+  totalAvailableNodes: number | null = null;
+  totalAvailableEdges: number | null = null;
+  /** Per-type counts from backend metadata — shown next to the filter-legend checkboxes. */
+  nodeTypeCounts: { [type: string]: number } = {};
+  edgeTypeCounts: { [type: string]: number } = {};
   filter: GraphFilter = {
     nodeTypes: ['SOURCE', 'DOCUMENT', 'SNIPPET', 'ENTITY', 'CUSTOM', 'TABLE', 'ATTACHMENT', 'IDENTIFIER'],
     edgeTypes: ['HIERARCHICAL', 'EMBEDDING_SIMILARITY', 'SHARED_ENTITY', 'USER_DEFINED', 'CITATION', 'TEMPORAL', 'CROSS_SOURCE', 'RESOLVES_TO']
@@ -2219,6 +2537,8 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
   sourceWeights: SourceWeight[] = [];
   previewQuery = '';
   weightPreview: WeightedSearchPreview | null = null;
+  weightsLoading = false;
+  previewLoading = false;
 
   // Forces
   forceConfig: ForceConfig = { ...DEFAULT_FORCE_CONFIG };
@@ -2236,8 +2556,12 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
     CUSTOM: '#64748b',
     TABLE: '#00bcd4',
     ATTACHMENT: '#795548',
-    IDENTIFIER: '#3F51B5'
+    IDENTIFIER: '#3F51B5',
+    ALIAS: '#009688'  // Teal — synthetic cross-doc alias hub (matches NODE_COLORS)
   };
+
+  /** Reference to the canvas child — used for imperative LOD merge calls (addNodesToGraph). */
+  @ViewChild('graphCanvas') private graphCanvas?: GraphCanvasComponent;
 
   constructor(
     private graphService: GraphService,
@@ -2261,6 +2585,42 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
     ).subscribe(query => {
       this.loadGraph(query);
     });
+
+    // Live-refresh: while the graph is changing (e.g. a crawl is writing to it), reload so the
+    // visualizer fills in without a manual Refresh. Gated on a node/edge-count signature so we only
+    // re-render when the graph actually changed (no jank when idle).
+    //
+    // Perf guards:
+    //  • Skip when the browser tab is hidden (document.hidden) — zero-cost when backgrounded.
+    //  • For large graphs (totalAvailableNodes > 2000), use the same LOD top-K path as loadGraph()
+    //    instead of requesting the full visualization payload every tick.
+    interval(5000).pipe(takeUntil(this.destroy$)).subscribe(() => {
+      if (!this.autoRefresh || this.loading || document.hidden) return;
+      const from = this.temporalFilterActive && this.timeFrom ? this.timeFrom + 'T00:00:00' : undefined;
+      const to = this.temporalFilterActive && this.timeTo ? this.timeTo + 'T23:59:59' : undefined;
+
+      // Mirror the LOD decision from loadGraph(): if we already know the graph is large,
+      // use the cheap top-K endpoint rather than the full visualization payload.
+      const refreshObs = (this.totalAvailableNodes !== null && this.totalAvailableNodes > 2000)
+        ? this.graphService.getTopKVisualization(300, 'pagerank', this.factSheetId ?? undefined)
+        : this.graphService.getVisualizationData(undefined, this.maxDepth, this.maxNodes, from, to);
+
+      refreshObs
+        .pipe(takeUntil(this.destroy$))
+        .subscribe({
+          next: (data: any) => {
+            const sig = this.graphSignature(data);
+            if (sig === this.lastGraphSignature) return; // unchanged → skip re-render (no layout jank)
+            this.lastGraphSignature = sig;
+            this.fullGraphData = data;
+            this.graphData = this.applyFilters(data, this.lastQuery);
+            if (this.strengthOverlayEnabled) {
+              this.scheduleVisibleNodeVerify();
+            }
+          },
+          error: () => { /* transient — keep last render */ }
+        });
+    });
   }
 
   ngOnDestroy(): void {
@@ -2280,20 +2640,40 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
 
   loadGraph(query?: string): void {
     this.loading = true;
+    this.lastQuery = query;
 
     const from = this.temporalFilterActive && this.timeFrom ? this.timeFrom + 'T00:00:00' : undefined;
     const to = this.temporalFilterActive && this.timeTo ? this.timeTo + 'T23:59:59' : undefined;
 
-    const loadObservable = this.graphService.getVisualizationData(undefined, this.maxDepth, this.maxNodes, from, to);
+    // LOD-first: ping /statistics to learn full graph size. If totalNodes > 2000, seed with
+    // top-300 by PageRank instead of loading the entire graph. Falls back to flat load on
+    // statistics error so normal operation is never interrupted.
+    const loadObservable = this.graphService.getStatistics().pipe(
+      switchMap((stats: any) => {
+        const totalNodes: number = stats?.totalNodes ?? stats?.nodeCount ?? 0;
+        if (totalNodes > 2000) {
+          return this.graphService.getTopKVisualization(300, 'pagerank', this.factSheetId ?? undefined);
+        }
+        return this.graphService.getVisualizationData(undefined, this.maxDepth, this.maxNodes, from, to);
+      }),
+      catchError(() => this.graphService.getVisualizationData(undefined, this.maxDepth, this.maxNodes, from, to))
+    );
 
     loadObservable
       .pipe(takeUntil(this.destroy$))
       .subscribe({
         next: (data) => {
+          // Capture store totals from backend metadata (used to show "N of M" in the stats bar)
+          const meta = data.statistics as any;
+          this.totalAvailableNodes = meta?.totalAvailableNodes ?? null;
+          this.totalAvailableEdges = meta?.totalAvailableEdges ?? null;
+          this.nodeTypeCounts = meta?.nodeTypeCounts ?? {};
+          this.edgeTypeCounts = meta?.edgeTypeCounts ?? {};
           // Cache full data for timeline snapshots
           this.fullGraphData = data;
           // Apply filters (snapshot filter handled inside applyFilters)
           this.graphData = this.applyFilters(data, query);
+          this.lastGraphSignature = this.graphSignature(data);
           this.loading = false;
           // If strength overlay is active, verify newly visible nodes
           if (this.strengthOverlayEnabled) {
@@ -2306,6 +2686,13 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
           this.loading = false;
         }
       });
+  }
+
+  /** Lightweight change signature for auto-refresh gating (node + edge counts). */
+  private graphSignature(data: any): string {
+    const n = data?.nodes?.length ?? 0;
+    const e = data?.links?.length ?? data?.edges?.length ?? 0;
+    return n + ':' + e;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -2484,14 +2871,17 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
   }
 
   loadSourceWeights(): void {
+    this.weightsLoading = true;
     this.weightService.getWeights()
       .pipe(takeUntil(this.destroy$))
       .subscribe({
         next: (weights) => {
           this.sourceWeights = weights;
+          this.weightsLoading = false;
         },
         error: (err) => {
           console.error('Failed to load weights:', err);
+          this.weightsLoading = false;
         }
       });
   }
@@ -2656,9 +3046,29 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
     this.mebnMfragMap = map;
   }
 
+  onFindingNodesChanged(m: Record<string, boolean> | null): void {
+    this.findingNodeMap = m;
+  }
+
   onNodeDoubleClicked(node: D3Node): void {
-    // Expand node to show its children
-    this.expandNodeById(node.id);
+    // LOD expand: fetch the node's 1-hop neighborhood and merge it into the live graph
+    // without a full reload. Falls back to flat expandNodeById on error.
+    this.graphService.getNodeNeighborhood(node.id, 50)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (data) => {
+          if (this.graphCanvas) {
+            this.graphCanvas.addNodesToGraph(data);
+          } else {
+            // Canvas not yet rendered (should not happen during a double-click, but guard anyway)
+            this.expandNodeById(node.id);
+          }
+        },
+        error: (err) => {
+          console.error('Failed to expand node neighborhood:', err);
+          this.expandNodeById(node.id);
+        }
+      });
   }
 
   onEdgeCreated(edge: { source: string; target: string }): void {
@@ -2767,7 +3177,11 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
     } else {
       this.filter.nodeTypes.push(type);
     }
-    if (this.graphData) {
+    // Apply the type filter in-memory against the cached full data to avoid a
+    // network round-trip. Only fall back to loadGraph() when no data is cached yet.
+    if (this.fullGraphData) {
+      this.graphData = this.applyFilters(this.fullGraphData, this.lastQuery);
+    } else if (this.graphData) {
       this.loadGraph();
     }
   }
@@ -2779,7 +3193,11 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
     } else {
       this.filter.edgeTypes.push(type);
     }
-    if (this.graphData) {
+    // Apply the type filter in-memory against the cached full data to avoid a
+    // network round-trip. Only fall back to loadGraph() when no data is cached yet.
+    if (this.fullGraphData) {
+      this.graphData = this.applyFilters(this.fullGraphData, this.lastQuery);
+    } else if (this.graphData) {
       this.loadGraph();
     }
   }
@@ -2798,7 +3216,7 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
       edgeTypes: [...this.allEdgeTypes]
     };
     this.maxDepth = 2;
-    this.maxNodes = 100;
+    this.maxNodes = 500;  // reset to bounded default — use slider to change
     this.searchQuery = '';
     this.temporalFilterActive = false;
     this.timeFrom = '';
@@ -2983,15 +3401,33 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
   previewWeights(): void {
     if (!this.previewQuery) return;
 
+    this.previewLoading = true;
     this.weightService.previewWeightedSearch(this.previewQuery)
       .pipe(takeUntil(this.destroy$))
       .subscribe({
         next: (preview) => {
           this.weightPreview = preview;
+          this.previewLoading = false;
         },
         error: (err) => {
           console.error('Failed to preview weights:', err);
+          this.previewLoading = false;
           this.snackBar.open('Failed to preview weights', 'Dismiss', { duration: 3000 });
+        }
+      });
+  }
+
+  submitSourceFeedback(sourceId: string, wasHelpful: boolean): void {
+    this.weightService.submitFeedback({ sourceNodeId: sourceId, wasHelpful })
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: () => {
+          this.snackBar.open(wasHelpful ? 'Marked helpful — weight boosted' : 'Marked unhelpful — weight reduced', 'OK', { duration: 2500 });
+          // Refresh the weight list so sliders reflect the new quality score
+          this.loadSourceWeights();
+        },
+        error: (err) => {
+          console.error('Failed to submit feedback:', err);
         }
       });
   }
@@ -3439,8 +3875,12 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
     if (!this.selectedNode) return;
     this.attributionLoading = true;
     this.attributionError = null;
+    this.explainTrail = null;
+    this.explainTrailLoading = true;
 
-    this.attributionService.explainQuick(this.selectedNode.id, {
+    const nodeId = this.selectedNode.id;
+
+    this.attributionService.explainQuick(nodeId, {
       includeCounterfactuals: true
     }).pipe(takeUntil(this.destroy$)).subscribe({
       next: (result) => {
@@ -3459,6 +3899,17 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
         this.snackBar.open(message, 'Dismiss', { duration: 6000 });
       }
     });
+
+    // In parallel: fetch a unified ReasoningTrail via POST /api/explain.
+    // A bare node id is routed as HYBRID by ExplainController; fallback GROUNDING
+    // fires only if HYBRID produces no trail (handled server-side by the orchestrator).
+    const explainReq: UnifiedExplainRequest = { target: nodeId, mode: 'HYBRID' };
+    this.kbGrounding.unifiedExplain(explainReq)
+      .pipe(takeUntil(this.destroy$), catchError(() => of(null)))
+      .subscribe(resp => {
+        this.explainTrail = resp?.trail ?? null;
+        this.explainTrailLoading = false;
+      });
   }
 
   /**
@@ -3558,6 +4009,23 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
 
   formatEvidenceType(type: string): string {
     return type.toLowerCase().replace(/_/g, ' ');
+  }
+
+  toCitation(metadata: Record<string, any> | undefined, sourceRef?: string): Citation | null {
+    const c: Citation = {};
+    if (sourceRef) c.sourceName = sourceRef;
+    if (metadata) {
+      const sid = metadata['_sourceDocumentId'] || metadata['source_id'];
+      if (sid) c.sourceId = String(sid);
+      if (metadata['_crawlRunId']) c.crawlRunId = String(metadata['_crawlRunId']);
+      if (metadata['_basisType']) c.basisType = String(metadata['_basisType']);
+      if (metadata['page_number'] != null) c.pageNumber = Number(metadata['page_number']);
+      if (metadata['chunk_index'] != null) c.chunkIndex = Number(metadata['chunk_index']);
+      if (metadata['confidence'] != null) c.confidence = Number(metadata['confidence']);
+      if (metadata['provenance'] && typeof metadata['provenance'] === 'object') c.provenance = metadata['provenance'];
+    }
+    if (!c.sourceName && !c.sourceId && !c.basisType && c.confidence == null) return null;
+    return c;
   }
 
   getInfluenceKeysForAttr(): string[] {

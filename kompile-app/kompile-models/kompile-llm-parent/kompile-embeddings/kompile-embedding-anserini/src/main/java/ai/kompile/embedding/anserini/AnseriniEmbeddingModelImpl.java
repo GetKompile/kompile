@@ -1,5 +1,9 @@
 package ai.kompile.embedding.anserini;
 
+import ai.kompile.core.crawl.graph.AgentCallContext;
+import ai.kompile.core.crawl.graph.CrawlJobScoped;
+import ai.kompile.core.crawl.graph.CrawlProgressEvent;
+import ai.kompile.core.crawl.graph.HeavyMemoryCoordinator;
 import ai.kompile.core.embeddings.EmbeddingModel;
 import ai.kompile.embedding.anserini.config.AnseriniEmbeddingConfiguration.AnseriniEmbeddingProperties;
 import ai.kompile.embedding.anserini.event.EmbeddingSubprocessEvent;
@@ -12,6 +16,8 @@ import org.nd4j.linalg.factory.Nd4j;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
+import ai.kompile.app.subprocess.SubprocessLogBus;
+import ai.kompile.app.subprocess.SubprocessLogEvent;
 import ai.kompile.app.subprocess.SubprocessRegistry;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -48,7 +54,7 @@ import java.util.stream.Collectors;
 @ConditionalOnProperty(value = "kompile.embedding.anserini.enabled", havingValue = "true", matchIfMissing = true)
 @org.springframework.context.annotation.Lazy
 @org.springframework.context.annotation.Primary
-public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
+public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScoped {
 
     private static final Logger log = LoggerFactory.getLogger(AnseriniEmbeddingModelImpl.class);
 
@@ -86,6 +92,14 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
     @Autowired(required = false)
     private SubprocessRegistry subprocessRegistry;
 
+    /**
+     * Shared subprocess log/lifecycle bus. The embedding subprocess's own progress, phase
+     * transitions, log lines, and crashes are republished here (keyed by the active crawl
+     * {@code jobId}) so the crawl that owns this run sees them live via its per-job sink.
+     */
+    @Autowired(required = false)
+    private SubprocessLogBus subprocessLogBus;
+
     // Restart-governor configuration (manual toggle + native-crash threshold), read live.
     @Autowired(required = false)
     private ai.kompile.embedding.anserini.config.EmbeddingRestartConfigService restartConfigService;
@@ -116,6 +130,21 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
 
     // Event publisher for broadcasting subprocess events to UI
     private final ApplicationEventPublisher eventPublisher;
+
+    // Heavy-memory serialization gate — optional; absent in unit tests and CPU-only builds.
+    // When present, ensures embedding and KGE training never run concurrently.
+    @Autowired(required = false)
+    private ai.kompile.core.crawl.graph.HeavyMemoryCoordinator heavyMemoryCoordinator;
+
+    // Job id of the crawl batch currently being embedded; set on the crawl thread at the top
+    // of embedBatch() and read by the subprocess-reader-thread batch-resize callback.
+    // Serialization through the heavy-memory gate makes this volatile correlation safe.
+    private volatile String currentEmbedJobId;
+
+    // Explicit crawl-scoped jobId set by the owning crawl via CrawlJobScoped, independent of
+    // AgentCallContext thread-locals (which don't reach the embedding executor threads). Preferred
+    // over currentEmbedJobId when set, so ALL embedding events during a crawl are attributed to it.
+    private volatile String activeCrawlJobId;
 
     // Op timing state - stored so it can be applied when subprocess becomes available
     private volatile boolean desiredOpTimingEnabled = false;
@@ -214,6 +243,10 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
         return storedEmbeddingProperties != null ? storedEmbeddingProperties.getRequestTimeoutMs() : 0;
     }
 
+    private long getLoadModelTimeoutMs() {
+        return storedEmbeddingProperties != null ? storedEmbeddingProperties.getLoadModelTimeoutMs() : 0;
+    }
+
     private long getHeartbeatTimeoutMs() {
         return storedEmbeddingProperties != null ? storedEmbeddingProperties.getHeartbeatTimeoutMs() : 0;
     }
@@ -308,17 +341,30 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
                 log.info("Starting embedding subprocess for model: {}", modelIdentifier);
 
                 // Configure subprocess launcher with timeouts (0 = no timeout)
+                int heapMb = storedEmbeddingProperties != null
+                        ? storedEmbeddingProperties.getSubprocessHeapMb()
+                        : 4096;
+                long physicalMb = storedEmbeddingProperties != null
+                        ? storedEmbeddingProperties.getEffectiveSubprocessMaxPhysicalMb()
+                        : (long) heapMb * 4;
                 EmbeddingSubprocessLauncher.Builder launcherBuilder = EmbeddingSubprocessLauncher.builder()
-                        .maxHeapMb(4096)
+                        .maxHeapMb(heapMb)
+                        .maxPhysicalMb(physicalMb)
                         .progressCallback(this::handleProgress)
                         .phaseTransitionCallback(this::handlePhaseTransition)
                         .logCallback(this::handleLog)
                         .errorCallback(this::handleError)
-                        .crashCallback(this::handleCrash);
+                        .crashCallback(this::handleCrash)
+                        .batchResizeCallback(this::handleBatchResize);
 
                 // Only set timeouts if configured (> 0), otherwise leave as default (no timeout)
                 if (getRequestTimeoutMs() > 0) {
                     launcherBuilder.requestTimeoutMs(getRequestTimeoutMs());
+                }
+                // LoadModel timeout: defaults to 240000ms (4 min) in properties to cover CPU warm-up
+                // (~111s observed); falls back to requestTimeoutMs inside the launcher if not set.
+                if (getLoadModelTimeoutMs() > 0) {
+                    launcherBuilder.loadModelTimeoutMs(getLoadModelTimeoutMs());
                 }
                 if (getHeartbeatTimeoutMs() > 0) {
                     launcherBuilder.heartbeatTimeoutMs(getHeartbeatTimeoutMs());
@@ -367,8 +413,12 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
                 loadingMessage = "Loading model in subprocess: " + modelIdentifier;
                 log.info("Loading model in subprocess: {}", modelIdentifier);
 
+                int configuredAbsoluteMaxBatch = storedEmbeddingProperties != null
+                        ? storedEmbeddingProperties.getAbsoluteMaxBatchSize()
+                        : configuredMaxBatch;
                 CompletableFuture<EmbeddingSubprocessMessage.LoadModelResponse> loadFuture =
-                        subprocessLauncher.loadModel(modelIdentifier, configuredOptimalBatch, configuredMaxBatch);
+                        subprocessLauncher.loadModel(modelIdentifier, configuredOptimalBatch, configuredMaxBatch,
+                                configuredAbsoluteMaxBatch, null);
 
                 // Use configurable timeout for model loading (0 = no timeout)
                 EmbeddingSubprocessMessage.LoadModelResponse response;
@@ -470,12 +520,16 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
         log.debug("[subprocess] Progress: {} {}% - {}", progress.phase(), progress.progressPercent(), progress.message());
         publishEvent(EmbeddingSubprocessEvent.progress(this, modelIdentifier,
                 progress.phase(), progress.progressPercent(), progress.message()));
+        publishToBus("INFO", "[" + progress.phase() + "] " + progress.progressPercent()
+                + "% - " + progress.message(), false);
     }
 
     private void handlePhaseTransition(EmbeddingSubprocessMessage.PhaseTransition transition) {
         log.info("[subprocess] Phase: {} -> {} ({}ms)", transition.fromPhase(), transition.toPhase(), transition.phaseDurationMs());
         publishEvent(EmbeddingSubprocessEvent.phaseTransition(this, modelIdentifier,
                 transition.fromPhase(), transition.toPhase(), transition.phaseDurationMs()));
+        publishToBus("INFO", "phase " + transition.fromPhase() + " → " + transition.toPhase()
+                + " (" + transition.phaseDurationMs() + "ms)", true);
     }
 
     private void handleLog(EmbeddingSubprocessMessage.Log logMsg) {
@@ -491,6 +545,7 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
         }
         publishEvent(EmbeddingSubprocessEvent.log(this, modelIdentifier,
                 logMsg.level(), logMsg.source(), logMsg.message()));
+        publishToBus(logMsg.level(), "[" + logMsg.source() + "] " + logMsg.message(), false);
     }
 
     private void handleError(EmbeddingSubprocessMessage.Error error) {
@@ -503,7 +558,63 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
         log.error("[subprocess] CRASH", e);
         this.lastObservedCrashReason = (e != null ? e.getMessage() : null);
         publishEvent(EmbeddingSubprocessEvent.subprocessCrashed(this, modelIdentifier, e.getMessage()));
+        publishToBus("ERROR", "subprocess crashed: " + (e != null ? e.getMessage() : "unknown"), false);
         // Subprocess launcher will handle restart via RestartPolicyCallback
+    }
+
+    private void handleBatchResize(EmbeddingSubprocessMessage.BatchResizeNotice notice) {
+        // Structured log line that higher layers can grep for auto-tuning.
+        log.warn("EMBED_DECISION batchResize model={} old={} new={} reason={} physicalBytes={} maxPhysicalBytes={}",
+                modelIdentifier, notice.oldBatch(), notice.newBatch(), notice.reason(),
+                notice.physicalBytes(), notice.maxPhysicalBytes());
+
+        // Publish a DECISION crawl-progress event so the SSE UI can surface the resize live.
+        // This callback runs on the subprocess reader thread where the AgentCallContext thread-local
+        // is NOT set; read currentEmbedJobId (volatile, written on the crawl thread before the gate
+        // acquire) instead.  Skip publishing when there is no active crawl job (jobId == null) or
+        // no event publisher (unit tests / non-Spring contexts).
+        String jobId = resolveJobId();
+        if (jobId != null && eventPublisher != null) {
+            String decisionMsg = "embedding batch resized " + notice.oldBatch() + "→" + notice.newBatch()
+                    + " (native memory pressure: " + notice.physicalBytes()
+                    + "/" + notice.maxPhysicalBytes() + ")";
+            try {
+                eventPublisher.publishEvent(new CrawlProgressEvent(
+                        this,
+                        jobId,
+                        null,
+                        CrawlProgressEvent.EventType.DECISION,
+                        decisionMsg));
+            } catch (Exception ex) {
+                log.debug("Failed to publish DECISION crawl-progress event for batch resize: {}", ex.getMessage());
+            }
+        }
+    }
+
+    @Override
+    public void setActiveCrawlJobId(String jobId) {
+        this.activeCrawlJobId = (jobId == null || jobId.isBlank()) ? null : jobId;
+    }
+
+    /** Prefer the explicit crawl-set jobId; fall back to the AgentCallContext-derived one. */
+    private String resolveJobId() {
+        String explicit = this.activeCrawlJobId;
+        return explicit != null ? explicit : this.currentEmbedJobId;
+    }
+
+    /** Republish an embedding-subprocess event onto the shared {@link SubprocessLogBus}, keyed by the active crawl job. */
+    private void publishToBus(String level, String message, boolean lifecycle) {
+        SubprocessLogBus bus = this.subprocessLogBus;
+        if (bus == null) {
+            return;
+        }
+        String jobId = resolveJobId();
+        if (lifecycle) {
+            bus.publish(SubprocessLogEvent.lifecycle("embedding", "embedding", jobId, message));
+        } else {
+            bus.publish(SubprocessLogEvent.line("embedding", "embedding", jobId,
+                    SubprocessLogEvent.Stream.STDOUT, level, message));
+        }
     }
 
     /**
@@ -811,6 +922,19 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
             return List.of();
         }
 
+        // Capture job id on the crawl thread (thread-local; NOT set on the subprocess reader thread).
+        // Also publish to the volatile field so the batch-resize callback (subprocess reader thread)
+        // can correlate its DECISION events to the right job.
+        String capturedJobId = AgentCallContext.getJobId();
+        if (capturedJobId == null) {
+            // Embedding often runs on executor threads with no AgentCallContext; fall back to the
+            // crawl-set jobId so events stay attributed to the owning crawl.
+            capturedJobId = activeCrawlJobId;
+        }
+        if (capturedJobId != null) {
+            this.currentEmbedJobId = capturedJobId;
+        }
+
         ensureInitialized();
 
         if (!initialized || subprocessLauncher == null || !subprocessLauncher.isRunning()) {
@@ -821,24 +945,36 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
 
         try {
             long start = System.currentTimeMillis();
-            // Use configurable timeout for batch embed (0 = no timeout)
-            List<float[]> result;
-            if (getEmbedBatchTimeoutSeconds() > 0) {
-                result = subprocessLauncher.embedBatch(texts).get(getEmbedBatchTimeoutSeconds(), TimeUnit.SECONDS);
-            } else {
-                result = subprocessLauncher.embedBatch(texts).get(); // No timeout - wait indefinitely
+            // Acquire the heavy-memory serialization gate so embedding and KGE training never
+            // run concurrently.  The gate is a Semaphore(1); acquire() blocks until the permit
+            // is available.  When the coordinator is absent (unit tests, CPU-only contexts) the
+            // null-check makes this a no-op and behavior is identical to before.
+            try (AutoCloseable gate = heavyMemoryCoordinator != null
+                    ? heavyMemoryCoordinator.acquire("embedding", capturedJobId)
+                    : null) {
+                // Use configurable timeout for batch embed (0 = no timeout)
+                List<float[]> result;
+                if (getEmbedBatchTimeoutSeconds() > 0) {
+                    result = subprocessLauncher.embedBatch(texts).get(getEmbedBatchTimeoutSeconds(), TimeUnit.SECONDS);
+                } else {
+                    result = subprocessLauncher.embedBatch(texts).get(); // No timeout - wait indefinitely
+                }
+                long elapsed = System.currentTimeMillis() - start;
+
+                if (result == null) {
+                    log.error("Subprocess returned null for batch of {} texts", texts.size());
+                    return List.of();
+                }
+
+                log.info("EMBED_BATCH_DONE: {} texts in {}ms ({} ms/text) via subprocess",
+                        texts.size(), elapsed, texts.isEmpty() ? 0 : elapsed / texts.size());
+
+                return result;
             }
-            long elapsed = System.currentTimeMillis() - start;
-
-            if (result == null) {
-                log.error("Subprocess returned null for batch of {} texts", texts.size());
-                return List.of();
-            }
-
-            log.info("EMBED_BATCH_DONE: {} texts in {}ms ({} ms/text) via subprocess",
-                    texts.size(), elapsed, texts.isEmpty() ? 0 : elapsed / texts.size());
-
-            return result;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.error("embedBatch interrupted while waiting for heavy-memory gate: {}", e.getMessage(), e);
+            return List.of();
         } catch (Exception e) {
             log.error("Error embedding batch via subprocess: {}", e.getMessage(), e);
             return List.of();
@@ -1311,8 +1447,12 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
                     // Publish event for model switch (subprocess already running)
                     publishEvent(EmbeddingSubprocessEvent.subprocessStarted(this, newModelIdentifier));
 
+                    int switchAbsoluteMaxBatch = storedEmbeddingProperties != null
+                            ? storedEmbeddingProperties.getAbsoluteMaxBatchSize()
+                            : configuredMaxBatch;
                     CompletableFuture<EmbeddingSubprocessMessage.LoadModelResponse> loadFuture =
-                            subprocessLauncher.loadModel(newModelIdentifier, configuredOptimalBatch, configuredMaxBatch);
+                            subprocessLauncher.loadModel(newModelIdentifier, configuredOptimalBatch, configuredMaxBatch,
+                                    switchAbsoluteMaxBatch, null);
 
                     // Use configurable timeout for model loading (0 = no timeout)
                     EmbeddingSubprocessMessage.LoadModelResponse response;

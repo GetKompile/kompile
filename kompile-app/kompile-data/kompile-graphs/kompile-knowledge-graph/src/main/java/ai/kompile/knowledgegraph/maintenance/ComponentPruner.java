@@ -51,6 +51,19 @@ import java.util.stream.Collectors;
  * {@code @Primary} matrix/vector store (soft-delete sets the {@code _stale} metadata marker via
  * {@link KnowledgeGraphService#pruneNodes}); it no longer reads or writes the JPA tables, which
  * are unpopulated on the live path.</p>
+ *
+ * <h3>Structure-aware connectivity (TABLE/DOCUMENT anchors)</h3>
+ * <p>TABLE and DOCUMENT nodes are <em>structural anchors</em>: they are never themselves pruned
+ * but they ARE added to the connectivity graph so that ENTITY (CELL) nodes reachable via
+ * CONTAINS or HEADER_OF edges to a TABLE or DOCUMENT are not treated as singletons.
+ * Only ENTITY nodes are candidates for the prune decision; structural anchors are excluded
+ * from {@code toPrune} regardless of component size.</p>
+ *
+ * <h3>Metadata-level pin ({@code _pinned:true})</h3>
+ * <p>On the live matrix/vector store path the JPA {@code userPinned} column is not populated.
+ * The pinning contract uses the {@code _pinned:true} metadata marker written by
+ * {@code ContentTypeRouter.persistGraphJson()} for TABLE and CELL nodes at creation time.
+ * Both the JPA field ({@code userPinned=true}) and the metadata marker are honoured here.</p>
  */
 @Slf4j
 @Component
@@ -82,7 +95,7 @@ public class ComponentPruner {
         int skipped = 0;
         List<String> warnings = new ArrayList<>();
 
-        // ── 1. Load all active (non-stale) entities from the live store ──────────
+        // ── 1. Load all active (non-stale) ENTITY nodes — these are candidates for pruning ──
         List<GraphNode> activeEntities = knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY)
                 .stream().filter(n -> !isStale(n)).collect(Collectors.toList());
         int scanned = activeEntities.size();
@@ -93,7 +106,10 @@ public class ComponentPruner {
                     Duration.between(start, Instant.now()));
         }
 
-        // ── 2. Build a ReasoningGraph from entities + edges ──────────────────────
+        // ── 2. Build a ReasoningGraph from entities + structural anchors (TABLE/DOCUMENT) ──
+        // Structural anchors are added to the graph so ENTITY (CELL) nodes reachable via
+        // CONTAINS/HEADER_OF edges to a TABLE or DOCUMENT are not treated as singletons.
+        // The anchors are never themselves included in the prune-candidate set.
         MutableReasoningGraph graph = new MutableReasoningGraph();
         for (GraphNode n : activeEntities) {
             graph.addEntity(n.getNodeId(),
@@ -101,6 +117,30 @@ public class ComponentPruner {
                     n.getTitle() != null ? n.getTitle() : n.getNodeId());
         }
 
+        // Load TABLE and DOCUMENT structural anchors and register them in the graph so
+        // CONTAINS / HEADER_OF edges to them make their ENTITY children look connected.
+        java.util.Set<String> structuralAnchorIds = new java.util.HashSet<>();
+        for (NodeLevel anchorType : new NodeLevel[]{NodeLevel.TABLE, NodeLevel.DOCUMENT}) {
+            try {
+                List<GraphNode> anchors = knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, anchorType);
+                for (GraphNode anchor : anchors) {
+                    if (!isStale(anchor)) {
+                        graph.addEntity(anchor.getNodeId(),
+                                anchor.getNodeType() != null ? anchor.getNodeType().name() : "",
+                                anchor.getTitle() != null ? anchor.getTitle() : anchor.getNodeId());
+                        structuralAnchorIds.add(anchor.getNodeId());
+                    }
+                }
+                log.debug("ComponentPruner: loaded {} {} structural anchor(s) for factSheet={}",
+                        anchors.size(), anchorType, factSheetId);
+            } catch (Exception e) {
+                log.warn("ComponentPruner: could not load {} nodes for factSheet={}: {} — " +
+                        "proceeding without them (cells may appear as singletons)",
+                        anchorType, factSheetId, e.getMessage());
+            }
+        }
+
+        // Add edges — now both ENTITY↔ENTITY and ENTITY↔TABLE/DOCUMENT endpoints are in the graph
         List<GraphEdge> activeEdges = knowledgeGraphService.getEdgesInFactSheet(factSheetId);
         for (GraphEdge edge : activeEdges) {
             if (edge.getSourceNode() == null || edge.getTargetNode() == null) continue;
@@ -117,10 +157,10 @@ public class ComponentPruner {
         // ── 3. Delegate component DECISION to the generic policy ─────────────────
         ComponentPruningPolicy genericPolicy = new ComponentPruningPolicy(policy.minComponentSize());
         PruneResult decision = genericPolicy.evaluate(graph);
-        log.debug("ComponentPruner: {} entities in small components for factSheet={}",
+        log.debug("ComponentPruner: {} nodes in small components for factSheet={} (includes anchors in count)",
                 decision.entityIds().size(), factSheetId);
 
-        // ── 4. Apply pinned-node exception (KG-specific, stays here) ─────────────
+        // ── 4. Apply pinned-node and structural-anchor exceptions ────────────────
         List<String> toPrune = new ArrayList<>();
 
         // Build a fast lookup: nodeId → GraphNode for pin checks
@@ -130,8 +170,15 @@ public class ComponentPruner {
         }
 
         for (String entityId : decision.entityIds()) {
+            // Never prune structural anchors (TABLE / DOCUMENT) — they are not ENTITY nodes
+            // but the policy sees them because they were added to the graph above.
+            if (structuralAnchorIds.contains(entityId)) {
+                skipped++;
+                continue;
+            }
+
             GraphNode node = nodeById.get(entityId);
-            if (policy.keepPinned() && node != null && Boolean.TRUE.equals(node.getUserPinned())) {
+            if (policy.keepPinned() && node != null && isPinned(node)) {
                 skipped++;
                 log.debug("ComponentPruner: skipping pinned node {}", entityId);
                 continue;
@@ -140,7 +187,7 @@ public class ComponentPruner {
             affected++;
         }
 
-        // ── 5. Apply deletions via store API ─────────────────────────────────────
+        // ── 5. Apply soft-mark via store API (never hard-delete) ─────────────────
         knowledgeGraphService.pruneNodes(toPrune, true, null, dryRun);
         if (!dryRun && !toPrune.isEmpty()) {
             log.info("ComponentPruner: marked {} nodes in small components as stale for factSheet={}",
@@ -179,5 +226,26 @@ public class ComponentPruner {
         } catch (Exception e) {
             return false;
         }
+    }
+
+    /**
+     * A node is pinned if:
+     * <ul>
+     *   <li>The JPA {@code userPinned} flag is {@code true} (set by the REST pin endpoint), or</li>
+     *   <li>The live-store metadata contains {@code "_pinned":true} (set at creation time by
+     *       {@code ContentTypeRouter.persistGraphJson()} for TABLE and CELL nodes so they survive
+     *       the component sweep even when embeddings / cross-doc edges are offline).</li>
+     * </ul>
+     */
+    private static boolean isPinned(GraphNode n) {
+        if (Boolean.TRUE.equals(n.getUserPinned())) {
+            return true;
+        }
+        String metadataJson = n.getMetadataJson();
+        if (metadataJson == null || metadataJson.isBlank()) {
+            return false;
+        }
+        // Quick check without full parse: _pinned:true marker
+        return metadataJson.contains("\"_pinned\"") && metadataJson.contains("true");
     }
 }

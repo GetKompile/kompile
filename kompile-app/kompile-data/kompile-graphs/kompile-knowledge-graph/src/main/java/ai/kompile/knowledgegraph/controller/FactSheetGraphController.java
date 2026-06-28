@@ -114,9 +114,9 @@ public class FactSheetGraphController {
     @GetMapping("/visualization")
     public ResponseEntity<GraphVisualizationData> getVisualization(
             @PathVariable(FieldNames.FACT_SHEET_ID) Long factSheetId,
-            @RequestParam(defaultValue = "500", name = "maxNodes") int maxNodes,
-            @RequestParam(defaultValue = "1000", name = "maxEdges") int maxEdges) {
-
+            @RequestParam(defaultValue = "0", name = "maxNodes") int maxNodes,
+            @RequestParam(defaultValue = "0", name = "maxEdges") int maxEdges) {
+        // maxNodes/maxEdges <= 0 means unlimited — no silent truncation.
         GraphVisualizationData data = factSheetGraphService.getVisualizationData(
             factSheetId, maxNodes, maxEdges);
         return ResponseEntity.ok(data);

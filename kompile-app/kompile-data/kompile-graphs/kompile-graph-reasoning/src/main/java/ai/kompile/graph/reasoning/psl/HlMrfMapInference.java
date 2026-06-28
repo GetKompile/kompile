@@ -149,23 +149,29 @@ public final class HlMrfMapInference {
     }
 
     /**
+     * Threshold below which programs are considered "small" and routed to
+     * {@link ScalarHlMrfInference}. The default KG subgraphs (maxNodes ≈ 100) sit well under
+     * this, so they stay on the fast scalar path. ADMM startup overhead only pays off above
+     * this threshold (roughly 500 ground rules).
+     */
+    public static final int DEFAULT_SCALAR_THRESHOLD = 500;
+
+    /**
      * Pick the inference strategy by problem size:
      * <ul>
-     *   <li>fewer than {@link #DEFAULT_TENSOR_THRESHOLD} ground rules ⇒ {@link AdmmHlMrfInference}
-     *       for mid-scale problems; {@link ScalarHlMrfInference} for very small ones (the ADMM
-     *       startup overhead dominates below ~50 rules).</li>
-     *   <li>for large programs, if the dense incidence matrix fits {@link #DEFAULT_DENSE_CELL_BUDGET}
-     *       and an ND4J backend is available ⇒ {@link TensorHlMrfInference};</li>
+     *   <li>fewer than {@link #DEFAULT_SCALAR_THRESHOLD} ground rules ⇒
+     *       {@link ScalarHlMrfInference} (fastest for small KG subgraphs; avoids ADMM startup
+     *       overhead that dominates at this scale).</li>
+     *   <li>{@link #DEFAULT_SCALAR_THRESHOLD}–{@link #DEFAULT_TENSOR_THRESHOLD} ground rules ⇒
+     *       {@link AdmmHlMrfInference} (canonical PSL solver, Bach et al. UAI 2013).</li>
+     *   <li>above {@link #DEFAULT_TENSOR_THRESHOLD}, if the dense incidence matrix fits
+     *       {@link #DEFAULT_DENSE_CELL_BUDGET} and an ND4J backend is available ⇒
+     *       {@link TensorHlMrfInference};</li>
      *   <li>otherwise ⇒ {@link SgdHlMrfInference} (sparse, mini-batch SGD).</li>
      * </ul>
-     *
-     * <p>ADMM is the canonical PSL solver (Bach et al. UAI 2013) and is now the default for
-     * mid-scale programs (50–{@link #DEFAULT_TENSOR_THRESHOLD} ground rules). Very small programs
-     * (fewer than 50 ground rules) still use {@link ScalarHlMrfInference} to avoid ADMM startup
-     * overhead.</p>
      */
     public static HlMrfSolver chooseSolver(int groundRuleCount, int atomCount) {
-        if (groundRuleCount < 50) {
+        if (groundRuleCount < DEFAULT_SCALAR_THRESHOLD) {
             return new ScalarHlMrfInference();
         }
         if (groundRuleCount < DEFAULT_TENSOR_THRESHOLD) {

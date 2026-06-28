@@ -39,7 +39,7 @@ import static org.mockito.Mockito.*;
  * Tests for {@link GraphBuildingServiceImpl} — entity extraction from documents,
  * shared entity edges, build lifecycle (status, cancel), and statistics.
  *
- * Note: GraphBuildingServiceImpl constructor takes 5 args (no ApplicationEventPublisher).
+ * Note: GraphBuildingServiceImpl constructor takes 2 args (EntityExtractionService, KnowledgeGraphService).
  */
 @ExtendWith(MockitoExtension.class)
 @org.mockito.junit.jupiter.MockitoSettings(strictness = org.mockito.quality.Strictness.LENIENT)
@@ -53,8 +53,9 @@ class GraphBuildingServiceImplTest {
 
     @BeforeEach
     void setUp() {
+        // Constructor is 2-arg: (EntityExtractionService, KnowledgeGraphService)
         service = new GraphBuildingServiceImpl(
-                entityMentionRepository, entityExtractionService, knowledgeGraphService);
+                entityExtractionService, knowledgeGraphService);
     }
 
     private BuildConfig syncConfig() {
@@ -308,14 +309,17 @@ class GraphBuildingServiceImplTest {
 
     @Test
     void clearGraph_deletesAll() {
-        // impl calls entityMentionRepository.deleteAll() then knowledgeGraphService.getGraphStatistics()
-        // Node/edge deletion is delegated to the backing store (no direct repo.deleteAll calls)
+        // impl calls knowledgeGraphService.getGraphStatistics() then findFactSheetIds() then deleteByFactSheetId()
+        // No entityMentionRepository.deleteAll() — the impl was refactored to the KnowledgeGraphService seam.
         when(knowledgeGraphService.getGraphStatistics()).thenReturn(Map.of());
+        when(knowledgeGraphService.findFactSheetIds()).thenReturn(Set.of());
 
         service.clearGraph();
 
-        verify(entityMentionRepository).deleteAll();
         verify(knowledgeGraphService).getGraphStatistics();
+        verify(knowledgeGraphService).findFactSheetIds();
+        // entityMentionRepository not involved
+        verify(entityMentionRepository, never()).deleteAll();
     }
 
     // ─── Build statistics ──────────────────────────────────────────────
@@ -323,14 +327,15 @@ class GraphBuildingServiceImplTest {
     @Test
     void getBuildStatistics_returnsCounts() {
         // impl delegates to knowledgeGraphService.getGraphStatistics() (putAll into result map)
-        // and entityMentionRepository.count() for totalEntityMentions
+        // and knowledgeGraphService.countNodesByType(ENTITY) for totalEntityMentions (no longer entityMentionRepository.count())
         Map<String, Object> serviceStats = new HashMap<>();
         serviceStats.put("totalNodes", 10L);
         serviceStats.put("totalEdges", 5L);
         when(knowledgeGraphService.getGraphStatistics()).thenReturn(serviceStats);
-        when(entityMentionRepository.count()).thenReturn(20L);
-        // countNodesByType called for all NodeLevel values; return 0 so nodesByType stays empty
-        when(knowledgeGraphService.countNodesByType(any(NodeLevel.class))).thenReturn(0L);
+        // countNodesByType(ENTITY) → totalEntityMentions
+        when(knowledgeGraphService.countNodesByType(NodeLevel.ENTITY)).thenReturn(20L);
+        // countNodesByType called for all NodeLevel values; return 0 for non-ENTITY so nodesByType only has ENTITY
+        when(knowledgeGraphService.countNodesByType(argThat(l -> l != NodeLevel.ENTITY))).thenReturn(0L);
 
         Map<String, Object> stats = service.getBuildStatistics();
 
@@ -345,7 +350,6 @@ class GraphBuildingServiceImplTest {
         // impl builds nodesByType via knowledgeGraphService.countNodesByType (only non-zero included)
         // edgesByType is not computed by GraphBuildingServiceImpl — that was a JPA-era artifact
         when(knowledgeGraphService.getGraphStatistics()).thenReturn(Map.of());
-        when(entityMentionRepository.count()).thenReturn(2L);
         when(knowledgeGraphService.countNodesByType(NodeLevel.ENTITY)).thenReturn(2L);
         when(knowledgeGraphService.countNodesByType(argThat(l -> l != NodeLevel.ENTITY))).thenReturn(0L);
 

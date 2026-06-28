@@ -506,6 +506,8 @@ public class McpSocketSession implements Runnable {
         register(map, new ai.kompile.cli.main.chat.tools.grounding.AskGraphExplainTool(null, om), om, wd);
         register(map, new ai.kompile.cli.main.chat.tools.grounding.AskGraphAssertTool(null, om), om, wd);
         register(map, new ai.kompile.cli.main.chat.tools.grounding.AskGraphSubscribeTool(om), om, wd);
+        register(map, new ai.kompile.cli.main.chat.tools.grounding.AskGraphMebnTool(null, om), om, wd);
+        register(map, new ai.kompile.cli.main.chat.tools.grounding.GraphReasonTool(null, om), om, wd);
 
         // Process management
         var processManager = new BackgroundProcessManager(coordSessionId);

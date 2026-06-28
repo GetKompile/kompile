@@ -17,6 +17,9 @@
 package ai.kompile.crawl.graph;
 
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.app.subprocess.SubprocessLogBus;
+import ai.kompile.app.subprocess.SubprocessLogEvent;
+import ai.kompile.app.subprocess.SubprocessLogSink;
 import ai.kompile.core.crawl.graph.*;
 import ai.kompile.core.crawl.graph.archive.CrawlStepArchiveService;
 import ai.kompile.core.crawler.*;
@@ -25,9 +28,14 @@ import ai.kompile.core.embeddings.VectorStore;
 import ai.kompile.core.graphrag.GraphConstants;
 import ai.kompile.core.graphrag.GraphConstructor;
 import ai.kompile.core.graphrag.model.Graph;
+import ai.kompile.core.kgembedding.KGEmbeddingAlgorithm;
+import ai.kompile.core.kgembedding.KGEmbeddingConfig;
+import ai.kompile.core.kgembedding.KgeTrainingExecutor;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
 import ai.kompile.core.llm.chat.LLMChat;
 import ai.kompile.crawl.graph.preprocessing.PreprocessingPipelineRunner;
+import ai.kompile.knowledgegraph.embedding.domain.KGEmbeddingJob;
+import ai.kompile.knowledgegraph.matrix.store.MatrixGraphStore;
 import ai.kompile.knowledgegraph.resolution.GraphCompactionService;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -93,6 +101,8 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
     // Token trackers delegated to CrawlLlmDispatcher
     private final ConcurrentHashMap<String, Long> queuedSequences = new ConcurrentHashMap<>();
     private final Set<String> runningJobIds = ConcurrentHashMap.newKeySet();
+    /** Maps scheduler-generated IDs (e.g. "crawl-55ef8175") to internal job UUIDs. */
+    private final ConcurrentHashMap<String, String> jobIdAliases = new ConcurrentHashMap<>();
     private final AtomicLong submitSequence = new AtomicLong(0L);
     private volatile ThreadPoolExecutor executor;
     private int executorQueueCapacity = -1;
@@ -150,6 +160,24 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
      * (re-)processed and the hash store is updated.  Intended for forced full re-crawls.
      */
     volatile boolean crawlForceFullRecrawl = false;
+    /**
+     * [FIX-4] When true (explicit opt-in only), clear the fact sheet's graph at the very
+     * start of the crawl before LOADING, so the new crawl starts from a clean slate.
+     * Default is FALSE — re-runs MERGE/UPDATE the graph, preserving enrichment/confidence.
+     */
+    volatile boolean crawlClearGraphBeforeRun = false;
+    /**
+     * When true (default), automatically trigger async KGE embedding training after the
+     * ENRICHMENT step completes successfully. Controlled by {@code crawlKgeAfterEnrichment}
+     * in {@code graph-extraction-config.json}. Set false to skip auto-KGE (on-demand only).
+     */
+    volatile boolean kgeAfterEnrichment = true;
+    /**
+     * Batch size (triples per mini-batch) for KGE training. Overrides TRANSE_DEFAULTS when > 0.
+     * Controlled by {@code crawlKgeBatchSize} in {@code graph-extraction-config.json}.
+     * Default: 256 (smaller than TRANSE_DEFAULTS=1024 to reduce peak memory).
+     */
+    volatile int kgeBatchSize = 256;
 
     // Optional Spring dependencies
 
@@ -167,6 +195,16 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
 
     @Autowired(required = false)
     private KnowledgeGraphService knowledgeGraphService;
+
+    /**
+     * Optional matrix graph store — in subprocess mode this is {@code SubprocessMatrixGraphStore}
+     * (HTTP delegate); in in-process mode it is {@code VectorStoreMatrixGraphStore} sharing the
+     * same {@code AnseriniVectorStoreImpl} bean as {@link #vectorStore}.  Used solely to
+     * propagate the deferred-embedding flag to the subprocess's vector store so graph-node
+     * adds during GRAPH_PREP do not embed synchronously there.
+     */
+    @Autowired(required = false)
+    private MatrixGraphStore matrixGraphStore;
 
     @Autowired(required = false)
     private CrossDocumentRelationCallback crossDocumentRelationCallback;
@@ -189,8 +227,33 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
     @Autowired(required = false)
     private org.springframework.context.ApplicationEventPublisher eventPublisher;
 
+    /**
+     * Shared bus carrying live log + lifecycle events from every managed subprocess
+     * (embedding, learning, …). The crawl registers a per-job {@link SubprocessLogSink}
+     * while it runs so each subprocess's own output streams to the crawl UI in real time.
+     */
+    @Autowired(required = false)
+    private SubprocessLogBus subprocessLogBus;
+
     @Autowired(required = false)
     private ProcessingCapacityTracker processingCapacityTracker;
+
+    /**
+     * Optional resource governor adapter (app-main). Injected {@code required=false} so the crawl
+     * module compiles without app-main. Used to check the OOM floor before starting KGE training
+     * and to publish DECISION events when the governor defers a heavy op.
+     */
+    @Autowired(required = false)
+    private ResourceGovernorAdapter resourceGovernorAdapter;
+
+    /**
+     * Optional heavy-memory serialization gate (app-main). Injected {@code required=false} so the
+     * crawl module compiles without app-main. Not used directly in the crawl pipeline (KGE acquires
+     * it internally via {@code KGEmbeddingJobService}) but consulted here to publish a DECISION
+     * event when the KGE start is delayed by the gate.
+     */
+    @Autowired(required = false)
+    private HeavyMemoryCoordinator heavyMemoryCoordinator;
 
     // Required Spring dependencies
 
@@ -250,6 +313,10 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
     // Optional graph hydration pipeline (ENRICHMENT step: MAP derivation + prune/compact + health).
     @Autowired(required = false)
     private GraphHydrationOrchestrator graphHydrationOrchestrator;
+
+    // Optional KGE embedding training (auto-triggered after ENRICHMENT when kgeAfterEnrichment=true).
+    @Autowired(required = false)
+    private ai.kompile.knowledgegraph.embedding.service.KGEmbeddingJobService kgeEmbeddingJobService;
 
     // CrawlBatchPlanner is used by CrawlDocumentChunkingService; no direct use here.
 
@@ -381,6 +448,9 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                 config, this, memoryMonitor, graphExtractionOrchestrator, vectorIndexingHelper,
                 llmDispatcher, executor, executorQueueCapacity);
         runtimeConfigManager.applyRequestOverrides(request.getRuntimeConfig(), this, graphExtractionOrchestrator);
+        // Push per-crawl extraction model policy (providerAllow / excludeMarkers / modelAllow) to the
+        // model service so dynamic model selection in CliAgentLLMChat respects per-project overrides.
+        runtimeConfigManager.applyExtractionPolicy(request.getGraphExtraction(), llmDispatcher);
         if (request.getSources() == null || request.getSources().isEmpty()) {
             throw new IllegalArgumentException("At least one source is required");
         }
@@ -410,6 +480,63 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
         }
         job.setSourceProgress(sourceProgressList);
         initializePipelineSteps(job);
+        // ── Pre-flight model probe (Part 2) ──────────────────────────────────────────────────────
+        // Run a quick availability probe for candidate extraction models so the result is visible
+        // in the job's TuningDecision log BEFORE extraction starts. Failures here must NEVER abort
+        // the crawl — the probe is purely informational and health-tracking.
+        GraphExtractionConfig graphExtConfig = request.getGraphExtraction();
+        if (graphExtConfig == null || graphExtConfig.isEnabled()) {
+            try {
+                if (llmDispatcher != null && llmDispatcher.cliAgentAvailability != null) {
+                    int probeMaxModels = 12; // default; future: read from graphExtConfig if a field is added
+                    Map<String, String> probeResults =
+                            llmDispatcher.cliAgentAvailability.probeExtractionModels(probeMaxModels);
+                    if (!probeResults.isEmpty()) {
+                        StringBuilder detailSb = new StringBuilder();
+                        probeResults.forEach((model, outcome) -> {
+                            if (detailSb.length() > 0) detailSb.append(", ");
+                            detailSb.append(model).append('=').append(outcome);
+                        });
+                        String probeDetail = detailSb.toString();
+                        log.info("[Job {}] MODEL_PREFLIGHT_PROBE: {}", jobId, probeDetail);
+                        job.recordTuningDecision(UnifiedCrawlJob.TuningDecision.builder()
+                                .timestamp(Instant.now())
+                                .stage("MODEL_PREFLIGHT_PROBE")
+                                .oldValue(0).newValue(probeResults.size())
+                                .direction("PROBE")
+                                .reason("preflight_model_availability")
+                                .detail(probeDetail)
+                                .memoryPercent(job.getMemoryUsagePercent().get())
+                                .build());
+                    }
+                }
+            } catch (Exception probeEx) {
+                log.warn("[Job {}] MODEL_PREFLIGHT_PROBE failed (non-fatal): {}", jobId, probeEx.getMessage());
+            }
+        }
+        // ── Context-window-derived batch budget (Part 3) ──────────────────────────────────────────
+        // Apply the primary-model context-window char budget to the orchestrator and record it as a
+        // TuningDecision so it is visible in the job UI. Only fires when fraction > 0.
+        try {
+            if (llmDispatcher != null && llmDispatcher.cliAgentAvailability != null) {
+                String budgetDetail = runtimeConfigManager.applyContextBudget(
+                        graphExtConfig, llmDispatcher, graphExtractionOrchestrator);
+                if (budgetDetail != null) {
+                    log.info("[Job {}] BATCH_BUDGET: {}", jobId, budgetDetail);
+                    job.recordTuningDecision(UnifiedCrawlJob.TuningDecision.builder()
+                            .timestamp(Instant.now())
+                            .stage("BATCH_BUDGET")
+                            .oldValue(graphExtractionTargetCharsPerBatch).newValue(graphExtractionOrchestrator.graphExtractionTargetCharsPerBatch)
+                            .direction("MAXIMIZE")
+                            .reason("context_window_budget")
+                            .detail(budgetDetail)
+                            .memoryPercent(job.getMemoryUsagePercent().get())
+                            .build());
+                }
+            }
+        } catch (Exception budgetEx) {
+            log.warn("[Job {}] BATCH_BUDGET apply failed (non-fatal): {}", jobId, budgetEx.getMessage());
+        }
         jobs.put(jobId, job);
 
         long sequence = submitSequence.incrementAndGet();
@@ -501,6 +628,7 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
             runningJobIds.remove(jobId);
             jobFutures.remove(jobId);
             llmDispatcher.removeTracker(jobId);
+            llmDispatcher.clearOpencodeModelIndex(jobId);
             updateQueueSnapshots();
         }
     }
@@ -781,6 +909,19 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
     }
 
     @Override
+    public void registerJobIdAlias(String alias, String internalJobId) {
+        if (alias != null && internalJobId != null) {
+            jobIdAliases.put(alias, internalJobId);
+        }
+    }
+
+    @Override
+    public String resolveJobId(String aliasOrInternalId) {
+        if (aliasOrInternalId == null) return null;
+        return jobIdAliases.getOrDefault(aliasOrInternalId, aliasOrInternalId);
+    }
+
+    @Override
     public List<CrawlStepArchiveService.ResumableCrawlJob> listResumableCrawlJobs() {
         return crawlStepArchiveService != null ? crawlStepArchiveService.listResumableCrawlJobs() : List.of();
     }
@@ -801,24 +942,45 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
 
     /**
      * Archive a pipeline step's inputs to disk and mark it ARCHIVED. Falls back to SKIP (so the job
-     * still completes) when no archive service is wired or the write fails.
+     * still completes) when no archive service is wired or the write fails, UNLESS the step is already
+     * DEFERRED — in that case the DEFERRED status is preserved so the embedding resumer can pick it up.
+     *
+     * <p>The DEFERRED-preservation rule applies to the pre-archive step state: if the step was DEFERRED
+     * before this call, a failed/missing archive must NOT downgrade it to ARCHIVED or SKIPPED because the
+     * embedding resumer (DeferredEmbeddingResumer) relies on that status to find pending chunks.
      */
     private void archiveCrawlStep(UnifiedCrawlJob job, String stepId, List<Document> chunks,
                                   Object config, String message) {
+        // Capture current status before any writes so archive failures don't override DEFERRED.
+        boolean stepWasDeferred = job.getPipelineSteps().stream()
+                .filter(s -> stepId.equals(s.getStepId()))
+                .findFirst()
+                .map(s -> s.getStatus().get() == UnifiedCrawlJob.PipelineStepStatus.DEFERRED)
+                .orElse(false);
+
         if (crawlStepArchiveService != null) {
             try {
                 String dir = crawlStepArchiveService.archive(job, stepId, chunks, config);
-                pipelineStepTracker.archivePipelineStep(job, stepId,
-                        dir != null ? message : message + " (archive write failed)");
                 if (dir != null) {
+                    pipelineStepTracker.archivePipelineStep(job, stepId, message);
                     recordEvent(job, stepId, "INFO", "Step archived for later", message);
                     return;
                 }
+                // archive() returned null (write failed) — log but don't flip status
+                log.warn("[Job {}] Archive write returned null for step {} — leaving step status unchanged",
+                        job.getJobId(), stepId);
             } catch (Exception e) {
                 log.warn("[Job {}] Failed to archive step {}: {}", job.getJobId(), stepId, e.getMessage(), e);
             }
         }
-        skipPipelineStep(job, stepId, message + " (archive unavailable — skipped)");
+        // Archive unavailable or failed. If the step was already DEFERRED, preserve that status
+        // so the embedding resumer can find the chunks. Otherwise fall back to SKIPPED.
+        if (stepWasDeferred) {
+            log.debug("[Job {}] Step {} was DEFERRED before archive attempt — preserving DEFERRED status (archive unavailable/failed)",
+                    job.getJobId(), stepId);
+        } else {
+            skipPipelineStep(job, stepId, message + " (archive unavailable — skipped)");
+        }
     }
 
     /**
@@ -937,11 +1099,21 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                 // so per-document islands are connected and cells survive the component sweep.
                 graphEdgeComputationService.computeSharedEntityEdges(factSheetId, 1);
                 graphEdgeComputationService.computeNameBasedCrossDocEdges(factSheetId);
+                // [FIX-2] Flush cross-doc edges to the vector store so they are durable.
+                if (knowledgeGraphService != null) {
+                    knowledgeGraphService.flushPendingNodes();
+                    log.info("[Job {}] EDGE_COMPUTATION resume: flushed cross-doc edges to persistent store", job.getJobId());
+                }
                 // Embedding-similarity edges: only when the embedding model is ready so that
                 // resume works in CPU mode and backfills similarity edges later on GPU.
                 EmbeddingModel embModel = vectorIndexingHelper.primaryEmbeddingModel();
                 if (vectorIndexingHelper.isEmbeddingModelReady(embModel)) {
                     graphEdgeComputationService.computeEmbeddingSimilarityEdges(factSheetId, 0.7, 10);
+                    // [FIX-2] Flush embedding-similarity edges to the vector store.
+                    if (knowledgeGraphService != null) {
+                        knowledgeGraphService.flushPendingNodes();
+                        log.info("[Job {}] EDGE_COMPUTATION resume: flushed similarity edges to persistent store", job.getJobId());
+                    }
                 } else {
                     log.info("[Job {}] EDGE_COMPUTATION resume: embedding model not ready ({}), " +
                                     "skipping similarity edges — re-run this step when GPU is available",
@@ -1198,6 +1370,10 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
     // ---- Internal pipeline execution ----
 
     private void executeJob(UnifiedCrawlJob job) {
+        // Per-job listener that streams every managed subprocess's own logs + lifecycle
+        // (embedding, learning, …) into this crawl's live UI. Registered after STARTED below,
+        // detached in the finally so it never leaks across jobs.
+        final SubprocessLogSink subprocessSink = ev -> handleSubprocessLog(job, ev);
         try {
             CrawlRuntimeConfigManager.CrawlRuntimeConfig config = runtimeConfigManager.refreshRuntimeConfig();
             executorQueueCapacity = runtimeConfigManager.applyRuntimeConfig(
@@ -1207,6 +1383,14 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
             job.setStartedAt(Instant.now());
             initializePipelineSteps(job);
             publishProgressEvent(job, CrawlProgressEvent.EventType.STARTED, "Crawl started");
+            if (subprocessLogBus != null) {
+                subprocessLogBus.register(subprocessSink);
+            }
+            // Attribute all embedding-subprocess activity to this job for the whole run, so its
+            // events relay to the crawl UI even when embedding runs on executor threads.
+            if (vectorIndexingHelper != null) {
+                vectorIndexingHelper.setActiveCrawlJobId(job.getJobId());
+            }
             CrawlStepPlan stepPlan = CrawlStepPlan.from(job.getRequest());
             try {
                 stepPlan.validate();
@@ -1216,6 +1400,27 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
             }
             recordEvent(job, "LOADING", "INFO", "Pipeline step plan", stepPlan.actions().toString());
             updateMemorySnapshot(job);
+
+            // [FIX-4] Clear graph before loading if explicitly requested (default=false = merge/update).
+            // This is a destructive opt-in only; the default preserves all prior enrichment/confidence.
+            if (crawlClearGraphBeforeRun && knowledgeGraphService != null) {
+                Long clearFactSheetId = jobFactSheetId(job);
+                if (clearFactSheetId != null) {
+                    log.warn("[Job {}] crawlClearGraphBeforeRun=true: CLEARING graph for factSheetId={} before LOADING",
+                            job.getJobId(), clearFactSheetId);
+                    recordEvent(job, "LOADING", "WARN", "Graph cleared before crawl",
+                            "crawlClearGraphBeforeRun=true: all nodes/edges for factSheetId=" + clearFactSheetId + " deleted");
+                    try {
+                        knowledgeGraphService.deleteByFactSheetId(clearFactSheetId);
+                        knowledgeGraphService.flushPendingNodes();
+                        log.info("[Job {}] Graph cleared for factSheetId={}", job.getJobId(), clearFactSheetId);
+                    } catch (Exception clearEx) {
+                        log.warn("[Job {}] Graph clear failed (non-fatal): {}", job.getJobId(), clearEx.getMessage());
+                    }
+                } else {
+                    log.debug("[Job {}] crawlClearGraphBeforeRun=true but no factSheetId — skipping clear", job.getJobId());
+                }
+            }
 
             TokenBudgetTracker tokenTracker = new TokenBudgetTracker();
             tokenTracker.registerBackend("default");
@@ -1311,13 +1516,34 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                     "Routing content by document type", allDocuments.size() + " document(s)");
             waitForMemoryCapacity(job, "ROUTING");
             job.getCurrentFile().set("(formula graph extraction for " + allDocuments.size() + " documents)");
-            allDocuments = new ArrayList<>(contentTypeRouter.routeByContentType(job, allDocuments));
+            // Routing is PURE classification: it returns the routed docs and COLLECTS the
+            // structured-graph persistence into this sink instead of running it inline.
+            List<Runnable> graphPersistence = new ArrayList<>();
+            allDocuments = new ArrayList<>(contentTypeRouter.routeByContentType(job, allDocuments, graphPersistence));
             job.getCurrentFile().set(null);
             completePipelineStep(job, "ROUTING", docGraphDocs.size(),
                     allDocuments.size() + " document(s) routed to text pipeline");
             updateProgress(job, "ROUTING", estimateProgress(job),
                     "Content routing complete", allDocuments.size() + " text-pipeline document(s)");
             log.info("[Job {}] Content routing complete: {} documents for text pipeline", job.getJobId(), allDocuments.size());
+
+            // Structured-graph persistence (formula/table/cell/document nodes) is its OWN linear
+            // step, NOT part of routing — routing only decides each document's pipeline. Run the
+            // operations routing collected; timed + logged so the cost is visible per job.
+            if (!graphPersistence.isEmpty()) {
+                long gpStart = System.currentTimeMillis();
+                job.getCurrentFile().set("(structured graph persistence: " + graphPersistence.size() + " ops)");
+                graphPersistence.parallelStream().forEach(task -> {
+                    try {
+                        task.run();
+                    } catch (Exception e) {
+                        log.warn("[Job {}] Structured graph persistence op failed: {}", job.getJobId(), e.getMessage());
+                    }
+                });
+                job.getCurrentFile().set(null);
+                log.info("[Job {}] Structured graph persistence complete: {} ops in {}ms",
+                        job.getJobId(), graphPersistence.size(), System.currentTimeMillis() - gpStart);
+            }
 
             if (isCancelled(job)) return;
 
@@ -1488,6 +1714,10 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
             unifiedGraph.setEntities(new ArrayList<>());
             unifiedGraph.setRelationships(new ArrayList<>());
             unifiedGraph.setCommunities(new ArrayList<>());
+            // Set to true when extraction hits the wholesale-failure threshold (0 entities + too many
+            // failed chunks). When true, downstream semantic steps are skipped — they are meaningless
+            // without a semantic graph. Failed chunks are archived for a resumable re-run.
+            boolean[] graphWholesaleFailure = {false};
 
             GraphExtractionConfig graphConfig = job.getRequest().getGraphExtraction();
 
@@ -1571,6 +1801,37 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                 int graphErrors = job.getErrorCount().get();
                 String graphSummary = extractedEntities + " entities, " + extractedRelationships + " relationships";
 
+                // Finish-early wholesale-failure guard: when entities==0 AND a sufficient fraction of
+                // chunks failed, skip downstream semantic steps (ENTITY_RESOLUTION, EDGE_COMPUTATION,
+                // ENRICHMENT) that are meaningless without a semantic graph. The threshold comes from
+                // crawlGraphExtractionWholesaleFailureThreshold (default 1.0 = only on total failure).
+                // Failed chunks are already archived as a resumable GRAPH_EXTRACTION step by the
+                // orchestrator, so the crawl can be re-run once the extraction issue is resolved.
+                boolean wholesaleFailure = false;
+                if (extractedEntities == 0 && graphErrors > 0 && chunkedDocuments.size() > 0) {
+                    double failedFraction = (double) graphErrors / chunkedDocuments.size();
+                    double threshold = graphExtractionOrchestrator.wholesaleFailureThreshold;
+                    if (failedFraction >= threshold) {
+                        wholesaleFailure = true;
+                        graphWholesaleFailure[0] = true;
+                        String failMsg = "Graph extraction wholesale failure: " + graphErrors + "/"
+                                + chunkedDocuments.size() + " chunks failed (" + String.format("%.0f%%", failedFraction * 100)
+                                + "), 0 entities extracted — downstream semantic steps SKIPPED."
+                                + " Failed chunks archived for resumable re-run.";
+                        log.error("[Job {}] {}", job.getJobId(), failMsg);
+                        job.getErrors().add(failMsg);
+                        recordEvent(job, "GRAPH_EXTRACTION", "ERROR", failMsg,
+                                "threshold=" + threshold + ", failedFraction=" + String.format("%.2f", failedFraction));
+                        failPipelineStep(job, "GRAPH_EXTRACTION", failMsg);
+                        // Skip the downstream steps by marking them so they don't run.
+                        for (String skipStep : new String[]{"ENTITY_RESOLUTION", "EDGE_COMPUTATION", "ENRICHMENT"}) {
+                            skipPipelineStep(job, skipStep,
+                                    "Skipped: wholesale graph extraction failure (0 entities, "
+                                            + String.format("%.0f%%", failedFraction * 100) + " chunks failed)");
+                        }
+                    }
+                }
+                if (!wholesaleFailure) {
                 if (extractedEntities == 0 && extractedRelationships == 0 && graphErrors > 0) {
                     String failMsg = "LLM graph extraction failed for all " + chunkedDocuments.size()
                             + " chunks (" + graphErrors + " errors). Check LLM configuration.";
@@ -1590,6 +1851,7 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                     completePipelineStep(job, "GRAPH_EXTRACTION", graphExtractionOrchestrator.completeGraphExtractionProgress(job),
                             graphSummary);
                 }
+                } // end !wholesaleFailure
                 trimNativeMemory(job, "GRAPH_EXTRACTION", "after graph extraction");
             } else if (stepPlan.isArchive("GRAPH_EXTRACTION")) {
                 archiveCrawlStep(job, "GRAPH_EXTRACTION", new ArrayList<>(chunkedDocuments), graphConfig,
@@ -1628,8 +1890,11 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
             if (isCancelled(job)) return;
 
             // Phase 6.5: Entity resolution
+            // Skipped when graphWholesaleFailure: 0 semantic entities → resolution is a no-op and
+            // downstream steps (edge computation, enrichment) are equally meaningless. The failed
+            // chunks are archived and resumable via GET /api/unified-crawl/jobs/resumable.
             GraphExtractionConfig graphConfigForResolution = job.getRequest().getGraphExtraction();
-            if (stepPlan.isRun("ENTITY_RESOLUTION") && graphCompactionService != null && graphConfigForResolution != null
+            if (!graphWholesaleFailure[0] && stepPlan.isRun("ENTITY_RESOLUTION") && graphCompactionService != null && graphConfigForResolution != null
                     && graphConfigForResolution.isEntityResolution()) {
                 try {
                     updateProgress(job, "ENTITY_RESOLUTION", estimateProgress(job),
@@ -1709,7 +1974,8 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
             if (isCancelled(job)) return;
 
             // Phase 7+8: Edge computation and vector indexing -- overlapped
-            boolean doEdgeComputation = stepPlan.isRun("EDGE_COMPUTATION")
+            // Edge computation is skipped on wholesale extraction failure (no semantic graph to compute over).
+            boolean doEdgeComputation = !graphWholesaleFailure[0] && stepPlan.isRun("EDGE_COMPUTATION")
                     && graphEdgeComputationService != null && knowledgeGraphService != null;
             if (!doEdgeComputation && stepPlan.isArchive("EDGE_COMPUTATION")) {
                 archiveCrawlStep(job, "EDGE_COMPUTATION", new ArrayList<>(), null,
@@ -1736,6 +2002,13 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                         // so per-document islands are connected and cells survive the component sweep.
                         graphEdgeComputationService.computeSharedEntityEdges(factSheetId, 1);
                         graphEdgeComputationService.computeNameBasedCrossDocEdges(factSheetId);
+                        // [FIX-2] Persist cross-doc/SHARED_ENTITY edges to the vector store so they
+                        // survive beyond this JVM session.  addEdge only mutates the in-memory adjacency
+                        // matrix; without this flush the ~49k SHARED_ENTITY edges are lost on restart.
+                        if (knowledgeGraphService != null) {
+                            knowledgeGraphService.flushPendingNodes();
+                            log.info("[Job {}] EDGE_COMPUTATION: flushed cross-doc edges to persistent store", job.getJobId());
+                        }
                         incrementPipelineStep(job, "EDGE_COMPUTATION", 1, 0, "Shared entity edges computed");
                         log.info("[Job {}] Shared entity edge computation complete", job.getJobId());
                     } catch (Exception e) {
@@ -1745,16 +2018,114 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                 edgePool.shutdown();
             }
 
+            // Barrier: await any async node-embedding tasks dispatched during GRAPH_PREP/GRAPH_EXTRACTION.
+            // These tasks run in AnseriniVectorStoreImpl's background pool and must complete before
+            // VECTOR_INDEXING reads from the same index or before KGE training begins.
+            if (vectorStore != null) {
+                try {
+                    vectorStore.awaitPendingEmbeddings();
+                    log.info("[Job {}] Async graph-node embeddings settled before VECTOR_INDEXING", job.getJobId());
+                } catch (Exception awaitEx) {
+                    log.warn("[Job {}] Non-fatal: async embedding barrier error: {}",
+                            job.getJobId(), awaitEx.getMessage(), awaitEx);
+                }
+            }
+
             if (doVectorIndex) {
                 EmbeddingModel embModel = vectorIndexingHelper.primaryEmbeddingModel();
                 if (!vectorIndexingHelper.isEmbeddingModelReady(embModel)) {
-                    vectorIndexingHelper.deferVectorIndexing(job, chunksForIndex, indexConfig,
-                            "Embedding model not ready: " + vectorIndexingHelper.embeddingModelNotReadyReason(embModel));
-                    // Auto-archive deferred chunks so they survive a restart and can be resumed via
-                    // POST /api/unified-crawl/jobs/{id}/steps/VECTOR_INDEXING/run
-                    archiveCrawlStep(job, "VECTOR_INDEXING", new ArrayList<>(job.getDeferredEmbeddingChunks()),
-                            job.getDeferredVectorIndexConfig(),
-                            job.getDeferredEmbeddingChunks().size() + " chunk(s) auto-archived (embedding model not ready)");
+                    // ── Inline model-load wait (mandate: crawl stays RUNNING) ──────────────
+                    // Only enter the wait loop if the model is actively loading. When the model
+                    // is NOT loading (e.g., permanently failed, OOM, or not configured at all)
+                    // defer immediately without a 5-minute busy-wait.
+                    boolean embModelIsLoading = false;
+                    try { embModelIsLoading = embModel != null && embModel.isLoading(); } catch (Exception ignored) {}
+                    if (!embModelIsLoading) {
+                        String unavailableReason = vectorIndexingHelper.embeddingModelNotReadyReason(embModel);
+                        log.warn("[Job {}] Embedding model unavailable and not loading ({}); deferring vector indexing immediately",
+                                job.getJobId(), unavailableReason);
+                        vectorIndexingHelper.deferVectorIndexing(job, chunksForIndex, indexConfig,
+                                "Embedding model unavailable: " + unavailableReason);
+                        archiveCrawlStep(job, "VECTOR_INDEXING", new ArrayList<>(job.getDeferredEmbeddingChunks()),
+                                job.getDeferredVectorIndexConfig(),
+                                job.getDeferredEmbeddingChunks().size() + " chunk(s) auto-archived (model unavailable)");
+                    } else {
+                    // Trigger initialization by attempting a readiness probe (which internally
+                    // calls ensureInitialized on AnseriniEmbeddingModelImpl). Then poll until
+                    // the model is ready, surfacing load progress as crawl events.
+                    String notReadyReason = vectorIndexingHelper.embeddingModelNotReadyReason(embModel);
+                    log.info("[Job {}] Embedding model not ready ({}); waiting inline for load to complete",
+                            job.getJobId(), notReadyReason);
+                    updatePipelineStep(job, "VECTOR_INDEXING", UnifiedCrawlJob.PipelineStepStatus.RUNNING,
+                            0, chunksForIndex.size(), 0, 0, 0, 0, null,
+                            "Loading embedding model...");
+                    recordEvent(job, "VECTOR_INDEXING", "INFO", "Waiting for embedding model to load",
+                            notReadyReason);
+                    publishProgressEvent(job, CrawlProgressEvent.EventType.PROGRESS,
+                            "Loading embedding model: " + notReadyReason);
+
+                    final long embModelLoadTimeoutMs = 300_000L; // 5 min — matches typical CPU warm-up
+                    final long embPollIntervalMs = 5_000L;
+                    long embWaitStart = System.currentTimeMillis();
+                    boolean embReady = false;
+                    while (!isCancelled(job)) {
+                        embModel = vectorIndexingHelper.primaryEmbeddingModel();
+                        if (vectorIndexingHelper.isEmbeddingModelReady(embModel)) {
+                            embReady = true;
+                            break;
+                        }
+                        long elapsed = System.currentTimeMillis() - embWaitStart;
+                        if (elapsed >= embModelLoadTimeoutMs) {
+                            log.warn("[Job {}] Embedding model load timed out after {}ms — falling back to deferred indexing",
+                                    job.getJobId(), elapsed);
+                            break;
+                        }
+                        // Surface load progress from the embedding model
+                        String loadPhase = embModel != null ? embModel.getLoadingPhase() : "starting";
+                        String loadMsg   = embModel != null ? embModel.getLoadingMessage() : null;
+                        long loadElapsed = embModel != null ? embModel.getLoadingElapsedMs() : elapsed;
+                        String progressMsg = "Loading embedding model"
+                                + (loadPhase != null ? " [" + loadPhase + "]" : "")
+                                + (loadMsg   != null ? ": " + loadMsg         : "")
+                                + " (" + (loadElapsed / 1000) + "s)";
+                        recordEvent(job, "VECTOR_INDEXING", "INFO", "Embedding model loading", progressMsg);
+                        publishProgressEvent(job, CrawlProgressEvent.EventType.PROGRESS, progressMsg);
+                        try { Thread.sleep(embPollIntervalMs); } catch (InterruptedException ie) {
+                            Thread.currentThread().interrupt();
+                            break;
+                        }
+                    }
+
+                    if (!embReady) {
+                        // Timed out or cancelled — fall back to deferred path as genuine-failure safety net
+                        log.warn("[Job {}] Embedding model unavailable after wait; deferring vector indexing",
+                                job.getJobId());
+                        vectorIndexingHelper.deferVectorIndexing(job, chunksForIndex, indexConfig,
+                                "Embedding model load timed out — deferred as fallback");
+                        archiveCrawlStep(job, "VECTOR_INDEXING", new ArrayList<>(job.getDeferredEmbeddingChunks()),
+                                job.getDeferredVectorIndexConfig(),
+                                job.getDeferredEmbeddingChunks().size() + " chunk(s) auto-archived (embedding load timeout)");
+                    } else {
+                        // Model loaded inline — proceed directly to indexing below
+                        log.info("[Job {}] Embedding model loaded inline; proceeding to vector indexing",
+                                job.getJobId());
+                        recordEvent(job, "VECTOR_INDEXING", "INFO", "Embedding model ready", "Proceeding with inline vector indexing");
+                        publishProgressEvent(job, CrawlProgressEvent.EventType.PROGRESS, "Embedding model loaded; starting vector indexing");
+                        try {
+                            job.getCurrentFile().set("(indexing " + chunksForIndex.size() + " chunks)");
+                            vectorIndexingHelper.indexDocuments(chunksForIndex, indexConfig, job);
+                            log.info("[Job {}] Vector indexing complete (after inline model load)", job.getJobId());
+                        } catch (Exception e) {
+                            String errorDetail = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+                            log.warn("[Job {}] Vector indexing deferred after inline-load failure: {}", job.getJobId(), errorDetail, e);
+                            vectorIndexingHelper.deferVectorIndexing(job, chunksForIndex, indexConfig,
+                                    "Vector indexing failed after inline load: " + errorDetail);
+                            archiveCrawlStep(job, "VECTOR_INDEXING", new ArrayList<>(job.getDeferredEmbeddingChunks()),
+                                    job.getDeferredVectorIndexConfig(),
+                                    job.getDeferredEmbeddingChunks().size() + " chunk(s) auto-archived after inline-load failure");
+                        }
+                    }
+                    } // closes else (model is loading) block
                 } else if (vectorIndexingHelper.shouldDeferForGpu()) {
                     // GPU VRAM has no headroom right now — defer embedding (a heavy local workload)
                     // instead of risking OOM. DeferredEmbeddingResumer drains it when VRAM frees.
@@ -1808,6 +2179,11 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                         EmbeddingModel embModel = vectorIndexingHelper.primaryEmbeddingModel();
                         if (memoryReady && vectorIndexingHelper.isEmbeddingModelReady(embModel)) {
                             graphEdgeComputationService.computeEmbeddingSimilarityEdges(factSheetId, 0.7, 10);
+                            // [FIX-2] Flush embedding-similarity edges to the vector store so they persist.
+                            if (knowledgeGraphService != null) {
+                                knowledgeGraphService.flushPendingNodes();
+                                log.info("[Job {}] EDGE_COMPUTATION: flushed embedding-similarity edges to persistent store", job.getJobId());
+                            }
                             incrementPipelineStep(job, "EDGE_COMPUTATION", 1, 0, "Embedding similarity edges computed");
                         } else {
                             incrementPipelineStep(job, "EDGE_COMPUTATION", 1, 0,
@@ -1826,7 +2202,8 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
             }
 
             // ── Phase 9: Post-crawl enrichment (MAP derivation + prune/compact + health) ──────
-            if (stepPlan.isRun("ENRICHMENT")) {
+            // Skipped when graphWholesaleFailure: enrichment over an empty graph is a no-op.
+            if (!graphWholesaleFailure[0] && stepPlan.isRun("ENRICHMENT")) {
                 if (graphHydrationOrchestrator == null) {
                     // C2: Make the silent-skip footgun visible. When the hydration orchestrator bean
                     // is absent, PSL/MEBN MAP derivation, Opinion-based pruning, and confidence
@@ -1875,10 +2252,118 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                                     + " merges=" + hr.mergesPerformed()
                                     + " orphans=" + hr.orphansRemoved()
                                     + " components=" + hr.componentNodesRemoved();
+                            // [FIX-2] Flush enrichment-derived edges/updates to the vector store.
+                            try {
+                                knowledgeGraphService.flushPendingNodes();
+                                log.info("[Job {}] ENRICHMENT: flushed enrichment graph state to persistent store", job.getJobId());
+                            } catch (Exception flushEx) {
+                                log.warn("[Job {}] ENRICHMENT: non-fatal flush error: {}", job.getJobId(), flushEx.getMessage());
+                            }
                             completePipelineStep(job, "ENRICHMENT",
                                     GraphHydrationOrchestrator.TOTAL_STAGES, summary);
                             recordEvent(job, "ENRICHMENT", "INFO", "Graph hydration enrichment complete", summary);
                             log.info("[Job {}] {}", job.getJobId(), summary);
+                            // ── Phase 10: LEARNING (KGE training) — inline tracked crawl step ─────
+                            // Mandate: crawl stays RUNNING until KGE finishes; progress (epoch/loss)
+                            // surfaces in the crawl UI via CrawlProgressEvent.
+                            if (kgeAfterEnrichment && kgeEmbeddingJobService != null && factSheetId != null) {
+                                final long kgeFactSheetId = factSheetId;
+                                final String kgeCrawlJobId = job.getJobId();
+                                final int effectiveBatchSize = kgeBatchSize > 0 ? kgeBatchSize
+                                        : KGEmbeddingConfig.TRANSE_DEFAULTS.batchSize();
+                                final KGEmbeddingConfig kgeCfg =
+                                        KGEmbeddingConfig.TRANSE_DEFAULTS
+                                                .toBuilder()
+                                                .batchSize(effectiveBatchSize)
+                                                .build();
+
+                                String batchDecision = "kge-training batch-size=" + effectiveBatchSize
+                                        + " (crawlKgeBatchSize=" + kgeBatchSize + ")";
+                                recordEvent(job, "LEARNING", "INFO", "KGE batch-size decision", batchDecision);
+                                publishProgressEvent(job, CrawlProgressEvent.EventType.DECISION, batchDecision);
+
+                                if (resourceGovernorAdapter != null && resourceGovernorAdapter.shouldThrottleHeavyMemory()) {
+                                    String oomReason = resourceGovernorAdapter.memoryPressureReason();
+                                    String oomMsg = "kge-training skipped by OOM floor: " + oomReason;
+                                    log.warn("[Job {}] Post-enrichment KGE skipped — {}", kgeCrawlJobId, oomReason);
+                                    recordEvent(job, "LEARNING", "WARN", "KGE skipped by OOM floor", oomMsg);
+                                    publishProgressEvent(job, CrawlProgressEvent.EventType.DECISION, oomMsg);
+                                    skipPipelineStep(job, "LEARNING", oomMsg);
+                                } else {
+                                    if (heavyMemoryCoordinator != null && heavyMemoryCoordinator.isEnabled()) {
+                                        String gateMsg = "kge-training will acquire heavy-memory gate before training";
+                                        recordEvent(job, "LEARNING", "INFO", "KGE gate decision", gateMsg);
+                                        publishProgressEvent(job, CrawlProgressEvent.EventType.DECISION, gateMsg);
+                                    }
+                                    // Start LEARNING step — crawl job stays RUNNING during this.
+                                    updatePipelineStep(job, "LEARNING",
+                                            UnifiedCrawlJob.PipelineStepStatus.RUNNING,
+                                            0, kgeCfg.epochs(), 0, 0, kgeCfg.epochs(), 0,
+                                            "epoch 0/" + kgeCfg.epochs(),
+                                            "KGE training starting (factSheet=" + kgeFactSheetId + ")");
+                                    publishProgressEvent(job, CrawlProgressEvent.EventType.PROGRESS,
+                                            "KGE training starting");
+
+                                    // Per-epoch callback: forward epoch/loss to the crawl UI.
+                                    KgeTrainingExecutor.ProgressCallback kgeCallback =
+                                            (cJobId, epoch, totalEpochs, loss) -> {
+                                                String epochMsg = "KGE epoch " + epoch + "/" + totalEpochs
+                                                        + " loss=" + String.format("%.4f", loss);
+                                                updatePipelineStep(job, "LEARNING",
+                                                        UnifiedCrawlJob.PipelineStepStatus.RUNNING,
+                                                        epoch, totalEpochs, 0, epoch, totalEpochs, 0,
+                                                        "epoch " + epoch + "/" + totalEpochs,
+                                                        epochMsg);
+                                                recordEvent(job, "LEARNING", "INFO", "KGE epoch progress", epochMsg);
+                                                publishProgressEvent(job, CrawlProgressEvent.EventType.PROGRESS, epochMsg);
+                                            };
+
+                                    try {
+                                        KGEmbeddingJob kgeJob =
+                                                kgeEmbeddingJobService.trainSynchronously(
+                                                        kgeCrawlJobId,
+                                                        kgeFactSheetId,
+                                                        KGEmbeddingAlgorithm.TRANSE,
+                                                        kgeCfg,
+                                                        kgeCallback);
+                                        if (kgeJob.getStatus().name().equals("COMPLETED")) {
+                                            String doneMsg = "KGE training complete: entities="
+                                                    + (kgeJob.getEntitiesEmbedded() != null ? kgeJob.getEntitiesEmbedded() : "?")
+                                                    + " relations=" + (kgeJob.getRelationsEmbedded() != null ? kgeJob.getRelationsEmbedded() : "?")
+                                                    + " loss=" + (kgeJob.getCurrentLoss() != null
+                                                            ? String.format("%.4f", kgeJob.getCurrentLoss()) : "?");
+                                            completePipelineStep(job, "LEARNING", kgeCfg.epochs(), doneMsg);
+                                            recordEvent(job, "LEARNING", "INFO", "KGE training complete", doneMsg);
+                                            publishProgressEvent(job, CrawlProgressEvent.EventType.PROGRESS, doneMsg);
+                                            log.info("[Job {}] {}", kgeCrawlJobId, doneMsg);
+                                        } else {
+                                            String failMsg = "KGE training ended with status=" + kgeJob.getStatus()
+                                                    + ": " + kgeJob.getErrorMessage();
+                                            failPipelineStep(job, "LEARNING", failMsg);
+                                            recordEvent(job, "LEARNING", "WARN", "KGE training non-completed", failMsg);
+                                            publishProgressEvent(job, CrawlProgressEvent.EventType.PROGRESS, failMsg);
+                                            log.warn("[Job {}] {}", kgeCrawlJobId, failMsg);
+                                        }
+                                    } catch (IllegalStateException alreadyRunning) {
+                                        String skipMsg = "KGE skipped — training already running for factSheet=" + kgeFactSheetId;
+                                        log.info("[Job {}] {}", kgeCrawlJobId, skipMsg);
+                                        skipPipelineStep(job, "LEARNING", skipMsg);
+                                        recordEvent(job, "LEARNING", "INFO", "KGE already running", skipMsg);
+                                    } catch (Exception kgeEx) {
+                                        String errMsg = "KGE training failed (non-fatal): " + kgeEx.getMessage();
+                                        log.warn("[Job {}] {}", kgeCrawlJobId, kgeEx.getMessage(), kgeEx);
+                                        failPipelineStep(job, "LEARNING", errMsg);
+                                        recordEvent(job, "LEARNING", "WARN", "KGE training error", errMsg);
+                                        publishProgressEvent(job, CrawlProgressEvent.EventType.PROGRESS, errMsg);
+                                    }
+                                }
+                            } else {
+                                skipPipelineStep(job, "LEARNING",
+                                        "KGE training skipped: kgeAfterEnrichment="
+                                                + kgeAfterEnrichment
+                                                + ", service=" + (kgeEmbeddingJobService != null ? "present" : "absent")
+                                                + ", factSheetId=" + factSheetId);
+                            }
                         } catch (Exception e) {
                             log.warn("[Job {}] ENRICHMENT step failed (non-fatal): {}",
                                     job.getJobId(), e.getMessage(), e);
@@ -1926,16 +2411,23 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
             }
             chunkedDocuments.clear();
             trimNativeMemory(job, "COMPLETED", "after releasing crawl document/result buffers");
-            boolean hasFailedSteps = job.getPipelineSteps().stream()
-                    .anyMatch(step -> step.getStatus().get() == UnifiedCrawlJob.PipelineStepStatus.FAILED);
+            List<String> failedNames = job.getPipelineSteps().stream()
+                    .filter(step -> step.getStatus().get() == UnifiedCrawlJob.PipelineStepStatus.FAILED)
+                    .map(step -> step.getStepId() != null ? step.getStepId() : step.getDisplayName())
+                    .filter(java.util.Objects::nonNull)
+                    .toList();
+            // Proper degrading at all levels: DEGRADABLE steps (post-graph enhancements like KGE/LEARNING)
+            // must NOT discard a crawl that already produced + persisted the graph — their failure degrades
+            // the job to COMPLETED-with-warnings. Only a HARD step failure (loading/extraction/persistence)
+            // fails the whole crawl. The degradable set is configurable (see degradableStepIds()).
+            Set<String> degradable = degradableStepIds();
+            List<String> hardFailed = failedNames.stream()
+                    .filter(n -> !degradable.contains(n.toUpperCase(Locale.ROOT)))
+                    .toList();
             boolean hasDeferredEmbedding = !job.getDeferredEmbeddingChunks().isEmpty();
 
-            if (hasFailedSteps) {
-                List<String> failedNames = job.getPipelineSteps().stream()
-                        .filter(step -> step.getStatus().get() == UnifiedCrawlJob.PipelineStepStatus.FAILED)
-                        .map(step -> step.getStepId() != null ? step.getStepId() : step.getDisplayName())
-                        .toList();
-                String failedStepsStr = String.join(", ", failedNames);
+            if (!hardFailed.isEmpty()) {
+                String failedStepsStr = String.join(", ", hardFailed);
                 String errorMsg = "Crawl completed but pipeline step(s) FAILED: " + failedStepsStr;
                 log.error("[Job {}] {}", job.getJobId(), errorMsg);
                 job.getStatus().set(UnifiedCrawlJob.Status.FAILED);
@@ -1948,6 +2440,7 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                 checkpointFailedJobForResume(job);
                 publishProgressEvent(job, CrawlProgressEvent.EventType.ERROR, errorMsg);
             } else if (hasDeferredEmbedding) {
+                recordDegradedSteps(job, failedNames);
                 String message = "Crawl graph completed; "
                         + job.getDeferredEmbeddingChunks().size() + " chunk(s) pending bge-m3/vector embedding";
                 log.warn("[Job {}] {}", job.getJobId(), message);
@@ -1960,6 +2453,7 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                 publishGraphBuildCompletedEvent(job);
                 publishProgressEvent(job, CrawlProgressEvent.EventType.PROGRESS, message);
             } else {
+                recordDegradedSteps(job, failedNames);
                 job.getStatus().set(UnifiedCrawlJob.Status.COMPLETED);
                 job.getCurrentPhase().set("COMPLETED");
                 job.getProgressPercent().set(100);
@@ -1985,6 +2479,14 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
             checkpointFailedJobForResume(job);
             publishProgressEvent(job, CrawlProgressEvent.EventType.ERROR,
                     e.getClass().getSimpleName() + ": " + e.getMessage());
+        } finally {
+            // Detach the per-job subprocess log listener registered at start.
+            if (subprocessLogBus != null) {
+                subprocessLogBus.unregister(subprocessSink);
+            }
+            if (vectorIndexingHelper != null) {
+                vectorIndexingHelper.setActiveCrawlJobId(null);
+            }
         }
     }
 
@@ -2109,6 +2611,42 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
         pipelineStepTracker.skipPipelineStep(job, phase, message);
     }
 
+    /**
+     * Pipeline step ids whose failure DEGRADES the crawl (COMPLETED-with-warning) rather than failing
+     * the whole job — post-graph enhancements computed over an already-persisted graph (KGE/LEARNING
+     * embedding training, and downstream reasoning hydration). Configurable on the fly via the
+     * {@code kompile.crawl.degradableSteps} property (comma-separated, case-insensitive); default
+     * {@code LEARNING,DERIVATION,ONTOLOGY_CONFORMANCE}. A hard step (loading/extraction/persistence)
+     * is never degradable — its failure must fail the crawl.
+     */
+    private Set<String> degradableStepIds() {
+        String prop = System.getProperty("kompile.crawl.degradableSteps",
+                "LEARNING,DERIVATION,ONTOLOGY_CONFORMANCE");
+        Set<String> out = new HashSet<>();
+        for (String s : prop.split(",")) {
+            String t = s.trim().toUpperCase(Locale.ROOT);
+            if (!t.isEmpty()) out.add(t);
+        }
+        return out;
+    }
+
+    /**
+     * Surface degraded (failed-but-non-fatal) enhancement steps on a crawl that still completed: a
+     * warning event in the per-job timeline + a DECISION progress event so it is visible in the crawl
+     * UI, and an entry in the job's error list (informational, not fatal). No-op when nothing degraded.
+     */
+    private void recordDegradedSteps(UnifiedCrawlJob job, List<String> failedNames) {
+        if (failedNames == null || failedNames.isEmpty()) {
+            return;
+        }
+        String msg = "Crawl completed; optional step(s) degraded (skipped): "
+                + String.join(", ", failedNames) + " — graph persisted, enhancement skipped";
+        log.warn("[Job {}] {}", job.getJobId(), msg);
+        job.getErrors().add(msg);
+        recordEvent(job, "COMPLETED", "WARN", "Degraded optional step(s)", msg);
+        publishProgressEvent(job, CrawlProgressEvent.EventType.DECISION, msg);
+    }
+
     private void incrementPipelineStep(UnifiedCrawlJob job, String phase,
                                        int completedItemsDelta, int completedBatchesDelta, String message) {
         pipelineStepTracker.incrementPipelineStep(job, phase, completedItemsDelta, completedBatchesDelta, message);
@@ -2206,6 +2744,51 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                     this, job.getJobId(), job.toProgressSnapshot(), eventType, message));
         } catch (Exception e) {
             log.debug("[Job {}] Failed to publish crawl progress event: {}", job.getJobId(), e.getMessage());
+        }
+    }
+
+    private volatile long lastSubprocessLogEventNanos = 0L;
+
+    /**
+     * Relay a managed subprocess's own log/lifecycle event into this crawl's live stream.
+     *
+     * <p>Registered as a per-job {@link SubprocessLogSink} on the {@link SubprocessLogBus} for the
+     * duration of {@link #executeJob}. Filters to events tagged with this job's id (subprocess
+     * launchers stamp the jobId when started for a crawl), records them on the job transcript, and
+     * publishes a crawl-progress event so the UI shows what the embedding/learning subprocess is
+     * doing in real time. Lifecycle (spin-up/shutdown) and ERROR events bypass the throttle and are
+     * surfaced as DECISION/PROGRESS immediately; ordinary log lines ride the shared 250 ms throttle
+     * so a chatty subprocess can't flood the SSE stream. Runs on the subprocess reader thread, so it
+     * is best-effort and never throws back into the bus.</p>
+     */
+    private void handleSubprocessLog(UnifiedCrawlJob job, SubprocessLogEvent ev) {
+        if (job == null || ev == null) {
+            return;
+        }
+        // Only surface events from a subprocess this crawl owns.
+        if (ev.jobId() == null || !ev.jobId().equals(job.getJobId())) {
+            return;
+        }
+        try {
+            String phase = job.getCurrentPhase().get();
+            boolean lifecycle = ev.stream() == SubprocessLogEvent.Stream.LIFECYCLE;
+            boolean error = "ERROR".equals(ev.level());
+            String label = "[" + ev.subprocessId() + "] " + ev.message();
+            if (lifecycle || error) {
+                recordEvent(job, phase, error ? "ERROR" : "INFO", label, null);
+                publishProgressEvent(job, lifecycle
+                        ? CrawlProgressEvent.EventType.DECISION
+                        : CrawlProgressEvent.EventType.PROGRESS, label);
+            } else {
+                long now = System.nanoTime();
+                if ((now - lastSubprocessLogEventNanos) >= PROGRESS_EVENT_INTERVAL_NANOS) {
+                    lastSubprocessLogEventNanos = now;
+                    recordEvent(job, phase, ev.level(), label, null);
+                    publishProgressEvent(job, CrawlProgressEvent.EventType.PROGRESS, label);
+                }
+            }
+        } catch (Exception e) {
+            log.debug("[Job {}] subprocess log relay failed: {}", job.getJobId(), e.getMessage());
         }
     }
 

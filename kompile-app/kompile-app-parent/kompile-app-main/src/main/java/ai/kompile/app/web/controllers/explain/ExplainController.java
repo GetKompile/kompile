@@ -28,8 +28,12 @@ import org.springframework.web.bind.annotation.RestController;
  * <ul>
  *   <li>Atom key (contains parentheses) → GROUNDING (KB derivation tree)</li>
  *   <li>Entity id (no parentheses, no prefix) → HYBRID (structural + semantic)</li>
- *   <li>{@code causal:<target>} prefix → CAUSAL (stub; Phase 3)</li>
+ *   <li>{@code causal:<target>} prefix → CAUSAL (attribution chains)</li>
  * </ul>
+ *
+ * <p>The {@code mode} field in the request body overrides auto-detection. Accepted values:
+ * {@code GROUNDING}, {@code HYBRID}, {@code CAUSAL}, {@code PSL} (HL-MRF soft logic),
+ * {@code MEBN} (multi-entity Bayesian network / variable elimination).</p>
  *
  * <p>This controller is in package {@code ai.kompile.app.web.controllers.explain},
  * which is registered in {@code GlobalExceptionHandler.basePackages} so structured

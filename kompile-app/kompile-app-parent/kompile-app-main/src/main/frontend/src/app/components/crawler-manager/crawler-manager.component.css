@@ -323,6 +323,15 @@
 }
 .steps-btn-note { font-size: 11px; color: var(--text-secondary); margin-left: 4px; }
 
+/* "Resumable" chip — past job has archived/deferred steps that can be re-run */
+.resumable-chip {
+  background: #e8f5e9 !important;
+  color: #2e7d32 !important;
+  font-size: 11px !important;
+  font-weight: 600;
+  min-height: 22px !important;
+}
+
 /* ── Per-step accordion (crawler-manager) ──────────────────────────────── */
 .cm-step-accordion-item {
   border: 1px solid var(--border-color);

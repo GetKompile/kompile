@@ -9,19 +9,27 @@
  */
 package ai.kompile.app.web.controllers.grounding;
 
+import ai.kompile.knowledgegraph.reasoning.TraceHumanizer;
+import ai.kompile.graph.reasoning.confidence.StrengthBand;
 import ai.kompile.graph.reasoning.fol.Fact;
 import ai.kompile.graph.reasoning.fol.grounding.ConjunctiveQueryEngine;
 import ai.kompile.graph.reasoning.fol.grounding.ConcurrentFactStore;
 import ai.kompile.graph.reasoning.fol.grounding.DerivationTree;
+import ai.kompile.graph.reasoning.fol.grounding.PlattCalibrator;
 import ai.kompile.graph.reasoning.fol.grounding.QueryBinding;
+import ai.kompile.graph.reasoning.fol.grounding.StrengthCalibrator;
 import ai.kompile.graph.reasoning.fol.grounding.VerifyResult;
+import ai.kompile.knowledgegraph.domain.NodeLevel;
 import ai.kompile.knowledgegraph.grounding.FactSheetKbState;
 import ai.kompile.knowledgegraph.grounding.KbGroundingService;
+import ai.kompile.knowledgegraph.reasoning.GraphToFactStoreProjector;
+import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.lang.Nullable;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -33,6 +41,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 /**
@@ -59,10 +68,30 @@ import java.util.stream.Collectors;
 public class KbGroundingController {
 
     private final KbGroundingService groundingService;
+    private final PlattCalibrator calibrator;
+
+    /**
+     * Optional: wired when app-main runs with the full Spring context. Used to resolve
+     * atom-key arguments to human-readable entity titles in derivation trees.
+     * Null-safe everywhere it is used so the controller works in plain-lib test contexts.
+     */
+    @Nullable
+    @Autowired(required = false)
+    private KnowledgeGraphService graphService;
+
+    /**
+     * Optional: wired in the full Spring context. Humanizes atom keys, evidence, and
+     * rule strings for the grounding-trace UI. Null-safe — falls back to empty maps in
+     * plain-lib test contexts where only KbGroundingService is present.
+     */
+    @Nullable
+    @Autowired(required = false)
+    private TraceHumanizer traceHumanizer;
 
     @Autowired
     public KbGroundingController(KbGroundingService groundingService) {
         this.groundingService = groundingService;
+        this.calibrator = new PlattCalibrator();
     }
 
     // ── Verify ───────────────────────────────────────────────────────────────────
@@ -80,11 +109,12 @@ public class KbGroundingController {
         long factSheetId = resolveFactSheetId(req.factSheetId());
         Instant asOf = req.asOf() != null ? req.asOf() : Instant.now();
 
+        String atom = resolveAtom(req.atom());
         VerifyResult result;
         if (req.minConfidence() != null && req.minConfidence() > 0.0) {
-            result = groundingService.verify(factSheetId, req.atom(), req.minConfidence());
+            result = groundingService.verify(factSheetId, atom, req.minConfidence());
         } else {
-            result = groundingService.verify(factSheetId, req.atom());
+            result = groundingService.verify(factSheetId, atom);
         }
 
         FactSheetKbState state = groundingService.getState(factSheetId);
@@ -101,13 +131,29 @@ public class KbGroundingController {
             }
         }
 
+        // Humanize evidence + rules for the UI (raw PSL atom keys → entity titles, rule syntax →
+        // readable form) using the same TraceHumanizer the /explain endpoint uses. Null-safe: in
+        // plain-lib test contexts traceHumanizer is null and the raw strings are surfaced unchanged.
+        List<String> displayEvidence = evidenceAtoms;
+        List<String> displayRules = activatedRules;
+        if (traceHumanizer != null) {
+            displayEvidence = traceHumanizer.humanizeEvidenceAtoms(evidenceAtoms);
+            displayRules = traceHumanizer.humanizeRules(activatedRules);
+        }
+
+        double calibratedConfidence = calibrator.calibrate(
+                result.confidence(), StrengthCalibrator.SignalType.OBSERVED, result);
+        StrengthBand band = StrengthBand.fromScalar(calibratedConfidence);
+
         VerifyResponse response = new VerifyResponse(
                 result.status().name(),
                 result.confidence(),
-                evidenceAtoms,
-                activatedRules,
-                evidenceAtoms.size(),       // derivationDepth approximation from evidence count
-                List.copyOf(evidenceAtoms), // sourceProvenance = evidenceAtoms (crawl-run IDs)
+                displayEvidence,
+                displayRules,
+                displayEvidence.size(),       // derivationDepth approximation from evidence count
+                List.copyOf(displayEvidence), // sourceProvenance = humanized evidence labels
+                calibratedConfidence,
+                band.name(),
                 meta
         );
         return ResponseEntity.ok(response);
@@ -178,19 +224,35 @@ public class KbGroundingController {
                 ? Math.min(req.depth(), DerivationTree.DEFAULT_MAX_DEPTH)
                 : DerivationTree.DEFAULT_MAX_DEPTH;
 
-        DerivationTree tree = groundingService.explain(factSheetId, req.atom(), depth);
-        VerifyResult verdict = groundingService.verify(factSheetId, req.atom());
-        String summary = deterministicSummary(tree, req.atom(), verdict);
+        String atom = resolveAtom(req.atom());
+        DerivationTree tree = groundingService.explain(factSheetId, atom, depth);
+        VerifyResult verdict = groundingService.verify(factSheetId, atom);
+
+        // Build human-readable title map and rule humanization map via TraceHumanizer.
+        // traceHumanizer is null in plain-lib test contexts (required=false) — fall back to empty maps.
+        Map<String, String> atomKeyToTitle;
+        Map<String, String> ruleToHumanized;
+        if (traceHumanizer != null) {
+            atomKeyToTitle = traceHumanizer.buildAtomKeyToTitle(tree.allAtomKeys());
+            List<String> treeRules = new ArrayList<>();
+            collectRuleStrings(tree, treeRules);
+            ruleToHumanized = traceHumanizer.buildRuleMap(treeRules);
+        } else {
+            atomKeyToTitle = Map.of();
+            ruleToHumanized = Map.of();
+        }
+
+        String summary = deterministicSummary(tree, atom, verdict, atomKeyToTitle);
 
         FactSheetKbState state = groundingService.getState(factSheetId);
         GroundingMeta meta = buildMeta(factSheetId, asOf, state, req.sessionId());
 
         ExplainResponse response = new ExplainResponse(
-                req.atom(),
+                atom,
                 verdict.status().name(),
                 verdict.confidence(),
                 summary,
-                tree.toJson(),
+                tree.toJsonWithTitlesAndRules(atomKeyToTitle, ruleToHumanized),
                 meta
         );
         return ResponseEntity.ok(response);
@@ -220,7 +282,7 @@ public class KbGroundingController {
 
         // Build source ID from sessionId + source per the spec's provenance convention
         String sourceId = buildSourceId(req.sessionId(), req.source());
-        Fact fact = Fact.soft(req.atom(), req.value(), sourceId);
+        Fact fact = Fact.soft(resolveAtom(req.atom()), req.value(), sourceId);
 
         KbGroundingService.AssertResult result;
         if (req.expectedVersion() != null) {
@@ -295,14 +357,60 @@ public class KbGroundingController {
         return factSheetId != null ? factSheetId : 0L;
     }
 
+    /** NodeLevels tried, in priority order, when resolving a bare external id to a node. */
+    private static final NodeLevel[] ATOM_LOOKUP_LEVELS = {
+        NodeLevel.ENTITY, NodeLevel.SOURCE, NodeLevel.DOCUMENT, NodeLevel.SNIPPET,
+        NodeLevel.TABLE, NodeLevel.CUSTOM, NodeLevel.ATTACHMENT, NodeLevel.IDENTIFIER
+    };
+
+    /** Matches a well-formed PSL atom key: {@code predicate(args...)}. */
+    private static final java.util.regex.Pattern ATOM_SHAPE =
+            java.util.regex.Pattern.compile("^[\\w\\-]+\\(.*\\)$", java.util.regex.Pattern.DOTALL);
+
+    /**
+     * Resolve a UI-supplied target into the PSL atom key the fact store is keyed by.
+     *
+     * <p>The graph UI passes a node id (e.g. {@code entity_country_usa}) or an external id, but the
+     * store is keyed by atom keys built by {@link GraphToFactStoreProjector} (e.g.
+     * {@code entity(country_usa)}). Without this, KB-Context "Verify"/"Why?" always returned UNKNOWN
+     * for graph-selected nodes. Already atom-shaped inputs — and inputs that resolve to no node —
+     * pass through unchanged, so existing atom-key callers (e.g. MCP tools) are unaffected.</p>
+     */
+    private String resolveAtom(String input) {
+        if (input == null || input.isBlank()) return input;
+        String trimmed = input.trim();
+        if (ATOM_SHAPE.matcher(trimmed).matches()) {
+            return trimmed; // already an atom key
+        }
+        if (graphService == null) return trimmed;
+        // Try as an internal node id (the form the graph visualizer emits).
+        String byNodeId = graphService.getNode(trimmed)
+                .map(GraphToFactStoreProjector::atomKeyForNode)
+                .orElse(null);
+        if (byNodeId != null) return byNodeId;
+        // Fall back: try as an external id across the common node levels.
+        for (NodeLevel level : ATOM_LOOKUP_LEVELS) {
+            String byExt = graphService.getNodeByExternalId(trimmed, level)
+                    .map(GraphToFactStoreProjector::atomKeyForNode)
+                    .orElse(null);
+            if (byExt != null) return byExt;
+        }
+        return trimmed;
+    }
+
     /**
      * Build the common meta-block from the current state.
-     * Phase 1: stale is always false (cascade executor not yet wired).
+     *
+     * <p>The {@code stale} flag is read directly from {@link KbGroundingService#isStale}: it
+     * is {@code true} when a graph mutation has been observed but the re-ground cascade has not
+     * yet completed. The {@code stalenessBudgetMs} is set to 3 s when stale to give the UI a
+     * polling hint; 0 when fresh.</p>
      */
     private GroundingMeta buildMeta(long factSheetId, Instant asOf,
                                     FactSheetKbState state, String sessionId) {
         long version = state.concurrentFactStore().version();
-        return new GroundingMeta(factSheetId, asOf, false, 0L, version, sessionId);
+        boolean stale = groundingService.isStale(factSheetId);
+        return new GroundingMeta(factSheetId, asOf, stale, stale ? 3000L : 0L, version, sessionId);
     }
 
     /**
@@ -319,10 +427,22 @@ public class KbGroundingController {
         return "agent-assert";
     }
 
+    /** Collect all non-null ruleApplied strings from a derivation tree (BFS). */
+    private static void collectRuleStrings(DerivationTree tree, List<String> acc) {
+        if (tree.ruleApplied() != null) acc.add(tree.ruleApplied());
+        for (DerivationTree child : tree.children()) {
+            collectRuleStrings(child, acc);
+        }
+    }
+
     /**
      * Deterministic NL summary of a derivation tree — no LLM required.
+     *
+     * @param atomKeyToTitle optional map from atom key to human-readable title; used to replace
+     *                       synthetic PSL constants with display names in child descriptions
      */
-    private String deterministicSummary(DerivationTree tree, String atom, VerifyResult verdict) {
+    private String deterministicSummary(DerivationTree tree, String atom,
+            VerifyResult verdict, Map<String, String> atomKeyToTitle) {
         if (verdict.status() == VerifyResult.Status.UNKNOWN) {
             return "The atom '" + atom + "' is not derivable from the current KB.";
         }
@@ -334,7 +454,8 @@ public class KbGroundingController {
             sb.append(" because: ");
             List<String> childDescs = new ArrayList<>();
             for (DerivationTree child : tree.children()) {
-                childDescs.add("'" + child.atomKey() + "' (confidence "
+                String childLabel = atomKeyToTitle.getOrDefault(child.atomKey(), child.atomKey());
+                childDescs.add("'" + childLabel + "' (confidence "
                         + String.format("%.2f", child.confidence()) + ")");
             }
             sb.append(String.join(" and ", childDescs));

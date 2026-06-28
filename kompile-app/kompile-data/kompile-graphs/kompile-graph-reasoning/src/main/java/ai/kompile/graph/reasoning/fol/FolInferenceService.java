@@ -125,9 +125,26 @@ public final class FolInferenceService {
      * target atom, carrying the posterior soft-truth as the fact value/confidence and the activated
      * rules as provenance. This is the "facts come out at the end" surface: an inference run emits a
      * set of (atom, probability) facts ready to persist and materialize back into the graph.
+     *
+     * <p>Unlike the {@link #inferFacts(PslProgram)} overload, this path feeds the builder's
+     * constant↔entity-id and constant↔label maps into {@link EntailmentEngine#entailFromPslResult}
+     * so that synthetic PSL constants ({@code n0}, {@code n1}, …) are translated to human-readable
+     * entity ids and labels in the returned facts.</p>
      */
     public List<InferredFact> inferFacts(ReasoningGraph graph, FolRuleSet ruleSet) {
-        return inferFacts(buildProgram(graph, ruleSet));
+        PslRun run = buildPslRun(graph, ruleSet);
+        HlMrfMapInference.Result result = HlMrfMapInference.solve(run.program());
+        String runId = UUID.randomUUID().toString();
+        List<EntailmentRecord> records = EntailmentEngine.entailFromPslResult(
+                run.program(), result, null, runId,
+                run.builder().constantToEntityId(),
+                run.builder().constantToLabel());
+        List<InferredFact> facts = new ArrayList<>(records.size());
+        for (EntailmentRecord record : records) {
+            facts.add(InferredFact.fromEntailment(record, 1L));
+        }
+        log.info("FOL inference emitted {} probabilistic facts (run {})", facts.size(), runId);
+        return facts;
     }
 
     /**

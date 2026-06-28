@@ -62,5 +62,16 @@ public enum NodeLevel {
      * product mapping. An identifier node with edges to more than one product is a
      * recycled / reassigned code collision.
      */
-    IDENTIFIER
+    IDENTIFIER,
+
+    /**
+     * A synthetic cross-document alias hub node — one per canonical name/value bucket.
+     * Created by the star-topology cross-doc edge computation in
+     * {@code GraphEdgeComputationServiceImpl}. Member ENTITY nodes connect to their
+     * alias hub via {@link EdgeType#ALIAS_OF} edges, enabling O(N) star graphs instead
+     * of O(N²) cliques for cross-document name resolution. Hub nodeIds are deterministic:
+     * {@code "alias_" + hubExternalId} where hubExternalId encodes the fact-sheet scope
+     * and bucket key.
+     */
+    ALIAS
 }

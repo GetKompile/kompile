@@ -18,6 +18,7 @@ import { Component, OnInit, OnDestroy, ViewChild, ElementRef, AfterViewChecked, 
 import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import { HttpClient } from '@angular/common/http';
 import { MatDialog } from '@angular/material/dialog';
+import { Router } from '@angular/router';
 import { Subscription, fromEvent } from 'rxjs';
 import { throttleTime, takeUntil, filter } from 'rxjs/operators';
 import { Subject } from 'rxjs';
@@ -42,6 +43,7 @@ import { MonitorEvent } from '../../models/monitor-models';
 import {
   ConversationalRagOptions,
   RetrievedDocument,
+  Citation,
   SearchType,
   DEFAULT_RAG_OPTIONS,
   RerankerConfig,
@@ -58,6 +60,7 @@ import {
   ActiveModelContext,
   MessageAttachment
 } from '../../models/api-models';
+import { ReasoningTrailDto } from '../../services/kb-grounding.service';
 
 // Unified message interface
 interface UnifiedMessage {
@@ -94,6 +97,7 @@ interface UnifiedMessage {
   agent?: AgentProvider;
   sources?: any[];
   _sourcesExpanded?: boolean;
+  reasoningTrails?: ReasoningTrailDto[];
   latencyMs?: number;
   tokenCount?: number;
   attachments?: MessageAttachment[];
@@ -377,7 +381,8 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     private cdr: ChangeDetectorRef,
     private ngZone: NgZone,
     private sanitizer: DomSanitizer,
-    private dialog: MatDialog
+    private dialog: MatDialog,
+    private router: Router
   ) {}
 
   /**
@@ -1098,6 +1103,9 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
         lastMsg.isStreaming = false;
         lastMsg.latencyMs = msg.latencyMs || (Date.now() - startTime);
         lastMsg.sources = msg.sources;
+        if (msg.reasoningTrails && msg.reasoningTrails.length > 0) {
+          lastMsg.reasoningTrails = msg.reasoningTrails;
+        }
         if (msg.tokenMetrics) {
           lastMsg.tokenMetrics = msg.tokenMetrics;
         }
@@ -2216,6 +2224,20 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
 
   toggleDocuments(message: UnifiedMessage): void {
     message.documentsExpanded = !message.documentsExpanded;
+    this.cdr.detectChanges();
+  }
+
+  /**
+   * Build a Citation from a RetrievedDocument when doc.citation is absent.
+   * Maps sourceId/pageNumber/chunkIndex/metadata onto the Citation shape.
+   */
+  toCitation(doc: RetrievedDocument): Citation {
+    return {
+      sourceId: doc.sourceId,
+      pageNumber: doc.pageNumber,
+      chunkIndex: doc.chunkIndex,
+      ...(doc.metadata ? { provenance: doc.metadata } : {})
+    };
   }
 
   toggleQueryInfo(message: UnifiedMessage): void {
@@ -2317,16 +2339,14 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
   }
 
   /**
-   * Open source in knowledge graph view
+   * Open source in knowledge graph view, navigating to /knowledge-graph with the node
+   * highlighted.  nodeId takes priority; falls back to documentId as a graph node lookup key.
    * @param source The source to view in graph
    */
   viewSourceInGraph(source: any): void {
-    if (source?.documentId || source?.nodeId) {
-      const nodeId = source.nodeId || source.documentId;
-      // Navigate to graph view with this node highlighted
-      // This would typically emit an event to parent component
-      console.log('View in graph:', nodeId);
-      // Could trigger navigation: this.router.navigate(['/graph'], { queryParams: { nodeId } });
+    const nodeId = source?.nodeId || source?.documentId;
+    if (nodeId) {
+      this.router.navigate(['/knowledge-graph'], { queryParams: { nodeId } });
     }
   }
 

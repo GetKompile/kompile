@@ -29,6 +29,9 @@ import java.util.function.Consumer;
  * @param negativeSamples Number of negative samples per positive triple
  * @param normalizeEntities Whether to L2-normalize entity embeddings after each epoch
  * @param progressCallback Optional callback for training progress updates
+ * @param warmStartEpochs Epoch count used when warm-starting from persisted embeddings.
+ *                        0 (default) means use {@link #epochs} even for warm starts.
+ *                        A positive value (e.g. 10) overrides epochs for incremental runs.
  */
 public record KGEmbeddingConfig(
         int embeddingDim,
@@ -38,7 +41,8 @@ public record KGEmbeddingConfig(
         double margin,
         int negativeSamples,
         boolean normalizeEntities,
-        Consumer<TrainingProgress> progressCallback
+        Consumer<TrainingProgress> progressCallback,
+        int warmStartEpochs
 ) {
     /**
      * Default configuration for TransE.
@@ -51,7 +55,8 @@ public record KGEmbeddingConfig(
             1.0,    // margin
             10,     // negativeSamples
             true,   // normalizeEntities
-            null    // progressCallback
+            null,   // progressCallback
+            10      // warmStartEpochs (10 incremental epochs vs 100 full)
     );
 
     /**
@@ -65,7 +70,8 @@ public record KGEmbeddingConfig(
             6.0,    // margin (higher for RotatE)
             256,    // negativeSamples (more for RotatE)
             false,  // normalizeEntities (RotatE uses modulus constraint)
-            null    // progressCallback
+            null,   // progressCallback
+            10      // warmStartEpochs (10 incremental epochs vs 100 full)
     );
 
     /**
@@ -90,7 +96,8 @@ public record KGEmbeddingConfig(
                 .margin(margin)
                 .negativeSamples(negativeSamples)
                 .normalizeEntities(normalizeEntities)
-                .progressCallback(progressCallback);
+                .progressCallback(progressCallback)
+                .warmStartEpochs(warmStartEpochs);
     }
 
     /**
@@ -99,8 +106,17 @@ public record KGEmbeddingConfig(
     public KGEmbeddingConfig withProgressCallback(Consumer<TrainingProgress> callback) {
         return new KGEmbeddingConfig(
                 embeddingDim, epochs, learningRate, batchSize,
-                margin, negativeSamples, normalizeEntities, callback
+                margin, negativeSamples, normalizeEntities, callback, warmStartEpochs
         );
+    }
+
+    /**
+     * Returns the effective epoch count for a warm-start run.
+     * When {@link #warmStartEpochs} is positive, that value is used;
+     * otherwise falls back to {@link #epochs} (same as a cold start).
+     */
+    public int effectiveWarmStartEpochs() {
+        return warmStartEpochs > 0 ? warmStartEpochs : epochs;
     }
 
     /**
@@ -115,6 +131,7 @@ public record KGEmbeddingConfig(
         private int negativeSamples = 10;
         private boolean normalizeEntities = true;
         private Consumer<TrainingProgress> progressCallback;
+        private int warmStartEpochs = 10;
 
         public Builder embeddingDim(int embeddingDim) {
             this.embeddingDim = embeddingDim;
@@ -156,10 +173,15 @@ public record KGEmbeddingConfig(
             return this;
         }
 
+        public Builder warmStartEpochs(int warmStartEpochs) {
+            this.warmStartEpochs = warmStartEpochs;
+            return this;
+        }
+
         public KGEmbeddingConfig build() {
             return new KGEmbeddingConfig(
                     embeddingDim, epochs, learningRate, batchSize,
-                    margin, negativeSamples, normalizeEntities, progressCallback
+                    margin, negativeSamples, normalizeEntities, progressCallback, warmStartEpochs
             );
         }
     }

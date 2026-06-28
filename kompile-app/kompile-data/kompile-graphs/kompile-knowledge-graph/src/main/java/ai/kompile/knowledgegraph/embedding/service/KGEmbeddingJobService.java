@@ -16,13 +16,17 @@
 
 package ai.kompile.knowledgegraph.embedding.service;
 
+import ai.kompile.core.crawl.graph.HeavyMemoryCoordinator;
 import ai.kompile.core.kgembedding.*;
+import ai.kompile.core.kgembedding.KgeTrainingExecutor.KgeTrainingResult;
+import ai.kompile.knowledgegraph.embedding.adapter.KgEmbeddingGraphAdapter;
 import ai.kompile.knowledgegraph.embedding.domain.KGEmbeddingJob;
 import ai.kompile.knowledgegraph.embedding.domain.KGEmbeddingJob.JobStatus;
 import ai.kompile.knowledgegraph.embedding.impl.RotatEModel;
 import ai.kompile.knowledgegraph.embedding.impl.TransEModel;
 import ai.kompile.knowledgegraph.embedding.repository.KGEmbeddingJobRepository;
 import ai.kompile.knowledgegraph.staging.ModelTrainedEvent;
+import org.nd4j.linalg.api.ndarray.INDArray;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -42,12 +46,11 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
-
-import ai.kompile.knowledgegraph.embedding.adapter.KgEmbeddingGraphAdapter;
 
 /**
  * Service for managing KG embedding training jobs.
@@ -87,6 +90,25 @@ public class KGEmbeddingJobService {
      */
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private List<KgEmbeddingGraphAdapter> graphAdapters;
+
+    /**
+     * Optional serialization gate for heavy in-memory model operations. When present (app-main
+     * context) KGE training waits for any concurrent embedding/indexing op to finish before
+     * calling {@code model.train()} — preventing the OOM crash on large-model hosts. When absent
+     * (plain unit tests or contexts without app-main) training proceeds without the gate.
+     */
+    @Autowired(required = false)
+    private HeavyMemoryCoordinator heavyMemoryCoordinator;
+
+    /**
+     * Optional out-of-process KGE training executor. When present and enabled
+     * ({@code kompile.learning.subprocess.enabled=true}) the expensive
+     * {@code model.train()} call is delegated to a separate JVM so that an OOM
+     * there cannot kill the main app. When absent the existing in-JVM path is
+     * used unchanged. Injected field-style from {@code kompile-app-main}.
+     */
+    @Autowired(required = false)
+    private KgeTrainingExecutor kgeTrainingExecutor;
 
     // Track running models for cancellation
     private final Map<String, KGEmbeddingModel> runningModels = new ConcurrentHashMap<>();
@@ -139,6 +161,217 @@ public class KGEmbeddingJobService {
     }
 
     /**
+     * Trains KGE embeddings <em>synchronously</em> — the calling thread blocks until training
+     * completes or fails.
+     *
+     * <p>This is the inline-crawl path: the crawl pipeline calls this method so it can hold
+     * the job in {@code RUNNING} state and forward per-epoch progress events to the crawl UI.
+     * The normal {@link #startTraining} path uses {@link #executeTrainingAsync} ({@code @Async})
+     * and returns immediately; this variant does not.</p>
+     *
+     * <p>When the out-of-process executor ({@link KgeTrainingExecutor}) is absent the method
+     * falls back to the same in-JVM training path used by {@code executeTrainingAsync}.</p>
+     *
+     * @param crawlJobId  crawl job ID for keying progress callbacks (forwarded to the executor)
+     * @param factSheetId fact sheet to train on
+     * @param algorithm   KGE algorithm
+     * @param config      training hyper-parameters
+     * @param callback    per-epoch progress callback; may be {@code null}
+     * @return the persisted {@link KGEmbeddingJob} record (COMPLETED or FAILED)
+     * @throws IllegalStateException if a training job is already running for this fact sheet
+     */
+    @Transactional
+    public KGEmbeddingJob trainSynchronously(String crawlJobId,
+                                             Long factSheetId,
+                                             KGEmbeddingAlgorithm algorithm,
+                                             KGEmbeddingConfig config,
+                                             KgeTrainingExecutor.ProgressCallback callback) {
+        if (jobRepository.hasRunningJob(factSheetId)) {
+            throw new IllegalStateException("A training job is already running for this fact sheet");
+        }
+
+        KGEmbeddingJob kgeJob = KGEmbeddingJob.builder()
+                .factSheetId(factSheetId)
+                .algorithm(algorithm)
+                .status(JobStatus.RUNNING)
+                .embeddingDim(config.embeddingDim())
+                .epochs(config.epochs())
+                .learningRate(config.learningRate())
+                .batchSize(config.batchSize())
+                .margin(config.margin())
+                .negativeSamples(config.negativeSamples())
+                .createdAt(Instant.now())
+                .startedAt(Instant.now())
+                .build();
+        kgeJob = jobRepository.save(kgeJob);
+
+        try {
+            KgEmbeddingGraphAdapter adapter = resolveGraphAdapter(factSheetId);
+
+            List<Triple> triples = adapter != null
+                    ? adapter.extractTriples(factSheetId)
+                    : storageService.extractTriples(factSheetId);
+            kgeJob.setTotalTriples(triples.size());
+            jobRepository.save(kgeJob);
+
+            if (triples.isEmpty()) {
+                kgeJob.setStatus(JobStatus.FAILED);
+                kgeJob.setErrorMessage("No triples found for training. Create some graph edges first.");
+                kgeJob.setCompletedAt(Instant.now());
+                jobRepository.save(kgeJob);
+                return kgeJob;
+            }
+
+            // ── Warm-start: load persisted embeddings from the prior run ──────────
+            // If the adapter has saved vectors from a previous crawl, pass them to the
+            // executor so the subprocess can seed from them (instead of random init) and
+            // run only warmStartEpochs (a fraction of full epochs) as an incremental update.
+            // Empty map = cold start (first crawl, or adapter doesn't support read-back).
+            Map<String, INDArray> priorEmbeddings = adapter != null
+                    ? adapter.loadEmbeddings(factSheetId)
+                    : Collections.emptyMap();
+            // Also load relation embeddings persisted via the sentinel-node path.
+            // Empty = cold-start relations (first crawl or adapter doesn't support it).
+            Map<String, INDArray> priorRelationEmbeddings = adapter != null
+                    ? adapter.loadRelationEmbeddings(factSheetId)
+                    : Collections.emptyMap();
+            boolean isWarmStart = !priorEmbeddings.isEmpty();
+            KGEmbeddingConfig effectiveConfig = isWarmStart
+                    ? config.toBuilder().epochs(config.effectiveWarmStartEpochs()).build()
+                    : config;
+            if (isWarmStart) {
+                log.info("[crawlJob={}] Warm-starting KGE: {} prior entity embeddings, {} relation embeddings " +
+                        "(factSheet={}); using {} epochs instead of {}",
+                        crawlJobId, priorEmbeddings.size(), priorRelationEmbeddings.size(),
+                        factSheetId, effectiveConfig.epochs(), config.epochs());
+            } else {
+                log.info("[crawlJob={}] Cold-start KGE: no prior embeddings (factSheet={}); " +
+                        "using {} epochs", crawlJobId, factSheetId, config.epochs());
+            }
+
+            if (kgeTrainingExecutor != null) {
+                // Out-of-process path — blocks until the subprocess finishes.
+                log.info("[crawlJob={}] Delegating inline KGE training to out-of-process executor (factSheet={})",
+                        crawlJobId, factSheetId);
+                KgeTrainingExecutor.KgeTrainingResult oopResult =
+                        kgeTrainingExecutor.trainOutOfProcess(crawlJobId, factSheetId, algorithm, effectiveConfig,
+                                triples, priorEmbeddings, priorRelationEmbeddings, callback);
+
+                Long version = System.currentTimeMillis();
+                if (oopResult.success()) {
+                    if (adapter != null) {
+                        adapter.storeEmbeddings(oopResult.model(), factSheetId, version);
+                    } else {
+                        storageService.storeEmbeddings(oopResult.model(), factSheetId, version);
+                    }
+                    kgeJob.setStatus(JobStatus.COMPLETED);
+                    kgeJob.setEmbeddingVersion(version);
+                    kgeJob.setEntitiesEmbedded(oopResult.model().getEntityCount());
+                    kgeJob.setRelationsEmbedded(oopResult.model().getRelationCount());
+                    kgeJob.setCurrentLoss(oopResult.finalLoss());
+                    if (eventPublisher != null) {
+                        try {
+                            Path kgeArtifact = writeKgeCheckpointStub(factSheetId, version,
+                                    oopResult.model().getEntityCount(),
+                                    oopResult.model().getRelationCount(),
+                                    oopResult.finalLoss());
+                            eventPublisher.publishEvent(
+                                    new ModelTrainedEvent(this, "kge", factSheetId, kgeArtifact, "kge-embedding"));
+                        } catch (Exception e) {
+                            log.warn("[crawlJob={}] KGE inline: could not publish ModelTrainedEvent — {}",
+                                    crawlJobId, e.getMessage());
+                        }
+                    }
+                } else {
+                    kgeJob.setStatus(JobStatus.FAILED);
+                    kgeJob.setErrorMessage(oopResult.errorMessage());
+                }
+            } else {
+                // In-JVM fallback path — same as executeTrainingAsync but synchronous.
+                KGEmbeddingModel model = createModel(algorithm);
+                // Warm-start: import prior entity embeddings so train() seeds from them.
+                // Also import relation embeddings when they are available; the model's
+                // importRelationEmbeddings() handles dim-match and index rebuild internally.
+                if (isWarmStart) {
+                    model.importEntityEmbeddings(priorEmbeddings);
+                }
+                if (!priorRelationEmbeddings.isEmpty()) {
+                    model.importRelationEmbeddings(priorRelationEmbeddings);
+                }
+                runningModels.put(kgeJob.getJobId(), model);
+                try {
+                    // Capture as effectively-final for lambda use; kgeJob was reassigned above.
+                    final KGEmbeddingJob finalKgeJob = kgeJob;
+                    KGEmbeddingConfig configWithCallback = effectiveConfig.withProgressCallback(progress -> {
+                        finalKgeJob.setCurrentEpoch(progress.epoch());
+                        finalKgeJob.setCurrentLoss(progress.loss());
+                        jobRepository.save(finalKgeJob);
+                        sendProgressUpdate(finalKgeJob.getJobId(), progress);
+                        if (callback != null) {
+                            try {
+                                callback.onProgress(crawlJobId, progress.epoch(), config.epochs(), progress.loss());
+                            } catch (Exception ignored) {}
+                        }
+                    });
+                    TrainingResult result;
+                    if (heavyMemoryCoordinator != null) {
+                        try (AutoCloseable token = heavyMemoryCoordinator.acquire("kge-training-inline", kgeJob.getJobId())) {
+                            result = model.train(triples, configWithCallback);
+                        } catch (InterruptedException ie) {
+                            Thread.currentThread().interrupt();
+                            throw new RuntimeException("KGE inline training interrupted while waiting for heavy-memory gate", ie);
+                        } catch (Exception e) {
+                            if (e instanceof RuntimeException) throw (RuntimeException) e;
+                            throw new RuntimeException(e);
+                        }
+                    } else {
+                        result = model.train(triples, configWithCallback);
+                    }
+                    if (result.success()) {
+                        Long version = System.currentTimeMillis();
+                        if (adapter != null) {
+                            adapter.storeEmbeddings(model, factSheetId, version);
+                        } else {
+                            storageService.storeEmbeddings(model, factSheetId, version);
+                        }
+                        kgeJob.setStatus(JobStatus.COMPLETED);
+                        kgeJob.setEmbeddingVersion(version);
+                        kgeJob.setEntitiesEmbedded(result.entitiesCount());
+                        kgeJob.setRelationsEmbedded(result.relationsCount());
+                        kgeJob.setCurrentLoss(result.finalLoss());
+                        if (eventPublisher != null) {
+                            try {
+                                Path kgeArtifact = writeKgeCheckpointStub(factSheetId, version,
+                                        result.entitiesCount(), result.relationsCount(), result.finalLoss());
+                                eventPublisher.publishEvent(
+                                        new ModelTrainedEvent(this, "kge", factSheetId, kgeArtifact, "kge-embedding"));
+                            } catch (Exception e) {
+                                log.warn("[crawlJob={}] KGE inline in-JVM: could not publish ModelTrainedEvent — {}",
+                                        crawlJobId, e.getMessage());
+                            }
+                        }
+                    } else {
+                        kgeJob.setStatus(result.errorMessage() != null && result.errorMessage().contains("cancelled")
+                                ? JobStatus.CANCELLED : JobStatus.FAILED);
+                        kgeJob.setErrorMessage(result.errorMessage());
+                    }
+                } finally {
+                    runningModels.remove(kgeJob.getJobId());
+                }
+            }
+        } catch (Exception e) {
+            log.error("[crawlJob={}] Inline KGE training failed (factSheet={}): {}", crawlJobId, factSheetId, e.getMessage(), e);
+            kgeJob.setStatus(JobStatus.FAILED);
+            kgeJob.setErrorMessage(e.getMessage());
+        } finally {
+            kgeJob.setCompletedAt(Instant.now());
+            jobRepository.save(kgeJob);
+            sendCompletionUpdate(kgeJob.getJobId(), kgeJob);
+        }
+        return kgeJob;
+    }
+
+    /**
      * Executes training asynchronously.
      */
     @Async
@@ -177,12 +410,80 @@ public class KGEmbeddingJobService {
                 return;
             }
 
-            // Create model
-            KGEmbeddingModel model = createModel(algorithm);
+            // ── out-of-process path ────────────────────────────────────────────────
+            // When the out-of-process executor is wired (kompile.learning.subprocess.enabled=true)
+            // delegate training to a separate JVM so that an OOM there cannot kill the main app.
+            if (kgeTrainingExecutor != null) {
+                log.info("Delegating KGE training for job {} to out-of-process executor", jobId);
+                // Warm-start: load prior embeddings and pass them to the executor so the subprocess
+                // seeds from them instead of cold-starting every time. Uses the shared prepareModel()
+                // seam so the OOP async path mirrors the warm-start behaviour of trainSynchronously.
+                WarmStartContext warmStart = prepareModel(adapter, factSheetId, algorithm, config);
+                if (warmStart.isWarmStart()) {
+                    log.info("Warm-starting KGE async (OOP): job={} factSheet={} priorEntityCount={} "
+                            + "priorRelCount={} epochs={}",
+                            jobId, factSheetId, warmStart.priorEmbeddings().size(),
+                            warmStart.priorRelationEmbeddings().size(), warmStart.effectiveConfig().epochs());
+                } else {
+                    log.info("Cold-starting KGE async (OOP): job={} factSheet={} epochs={}",
+                            jobId, factSheetId, warmStart.effectiveConfig().epochs());
+                }
+                KgeTrainingResult oopResult = kgeTrainingExecutor.trainOutOfProcess(
+                        jobId, factSheetId, algorithm, warmStart.effectiveConfig(), triples,
+                        warmStart.priorEmbeddings(), warmStart.priorRelationEmbeddings(), null);
+
+                Long version = System.currentTimeMillis();
+                if (oopResult.success()) {
+                    if (adapter != null) {
+                        adapter.storeEmbeddings(oopResult.model(), factSheetId, version);
+                    } else {
+                        storageService.storeEmbeddings(oopResult.model(), factSheetId, version);
+                    }
+                    job.setStatus(JobStatus.COMPLETED);
+                    job.setEmbeddingVersion(version);
+                    job.setEntitiesEmbedded(oopResult.model().getEntityCount());
+                    job.setRelationsEmbedded(oopResult.model().getRelationCount());
+                    job.setCurrentLoss(oopResult.finalLoss());
+
+                    if (eventPublisher != null) {
+                        try {
+                            Path kgeArtifact = writeKgeCheckpointStub(factSheetId, version,
+                                    oopResult.model().getEntityCount(),
+                                    oopResult.model().getRelationCount(),
+                                    oopResult.finalLoss());
+                            eventPublisher.publishEvent(
+                                    new ModelTrainedEvent(this, "kge", factSheetId, kgeArtifact, "kge-embedding"));
+                        } catch (Exception e) {
+                            log.warn("KGE OOP training factSheet={}: could not publish ModelTrainedEvent — {}",
+                                    factSheetId, e.getMessage());
+                        }
+                    }
+                } else {
+                    job.setStatus(JobStatus.FAILED);
+                    job.setErrorMessage(oopResult.errorMessage());
+                }
+                // Skip the in-JVM path entirely
+                return;
+            }
+
+            // ── in-JVM path (default when executor is absent) ──────────────────────
+            // Warm-start: load prior embeddings, seed the model, and reduce epoch count.
+            // Uses the shared prepareModel() seam so the async path is no longer a cold-start
+            // every time — it now mirrors the warm-start behaviour of trainSynchronously.
+            WarmStartContext warmStart = prepareModel(adapter, factSheetId, algorithm, config);
+            KGEmbeddingModel model = warmStart.model();
+            KGEmbeddingConfig effectiveConfig = warmStart.effectiveConfig();
+            if (warmStart.isWarmStart()) {
+                log.info("Warm-starting KGE async (in-JVM): job={} factSheet={} priorEntityCount={} epochs={}",
+                        jobId, factSheetId, warmStart.priorEmbeddings().size(), effectiveConfig.epochs());
+            } else {
+                log.info("Cold-starting KGE async (in-JVM): job={} factSheet={} epochs={}",
+                        jobId, factSheetId, effectiveConfig.epochs());
+            }
             runningModels.put(jobId, model);
 
             // Configure with progress callback
-            KGEmbeddingConfig configWithCallback = config.withProgressCallback(progress -> {
+            KGEmbeddingConfig configWithCallback = effectiveConfig.withProgressCallback(progress -> {
                 // Update job progress
                 job.setCurrentEpoch(progress.epoch());
                 job.setCurrentLoss(progress.loss());
@@ -192,8 +493,24 @@ public class KGEmbeddingJobService {
                 sendProgressUpdate(jobId, progress);
             });
 
-            // Train
-            TrainingResult result = model.train(triples, configWithCallback);
+            // Acquire the heavy-memory serialization gate before training so KGE never
+            // overlaps a concurrent embedding or indexing step on the same host.
+            // The gate is a Semaphore(1) in HeavyMemoryCoordinatorImpl (app-main); absent in
+            // unit tests (no-op). try-with-resources guarantees release even on exception.
+            TrainingResult result;
+            if (heavyMemoryCoordinator != null) {
+                try (AutoCloseable token = heavyMemoryCoordinator.acquire("kge-training", jobId)) {
+                    result = model.train(triples, configWithCallback);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    throw new RuntimeException("KGE training interrupted while waiting for heavy-memory gate", ie);
+                } catch (Exception e) {
+                    if (e instanceof RuntimeException) throw (RuntimeException) e;
+                    throw new RuntimeException(e);
+                }
+            } else {
+                result = model.train(triples, configWithCallback);
+            }
 
             if (result.success()) {
                 // Store embeddings back into the same store the triples came from.
@@ -319,6 +636,63 @@ public class KGEmbeddingJobService {
             case TRANSE -> new TransEModel();
             case ROTATE -> new RotatEModel();
         };
+    }
+
+    /**
+     * Holds the result of {@link #prepareModel}: a freshly created (and optionally seeded)
+     * model plus the effective config with warm-start epoch reduction applied.
+     */
+    private record WarmStartContext(
+            KGEmbeddingModel model,
+            KGEmbeddingConfig effectiveConfig,
+            boolean isWarmStart,
+            Map<String, INDArray> priorEmbeddings,
+            Map<String, INDArray> priorRelationEmbeddings) {}
+
+    /**
+     * Shared helper used by both {@link #trainSynchronously} and {@link #executeTrainingAsync}
+     * to load prior embeddings, create a model, seed it for a warm start, and adjust the
+     * epoch count. Extracted to a single place so neither caller can diverge.
+     *
+     * <p>When the adapter returns non-empty prior entity embeddings the method:
+     * <ol>
+     *   <li>Reduces epochs to {@code config.effectiveWarmStartEpochs()} for an incremental update.</li>
+     *   <li>Calls {@code model.importEntityEmbeddings()} so training seeds from prior vectors,
+     *       not random init — this is the resumability contract for KGE.</li>
+     *   <li>Calls {@code model.importRelationEmbeddings()} when relation priors exist.</li>
+     * </ol>
+     * When the adapter is absent or returns empty embeddings the method falls back to a full
+     * cold-start (random init, full epoch count).</p>
+     *
+     * @param adapter     graph adapter to load prior embeddings from; {@code null} = cold start
+     * @param factSheetId fact sheet identifier
+     * @param algorithm   KGE algorithm to create the model for
+     * @param config      hyper-parameters from the caller
+     * @return a {@link WarmStartContext} with the seeded model, effective config, and the raw
+     *         prior-embedding maps (needed by the OOP executor path to pass to the subprocess)
+     */
+    private WarmStartContext prepareModel(KgEmbeddingGraphAdapter adapter,
+                                         Long factSheetId,
+                                         KGEmbeddingAlgorithm algorithm,
+                                         KGEmbeddingConfig config) {
+        Map<String, INDArray> priorEmbeddings = adapter != null
+                ? adapter.loadEmbeddings(factSheetId)
+                : Collections.emptyMap();
+        Map<String, INDArray> priorRelEmbeddings = adapter != null
+                ? adapter.loadRelationEmbeddings(factSheetId)
+                : Collections.emptyMap();
+        boolean isWarmStart = !priorEmbeddings.isEmpty();
+        KGEmbeddingConfig effectiveConfig = isWarmStart
+                ? config.toBuilder().epochs(config.effectiveWarmStartEpochs()).build()
+                : config;
+        KGEmbeddingModel model = createModel(algorithm);
+        if (isWarmStart) {
+            model.importEntityEmbeddings(priorEmbeddings);
+        }
+        if (!priorRelEmbeddings.isEmpty()) {
+            model.importRelationEmbeddings(priorRelEmbeddings);
+        }
+        return new WarmStartContext(model, effectiveConfig, isWarmStart, priorEmbeddings, priorRelEmbeddings);
     }
 
     /**

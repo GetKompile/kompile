@@ -47,7 +47,14 @@ public class CrawlProgressEvent extends ApplicationEvent {
         /** The job finished successfully. */
         COMPLETED,
         /** The job was cancelled by the user or system. */
-        CANCELLED
+        CANCELLED,
+        /**
+         * A resource-governance or scheduling decision was made that affects the job:
+         * e.g. heavy-memory gate acquired/waited, OOM-floor deferral, KGE batch-size selection.
+         * The {@code message} field carries a human-readable description of the decision
+         * (what was chosen, why, and optionally old/new values).
+         */
+        DECISION
     }
 
     private final String jobId;

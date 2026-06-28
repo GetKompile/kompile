@@ -55,16 +55,11 @@ import java.util.Map;
 @Component
 public class OpinionPrunePass {
 
-    private final KnowledgeGraphService knowledgeGraphService;
-
-    public OpinionPrunePass(KnowledgeGraphService knowledgeGraphService) {
-        this.knowledgeGraphService = knowledgeGraphService;
-    }
-
-    /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
-    protected OpinionPrunePass() {
-        this.knowledgeGraphService = null;
-    }
+    // Field injection (not constructor): when Spring wires this bean via a CGLIB proxy (the native-image
+    // / proxy path), a no-arg proxy constructor leaves a constructor-final field null and P6 silently
+    // no-ops. Field injection lets Spring populate it on the proxy too, so the opinion prune actually runs.
+    @org.springframework.beans.factory.annotation.Autowired
+    private KnowledgeGraphService knowledgeGraphService;
 
     /**
      * Result record for one execution of this pass.
@@ -97,6 +92,14 @@ public class OpinionPrunePass {
     public Result execute(Long factSheetId, PrunePolicy policy, boolean dryRun) {
         if (factSheetId == null) throw new IllegalArgumentException("factSheetId must not be null");
         if (policy == null) throw new IllegalArgumentException("policy must not be null");
+
+        // Guard: knowledgeGraphService is null when Spring wired this bean via the protected no-arg
+        // constructor (CGLIB proxy path in GraalVM native image).  Rather than NPE, log and no-op.
+        if (knowledgeGraphService == null) {
+            log.warn("OpinionPrunePass: knowledgeGraphService is null (CGLIB proxy path) — "
+                    + "skipping P6 opinion prune for factSheet={}", factSheetId);
+            return Result.empty(dryRun);
+        }
 
         List<GraphEdge> allEdges = knowledgeGraphService.getEdgesInFactSheet(factSheetId).stream()
                 .filter(e -> !Boolean.TRUE.equals(e.getStale()))

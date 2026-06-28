@@ -220,9 +220,10 @@ class KbGroundingAuditControllerTest {
         void factTierRow_nullableTemporalFields() {
             KbGroundingAuditController.FactTierRow row =
                     new KbGroundingAuditController.FactTierRow(
-                            "revenue(Q1)", 0.8, "HIGH", "NONE", 2, null, null);
+                            "revenue(Q1)", 0.8, "HIGH", "NONE", 2, null, null, null, null, null, null);
             assertNull(row.validFrom(),  "validFrom should accept null");
             assertNull(row.validTo(),    "validTo should accept null");
+            assertNull(row.basisType(),  "basisType should accept null");
             assertEquals("revenue(Q1)", row.atomKey());
             assertEquals(0.8, row.confidence(), 0.001);
         }
@@ -234,7 +235,7 @@ class KbGroundingAuditControllerTest {
             long to   = 1_700_100_000_000L;
             KbGroundingAuditController.FactTierRow row =
                     new KbGroundingAuditController.FactTierRow(
-                            "active(Node7)", 0.95, "ESTABLISHED", "PROMOTED", 5, from, to);
+                            "active(Node7)", 0.95, "ESTABLISHED", "PROMOTED", 5, from, to, null, null, null, null);
             assertEquals(from, row.validFrom());
             assertEquals(to,   row.validTo());
         }

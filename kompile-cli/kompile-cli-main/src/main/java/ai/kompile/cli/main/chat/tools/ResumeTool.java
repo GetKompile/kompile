@@ -1862,7 +1862,7 @@ public class ResumeTool implements CliTool {
                 }
                 case "opencode" -> {
                     agentCommand.add("opencode");
-                    agentCommand.add("-s");
+                    agentCommand.add("--session");
                     agentCommand.add(sessionId);
                 }
                 case "gemini" -> {
@@ -1887,9 +1887,12 @@ public class ResumeTool implements CliTool {
                 }
             }
 
-            // Add permission bypass flags
-            ai.kompile.cli.main.chat.agent.AgentFlagOverrides.addPermissionBypassFlags(
-                    agentCommand, agent, true, effectiveWorkDir);
+            // OpenCode only supports --dangerously-skip-permissions on `opencode run`,
+            // not on native TUI resume (`opencode --session <id>`).
+            if (supportsNativeResumePermissionBypass(agent)) {
+                ai.kompile.cli.main.chat.agent.AgentFlagOverrides.addPermissionBypassFlags(
+                        agentCommand, agent, true, effectiveWorkDir);
+            }
 
             // Inject MCP tools before launching — probe for running kompile-app (SSE),
             // fall back to stdio if not found
@@ -2068,8 +2071,22 @@ public class ResumeTool implements CliTool {
             // Export to agent's native format
             ConversationExporter.ExportResult exportResult;
             try {
+                CrossAgentResumeCompactor.TargetBudget targetBudget =
+                        CrossAgentResumeCompactor.targetBudget(
+                                agent,
+                                conversation.source(),
+                                conversation.workingDirectory());
+                CrossAgentResumeCompactor.Result compaction =
+                        CrossAgentResumeCompactor.compactToFit(conversation.turns(), targetBudget);
+                if (compaction.compacted()) {
+                    terminal.writer().println(YELLOW + "Compacted transcript for target context: "
+                            + compaction.tokensBefore() + " → " + compaction.tokensAfter()
+                            + " tokens (" + compaction.summarizedTurns() + " older turns, "
+                            + compaction.stages() + " stage" + (compaction.stages() == 1 ? "" : "s")
+                            + ", model " + targetBudget.modelId() + ")" + RESET);
+                }
                 exportResult = ConversationExporter.exportToAgent(
-                        conversation.turns(),
+                        compaction.turns(),
                         agent,
                         targetSessionId,
                         conversation.source(),
@@ -2107,26 +2124,10 @@ public class ResumeTool implements CliTool {
             terminal.close();
             terminalClosed = true;
 
-            List<String> agentCommand = new ArrayList<>();
-            String[] resumeParts = exportResult.getResumeCommand().split("\\s+");
-            if (resumeParts.length == 0 || resumeParts[0].isEmpty()) {
+            List<String> agentCommand = buildAgentResumeCommand(agent, exportResult);
+            if (agentCommand.isEmpty()) {
                 throw new IllegalArgumentException("Resume command is empty for agent: " + agent);
             }
-            agentCommand.add(resumeParts[0]);
-            if (agent.toLowerCase().contains("codex") && exportResult.getWorkingDirectory() != null) {
-                agentCommand.add("-C");
-                agentCommand.add(exportResult.getWorkingDirectory().toString());
-            }
-            for (int i = 1; i < resumeParts.length; i++) {
-                String part = resumeParts[i];
-                if (!part.isEmpty()) {
-                    agentCommand.add(part);
-                }
-            }
-
-            // Add permission bypass flags via centralized overrides
-            ai.kompile.cli.main.chat.agent.AgentFlagOverrides.addPermissionBypassFlags(
-                    agentCommand, agent, true, exportResult.getWorkingDirectory());
 
             ProcessBuilder pb = new ProcessBuilder(agentCommand);
             if (exportResult.getWorkingDirectory() != null) {
@@ -2884,12 +2885,16 @@ public class ResumeTool implements CliTool {
         }
 
         // For non-codex agents, append bypass flags at the end
-        if (!agentKey.contains("codex")) {
+        if (!agentKey.contains("codex") && supportsNativeResumePermissionBypass(agent)) {
             ai.kompile.cli.main.chat.agent.AgentFlagOverrides.addPermissionBypassFlags(
                     agentCommand, agent, true, exportResult.getWorkingDirectory());
         }
 
         return agentCommand;
+    }
+
+    private boolean supportsNativeResumePermissionBypass(String agent) {
+        return agent == null || !agent.toLowerCase(Locale.ROOT).contains("opencode");
     }
 
     /**

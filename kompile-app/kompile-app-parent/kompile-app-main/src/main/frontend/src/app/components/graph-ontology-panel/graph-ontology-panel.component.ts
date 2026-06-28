@@ -136,6 +136,18 @@ export class GraphOntologyPanelComponent implements OnInit, OnChanges {
     return v == null ? '—' : (v * 100).toFixed(1) + '%';
   }
 
+  /** Humanize an OWL sample-entailment string into plain English (falls back to the raw string). */
+  entailmentProse(e: string): string {
+    if (!e) return e;
+    let m: RegExpMatchArray | null;
+    if ((m = e.match(/^domain\(([^)]+)\)\s*⊑\s*(.+)$/))) return `${m[1].trim()} must start from a ${m[2].trim()}`;
+    if ((m = e.match(/^range\(([^)]+)\)\s*⊑\s*(.+)$/))) return `${m[1].trim()} must point to a ${m[2].trim()}`;
+    if ((m = e.match(/^(.+?)\s*⊑\s*(.+)$/))) return `${m[1].trim()} is a kind of ${m[2].trim()}`;
+    if ((m = e.match(/^(.+?)\s*∈\s*(.+)$/))) return `${m[1].trim()} is a ${m[2].trim()}`;
+    if ((m = e.match(/^(.+?)\s+is transitive/i))) return `${m[1].trim()} relationships chain transitively`;
+    return e;
+  }
+
   /**
    * D4: Derive an ontology from the current cold graph.
    * POSTs to POST /api/process/ontology/derive (body = DeriveOntologyRequest).

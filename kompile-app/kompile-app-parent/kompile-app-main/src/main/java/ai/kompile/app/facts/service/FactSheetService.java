@@ -165,7 +165,16 @@ public class FactSheetService {
                     .vectorStorePath(vectorStorePath)
                     .keywordIndexPath(keywordIndexPath)
                     .build();
-                return factSheetRepository.save(defaultSheet);
+                try {
+                    return factSheetRepository.save(defaultSheet);
+                } catch (org.springframework.dao.DataIntegrityViolationException e) {
+                    // Concurrent create race: another thread/instance inserted "Default" first
+                    // (unique name constraint at FactSheet.name). Return the winner's row instead
+                    // of propagating a 500 — this is the startup race where @PostConstruct and an
+                    // early request both call getOrCreateDefaultSheet() on a fresh DB.
+                    logger.warn("Concurrent default fact sheet creation detected; loading existing row instead: {}", e.getMessage());
+                    return factSheetRepository.findByName(DEFAULT_SHEET_NAME).orElseThrow(() -> e);
+                }
             });
     }
 

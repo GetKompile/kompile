@@ -61,7 +61,7 @@ class ResourceGovernorTest {
                 ? List.of(new GpuSnapshot(0, 0L, 1000L, 0L, gpuUsed, gpuP))
                 : List.of();
         return new ResourceSnapshot(0L, cpu, ram, heap, 0.0,
-                cpuP, ramP, PressureLevel.NOMINAL, PressureLevel.NOMINAL, gpus, gpuAvail);
+                cpuP, ramP, PressureLevel.NOMINAL, PressureLevel.NOMINAL, gpus, gpuAvail, -1L);
     }
 
     @Test

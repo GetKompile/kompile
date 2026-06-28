@@ -15,6 +15,7 @@
  */
 package ai.kompile.knowledgegraph.matrix.service;
 
+import ai.kompile.core.citation.CitationDto;
 import ai.kompile.core.embeddings.EmbeddingModel;
 import ai.kompile.core.graphrag.GraphRagService;
 import ai.kompile.core.graphrag.model.Entity;
@@ -24,6 +25,7 @@ import ai.kompile.core.graphrag.query.GraphRagQuery;
 import ai.kompile.core.graphrag.query.GraphRagResult;
 import ai.kompile.core.graphrag.query.SearchType;
 import ai.kompile.core.llm.chat.LLMChat;
+import ai.kompile.knowledgegraph.citation.CitationSupport;
 import ai.kompile.knowledgegraph.matrix.algorithms.MatrixGraphAlgorithms;
 import ai.kompile.knowledgegraph.matrix.model.AdjacencyMatrixGraph;
 import ai.kompile.knowledgegraph.matrix.model.MatrixGraphNode;
@@ -33,7 +35,6 @@ import ai.kompile.knowledgegraph.resolution.SessionEntityState;
 import lombok.extern.slf4j.Slf4j;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
@@ -41,6 +42,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+
+import static java.util.Collections.emptyList;
 
 /**
  * Matrix-based implementation of GraphRagService.
@@ -56,7 +59,6 @@ import java.util.stream.Collectors;
  * </p>
  */
 @Service
-@Primary
 @Slf4j
 public class MatrixGraphRagService implements GraphRagService {
 
@@ -89,15 +91,47 @@ public class MatrixGraphRagService implements GraphRagService {
     private final Map<String, SessionEntityState> sessionEntities = new ConcurrentHashMap<>();
     private int turnCounter = 0;
 
+    /**
+     * Additive weight for the grounded confidence ranking signal. Default 0.0 = feature off.
+     * When zero (the default), the confidence term contributes exactly 0 to every score, so
+     * ranking is byte-for-byte identical to the unweighted baseline in all retrieval modes.
+     * Set to a positive value (e.g. 0.2) to nudge higher-confidence nodes up the ranking.
+     * <p>
+     * Confidence is sourced from node metadata key {@code "confidence"}, which is populated by
+     * the LLM extraction pipeline ({@code MultiAgentExtractionService}) with a per-entity
+     * extraction confidence score. Note: PSL/inferred-fact confidence written by
+     * {@code InferredFactGraphMaterializer} uses namespaced keys (e.g.
+     * {@code "inferred.<predicate>.confidence"}) and is NOT reflected here unless callers
+     * separately denormalise it into the plain {@code "confidence"} key.
+     * </p>
+     */
+    private double groundedConfidenceWeight = 0.0;
+
+    /**
+     * Configures the grounded-confidence ranking weight (managed config — no {@code @Value}).
+     * 0.0 (default) disables the feature; ranking is unchanged.
+     */
+    public void setGroundedConfidenceWeight(double weight) {
+        this.groundedConfidenceWeight = weight;
+    }
+
+    /** Returns the current grounded-confidence ranking weight. */
+    public double getGroundedConfidenceWeight() {
+        return groundedConfidenceWeight;
+    }
+
     private static final Pattern ENTITY_MENTION_PATTERN = Pattern.compile(
             "\\b(that|the|this|those)\\s+(company|person|organization|place|product|event|ceo|founder|manager)\\b",
             Pattern.CASE_INSENSITIVE
     );
 
     /**
-     * Default graph ID for RAG queries.
+     * Bundles a formatted context string with the underlying nodes that produced it,
+     * so callers can both synthesise an answer and populate the Entity list.
      */
-    private static final String DEFAULT_GRAPH_ID = "default-knowledge-graph";
+    private record RetrievalResult(String context, List<MatrixGraphNode> nodes) {
+        static RetrievalResult empty() { return new RetrievalResult("", emptyList()); }
+    }
 
     @Override
     public GraphRagResult answerQuery(GraphRagQuery query) {
@@ -111,8 +145,8 @@ public class MatrixGraphRagService implements GraphRagService {
         // Resolve ambiguous entity references
         String resolvedQuery = resolveEntityReferences(query.getQuery(), entityState);
 
-        // Get or load the graph
-        String graphId = DEFAULT_GRAPH_ID;
+        // Get or load the graph scoped to the query's fact sheet (per-fact-sheet segmentation)
+        String graphId = MatrixKnowledgeGraphService.graphIdForFactSheet(query.getFactSheetId());
         Optional<AdjacencyMatrixGraph> graphOpt = graphStore.loadGraph(graphId);
 
         if (graphOpt.isEmpty()) {
@@ -136,16 +170,16 @@ public class MatrixGraphRagService implements GraphRagService {
                 .build();
 
         // Retrieve relevant context based on search type
-        String context;
+        RetrievalResult retrieval;
         if (query.getSearchType() == SearchType.GLOBAL) {
-            context = retrieveGlobalContext(matrixGraph, resolvedRagQuery);
+            retrieval = retrieveGlobalContext(matrixGraph, resolvedRagQuery);
         } else if (query.getSearchType() == SearchType.HYBRID) {
-            context = retrieveHybridContext(matrixGraph, resolvedRagQuery);
+            retrieval = retrieveHybridContext(matrixGraph, resolvedRagQuery);
         } else {
-            context = retrieveLocalContextWithTracking(matrixGraph, resolvedRagQuery, entityState);
+            retrieval = retrieveLocalContextWithTracking(matrixGraph, resolvedRagQuery, entityState);
         }
 
-        if (context.isEmpty()) {
+        if (retrieval.context().isEmpty()) {
             return GraphRagResult.builder()
                     .answer("I couldn't find relevant information in the knowledge graph to answer your question.")
                     .formattedContext("")
@@ -153,11 +187,32 @@ public class MatrixGraphRagService implements GraphRagService {
         }
 
         // Synthesize answer using LLM
-        String answer = synthesizeAnswer(resolvedQuery, context);
+        String answer = synthesizeAnswer(resolvedQuery, retrieval.context());
+
+        // Convert the retrieved MatrixGraphNodes to Entity objects so callers get
+        // metadata, provenance, and confidence alongside the answer.
+        List<Entity> entities = retrieval.nodes().stream()
+                .map(this::nodeToEntity)
+                .collect(Collectors.toList());
+
+        // Build citation refs from retrieved nodes (best-effort; null-safe)
+        List<CitationDto> sourceChunkRefs = Collections.emptyList();
+        try {
+            sourceChunkRefs = retrieval.nodes().stream()
+                    .map(node -> CitationSupport.from(
+                            node.getMetadata() != null ? node.getMetadata() : Map.of(), null, null,
+                            node.getTitle(), node.getNodeId()))
+                    .collect(Collectors.toList());
+        } catch (Exception e) {
+            log.debug("Could not build sourceChunkRefs: {}", e.getMessage());
+        }
 
         return GraphRagResult.builder()
                 .answer(answer)
-                .formattedContext(context)
+                .formattedContext(retrieval.context())
+                .entities(entities)
+                .sourceChunkRefs(sourceChunkRefs)
+                .searchType(query.getSearchType())
                 .build();
     }
 
@@ -195,8 +250,8 @@ public class MatrixGraphRagService implements GraphRagService {
     /**
      * Retrieves local context with entity tracking for session state.
      */
-    private String retrieveLocalContextWithTracking(AdjacencyMatrixGraph graph, GraphRagQuery query, SessionEntityState entityState) {
-        String context = retrieveLocalContext(graph, query);
+    private RetrievalResult retrieveLocalContextWithTracking(AdjacencyMatrixGraph graph, GraphRagQuery query, SessionEntityState entityState) {
+        RetrievalResult result = retrieveLocalContext(graph, query);
 
         // Track entities found in local search results
         if (embeddingModel != null) {
@@ -216,14 +271,14 @@ public class MatrixGraphRagService implements GraphRagService {
             }
         }
 
-        return context;
+        return result;
     }
 
     /**
      * Retrieves local context by finding nodes similar to the query embedding.
      * Falls back to text search if EmbeddingModel is not available.
      */
-    private String retrieveLocalContext(AdjacencyMatrixGraph graph, GraphRagQuery query) {
+    private RetrievalResult retrieveLocalContext(AdjacencyMatrixGraph graph, GraphRagQuery query) {
         int k = query.getK() > 0 ? query.getK() : 5;
 
         // If no embedding model, use text search directly
@@ -231,7 +286,7 @@ public class MatrixGraphRagService implements GraphRagService {
             log.debug("No EmbeddingModel available, using text search for local context");
             List<MatrixGraphNode> searchResults = graphStore.searchNodes(
                     graph.getGraphId(), query.getQuery(), k);
-            return formatNodesAsContext(searchResults, graph);
+            return new RetrievalResult(formatNodesAsContext(searchResults, graph), searchResults);
         }
 
         // Embed the query
@@ -240,7 +295,7 @@ public class MatrixGraphRagService implements GraphRagService {
             // Fallback to text search if embedding fails
             List<MatrixGraphNode> searchResults = graphStore.searchNodes(
                     graph.getGraphId(), query.getQuery(), k);
-            return formatNodesAsContext(searchResults, graph);
+            return new RetrievalResult(formatNodesAsContext(searchResults, graph), searchResults);
         }
 
         // Find similar nodes using the graph store
@@ -251,11 +306,14 @@ public class MatrixGraphRagService implements GraphRagService {
             // Fallback: use text search
             List<MatrixGraphNode> searchResults = graphStore.searchNodes(
                     graph.getGraphId(), query.getQuery(), k);
-
-            return formatNodesAsContext(searchResults, graph);
+            return new RetrievalResult(formatNodesAsContext(searchResults, graph), searchResults);
         }
 
-        // Get the nodes and their relationships
+        // Get the nodes and their relationships.
+        // Capture similarity scores for optional confidence-nudged re-ranking at the end.
+        Map<String, Double> simScoreById = groundedConfidenceWeight > 0.0
+                ? similarNodes.stream().collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue))
+                : Collections.emptyMap();
         List<MatrixGraphNode> relevantNodes = new ArrayList<>();
         for (Map.Entry<String, Double> entry : similarNodes) {
             graph.getNode(entry.getKey()).ifPresent(relevantNodes::add);
@@ -273,13 +331,22 @@ public class MatrixGraphRagService implements GraphRagService {
             }
         }
 
-        List<MatrixGraphNode> allRelevantNodes = expandedNodeIds.stream()
+        // Additive grounded-confidence term: when groundedConfidenceWeight > 0, re-rank by
+        // (similarity + confidence * weight). Expanded neighbors without a direct similarity
+        // score get 0.0 as their base. At weight == 0.0 (default), the guard prevents this
+        // branch from running, preserving the original set-iteration order exactly.
+        var nodeStream = expandedNodeIds.stream()
                 .map(id -> graph.getNode(id))
                 .filter(Optional::isPresent)
-                .map(Optional::get)
-                .collect(Collectors.toList());
+                .map(Optional::get);
+        if (groundedConfidenceWeight > 0.0) {
+            nodeStream = nodeStream.sorted(Comparator.comparingDouble((MatrixGraphNode n) ->
+                    -(simScoreById.getOrDefault(n.getNodeId(), 0.0)
+                      + groundedConfidenceWeight * nodeGroundedConfidence(n))));
+        }
+        List<MatrixGraphNode> allRelevantNodes = nodeStream.collect(Collectors.toList());
 
-        return formatNodesAsContext(allRelevantNodes, graph);
+        return new RetrievalResult(formatNodesAsContext(allRelevantNodes, graph), allRelevantNodes);
     }
 
     /**
@@ -293,7 +360,7 @@ public class MatrixGraphRagService implements GraphRagService {
      * Falls back to local/text retrieval when no embedding model is available or no seeds are found.
      * </p>
      */
-    private String retrieveHybridContext(AdjacencyMatrixGraph graph, GraphRagQuery query) {
+    private RetrievalResult retrieveHybridContext(AdjacencyMatrixGraph graph, GraphRagQuery query) {
         int k = query.getK() > 0 ? query.getK() : 5;
 
         // Without an embedding model we cannot seed PPR; degrade to text-based local retrieval.
@@ -337,7 +404,7 @@ public class MatrixGraphRagService implements GraphRagService {
         // Personalized PageRank over the graph structure, seeded by the embedding matches.
         Map<String, Double> ppr = MatrixGraphAlgorithms.personalizedPageRank(graph, seedWeights);
         if (ppr.isEmpty()) {
-            return retrieveLocalContext(graph, query);
+            return retrieveLocalContext(graph, query); // already returns RetrievalResult
         }
 
         // Blend structural PPR importance with direct vector similarity (different scales, so
@@ -363,11 +430,17 @@ public class MatrixGraphRagService implements GraphRagService {
         Set<String> candidateIds = new HashSet<>(blended.keySet());
         candidateIds.addAll(kgeSim.keySet());
 
+        // Additive grounded-confidence term: when groundedConfidenceWeight > 0, nodes with higher
+        // PSL/extraction confidence are nudged up in the ranking. At the default weight of 0.0 the
+        // term contributes exactly 0 → scores and order are identical to the unweighted baseline.
         Map<String, Double> finalScores = new HashMap<>();
         for (String id : candidateIds) {
             double base = blended.getOrDefault(id, 0.0);
             double kge = kgeSim.getOrDefault(id, 0.0);
-            finalScores.put(id, base + KGE_RETRIEVAL_WEIGHT * kge);
+            double conf = groundedConfidenceWeight > 0.0
+                    ? graph.getNode(id).map(this::nodeGroundedConfidence).orElse(0.0)
+                    : 0.0;
+            finalScores.put(id, base + KGE_RETRIEVAL_WEIGHT * kge + groundedConfidenceWeight * conf);
         }
 
         List<MatrixGraphNode> rankedNodes = finalScores.entrySet().stream()
@@ -384,7 +457,7 @@ public class MatrixGraphRagService implements GraphRagService {
         List<String> keyEntityIds = rankedNodes.stream()
                 .map(MatrixGraphNode::getNodeId)
                 .collect(Collectors.toList());
-        return baseContext + retrievePathContext(graph, keyEntityIds);
+        return new RetrievalResult(baseContext + retrievePathContext(graph, keyEntityIds), rankedNodes);
     }
 
     /** Blend weight for the structural KG-embedding similarity term in HYBRID retrieval. */
@@ -444,6 +517,36 @@ public class MatrixGraphRagService implements GraphRagService {
             return 0.0;
         }
         return dot / (na * nb);
+    }
+
+    /**
+     * Reads the grounded confidence for a node. Prefers the PSL/inferred (grounded-reasoning)
+     * confidence that {@link ai.kompile.knowledgegraph.reasoning.InferredFactGraphMaterializer}
+     * writes under {@code "inferred.<predicate>.confidence"} keys — taking the strongest grounded
+     * belief about the node when several predicates were inferred. Falls back to the plain
+     * {@code "confidence"} key (LLM-extraction confidence) when no grounded value is present.
+     * Returns 0.0 when metadata is absent or no numeric confidence exists. Null-safe; never throws.
+     */
+    private double nodeGroundedConfidence(MatrixGraphNode node) {
+        if (node == null || node.getMetadata() == null) {
+            return 0.0;
+        }
+        java.util.Map<String, Object> meta = node.getMetadata();
+        // Prefer grounded (PSL-inferred) confidence: max over "inferred.<predicate>.confidence".
+        double grounded = -1.0;
+        for (java.util.Map.Entry<String, Object> e : meta.entrySet()) {
+            String k = e.getKey();
+            if (k != null && k.startsWith("inferred.") && k.endsWith(".confidence")
+                    && e.getValue() instanceof Number num) {
+                grounded = Math.max(grounded, num.doubleValue());
+            }
+        }
+        if (grounded >= 0.0) {
+            return grounded;
+        }
+        // Fall back to extraction confidence.
+        Object v = meta.get("confidence");
+        return v instanceof Number ? ((Number) v).doubleValue() : 0.0;
     }
 
     /** Max distinct key entities to connect with paths (bounds the O(n^2) pair search). */
@@ -544,7 +647,7 @@ public class MatrixGraphRagService implements GraphRagService {
     /**
      * Retrieves global context using PageRank to identify important nodes.
      */
-    private String retrieveGlobalContext(AdjacencyMatrixGraph graph, GraphRagQuery query) {
+    private RetrievalResult retrieveGlobalContext(AdjacencyMatrixGraph graph, GraphRagQuery query) {
         int k = query.getK() > 0 ? query.getK() : 10;
 
         // Microsoft-GraphRAG-style global search: when community reports exist, answer from the
@@ -553,16 +656,33 @@ public class MatrixGraphRagService implements GraphRagService {
         if (communitySummaryService != null) {
             List<CommunitySummaryService.CommunityReport> reports = communitySummaryService.getOrBuildReports(graph);
             if (reports != null && !reports.isEmpty()) {
-                return buildCommunityContext(reports, query);
+                // Surface community member nodes (CommunityReport.memberNodeIds) as citations,
+                // resolved via the live graph and deduped/capped — so GLOBAL search returns
+                // traceable sources instead of nothing.
+                List<MatrixGraphNode> communityNodes = reports.stream()
+                        .flatMap(r -> r.memberNodeIds().stream())
+                        .distinct()
+                        .map(graph::getNode)
+                        .filter(Optional::isPresent)
+                        .map(Optional::get)
+                        .limit(50)
+                        .collect(Collectors.toList());
+                return new RetrievalResult(buildCommunityContext(reports, query), communityNodes);
             }
         }
 
         // Compute PageRank to find important nodes
         Map<String, Double> pageRankScores = MatrixGraphAlgorithms.pageRank(graph);
 
-        // Sort by PageRank and take top k
+        // Sort by PageRank (+ optional grounded-confidence nudge) and take top k.
+        // When groundedConfidenceWeight == 0.0 the confidence term adds exactly 0, so
+        // sort order is identical to the unweighted baseline.
         List<String> topNodeIds = pageRankScores.entrySet().stream()
-                .sorted((a, b) -> Double.compare(b.getValue(), a.getValue()))
+                .sorted((a, b) -> Double.compare(
+                        b.getValue() + groundedConfidenceWeight
+                                * graph.getNode(b.getKey()).map(this::nodeGroundedConfidence).orElse(0.0),
+                        a.getValue() + groundedConfidenceWeight
+                                * graph.getNode(a.getKey()).map(this::nodeGroundedConfidence).orElse(0.0)))
                 .limit(k)
                 .map(Map.Entry::getKey)
                 .collect(Collectors.toList());
@@ -605,7 +725,7 @@ public class MatrixGraphRagService implements GraphRagService {
             }
         }
 
-        return contextBuilder.toString();
+        return new RetrievalResult(contextBuilder.toString(), importantNodes);
     }
 
     /**
@@ -732,6 +852,48 @@ public class MatrixGraphRagService implements GraphRagService {
             log.error("Failed to synthesize answer with LLM", e);
             return "I encountered an error while generating an answer. Please try again.";
         }
+    }
+
+    /**
+     * Converts a {@link MatrixGraphNode} to the API-facing {@link Entity} model, copying
+     * metadata (provenance keys), confidence, and description as text-unit.
+     */
+    private Entity nodeToEntity(MatrixGraphNode node) {
+        Entity entity = new Entity();
+        entity.setId(node.getNodeId());
+        entity.setTitle(node.getTitle());
+        entity.setType(node.getNodeType());
+        entity.setDescription(node.getDescription());
+
+        Map<String, Object> nodeMeta = node.getMetadata();
+        if (nodeMeta != null && !nodeMeta.isEmpty()) {
+            entity.setMetadata(new java.util.LinkedHashMap<>(nodeMeta));
+
+            // Confidence from metadata if present
+            Object confObj = nodeMeta.get("confidence");
+            if (confObj instanceof Number) {
+                entity.setConfidence(((Number) confObj).doubleValue());
+            }
+        } else {
+            entity.setMetadata(new java.util.LinkedHashMap<>());
+        }
+
+        // textUnits: description + content_preview snippet from metadata
+        List<String> textUnits = new ArrayList<>();
+        if (node.getDescription() != null && !node.getDescription().isBlank()) {
+            textUnits.add(node.getDescription());
+        }
+        if (nodeMeta != null) {
+            Object preview = nodeMeta.get("content_preview");
+            if (preview instanceof String previewStr && !previewStr.isBlank()) {
+                textUnits.add(previewStr);
+            }
+        }
+        if (!textUnits.isEmpty()) {
+            entity.setTextUnits(textUnits);
+        }
+
+        return entity;
     }
 
     /**

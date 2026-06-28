@@ -31,7 +31,10 @@ import {
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { MatIconModule } from '@angular/material/icon';
-import * as d3 from 'd3';
+import { Subject, takeUntil } from 'rxjs';
+import Sigma from 'sigma';
+import Graph from 'graphology';
+import { ThemeService } from '../../services/theme.service';
 import {
   D3Node,
   D3Link,
@@ -46,19 +49,28 @@ import {
   EDGE_DASH_PATTERNS
 } from '../../models/graph-models';
 
-interface SimulationNode extends D3Node {
-  x: number;
-  y: number;
-  vx?: number;
-  vy?: number;
-  fx?: number | null;
-  fy?: number | null;
-}
+// Community palette (same as original)
+const COMMUNITY_PALETTE: string[] = [
+  '#4285F4', '#EA4335', '#FBBC05', '#34A853', '#FF6D00',
+  '#9C27B0', '#00BCD4', '#FF5722', '#607D8B', '#795548',
+  '#E91E63', '#009688', '#FF9800', '#3F51B5', '#8BC34A',
+  '#F44336', '#2196F3', '#4CAF50', '#FFC107', '#9E9E9E'
+];
 
-interface SimulationLink extends Omit<D3Link, 'source' | 'target'> {
-  source: SimulationNode | string;
-  target: SimulationNode | string;
-}
+// Strength band border colors (same as original)
+const STRENGTH_BORDER_COLORS: Record<string, string> = {
+  ESTABLISHED:  '#4CAF50',
+  HIGH:         '#8BC34A',
+  PROBABLE:     '#FFC107',
+  SPECULATIVE:  '#FF9800',
+  SUPPRESSED:   '#F44336',
+};
+
+// MFrag accent colors (maps each unique MFrag to a color)
+const MFRAG_ACCENT_COLORS: string[] = [
+  '#667eea', '#22c55e', '#f59e0b', '#8b5cf6', '#ef4444',
+  '#0ea5e9', '#ec4899'
+];
 
 @Component({
   selector: 'app-graph-canvas',
@@ -72,34 +84,8 @@ interface SimulationLink extends Omit<D3Link, 'source' | 'target'> {
         <mat-icon class="empty-icon">device_hub</mat-icon>
         <p class="empty-message">No nodes yet — run a crawl or build the graph to populate it.</p>
       </div>
-      <svg #svgElement class="graph-svg">
-        <defs>
-          <!-- Arrow markers for directed edges -->
-          <marker id="arrow" viewBox="0 -5 10 10" refX="20" refY="0"
-                  markerWidth="6" markerHeight="6" orient="auto">
-            <path d="M0,-5L10,0L0,5" fill="#999"/>
-          </marker>
-          <marker id="arrow-similarity" viewBox="0 -5 10 10" refX="20" refY="0"
-                  markerWidth="6" markerHeight="6" orient="auto">
-            <path d="M0,-5L10,0L0,5" [attr.fill]="edgeColors.EMBEDDING_SIMILARITY"/>
-          </marker>
-          <marker id="arrow-entity" viewBox="0 -5 10 10" refX="20" refY="0"
-                  markerWidth="6" markerHeight="6" orient="auto">
-            <path d="M0,-5L10,0L0,5" [attr.fill]="edgeColors.SHARED_ENTITY"/>
-          </marker>
-          <marker id="arrow-user" viewBox="0 -5 10 10" refX="20" refY="0"
-                  markerWidth="6" markerHeight="6" orient="auto">
-            <path d="M0,-5L10,0L0,5" [attr.fill]="edgeColors.USER_DEFINED"/>
-          </marker>
-        </defs>
-        <g class="zoom-container">
-          <g class="mfrag-regions"></g>
-          <g class="links"></g>
-          <g class="nodes"></g>
-          <g class="prior-rings"></g>
-          <g class="labels"></g>
-        </g>
-      </svg>
+      <!-- Sigma.js WebGL container — Sigma injects its canvas elements here -->
+      <div #sigmaContainer class="sigma-container"></div>
       <div class="zoom-controls">
         <button (click)="zoomIn()" title="Zoom In">+</button>
         <button (click)="zoomOut()" title="Zoom Out">-</button>
@@ -118,24 +104,47 @@ interface SimulationLink extends Omit<D3Link, 'source' | 'target'> {
                 [style.border-style]="getEdgeBorderStyle(edgeType)"></span>
           <span class="legend-label">{{formatEdgeType(edgeType)}}</span>
         </div>
-        <ng-container *ngIf="posteriorOverlay || priorOverlay || mebnMfragMap">
+        <ng-container *ngIf="posteriorOverlay || priorOverlay || mebnMfragMap || findingNodeMap">
           <div class="legend-title">Bayesian</div>
           <div class="legend-item" *ngIf="priorOverlay">
             <span class="legend-ring"></span>
-            <span class="legend-label">Prior ring (dashed)</span>
+            <span class="legend-label">Prior (heat tint)</span>
           </div>
           <div class="legend-item" *ngIf="posteriorOverlay && !influenceOverlayActive">
             <span class="legend-heat-swatch"></span>
             <span class="legend-label">Posterior heat</span>
           </div>
+          <!-- Heat gradient bar: low (blue) → mid (yellow) → high (red) -->
+          <div class="legend-item legend-heat-bar-row" *ngIf="posteriorOverlay && !influenceOverlayActive">
+            <span class="legend-heat-bar"></span>
+            <div class="legend-heat-ticks">
+              <span>0%</span><span>50%</span><span>100%</span>
+            </div>
+          </div>
           <div class="legend-item" *ngIf="posteriorOverlay && influenceOverlayActive">
             <span class="legend-influence-swatch"></span>
             <span class="legend-label">Influence score</span>
           </div>
-          <div class="legend-item" *ngIf="mebnMfragMap">
-            <span class="legend-mfrag-swatch"></span>
-            <span class="legend-label">MFrag region</span>
+          <!-- Evidence/Finding swatch -->
+          <div class="legend-item" *ngIf="findingNodeMap">
+            <span class="legend-color" style="background:#ff6b00"></span>
+            <span class="legend-label">Evidence / Finding</span>
           </div>
+          <!-- Per-fragment MFrag swatches (replaces the generic single swatch) -->
+          <ng-container *ngIf="mebnMfragMap && uniqueMfrags.length > 0">
+            <div class="legend-item" *ngFor="let frag of uniqueMfrags; let fi = index">
+              <span class="legend-color"
+                    [style.background-color]="mfragAccentColor(fi)"
+                    style="border-radius:3px"></span>
+              <span class="legend-label">{{ fragLabelCanvas(frag) }}</span>
+            </div>
+          </ng-container>
+          <ng-container *ngIf="mebnMfragMap && uniqueMfrags.length === 0">
+            <div class="legend-item">
+              <span class="legend-mfrag-swatch"></span>
+              <span class="legend-label">MFrag region</span>
+            </div>
+          </ng-container>
         </ng-container>
         <ng-container *ngIf="strengthOverlayEnabled">
           <div class="legend-title">Strength</div>
@@ -200,11 +209,14 @@ interface SimulationLink extends Omit<D3Link, 'source' | 'target'> {
       position: relative;
       width: 100%;
       height: 100%;
-      background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+      background: var(--graph-bg, linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%));
       overflow: hidden;
     }
 
-    .graph-svg {
+    /* Sigma.js WebGL canvas container — fills the full graph area */
+    .sigma-container {
+      position: absolute;
+      inset: 0;
       width: 100%;
       height: 100%;
     }
@@ -245,6 +257,7 @@ interface SimulationLink extends Omit<D3Link, 'source' | 'target'> {
       display: flex;
       flex-direction: column;
       gap: 6px;
+      z-index: 20;
     }
 
     .zoom-controls button {
@@ -264,7 +277,7 @@ interface SimulationLink extends Omit<D3Link, 'source' | 'target'> {
     }
 
     .zoom-controls button:hover {
-      background: #f1f5f9;
+      background: var(--bg-body, #f1f5f9);
       border-color: #667eea;
       color: #667eea;
       transform: translateY(-1px);
@@ -288,6 +301,7 @@ interface SimulationLink extends Omit<D3Link, 'source' | 'target'> {
       box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
       min-width: 160px;
       max-width: 220px;
+      z-index: 20;
     }
 
     .legend-title {
@@ -338,7 +352,7 @@ interface SimulationLink extends Omit<D3Link, 'source' | 'target'> {
       width: 14px;
       height: 14px;
       border-radius: 50%;
-      border: 2px dashed rgba(255,255,255,0.5);
+      border: 2px dashed var(--text-tertiary, #8792a2);
       background: transparent;
     }
 
@@ -364,6 +378,30 @@ interface SimulationLink extends Omit<D3Link, 'source' | 'target'> {
       border: 1.5px dashed rgba(144, 202, 249, 0.3);
     }
 
+    /* Posterior heat gradient bar (feature 4) */
+    .legend-heat-bar-row {
+      flex-direction: column;
+      align-items: stretch;
+      gap: 2px;
+      margin-bottom: 4px;
+    }
+
+    .legend-heat-bar {
+      display: block;
+      width: 100%;
+      height: 8px;
+      border-radius: 4px;
+      background: linear-gradient(to right, #3b82f6 0%, #f59e0b 50%, #ef4444 100%);
+    }
+
+    .legend-heat-ticks {
+      display: flex;
+      justify-content: space-between;
+      font-size: 9px;
+      color: var(--text-secondary, #697386);
+      margin-top: 1px;
+    }
+
     .legend-circle-swatch {
       width: 14px;
       height: 14px;
@@ -380,45 +418,37 @@ interface SimulationLink extends Omit<D3Link, 'source' | 'target'> {
       transform: rotate(45deg);
     }
 
-    /* Strength overlay tint circles */
-    .strength-tint {
-      pointer-events: none;
-    }
-
-    /* Provenance diamond markers */
-    .provenance-diamond {
-      pointer-events: none;
-    }
-
-    /* Conformance rings */
-    .conformance-ring {
-      pointer-events: none;
+    /* Dark-theme background override for the graph canvas */
+    :host-context(body.dark-theme) .graph-canvas-container {
+      background: linear-gradient(135deg, #12161e 0%, #0f1318 100%);
     }
   `]
 })
 export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
   @ViewChild('container', { static: true }) containerRef!: ElementRef<HTMLDivElement>;
-  @ViewChild('svgElement', { static: true }) svgRef!: ElementRef<SVGSVGElement>;
+  @ViewChild('sigmaContainer', { static: true }) sigmaContainerRef!: ElementRef<HTMLDivElement>;
 
   @Input() data: D3VisualizationData | null = null;
+  /** ForceConfig is accepted for API compatibility; Sigma handles its own layout. */
   @Input() forceConfig: ForceConfig = DEFAULT_FORCE_CONFIG;
   @Input() showLegend: boolean = true;
   @Input() linkMode: boolean = false;
   @Input() posteriorOverlay: Record<string, number> | null = null;
   @Input() priorOverlay: Record<string, number> | null = null;
-  @Input() mebnMfragMap: Record<string, string> | null = null;  // nodeId -> mfragName
-  @Input() influenceOverlayActive: boolean = false;  // true when posteriorOverlay contains influence scores (not true posteriors)
+  @Input() mebnMfragMap: Record<string, string> | null = null;
+  @Input() findingNodeMap: Record<string, boolean> | null = null;
+  @Input() influenceOverlayActive: boolean = false;
 
   // Phase-2 KB overlays
   @Input() strengthOverlayEnabled: boolean = false;
-  @Input() strengthBandMap: Map<string, string> = new Map();  // nodeId -> StrengthBand name
+  @Input() strengthBandMap: Map<string, string> = new Map();
   @Input() provenanceOverlayEnabled: boolean = false;
   @Input() communityOverlayEnabled: boolean = false;
-  @Input() communityMap: Map<string, number> = new Map();  // nodeId -> communityId (integer)
+  @Input() communityMap: Map<string, number> = new Map();
 
-  // Conformance overlay (P2)
+  // Conformance overlay
   @Input() conformanceOverlayEnabled: boolean = false;
-  @Input() conformanceMap: Map<string, boolean | null> = new Map();  // nodeId -> true=conformant, false=violation, null=untagged
+  @Input() conformanceMap: Map<string, boolean | null> = new Map();
 
   @Output() nodeSelected = new EventEmitter<D3Node | null>();
   @Output() nodeDoubleClicked = new EventEmitter<D3Node>();
@@ -434,486 +464,588 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
   /** True after data has been received but the node list resolved to 0 entries. */
   showEmptyState = false;
 
-  private svg!: d3.Selection<SVGSVGElement, unknown, null, undefined>;
-  private zoomContainer!: d3.Selection<SVGGElement, unknown, null, undefined>;
-  private linksGroup!: d3.Selection<SVGGElement, unknown, null, undefined>;
-  private nodesGroup!: d3.Selection<SVGGElement, unknown, null, undefined>;
-  private priorRingsGroup!: d3.Selection<SVGGElement, unknown, null, undefined>;
-  private mfragRegionsGroup!: d3.Selection<SVGGElement, unknown, null, undefined>;
-  private labelsGroup!: d3.Selection<SVGGElement, unknown, null, undefined>;
+  // Sigma/graphology state
+  private sigmaInstance: Sigma | null = null;
+  private graph: Graph | null = null;
 
-  private simulation!: d3.Simulation<SimulationNode, SimulationLink>;
-  private zoom!: d3.ZoomBehavior<SVGSVGElement, unknown>;
+  /** Fast lookup: node key → original D3Node. */
+  private nodeMap = new Map<string, D3Node>();
 
-  private nodes: SimulationNode[] = [];
-  private links: SimulationLink[] = [];
-  private selectedNode: SimulationNode | null = null;
-  private linkSourceNode: SimulationNode | null = null;
-  private mfragTickCounter = 0;
+  private selectedNodeKey: string | null = null;
+  private linkSourceKey: string | null = null;
 
-  // Cached D3 selections for ticked() performance
-  private cachedLinkSel!: d3.Selection<SVGLineElement, SimulationLink, SVGGElement, unknown>;
-  private cachedNodeSel!: d3.Selection<SVGCircleElement, SimulationNode, SVGGElement, unknown>;
-  private cachedLabelSel!: d3.Selection<SVGTextElement, SimulationNode, SVGGElement, unknown>;
-  private cachedPriorSel!: d3.Selection<SVGCircleElement, SimulationNode, SVGGElement, unknown>;
+  // Drag interaction state
+  private isDragging = false;
+  private dragNode: string | null = null;
 
-  private resizeObserver!: ResizeObserver;
-  private width = 0;
-  private height = 0;
+  // Unique MFrag name list — built when mebnMfragMap changes; public for legend *ngFor
+  uniqueMfrags: string[] = [];
+
+  private destroy$ = new Subject<void>();
 
   constructor(
     private cdr: ChangeDetectorRef,
-    private ngZone: NgZone
+    private ngZone: NgZone,
+    private themeService: ThemeService
   ) {}
 
   ngOnInit(): void {
-    this.initializeSvg();
-    this.initializeZoom();
-    this.initializeSimulation();
-    this.setupResizeObserver();
-    // Render any data that arrived before the simulation was ready
+    this.initializeSigma();
     if (this.data) {
       this.updateGraph();
     }
+    // Re-apply colors whenever the theme toggles
+    this.themeService.theme$
+      .pipe(takeUntil(this.destroy$))
+      .subscribe(() => this.refreshNodeColors());
   }
 
   ngOnChanges(changes: SimpleChanges): void {
-    if (changes['data'] && this.data && this.simulation) {
+    if (changes['data'] && this.data && this.sigmaInstance) {
       this.updateGraph();
     }
-    if (changes['forceConfig'] && this.simulation) {
-      this.updateForces();
-    }
-    if (changes['posteriorOverlay'] && this.nodesGroup) {
-      this.updatePosteriorOverlay();
-    }
-    if (changes['priorOverlay'] && this.priorRingsGroup) {
-      this.updatePriorRings();
-    }
-    if (changes['mebnMfragMap'] && this.mfragRegionsGroup) {
-      this.updateMfragRegions();
-    }
-    if ((changes['strengthOverlayEnabled'] || changes['strengthBandMap']) && this.nodesGroup) {
-      this.updateStrengthOverlay();
-    }
-    if (changes['provenanceOverlayEnabled'] && this.nodesGroup) {
-      this.updateProvenanceOverlay();
-    }
-    if ((changes['communityOverlayEnabled'] || changes['communityMap']) && this.nodesGroup) {
-      this.updateCommunityOverlay();
-    }
-    if ((changes['conformanceOverlayEnabled'] || changes['conformanceMap']) && this.nodesGroup) {
-      this.updateConformanceOverlay();
+    // Overlay changes: just recompute node colors + refresh
+    const overlayKeys = [
+      'posteriorOverlay', 'priorOverlay', 'mebnMfragMap',
+      'findingNodeMap',
+      'strengthOverlayEnabled', 'strengthBandMap',
+      'provenanceOverlayEnabled',
+      'communityOverlayEnabled', 'communityMap',
+      'conformanceOverlayEnabled', 'conformanceMap',
+      'influenceOverlayActive',
+    ];
+    if (overlayKeys.some(k => !!changes[k]) && this.sigmaInstance) {
+      if (changes['mebnMfragMap']) {
+        this.rebuildMfragIndex();
+      }
+      this.refreshNodeColors();
     }
   }
 
   ngOnDestroy(): void {
-    if (this.resizeObserver) {
-      this.resizeObserver.disconnect();
+    this.destroy$.next();
+    this.destroy$.complete();
+    if (this.sigmaInstance) {
+      this.sigmaInstance.kill();
+      this.sigmaInstance = null;
     }
-    if (this.simulation) {
-      this.simulation.stop();
-    }
+    this.graph = null;
   }
 
-  private initializeSvg(): void {
-    this.svg = d3.select(this.svgRef.nativeElement);
-    this.zoomContainer = this.svg.select('.zoom-container') as d3.Selection<SVGGElement, unknown, null, undefined>;
-    this.linksGroup = this.zoomContainer.select('.links') as d3.Selection<SVGGElement, unknown, null, undefined>;
-    this.nodesGroup = this.zoomContainer.select('.nodes') as d3.Selection<SVGGElement, unknown, null, undefined>;
-    this.priorRingsGroup = this.zoomContainer.select('.prior-rings') as d3.Selection<SVGGElement, unknown, null, undefined>;
-    this.mfragRegionsGroup = this.zoomContainer.select('.mfrag-regions') as d3.Selection<SVGGElement, unknown, null, undefined>;
-    this.labelsGroup = this.zoomContainer.select('.labels') as d3.Selection<SVGGElement, unknown, null, undefined>;
+  // ── Initialization ────────────────────────────────────────────────────────────
 
-    const rect = this.containerRef.nativeElement.getBoundingClientRect();
-    this.width = rect.width || 800;
-    this.height = rect.height || 600;
-  }
+  private initializeSigma(): void {
+    this.graph = new Graph({ multi: true, allowSelfLoops: false });
 
-  private initializeZoom(): void {
-    this.zoom = d3.zoom<SVGSVGElement, unknown>()
-      .scaleExtent([0.1, 4])
-      .on('zoom', (event) => {
-        this.zoomContainer.attr('transform', event.transform);
+    this.sigmaInstance = new Sigma(this.graph, this.sigmaContainerRef.nativeElement, {
+      renderEdgeLabels: false,
+      labelFont: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+      labelSize: 11,
+      labelWeight: '500',
+      defaultEdgeType: 'line',
+      minCameraRatio: 0.05,
+      maxCameraRatio: 20,
+    });
+
+    // ── Node click — selection / link-mode ────────────────────────────────────
+    this.sigmaInstance.on('clickNode', ({ node }) => {
+      this.ngZone.run(() => this.handleNodeClick(node));
+    });
+
+    // ── Node double-click ─────────────────────────────────────────────────────
+    this.sigmaInstance.on('doubleClickNode', ({ node, event }) => {
+      event.preventSigmaDefault();
+      this.ngZone.run(() => {
+        const d3Node = this.nodeMap.get(node);
+        if (d3Node) this.nodeDoubleClicked.emit(d3Node);
       });
+    });
 
-    this.svg.call(this.zoom);
+    // ── Right-click context menu ───────────────────────────────────────────────
+    this.sigmaInstance.on('rightClickNode', ({ node, event }) => {
+      event.preventSigmaDefault();
+      this.ngZone.run(() => {
+        const d3Node = this.nodeMap.get(node);
+        if (d3Node) {
+          this.nodeContextMenu.emit({ node: d3Node, event: event.original as MouseEvent });
+        }
+      });
+    });
+
+    // ── Background click — deselect ────────────────────────────────────────────
+    this.sigmaInstance.on('clickStage', () => {
+      this.ngZone.run(() => {
+        this.selectedNodeKey = null;
+        this.nodeSelected.emit(null);
+        this.refreshNodeColors();
+        this.cdr.markForCheck();
+      });
+    });
+
+    // ── Node dragging ─────────────────────────────────────────────────────────
+    this.setupDragging();
   }
 
-  private initializeSimulation(): void {
-    this.simulation = d3.forceSimulation<SimulationNode, SimulationLink>()
-      .force('link', d3.forceLink<SimulationNode, SimulationLink>()
-        .id(d => d.id)
-        .distance(this.forceConfig.linkDistance)
-        .strength(this.forceConfig.linkStrength))
-      .force('charge', d3.forceManyBody()
-        .strength(this.forceConfig.chargeStrength))
-      .force('collision', d3.forceCollide()
-        .radius(this.forceConfig.collisionRadius))
-      .force('center', d3.forceCenter(this.width / 2, this.height / 2)
-        .strength(this.forceConfig.centerStrength))
-      .alphaDecay(this.forceConfig.alphaDecay)
-      .velocityDecay(this.forceConfig.velocityDecay);
+  private setupDragging(): void {
+    if (!this.sigmaInstance) return;
+    const sigma = this.sigmaInstance;
 
-    this.simulation.on('tick', () => this.ticked());
-  }
+    sigma.on('downNode', ({ node }) => {
+      this.isDragging = true;
+      this.dragNode = node;
+      sigma.getCamera().disable();
+    });
 
-  private updateForces(): void {
-    this.simulation
-      .force('link', d3.forceLink<SimulationNode, SimulationLink>()
-        .id(d => d.id)
-        .distance(this.forceConfig.linkDistance)
-        .strength(this.forceConfig.linkStrength))
-      .force('charge', d3.forceManyBody()
-        .strength(this.forceConfig.chargeStrength))
-      .force('collision', d3.forceCollide()
-        .radius(this.forceConfig.collisionRadius))
-      .force('center', d3.forceCenter(this.width / 2, this.height / 2)
-        .strength(this.forceConfig.centerStrength))
-      .alphaDecay(this.forceConfig.alphaDecay)
-      .velocityDecay(this.forceConfig.velocityDecay);
+    sigma.getMouseCaptor().on('mousemovebody', (event: any) => {
+      if (!this.isDragging || !this.dragNode || !this.graph) return;
+      const pos = sigma.viewportToGraph({ x: event.x, y: event.y });
+      if (this.graph.hasNode(this.dragNode)) {
+        this.graph.setNodeAttribute(this.dragNode, 'x', pos.x);
+        this.graph.setNodeAttribute(this.dragNode, 'y', pos.y);
+      }
+      event.preventSigmaDefault?.();
+    });
 
-    this.simulation.alpha(0.3).restart();
-  }
-
-  private setupResizeObserver(): void {
-    this.resizeObserver = new ResizeObserver(entries => {
-      for (const entry of entries) {
-        this.width = entry.contentRect.width;
-        this.height = entry.contentRect.height;
-        this.simulation.force('center', d3.forceCenter(this.width / 2, this.height / 2));
-        this.simulation.alpha(0.1).restart();
+    sigma.getMouseCaptor().on('mouseup', () => {
+      if (this.isDragging) {
+        this.isDragging = false;
+        this.dragNode = null;
+        sigma.getCamera().enable();
       }
     });
-    this.resizeObserver.observe(this.containerRef.nativeElement);
   }
 
+  // ── Graph data update ─────────────────────────────────────────────────────────
+
+  /**
+   * Diff-based graph update: adds/removes/updates only the nodes and edges that
+   * actually changed relative to the current graphology state. Existing node
+   * positions (including user drags) are never touched — only visual attributes
+   * (color, label, size) are updated. Layout is computed only for genuinely new
+   * nodes. One sigma.refresh() fires at the end.
+   *
+   * This replaces the old clear()-and-rebuild approach, which destroyed and
+   * recreated every graphology object on every 5s auto-refresh tick even when
+   * the graph content was stable.
+   */
   private updateGraph(): void {
-    if (!this.data) return;
+    if (!this.data || !this.graph || !this.sigmaInstance) return;
 
-    // Transform data to simulation format
-    this.nodes = this.data.nodes.map(n => ({
-      ...n,
-      x: this.width / 2 + Math.random() * 100 - 50,
-      y: this.height / 2 + Math.random() * 100 - 50
-    }));
+    // Rebuild internal index of unique MFrag names
+    this.rebuildMfragIndex();
 
-    this.links = this.data.links.map(l => ({ ...l }));
-
-    // Show empty-state overlay when there are no nodes to render.
-    this.showEmptyState = this.nodes.length === 0;
+    const nodes = this.data.nodes;
+    this.showEmptyState = nodes.length === 0;
     this.cdr.markForCheck();
 
-    if (this.nodes.length === 0) {
-      // Clear any stale SVG elements from a previous load and skip simulation.
-      this.linksGroup.selectAll('*').remove();
-      this.nodesGroup.selectAll('*').remove();
-      this.labelsGroup.selectAll('*').remove();
+    // ── 1. Compute which node ids are incoming ────────────────────────────────
+    const incomingNodeIds = new Set(nodes.map(n => n.id));
+
+    // ── 2. Drop nodes absent from the new data (graphology also drops their edges) ──
+    const toDropNodes: string[] = [];
+    this.graph.forEachNode((id) => {
+      if (!incomingNodeIds.has(id)) toDropNodes.push(id);
+    });
+    for (const id of toDropNodes) {
+      this.graph.dropNode(id);
+      this.nodeMap.delete(id);
+    }
+
+    if (nodes.length === 0) {
+      this.sigmaInstance.refresh();
       return;
     }
 
-    // Update simulation data
-    this.simulation.nodes(this.nodes);
-    const linkForce = this.simulation.force('link') as d3.ForceLink<SimulationNode, SimulationLink>;
-    if (linkForce) {
-      linkForce.links(this.links);
-    }
+    // ── 3. Identify genuinely new nodes; compute positions only for them ──────
+    const newNodes = nodes.filter(n => !this.graph!.hasNode(n.id));
+    const newPositions = this.computeCircularLayout(newNodes);
 
-    // Render elements
-    this.renderLinks();
-    this.renderNodes();
-    this.renderLabels();
+    // ── 4. Add new nodes / update existing node attributes ────────────────────
+    for (const node of nodes) {
+      const anyNode = node as any;
+      const color = this.resolveNodeColor(node);
+      const label = this.truncateLabel(anyNode.label || anyNode.title || node.id, 20);
+      const size = (NODE_SIZES[node.type] || 10) * 0.75;
 
-    // Apply KB overlays if enabled
-    if (this.strengthOverlayEnabled) {
-      this.updateStrengthOverlay();
-    }
-    if (this.provenanceOverlayEnabled) {
-      this.updateProvenanceOverlay();
-    }
-    if (this.conformanceOverlayEnabled) {
-      this.updateConformanceOverlay();
-    }
-
-    // Restart simulation
-    this.simulation.alpha(1).restart();
-  }
-
-  private renderLinks(): void {
-    const linkSelection = this.linksGroup
-      .selectAll<SVGLineElement, SimulationLink>('line')
-      .data(this.links, d => d.id);
-
-    linkSelection.exit().remove();
-
-    const linkEnter = linkSelection.enter()
-      .append('line')
-      .attr('stroke', d => EDGE_COLORS[d.type] || '#999')
-      .attr('stroke-width', d => Math.max(1, (d.weight || 1) * 2))
-      .attr('stroke-dasharray', d => EDGE_DASH_PATTERNS[d.type] || 'none')
-      .attr('marker-end', d => this.getMarker(d.type));
-
-    this.cachedLinkSel = linkSelection.merge(linkEnter)
-      .attr('stroke', d => EDGE_COLORS[d.type] || '#999')
-      .attr('stroke-width', d => Math.max(1, (d.weight || 1) * 2))
-      .attr('stroke-dasharray', d => EDGE_DASH_PATTERNS[d.type] || 'none');
-  }
-
-  private renderNodes(): void {
-    const nodeSelection = this.nodesGroup
-      .selectAll<SVGCircleElement, SimulationNode>('circle')
-      .data(this.nodes, d => d.id);
-
-    nodeSelection.exit().remove();
-
-    const nodeEnter = nodeSelection.enter()
-      .append('circle')
-      .classed('graph-node', true)
-      .attr('r', d => NODE_SIZES[d.type] || 10)
-      .attr('fill', d => NODE_COLORS[d.type] || '#999')
-      .attr('stroke', '#ffffff')
-      .attr('stroke-width', 2.5)
-      .attr('cursor', 'pointer')
-      .style('filter', 'drop-shadow(0 2px 4px rgba(0, 0, 0, 0.15))')
-      .call(this.drag() as any);
-
-    nodeEnter
-      .on('click', (event, d) => this.onNodeClick(event, d))
-      .on('dblclick', (event, d) => this.onNodeDoubleClick(event, d))
-      .on('contextmenu', (event, d) => this.onNodeContextMenu(event, d));
-
-    this.cachedNodeSel = nodeSelection.merge(nodeEnter)
-      .attr('r', d => NODE_SIZES[d.type] || 10)
-      .attr('fill', d => NODE_COLORS[d.type] || '#999')
-      .classed('selected', d => this.selectedNode?.id === d.id);
-  }
-
-  private renderLabels(): void {
-    const labelSelection = this.labelsGroup
-      .selectAll<SVGTextElement, SimulationNode>('text')
-      .data(this.nodes, d => d.id);
-
-    labelSelection.exit().remove();
-
-    const labelEnter = labelSelection.enter()
-      .append('text')
-      .attr('font-size', '11px')
-      .attr('font-weight', '500')
-      .attr('fill', '#1a1f36')
-      .attr('text-anchor', 'middle')
-      .attr('dy', d => -(NODE_SIZES[d.type] || 10) - 8)
-      .text(d => this.truncateLabel(d.label || d.title || d.id, 20));
-
-    this.cachedLabelSel = labelSelection.merge(labelEnter)
-      .text(d => this.truncateLabel(d.label || d.title || d.id, 20));
-  }
-
-  private ticked(): void {
-    // Use cached selections — avoids DOM traversal on every tick
-    if (this.cachedLinkSel) {
-      this.cachedLinkSel
-        .attr('x1', d => (d.source as SimulationNode).x)
-        .attr('y1', d => (d.source as SimulationNode).y)
-        .attr('x2', d => (d.target as SimulationNode).x)
-        .attr('y2', d => (d.target as SimulationNode).y);
-    }
-
-    if (this.cachedNodeSel) {
-      this.cachedNodeSel
-        .attr('cx', d => d.x)
-        .attr('cy', d => d.y);
-    }
-
-    if (this.cachedPriorSel) {
-      this.cachedPriorSel
-        .attr('cx', d => d.x)
-        .attr('cy', d => d.y);
-    }
-
-    if (this.cachedLabelSel) {
-      this.cachedLabelSel
-        .attr('x', d => d.x)
-        .attr('y', d => d.y);
-    }
-
-    // Update strength tint positions
-    if (this.strengthOverlayEnabled) {
-      this.nodesGroup.selectAll<SVGCircleElement, SimulationNode>('.strength-tint')
-        .attr('cx', d => d.x)
-        .attr('cy', d => d.y);
-    }
-
-    // Update provenance diamond positions
-    if (this.provenanceOverlayEnabled) {
-      this.nodesGroup.selectAll<SVGRectElement, SimulationNode>('.provenance-diamond')
-        .attr('x', d => (d.x || 0) - (NODE_SIZES[d.type] || 10) * 0.85)
-        .attr('y', d => (d.y || 0) - (NODE_SIZES[d.type] || 10) * 0.85)
-        .attr('transform', d => `rotate(45, ${d.x || 0}, ${d.y || 0})`);
-    }
-
-    // Update conformance ring positions
-    if (this.conformanceOverlayEnabled) {
-      this.nodesGroup.selectAll<SVGCircleElement, SimulationNode>('.conformance-ring')
-        .attr('cx', d => d.x)
-        .attr('cy', d => d.y);
-    }
-
-    // Update MFrag region positions (throttled to every 5th tick for performance)
-    if (this.mebnMfragMap) {
-      this.mfragTickCounter++;
-      if (this.mfragTickCounter % 5 === 0) {
-        this.updateMfragRegions();
-      }
-    }
-  }
-
-  private drag(): d3.DragBehavior<SVGCircleElement, SimulationNode, SimulationNode | d3.SubjectPosition> {
-    return d3.drag<SVGCircleElement, SimulationNode>()
-      .on('start', (event, d) => {
-        if (!event.active) this.simulation.alphaTarget(0.3).restart();
-        d.fx = d.x;
-        d.fy = d.y;
-      })
-      .on('drag', (event, d) => {
-        d.fx = event.x;
-        d.fy = event.y;
-      })
-      .on('end', (event, d) => {
-        if (!event.active) this.simulation.alphaTarget(0);
-        // Keep node pinned if shift is held, otherwise release
-        if (!event.sourceEvent.shiftKey) {
-          d.fx = null;
-          d.fy = null;
-        }
-      });
-  }
-
-  private onNodeClick(event: MouseEvent, node: SimulationNode): void {
-    event.stopPropagation();
-
-    if (this.linkMode && this.linkSourceNode) {
-      // Complete link creation
-      if (this.linkSourceNode.id !== node.id) {
-        this.ngZone.run(() => {
-          this.edgeCreated.emit({
-            source: this.linkSourceNode!.id,
-            target: node.id
-          });
+      if (this.graph.hasNode(node.id)) {
+        // Existing node: update visual attributes only — NEVER touch x/y so
+        // user-dragged positions are preserved across every auto-refresh tick.
+        this.graph.setNodeAttribute(node.id, 'color', color);
+        this.graph.setNodeAttribute(node.id, 'label', label);
+        this.graph.setNodeAttribute(node.id, 'size', size);
+      } else {
+        // New node: assign a layout position.
+        const pos = newPositions.get(node.id)!;
+        this.graph.addNode(node.id, {
+          x: anyNode.x !== undefined ? anyNode.x : pos.x,
+          y: anyNode.y !== undefined ? anyNode.y : pos.y,
+          size,
+          color,
+          label,
         });
       }
-      this.linkSourceNode = null;
-      this.ngZone.run(() => {
-        this.linkSourceChanged.emit(null);
-      });
-    } else if (this.linkMode) {
-      // Start link creation
-      this.linkSourceNode = node;
-      this.ngZone.run(() => {
-        this.linkSourceChanged.emit(node);
-      });
-    } else {
-      // Normal selection
-      this.selectedNode = this.selectedNode?.id === node.id ? null : node;
-      this.ngZone.run(() => {
-        this.nodeSelected.emit(this.selectedNode);
-        this.cdr.markForCheck();
-      });
+      this.nodeMap.set(node.id, node);
     }
 
-    // Update visual selection
-    this.nodesGroup.selectAll<SVGCircleElement, SimulationNode>('circle')
-      .classed('selected', d => this.selectedNode?.id === d.id || this.linkSourceNode?.id === d.id)
-      .attr('stroke', d => {
-        if (this.linkSourceNode?.id === d.id) return '#fbbf24'; // Gold for link source
-        if (this.selectedNode?.id === d.id) return '#667eea'; // Purple for selected
-        return '#ffffff';
-      })
-      .attr('stroke-width', d => (this.selectedNode?.id === d.id || this.linkSourceNode?.id === d.id) ? 4 : 2);
-  }
+    // ── 5. Diff edges: build the expected key set, add missing, drop stale ────
+    const incomingEdgeKeys = new Set<string>();
+    for (const link of this.data.links) {
+      const srcKey = typeof link.source === 'string' ? link.source : (link.source as any).id;
+      const tgtKey = typeof link.target === 'string' ? link.target : (link.target as any).id;
+      if (!this.graph.hasNode(srcKey) || !this.graph.hasNode(tgtKey)) continue;
+      const edgeKey = link.id || `${srcKey}→${tgtKey}:${link.type}`;
+      incomingEdgeKeys.add(edgeKey);
+      if (!this.graph.hasEdge(edgeKey)) {
+        try {
+          this.graph.addEdgeWithKey(edgeKey, srcKey, tgtKey, {
+            color: EDGE_COLORS[link.type] || '#999999',
+            size: Math.max(0.5, (link.weight || 1) * 1.5),
+            type: 'line',
+          });
+        } catch {
+          // Duplicate edge key (edge exists under a different key) — skip
+        }
+      }
+    }
 
-  private onNodeDoubleClick(event: MouseEvent, node: SimulationNode): void {
-    event.stopPropagation();
-    this.ngZone.run(() => {
-      this.nodeDoubleClicked.emit(node);
+    // Drop edges that are no longer in the incoming data. Collect first to avoid
+    // mutating the graph while iterating over it.
+    const toDropEdges: string[] = [];
+    this.graph.forEachEdge((edgeKey) => {
+      if (!incomingEdgeKeys.has(edgeKey)) toDropEdges.push(edgeKey);
     });
+    for (const edgeKey of toDropEdges) {
+      try { this.graph.dropEdge(edgeKey); } catch { /* already gone */ }
+    }
+
+    this.sigmaInstance.refresh();
   }
 
-  private onNodeContextMenu(event: MouseEvent, node: SimulationNode): void {
-    event.preventDefault();
-    event.stopPropagation();
-    this.ngZone.run(() => {
-      this.nodeContextMenu.emit({ node, event });
+  /**
+   * Merge the given visualization data into the existing Sigma graph (LOD expand).
+   *
+   * Only nodes/edges absent from the graph are added — existing positions and
+   * dragged placements are preserved. New nodes are placed radially around the
+   * first incoming node that is already in the graph (the "anchor"), using the
+   * same FNV-1a jitter as computeCircularLayout so positions are stable across
+   * subsequent calls for the same nodeId. Calls sigma.refresh() once at the end.
+   *
+   * Called by GraphVisualizerComponent on double-click expand.
+   */
+  addNodesToGraph(data: D3VisualizationData): void {
+    if (!data || !this.graph || !this.sigmaInstance) return;
+
+    // Locate anchor: the first incoming node already present in the graph.
+    // This is the node the user double-clicked, which anchors the radial layout.
+    let anchorX = 0;
+    let anchorY = 0;
+    let foundAnchor = false;
+    for (const node of data.nodes) {
+      if (this.graph.hasNode(node.id)) {
+        anchorX = this.graph.getNodeAttribute(node.id, 'x') as number;
+        anchorY = this.graph.getNodeAttribute(node.id, 'y') as number;
+        foundAnchor = true;
+        break;
+      }
+    }
+    if (!foundAnchor && this.graph.order > 0) {
+      // Fall back to centroid of the whole graph
+      let sumX = 0, sumY = 0, count = 0;
+      this.graph.forEachNode((_, attrs) => {
+        const a = attrs as any;
+        sumX += (a.x as number) || 0;
+        sumY += (a.y as number) || 0;
+        count++;
+      });
+      if (count > 0) {
+        anchorX = sumX / count;
+        anchorY = sumY / count;
+      }
+    }
+
+    // Identify genuinely new nodes and compute their radial positions
+    const newNodes = data.nodes.filter(n => !this.graph!.hasNode(n.id));
+    const n = newNodes.length;
+    const radius = Math.max(100, Math.sqrt(n + 1) * 50);
+    const jitterScale = radius * 0.08;
+
+    newNodes.forEach((node, i) => {
+      const angle = (2 * Math.PI * i) / Math.max(1, n);
+      const x = anchorX + Math.cos(angle) * radius + (this.hashToUnit(node.id, 1) - 0.5) * jitterScale;
+      const y = anchorY + Math.sin(angle) * radius + (this.hashToUnit(node.id, 2) - 0.5) * jitterScale;
+      const anyNode = node as any;
+      this.graph!.addNode(node.id, {
+        x,
+        y,
+        size: (NODE_SIZES[node.type] || 10) * 0.75,
+        color: this.resolveNodeColor(node),
+        label: this.truncateLabel(anyNode.label || anyNode.title || node.id, 20),
+      });
+      this.nodeMap.set(node.id, node);
     });
+
+    // Ensure nodeMap is up-to-date for existing nodes too (may arrive with richer metadata)
+    for (const node of data.nodes) {
+      if (!this.nodeMap.has(node.id)) {
+        this.nodeMap.set(node.id, node);
+      }
+    }
+
+    // Add only missing edges (same key scheme as updateGraph)
+    for (const link of data.links) {
+      const srcKey = typeof link.source === 'string' ? link.source : (link.source as any).id;
+      const tgtKey = typeof link.target === 'string' ? link.target : (link.target as any).id;
+      if (!this.graph.hasNode(srcKey) || !this.graph.hasNode(tgtKey)) continue;
+      const edgeKey = link.id || `${srcKey}→${tgtKey}:${link.type}`;
+      if (this.graph.hasEdge(edgeKey)) continue;
+      try {
+        this.graph.addEdgeWithKey(edgeKey, srcKey, tgtKey, {
+          color: EDGE_COLORS[link.type] || '#999999',
+          size: Math.max(0.5, (link.weight || 1) * 1.5),
+          type: 'line',
+        });
+      } catch {
+        // Duplicate edge key (possible if the edge exists under a different key) — skip
+      }
+    }
+
+    if (n > 0) {
+      this.showEmptyState = false;
+      this.cdr.markForCheck();
+    }
+
+    this.sigmaInstance.refresh();
   }
 
-  // Public zoom methods
+  /**
+   * Circular layout: nodes at equal angles around a circle whose radius grows
+   * with sqrt(n) so small and large graphs both look spread out.
+   */
+  private computeCircularLayout(nodes: D3Node[]): Map<string, { x: number; y: number }> {
+    const positions = new Map<string, { x: number; y: number }>();
+    const n = nodes.length;
+    const radius = Math.max(200, Math.sqrt(n) * 60);
+    const jitterScale = radius * 0.08;
+
+    nodes.forEach((node, i) => {
+      const angle = (2 * Math.PI * i) / n;
+      // Deterministic jitter seeded by node id (was Math.random()). A random jitter
+      // re-positioned every node on every updateGraph() call, so the whole graph visibly
+      // jumped on each 5s auto-refresh / filter change even when nothing actually changed.
+      // Hashing the id keeps each node's jitter stable across refreshes.
+      positions.set(node.id, {
+        x: Math.cos(angle) * radius + (this.hashToUnit(node.id, 1) - 0.5) * jitterScale,
+        y: Math.sin(angle) * radius + (this.hashToUnit(node.id, 2) - 0.5) * jitterScale,
+      });
+    });
+
+    return positions;
+  }
+
+  /**
+   * Deterministic [0,1) hash of a string id + salt (FNV-1a). Stable per id, so the
+   * circular-layout jitter is reproducible across refreshes instead of random.
+   */
+  private hashToUnit(s: string, salt: number): number {
+    let h = (2166136261 ^ salt) >>> 0;
+    for (let i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return ((h >>> 0) % 100000) / 100000;
+  }
+
+  // ── Node color resolution (overlays in priority order) ─────────────────────
+
+  private resolveNodeColor(node: D3Node): string {
+    // 1. Posterior / influence heat
+    if (this.posteriorOverlay && this.posteriorOverlay[node.id] !== undefined) {
+      return this.posteriorHeatColor(this.posteriorOverlay[node.id]);
+    }
+    // 1b. Evidence/finding nodes — orange, rendered after posterior so findings that also
+    //     have posteriors keep the heat color when inference is running.
+    if (this.findingNodeMap?.[node.id]) {
+      return '#ff6b00';
+    }
+    // 2. Prior rings — tint toward heat color
+    if (this.priorOverlay && this.priorOverlay[node.id] !== undefined) {
+      const h = this.posteriorHeatColor(this.priorOverlay[node.id]);
+      return this.blendColor(NODE_COLORS[node.type] || '#999999', h, 0.45);
+    }
+    // 3. Strength band
+    if (this.strengthOverlayEnabled && this.strengthBandMap.has(node.id)) {
+      return STRENGTH_BORDER_COLORS[this.strengthBandMap.get(node.id)!] || (NODE_COLORS[node.type] || '#999999');
+    }
+    // 4. Community
+    if (this.communityOverlayEnabled && this.communityMap.has(node.id)) {
+      return COMMUNITY_PALETTE[this.communityMap.get(node.id)! % COMMUNITY_PALETTE.length];
+    }
+    // 5. Conformance
+    if (this.conformanceOverlayEnabled && this.conformanceMap.has(node.id)) {
+      const v = this.conformanceMap.get(node.id);
+      if (v === true)  return '#4CAF50';
+      if (v === false) return '#F44336';
+      return '#9E9E9E';
+    }
+    // 6. MFrag membership — accent color per unique MFrag name
+    if (this.mebnMfragMap && this.mebnMfragMap[node.id]) {
+      const idx = this.uniqueMfrags.indexOf(this.mebnMfragMap[node.id]);
+      return MFRAG_ACCENT_COLORS[Math.max(0, idx) % MFRAG_ACCENT_COLORS.length];
+    }
+    // 7. Provenance-derived nodes — purple tint
+    if (this.provenanceOverlayEnabled && this.isDerivedNode(node)) {
+      return '#ce93d8';
+    }
+    // 8. Default: type color
+    return NODE_COLORS[node.type] || '#999999';
+  }
+
+  private refreshNodeColors(): void {
+    if (!this.graph || !this.sigmaInstance) return;
+
+    this.graph.forEachNode((nodeKey) => {
+      const d3Node = this.nodeMap.get(nodeKey);
+      if (!d3Node) return;
+      let color = this.resolveNodeColor(d3Node);
+
+      // Selection and link-source highlights override the overlay color
+      if (nodeKey === this.selectedNodeKey) {
+        this.graph!.setNodeAttribute(nodeKey, 'highlighted', true);
+        this.graph!.setNodeAttribute(nodeKey, 'color', color);
+      } else if (nodeKey === this.linkSourceKey) {
+        this.graph!.setNodeAttribute(nodeKey, 'highlighted', true);
+        this.graph!.setNodeAttribute(nodeKey, 'color', '#fbbf24');
+      } else {
+        this.graph!.setNodeAttribute(nodeKey, 'highlighted', false);
+        this.graph!.setNodeAttribute(nodeKey, 'color', color);
+      }
+    });
+
+    this.sigmaInstance.refresh();
+  }
+
+  // ── Click / interaction handlers ──────────────────────────────────────────────
+
+  private handleNodeClick(nodeKey: string): void {
+    const d3Node = this.nodeMap.get(nodeKey);
+    if (!d3Node) return;
+
+    if (this.linkMode && this.linkSourceKey) {
+      if (this.linkSourceKey !== nodeKey) {
+        this.edgeCreated.emit({ source: this.linkSourceKey, target: nodeKey });
+      }
+      this.linkSourceKey = null;
+      this.linkSourceChanged.emit(null);
+    } else if (this.linkMode) {
+      this.linkSourceKey = nodeKey;
+      this.linkSourceChanged.emit(d3Node);
+    } else {
+      // Toggle selection
+      if (this.selectedNodeKey === nodeKey) {
+        this.selectedNodeKey = null;
+        this.nodeSelected.emit(null);
+      } else {
+        this.selectedNodeKey = nodeKey;
+        this.nodeSelected.emit(d3Node);
+      }
+      this.cdr.markForCheck();
+    }
+
+    this.refreshNodeColors();
+  }
+
+  // ── Zoom controls (public — called from template) ─────────────────────────────
+
   zoomIn(): void {
-    this.svg.transition().duration(300).call(this.zoom.scaleBy, 1.3);
+    if (!this.sigmaInstance) return;
+    const cam = this.sigmaInstance.getCamera();
+    cam.animate({ ratio: cam.ratio / 1.3 }, { duration: 300 });
   }
 
   zoomOut(): void {
-    this.svg.transition().duration(300).call(this.zoom.scaleBy, 0.7);
+    if (!this.sigmaInstance) return;
+    const cam = this.sigmaInstance.getCamera();
+    cam.animate({ ratio: cam.ratio * 1.3 }, { duration: 300 });
   }
 
   resetZoom(): void {
-    this.svg.transition().duration(500).call(
-      this.zoom.transform,
-      d3.zoomIdentity
-    );
+    if (!this.sigmaInstance) return;
+    this.sigmaInstance.getCamera().animatedReset();
   }
 
   fitToScreen(): void {
-    if (this.nodes.length === 0) return;
-
-    const padding = 50;
-    const bounds = this.getBounds();
-    const dx = bounds.maxX - bounds.minX;
-    const dy = bounds.maxY - bounds.minY;
-    const x = (bounds.minX + bounds.maxX) / 2;
-    const y = (bounds.minY + bounds.maxY) / 2;
-    const scale = Math.min(
-      (this.width - 2 * padding) / dx,
-      (this.height - 2 * padding) / dy,
-      2
-    );
-
-    this.svg.transition().duration(500).call(
-      this.zoom.transform,
-      d3.zoomIdentity
-        .translate(this.width / 2, this.height / 2)
-        .scale(scale)
-        .translate(-x, -y)
-    );
+    if (!this.sigmaInstance) return;
+    this.sigmaInstance.getCamera().animatedReset();
   }
 
-  private getBounds(): { minX: number; maxX: number; minY: number; maxY: number } {
-    let minX = Infinity, maxX = -Infinity;
-    let minY = Infinity, maxY = -Infinity;
-
-    for (const node of this.nodes) {
-      const r = NODE_SIZES[node.type] || 10;
-      minX = Math.min(minX, node.x - r);
-      maxX = Math.max(maxX, node.x + r);
-      minY = Math.min(minY, node.y - r);
-      maxY = Math.max(maxY, node.y + r);
-    }
-
-    return { minX, maxX, minY, maxY };
-  }
-
-  private getMarker(edgeType: EdgeType): string {
-    switch (edgeType) {
-      case 'EMBEDDING_SIMILARITY': return 'url(#arrow-similarity)';
-      case 'SHARED_ENTITY': return 'url(#arrow-entity)';
-      case 'USER_DEFINED': return 'url(#arrow-user)';
-      default: return 'url(#arrow)';
-    }
-  }
+  // ── Utility helpers ───────────────────────────────────────────────────────────
 
   private truncateLabel(text: string, maxLength: number): string {
-    if (text.length <= maxLength) return text;
-    return text.substring(0, maxLength - 3) + '...';
+    if (!text) return '';
+    return text.length <= maxLength ? text : text.substring(0, maxLength - 3) + '...';
   }
+
+  private isDerivedNode(node: D3Node): boolean {
+    const meta = (node as any).metadata as Record<string, unknown> | undefined;
+    if (!meta) return false;
+    if (meta['_derived'] === true) return true;
+    const src = meta['_source'] as string | undefined;
+    if (src?.toLowerCase().includes('derived')) return true;
+    const prov = meta['_provenance'] as string | undefined;
+    if (prov?.toLowerCase().includes('derived')) return true;
+    return false;
+  }
+
+  private rebuildMfragIndex(): void {
+    if (!this.mebnMfragMap) {
+      this.uniqueMfrags = [];
+      return;
+    }
+    const names = Object.values(this.mebnMfragMap);
+    this.uniqueMfrags = [...new Set(names)];
+  }
+
+  /**
+   * Heat colour interpolation: blue (0) → yellow (0.5) → red (1).
+   * Matches the original D3 implementation for visual consistency.
+   */
+  private posteriorHeatColor(value: number): string {
+    const r = value < 0.5 ? Math.round(value * 2 * 255) : 255;
+    const g = value < 0.5
+      ? Math.round(100 + value * 2 * 155)
+      : Math.round(255 - (value - 0.5) * 2 * 200);
+    const b = value < 0.5
+      ? Math.round(255 - value * 2 * 200)
+      : Math.round(55 - (value - 0.5) * 2 * 55);
+    return `rgb(${r},${g},${b})`;
+  }
+
+  /**
+   * Linear blend between two hex/rgb colours. alpha=0 → a, alpha=1 → b.
+   * Used to produce a gentle prior-ring tint.
+   */
+  private blendColor(a: string, b: string, alpha: number): string {
+    const pa = this.parseColor(a);
+    const pb = this.parseColor(b);
+    if (!pa || !pb) return b;
+    const r = Math.round(pa[0] * (1 - alpha) + pb[0] * alpha);
+    const g = Math.round(pa[1] * (1 - alpha) + pb[1] * alpha);
+    const bl = Math.round(pa[2] * (1 - alpha) + pb[2] * alpha);
+    return `rgb(${r},${g},${bl})`;
+  }
+
+  private parseColor(color: string): [number, number, number] | null {
+    const hex = color.match(/^#([0-9a-f]{6})$/i);
+    if (hex) {
+      const v = parseInt(hex[1], 16);
+      return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
+    }
+    const rgb = color.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+    if (rgb) return [+rgb[1], +rgb[2], +rgb[3]];
+    return null;
+  }
+
+  // ── Legend helper methods (called from template) ──────────────────────────────
 
   getEdgeBorderStyle(edgeType: EdgeType): string {
     const pattern = EDGE_DASH_PATTERNS[edgeType];
@@ -924,391 +1056,30 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
     return edgeType.toLowerCase().replace(/_/g, ' ');
   }
 
-  private updatePosteriorOverlay(): void {
-    if (!this.nodesGroup) return;
-
-    this.nodesGroup.selectAll<SVGCircleElement, SimulationNode>('circle')
-      .attr('fill', (d: SimulationNode) => {
-        if (this.posteriorOverlay && this.posteriorOverlay[d.id] !== undefined) {
-          return this.getPosteriorHeatColor(this.posteriorOverlay[d.id]);
-        }
-        return NODE_COLORS[d.type] || '#999';
-      })
-      .attr('stroke', (d: SimulationNode) => {
-        if (this.posteriorOverlay && this.posteriorOverlay[d.id] !== undefined) {
-          return '#1a1f36';
-        }
-        return 'white';
-      })
-      .attr('stroke-width', (d: SimulationNode) => {
-        if (this.posteriorOverlay && this.posteriorOverlay[d.id] !== undefined) {
-          return 2;
-        }
-        return 1.5;
-      });
-  }
-
-  private getPosteriorHeatColor(value: number): string {
-    // Interpolate from cool blue (0.0) through yellow (0.5) to hot red (1.0)
-    const r = value < 0.5 ? Math.round(value * 2 * 255) : 255;
-    const g = value < 0.5 ? Math.round(100 + value * 2 * 155) : Math.round(255 - (value - 0.5) * 2 * 200);
-    const b = value < 0.5 ? Math.round(255 - value * 2 * 200) : Math.round(55 - (value - 0.5) * 2 * 55);
-    return `rgb(${r}, ${g}, ${b})`;
-  }
-
-  private updatePriorRings(): void {
-    if (!this.priorRingsGroup) return;
-
-    // Remove all existing prior rings
-    this.priorRingsGroup.selectAll('circle').remove();
-
-    if (!this.priorOverlay) {
-      this.cachedPriorSel = null as any;
-      return;
-    }
-
-    // Add a dashed ring for each node with a prior value
-    const nodesWithPrior = this.nodes.filter(n => this.priorOverlay![n.id] !== undefined);
-    for (const node of nodesWithPrior) {
-      const prior = this.priorOverlay[node.id];
-      const baseRadius = (node as any).r || NODE_SIZES[node.type] || 10;
-      const ringRadius = baseRadius + 4;
-
-      this.priorRingsGroup.append('circle')
-        .datum(node)
-        .attr('cx', node.x || 0)
-        .attr('cy', node.y || 0)
-        .attr('r', ringRadius)
-        .attr('fill', 'none')
-        .attr('stroke', this.getPosteriorHeatColor(prior))
-        .attr('stroke-width', 2)
-        .attr('stroke-dasharray', '4 2')
-        .attr('opacity', 0.7)
-        .attr('pointer-events', 'none');
-    }
-
-    // Cache selection for ticked()
-    this.cachedPriorSel = this.priorRingsGroup.selectAll<SVGCircleElement, SimulationNode>('circle');
-  }
-
-  // ── Strength Overlay ────────────────────────────────────────────────────────
-
-  private readonly STRENGTH_BORDER_COLORS: Record<string, string> = {
-    ESTABLISHED:  '#4CAF50',
-    HIGH:         '#8BC34A',
-    PROBABLE:     '#FFC107',
-    SPECULATIVE:  '#FF9800',
-    SUPPRESSED:   '#F44336',
-  };
-
-  private readonly STRENGTH_TINT_COLORS: Record<string, string> = {
-    ESTABLISHED:  'rgba(76,175,80,0.15)',
-    HIGH:         'rgba(139,195,74,0.15)',
-    PROBABLE:     'rgba(255,193,7,0.15)',
-    SPECULATIVE:  'rgba(255,152,0,0.15)',
-    SUPPRESSED:   'rgba(244,67,54,0.15)',
-  };
-
-  private updateStrengthOverlay(): void {
-    if (!this.nodesGroup) return;
-
-    // Remove existing strength overlay elements
-    this.nodesGroup.selectAll<SVGCircleElement, SimulationNode>('.strength-tint').remove();
-
-    if (!this.strengthOverlayEnabled || this.strengthBandMap.size === 0) {
-      // Reset stroke back to defaults
-      this.nodesGroup.selectAll<SVGCircleElement, SimulationNode>('circle.graph-node')
-        .attr('stroke', d => this.selectedNode?.id === d.id ? '#667eea' : '#ffffff')
-        .attr('stroke-width', d => this.selectedNode?.id === d.id ? 4 : 2.5);
-      return;
-    }
-
-    // Apply border color based on strength band
-    this.nodesGroup.selectAll<SVGCircleElement, SimulationNode>('circle.graph-node')
-      .attr('stroke', (d: SimulationNode) => {
-        if (this.selectedNode?.id === d.id) return '#667eea';
-        const band = this.strengthBandMap.get(d.id);
-        return band ? (this.STRENGTH_BORDER_COLORS[band] || '#ffffff') : '#ffffff';
-      })
-      .attr('stroke-width', (d: SimulationNode) => {
-        if (this.selectedNode?.id === d.id) return 4;
-        return this.strengthBandMap.has(d.id) ? 3.5 : 2.5;
-      });
-
-    // Add tint circles behind the main circles
-    const nodesWithBand = this.nodes.filter(n => this.strengthBandMap.has(n.id));
-    for (const node of nodesWithBand) {
-      const band = this.strengthBandMap.get(node.id)!;
-      const tint = this.STRENGTH_TINT_COLORS[band];
-      if (!tint) continue;
-      const baseR = NODE_SIZES[node.type] || 10;
-      this.nodesGroup.insert('circle', 'circle')
-        .datum(node)
-        .classed('strength-tint', true)
-        .attr('cx', node.x || 0)
-        .attr('cy', node.y || 0)
-        .attr('r', baseR + 6)
-        .attr('fill', tint)
-        .attr('stroke', 'none')
-        .attr('pointer-events', 'none');
-    }
-  }
-
-  // ── Provenance Overlay ───────────────────────────────────────────────────────
-
-  private updateProvenanceOverlay(): void {
-    if (!this.nodesGroup) return;
-
-    // Remove existing diamond overlays
-    this.nodesGroup.selectAll('.provenance-diamond').remove();
-
-    if (!this.provenanceOverlayEnabled) return;
-
-    // For DERIVED nodes, add a rotated square (diamond) overlay
-    const derivedNodes = this.nodes.filter(n => this.isDerivedNode(n));
-    for (const node of derivedNodes) {
-      const size = (NODE_SIZES[node.type] || 10) * 0.85;
-      this.nodesGroup.append('rect')
-        .datum(node)
-        .classed('provenance-diamond', true)
-        .attr('x', (node.x || 0) - size)
-        .attr('y', (node.y || 0) - size)
-        .attr('width', size * 2)
-        .attr('height', size * 2)
-        .attr('fill', 'none')
-        .attr('stroke', '#ce93d8')
-        .attr('stroke-width', 2)
-        .attr('stroke-dasharray', '3 2')
-        .attr('transform', `rotate(45, ${node.x || 0}, ${node.y || 0})`)
-        .attr('pointer-events', 'none');
-    }
-  }
-
-  private isDerivedNode(node: SimulationNode): boolean {
-    const meta = node.metadata as Record<string, unknown> | undefined;
-    if (!meta) return false;
-    if (meta['_derived'] === true) return true;
-    const src = meta['_source'] as string | undefined;
-    if (src && src.toLowerCase().includes('derived')) return true;
-    const prov = meta['_provenance'] as string | undefined;
-    if (prov && prov.toLowerCase().includes('derived')) return true;
-    return false;
-  }
-
-  // ── Community Overlay ─────────────────────────────────────────────────────────
-  // Community rings are rebuilt by updateCommunityOverlay() when communityMap/
-  // communityOverlayEnabled inputs change — NOT on every simulation tick (same
-  // pattern as provenance diamond overlays).
-
-  private readonly COMMUNITY_PALETTE: string[] = [
-    '#4285F4', '#EA4335', '#FBBC05', '#34A853', '#FF6D00',
-    '#9C27B0', '#00BCD4', '#FF5722', '#607D8B', '#795548',
-    '#E91E63', '#009688', '#FF9800', '#3F51B5', '#8BC34A',
-    '#F44336', '#2196F3', '#4CAF50', '#FFC107', '#9E9E9E'
-  ];
-
-  private communityColor(communityId: number): string {
-    return this.COMMUNITY_PALETTE[communityId % this.COMMUNITY_PALETTE.length];
-  }
-
-  private updateCommunityOverlay(): void {
-    if (!this.nodesGroup) return;
-
-    this.nodesGroup.selectAll('.community-ring').remove();
-
-    if (!this.communityOverlayEnabled || this.communityMap.size === 0) {
-      this.nodesGroup.selectAll<SVGCircleElement, SimulationNode>('circle.graph-node')
-        .attr('stroke', d => this.selectedNode?.id === d.id ? '#667eea' : '#ffffff')
-        .attr('stroke-width', d => this.selectedNode?.id === d.id ? 4 : 2.5);
-      return;
-    }
-
-    // Color node strokes by community id
-    this.nodesGroup.selectAll<SVGCircleElement, SimulationNode>('circle.graph-node')
-      .attr('stroke', (d: SimulationNode) => {
-        if (this.selectedNode?.id === d.id) return '#667eea';
-        const cid = this.communityMap.get(d.id);
-        return cid !== undefined ? this.communityColor(cid) : '#ffffff';
-      })
-      .attr('stroke-width', (d: SimulationNode) => {
-        if (this.selectedNode?.id === d.id) return 4;
-        return this.communityMap.has(d.id) ? 4 : 2.5;
-      });
-
-    // Add a semi-transparent ring behind each node in the community color
-    const nodesWithCommunity = this.nodes.filter(n => this.communityMap.has(n.id));
-    for (const node of nodesWithCommunity) {
-      const cid = this.communityMap.get(node.id)!;
-      const color = this.communityColor(cid);
-      const baseR = NODE_SIZES[node.type] || 10;
-      this.nodesGroup.insert('circle', 'circle')
-        .datum(node)
-        .classed('community-ring', true)
-        .attr('cx', node.x || 0)
-        .attr('cy', node.y || 0)
-        .attr('r', baseR + 7)
-        .attr('fill', color + '22')  // 13% opacity
-        .attr('stroke', color)
-        .attr('stroke-width', 1.5)
-        .attr('stroke-opacity', 0.6)
-        .attr('pointer-events', 'none');
-    }
-  }
-
-  // ── Conformance Overlay (P2) ──────────────────────────────────────────────
-  // Mirrors the community overlay pattern exactly:
-  //   conformant  = green ring  (#4CAF50)
-  //   violation   = red ring    (#F44336)
-  //   untagged    = grey ring   (#9E9E9E)
-
-  private readonly CONFORMANCE_COLORS: Record<string, string> = {
-    CONFORMANT: '#4CAF50',
-    VIOLATION:  '#F44336',
-    UNTAGGED:   '#9E9E9E',
-  };
-
-  private readonly CONFORMANCE_TINT_COLORS: Record<string, string> = {
-    CONFORMANT: 'rgba(76,175,80,0.12)',
-    VIOLATION:  'rgba(244,67,54,0.12)',
-    UNTAGGED:   'rgba(158,158,158,0.10)',
-  };
-
-  private conformanceTier(nodeId: string): 'CONFORMANT' | 'VIOLATION' | 'UNTAGGED' | null {
-    if (!this.conformanceMap.has(nodeId)) return null;
-    const val = this.conformanceMap.get(nodeId);
-    if (val === true)  return 'CONFORMANT';
-    if (val === false) return 'VIOLATION';
-    return 'UNTAGGED';
-  }
-
-  private updateConformanceOverlay(): void {
-    if (!this.nodesGroup) return;
-
-    this.nodesGroup.selectAll('.conformance-ring').remove();
-
-    if (!this.conformanceOverlayEnabled || this.conformanceMap.size === 0) {
-      // Reset stroke back to defaults only when no other overlay is coloring it
-      if (!this.communityOverlayEnabled && !this.strengthOverlayEnabled) {
-        this.nodesGroup.selectAll<SVGCircleElement, SimulationNode>('circle.graph-node')
-          .attr('stroke', d => this.selectedNode?.id === d.id ? '#667eea' : '#ffffff')
-          .attr('stroke-width', d => this.selectedNode?.id === d.id ? 4 : 2.5);
+  /**
+   * Human-readable label for an MFrag name — mirrors BayesianPanelComponent.fragLabel()
+   * but lives here so the legend template can call it without importing the panel.
+   */
+  fragLabelCanvas(name: string | undefined | null): string {
+    if (!name) return '';
+    const tokens = name
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .replace(/[_-]+/g, ' ')
+      .trim()
+      .split(/\s+/)
+      .filter(w => w.length);
+    const out: string[] = [];
+    for (const w of tokens) {
+      const titled = w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+      if (out.length === 0 || out[out.length - 1].toLowerCase() !== titled.toLowerCase()) {
+        out.push(titled);
       }
-      return;
     }
-
-    // Color node strokes by conformance tier
-    this.nodesGroup.selectAll<SVGCircleElement, SimulationNode>('circle.graph-node')
-      .attr('stroke', (d: SimulationNode) => {
-        if (this.selectedNode?.id === d.id) return '#667eea';
-        const tier = this.conformanceTier(d.id);
-        return tier ? (this.CONFORMANCE_COLORS[tier] || '#ffffff') : '#ffffff';
-      })
-      .attr('stroke-width', (d: SimulationNode) => {
-        if (this.selectedNode?.id === d.id) return 4;
-        return this.conformanceMap.has(d.id) ? 4 : 2.5;
-      });
-
-    // Add a semi-transparent ring behind each node with a conformance entry
-    const nodesWithConformance = this.nodes.filter(n => this.conformanceMap.has(n.id));
-    for (const node of nodesWithConformance) {
-      const tier = this.conformanceTier(node.id)!;
-      const color = this.CONFORMANCE_COLORS[tier];
-      const tint  = this.CONFORMANCE_TINT_COLORS[tier];
-      const baseR = NODE_SIZES[node.type] || 10;
-      this.nodesGroup.insert('circle', 'circle')
-        .datum(node)
-        .classed('conformance-ring', true)
-        .attr('cx', node.x || 0)
-        .attr('cy', node.y || 0)
-        .attr('r', baseR + 7)
-        .attr('fill', tint)
-        .attr('stroke', color)
-        .attr('stroke-width', 1.5)
-        .attr('stroke-opacity', 0.7)
-        .attr('pointer-events', 'none');
-    }
+    return out.join(' ') || name;
   }
 
-  private readonly MFRAG_COLORS = [
-    'rgba(102, 126, 234, 0.08)',  // indigo
-    'rgba(34, 197, 94, 0.08)',    // green
-    'rgba(245, 158, 11, 0.08)',   // amber
-    'rgba(139, 92, 246, 0.08)',   // purple
-    'rgba(239, 68, 68, 0.08)',    // red
-    'rgba(14, 165, 233, 0.08)',   // sky
-    'rgba(236, 72, 153, 0.08)',   // pink
-  ];
-
-  private readonly MFRAG_BORDER_COLORS = [
-    'rgba(102, 126, 234, 0.3)',
-    'rgba(34, 197, 94, 0.3)',
-    'rgba(245, 158, 11, 0.3)',
-    'rgba(139, 92, 246, 0.3)',
-    'rgba(239, 68, 68, 0.3)',
-    'rgba(14, 165, 233, 0.3)',
-    'rgba(236, 72, 153, 0.3)',
-  ];
-
-  private updateMfragRegions(): void {
-    if (!this.mfragRegionsGroup) return;
-
-    this.mfragRegionsGroup.selectAll('*').remove();
-    if (!this.mebnMfragMap) return;
-
-    // Group nodes by MFrag name
-    const mfragGroups = new Map<string, SimulationNode[]>();
-    for (const node of this.nodes) {
-      const mfrag = this.mebnMfragMap[node.id];
-      if (!mfrag) continue;
-      if (!mfragGroups.has(mfrag)) mfragGroups.set(mfrag, []);
-      mfragGroups.get(mfrag)!.push(node);
-    }
-
-    let colorIndex = 0;
-    for (const [mfragName, groupNodes] of mfragGroups) {
-      if (groupNodes.length < 1) continue;
-
-      // Compute bounding box with padding, accounting for node radius
-      const padding = 30;
-      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-      for (const n of groupNodes) {
-        const x = n.x || 0;
-        const y = n.y || 0;
-        const r = NODE_SIZES[n.type] || 10;
-        if (x - r < minX) minX = x - r;
-        if (y - r < minY) minY = y - r;
-        if (x + r > maxX) maxX = x + r;
-        if (y + r > maxY) maxY = y + r;
-      }
-
-      const fill = this.MFRAG_COLORS[colorIndex % this.MFRAG_COLORS.length];
-      const stroke = this.MFRAG_BORDER_COLORS[colorIndex % this.MFRAG_BORDER_COLORS.length];
-      colorIndex++;
-
-      // Draw rounded rect background
-      this.mfragRegionsGroup.append('rect')
-        .attr('x', minX - padding)
-        .attr('y', minY - padding)
-        .attr('width', maxX - minX + padding * 2)
-        .attr('height', maxY - minY + padding * 2)
-        .attr('rx', 12)
-        .attr('ry', 12)
-        .attr('fill', fill)
-        .attr('stroke', stroke)
-        .attr('stroke-width', 1.5)
-        .attr('stroke-dasharray', '6 3')
-        .attr('pointer-events', 'none');
-
-      // Label
-      this.mfragRegionsGroup.append('text')
-        .attr('x', minX - padding + 8)
-        .attr('y', minY - padding + 14)
-        .attr('fill', stroke.replace('0.3', '0.8'))
-        .attr('font-size', '10px')
-        .attr('font-weight', '600')
-        .attr('letter-spacing', '0.5px')
-        .attr('pointer-events', 'none')
-        .text(mfragName);
-    }
+  /** Returns the MFRAG_ACCENT_COLORS entry for a given array index. */
+  mfragAccentColor(index: number): string {
+    return MFRAG_ACCENT_COLORS[index % MFRAG_ACCENT_COLORS.length];
   }
 }

@@ -16,12 +16,11 @@
 package ai.kompile.knowledgegraph.maintenance;
 
 import ai.kompile.core.graphrag.maintenance.model.GraphSnapshot;
+import ai.kompile.knowledgegraph.grounding.GroundingResetPort;
 import ai.kompile.knowledgegraph.io.GraphEmbeddingSidecar;
 import ai.kompile.knowledgegraph.io.GraphIOService;
 import ai.kompile.knowledgegraph.io.model.ImportResult;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
-import ai.kompile.knowledgegraph.repository.GraphEdgeRepository;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -57,19 +56,13 @@ public class SnapshotManager {
     @Value("${kompile.data.dir:}")
     private String dataDir;
 
-    private final GraphNodeRepository nodeRepository;
-    private final GraphEdgeRepository edgeRepository;
     private final ObjectMapper objectMapper;
     private final GraphIOService graphIOService;
     private final KnowledgeGraphService knowledgeGraphService;
 
-    public SnapshotManager(GraphNodeRepository nodeRepository,
-                           GraphEdgeRepository edgeRepository,
-                           ObjectMapper objectMapper,
+    public SnapshotManager(ObjectMapper objectMapper,
                            GraphIOService graphIOService,
                            KnowledgeGraphService knowledgeGraphService) {
-        this.nodeRepository = nodeRepository;
-        this.edgeRepository = edgeRepository;
         this.objectMapper = objectMapper;
         this.graphIOService = graphIOService;
         this.knowledgeGraphService = knowledgeGraphService;
@@ -81,6 +74,14 @@ public class SnapshotManager {
      */
     @Autowired(required = false)
     private GraphEmbeddingSidecar embeddingSidecar;
+
+    /**
+     * Optional — wired when {@code kompile-graph-change-tracking} is on the classpath.
+     * After a snapshot restore, the in-memory KB state is stale (the underlying graph changed
+     * completely); this port evicts the cached state and schedules a fresh re-ground.
+     */
+    @Autowired(required = false)
+    private GroundingResetPort groundingResetPort;
 
     private Path snapshotBaseDir() {
         if (dataDir != null && !dataDir.isBlank()) {
@@ -309,6 +310,13 @@ public class SnapshotManager {
                     log.warn("Failed to reattach snapshot embeddings for {}: {}", snapshotId, e.getMessage());
                 }
             }
+        }
+
+        // Invalidate the in-memory KB grounding state (facts/inferences are now stale because
+        // the entire graph was replaced) and schedule a fresh re-ground asynchronously.
+        // This is done AFTER embedding reattachment so the cascade sees the full restored graph.
+        if (factSheetId != null && groundingResetPort != null) {
+            groundingResetPort.invalidateAndReground(factSheetId, "restore:" + snapshotId);
         }
 
         final String wantedId = snapshotId;

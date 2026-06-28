@@ -147,7 +147,7 @@
 }
 
 .entity-table th, .connection-table th {
-  background: #f8fafc;
+  background: var(--bg-surface-elevated, #f8fafc);
   font-size: 12px;
   font-weight: 600;
   color: var(--text-secondary, #697386);
@@ -161,11 +161,16 @@
 }
 
 .entity-table tr:hover, .connection-table tr:hover {
-  background: #f8fafc;
+  background: var(--bg-surface-elevated, #f8fafc);
 }
 
 .entity-table tr.selected, .connection-table tr.selected {
-  background: #eef2ff;
+  background: rgba(102, 126, 234, 0.1);
+}
+
+body.dark-theme .entity-table tr.selected,
+body.dark-theme .connection-table tr.selected {
+  background: rgba(102, 126, 234, 0.2);
 }
 
 /* Type Badge */
@@ -289,7 +294,7 @@
   justify-content: space-between;
   align-items: center;
   padding: 12px 16px;
-  background: #f8fafc;
+  background: var(--bg-surface-elevated, #f8fafc);
   border-bottom: 1px solid var(--border-color, #e3e8ee);
 }
 
@@ -318,7 +323,7 @@
 
 .card-footer {
   padding: 12px 16px;
-  background: #f8fafc;
+  background: var(--bg-surface-elevated, #f8fafc);
   border-top: 1px solid var(--border-color, #e3e8ee);
 }
 
@@ -444,11 +449,12 @@
 }
 
 .metadata-content {
-  background: #f1f5f9;
+  background: var(--bg-surface-elevated, #f1f5f9);
   padding: 12px;
   border-radius: 8px;
   font-size: 11px;
   font-family: var(--font-family-monospace, 'JetBrains Mono', monospace);
+  color: var(--text-primary);
   overflow-x: auto;
   margin: 0;
   max-height: 200px;
@@ -486,7 +492,7 @@
   align-items: center;
   gap: 10px;
   padding: 10px 12px;
-  background: #f8fafc;
+  background: var(--bg-surface-elevated, #f8fafc);
   border-radius: 8px;
   border: 1px solid var(--border-color, #e3e8ee);
 }
@@ -532,7 +538,7 @@
   align-items: center;
   gap: 10px;
   padding: 10px 12px;
-  background: #f8fafc;
+  background: var(--bg-surface-elevated, #f8fafc);
   border-radius: 8px;
   border: 1px solid var(--border-color, #e3e8ee);
   cursor: pointer;
@@ -540,8 +546,12 @@
 }
 
 .connected-item:hover {
-  background: #eef2ff;
+  background: rgba(102, 126, 234, 0.1);
   border-color: #667eea;
+}
+
+body.dark-theme .connected-item:hover {
+  background: rgba(102, 126, 234, 0.2);
 }
 
 .connected-info {
@@ -565,7 +575,7 @@
   align-items: center;
   gap: 8px;
   padding: 16px;
-  background: #f8fafc;
+  background: var(--bg-surface-elevated, #f8fafc);
   border-radius: 8px;
   color: var(--text-tertiary, #8792a2);
   font-size: 13px;

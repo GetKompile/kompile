@@ -170,7 +170,7 @@ class UnifiedCrawlControllerTest {
 
         when(unifiedCrawlService.getAllJobs()).thenReturn(List.of(j1, j2));
 
-        ResponseEntity<List<Map<String, Object>>> response = controller.listJobs();
+        ResponseEntity<List<Map<String, Object>>> response = controller.listJobs(true);
 
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertNotNull(response.getBody());
@@ -188,7 +188,7 @@ class UnifiedCrawlControllerTest {
     void listJobs_empty() {
         when(unifiedCrawlService.getAllJobs()).thenReturn(List.of());
 
-        ResponseEntity<List<Map<String, Object>>> response = controller.listJobs();
+        ResponseEntity<List<Map<String, Object>>> response = controller.listJobs(true);
 
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertTrue(response.getBody().isEmpty());

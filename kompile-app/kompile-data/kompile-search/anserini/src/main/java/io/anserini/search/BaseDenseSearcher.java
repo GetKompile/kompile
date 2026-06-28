@@ -44,6 +44,14 @@ import java.io.IOException;
  */
 public abstract class BaseDenseSearcher<K extends Comparable<K>> extends BaseSearcher<K, Object> {
 
+    static {
+        // Select Lucene's native-image-safe mmap provider before any MMapDirectory is constructed.
+        // Runs before the constructor of every concrete dense searcher (subclass init initializes
+        // this superclass first), so the dense vector index is always opened off-heap and the
+        // native image never hits the unsupported Arena.ofShared() path.
+        LuceneRuntimeConfig.ensure();
+    }
+
     public BaseDenseSearcher(BaseSearchArgs args) {
         super(args);
     }

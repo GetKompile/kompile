@@ -16,6 +16,7 @@
 package ai.kompile.knowledgegraph.service;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -59,7 +60,7 @@ public interface GraphEdgeComputationService {
      * @param nodeIds List of new node UUIDs
      * @param minSimilarity Minimum similarity threshold
      */
-    void updateSimilarityEdgesIncremental(java.util.List<String> nodeIds, double minSimilarity);
+    void updateSimilarityEdgesIncremental(List<String> nodeIds, double minSimilarity);
 
     // ═══════════════════════════════════════════════════════════════════════════
     // SHARED ENTITY EDGES
@@ -79,6 +80,22 @@ public interface GraphEdgeComputationService {
      * @param minSharedEntities Minimum number of shared entities to create an edge
      */
     void computeSharedEntityEdges(Long factSheetId, int minSharedEntities);
+
+    /**
+     * Embedding-free cross-document entity resolution: links ENTITY nodes across different
+     * source documents when they share the same normalized name (lowercase + trim + collapse
+     * whitespace) AND the same entityType metadata.  Creates a {@code SHARED_ENTITY} edge
+     * between each unique pair, giving isolated per-document entity islands a cross-doc
+     * connection that keeps them from being swept as small components.
+     *
+     * <p>This pass runs even when the embedding model is offline, so it always fires during
+     * the EDGE_COMPUTATION crawl step regardless of GPU/embedding availability.</p>
+     *
+     * @param factSheetId fact sheet to scope the resolution (null = global)
+     */
+    default void computeNameBasedCrossDocEdges(Long factSheetId) {
+        // Default no-op; overridden by GraphEdgeComputationServiceImpl.
+    }
 
     /**
      * Extract entities from a node's content
@@ -115,6 +132,20 @@ public interface GraphEdgeComputationService {
      * @return Number of edges deleted
      */
     int deleteAllComputedEdges();
+
+    /**
+     * Collapse the existing cross-doc name-resolution SHARED_ENTITY edges (the legacy O(k²) clique
+     * bloat) and recompute them as a STAR (the fixed topology). Deletes ONLY edges whose description
+     * marks them as name-based cross-doc resolution; entity-mention shared edges and embedding
+     * similarity edges are untouched. Numbers-first: {@code dryRun=true} only counts what would change.
+     *
+     * @param factSheetId fact sheet to scope (null = global)
+     * @param dryRun      when true, report counts without deleting/recomputing
+     * @return summary map (existingCrossDocEdges, deleted, crossDocEdgesAfter, dryRun)
+     */
+    default Map<String, Object> rebuildCrossDocEdges(Long factSheetId, boolean dryRun) {
+        return Map.of("error", "not implemented");
+    }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // STATUS & MONITORING

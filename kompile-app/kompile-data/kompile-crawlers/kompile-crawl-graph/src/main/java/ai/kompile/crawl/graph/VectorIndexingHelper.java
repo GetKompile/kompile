@@ -17,6 +17,7 @@
 package ai.kompile.crawl.graph;
 
 import ai.kompile.core.crawl.graph.BatchRetryPolicy;
+import ai.kompile.core.crawl.graph.CrawlJobScoped;
 import ai.kompile.core.crawl.graph.DynamicBatchSizer;
 import ai.kompile.core.crawl.graph.ResourceGovernorAdapter;
 import ai.kompile.core.crawl.graph.UnifiedCrawlJob;
@@ -149,6 +150,14 @@ class VectorIndexingHelper {
             int pendingBatchNumber = 0;
             long pendingBatchStartNs = 0;
 
+            // Hard backstop: a poison batch POSITION must never block the crawl forever. The retry
+            // policy dead-letters by batchKey, but pipelined async store-timeouts can be attributed
+            // to a different batch's key, splitting the count so no key reaches maxRetries. This
+            // counts consecutive failures at the SAME start index and force-dead-letters past the
+            // cap, guaranteeing the loop always advances. Configurable; default 8.
+            int lastFailedStartIndex = -1;
+            int failuresAtSameStartIndex = 0;
+            final int sameIndexFailureCap = Integer.getInteger("kompile.embedding.maxBatchPositionFailures", 8);
             try {
             for (int i = 0; i < documents.size();) {
                 if (isCancelled(job)) return;
@@ -217,12 +226,36 @@ class VectorIndexingHelper {
                         embeddingSizer.publishStats(job);
                     }
                     String errorDetail = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+                    // Track consecutive failures at this position for the hard backstop. Log the FIRST
+                    // failure at a new position WITH its full stack so the real root cause (e.g. which
+                    // ND4J op throws UnsupportedOperationException) is captured, not just the type.
+                    if (i == lastFailedStartIndex) {
+                        failuresAtSameStartIndex++;
+                    } else {
+                        lastFailedStartIndex = i;
+                        failuresAtSameStartIndex = 1;
+                        log.warn("[Job {}] Vector batch {}/{} first failure at index {} (size {}): {}",
+                                job.getJobId(), batchNumber, totalBatches, i, adaptiveBatchSize, errorDetail, e);
+                    }
+                    boolean forceDeadLetter = failuresAtSameStartIndex > sameIndexFailureCap;
                     // Evaluate retry policy before giving up
                     // batchKey = i (the stable start index of this batch); local embedding model has
                     // no backend chain, so no fallback selector.
                     BatchRetryPolicy.RetryDecision<Document> retryDecision = vectorRetryPolicy.evaluateFailure(
                             i, batch, adaptiveBatchSize, errorDetail, null, null, job);
-                    switch (retryDecision.getAction()) {
+                    // Backstop overrides the policy: if this position has failed too many times
+                    // (e.g. cross-batch store-timeout attribution prevented a clean dead-letter),
+                    // force a dead-letter so the loop advances and the crawl never blocks forever.
+                    BatchRetryPolicy.RetryAction action = forceDeadLetter
+                            ? BatchRetryPolicy.RetryAction.DEAD_LETTER
+                            : retryDecision.getAction();
+                    if (forceDeadLetter) {
+                        log.error("[Job {}] Vector batch {}/{} FORCE-dead-lettered after {} failures at index {} "
+                                + "(backstop cap {}) — skipping to keep the crawl progressing. Last error: {}",
+                                job.getJobId(), batchNumber, totalBatches, failuresAtSameStartIndex, i,
+                                sameIndexFailureCap, errorDetail);
+                    }
+                    switch (action) {
                         case RETRY_SAME_BACKEND: {
                             log.warn("[Job {}] Vector batch {}/{} failed ({}), retrying with batch size {} after {}ms backoff",
                                     job.getJobId(), batchNumber, totalBatches, errorDetail,
@@ -507,6 +540,23 @@ class VectorIndexingHelper {
             return Math.max(1, Math.min(configuredBatchSize, Math.max(1, configuredBatchSize / 2)));
         }
         return configuredBatchSize;
+    }
+
+    /**
+     * Bind every {@link CrawlJobScoped} embedding model to {@code jobId} (or clear with null) so the
+     * embedding subprocess's events are attributed to the owning crawl even when embedding runs on
+     * executor threads that don't carry the {@code AgentCallContext} thread-local. Set regardless of
+     * init state so the binding is in place before the model warms up.
+     */
+    void setActiveCrawlJobId(String jobId) {
+        if (embeddingModels == null) {
+            return;
+        }
+        for (EmbeddingModel model : embeddingModels) {
+            if (model instanceof CrawlJobScoped scoped) {
+                scoped.setActiveCrawlJobId(jobId);
+            }
+        }
     }
 
     EmbeddingModel primaryEmbeddingModel() {

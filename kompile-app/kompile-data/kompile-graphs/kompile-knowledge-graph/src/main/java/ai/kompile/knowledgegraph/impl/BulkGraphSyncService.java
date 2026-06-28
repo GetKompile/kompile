@@ -15,55 +15,46 @@
  */
 package ai.kompile.knowledgegraph.impl;
 
+import ai.kompile.core.graphrag.GraphConstants;
 import ai.kompile.knowledgegraph.builder.dto.ExtractedGraphDTO;
 import ai.kompile.knowledgegraph.domain.*;
-import ai.kompile.knowledgegraph.repository.GraphEdgeRepository;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
+import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import lombok.AccessLevel;
-import lombok.NoArgsConstructor;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
-import org.springframework.transaction.annotation.Transactional;
-
 import java.util.*;
 import java.util.stream.Collectors;
 
 /**
  * Bulk graph sync service that persists extracted entities and relationships
- * to the JPA knowledge graph in batched operations within a single transaction.
- * <p>
- * This avoids the N+1 query problem that occurs when persisting entities
- * one at a time via KnowledgeGraphService, which causes H2 cache thrashing
- * when the graph contains tens of thousands of nodes.
+ * to the matrix/vector store in batched operations via the {@link KnowledgeGraphService} seam.
+ *
+ * <p>The matrix store's {@code createNode}/{@code createEdge} operations are idempotent,
+ * so the dedup keys guard within-batch duplicates only; the store handles cross-batch idempotency.</p>
  */
 @Service
-@RequiredArgsConstructor
-@NoArgsConstructor(access = AccessLevel.PROTECTED, force = true)
 @Slf4j
 public class BulkGraphSyncService {
 
+    @Autowired
+    private KnowledgeGraphService knowledgeGraphService;
+    @Autowired
+    private ObjectMapper objectMapper;
 
-    @Autowired
-    private final GraphNodeRepository nodeRepository;
-    @Autowired
-    private final GraphEdgeRepository edgeRepository;
-    @Autowired
-    private final ObjectMapper objectMapper;
+    /** No-arg constructor for CGLIB proxy / GraalVM native image. */
+    protected BulkGraphSyncService() {}
 
     /**
-     * Bulk sync extracted entities and relationships to JPA in a single transaction.
+     * Bulk sync extracted entities and relationships to the matrix/vector store.
      *
      * @param entities      Extracted entities from LLM
      * @param relationships Extracted relationships from LLM
      * @param factSheetId   Optional fact sheet scope (may be null)
-     * @return Map from entity ID (without "matrix:" prefix) to JPA node UUID
+     * @return Map from entity ID (without "matrix:" prefix) to graph nodeId UUID
      */
-    @Transactional
     public Map<String, String> syncEntitiesAndRelationships(
             List<ExtractedGraphDTO.ExtractedEntity> entities,
             List<ExtractedGraphDTO.ExtractedRelationship> relationships,
@@ -75,20 +66,20 @@ public class BulkGraphSyncService {
 
         long start = System.currentTimeMillis();
 
-        // === PHASE 1: Bulk node sync ===
+        // === PHASE 1: Node sync ===
         Map<String, String> entityIdToNodeId = syncNodes(entities, factSheetId);
 
         long nodeMs = System.currentTimeMillis() - start;
 
-        // === PHASE 2: Bulk edge sync ===
+        // === PHASE 2: Edge sync ===
         int edgesCreated = 0;
         if (relationships != null && !relationships.isEmpty()) {
             edgesCreated = syncEdges(relationships, entityIdToNodeId, factSheetId);
         }
 
         long totalMs = System.currentTimeMillis() - start;
-        log.info("Bulk sync complete: {} entities ({} new), {} edges created in {}ms (nodes={}ms)",
-                entities.size(), entityIdToNodeId.size(), edgesCreated, totalMs, nodeMs);
+        log.info("Bulk sync complete: {} entities, {} edges created in {}ms (nodes={}ms)",
+                entities.size(), edgesCreated, totalMs, nodeMs);
 
         return entityIdToNodeId;
     }
@@ -97,74 +88,42 @@ public class BulkGraphSyncService {
             List<ExtractedGraphDTO.ExtractedEntity> entities,
             Long factSheetId) {
 
-        // Collect all external IDs
-        Set<String> externalIds = entities.stream()
-                .map(e -> "matrix:" + e.getId())
-                .collect(Collectors.toSet());
-
-        // Single bulk lookup for existing nodes, scoped by fact sheet when available.
-        List<GraphNode> existingNodes = factSheetId != null
-                ? nodeRepository.findByExternalIdInAndNodeTypeAndFactSheetId(externalIds, NodeLevel.ENTITY, factSheetId)
-                : nodeRepository.findByExternalIdInAndNodeType(externalIds, NodeLevel.ENTITY);
-        Map<String, GraphNode> existingByExtId = existingNodes.stream()
-                .collect(Collectors.toMap(GraphNode::getExternalId, n -> n, (a, b) -> a));
-
         Map<String, String> entityIdToNodeId = new HashMap<>();
-        List<GraphNode> nodesToSave = new ArrayList<>();
-        // Track which entity ID maps to which new node (by list index)
-        List<String> newNodeEntityIds = new ArrayList<>();
 
         for (ExtractedGraphDTO.ExtractedEntity entity : entities) {
+            // Use "matrix:<id>" as the stable external ID (matches historical convention)
             String externalId = "matrix:" + entity.getId();
-            GraphNode existing = existingByExtId.get(externalId);
 
-            if (existing != null) {
-                entityIdToNodeId.put(entity.getId(), existing.getNodeId());
-            } else {
-                Map<String, Object> meta = entity.getMetadata() != null
-                        ? new HashMap<>(entity.getMetadata())
-                        : new HashMap<>();
-                meta.put("extraction_source", "matrix_graph");
-                if (entity.getNodeLabel() != null && !entity.getNodeLabel().isBlank()) {
-                    meta.put("entity_type", entity.getNodeLabel());
+            Map<String, Object> meta = entity.getMetadata() != null
+                    ? new HashMap<>(entity.getMetadata())
+                    : new HashMap<>();
+            meta.put("extraction_source", "matrix_graph");
+            if (entity.getNodeLabel() != null && !entity.getNodeLabel().isBlank()) {
+                meta.put("entity_type", GraphConstants.normalizeEntityType(entity.getNodeLabel()));
+            }
+            if (factSheetId != null) {
+                meta.put("factSheetId", factSheetId);
+            }
+
+            String rawTitle = entity.getTitle();
+            final String title = rawTitle == null ? entity.getId()
+                    : (rawTitle.length() > 490 ? rawTitle.substring(0, 490) + "..." : rawTitle);
+
+            try {
+                // getNodeByExternalId + createNode are idempotent on the matrix store
+                GraphNode node = knowledgeGraphService.getNodeByExternalId(externalId, NodeLevel.ENTITY, factSheetId)
+                        .orElseGet(() -> knowledgeGraphService.createNode(
+                                NodeLevel.ENTITY, externalId, title,
+                                entity.getDescription(), meta, factSheetId));
+                if (node != null) {
+                    entityIdToNodeId.put(entity.getId(), node.getNodeId());
                 }
-                if (factSheetId != null) meta.put("factSheetId", factSheetId);
-
-                String metaJson;
-                try {
-                    metaJson = objectMapper.writeValueAsString(meta);
-                } catch (Exception e) {
-                    metaJson = "{}";
-                }
-
-                String title = entity.getTitle();
-                if (title != null && title.length() > 490) {
-                    title = title.substring(0, 490) + "...";
-                }
-
-                GraphNode newNode = GraphNode.builder()
-                        .externalId(externalId)
-                        .nodeType(NodeLevel.ENTITY)
-                        .title(title != null ? title : entity.getId())
-                        .description(entity.getDescription())
-                        .metadataJson(metaJson)
-                        .factSheetId(factSheetId)
-                        .build();
-
-                nodesToSave.add(newNode);
-                newNodeEntityIds.add(entity.getId());
+            } catch (Exception e) {
+                log.warn("BulkGraphSyncService: failed to sync entity {}: {}", entity.getId(), e.getMessage());
             }
         }
 
-        // Batch save all new nodes at once
-        if (!nodesToSave.isEmpty()) {
-            List<GraphNode> saved = nodeRepository.saveAll(nodesToSave);
-            for (int i = 0; i < saved.size(); i++) {
-                entityIdToNodeId.put(newNodeEntityIds.get(i), saved.get(i).getNodeId());
-            }
-            log.debug("Bulk created {} new entity nodes", saved.size());
-        }
-
+        log.debug("Bulk synced {} entity nodes", entityIdToNodeId.size());
         return entityIdToNodeId;
     }
 
@@ -173,27 +132,9 @@ public class BulkGraphSyncService {
             Map<String, String> entityIdToNodeId,
             Long factSheetId) {
 
-        // Collect all node IDs that will be involved in edges
-        Set<String> allNodeIds = new HashSet<>(entityIdToNodeId.values());
-
-        // Bulk load existing semantic edges for these nodes to avoid N individual existence checks.
-        Map<String, GraphEdge> existingEdgesByKey = loadExistingEdgeKeyMap(allNodeIds);
-        Set<String> reservedEdgeKeys = new HashSet<>(existingEdgesByKey.keySet());
-
-        // Bulk load all nodes we need for edge creation (single query instead of N)
-        Map<String, GraphNode> nodesByNodeId = new HashMap<>();
-        if (!allNodeIds.isEmpty()) {
-            for (List<String> chunk : partition(new ArrayList<>(allNodeIds), 500)) {
-                List<GraphNode> nodes = nodeRepository.findByNodeIdIn(chunk);
-                for (GraphNode n : nodes) {
-                    nodesByNodeId.put(n.getNodeId(), n);
-                }
-            }
-        }
-
-        List<GraphEdge> edgesToSave = new ArrayList<>();
-        List<GraphEdge> existingEdgesToUpdate = new ArrayList<>();
-        Set<GraphNode> nodesNeedingEdgeCountUpdate = new HashSet<>();
+        int edgesCreated = 0;
+        // Guard against within-batch duplicates (store handles cross-batch idempotency)
+        Set<String> reservedEdgeKeys = new HashSet<>();
 
         for (ExtractedGraphDTO.ExtractedRelationship rel : relationships) {
             String sourceNodeId = entityIdToNodeId.get(rel.getSource());
@@ -201,137 +142,38 @@ public class BulkGraphSyncService {
             if (sourceNodeId == null || targetNodeId == null) continue;
 
             String label = normalizeRelationshipLabel(rel.getRelationshipType());
-            String forwardKey = edgeKey(sourceNodeId, targetNodeId, EdgeType.USER_DEFINED, label, factSheetId);
-            String reverseKey = edgeKey(targetNodeId, sourceNodeId, EdgeType.USER_DEFINED, label, factSheetId);
-            String description = normalizeRelationshipDescription(rel.getDescription(), label);
-            String metadataJson = relationshipMetadataJson(rel, label, description, factSheetId);
+            String forwardKey = edgeKey(sourceNodeId, targetNodeId, label, factSheetId);
+            String reverseKey = edgeKey(targetNodeId, sourceNodeId, label, factSheetId);
 
-            GraphEdge existing = existingEdgesByKey.get(forwardKey);
-            if (existing == null) {
-                existing = existingEdgesByKey.get(reverseKey);
-            }
-            if (existing != null) {
-                boolean changed = false;
-                if (existing.getLabel() == null || existing.getLabel().isBlank()) {
-                    existing.setLabel(label);
-                    changed = true;
-                }
-                if (existing.getDescription() == null || existing.getDescription().isBlank()
-                        || existing.getDescription().equals(existing.getLabel())) {
-                    existing.setDescription(description);
-                    changed = true;
-                }
-                if (existing.getMetadataJson() == null || existing.getMetadataJson().isBlank()) {
-                    existing.setMetadataJson(metadataJson);
-                    changed = true;
-                }
-                if (existing.getFactSheetId() == null && factSheetId != null) {
-                    existing.setFactSheetId(factSheetId);
-                    changed = true;
-                }
-                if (changed) {
-                    existingEdgesToUpdate.add(existing);
-                }
-                continue;
-            }
             if (reservedEdgeKeys.contains(forwardKey) || reservedEdgeKeys.contains(reverseKey)) {
                 continue;
             }
 
-            // Mark as existing to prevent duplicates within this batch.
-            reservedEdgeKeys.add(forwardKey);
-            reservedEdgeKeys.add(reverseKey);
-
-            GraphNode source = nodesByNodeId.get(sourceNodeId);
-            GraphNode target = nodesByNodeId.get(targetNodeId);
-            if (source == null || target == null) continue;
-
-            double weight = rel.getWeight() != null ? rel.getWeight() : 1.0;
-
-            GraphEdge edge = GraphEdge.builder()
-                    .sourceNode(source)
-                    .targetNode(target)
-                    .edgeType(EdgeType.USER_DEFINED)
-                    .weight(weight)
-                    .description(description)
-                    .label(label)
-                    .metadataJson(metadataJson)
-                    .bidirectional(true)
-                    .factSheetId(factSheetId)
-                    .occurredAt(parseOccurredAt(rel))
-                    .build();
-
-            edgesToSave.add(edge);
-
-            source.incrementEdgeCount();
-            target.incrementEdgeCount();
-            nodesNeedingEdgeCountUpdate.add(source);
-            nodesNeedingEdgeCountUpdate.add(target);
-        }
-
-        if (!existingEdgesToUpdate.isEmpty()) {
-            edgeRepository.saveAll(existingEdgesToUpdate);
-            log.debug("Bulk updated semantic metadata on {} existing edges", existingEdgesToUpdate.size());
-        }
-
-        // Batch save all new edges
-        if (!edgesToSave.isEmpty()) {
-            edgeRepository.saveAll(edgesToSave);
-            // Batch update edge counts on affected nodes
-            nodeRepository.saveAll(nodesNeedingEdgeCountUpdate);
-            log.debug("Bulk created {} new edges, updated {} node edge counts",
-                    edgesToSave.size(), nodesNeedingEdgeCountUpdate.size());
-        }
-
-        return edgesToSave.size();
-    }
-
-    /**
-     * Load all existing semantic edge keys for a set of node IDs into a fast lookup map.
-     * Each key includes source, target, edge type, label, and fact sheet so different
-     * semantic relationships between the same entity pair can coexist.
-     */
-    private Map<String, GraphEdge> loadExistingEdgeKeyMap(Set<String> nodeIds) {
-        Map<String, GraphEdge> edges = new HashMap<>();
-        if (nodeIds.isEmpty()) return edges;
-
-        List<String> nodeIdList = new ArrayList<>(nodeIds);
-        for (List<String> chunk : partition(nodeIdList, 500)) {
             try {
-                List<GraphEdge> sourceEdges = edgeRepository.findBySourceNodeNodeIdIn(chunk);
-                for (GraphEdge e : sourceEdges) {
-                    String sId = e.getSourceNode().getNodeId();
-                    String tId = e.getTargetNode().getNodeId();
-                    String label = existingEdgeSemanticLabel(e);
-                    edges.putIfAbsent(edgeKey(sId, tId, e.getEdgeType(), label, e.getFactSheetId()), e);
-                    edges.putIfAbsent(edgeKey(tId, sId, e.getEdgeType(), label, e.getFactSheetId()), e);
+                // The matrix store createEdge is idempotent: same source+target+relationType
+                // returns the existing edge without creating a duplicate.
+                if (!knowledgeGraphService.edgeExists(sourceNodeId, targetNodeId,
+                        EdgeType.USER_DEFINED, label, factSheetId)) {
+                    String description = normalizeRelationshipDescription(rel.getDescription(), label);
+                    double weight = rel.getWeight() != null ? rel.getWeight() : 1.0;
+                    knowledgeGraphService.createEdge(sourceNodeId, targetNodeId,
+                            EdgeType.USER_DEFINED, label, weight, description);
+                    edgesCreated++;
+                    reservedEdgeKeys.add(forwardKey);
+                    reservedEdgeKeys.add(reverseKey);
                 }
             } catch (Exception e) {
-                log.warn("Failed to bulk-load source edges: {}", e.getMessage());
-            }
-
-            try {
-                List<GraphEdge> targetEdges = edgeRepository.findByTargetNodeNodeIdIn(chunk);
-                for (GraphEdge e : targetEdges) {
-                    String sId = e.getSourceNode().getNodeId();
-                    String tId = e.getTargetNode().getNodeId();
-                    String label = existingEdgeSemanticLabel(e);
-                    edges.putIfAbsent(edgeKey(sId, tId, e.getEdgeType(), label, e.getFactSheetId()), e);
-                    edges.putIfAbsent(edgeKey(tId, sId, e.getEdgeType(), label, e.getFactSheetId()), e);
-                }
-            } catch (Exception e) {
-                log.warn("Failed to bulk-load target edges: {}", e.getMessage());
+                log.debug("BulkGraphSyncService: failed to sync edge {} -> {}: {}",
+                        rel.getSource(), rel.getTarget(), e.getMessage());
             }
         }
 
-        return edges;
+        return edgesCreated;
     }
 
-    private String edgeKey(String sourceNodeId, String targetNodeId, EdgeType edgeType,
-                           String label, Long factSheetId) {
-        String type = edgeType != null ? edgeType.name() : EdgeType.USER_DEFINED.name();
+    private String edgeKey(String sourceNodeId, String targetNodeId, String label, Long factSheetId) {
         String sheet = factSheetId != null ? factSheetId.toString() : "global";
-        return sheet + "|" + sourceNodeId + "|" + targetNodeId + "|" + type + "|" + normalizeRelationshipLabel(label);
+        return sheet + "|" + sourceNodeId + "|" + targetNodeId + "|" + normalizeRelationshipLabel(label);
     }
 
     private String normalizeRelationshipLabel(String label) {
@@ -350,97 +192,5 @@ public class BulkGraphSyncService {
             return description.trim();
         }
         return label;
-    }
-
-    private String existingEdgeSemanticLabel(GraphEdge edge) {
-        if (edge == null) {
-            return "RELATED_TO";
-        }
-        String label = normalizeRelationshipLabel(edge.getLabel());
-        String edgeTypeName = edge.getEdgeType() != null ? edge.getEdgeType().name() : null;
-        if (!"RELATED_TO".equals(label) && !Objects.equals(label, edgeTypeName)) {
-            return label;
-        }
-        String inferred = inferRelationshipLabel(edge.getDescription());
-        return inferred != null ? inferred : label;
-    }
-
-    private String inferRelationshipLabel(String description) {
-        if (description == null || description.isBlank()) {
-            return null;
-        }
-        String upper = description.trim().toUpperCase(Locale.ROOT);
-        if (upper.contains(" IS HEADER OF CELL") || upper.contains(" HEADER OF ")) {
-            return "HEADER_OF";
-        }
-        if (upper.contains(" DEPENDS ON ") || upper.startsWith("DEPENDS ON ")) {
-            return "DEPENDS_ON";
-        }
-        if (upper.contains(" CREATED ON ") || upper.contains(" PUBLISHED ON ")) {
-            return "PUBLISHED_ON";
-        }
-        if (upper.matches("[A-Z][A-Z0-9_ ]{1,80}")) {
-            return normalizeRelationshipLabel(upper);
-        }
-        return null;
-    }
-
-    private String relationshipMetadataJson(ExtractedGraphDTO.ExtractedRelationship rel,
-                                            String label,
-                                            String description,
-                                            Long factSheetId) {
-        Map<String, Object> metadata = rel.getMetadata() != null
-                ? new LinkedHashMap<>(rel.getMetadata())
-                : new LinkedHashMap<>();
-        metadata.putIfAbsent("semanticType", label);
-        metadata.putIfAbsent("relationshipType", label);
-        metadata.putIfAbsent("semanticContext", description);
-        metadata.putIfAbsent("sourceEntityId", rel.getSource());
-        metadata.putIfAbsent("targetEntityId", rel.getTarget());
-        metadata.putIfAbsent("extractionSource", "matrix_graph");
-        if (rel.getConfidence() != null) {
-            metadata.putIfAbsent("confidence", rel.getConfidence());
-        }
-        if (rel.getWeight() != null) {
-            metadata.putIfAbsent("weight", rel.getWeight());
-        }
-        if (factSheetId != null) {
-            metadata.putIfAbsent("factSheetId", factSheetId);
-        }
-        try {
-            return objectMapper.writeValueAsString(metadata);
-        } catch (Exception e) {
-            return "{\"semanticType\":\"" + label + "\"}";
-        }
-    }
-
-    /**
-     * Extracts the occurredAt timestamp from relationship metadata.
-     * Looks for the "occurredAt" key which should contain an ISO-8601 datetime string.
-     */
-    private LocalDateTime parseOccurredAt(ExtractedGraphDTO.ExtractedRelationship rel) {
-        if (rel.getMetadata() == null) return null;
-        Object val = rel.getMetadata().get("occurredAt");
-        if (val == null) return null;
-        try {
-            String s = val.toString();
-            // Handle ISO instant format (e.g., "2024-03-15T10:30:00Z")
-            if (s.endsWith("Z") || s.contains("+") || s.contains("T")) {
-                return LocalDateTime.parse(s.replace("Z", "").split("\\+")[0].split("-(?=[0-9]{2}:)")[0]);
-            }
-            return LocalDateTime.parse(s);
-        } catch (Exception e) {
-            log.debug("Could not parse occurredAt '{}': {}", val, e.getMessage());
-            return null;
-        }
-    }
-
-    /** Partition a list into chunks of the given size. */
-    private static <T> List<List<T>> partition(List<T> list, int size) {
-        List<List<T>> partitions = new ArrayList<>();
-        for (int i = 0; i < list.size(); i += size) {
-            partitions.add(list.subList(i, Math.min(i + size, list.size())));
-        }
-        return partitions;
     }
 }

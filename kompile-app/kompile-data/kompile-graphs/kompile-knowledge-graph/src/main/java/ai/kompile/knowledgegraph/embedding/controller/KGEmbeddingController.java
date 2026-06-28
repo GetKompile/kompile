@@ -30,7 +30,7 @@ import ai.kompile.knowledgegraph.embedding.impl.RotatEModel;
 import ai.kompile.knowledgegraph.embedding.impl.TransEModel;
 import ai.kompile.knowledgegraph.embedding.service.KGEmbeddingJobService;
 import ai.kompile.knowledgegraph.embedding.service.KGEmbeddingStorageService;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
+import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import ai.kompile.orchestrator.api.LlmIntegrationService;
 import ai.kompile.orchestrator.api.LlmProvider;
 import org.nd4j.linalg.api.ndarray.INDArray;
@@ -56,22 +56,22 @@ public class KGEmbeddingController {
 
     private final KGEmbeddingJobService jobService;
     private final KGEmbeddingStorageService storageService;
-    private final GraphNodeRepository nodeRepository;
+    private final KnowledgeGraphService knowledgeGraphService;
     private final KGEmbeddingConfigService configService;
 
-    // In-memory models for scoring (loaded from DB)
+    // In-memory models for scoring (loaded from the live store via storageService)
     private final Map<Long, KGEmbeddingModel> loadedModels = new HashMap<>();
 
     @Autowired
     public KGEmbeddingController(
             KGEmbeddingJobService jobService,
             KGEmbeddingStorageService storageService,
-            GraphNodeRepository nodeRepository,
+            KnowledgeGraphService knowledgeGraphService,
             KGEmbeddingConfigService configService
     ) {
         this.jobService = jobService;
         this.storageService = storageService;
-        this.nodeRepository = nodeRepository;
+        this.knowledgeGraphService = knowledgeGraphService;
         this.configService = configService;
     }
 
@@ -156,7 +156,7 @@ public class KGEmbeddingController {
             @RequestParam(defaultValue = "0", name = "page") int page,
             @RequestParam(defaultValue = "50", name = "size") int size
     ) {
-        List<GraphNode> nodes = nodeRepository.findByFactSheetIdAndKgEmbeddingNotNull(factSheetId);
+        List<GraphNode> nodes = knowledgeGraphService.findNodesWithKgEmbedding(factSheetId);
 
         // Filter by search
         if (search != null && !search.isEmpty()) {
@@ -188,7 +188,7 @@ public class KGEmbeddingController {
             @PathVariable("factSheetId") Long factSheetId,
             @PathVariable("nodeId") String nodeId
     ) {
-        return nodeRepository.findByNodeId(nodeId)
+        return knowledgeGraphService.getNode(nodeId)
                 .filter(n -> n.getKgEmbedding() != null)
                 .map(this::toEntityEmbeddingDTO)
                 .map(ResponseEntity::ok)

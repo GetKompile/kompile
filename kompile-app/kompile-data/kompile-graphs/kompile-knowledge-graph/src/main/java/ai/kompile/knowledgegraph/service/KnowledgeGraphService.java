@@ -16,11 +16,14 @@
 package ai.kompile.knowledgegraph.service;
 
 import ai.kompile.core.graphrag.maintenance.model.GraphPruneResult;
+import ai.kompile.core.kgembedding.KGEmbeddingAlgorithm;
 import ai.kompile.knowledgegraph.domain.*;
 import org.nd4j.linalg.api.ndarray.INDArray;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
@@ -80,6 +83,39 @@ public interface KnowledgeGraphService {
     default GraphNode createSnippetNode(GraphNode documentNode, String snippetId, String content,
                                          int chunkIndex, Map<String, Object> metadata) {
         return createSnippetNode(documentNode, snippetId, content, chunkIndex);
+    }
+
+    /**
+     * Specification for one snippet node to create via {@link #createSnippetNodesBatch}.
+     *
+     * <p>Carries the parent-document identity ({@code parentExternalId} + {@code parentFactSheetId})
+     * rather than the full {@link GraphNode} object so the batch payload stays minimal over RPC.</p>
+     */
+    record SnippetSpec(String parentExternalId, Long parentFactSheetId,
+                       String snippetId, String content, int chunkIndex) {}
+
+    /**
+     * Create many SNIPPET nodes in one call, returning them in the same order as {@code specs}.
+     *
+     * <p>The default implementation loops the existing {@link #createSnippetNode} overload,
+     * reconstructing a minimal parent {@link GraphNode} from the spec fields — so all existing
+     * implementors stay correct without change. Stores that can batch (the matrix/vector store)
+     * override this for a single batched write per fact-sheet group.</p>
+     */
+    default List<GraphNode> createSnippetNodesBatch(List<SnippetSpec> specs) {
+        if (specs == null || specs.isEmpty()) {
+            return List.of();
+        }
+        List<GraphNode> created = new java.util.ArrayList<>(specs.size());
+        for (SnippetSpec s : specs) {
+            GraphNode parentNode = GraphNode.builder()
+                    .nodeId("doc_" + s.parentExternalId())
+                    .externalId(s.parentExternalId())
+                    .factSheetId(s.parentFactSheetId())
+                    .build();
+            created.add(createSnippetNode(parentNode, s.snippetId(), s.content(), s.chunkIndex()));
+        }
+        return created;
     }
 
     /**
@@ -158,6 +194,34 @@ public interface KnowledgeGraphService {
                                   String description, Map<String, Object> metadata,
                                   Long factSheetId) {
         return createNode(nodeType, externalId, title, description, metadata);
+    }
+
+    /**
+     * Specification for one node to create via {@link #createNodesBatch}.
+     */
+    record NodeSpec(NodeLevel nodeType, String externalId, String title,
+                    String description, Map<String, Object> metadata) {}
+
+    /**
+     * Create many nodes in one call, scoped to a fact sheet, returning the created nodes
+     * in the same order as {@code specs}.
+     *
+     * <p>The default implementation loops over {@link #createNode}, so every existing
+     * implementor keeps working unchanged. Stores that can write in bulk (the matrix/vector
+     * store) override this to collapse N per-node persistence calls into a single batched
+     * write — the per-node path otherwise dominates structural-graph construction (one Lucene
+     * add per spreadsheet cell/formula node, ~thousands per crawl).</p>
+     */
+    default List<GraphNode> createNodesBatch(List<NodeSpec> specs, Long factSheetId) {
+        if (specs == null || specs.isEmpty()) {
+            return List.of();
+        }
+        List<GraphNode> created = new java.util.ArrayList<>(specs.size());
+        for (NodeSpec s : specs) {
+            created.add(createNode(s.nodeType(), s.externalId(), s.title(),
+                    s.description(), s.metadata(), factSheetId));
+        }
+        return created;
     }
 
     /**
@@ -325,6 +389,43 @@ public interface KnowledgeGraphService {
     }
 
     /**
+     * Specification for one edge to create via {@link #createEdgesBatch}.
+     *
+     * <p>The batch method performs server-side idempotency: if an edge already exists between
+     * {@code sourceNodeId} and {@code targetNodeId} (regardless of edge type), the tuple is
+     * skipped rather than creating a duplicate.  Duplicate checking is intentionally coarse
+     * (same source+target pair) to match the behaviour of the normalizer redirect step.</p>
+     */
+    record EdgeSpec(String sourceNodeId, String targetNodeId, EdgeType edgeType,
+                    Double weight, String description) {}
+
+    /**
+     * Create many edges in one call, skipping pairs that already have an edge between them.
+     *
+     * <p>The default implementation loops existing {@link #edgeExists(String, String)} +
+     * {@link #createEdge(String, String, EdgeType, Double, String)} so every existing implementor
+     * is correct without change. Stores that can batch (the matrix/vector store) override this to
+     * collapse N per-edge round-trips into a single batched write — the per-edge path otherwise
+     * dominates post-extraction normalisation (one RPC per duplicate edge redirect).</p>
+     *
+     * @param specs list of edges to create
+     * @return number of edges actually created (existing edges are not double-counted)
+     */
+    default int createEdgesBatch(List<EdgeSpec> specs) {
+        if (specs == null || specs.isEmpty()) return 0;
+        int created = 0;
+        for (EdgeSpec s : specs) {
+            try {
+                if (!edgeExists(s.sourceNodeId(), s.targetNodeId())) {
+                    createEdge(s.sourceNodeId(), s.targetNodeId(), s.edgeType(), s.weight(), s.description());
+                    created++;
+                }
+            } catch (Exception e) { /* best-effort — skip failures */ }
+        }
+        return created;
+    }
+
+    /**
      * Add a document to the graph, creating or updating the source node and document node.
      * Default implementation uses createOrUpdateSourceNode + createDocumentNode.
      */
@@ -456,6 +557,33 @@ public interface KnowledgeGraphService {
      * Get nodes of a specific type scoped to a fact sheet.
      */
     List<GraphNode> getNodesByTypeInFactSheet(Long factSheetId, NodeLevel type);
+
+    /**
+     * Count ENTITY nodes scoped to a fact sheet without materialising the full list.
+     * The default implementation loads and counts; matrix stores override with a streaming count.
+     */
+    default long countEntityNodesInFactSheet(Long factSheetId) {
+        return getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY).size();
+    }
+
+    /**
+     * Return a bounded page of ENTITY nodes for a fact sheet.
+     * Used by {@code GraphCompactionService} to load entity nodes in bounded chunks
+     * so the full list is never materialised all at once during ENTITY_RESOLUTION.
+     *
+     * <p>The default implementation loads the full list and subLists; matrix stores
+     * override with an efficient streaming skip+limit to avoid full materialisation.</p>
+     *
+     * @param factSheetId fact sheet to scope to (must not be null)
+     * @param offset      zero-based start index
+     * @param pageSize    maximum number of nodes to return
+     */
+    default List<GraphNode> getEntityNodesInFactSheetPage(Long factSheetId, int offset, int pageSize) {
+        List<GraphNode> all = getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY);
+        int start = Math.min(offset, all.size());
+        int end   = Math.min(offset + pageSize, all.size());
+        return new ArrayList<>(all.subList(start, end));
+    }
 
     /**
      * Get all nodes belonging to a fact sheet.
@@ -590,6 +718,129 @@ public interface KnowledgeGraphService {
     default int applyNodeEmbeddings(Map<String, INDArray> embeddingsByNodeId) {
         return 0;
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // KGE METADATA BATCH UPDATE (write KGE keys without triggering sentence re-embed)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * A (nodeId, additionalMetadata) pair for {@link #updateNodeKgeMetadataBatch}.
+     *
+     * <p>The {@code additionalMetadata} map contains only the keys to MERGE into the node's
+     * existing metadata (e.g. {@code kgeEmbedding}, {@code kgeAlgorithm}, {@code kgeVersion}).
+     * Existing metadata keys NOT present in {@code additionalMetadata} are preserved.</p>
+     */
+    record NodeMetadataUpdate(String nodeId, Map<String, Object> additionalMetadata) {}
+
+    /**
+     * Blocks until all pending async embedding tasks (dispatched by {@link VectorStore#add})
+     * have completed and their documents are committed to the store.
+     *
+     * <p>Call this before {@link #updateNodeKgeMetadataBatch} to ensure sentence embeddings
+     * dispatched during graph construction are visible in the adjacency-matrix cache, so the
+     * subsequent metadata-only updates can reuse the cached vectors without re-embedding.
+     * The default is a no-op; the matrix-store implementation delegates to
+     * {@link ai.kompile.core.embeddings.VectorStore#awaitPendingEmbeddings()}.</p>
+     */
+    default void awaitPendingEmbeddings() {}
+
+    /**
+     * Write KGE structural-embedding metadata (kgeEmbedding, kgeAlgorithm, kgeVersion) for
+     * many nodes in a single call WITHOUT triggering sentence re-embeds.
+     *
+     * <p>Each update MERGES its {@code additionalMetadata} keys into the node's existing
+     * metadata — existing keys not present in the update are preserved.  This is the correct
+     * write path for {@link ai.kompile.knowledgegraph.embedding.adapter.MatrixKgEmbeddingGraphAdapter#storeEmbeddings}
+     * so that storing 5 903 KGE vectors does not enqueue 5 903 sentence re-embeds in the
+     * graph subprocess's async-embed pool (the root cause of the post-KGE OOM).</p>
+     *
+     * <p>The default implementation loops {@link #getNode} + metadata-merge + {@link #updateNode}
+     * (with null title/description to avoid re-embedding) so every existing implementor stays
+     * correct.  The matrix/vector store overrides this to do all merges in one batched server-side
+     * call — a single subprocess RPC instead of 5 903.</p>
+     *
+     * @param updates list of (nodeId, additionalMetadata) pairs
+     * @return number of nodes actually updated (nodes not found are skipped)
+     */
+    default int updateNodeKgeMetadataBatch(List<NodeMetadataUpdate> updates) {
+        if (updates == null || updates.isEmpty()) return 0;
+        int count = 0;
+        for (NodeMetadataUpdate u : updates) {
+            try {
+                Optional<GraphNode> nodeOpt = getNode(u.nodeId());
+                if (nodeOpt.isEmpty()) continue;
+                GraphNode node = nodeOpt.get();
+                // Merge: preserve existing metadata, overwrite only the new KGE keys
+                java.util.Map<String, Object> merged = node.getMetadata() != null
+                        ? new java.util.HashMap<>(node.getMetadata()) : new java.util.HashMap<>();
+                merged.putAll(u.additionalMetadata());
+                // Null title+description → MatrixKnowledgeGraphService takes the
+                // no-re-embed (updateNodeMetadata) code path
+                updateNode(u.nodeId(), null, null, merged);
+                count++;
+            } catch (Exception e) { /* best-effort — skip failures */ }
+        }
+        return count;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // KG EMBEDDING STORAGE (TransE/RotatE — structural KGE on nodes and edges)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Store a structural KGE (TransE/RotatE) embedding for a node.
+     * The embedding is keyed by {@code nodeId} (UUID string) and associated metadata
+     * (algorithm, training version, timestamp) are stored alongside.
+     *
+     * <p>Default: no-op (store does not support KGE persistence).</p>
+     */
+    default void storeNodeKgEmbedding(String nodeId, INDArray embedding,
+                                       ai.kompile.core.kgembedding.KGEmbeddingAlgorithm algorithm,
+                                       Long version, java.time.Instant updatedAt) {}
+
+    /**
+     * Retrieve the structural KGE embedding for a node, or {@code null} if none is stored.
+     * Default: {@code null}.
+     */
+    default INDArray getNodeKgEmbedding(String nodeId) { return null; }
+
+    /**
+     * Return nodeIds (UUIDs) of all nodes in a fact sheet that have a stored KGE embedding.
+     * Default: empty list.
+     */
+    default List<GraphNode> findNodesWithKgEmbedding(Long factSheetId) {
+        return java.util.List.of();
+    }
+
+    /**
+     * Store a structural KGE relation embedding for an edge type.
+     * Relation embeddings are type-shared (one per EdgeType name) and stored per fact sheet.
+     * Default: no-op.
+     */
+    default void storeEdgeTypeKgEmbedding(String edgeTypeName, INDArray embedding,
+                                           ai.kompile.core.kgembedding.KGEmbeddingAlgorithm algorithm,
+                                           Long version, Long factSheetId) {}
+
+    /**
+     * Return all stored edge-type KGE embeddings for a fact sheet as a map
+     * from EdgeType name → embedding. Default: empty map.
+     */
+    default Map<String, INDArray> getEdgeTypeKgEmbeddings(Long factSheetId) {
+        return java.util.Map.of();
+    }
+
+    /**
+     * Return the algorithm used for the stored node KGE embeddings in a fact sheet,
+     * or {@code null} if none. Default: {@code null}.
+     */
+    default ai.kompile.core.kgembedding.KGEmbeddingAlgorithm getStoredKgAlgorithm(Long factSheetId) {
+        return null;
+    }
+
+    /**
+     * Clear all KGE embeddings (node and edge) for a fact sheet. Default: no-op.
+     */
+    default void clearKgEmbeddings(Long factSheetId) {}
 
     // ═══════════════════════════════════════════════════════════════════════════
     // COUNT / STATISTICS
@@ -993,5 +1244,42 @@ public interface KnowledgeGraphService {
      */
     default Map<String, Object> getTemporalBounds() {
         return Map.of();
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // LEVEL-OF-DETAIL (LOD) ENDPOINTS — bounded graph views for large graphs
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Level-of-detail: return a bounded visualization of the top-K nodes by centrality, plus the
+     * induced subgraph edges between them. Ideal as the initial "seed" view for the Sigma.js
+     * visualizer on large graphs. The default falls back to a maxNodes-capped standard
+     * visualization; matrix stores override with a real centrality-ranked selection.
+     *
+     * @param factSheetId optional fact-sheet scope (null = all graphs)
+     * @param k           maximum number of nodes to return
+     * @param metric      "pagerank" (default), "degree", or "betweenness"
+     * @return viz-shape map: nodes / edges / links / statistics
+     *         (statistics.totalAvailableNodes = full node count so the UI can show "K of N")
+     */
+    default Map<String, Object> getTopKVisualizationData(Long factSheetId, int k, String metric) {
+        return getVisualizationData(null, 2, k);
+    }
+
+    /**
+     * Level-of-detail: 1-hop neighborhood expand for a single node. Returns the seed node plus its
+     * immediate neighbors (capped at maxNeighbors, sorted by edge weight desc) and all connecting
+     * edges, in the standard viz shape. The default returns an empty result; matrix stores override
+     * with a direct adjacency-list expansion (no full-graph scan).
+     *
+     * @param nodeId       the seed node id
+     * @param maxNeighbors cap on returned neighbors (sorted by edge weight desc)
+     * @param edgeTypes    optional edge-type filter (null/empty = all types)
+     * @return viz-shape map: nodes / edges / links / statistics
+     */
+    default Map<String, Object> expandNeighborhoodVisualization(String nodeId, int maxNeighbors,
+                                                                  List<String> edgeTypes) {
+        return Map.of("nodes", List.of(), "edges", List.of(), "links", List.of(),
+                "statistics", Map.of("totalAvailableNodes", 0));
     }
 }

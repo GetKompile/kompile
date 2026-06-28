@@ -26,6 +26,7 @@ import java.io.IOException;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
@@ -49,12 +50,10 @@ public class ExploreTool implements CliTool {
     private static final int MAX_ENTRIES = 500;
     private static final int DEFAULT_GLIMPSE_LINES = 10;
 
-    private static final Set<String> SKIP_DIRS = Set.of(
-            ".git", "node_modules", "target", "__pycache__", ".gradle",
-            "build", "dist", ".next", ".nuxt", ".cache", "venv", ".venv",
-            ".tox", ".mypy_cache", ".pytest_cache", "vendor", ".idea",
-            ".vscode", ".angular", "out", ".svn", "coverage", ".nyc_output"
-    );
+    /** Hard wall-clock cap on a single explore so a deep tree on a large repo can't hang the
+     *  MCP client. Mirrors the caps in {@link GrepTool} and {@link GlobTool}; directory
+     *  pruning is shared via {@link SearchExclusions} (was a private SKIP_DIRS copy). */
+    private static final long TIMEOUT_MILLIS = 15_000;
 
     private static final Set<String> KEY_FILES = Set.of(
             "README.md", "readme.md", "README.txt", "README",
@@ -164,9 +163,13 @@ public class ExploreTool implements CliTool {
 
         Pattern filter = filterStr.isEmpty() ? null : Pattern.compile(filterStr);
         Set<String> gitignorePatterns = respectGitignore ? loadGitignore(dir) : Set.of();
+        SearchExclusions.GitignoreDirFilter gitFilter = SearchExclusions.loadGitignoreDirFilter(dir);
 
-        // Collect tree structure
-        TreeNode root = buildTree(dir, dir, depth, showHidden, gitignorePatterns, filter);
+        // Collect tree structure (bounded by a hard wall-clock deadline)
+        long deadline = System.currentTimeMillis() + TIMEOUT_MILLIS;
+        AtomicBoolean timedOut = new AtomicBoolean(false);
+        TreeNode root = buildTree(dir, dir, depth, showHidden, gitignorePatterns, filter,
+                gitFilter, deadline, timedOut);
 
         // Compute statistics
         Stats stats = computeStats(root);
@@ -192,6 +195,10 @@ public class ExploreTool implements CliTool {
                 .append(" | **Total size**: ").append(formatSize(stats.totalSize)).append("\n");
         if (stats.entriesExceeded) {
             sb.append("*(tree truncated at ").append(MAX_ENTRIES).append(" entries)*\n");
+        }
+        if (timedOut.get()) {
+            sb.append("*(exploration timed out after ").append(TIMEOUT_MILLIS / 1000)
+                    .append("s — tree only partially scanned; narrow with 'path' or a lower 'depth')*\n");
         }
         sb.append("\n");
 
@@ -234,7 +241,8 @@ public class ExploreTool implements CliTool {
         metadata.put("dirCount", stats.dirCount);
         metadata.put("totalSize", stats.totalSize);
         metadata.put("depth", depth);
-        metadata.put("truncated", stats.entriesExceeded);
+        metadata.put("truncated", stats.entriesExceeded || timedOut.get());
+        metadata.put("timedOut", timedOut.get());
         if (!stats.languageCounts.isEmpty()) {
             metadata.put("languages", stats.languageCounts);
         }
@@ -243,7 +251,9 @@ public class ExploreTool implements CliTool {
     }
 
     private TreeNode buildTree(Path root, Path current, int maxDepth, boolean showHidden,
-                               Set<String> gitignorePatterns, Pattern filter) {
+                               Set<String> gitignorePatterns, Pattern filter,
+                               SearchExclusions.GitignoreDirFilter gitFilter,
+                               long deadline, AtomicBoolean timedOut) {
         TreeNode node = new TreeNode();
         node.name = current.getFileName() != null ? current.getFileName().toString() : current.toString();
         node.isDirectory = true;
@@ -275,14 +285,24 @@ public class ExploreTool implements CliTool {
                     node.entriesExceeded = true;
                     break;
                 }
+                if (System.currentTimeMillis() > deadline) {
+                    timedOut.set(true);
+                    node.entriesExceeded = true;
+                    break;
+                }
 
                 String name = entry.getFileName().toString();
 
                 // Skip hidden files unless requested
                 if (!showHidden && name.startsWith(".")) continue;
 
-                // Skip well-known non-source directories
-                if (Files.isDirectory(entry) && SKIP_DIRS.contains(name)) continue;
+                // Skip well-known non-source directories (shared SearchExclusions source of
+                // truth) and project-specific git-ignored data directories.
+                if (Files.isDirectory(entry)
+                        && (SearchExclusions.isExcludedDir(name, showHidden)
+                            || gitFilter.isIgnoredDir(root.relativize(entry).toString(), name))) {
+                    continue;
+                }
 
                 // Respect .gitignore
                 if (!gitignorePatterns.isEmpty()) {
@@ -298,7 +318,8 @@ public class ExploreTool implements CliTool {
                 }
 
                 if (Files.isDirectory(entry)) {
-                    TreeNode child = buildTree(root, entry, maxDepth - 1, showHidden, gitignorePatterns, filter);
+                    TreeNode child = buildTree(root, entry, maxDepth - 1, showHidden, gitignorePatterns, filter,
+                            gitFilter, deadline, timedOut);
                     node.children.add(child);
                     entryCount += 1 + child.totalEntries();
                 } else {

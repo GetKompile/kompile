@@ -19,11 +19,14 @@ package ai.kompile.crawl.graph;
 import ai.kompile.core.crawl.graph.GraphEnrichmentService;
 import ai.kompile.crawl.graph.ontology.OntologyConformanceTagger;
 import ai.kompile.graph.reasoning.confidence.StrengthBand;
+import ai.kompile.knowledgegraph.confidence.KbConfig;
+import ai.kompile.knowledgegraph.confidence.KbConfigManager;
 import ai.kompile.knowledgegraph.maintenance.HealthSetpoints;
 import ai.kompile.knowledgegraph.maintenance.PruneCompactOrchestrator;
 import ai.kompile.knowledgegraph.maintenance.PruneCompactResult;
 import ai.kompile.knowledgegraph.reasoning.FactPromotionTracker;
 import ai.kompile.knowledgegraph.reasoning.IncrementalReasoningOrchestrator;
+import ai.kompile.knowledgegraph.reasoning.MebnTheoryRegistrationService;
 import ai.kompile.knowledgegraph.reasoning.RegroundResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -33,6 +36,12 @@ import org.springframework.stereotype.Component;
 
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.function.BiConsumer;
 
 /**
@@ -144,6 +153,34 @@ public class GraphHydrationOrchestrator implements GraphEnrichmentService {
     private OntologyConformanceTagger ontologyConformanceTagger;
 
     /**
+     * Optional: KB config manager for reading the derivation time budget and PSL epoch cap.
+     * Null in plain-Java test contexts and Spring contexts that exclude kompile-knowledge-graph.
+     */
+    @Autowired(required = false)
+    @Nullable
+    private KbConfigManager kbConfigManager;
+
+    /**
+     * Optional: MEBN MTheory registration service.  When non-null and
+     * {@code kbMebnTheoryRegistrationOnCrawlEnabled} is {@code true} in the live
+     * {@link KbConfig}, this service is called once per fact sheet immediately before
+     * {@link IncrementalReasoningOrchestrator#runFullReground} so that STEP 9 (SSBN
+     * weight learning) fires inside the derivation cascade.
+     *
+     * <p>Null in plain-Java test contexts or Spring contexts that have not loaded the
+     * knowledge-graph module.  The flag defaults to {@code false}, so a normal crawl is
+     * byte-for-byte unchanged when this bean is absent.</p>
+     */
+    @Autowired(required = false)
+    @Nullable
+    private MebnTheoryRegistrationService mebnRegistrationService;
+
+    /** Return the current KB config (defaults when no manager is wired). */
+    private KbConfig kbCfg() {
+        return kbConfigManager != null ? kbConfigManager.current() : KbConfig.defaults();
+    }
+
+    /**
      * Run the full hydration pipeline for the given fact sheet.
      *
      * @param factSheetId      target fact sheet
@@ -179,26 +216,118 @@ public class GraphHydrationOrchestrator implements GraphEnrichmentService {
             if (reasoningOrchestrator != null) {
                 derivationAttempted = true;
                 try {
-                    log.info("[Hydration factSheet={}] DERIVATION: starting MAP re-ground", factSheetId);
+                    KbConfig cfg = kbCfg();
+                    long budgetMs = cfg.getDerivationTimeBudgetMs();
+                    log.info("[Hydration factSheet={}] DERIVATION: starting MAP re-ground (timeBudgetMs={}, "
+                            + "pslEpochsCap={}, maxAtoms={})",
+                            factSheetId, budgetMs > 0 ? budgetMs : "unlimited",
+                            cfg.getDerivationPslMaxEpochs() > 0 ? cfg.getDerivationPslMaxEpochs() : "inherit",
+                            cfg.getDerivationMaxAtoms() > 0 ? cfg.getDerivationMaxAtoms() : "unlimited");
+
                     // Signal the learning phase before the MAP solve + weight-update runs.
                     // IncrementalReasoningOrchestrator.runFullReground() performs PSL minibatch
-                    // weight learning (step 5b) and throttled MEBN finite-difference gradient
-                    // descent (step 9) inside the same call.  Expose it as a distinct sub-stage
-                    // so the crawl status card can name it explicitly.
-                    // NOTE: the actual weight-update iteration counts are not yet surfaced here;
-                    // that requires a new RegroundResult field — deferred as a follow-up.
+                    // weight learning (step 5b) inside the same call. MEBN gradient descent
+                    // (step 9) runs only when a theory has been registered via registerMTheory().
+                    // Emit a conservative pre-derivation label (not "MEBN gradient descent run"
+                    // since MEBN may not actually fire on this cascade).
                     safeCallback(progressCallback, STAGE_WEIGHT_LEARNING,
-                            "Learning weights: PSL minibatch gradient update + MEBN finite-difference "
-                            + "gradient descent (throttled every 10 cascades) — factSheet=" + factSheetId);
-                    RegroundResult rr = reasoningOrchestrator.runFullReground(factSheetId);
+                            "Derivation + weight learning starting (PSL online gradient; MEBN when theory registered)"
+                            + " — factSheet=" + factSheetId);
+
+                    // ── MEBN MTheory pre-registration (kbMebnTheoryRegistrationOnCrawlEnabled, default OFF) ──
+                    // When the flag is on and the service is present, auto-build an MTheory from
+                    // live graph topology and register it now so STEP 9 (SSBN gradient-descent weight
+                    // learning) fires inside runFullReground below.  Failures are non-fatal: the
+                    // derivation still runs; it will simply not perform MEBN weight learning.
+                    if (mebnRegistrationService != null && kbCfg().isMebnTheoryRegistrationOnCrawlEnabled()) {
+                        try {
+                            int mFragCount = mebnRegistrationService.registerMTheoryForFactSheet(factSheetId);
+                            log.info("[Hydration factSheet={}] MEBN MTheory pre-registered: {} MFrag(s) — "
+                                    + "SSBN weight learning will run in this cascade", factSheetId, mFragCount);
+                        } catch (Exception mebnEx) {
+                            log.warn("[Hydration factSheet={}] MEBN MTheory registration failed "
+                                    + "(non-fatal, crawl continues): {}",
+                                    factSheetId, mebnEx.getMessage(), mebnEx);
+                        }
+                    }
+
+                    // ── DERIVATION TIME BUDGET ────────────────────────────────────────────
+                    // Wrap runFullReground in a bounded future so a pathological grounding
+                    // (e.g. 500k ground rules × 50 MAP epochs) cannot hold the crawl hostage.
+                    // If budgetMs <= 0, run synchronously without a cap (legacy behaviour).
+                    final RegroundResult rr;
+                    if (budgetMs > 0) {
+                        // Use a single-thread executor so the grounding runs on a named thread
+                        // (not a ForkJoinPool worker) and can be interrupted cleanly.
+                        ExecutorService exec = Executors.newSingleThreadExecutor(r -> {
+                            Thread t = new Thread(r, "derivation-" + factSheetId);
+                            t.setDaemon(true);
+                            return t;
+                        });
+                        Future<RegroundResult> future = exec.submit(
+                                () -> reasoningOrchestrator.runFullReground(factSheetId));
+                        exec.shutdown();
+                        try {
+                            rr = future.get(budgetMs, TimeUnit.MILLISECONDS);
+                        } catch (TimeoutException tex) {
+                            // Use cancel(false) — do NOT interrupt the derivation thread.
+                            // The derivation thread holds shared DB connections; interrupting it
+                            // (cancel(true)) causes ClosedByInterruptException on open NIO channels.
+                            // The thread is a daemon so it will not prevent JVM exit.
+                            future.cancel(false);
+                            exec.shutdownNow();
+                            log.warn("[Hydration factSheet={}] DERIVATION timed out after {}ms — "
+                                    + "crawl continues (partial results materialized up to timeout)",
+                                    factSheetId, budgetMs);
+                            safeCallback(progressCallback, STAGE_DERIVATION,
+                                    "DERIVATION timed out after " + budgetMs + "ms (budget cap) — "
+                                    + "crawl continues; increase kbDerivationTimeBudgetMs to allow more time");
+                            // Fall through to LEARNING_METRICS emission below with skipped=true
+                            throw new RuntimeException("DERIVATION_TIMEOUT:" + budgetMs + "ms", tex);
+                        } catch (ExecutionException eex) {
+                            exec.shutdownNow();
+                            Throwable cause = eex.getCause() != null ? eex.getCause() : eex;
+                            throw new RuntimeException(cause.getMessage(), cause);
+                        } catch (InterruptedException iex) {
+                            // Do NOT use cancel(true) — clear local interrupt and let derivation
+                            // finish naturally on the daemon thread.
+                            future.cancel(false);
+                            exec.shutdownNow();
+                            Thread.currentThread().interrupt();
+                            throw new RuntimeException("DERIVATION interrupted", iex);
+                        }
+                    } else {
+                        rr = reasoningOrchestrator.runFullReground(factSheetId);
+                    }
+
                     relationsDerived   = rr.versionsWritten();
                     retractedAtomCount = rr.retractedAtomKeys().size();
                     retractedAtomKeys  = rr.retractedAtomKeys();
                     runId              = rr.runId();
                     derivationSucceeded = true;
                     stagesRun++;
-                    String msg = "DERIVATION complete: " + relationsDerived + " fact version(s) derived, "
-                            + retractedAtomCount + " retracted, runId=" + runId;
+                    // Surface a structured diagnosis when 0 facts were derived.
+                    // The reasoning library already logs the detailed explanation (atom value
+                    // distribution, stable-fixed-point vs empty FactStore) at INFO in
+                    // IncrementalReasoningOrchestrator and GraphToFactStoreProjector.
+                    // Here we propagate a short structured label into the crawl progress
+                    // callback (recordHydrationSubStageProgress → recordEvent → SSE) so the
+                    // crawl status card can show "why 0" without requiring log access.
+                    final String msg;
+                    if (relationsDerived == 0 && retractedAtomCount > 0) {
+                        msg = "DERIVATION complete: 0 new fact version(s) derived "
+                                + "(stable fixed-point — all MAP posteriors match existing store within ε="
+                                + "0.001), " + retractedAtomCount + " atoms from prior cascade(s) "
+                                + "no longer produced by this run (implicit retraction), runId=" + runId
+                                + ". This is normal on re-crawls when the graph has not changed.";
+                    } else if (relationsDerived == 0) {
+                        msg = "DERIVATION complete: 0 fact version(s) derived, "
+                                + retractedAtomCount + " retracted, runId=" + runId
+                                + ". Check IncrementalReasoningOrchestrator logs for root cause.";
+                    } else {
+                        msg = "DERIVATION complete: " + relationsDerived + " fact version(s) derived, "
+                                + retractedAtomCount + " retracted, runId=" + runId;
+                    }
                     log.info("[Hydration factSheet={}] {}", factSheetId, msg);
                     safeCallback(progressCallback, STAGE_DERIVATION, msg);
                 } catch (Exception e) {
@@ -422,5 +551,73 @@ public class GraphHydrationOrchestrator implements GraphEnrichmentService {
         } catch (Exception e) {
             log.debug("[Hydration] Progress callback threw for stage {}: {}", stageId, e.getMessage());
         }
+    }
+
+    // ── Single-stage re-run entry points (P3 per-step resumability) ───────────────
+
+    /**
+     * Re-run only the DERIVATION stage for the given fact sheet.
+     *
+     * <p>Delegates to {@link #run} with a {@link HydrationConfig} that enables only
+     * {@code DERIVATION}.  Safe to call when the reasoning orchestrator is null — returns
+     * {@link HydrationResult#empty()} and logs a warning.</p>
+     *
+     * @param factSheetId the fact sheet to re-derive
+     * @return hydration result covering only the derivation stage
+     */
+    public HydrationResult runDerivationOnly(long factSheetId) {
+        if (reasoningOrchestrator == null) {
+            log.warn("[Hydration factSheet={}] runDerivationOnly: reasoningOrchestrator not wired — skipping",
+                    factSheetId);
+            return HydrationResult.empty();
+        }
+        HydrationConfig cfg = new HydrationConfig(
+                Set.of(STAGE_DERIVATION), 0.4, false);
+        return run(factSheetId, cfg, (stage, msg) ->
+                log.debug("[Hydration factSheet={}] DERIVATION re-run [{}]: {}", factSheetId, stage, msg));
+    }
+
+    /**
+     * Re-run only the PRUNE_COMPACT stage for the given fact sheet.
+     *
+     * <p>Safe to call when {@link PruneCompactOrchestrator} is null — returns
+     * {@link HydrationResult#empty()} and logs a warning.  Always live (not dry-run);
+     * uses default health setpoints.</p>
+     *
+     * @param factSheetId the fact sheet to prune/compact
+     * @return hydration result covering only the prune-compact stage
+     */
+    public HydrationResult runPruneOnly(long factSheetId) {
+        if (pruneCompactOrchestrator == null) {
+            log.warn("[Hydration factSheet={}] runPruneOnly: pruneCompactOrchestrator not wired — skipping",
+                    factSheetId);
+            return HydrationResult.empty();
+        }
+        HydrationConfig cfg = new HydrationConfig(
+                Set.of(STAGE_PRUNE_COMPACT), 0.4, false);
+        return run(factSheetId, cfg, (stage, msg) ->
+                log.debug("[Hydration factSheet={}] PRUNE re-run [{}]: {}", factSheetId, stage, msg));
+    }
+
+    /**
+     * Re-run only the ONTOLOGY_CONFORMANCE stage for the given fact sheet.
+     *
+     * <p>When no {@link OntologyConformanceTagger} or no ontology is bound to the fact sheet,
+     * the tagger returns {@link OntologyConformanceTagger.TagResult#empty()} (zero counts) and
+     * this method returns {@link HydrationResult#empty()}.  Tag-only: never deletes or drops nodes.</p>
+     *
+     * @param factSheetId the fact sheet to tag
+     * @return hydration result covering only the conformance stage
+     */
+    public HydrationResult runOntologyConformanceOnly(long factSheetId) {
+        if (ontologyConformanceTagger == null) {
+            log.warn("[Hydration factSheet={}] runOntologyConformanceOnly: ontologyConformanceTagger not wired — skipping",
+                    factSheetId);
+            return HydrationResult.empty();
+        }
+        HydrationConfig cfg = new HydrationConfig(
+                Set.of(STAGE_ONTOLOGY_CONFORMANCE), 0.4, false);
+        return run(factSheetId, cfg, (stage, msg) ->
+                log.debug("[Hydration factSheet={}] ONTOLOGY_CONFORMANCE re-run [{}]: {}", factSheetId, stage, msg));
     }
 }

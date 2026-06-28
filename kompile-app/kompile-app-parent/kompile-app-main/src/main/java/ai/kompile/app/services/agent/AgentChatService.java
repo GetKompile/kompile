@@ -24,9 +24,11 @@ import ai.kompile.chat.history.service.FolderService;
 import ai.kompile.core.agent.AgentProvider;
 import ai.kompile.core.agent.ProcessState;
 import ai.kompile.core.agent.ProcessStatus;
+import ai.kompile.core.citation.CitationDto;
 import ai.kompile.core.embeddings.NoOpVectorStoreImpl;
 import ai.kompile.core.embeddings.VectorStore;
 import ai.kompile.core.graphrag.GraphRagService;
+import ai.kompile.core.graphrag.model.Entity;
 import ai.kompile.core.graphrag.query.GraphRagQuery;
 import ai.kompile.core.graphrag.query.GraphRagResult;
 import ai.kompile.core.graphrag.query.SearchType;
@@ -35,6 +37,9 @@ import ai.kompile.core.rag.query.QueryProcessor;
 import ai.kompile.core.retrievers.DocumentRetriever;
 import ai.kompile.core.retrievers.NoOpDocumentRetrieverImpl;
 import ai.kompile.core.retrievers.RetrievedDoc;
+import ai.kompile.core.source.SourceMetadataConstants;
+import ai.kompile.knowledgegraph.citation.CitationSupport;
+import ai.kompile.knowledgegraph.domain.GraphProvenanceKeys;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
@@ -88,6 +93,11 @@ public class AgentChatService {
     // CLI/MCP tool-call index so they surface in the MCP Hub tool-call catalog.
     @Autowired(required = false)
     private ToolCallWriterService toolCallWriterService;
+
+    // Collects ReasoningTrail DTOs pushed by KbVerifyExplainTool during a chat turn
+    // so they can be streamed as reasoning_trace SSE events after the subprocess exits.
+    @Autowired(required = false)
+    private ReasoningTraceStore reasoningTraceStore;
 
     // RAG prompt template
     private static final String RAG_CONTEXT_TEMPLATE = """
@@ -264,6 +274,10 @@ public class AgentChatService {
                 Map<String, String> env = pb.environment();
                 env.putAll(agent.safeEnvironment());
 
+                // Record the turn start time so we can drain reasoning traces
+                // that were accumulated by KbVerifyExplainTool during this turn.
+                long turnStartMs = System.currentTimeMillis();
+
                 process = pb.start();
                 final Process runningProcess = process;
 
@@ -353,6 +367,15 @@ public class AgentChatService {
                     } else {
                         int exitCode = runningProcess.exitValue();
                         if (exitCode == 0) {
+                            // Emit any reasoning traces accumulated by KbVerifyExplainTool
+                            // during this turn BEFORE the complete event so the frontend
+                            // can attach them to the streaming message.
+                            if (reasoningTraceStore != null) {
+                                List<Map<String, Object>> traces = reasoningTraceStore.drainSince(turnStartMs);
+                                for (Map<String, Object> trace : traces) {
+                                    sendEvent(emitter, "reasoning_trace", trace);
+                                }
+                            }
                             diagnosticService.processCompleted(processId, exitCode);
                             sendEvent(emitter, "complete", Map.of(
                                     "processId", processId,
@@ -442,13 +465,42 @@ public class AgentChatService {
                 hasContext = true;
                 log.info("Retrieved graph context for augmentation");
 
-                // Add graph result as a source for client display
-                RetrievedDoc graphDoc = new RetrievedDoc(
-                        "graph-context",
-                        graphResult.getFormattedContext(),
-                        Map.of("type", "graph", "searchType", request.getGraphRagSearchType()),
-                        1.0);
-                retrievedSources.add(graphDoc);
+                // Emit per-entity sources so the frontend can show clickable graph-linked cards.
+                // Falls back to a single flat source when the entity list is empty.
+                List<Entity> entities = graphResult.getEntities();
+                if (entities != null && !entities.isEmpty()) {
+                    for (Entity entity : entities) {
+                        String entityId = entity.getId();
+                        if (entityId == null) continue;
+                        // Prefer description; fall back to first text unit.
+                        String entityText = entity.getDescription();
+                        if ((entityText == null || entityText.isBlank())
+                                && entity.getTextUnits() != null && !entity.getTextUnits().isEmpty()) {
+                            entityText = entity.getTextUnits().get(0);
+                        }
+                        if (entityText == null) entityText = "";
+
+                        Map<String, Object> entityMeta = new HashMap<>(
+                                entity.getMetadata() != null ? entity.getMetadata() : Map.of());
+                        entityMeta.put("node_id", entityId);
+                        if (entity.getType() != null) {
+                            entityMeta.put("type", entity.getType());
+                        }
+                        // Preserve source_id if already present in entity metadata
+                        double confidence = entity.getConfidence() != null ? entity.getConfidence() : 0.0;
+                        RetrievedDoc entityDoc = new RetrievedDoc(entityId, entityText, entityMeta, confidence);
+                        retrievedSources.add(entityDoc);
+                    }
+                    log.info("Added {} entity sources from graph RAG result", entities.size());
+                } else {
+                    // No structured entities — fall back to a single flat context source
+                    RetrievedDoc graphDoc = new RetrievedDoc(
+                            "graph-context",
+                            graphResult.getFormattedContext(),
+                            Map.of("type", "graph", "searchType", request.getGraphRagSearchType()),
+                            1.0);
+                    retrievedSources.add(graphDoc);
+                }
             }
         }
 
@@ -582,15 +634,40 @@ public class AgentChatService {
             source.put("content", content.length() > 2000 ? content.substring(0, 2000) + "... [truncated]" : content);
 
             // Include relevant metadata
+            Map<String, Object> safeMetadata = new HashMap<>();
             if (doc.getMetadata() != null) {
-                Map<String, Object> safeMetadata = new HashMap<>();
                 for (Map.Entry<String, Object> entry : doc.getMetadata().entrySet()) {
-                    // Only include string/number metadata, skip large objects
-                    if (entry.getValue() instanceof String || entry.getValue() instanceof Number) {
+                    // Include string, number, and boolean metadata; skip large/complex objects
+                    if (entry.getValue() instanceof String
+                            || entry.getValue() instanceof Number
+                            || entry.getValue() instanceof Boolean) {
                         safeMetadata.put(entry.getKey(), entry.getValue());
                     }
                 }
                 source.put("metadata", safeMetadata);
+            }
+
+            // Uniform citation object
+            CitationDto citation = CitationSupport.from(doc.getMetadata(), doc.getScore(), null);
+            source.put("citation", citation);
+
+            // Graph linkage: nodeId for "View in knowledge graph", documentId for document navigation
+            String nodeId = extractMetadataString(doc.getMetadata(), "node_id", "nodeId", "externalId");
+            if (nodeId == null && doc.getId() != null && !doc.getId().startsWith("doc-")) {
+                // doc.getId() is a stable external ID when set by the graph store
+                nodeId = doc.getId();
+            }
+            if (nodeId != null) {
+                source.put("nodeId", nodeId);
+            }
+            String documentId = extractMetadataString(doc.getMetadata(),
+                    SourceMetadataConstants.SOURCE_ID,          // "source_id"
+                    GraphProvenanceKeys.SOURCE_DOCUMENT_ID);    // "_sourceDocumentId"
+            if (documentId == null && citation != null && citation.sourceId() != null) {
+                documentId = citation.sourceId();
+            }
+            if (documentId != null) {
+                source.put("documentId", documentId);
             }
 
             sources.add(source);
@@ -631,6 +708,21 @@ public class AgentChatService {
         }
 
         return "Document";
+    }
+
+    /**
+     * Return the first non-blank string value found in {@code metadata} under any of
+     * the supplied keys, or {@code null} if none match.
+     */
+    private String extractMetadataString(Map<String, Object> metadata, String... keys) {
+        if (metadata == null) return null;
+        for (String key : keys) {
+            Object v = metadata.get(key);
+            if (v instanceof String s && !s.isBlank()) {
+                return s;
+            }
+        }
+        return null;
     }
 
     /**

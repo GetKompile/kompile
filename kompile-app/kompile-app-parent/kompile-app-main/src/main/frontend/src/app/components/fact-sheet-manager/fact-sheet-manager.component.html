@@ -1199,6 +1199,7 @@
                 [taskId]="'crawl-' + (job.internalJobId || job.jobId)"
                 [isJobRunning]="job.status === 'RUNNING' || job.status === 'PENDING'"
                 [compact]="true"
+                [runningStepIds]="getRunningStepIds(job.jobId)"
                 (runStepRequested)="onRunStepRequested($event)">
               </app-crawl-step-monitor>
 

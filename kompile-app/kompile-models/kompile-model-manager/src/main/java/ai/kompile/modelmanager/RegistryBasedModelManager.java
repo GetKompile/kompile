@@ -92,12 +92,7 @@ public class RegistryBasedModelManager {
     public static final String ROLE_RERANKING = "reranking";
 
     public RegistryBasedModelManager() {
-        String cacheDirEnv = System.getenv(ENV_KOMPILE_MODEL_CACHE_DIR);
-        if (cacheDirEnv != null && !cacheDirEnv.trim().isEmpty()) {
-            this.baseCachePath = Paths.get(cacheDirEnv.trim());
-        } else {
-            this.baseCachePath = Paths.get(System.getProperty("user.home"), DEFAULT_KOMPILE_MODEL_CACHE_SUBDIR);
-        }
+        this.baseCachePath = ModelConstants.resolveBaseModelCacheDir();
         this.objectMapper = JsonUtils.standardMapper();
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))

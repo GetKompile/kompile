@@ -16,7 +16,6 @@
 package ai.kompile.knowledgegraph.resolution;
 
 import ai.kompile.knowledgegraph.domain.*;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import ai.kompile.knowledgegraph.resolution.GraphCompactionService.*;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.junit.jupiter.api.BeforeEach;
@@ -26,6 +25,8 @@ import java.time.LocalDateTime;
 import java.util.*;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.*;
 
@@ -42,12 +43,6 @@ class GraphCompactionServiceTest {
     void setUp() {
         knowledgeGraphService = mock(KnowledgeGraphService.class);
         compactionService = new GraphCompactionService(knowledgeGraphService);
-    }
-
-    private void setNodeRepository(GraphNodeRepository nodeRepository) throws Exception {
-        java.lang.reflect.Field field = GraphCompactionService.class.getDeclaredField("nodeRepository");
-        field.setAccessible(true);
-        field.set(compactionService, nodeRepository);
     }
 
     private GraphNode entityNode(String nodeId, String title, String entityType) {
@@ -242,18 +237,23 @@ class GraphCompactionServiceTest {
     }
 
     @Test
-    void preview_factSheetScopedUsesRepositoryInsteadOfGlobalGraphSearch() throws Exception {
+    void preview_factSheetScopedUsesRepositoryInsteadOfGlobalGraphSearch() {
+        // Impl now uses chunked paging: getEntityNodesInFactSheetPage (default method that
+        // delegates to getNodesByTypeInFactSheet) rather than loading all nodes at once.
+        // Mockito 5 does not call through default interface methods unless told to, so we
+        // wire doCallRealMethod() so the default impl delegates to our stub.
         GraphNode scopedA = entityNode("scoped-a", "Hydrate Daily Set", "SKU_MASTER");
         GraphNode scopedB = entityNode("scoped-b", "Hydrate Daily Set", "SKU_MASTER");
         GraphNode globalA = entityNode("global-a", "Channel", "APPROVAL_ROLE");
         GraphNode globalB = entityNode("global-b", "Channel", "APPROVAL_ROLE");
 
-        GraphNodeRepository nodeRepository = mock(GraphNodeRepository.class);
-        setNodeRepository(nodeRepository);
-        when(nodeRepository.findByFactSheetIdAndNodeType(1L, NodeLevel.ENTITY))
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(1L, NodeLevel.ENTITY))
                 .thenReturn(List.of(scopedA, scopedB));
         when(knowledgeGraphService.searchNodes("", NodeLevel.ENTITY, 100_000))
                 .thenReturn(List.of(globalA, globalB));
+        // Allow the default getEntityNodesInFactSheetPage to delegate to the stub above.
+        doCallRealMethod().when(knowledgeGraphService)
+                .getEntityNodesInFactSheetPage(anyLong(), anyInt(), anyInt());
 
         List<MatchCandidate> candidates = compactionService.previewCandidates(
                 1L, CompactionConfig.previewOnly(0.85));
@@ -261,7 +261,8 @@ class GraphCompactionServiceTest {
         assertEquals(1, candidates.size());
         assertEquals(Set.of("scoped-a", "scoped-b"),
                 Set.of(candidates.get(0).nodeIdA(), candidates.get(0).nodeIdB()));
-        verify(nodeRepository).findByFactSheetIdAndNodeType(1L, NodeLevel.ENTITY);
+        // Verify fact-sheet-scoped method was called (not the global search)
+        verify(knowledgeGraphService).getNodesByTypeInFactSheet(1L, NodeLevel.ENTITY);
         verify(knowledgeGraphService, never()).searchNodes("", NodeLevel.ENTITY, 100_000);
     }
 

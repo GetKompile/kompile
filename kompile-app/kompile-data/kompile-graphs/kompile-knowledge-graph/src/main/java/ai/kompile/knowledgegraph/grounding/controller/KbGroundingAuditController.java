@@ -18,6 +18,7 @@ import ai.kompile.knowledgegraph.grounding.KbCorrectionService.CorrectionResult;
 import ai.kompile.knowledgegraph.persistence.dual.InferredFactRow;
 import ai.kompile.knowledgegraph.persistence.dual.InferredFactRowRepository;
 import ai.kompile.knowledgegraph.reasoning.FactPromotionTracker;
+import ai.kompile.knowledgegraph.reasoning.TraceHumanizer;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -53,6 +54,11 @@ public class KbGroundingAuditController {
 
     @Nullable
     private final InferredFactRowRepository factRepo;
+
+    /** Optional: humanizes atom keys to entity titles for the facts browser. Null-safe. */
+    @Nullable
+    @Autowired(required = false)
+    private TraceHumanizer traceHumanizer;
 
     @Autowired
     public KbGroundingAuditController(
@@ -198,6 +204,12 @@ public class KbGroundingAuditController {
                     continue;
                 }
 
+                // Extract source provenance fields from the DB row (single pass, reuse the already-fetched row)
+                String provJson        = dbRow != null ? dbRow.getProvenanceJson() : null;
+                String rowBasisType    = KbOpinionBrowserController.extractStringValue(provJson, BASIS_TYPE_JSON_KEY);
+                String rowCrawlRunId   = KbOpinionBrowserController.extractStringValue(provJson, CRAWL_RUN_ID_JSON_KEY);
+                String rowSourceDocId  = KbOpinionBrowserController.extractStringValue(provJson, SOURCE_DOCUMENT_ID_JSON_KEY);
+
                 rows.add(new FactTierRow(
                         atomKey,
                         fact.confidence(),
@@ -205,7 +217,11 @@ public class KbGroundingAuditController {
                         promotionTracker.getPromotionStatus(factSheetId, atomKey),
                         promotionTracker.getCorroborationCount(factSheetId, atomKey),
                         rowValidFrom,
-                        rowValidTo));
+                        rowValidTo,
+                        rowBasisType,
+                        rowCrawlRunId,
+                        rowSourceDocId,
+                        traceHumanizer != null ? traceHumanizer.humanizeAtom(atomKey) : atomKey));
             }
         }
         return ResponseEntity.ok(rows);
@@ -320,6 +336,13 @@ public class KbGroundingAuditController {
         return true;
     }
 
+    // ── Provenance JSON key constants ─────────────────────────────────────────
+    // Kept private; extraction delegated to the package-private KbOpinionBrowserController.extractStringValue.
+
+    private static final String BASIS_TYPE_JSON_KEY         = "\"_basisType\"";
+    private static final String SOURCE_DOCUMENT_ID_JSON_KEY = "\"_sourceDocumentId\"";
+    private static final String CRAWL_RUN_ID_JSON_KEY       = "\"_crawlRunId\"";
+
     /**
      * A single row returned by {@code GET /facts}.
      *
@@ -330,6 +353,9 @@ public class KbGroundingAuditController {
      * @param corroborationCount number of independent corroborations
      * @param validFrom          epoch millis when this fact became valid (= inferredAt). Null = unknown.
      * @param validTo            epoch millis when this fact ceased to be valid. Null = still valid / unbounded.
+     * @param basisType          basis type read from {@code _basisType} in provenanceJson; null = unknown.
+     * @param crawlRunId         crawl run/job identifier from {@code _crawlRunId}; null = unknown.
+     * @param sourceDocumentId   source document identifier from {@code _sourceDocumentId}; null = unknown.
      */
     public record FactTierRow(
             String atomKey,
@@ -338,7 +364,12 @@ public class KbGroundingAuditController {
             String promotionStatus,
             int corroborationCount,
             Long validFrom,
-            Long validTo) {}
+            Long validTo,
+            String basisType,
+            String crawlRunId,
+            String sourceDocumentId,
+            /** Human-readable label for {@code atomKey} (entity titles); falls back to atomKey. */
+            String displayLabel) {}
 
     /** Request payload for POST /corrections. */
     public record CorrectionRequest(

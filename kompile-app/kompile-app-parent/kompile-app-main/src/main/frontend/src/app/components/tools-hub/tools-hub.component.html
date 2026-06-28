@@ -17,17 +17,10 @@
 <div class="tools-hub">
   <div class="hub-header">
     <h2>Data</h2>
-    <p class="subtitle">Index browser &amp; knowledge graphs, MCP servers, orchestration, document chunking, pipelines, system prompts, business processes, workflows, compute graphs, crawlers, and code projects</p>
+    <p class="subtitle">MCP servers, orchestration, document chunking, pipelines, system prompts, business processes, workflows, compute graphs, crawlers, and code projects</p>
   </div>
 
   <div class="sub-tabs">
-    <button
-      class="sub-tab"
-      [class.active]="activeSubTab === 'indexBrowser'"
-      (click)="selectSubTab('indexBrowser')">
-      <mat-icon class="tab-icon">manage_search</mat-icon>
-      <span class="tab-label">Index Browser</span>
-    </button>
     <button
       class="sub-tab"
       [class.active]="activeSubTab === 'mcp'"
@@ -98,13 +91,7 @@
       <mat-icon class="tab-icon">travel_explore</mat-icon>
       <span class="tab-label">Crawlers</span>
     </button>
-    <button
-      class="sub-tab"
-      [class.active]="activeSubTab === 'crawlWorkers'"
-      (click)="selectSubTab('crawlWorkers')">
-      <mat-icon class="tab-icon">dns</mat-icon>
-      <span class="tab-label">Crawl Workers</span>
-    </button>
+
     <button
       class="sub-tab"
       [class.active]="activeSubTab === 'codeProjects'"
@@ -112,12 +99,17 @@
       <mat-icon class="tab-icon">code</mat-icon>
       <span class="tab-label">Code Projects</span>
     </button>
+
+    <button
+      class="sub-tab"
+      [class.active]="activeSubTab === 'indexBrowser'"
+      (click)="selectSubTab('indexBrowser')">
+      <mat-icon class="tab-icon">manage_search</mat-icon>
+      <span class="tab-label">Index Browser</span>
+    </button>
   </div>
 
   <div class="sub-tab-content">
-    <div *ngIf="activeSubTab === 'indexBrowser'">
-      <app-index-browser></app-index-browser>
-    </div>
     <div *ngIf="activeSubTab === 'mcp'">
       <app-mcp-hub></app-mcp-hub>
     </div>
@@ -146,13 +138,20 @@
       <app-compute-graph-dashboard></app-compute-graph-dashboard>
     </div>
     <div *ngIf="activeSubTab === 'crawlers'">
-      <app-crawler-manager></app-crawler-manager>
-    </div>
-    <div *ngIf="activeSubTab === 'crawlWorkers'">
-      <app-cluster-workers></app-cluster-workers>
+      <mat-tab-group>
+        <mat-tab label="Crawlers">
+          <app-crawler-manager></app-crawler-manager>
+        </mat-tab>
+        <mat-tab label="Workers">
+          <app-cluster-workers></app-cluster-workers>
+        </mat-tab>
+      </mat-tab-group>
     </div>
     <div *ngIf="activeSubTab === 'codeProjects'">
       <app-code-projects-hub></app-code-projects-hub>
+    </div>
+    <div *ngIf="activeSubTab === 'indexBrowser'">
+      <app-index-browser></app-index-browser>
     </div>
   </div>
 </div>

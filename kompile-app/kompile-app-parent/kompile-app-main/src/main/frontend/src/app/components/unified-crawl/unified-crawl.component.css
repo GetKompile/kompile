@@ -1,4 +1,15 @@
     .unified-crawl-container { padding: 16px; max-width: 900px; }
+    .page-header {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 16px; margin-bottom: 12px; flex-wrap: wrap;
+    }
+    .page-header-info { display: flex; align-items: center; gap: 12px; min-width: 0; }
+    .page-header-info > mat-icon {
+      font-size: 32px; width: 32px; height: 32px; color: var(--accent-color, #3f51b5); flex-shrink: 0;
+    }
+    .page-header-title { margin: 0; font-size: 18px; font-weight: 600; color: var(--text-primary); }
+    .page-header-sub { font-size: 13px; color: var(--text-secondary); }
+    .new-crawl-btn { flex-shrink: 0; }
     .scheduler-notifications { margin-bottom: 12px; }
     .scheduler-notification {
       display: flex; align-items: center; gap: 8px;

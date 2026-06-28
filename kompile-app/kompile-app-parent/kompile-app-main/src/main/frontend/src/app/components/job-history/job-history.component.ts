@@ -16,6 +16,7 @@
 
 import { Component, OnInit, OnDestroy, ChangeDetectionStrategy, ChangeDetectorRef } from '@angular/core';
 import { MatDialog } from '@angular/material/dialog';
+import { MatSnackBar } from '@angular/material/snack-bar';
 import { Subject, interval } from 'rxjs';
 import { takeUntil, filter, throttleTime, bufferTime } from 'rxjs/operators';
 import { ConfirmDialogComponent, ConfirmDialogData } from '../confirm-dialog/confirm-dialog.component';
@@ -34,6 +35,7 @@ import {
 } from '../../services/job-history.service';
 import { WebSocketService, WebSocketConnectionState } from '../../services/websocket.service';
 import { IngestProgressUpdate, IngestStatus } from '../../models/api-models';
+import { UnifiedCrawlService, PipelineStepProgress } from '../../services/unified-crawl.service';
 
 @Component({
   selector: 'app-job-history',
@@ -91,11 +93,21 @@ export class JobHistoryComponent implements OnInit, OnDestroy {
   // Available status options
   statusOptions: (JobStatus | 'ALL')[] = ['ALL', 'QUEUED', 'RUNNING', 'COMPLETED', 'FAILED', 'CANCELLED', 'MEMORY_KILLED', 'PAUSED'];
 
+  // Per-step retry support for the history detail view
+  /** Steps loaded from the unified-crawl history endpoint for the selected job. */
+  selectedJobSteps: PipelineStepProgress[] = [];
+  /** jobId from which selectedJobSteps were loaded (avoids stale data when navigating between jobs). */
+  private stepsLoadedForJobId: string | null = null;
+  /** In-flight step re-run keys (`${jobId}:${stepId}`). */
+  stepActionInProgress: { [key: string]: boolean } = {};
+
   constructor(
     private jobHistoryService: JobHistoryService,
+    private unifiedCrawlService: UnifiedCrawlService,
     private webSocketService: WebSocketService,
     private cdr: ChangeDetectorRef,
-    private dialog: MatDialog
+    private dialog: MatDialog,
+    private snackBar: MatSnackBar
   ) { }
 
   ngOnInit(): void {
@@ -344,6 +356,8 @@ export class JobHistoryComponent implements OnInit, OnDestroy {
     this.cachedNd4jCategories = null;
     this.cachedNd4jEnvironment = null;
     this.showNd4jDetails = false;
+    this.selectedJobSteps = [];
+    this.stepsLoadedForJobId = null;
     this.cdr.markForCheck();
 
     this.jobHistoryService.getJobSummary(taskId).subscribe({
@@ -363,6 +377,12 @@ export class JobHistoryComponent implements OnInit, OnDestroy {
         this.cdr.markForCheck();
         // Load events for this job
         this.loadEvents(taskId);
+        // Load per-step progress from the unified-crawl history endpoint so the step monitor
+        // can show retry/re-run buttons for past jobs (crawl taskIds have format "crawl-<jobId>").
+        const crawlJobId = taskId.startsWith('crawl-') ? taskId.slice('crawl-'.length) : null;
+        if (crawlJobId) {
+          this.loadJobSteps(crawlJobId);
+        }
       },
       error: (err) => {
         this.error = `Failed to load job details for ${taskId}`;
@@ -371,6 +391,73 @@ export class JobHistoryComponent implements OnInit, OnDestroy {
         console.error(err);
       }
     });
+  }
+
+  /** Load per-step data from the unified-crawl job history endpoint. */
+  private loadJobSteps(crawlJobId: string): void {
+    this.unifiedCrawlService.getJobFromHistory(crawlJobId)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (detail) => {
+          if (detail?.pipelineSteps?.length) {
+            // JobDetail.pipelineSteps uses the same shape as PipelineStepProgress
+            this.selectedJobSteps = detail.pipelineSteps as unknown as PipelineStepProgress[];
+            this.stepsLoadedForJobId = crawlJobId;
+          } else {
+            this.selectedJobSteps = [];
+          }
+          this.cdr.markForCheck();
+        },
+        error: () => {
+          // Non-fatal: step list simply won't show in the history view
+          this.selectedJobSteps = [];
+          this.cdr.markForCheck();
+        }
+      });
+  }
+
+  /**
+   * Re-run a single step from the history detail view.
+   * The crawlJobId is derived from the history taskId (format "crawl-{jobId}").
+   */
+  runHistoryStep(crawlJobId: string, stepId: string): void {
+    const key = `${crawlJobId}:${stepId}`;
+    this.stepActionInProgress[key] = true;
+    this.cdr.markForCheck();
+    this.unifiedCrawlService.runStep(crawlJobId, stepId)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (resp: any) => {
+          this.stepActionInProgress[key] = false;
+          this.snackBar.open(resp?.message || `Step ${stepId} triggered`, 'OK', { duration: 3000 });
+          // Reload steps to reflect new status
+          this.loadJobSteps(crawlJobId);
+          this.cdr.markForCheck();
+        },
+        error: (err: any) => {
+          this.stepActionInProgress[key] = false;
+          const msg = err?.error?.error || err?.message || `Failed to run step ${stepId}`;
+          this.snackBar.open(msg, 'Dismiss', { duration: 5000 });
+          this.cdr.markForCheck();
+        }
+      });
+  }
+
+  /** Builds the Set<string> of in-progress stepIds for a given crawlJobId. */
+  getRunningStepIds(crawlJobId: string): Set<string> {
+    const s = new Set<string>();
+    const prefix = crawlJobId + ':';
+    for (const key of Object.keys(this.stepActionInProgress)) {
+      if (this.stepActionInProgress[key] && key.startsWith(prefix)) {
+        s.add(key.slice(prefix.length));
+      }
+    }
+    return s;
+  }
+
+  /** Derive the crawl jobId from a history taskId (format "crawl-{jobId}"). */
+  getCrawlJobIdFromTaskId(taskId: string): string | null {
+    return taskId?.startsWith('crawl-') ? taskId.slice('crawl-'.length) : null;
   }
 
   // ===================== FILTERING =====================

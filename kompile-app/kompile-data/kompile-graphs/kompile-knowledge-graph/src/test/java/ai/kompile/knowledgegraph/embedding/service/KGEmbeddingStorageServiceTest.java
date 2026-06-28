@@ -23,8 +23,7 @@ import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
-import ai.kompile.knowledgegraph.repository.GraphEdgeRepository;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
+import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -49,10 +48,7 @@ import static org.mockito.Mockito.*;
 class KGEmbeddingStorageServiceTest {
 
     @Mock
-    private GraphNodeRepository nodeRepository;
-
-    @Mock
-    private GraphEdgeRepository edgeRepository;
+    private KnowledgeGraphService knowledgeGraphService;
 
     @Mock
     private KGEmbeddingModel mockModel;
@@ -64,7 +60,7 @@ class KGEmbeddingStorageServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new KGEmbeddingStorageService(nodeRepository, edgeRepository);
+        service = new KGEmbeddingStorageService(knowledgeGraphService);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -73,7 +69,7 @@ class KGEmbeddingStorageServiceTest {
 
     @Test
     void extractTriples_withNoEdges_returnsEmptyList() {
-        when(edgeRepository.findByFactSheetId(FACT_SHEET_ID)).thenReturn(Collections.emptyList());
+        when(knowledgeGraphService.getEdgesInFactSheet(FACT_SHEET_ID)).thenReturn(Collections.emptyList());
 
         List<Triple> triples = service.extractTriples(FACT_SHEET_ID);
         assertTrue(triples.isEmpty());
@@ -85,7 +81,9 @@ class KGEmbeddingStorageServiceTest {
         GraphNode target = buildNode("Bob", NodeLevel.ENTITY);
         GraphEdge edge = buildEdge(source, target, EdgeType.HIERARCHICAL);
 
-        when(edgeRepository.findByFactSheetId(FACT_SHEET_ID)).thenReturn(List.of(edge));
+        when(knowledgeGraphService.getEdgesInFactSheet(FACT_SHEET_ID)).thenReturn(List.of(edge));
+        when(knowledgeGraphService.getNode(source.getNodeId())).thenReturn(Optional.of(source));
+        when(knowledgeGraphService.getNode(target.getNodeId())).thenReturn(Optional.of(target));
 
         List<Triple> triples = service.extractTriples(FACT_SHEET_ID);
         assertEquals(1, triples.size());
@@ -99,7 +97,7 @@ class KGEmbeddingStorageServiceTest {
         GraphNode target = buildNode("Bob", NodeLevel.ENTITY);
         GraphEdge edge = buildEdge(null, target, EdgeType.HIERARCHICAL);
 
-        when(edgeRepository.findByFactSheetId(FACT_SHEET_ID)).thenReturn(List.of(edge));
+        when(knowledgeGraphService.getEdgesInFactSheet(FACT_SHEET_ID)).thenReturn(List.of(edge));
 
         List<Triple> triples = service.extractTriples(FACT_SHEET_ID);
         assertTrue(triples.isEmpty());
@@ -110,7 +108,8 @@ class KGEmbeddingStorageServiceTest {
         GraphNode source = buildNode("Alice", NodeLevel.ENTITY);
         GraphEdge edge = buildEdge(source, null, EdgeType.HIERARCHICAL);
 
-        when(edgeRepository.findByFactSheetId(FACT_SHEET_ID)).thenReturn(List.of(edge));
+        when(knowledgeGraphService.getEdgesInFactSheet(FACT_SHEET_ID)).thenReturn(List.of(edge));
+        when(knowledgeGraphService.getNode(source.getNodeId())).thenReturn(Optional.of(source));
 
         List<Triple> triples = service.extractTriples(FACT_SHEET_ID);
         assertTrue(triples.isEmpty());
@@ -131,14 +130,13 @@ class KGEmbeddingStorageServiceTest {
         when(mockModel.getAllEntityEmbeddings()).thenReturn(entityEmbeddings);
         when(mockModel.getAllRelationEmbeddings()).thenReturn(relEmbeddings);
         when(mockModel.getAlgorithm()).thenReturn(KGEmbeddingAlgorithm.TRANSE);
-        when(nodeRepository.findByFactSheetId(FACT_SHEET_ID)).thenReturn(List.of(node));
-        when(edgeRepository.findByFactSheetId(FACT_SHEET_ID)).thenReturn(Collections.emptyList());
-        when(nodeRepository.saveAll(any())).thenReturn(Collections.emptyList());
-        when(edgeRepository.saveAll(any())).thenReturn(Collections.emptyList());
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(FACT_SHEET_ID, NodeLevel.ENTITY))
+                .thenReturn(List.of(node));
 
         int result = service.storeEmbeddings(mockModel, FACT_SHEET_ID, EMBEDDING_VERSION);
         assertTrue(result >= 0);
-        verify(nodeRepository).saveAll(anyList());
+        verify(knowledgeGraphService).storeNodeKgEmbedding(
+                eq(node.getNodeId()), any(), eq(KGEmbeddingAlgorithm.TRANSE), eq(EMBEDDING_VERSION), any());
     }
 
     @Test
@@ -146,10 +144,8 @@ class KGEmbeddingStorageServiceTest {
         when(mockModel.getAllEntityEmbeddings()).thenReturn(Map.of("Unknown", Nd4j.rand(1, 10)));
         when(mockModel.getAllRelationEmbeddings()).thenReturn(new HashMap<>());
         when(mockModel.getAlgorithm()).thenReturn(KGEmbeddingAlgorithm.TRANSE);
-        when(nodeRepository.findByFactSheetId(FACT_SHEET_ID)).thenReturn(Collections.emptyList());
-        when(edgeRepository.findByFactSheetId(FACT_SHEET_ID)).thenReturn(Collections.emptyList());
-        when(nodeRepository.saveAll(any())).thenReturn(Collections.emptyList());
-        when(edgeRepository.saveAll(any())).thenReturn(Collections.emptyList());
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(FACT_SHEET_ID, NodeLevel.ENTITY))
+                .thenReturn(Collections.emptyList());
 
         int result = service.storeEmbeddings(mockModel, FACT_SHEET_ID, EMBEDDING_VERSION);
         assertEquals(0, result);
@@ -161,7 +157,7 @@ class KGEmbeddingStorageServiceTest {
 
     @Test
     void loadEmbeddings_withNoNodesHavingEmbeddings_returnsFalse() {
-        when(nodeRepository.findByFactSheetIdAndKgEmbeddingNotNull(FACT_SHEET_ID))
+        when(knowledgeGraphService.findNodesWithKgEmbedding(FACT_SHEET_ID))
                 .thenReturn(Collections.emptyList());
 
         boolean result = service.loadEmbeddings(mockModel, FACT_SHEET_ID);
@@ -173,10 +169,10 @@ class KGEmbeddingStorageServiceTest {
         INDArray emb = Nd4j.rand(1, 10);
         GraphNode node = buildNodeWithEmbedding("Alice", emb, KGEmbeddingAlgorithm.TRANSE);
 
-        when(nodeRepository.findByFactSheetIdAndKgEmbeddingNotNull(FACT_SHEET_ID))
+        when(knowledgeGraphService.findNodesWithKgEmbedding(FACT_SHEET_ID))
                 .thenReturn(List.of(node));
-        when(edgeRepository.findByFactSheetIdAndKgRelationEmbeddingNotNull(FACT_SHEET_ID))
-                .thenReturn(Collections.emptyList());
+        when(knowledgeGraphService.getEdgeTypeKgEmbeddings(FACT_SHEET_ID))
+                .thenReturn(Collections.emptyMap());
 
         boolean result = service.loadEmbeddings(mockModel, FACT_SHEET_ID);
         assertTrue(result);
@@ -190,8 +186,7 @@ class KGEmbeddingStorageServiceTest {
 
     @Test
     void getStoredAlgorithm_withNoEmbeddings_returnsNull() {
-        when(nodeRepository.findByFactSheetIdAndKgEmbeddingNotNull(FACT_SHEET_ID))
-                .thenReturn(Collections.emptyList());
+        when(knowledgeGraphService.getStoredKgAlgorithm(FACT_SHEET_ID)).thenReturn(null);
 
         KGEmbeddingAlgorithm algo = service.getStoredAlgorithm(FACT_SHEET_ID);
         assertNull(algo);
@@ -199,9 +194,8 @@ class KGEmbeddingStorageServiceTest {
 
     @Test
     void getStoredAlgorithm_withTransENodes_returnsTransE() {
-        GraphNode node = buildNodeWithEmbedding("Alice", Nd4j.rand(1, 10), KGEmbeddingAlgorithm.TRANSE);
-        when(nodeRepository.findByFactSheetIdAndKgEmbeddingNotNull(FACT_SHEET_ID))
-                .thenReturn(List.of(node));
+        when(knowledgeGraphService.getStoredKgAlgorithm(FACT_SHEET_ID))
+                .thenReturn(KGEmbeddingAlgorithm.TRANSE);
 
         KGEmbeddingAlgorithm algo = service.getStoredAlgorithm(FACT_SHEET_ID);
         assertEquals(KGEmbeddingAlgorithm.TRANSE, algo);
@@ -209,9 +203,8 @@ class KGEmbeddingStorageServiceTest {
 
     @Test
     void getStoredAlgorithm_withRotatENodes_returnsRotatE() {
-        GraphNode node = buildNodeWithEmbedding("Bob", Nd4j.rand(1, 16), KGEmbeddingAlgorithm.ROTATE);
-        when(nodeRepository.findByFactSheetIdAndKgEmbeddingNotNull(FACT_SHEET_ID))
-                .thenReturn(List.of(node));
+        when(knowledgeGraphService.getStoredKgAlgorithm(FACT_SHEET_ID))
+                .thenReturn(KGEmbeddingAlgorithm.ROTATE);
 
         KGEmbeddingAlgorithm algo = service.getStoredAlgorithm(FACT_SHEET_ID);
         assertEquals(KGEmbeddingAlgorithm.ROTATE, algo);
@@ -223,12 +216,11 @@ class KGEmbeddingStorageServiceTest {
 
     @Test
     void getStats_withEmptyFactSheet_returnsZeroCounts() {
-        when(nodeRepository.findByFactSheetId(FACT_SHEET_ID)).thenReturn(Collections.emptyList());
-        when(nodeRepository.countByFactSheetIdAndKgEmbeddingNotNull(FACT_SHEET_ID)).thenReturn(0L);
-        when(edgeRepository.findByFactSheetId(FACT_SHEET_ID)).thenReturn(Collections.emptyList());
-        when(edgeRepository.countByFactSheetIdAndKgRelationEmbeddingNotNull(FACT_SHEET_ID)).thenReturn(0L);
-        when(nodeRepository.findByFactSheetIdAndKgEmbeddingNotNull(FACT_SHEET_ID))
+        when(knowledgeGraphService.countActiveNodes(FACT_SHEET_ID)).thenReturn(0L);
+        when(knowledgeGraphService.findNodesWithKgEmbedding(FACT_SHEET_ID))
                 .thenReturn(Collections.emptyList());
+        when(knowledgeGraphService.getEdgeTypeKgEmbeddings(FACT_SHEET_ID))
+                .thenReturn(Collections.emptyMap());
 
         KGEmbeddingStorageService.EmbeddingStats stats = service.getStats(FACT_SHEET_ID);
 
@@ -245,12 +237,11 @@ class KGEmbeddingStorageServiceTest {
         GraphNode node = buildNodeWithEmbedding("Alice", Nd4j.rand(1, 10), KGEmbeddingAlgorithm.TRANSE);
         node.setKgEmbeddingVersion(EMBEDDING_VERSION);
 
-        when(nodeRepository.findByFactSheetId(FACT_SHEET_ID)).thenReturn(List.of(node));
-        when(nodeRepository.countByFactSheetIdAndKgEmbeddingNotNull(FACT_SHEET_ID)).thenReturn(1L);
-        when(edgeRepository.findByFactSheetId(FACT_SHEET_ID)).thenReturn(Collections.emptyList());
-        when(edgeRepository.countByFactSheetIdAndKgRelationEmbeddingNotNull(FACT_SHEET_ID)).thenReturn(0L);
-        when(nodeRepository.findByFactSheetIdAndKgEmbeddingNotNull(FACT_SHEET_ID))
+        when(knowledgeGraphService.countActiveNodes(FACT_SHEET_ID)).thenReturn(1L);
+        when(knowledgeGraphService.findNodesWithKgEmbedding(FACT_SHEET_ID))
                 .thenReturn(List.of(node));
+        when(knowledgeGraphService.getEdgeTypeKgEmbeddings(FACT_SHEET_ID))
+                .thenReturn(Collections.emptyMap());
 
         KGEmbeddingStorageService.EmbeddingStats stats = service.getStats(FACT_SHEET_ID);
 
@@ -282,19 +273,10 @@ class KGEmbeddingStorageServiceTest {
     // ═══════════════════════════════════════════════════════════════════════════
 
     @Test
-    void clearEmbeddings_setsNullOnAllNodes() {
-        GraphNode node = buildNodeWithEmbedding("Alice", Nd4j.rand(1, 10), KGEmbeddingAlgorithm.TRANSE);
-        when(nodeRepository.findByFactSheetId(FACT_SHEET_ID)).thenReturn(List.of(node));
-        when(edgeRepository.findByFactSheetId(FACT_SHEET_ID)).thenReturn(Collections.emptyList());
-        when(nodeRepository.saveAll(any())).thenReturn(Collections.emptyList());
-        when(edgeRepository.saveAll(any())).thenReturn(Collections.emptyList());
-
+    void clearEmbeddings_delegatesToKnowledgeGraphService() {
         service.clearEmbeddings(FACT_SHEET_ID);
 
-        assertNull(node.getKgEmbedding());
-        assertNull(node.getKgEmbeddingAlgorithm());
-        assertNull(node.getKgEmbeddingVersion());
-        verify(nodeRepository).saveAll(anyList());
+        verify(knowledgeGraphService).clearKgEmbeddings(FACT_SHEET_ID);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

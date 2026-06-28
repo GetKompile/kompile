@@ -24,8 +24,7 @@ import ai.kompile.knowledgegraph.domain.NodeLevel;
 import ai.kompile.knowledgegraph.embedding.config.KGEmbeddingConfigService;
 import ai.kompile.knowledgegraph.embedding.config.KGEmbeddingConfigService.GraphRAGConfig;
 import ai.kompile.knowledgegraph.embedding.service.KGEmbeddingStorageService;
-import ai.kompile.knowledgegraph.repository.GraphEdgeRepository;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
+import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -48,10 +47,7 @@ import static org.mockito.Mockito.*;
 class KGEmbeddingRetrieverTest {
 
     @Mock
-    private GraphNodeRepository nodeRepository;
-
-    @Mock
-    private GraphEdgeRepository edgeRepository;
+    private KnowledgeGraphService knowledgeGraphService;
 
     @Mock
     private KGEmbeddingStorageService storageService;
@@ -67,8 +63,7 @@ class KGEmbeddingRetrieverTest {
     @BeforeEach
     void setUp() {
         retriever = new KGEmbeddingRetriever(
-                nodeRepository,
-                edgeRepository,
+                knowledgeGraphService,
                 storageService,
                 configService,
                 null,          // no text embedding model
@@ -146,14 +141,8 @@ class KGEmbeddingRetrieverTest {
 
         // No text embedding model, so falls back to keyword match
         GraphNode node = buildNode("alice_node", "Alice in Wonderland", NodeLevel.ENTITY);
-        when(nodeRepository.findEntitiesByFactSheet(1L)).thenReturn(List.of(node));
-        when(nodeRepository.findByFactSheetId(1L)).thenReturn(List.of(node));
-        when(edgeRepository.findBySourceNodeTitleAndFactSheetId(anyString(), anyLong()))
-                .thenReturn(Collections.emptyList());
-        when(edgeRepository.findByTargetNodeTitleAndFactSheetId(anyString(), anyLong()))
-                .thenReturn(Collections.emptyList());
-        when(edgeRepository.findByFactSheetId(1L)).thenReturn(Collections.emptyList());
-        when(edgeRepository.findBySourceNodeIdOrTargetNodeId(any())).thenReturn(Collections.emptyList());
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(1L, NodeLevel.ENTITY)).thenReturn(List.of(node));
+        when(knowledgeGraphService.getEdgesInFactSheet(1L)).thenReturn(Collections.emptyList());
         when(storageService.getStoredAlgorithm(1L)).thenReturn(null);
 
         List<RetrievedDoc> results = retriever.retrieveWithDetails("alice", 5);
@@ -165,7 +154,7 @@ class KGEmbeddingRetrieverTest {
     void retrieveWithDetails_whenGraphRAGDisabledWithNoBaseRetriever_returnsEmpty() {
         // Create retriever without base retriever
         KGEmbeddingRetriever retrieverNoBase = new KGEmbeddingRetriever(
-                nodeRepository, edgeRepository, storageService, configService, null, null);
+                knowledgeGraphService, storageService, configService, null, null);
 
         when(configService.getGraphRAGConfig()).thenReturn(
                 new GraphRAGConfig(false, 0.3, 0.7, 1, 5, 1L));
@@ -179,8 +168,8 @@ class KGEmbeddingRetrieverTest {
         when(configService.getGraphRAGConfig()).thenReturn(
                 new GraphRAGConfig(true, 0.3, 0.7, 1, 5, 1L));
 
-        // Make nodeRepository throw
-        when(nodeRepository.findEntitiesByFactSheet(anyLong()))
+        // Make knowledgeGraphService throw so retrieval fails
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(anyLong(), any()))
                 .thenThrow(new RuntimeException("DB error"));
 
         RetrievedDoc fallbackDoc = RetrievedDoc.builder()

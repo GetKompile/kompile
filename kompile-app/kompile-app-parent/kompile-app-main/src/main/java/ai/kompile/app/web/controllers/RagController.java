@@ -16,9 +16,12 @@
 
 package ai.kompile.app.web.controllers; // New package for controllers in the main app
 
+import ai.kompile.core.citation.CitationDto;
 import ai.kompile.core.rag.RagQuery;    // Import DTO from kompile-app-core
 import ai.kompile.core.rag.RagResult;
 import ai.kompile.core.rag.RagService;    // Import interface from kompile-app-core
+import ai.kompile.core.retrievers.RetrievedDoc;
+import ai.kompile.knowledgegraph.citation.CitationSupport;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -30,6 +33,9 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 @RestController
@@ -66,7 +72,27 @@ public class RagController {
                 return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("query", query.getQuery(), "error", answer));
             }
             logger.info("RagController successfully processed query: {}", safeQuery);
-            return ResponseEntity.ok(Map.of("query", query.getQuery(), "answer", answer));
+
+            // Build per-doc citation list (getMetadata() is the store-agnostic seam;
+            // source accessor methods are @JsonIgnore so we extract here in the controller layer)
+            List<Map<String, Object>> citations = new ArrayList<>();
+            if (answer.getRetrievedDocs() != null) {
+                for (RetrievedDoc doc : answer.getRetrievedDocs()) {
+                    CitationDto cit = CitationSupport.from(doc.getMetadata(), doc.getScore(), null);
+                    Map<String, Object> citEntry = new LinkedHashMap<>();
+                    citEntry.put("docId", doc.getId());
+                    citEntry.put("citation", cit);
+                    citations.add(citEntry);
+                }
+            }
+
+            Map<String, Object> responseBody = new LinkedHashMap<>();
+            responseBody.put("query", query.getQuery());
+            responseBody.put("answer", answer);
+            if (!citations.isEmpty()) {
+                responseBody.put("citations", citations);
+            }
+            return ResponseEntity.ok(responseBody);
         } catch (Exception e) {
             logger.error("Unexpected error processing RAG query in RagController: {}", e.getMessage(), e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)

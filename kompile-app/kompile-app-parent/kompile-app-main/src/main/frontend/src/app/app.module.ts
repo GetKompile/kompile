@@ -27,6 +27,7 @@ import { McpToolsViewerComponent } from './components/mcp-tools-viewer/mcp-tools
 import { McpServerBuilderComponent } from './components/mcp-server-builder/mcp-server-builder.component';
 import { RestMcpBridgeComponent } from './components/rest-mcp-bridge/rest-mcp-bridge.component';
 import { IndexBrowserComponent } from './components/index-browser/index-browser.component';
+import { IndexSystemStatusComponent } from './components/index-system-status/index-system-status.component';
 import { ModelDebugComponent } from './components/model-debug/model-debug.component';
 import { UnifiedChatComponent } from './components/unified-chat/unified-chat.component';
 import { RagTesterComponent } from './components/rag-tester/rag-tester.component';
@@ -152,6 +153,10 @@ import { AgentModelConfigComponent } from './components/agent-model-config/agent
 import { GraphsHubComponent } from './components/graphs-hub/graphs-hub.component';
 import { EnforcerHubComponent } from './components/enforcer-hub/enforcer-hub.component';
 import { KbConfidenceSettingsComponent } from './components/settings/kb-confidence-settings/kb-confidence-settings.component';
+import { CrawlStepMonitorComponent } from './components/crawl-step-monitor/crawl-step-monitor.component';
+import { SourceCitationComponent } from './components/source-citation/source-citation.component';
+import { GroundingConsolePanelComponent } from './components/grounding-console-panel/grounding-console-panel.component';
+import { ReasoningTrailComponent } from './components/reasoning-trail/reasoning-trail.component';
 
 // Angular Material Modules
 import { MatButtonModule } from '@angular/material/button';
@@ -196,6 +201,7 @@ import { MatNativeDateModule } from '@angular/material/core';
     McpServerBuilderComponent,
     RestMcpBridgeComponent,
     IndexBrowserComponent,
+    IndexSystemStatusComponent,
     ModelDebugComponent,
     UnifiedChatComponent,
     RagTesterComponent,
@@ -365,7 +371,11 @@ import { MatNativeDateModule } from '@angular/material/core';
     AgentModelConfigComponent,
     GraphsHubComponent,
     EnforcerHubComponent,
-    KbConfidenceSettingsComponent
+    KbConfidenceSettingsComponent,
+    CrawlStepMonitorComponent,
+    SourceCitationComponent,
+    GroundingConsolePanelComponent,
+    ReasoningTrailComponent
   ],
   providers: [],
   bootstrap: [AppComponent]

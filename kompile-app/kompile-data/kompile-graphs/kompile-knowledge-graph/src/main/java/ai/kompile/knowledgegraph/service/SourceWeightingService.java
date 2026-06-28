@@ -16,6 +16,7 @@
 package ai.kompile.knowledgegraph.service;
 
 import ai.kompile.knowledgegraph.domain.SourceWeight;
+import ai.kompile.knowledgegraph.domain.SourceWeightView;
 
 import java.util.List;
 import java.util.Map;
@@ -54,6 +55,13 @@ public interface SourceWeightingService {
      * Get all weights configured for a source
      */
     List<SourceWeight> getAllWeightsForSource(String sourceNodeId);
+
+    /**
+     * Return all SOURCE-type graph nodes with their current effective weights.
+     * Sources that have no persisted {@link SourceWeight} row are included with
+     * the system default weight.  Used to populate the "Configure Weights" UI panel.
+     */
+    List<SourceWeightView> listAllSourcesWithWeights();
 
     /**
      * Remove a weight configuration

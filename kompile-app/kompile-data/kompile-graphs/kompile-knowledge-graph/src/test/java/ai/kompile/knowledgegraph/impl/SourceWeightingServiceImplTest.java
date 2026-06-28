@@ -26,6 +26,8 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
+import ai.kompile.core.embeddings.EmbeddingModel;
+import org.nd4j.linalg.factory.Nd4j;
 
 import java.util.List;
 import java.util.Map;
@@ -45,6 +47,7 @@ class SourceWeightingServiceImplTest {
 
     @Mock private SourceWeightRepository weightRepository;
     @Mock private KnowledgeGraphService knowledgeGraphService;
+    @Mock private EmbeddingModel embeddingModel;
 
     private SourceWeightingServiceImpl service;
 
@@ -246,6 +249,86 @@ class SourceWeightingServiceImplTest {
         Map<String, Double> weights = service.computeQueryWeights("query", List.of("n-1", "n-2"));
         assertEquals(1.0, weights.get("n-1")); // default
         assertEquals(2.0, weights.get("n-2")); // user-defined
+    }
+
+    // ─── previewWeightedSearch ──────────────────────────────────────
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void previewWeightedSearch_withoutEmbeddingModel_ranksByWeightOnly() {
+        // No embedding model injected (field stays null) → relevance must be absent and the
+        // ranking falls back to configured weight. Input order is low-then-high to prove sorting.
+        GraphNode low = stubNode("n-2", "Low weight source");
+        GraphNode high = stubNode("n-1", "High weight source");
+        high.setSourceType("PDF");
+        when(knowledgeGraphService.getAllSources()).thenReturn(List.of(low, high));
+        when(weightRepository.findEnabledWeightsForSource("n-1"))
+                .thenReturn(List.of(SourceWeight.builder()
+                        .baseWeight(2.5).effectiveWeight(2.5).topic(null).enabled(true).build()));
+        when(weightRepository.findEnabledWeightsForSource("n-2")).thenReturn(List.of());
+
+        Map<String, Object> result = service.previewWeightedSearch("anything", 10);
+
+        List<Map<String, Object>> items = (List<Map<String, Object>>) result.get("sourceWeights");
+        assertEquals(2, items.size());
+        // Heavier source ranks first; with no embeddings, score == weight and relevance is null.
+        assertEquals("n-1", items.get(0).get("sourceId"));
+        assertEquals("PDF", items.get(0).get("sourceType"));
+        assertEquals(2.5, (Double) items.get(0).get("weight"), 1e-9);
+        assertEquals(2.5, (Double) items.get(0).get("score"), 1e-9);
+        assertNull(items.get(0).get("relevance"), "relevance must be null when embeddings unavailable");
+        assertEquals("n-2", items.get(1).get("sourceId"));
+        assertTrue(((String) result.get("note")).toLowerCase().contains("weight only"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void previewWeightedSearch_withEmbeddingModel_ranksBySemanticRelevance() {
+        // Equal weights so ordering is driven purely by query↔source cosine similarity.
+        GraphNode aligned = stubNode("n-1", "aligned");
+        GraphNode orthogonal = stubNode("n-2", "orthogonal");
+        when(knowledgeGraphService.getAllSources()).thenReturn(List.of(aligned, orthogonal));
+        when(weightRepository.findEnabledWeightsForSource(anyString())).thenReturn(List.of());
+
+        ReflectionTestUtils.setField(service, "embeddingModel", embeddingModel);
+        when(embeddingModel.isInitialized()).thenReturn(true);
+        // Query lies on the first axis; source rows: n-1 aligned (cos=1), n-2 orthogonal (cos=0).
+        when(embeddingModel.embed(anyString())).thenReturn(Nd4j.create(new float[][]{{1f, 0f}}));
+        when(embeddingModel.embed(anyList()))
+                .thenReturn(Nd4j.create(new float[][]{{1f, 0f}, {0f, 1f}}));
+
+        Map<String, Object> result = service.previewWeightedSearch("find the aligned one", 10);
+
+        List<Map<String, Object>> items = (List<Map<String, Object>>) result.get("sourceWeights");
+        assertEquals(2, items.size());
+        assertEquals("n-1", items.get(0).get("sourceId"));
+        assertEquals(1.0, (Double) items.get(0).get("relevance"), 1e-4);
+        assertEquals(1.0, (Double) items.get(0).get("score"), 1e-4); // weight 1.0 × relevance 1.0
+        assertEquals("n-2", items.get(1).get("sourceId"));
+        assertEquals(0.0, (Double) items.get(1).get("relevance"), 1e-4);
+        assertEquals(0.0, (Double) items.get(1).get("score"), 1e-4);
+        assertTrue(((String) result.get("note")).toLowerCase().contains("relevance"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void previewWeightedSearch_embeddingFailure_fallsBackToWeightOnly() {
+        // A failure inside the embedding path must not break the preview — it degrades to weights.
+        GraphNode node = stubNode("n-1", "Source");
+        when(knowledgeGraphService.getAllSources()).thenReturn(List.of(node));
+        when(weightRepository.findEnabledWeightsForSource("n-1")).thenReturn(List.of());
+
+        ReflectionTestUtils.setField(service, "embeddingModel", embeddingModel);
+        when(embeddingModel.isInitialized()).thenReturn(true);
+        when(embeddingModel.embed(anyList())).thenThrow(new RuntimeException("embedding subprocess down"));
+
+        Map<String, Object> result = service.previewWeightedSearch("q", 10);
+
+        List<Map<String, Object>> items = (List<Map<String, Object>>) result.get("sourceWeights");
+        assertEquals(1, items.size());
+        assertNull(items.get(0).get("relevance"));
+        assertEquals(1.0, (Double) items.get(0).get("score"), 1e-9);
+        assertTrue(((String) result.get("note")).toLowerCase().contains("weight only"));
     }
 
     // ─── getDefaultWeight ───────────────────────────────────────────

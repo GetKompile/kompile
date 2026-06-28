@@ -16,6 +16,8 @@
 
 package ai.kompile.cli.main.coordination;
 
+import ai.kompile.cli.main.chat.tools.SearchExclusions;
+
 import java.io.IOException;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
@@ -42,12 +44,16 @@ public class FileWatcherService {
     private final ExecutorService watchExecutor;
     private volatile boolean running = false;
     private static final int MAX_RECENT_EVENTS = 500;
-    private static final Set<String> IGNORED_DIRS = Set.of(
-        ".git", "node_modules", ".kompile", "target", "build", ".gradle", "__pycache__", ".angular"
-    );
+
+    /** Shared exclusion source of truth + this project's .gitignore directory prunes. The
+     *  initial recursive watch registration walks the tree to depth 5; without these it
+     *  descended into heavy build/data dirs (e.g. multi-GB model builds), and because tool
+     *  init blocks on it, that delayed the first MCP tool call (even grep). */
+    private final SearchExclusions.GitignoreDirFilter gitFilter;
 
     public FileWatcherService(Path rootDir) throws IOException {
         this.rootDir = rootDir;
+        this.gitFilter = SearchExclusions.loadGitignoreDirFilter(rootDir);
         this.watchService = FileSystems.getDefault().newWatchService();
         this.watchExecutor = Executors.newSingleThreadExecutor(r -> {
             Thread t = new Thread(r, "file-watcher");
@@ -253,8 +259,15 @@ public class FileWatcherService {
     }
 
     private boolean shouldIgnore(Path path) {
+        // Named build/vcs/dependency/metadata directories anywhere along the path.
         for (Path component : path) {
-            if (IGNORED_DIRS.contains(component.toString())) return true;
+            if (SearchExclusions.isExcludedDir(component.toString())) return true;
+        }
+        // Project-specific git-ignored data directories (e.g. multi-GB model builds).
+        if (!gitFilter.isEmpty() && path.startsWith(rootDir)) {
+            Path rel = rootDir.relativize(path);
+            String name = path.getFileName() != null ? path.getFileName().toString() : "";
+            if (gitFilter.isIgnoredDir(rel.toString(), name)) return true;
         }
         return false;
     }

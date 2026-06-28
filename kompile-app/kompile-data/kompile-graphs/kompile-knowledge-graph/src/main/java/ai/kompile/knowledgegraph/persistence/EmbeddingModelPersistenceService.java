@@ -43,7 +43,7 @@ public class EmbeddingModelPersistenceService {
     @Value("${kompile.data.dir:}")
     private String dataDir;
 
-    @Value("${kompile.staging.url:}")
+    @Value("${kompile.staging.url:http://localhost:8090}")
     private String stagingUrl;
 
     private final ObjectMapper objectMapper;

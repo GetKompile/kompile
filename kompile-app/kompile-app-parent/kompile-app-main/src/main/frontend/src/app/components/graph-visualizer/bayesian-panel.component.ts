@@ -25,8 +25,9 @@ import { MatExpansionModule } from '@angular/material/expansion';
 import { MatChipsModule } from '@angular/material/chips';
 import { FormsModule } from '@angular/forms';
 import { Subject, takeUntil } from 'rxjs';
-import { BayesianService } from '../../services/bayesian.service';
+import { BayesianService, MTheoryStructure } from '../../services/bayesian.service';
 import { BayesianInferenceResult, MpeResult } from '../../models/attribution-models';
+import { MfragDiagramComponent } from './mfrag-diagram.component';
 
 interface PosteriorEntry {
   variable: string;
@@ -53,7 +54,8 @@ interface PosteriorEntry {
     MatSlideToggleModule,
     MatExpansionModule,
     MatChipsModule,
-    FormsModule
+    FormsModule,
+    MfragDiagramComponent
   ],
   template: `
     <div class="bayesian-panel">
@@ -123,7 +125,7 @@ interface PosteriorEntry {
               <span class="mebn-section-label">MFrags</span>
               <div *ngFor="let frag of result.networkStats['mFragDetails']" class="mebn-mfrag">
                 <div class="mfrag-header">
-                  <span class="mfrag-name">{{frag.name}}</span>
+                  <span class="mfrag-name">{{ fragLabel(frag.name) }}</span>
                 </div>
                 <div class="mfrag-vars" *ngIf="frag.residentVariables?.length">
                   <span class="mfrag-var-label">Resident:</span>
@@ -164,12 +166,12 @@ interface PosteriorEntry {
             </div>
             <div *ngIf="entry.mfragName" class="entry-mebn-meta">
               <span class="mebn-badge mfrag-badge" [matTooltip]="'MFrag: ' + entry.mfragName">
-                {{entry.mfragName}}
+                {{ fragLabel(entry.mfragName) }}
               </span>
               <span class="mebn-badge role-badge"
                     [class.role-resident]="entry.nodeRole === 'RESIDENT'"
                     [class.role-input]="entry.nodeRole === 'INPUT'">
-                {{entry.nodeRole}}
+                {{ roleLabel(entry.nodeRole) }}
               </span>
               <span *ngIf="entry.entityType" class="mebn-badge entity-badge"
                     [matTooltip]="'Entity: ' + (entry.entityId || '')">
@@ -201,13 +203,112 @@ interface PosteriorEntry {
           </div>
         </div>
 
+        <!-- MEBN fragment structure: typed variables, contexts, parent→child edges + strengths -->
+        <mat-expansion-panel *ngIf="mebnTheory && mebnTheory.fragments.length > 0" class="mebn-frags-panel">
+          <mat-expansion-panel-header>
+            <mat-panel-title>MEBN Fragments ({{ mebnTheory.fragments.length }})</mat-panel-title>
+          </mat-expansion-panel-header>
+          <div style="display:flex;flex-direction:column;gap:12px;">
+            <div *ngFor="let frag of mebnTheory.fragments; let fi = index"
+                 class="mfrag-card"
+                 [style.border-left-color]="mfragColor(fi)">
+
+              <!-- Fragment header -->
+              <div style="display:flex;align-items:center;gap:6px;font-weight:600;margin-bottom:8px;">
+                <mat-icon style="font-size:16px;width:16px;height:16px;"
+                          [style.color]="mfragColor(fi)">account_tree</mat-icon>
+                <span [style.color]="mfragColor(fi)">{{ fragLabel(frag.name) }}</span>
+                <span style="font-size:10px;opacity:0.6;margin-left:4px;">
+                  {{ frag.residentNodes.length }} resident · {{ frag.inputNodes.length }} input
+                </span>
+              </div>
+
+              <!-- ① Mini node-link SVG diagram -->
+              <div class="mfrag-diagram-wrap">
+                <app-mfrag-diagram [fragment]="frag"></app-mfrag-diagram>
+              </div>
+
+              <!-- Resident + input variable detail rows (kept for type/state detail) -->
+              <div *ngFor="let rv of frag.residentNodes"
+                   style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:2px 0;font-size:11px;">
+                <span class="mebn-badge role-badge role-resident" [matTooltip]="roleLabel(rv.role)">{{ roleLabel(rv.role) }}</span>
+                <span style="font-family:monospace;">{{ rv.signature }}</span>
+                <span *ngIf="rv.states?.length" style="opacity:0.65;">{{ rv.states.join(' | ') }}</span>
+              </div>
+              <div *ngFor="let rv of frag.inputNodes"
+                   style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:2px 0;font-size:11px;">
+                <span class="mebn-badge role-badge role-input" [matTooltip]="roleLabel(rv.role)">{{ roleLabel(rv.role) }}</span>
+                <span style="font-family:monospace;">{{ rv.signature }}</span>
+                <span *ngIf="rv.states?.length" style="opacity:0.65;">{{ rv.states.join(' | ') }}</span>
+              </div>
+
+              <!-- Parent → child edges (text summary, SVG above carries the visual) -->
+              <div *ngFor="let e of frag.edges"
+                   style="display:flex;align-items:center;gap:6px;margin:2px 0;font-size:11px;">
+                <span style="font-family:monospace;opacity:0.85;">{{ e.parent }}</span>
+                <mat-icon style="font-size:12px;width:12px;height:12px;opacity:0.55;">arrow_forward</mat-icon>
+                <span style="font-family:monospace;opacity:0.85;">{{ e.child }}</span>
+                <span style="flex:1;height:5px;background:rgba(0,0,0,0.08);border-radius:3px;min-width:32px;overflow:hidden;">
+                  <span style="display:block;height:100%;background:#667eea;"
+                        [style.width.%]="e.strength * 100"></span>
+                </span>
+                <span style="opacity:0.75;min-width:30px;text-align:right;font-family:monospace;">
+                  {{ (e.strength * 100).toFixed(0) }}%
+                </span>
+              </div>
+
+              <!-- ⑤ Structured context-constraint chips -->
+              <div *ngIf="frag.contexts?.length" class="mfrag-ctx-row">
+                <span style="font-size:10px;font-weight:600;opacity:0.75;margin-right:4px;">When:</span>
+                <span *ngFor="let cc of parseContextConstraints(frag.contexts)"
+                      class="mfrag-ctx-chip"
+                      [matTooltip]="cc.raw !== cc.parsed ? cc.raw : ''">
+                  {{ cc.parsed }}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <!-- ② MTheory overview graph: fragments-as-nodes, shared-RV edges -->
+          <div *ngIf="mebnTheory.fragments.length > 1" class="theory-overview-wrap">
+            <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;
+                        color:#667eea;margin-bottom:6px;">MTheory Overview</div>
+            <svg width="340" height="270" xmlns="http://www.w3.org/2000/svg" class="theory-svg">
+              <!-- Edges (drawn first so nodes appear on top) -->
+              <g *ngFor="let te of theoryOverviewData.edges">
+                <line [attr.x1]="te.x1" [attr.y1]="te.y1"
+                      [attr.x2]="te.x2" [attr.y2]="te.y2"
+                      stroke="#667eea" stroke-width="1" opacity="0.4"/>
+                <polygon [attr.points]="te.arrowPoints" fill="#667eea" opacity="0.5"/>
+                <text *ngIf="te.label"
+                      [attr.x]="(te.x1+te.x2)/2" [attr.y]="(te.y1+te.y2)/2 - 4"
+                      font-size="8" fill="#667eea" text-anchor="middle" opacity="0.8">
+                  {{ te.label }}
+                </text>
+              </g>
+              <!-- Nodes -->
+              <g *ngFor="let tn of theoryOverviewData.nodes">
+                <circle [attr.cx]="tn.x" [attr.cy]="tn.y"
+                        [attr.r]="tn.r"
+                        [attr.fill]="tn.color"
+                        opacity="0.85"
+                        stroke="white" stroke-width="1.5"/>
+                <text [attr.x]="tn.x" [attr.y]="tn.y + tn.r + 11"
+                      font-size="8" fill="currentColor" text-anchor="middle">
+                  {{ tn.label }}
+                </text>
+              </g>
+            </svg>
+          </div>
+        </mat-expansion-panel>
+
         <mat-expansion-panel *ngIf="result.inferenceTrace && result.inferenceTrace.length > 0">
           <mat-expansion-panel-header>
             <mat-panel-title>Inference Trace ({{result.inferenceTrace.length}} steps)</mat-panel-title>
           </mat-expansion-panel-header>
           <div class="trace-list">
             <div *ngFor="let step of result.inferenceTrace" class="trace-step">
-              <span class="step-op">{{step.operation}}</span>
+              <span class="step-op">{{ opLabel(step.operation) }}</span>
               <span class="step-var">{{step.eliminatedTitle || step.eliminatedVariable}}</span>
               <span *ngIf="step.priorValue !== undefined" class="step-prior">
                 {{(step.priorValue * 100).toFixed(1)}}%
@@ -277,11 +378,11 @@ interface PosteriorEntry {
                     </span>
                   </div>
                   <div *ngIf="entry.mfragName" class="entry-mebn-meta">
-                    <span class="mebn-badge mfrag-badge">{{entry.mfragName}}</span>
+                    <span class="mebn-badge mfrag-badge">{{ fragLabel(entry.mfragName) }}</span>
                     <span class="mebn-badge role-badge"
                           [class.role-resident]="entry.nodeRole === 'RESIDENT'"
                           [class.role-input]="entry.nodeRole === 'INPUT'">
-                      {{entry.nodeRole}}
+                      {{ roleLabel(entry.nodeRole) }}
                     </span>
                     <span *ngIf="entry.entityType" class="mebn-badge entity-badge">{{entry.entityType}}</span>
                   </div>
@@ -301,7 +402,7 @@ interface PosteriorEntry {
                 </mat-expansion-panel-header>
                 <div class="trace-list">
                   <div *ngFor="let step of whatIfResult.inferenceTrace" class="trace-step">
-                    <span class="step-op">{{step.operation}}</span>
+                    <span class="step-op">{{ opLabel(step.operation) }}</span>
                     <span class="step-var">{{step.eliminatedTitle || step.eliminatedVariable}}</span>
                     <span *ngIf="step.priorValue !== undefined" class="step-prior">
                       {{(step.priorValue * 100).toFixed(1)}}%
@@ -356,11 +457,11 @@ interface PosteriorEntry {
                     </span>
                   </div>
                   <div *ngIf="entry.mfragName" class="entry-mebn-meta">
-                    <span class="mebn-badge mfrag-badge">{{entry.mfragName}}</span>
+                    <span class="mebn-badge mfrag-badge">{{ fragLabel(entry.mfragName) }}</span>
                     <span class="mebn-badge role-badge"
                           [class.role-resident]="entry.nodeRole === 'RESIDENT'"
                           [class.role-input]="entry.nodeRole === 'INPUT'">
-                      {{entry.nodeRole}}
+                      {{ roleLabel(entry.nodeRole) }}
                     </span>
                     <span *ngIf="entry.entityType" class="mebn-badge entity-badge">{{entry.entityType}}</span>
                   </div>
@@ -391,7 +492,7 @@ interface PosteriorEntry {
                 </mat-expansion-panel-header>
                 <div class="trace-list">
                   <div *ngFor="let step of mpeResult.inferenceTrace" class="trace-step">
-                    <span class="step-op">{{step.operation}}</span>
+                    <span class="step-op">{{ opLabel(step.operation) }}</span>
                     <span class="step-var">{{step.eliminatedTitle || step.eliminatedVariable}}</span>
                     <span *ngIf="step.priorValue !== undefined" class="step-prior">
                       {{(step.priorValue * 100).toFixed(1)}}%
@@ -884,10 +985,105 @@ interface PosteriorEntry {
       color: #d97706;
       border: 1px solid rgba(245, 158, 11, 0.25);
     }
+
+    /* ── MFrag card (feature 1: mini diagrams + feature 5: context chips) ── */
+    .mfrag-card {
+      border: 1px solid rgba(102, 126, 234, 0.22);
+      border-left: 3px solid #667eea;
+      border-radius: 6px;
+      padding: 8px 10px;
+      background: var(--bg-surface, #fff);
+    }
+
+    .mfrag-diagram-wrap {
+      margin: 6px 0 8px;
+      overflow-x: auto;
+      background: var(--bg-body, #f8fafc);
+      border-radius: 4px;
+      padding: 4px 0;
+      border: 1px solid var(--border-color, #e5e7eb);
+    }
+
+    .mfrag-ctx-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 4px;
+      margin-top: 5px;
+    }
+
+    .mfrag-ctx-chip {
+      display: inline-block;
+      padding: 1px 7px;
+      border-radius: 10px;
+      background: rgba(245, 158, 11, 0.12);
+      border: 1px solid rgba(245, 158, 11, 0.3);
+      color: #d97706;
+      font-size: 10px;
+      font-family: monospace;
+      cursor: default;
+    }
+
+    /* ── Theory overview (feature 2) ── */
+    .theory-overview-wrap {
+      margin-top: 14px;
+      padding-top: 10px;
+      border-top: 1px solid var(--border-color, #e5e7eb);
+    }
+
+    .theory-svg {
+      display: block;
+      overflow: visible;
+    }
   `]
 })
 export class BayesianPanelComponent implements OnChanges, OnDestroy {
   private destroy$ = new Subject<void>();
+
+  /** Human label for a variable-elimination operation (Bayesian inference trace). */
+  opLabel(op: string | undefined | null): string {
+    switch ((op || '').toUpperCase()) {
+      case 'REDUCE': return 'Apply evidence';
+      case 'MULTIPLY': return 'Combine factors';
+      case 'MARGINALIZE': return 'Sum out variable';
+      case 'NORMALIZE': return 'Normalize';
+      default: return op || '';
+    }
+  }
+
+  /** Human label for an MEBN random-variable role. */
+  roleLabel(role: string | undefined | null): string {
+    switch ((role || '').toUpperCase()) {
+      case 'RESIDENT': return 'Defined here';
+      case 'INPUT': return 'Input (from another fragment)';
+      case 'CONTEXT': return 'Context condition';
+      default: return role || '';
+    }
+  }
+
+  /**
+   * Human label for an MFrag name. Handles both generation forms: PascalCase domain names
+   * (CausalInfluence → "Causal Influence") and sanitized edge-type names
+   * (RELATED_TO → "Related To", entity_entity_number → "Entity Number"). Collapses
+   * consecutive duplicate tokens so node-id-shaped labels don't repeat.
+   */
+  fragLabel(name: string | undefined | null): string {
+    if (!name) return '';
+    const tokens = name
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')  // split camelCase / PascalCase
+      .replace(/[_-]+/g, ' ')                    // snake / kebab → spaces
+      .trim()
+      .split(/\s+/)
+      .filter(w => w.length);
+    const out: string[] = [];
+    for (const w of tokens) {
+      const titled = w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+      if (out.length === 0 || out[out.length - 1].toLowerCase() !== titled.toLowerCase()) {
+        out.push(titled);
+      }
+    }
+    return out.join(' ') || name;
+  }
 
   @Input() nodeId: string | null = null;
   /** Inference reach — how far from the seed node the network is expanded. */
@@ -896,6 +1092,8 @@ export class BayesianPanelComponent implements OnChanges, OnDestroy {
   @Output() posteriorOverlayChanged = new EventEmitter<Record<string, number> | null>();
   @Output() priorOverlayChanged = new EventEmitter<Record<string, number> | null>();
   @Output() mebnMfragMapChanged = new EventEmitter<Record<string, string> | null>();
+  /** Emits a map of nodeId→true for nodes that are evidence/findings in the SSBN. Emits null when overlay is off. */
+  @Output() findingNodesChanged = new EventEmitter<Record<string, boolean> | null>();
 
   loading = false;
   error: string | null = null;
@@ -910,6 +1108,12 @@ export class BayesianPanelComponent implements OnChanges, OnDestroy {
   // Network stats (lightweight, no full inference)
   networkStatsData: Record<string, any> | null = null;
   networkStatsLoading = false;
+
+  // MEBN theory structure (fragments: typed variables, contexts, parent→child edges)
+  mebnTheory: MTheoryStructure | null = null;
+  mebnTheoryLoading = false;
+  /** Pre-computed overview graph data (cached to avoid double template evaluation). */
+  theoryOverviewData: { nodes: any[]; edges: any[] } = { nodes: [], edges: [] };
 
   // What-If state
   whatIfEvidence: Record<string, number> = {};
@@ -975,12 +1179,29 @@ export class BayesianPanelComponent implements OnChanges, OnDestroy {
 
         // Fetch dedicated network stats for richer metadata
         this.loadNetworkStats();
+        // Fetch the MEBN fragment structure (typed variables, contexts, edges)
+        this.loadMebnTheory();
       },
       error: (err) => {
         this.error = this.extractErr(err, 'Inference failed');
         this.loading = false;
       }
     });
+  }
+
+  private loadMebnTheory(): void {
+    if (!this.useMebn) { this.mebnTheory = null; return; }
+    this.mebnTheoryLoading = true;
+    this.bayesianService.mebnTheory(this.nodeId, this.maxDepth, this.maxNodes)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (theory) => {
+          this.mebnTheory = theory;
+          this.theoryOverviewData = this.buildTheoryOverview(theory);
+          this.mebnTheoryLoading = false;
+        },
+        error: () => { this.mebnTheory = null; this.mebnTheoryLoading = false; }
+      });
   }
 
   private loadNetworkStats(): void {
@@ -1006,6 +1227,7 @@ export class BayesianPanelComponent implements OnChanges, OnDestroy {
       this.posteriorOverlayChanged.emit(null);
       this.priorOverlayChanged.emit(null);
       this.mebnMfragMapChanged.emit(null);
+      this.findingNodesChanged.emit(null);
     }
   }
 
@@ -1023,6 +1245,111 @@ export class BayesianPanelComponent implements OnChanges, OnDestroy {
 
   getObjectEntries(obj: Record<string, number>): [string, number][] {
     return obj ? Object.entries(obj) as [string, number][] : [];
+  }
+
+  // ── Feature ⑤: Structured context-constraint chip parser ─────────────────
+
+  parseContextConstraints(contexts: string[]): Array<{ raw: string; parsed: string }> {
+    return (contexts || []).map(ctx => {
+      let m: RegExpMatchArray | null;
+      if ((m = ctx.match(/^IsA\s*\(\s*(\w+)\s*,\s*(\w+)\s*\)$/i))) {
+        return { raw: ctx, parsed: `${m[1]} : ${m[2]}` };
+      }
+      if ((m = ctx.match(/^notEqual\s*\(\s*(\w+)\s*,\s*(\w+)\s*\)/i))) {
+        return { raw: ctx, parsed: `${m[1]} ≠ ${m[2]}` };
+      }
+      if ((m = ctx.match(/^edgeExists\s*\(\s*(\w+)\s*,\s*(\w+)\s*\)/i))) {
+        return { raw: ctx, parsed: `${m[1]} — ${m[2]}` };
+      }
+      if ((m = ctx.match(/^entityExists\s*\(\s*(\w+)\s*\)/i))) {
+        return { raw: ctx, parsed: `${m[1]} exists` };
+      }
+      return { raw: ctx, parsed: ctx };
+    });
+  }
+
+  // ── Feature ② / ④: MTheory overview + per-fragment accent color ──────────
+
+  private readonly MFRAG_PALETTE: string[] = [
+    '#667eea', '#22c55e', '#f59e0b', '#8b5cf6', '#ef4444',
+    '#0ea5e9', '#ec4899', '#14b8a6', '#f97316', '#6366f1'
+  ];
+
+  mfragColor(index: number): string {
+    return this.MFRAG_PALETTE[index % this.MFRAG_PALETTE.length];
+  }
+
+  /**
+   * Build node/edge layout for the MTheory overview SVG.
+   * Fragments → radial nodes; directed edge A→B when B has an inputNode
+   * whose name matches a residentNode name of A (shared random variable).
+   * Capped at 20 fragments. Result is pure data — safe to call from template.
+   */
+  buildTheoryOverview(theory: MTheoryStructure | null): {
+    nodes: Array<{ x: number; y: number; r: number; color: string; label: string }>;
+    edges: Array<{ x1: number; y1: number; x2: number; y2: number; arrowPoints: string; label: string }>;
+  } {
+    if (!theory || !theory.fragments) return { nodes: [], edges: [] };
+
+    const frags = theory.fragments.slice(0, 20);
+    const n = frags.length;
+    const CX = 170, CY = 130, R = 110;
+
+    const tNodes = frags.map((f: any, i: number) => {
+      const angle = (2 * Math.PI * i) / n - Math.PI / 2;
+      const rvCount = (f.residentNodes || []).length;
+      return {
+        x: CX + R * Math.cos(angle),
+        y: CY + R * Math.sin(angle),
+        r: Math.min(18, Math.max(7, rvCount * 3 + 7)),
+        color: this.MFRAG_PALETTE[i % this.MFRAG_PALETTE.length],
+        label: this.fragLabel(f.name).substring(0, 10),
+        residentNames: new Set<string>((f.residentNodes || []).map((rv: any) => rv.name)),
+        inputNames: new Set<string>((f.inputNodes || []).map((iv: any) => iv.name)),
+      };
+    });
+
+    const tEdges: Array<{ x1: number; y1: number; x2: number; y2: number; arrowPoints: string; label: string }> = [];
+
+    for (let i = 0; i < tNodes.length; i++) {
+      for (let j = 0; j < tNodes.length; j++) {
+        if (i === j) continue;
+        // B (j) has inputNode whose name is a residentNode of A (i)
+        const shared: string[] = [];
+        for (const name of tNodes[j].inputNames) {
+          if (tNodes[i].residentNames.has(name)) {
+            shared.push(name);
+          }
+        }
+        if (shared.length === 0) continue;
+
+        const src = tNodes[i];
+        const tgt = tNodes[j];
+        const dx = tgt.x - src.x;
+        const dy = tgt.y - src.y;
+        const len = Math.sqrt(dx * dx + dy * dy) || 1;
+        const ux = dx / len, uy = dy / len;
+        const ARROW = 6;
+
+        const x1 = src.x + ux * (src.r + 2);
+        const y1 = src.y + uy * (src.r + 2);
+        const x2 = tgt.x - ux * (tgt.r + 2);
+        const y2 = tgt.y - uy * (tgt.r + 2);
+        const lx2 = x2 - ux * ARROW;
+        const ly2 = y2 - uy * ARROW;
+        const px = -uy, py = ux;
+        const hw = ARROW * 0.4;
+        const arrowPoints = [
+          `${x2.toFixed(1)},${y2.toFixed(1)}`,
+          `${(lx2 + px * hw).toFixed(1)},${(ly2 + py * hw).toFixed(1)}`,
+          `${(lx2 - px * hw).toFixed(1)},${(ly2 - py * hw).toFixed(1)}`,
+        ].join(' ');
+
+        tEdges.push({ x1, y1, x2, y2, arrowPoints, label: shared[0] });
+      }
+    }
+
+    return { nodes: tNodes, edges: tEdges };
   }
 
   // ── What-If ──
@@ -1213,6 +1540,20 @@ export class BayesianPanelComponent implements OnChanges, OnDestroy {
       }
       if (Object.keys(mfragMap).length > 0) {
         this.mebnMfragMapChanged.emit(mfragMap);
+      }
+    }
+
+    // ③ Evidence/finding overlay: map evidence variable keys → KG node IDs
+    if (this.result.evidence && Object.keys(this.result.evidence).length > 0) {
+      const findingMap: Record<string, boolean> = {};
+      for (const variable of Object.keys(this.result.evidence)) {
+        const nodeId = this.result.variableToNodeId?.[variable];
+        if (nodeId) {
+          findingMap[nodeId] = true;
+        }
+      }
+      if (Object.keys(findingMap).length > 0) {
+        this.findingNodesChanged.emit(findingMap);
       }
     }
   }

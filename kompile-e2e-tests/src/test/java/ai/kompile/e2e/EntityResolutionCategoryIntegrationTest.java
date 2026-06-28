@@ -37,7 +37,6 @@ import ai.kompile.kclaw.model.KClawResponse;
 import ai.kompile.knowledgegraph.agent.LlmRelationExtractionAgent;
 import ai.kompile.knowledgegraph.agent.MultiAgentExtractionService;
 import ai.kompile.knowledgegraph.domain.*;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import ai.kompile.knowledgegraph.resolution.EntityResolutionService;
 import ai.kompile.knowledgegraph.resolution.GraphCompactionService;
 import ai.kompile.knowledgegraph.resolution.GraphCompactionService.*;
@@ -1099,13 +1098,13 @@ class EntityResolutionCategoryIntegrationTest {
 
         private AutoLabelService autoLabelService;
         private EntityCategoryRepository categoryRepository;
-        private GraphNodeRepository nodeRepository;
+        private KnowledgeGraphService nodeRepository;
         private ObjectMapper objectMapper;
 
         @BeforeEach
         void setUp() {
             categoryRepository = mock(EntityCategoryRepository.class);
-            nodeRepository = mock(GraphNodeRepository.class);
+            nodeRepository = mock(KnowledgeGraphService.class);
             objectMapper = new ObjectMapper();
         }
 
@@ -1236,7 +1235,7 @@ class EntityResolutionCategoryIntegrationTest {
                     entityNode("e5", "Sundar Pichai", "PERSON")
             );
             for (GraphNode node : entities) {
-                when(nodeRepository.findByNodeId(node.getNodeId()))
+                when(nodeRepository.getNode(node.getNodeId()))
                         .thenReturn(Optional.of(node));
             }
 
@@ -1287,7 +1286,7 @@ class EntityResolutionCategoryIntegrationTest {
                     .thenReturn(Optional.of(techCat));
 
             GraphNode node = entityNode("e1", "Google", "ORGANIZATION");
-            when(nodeRepository.findByNodeId("e1")).thenReturn(Optional.of(node));
+            when(nodeRepository.getNode("e1")).thenReturn(Optional.of(node));
 
             List<AutoLabelSuggestion> suggestions = List.of(
                     AutoLabelSuggestion.builder()
@@ -1300,15 +1299,10 @@ class EntityResolutionCategoryIntegrationTest {
             MassEditResult result = autoLabelService.applySuggestions(factSheetId, suggestions);
 
             assertEquals(1, result.getEntitiesAffected());
-            verify(nodeRepository).save(argThat(savedNode -> {
-                try {
-                    var meta = objectMapper.readTree(savedNode.getMetadataJson());
-                    return "Technology".equals(meta.path("taxonomyCategory").asText())
-                            && meta.has("taxonomyDomain");
-                } catch (Exception e) {
-                    return false;
-                }
-            }));
+            verify(nodeRepository).updateNode(eq("e1"), anyString(), any(), argThat(meta ->
+                    meta != null
+                    && "Technology".equals(meta.get("taxonomyCategory"))
+                    && meta.containsKey("taxonomyDomain")));
         }
 
         @Test
@@ -2302,13 +2296,13 @@ class EntityResolutionCategoryIntegrationTest {
 
         private AutoLabelService autoLabelService;
         private EntityCategoryRepository categoryRepository;
-        private GraphNodeRepository nodeRepository;
+        private KnowledgeGraphService nodeRepository;
         private ObjectMapper objectMapper;
 
         @BeforeEach
         void setUp() {
             categoryRepository = mock(EntityCategoryRepository.class);
-            nodeRepository = mock(GraphNodeRepository.class);
+            nodeRepository = mock(KnowledgeGraphService.class);
             objectMapper = new ObjectMapper();
             autoLabelService = new AutoLabelService(categoryRepository, nodeRepository, objectMapper);
         }
@@ -2351,7 +2345,7 @@ class EntityResolutionCategoryIntegrationTest {
                     .thenReturn(Optional.of(domain));
 
             GraphNode node = entityNode("e1", "AWS", "ORGANIZATION");
-            when(nodeRepository.findByNodeId("e1")).thenReturn(Optional.of(node));
+            when(nodeRepository.getNode("e1")).thenReturn(Optional.of(node));
 
             List<AutoLabelSuggestion> suggestions = List.of(
                     AutoLabelSuggestion.builder()
@@ -2365,20 +2359,10 @@ class EntityResolutionCategoryIntegrationTest {
 
             assertEquals(1, result.getEntitiesAffected());
             // Verify the saved node has the correct domain (walked up 2 levels)
-            verify(nodeRepository).save(argThat(savedNode -> {
-                try {
-                    var meta = objectMapper.readTree(savedNode.getMetadataJson());
-                    String taxonomyCat = meta.path("taxonomyCategory").asText();
-                    String taxonomyDomain = meta.path("taxonomyDomain").asText();
-                    // Category should be the leaf label
-                    boolean catCorrect = "IaaS Providers".equals(taxonomyCat);
-                    // Domain should be the root — "Technology"
-                    boolean domainCorrect = "Technology".equals(taxonomyDomain);
-                    return catCorrect && domainCorrect;
-                } catch (Exception e) {
-                    return false;
-                }
-            }));
+            verify(nodeRepository).updateNode(eq("e1"), anyString(), any(), argThat(meta ->
+                    meta != null
+                    && "IaaS Providers".equals(meta.get("taxonomyCategory"))
+                    && "Technology".equals(meta.get("taxonomyDomain"))));
         }
 
         @Test
@@ -2410,7 +2394,7 @@ class EntityResolutionCategoryIntegrationTest {
                     entityNode("e2", "Tim Cook", "PERSON")
             );
             for (GraphNode n : entities) {
-                when(nodeRepository.findByNodeId(n.getNodeId())).thenReturn(Optional.of(n));
+                when(nodeRepository.getNode(n.getNodeId())).thenReturn(Optional.of(n));
             }
 
             // High minConfidence threshold — Claude's suggestions may be below this
@@ -2451,7 +2435,7 @@ class EntityResolutionCategoryIntegrationTest {
                             + "\"founded\":\"1976\",\"ticker\":\"AAPL\",\"custom_field\":\"custom_value\"}")
                     .createdAt(LocalDateTime.now()).updatedAt(LocalDateTime.now())
                     .build();
-            when(nodeRepository.findByNodeId("e1")).thenReturn(Optional.of(node));
+            when(nodeRepository.getNode("e1")).thenReturn(Optional.of(node));
 
             List<AutoLabelSuggestion> suggestions = List.of(
                     AutoLabelSuggestion.builder()
@@ -2463,21 +2447,15 @@ class EntityResolutionCategoryIntegrationTest {
 
             autoLabelService.applySuggestions(factSheetId, suggestions);
 
-            verify(nodeRepository).save(argThat(savedNode -> {
-                try {
-                    var meta = objectMapper.readTree(savedNode.getMetadataJson());
+            verify(nodeRepository).updateNode(eq("e1"), anyString(), any(), argThat(meta ->
+                    meta != null
                     // New taxonomy fields added
-                    boolean hasTaxonomy = meta.has("taxonomyCategory") && meta.has("taxonomyDomain");
+                    && meta.containsKey("taxonomyCategory") && meta.containsKey("taxonomyDomain")
                     // Original fields preserved
-                    boolean hasEntityType = "ORGANIZATION".equals(meta.path("entity_type").asText());
-                    boolean hasTicker = "AAPL".equals(meta.path("ticker").asText());
-                    boolean hasFounded = "1976".equals(meta.path("founded").asText());
-                    boolean hasCustom = "custom_value".equals(meta.path("custom_field").asText());
-                    return hasTaxonomy && hasEntityType && hasTicker && hasFounded && hasCustom;
-                } catch (Exception e) {
-                    return false;
-                }
-            }));
+                    && "ORGANIZATION".equals(meta.get("entity_type"))
+                    && "AAPL".equals(meta.get("ticker"))
+                    && "1976".equals(meta.get("founded"))
+                    && "custom_value".equals(meta.get("custom_field"))));
         }
 
         @Test
@@ -2497,7 +2475,7 @@ class EntityResolutionCategoryIntegrationTest {
                     .thenReturn(List.of(cat));
 
             GraphNode node = entityNode("e1", "Apple", "ORGANIZATION");
-            when(nodeRepository.findByNodeId("e1")).thenReturn(Optional.of(node));
+            when(nodeRepository.getNode("e1")).thenReturn(Optional.of(node));
 
             MassEditResult result = autoLabelService.autoLabel(factSheetId,
                     List.of("e1"), true, 0.5);

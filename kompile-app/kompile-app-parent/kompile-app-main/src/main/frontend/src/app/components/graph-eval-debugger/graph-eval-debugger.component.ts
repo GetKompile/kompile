@@ -43,6 +43,8 @@ import {
   EntityMatch,
   RelationshipMatch
 } from '../../models/graph-eval.models';
+import { Citation } from '../../models/api-models';
+import { SourceCitationComponent } from '../source-citation/source-citation.component';
 
 @Component({
   selector: 'app-graph-eval-debugger',
@@ -63,7 +65,8 @@ import {
     MatDividerModule,
     MatChipsModule,
     MatTabsModule,
-    MatSelectModule
+    MatSelectModule,
+    SourceCitationComponent
   ],
   templateUrl: './graph-eval-debugger.component.html',
   styleUrls: ['./graph-eval-debugger.component.scss']
@@ -253,5 +256,17 @@ export class GraphEvalDebuggerComponent implements OnInit, OnDestroy {
 
   formatPercent(value: number): string {
     return (value * 100).toFixed(1) + '%';
+  }
+
+  /**
+   * Build a Citation for the <app-source-citation> component from an extracted entity.
+   * Uses the backend-provided citation when present; falls back to confidence only.
+   */
+  toCitation(entity: GraphEntity): Citation {
+    if (entity.citation) {
+      // Prefer per-entity confidence over the shared source citation's confidence field.
+      return { ...entity.citation, confidence: entity.citation.confidence ?? entity.confidence };
+    }
+    return { confidence: entity.confidence };
   }
 }

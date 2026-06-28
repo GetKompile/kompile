@@ -75,6 +75,41 @@ public class JobLogService {
     // Track sequence numbers per task for log ordering
     private final Map<String, AtomicLong> sequenceCounters = new ConcurrentHashMap<>();
 
+    // Degraded-mode state + CIRCUIT BREAKER: when the job-log DB (H2) fails (lock timeout / index
+    // corruption), we must NOT fail the crawl AND must NOT keep calling the DB — each failing call
+    // holds a Hikari connection for the full lock-timeout (~30s), so repeated calls exhaust the pool
+    // and take down ALL JPA in the app (observed: corrupted job_log_entries → pool death → H2
+    // MVStore self-re-lock panic). So once the DB fails we OPEN the circuit: skip the DB entirely and
+    // write straight to the application log for a cooldown, then allow a single probe to re-close it.
+    private volatile boolean persistenceDegraded = false;
+    private final AtomicLong droppedEntries = new AtomicLong(0);
+    /** When the circuit is open, {@code System.nanoTime()} before this value means "skip the DB". */
+    private volatile long circuitOpenUntilNanos = 0L;
+    /** Cooldown the circuit stays open before allowing one probe write/read. Configurable. */
+    @Value("${kompile.ingest.job-log.db-failure-cooldown-seconds:60}")
+    private long dbFailureCooldownSeconds = 60;
+
+    /** True if the DB circuit is currently open (recent failure, still in cooldown) — skip the DB. */
+    private boolean dbCircuitOpen() {
+        return circuitOpenUntilNanos != 0L && System.nanoTime() < circuitOpenUntilNanos;
+    }
+
+    /** Open the circuit for the cooldown window after a DB failure; logs the transition once. */
+    private void openCircuit(Exception cause) {
+        droppedEntries.incrementAndGet();
+        circuitOpenUntilNanos = System.nanoTime() + Math.max(1L, dbFailureCooldownSeconds) * 1_000_000_000L;
+        if (!persistenceDegraded) {
+            persistenceDegraded = true;
+            logger.warn("Job-log DB persistence FAILED — opening circuit for {}s, degrading to application "
+                    + "log (crawl continues; pool protected). Cause: {}", dbFailureCooldownSeconds, cause.toString());
+        }
+    }
+
+    /** Fallback sink: emit the entry to the application log so it is never lost. Never throws. */
+    private void appLogOnly(JobLogEntry entry) {
+        logger.info("[job-log:{}][{}] {}", entry.getTaskId(), entry.getLevel(), entry.getMessage());
+    }
+
     @Value("${kompile.ingest.job-log.enabled:true}")
     private boolean enabled;
 
@@ -272,10 +307,7 @@ public class JobLogService {
     public void logBatch(String taskId, List<JobLogEntry> entries) {
         if (!isEnabled() || entries == null || entries.isEmpty()) return;
 
-        AtomicLong seqCounter = sequenceCounters.computeIfAbsent(taskId, k -> {
-            Long maxSeq = repository.findMaxSequenceNumber(taskId);
-            return new AtomicLong(maxSeq != null ? maxSeq : 0);
-        });
+        AtomicLong seqCounter = sequenceCounters.computeIfAbsent(taskId, k -> nextSeqForTask(taskId));
 
         for (JobLogEntry entry : entries) {
             entry.setTaskId(taskId);
@@ -285,25 +317,72 @@ public class JobLogService {
             }
         }
 
-        repository.saveAll(entries);
+        // Circuit open: skip the DB → app-log only, so the failing table can't drain the pool.
+        if (dbCircuitOpen()) {
+            for (JobLogEntry entry : entries) appLogOnly(entry);
+            return;
+        }
+        try {
+            repository.saveAll(entries);
+            // Check and enforce per-job limit
+            enforceMaxEntriesForTask(taskId);
+            if (persistenceDegraded) {
+                persistenceDegraded = false;
+                circuitOpenUntilNanos = 0L; // probe succeeded — close the circuit
+                logger.info("Job-log DB persistence recovered (had degraded to app-log; {} entries dropped while degraded)",
+                        droppedEntries.get());
+            }
+        } catch (Exception e) {
+            // Batch persistence failed — open the circuit + degrade every entry to the app log, never fail the crawl.
+            openCircuit(e);
+            for (JobLogEntry entry : entries) appLogOnly(entry);
+        }
+    }
 
-        // Check and enforce per-job limit
-        enforceMaxEntriesForTask(taskId);
+    /** Compute the starting sequence counter for a task, honoring the DB circuit breaker. */
+    private AtomicLong nextSeqForTask(String taskId) {
+        if (dbCircuitOpen()) {
+            return new AtomicLong(0); // circuit open — don't touch the DB
+        }
+        try {
+            Long maxSeq = repository.findMaxSequenceNumber(taskId);
+            return new AtomicLong(maxSeq != null ? maxSeq : 0);
+        } catch (Exception e) {
+            openCircuit(e);
+            return new AtomicLong(0);
+        }
     }
 
     private void saveEntry(JobLogEntry entry) {
-        repository.save(entry);
-        // Check and enforce per-job limit periodically (every 100 entries)
-        if (entry.getSequenceNumber() % 100 == 0) {
-            enforceMaxEntriesForTask(entry.getTaskId());
+        // Circuit open: the DB is failing — skip it entirely and write to the app log, so we never
+        // hold a Hikari connection through a 30s lock-timeout and never exhaust the pool.
+        if (dbCircuitOpen()) {
+            appLogOnly(entry);
+            return;
+        }
+        try {
+            repository.save(entry);
+            // Check and enforce per-job limit periodically (every 100 entries)
+            if (entry.getSequenceNumber() % 100 == 0) {
+                enforceMaxEntriesForTask(entry.getTaskId());
+            }
+            if (persistenceDegraded) {
+                persistenceDegraded = false;
+                circuitOpenUntilNanos = 0L; // probe succeeded — close the circuit
+                logger.info("Job-log DB persistence recovered (had degraded to app-log; {} entries dropped while degraded)",
+                        droppedEntries.get());
+            }
+        } catch (Exception e) {
+            // A job-log persistence failure (e.g. H2 lock timeout / index corruption) must NEVER
+            // fail the crawl, and must STOP hammering the DB (open the circuit) so the connection
+            // pool is never drained. Visibility is preserved via app.out.log + the file log sinks.
+            openCircuit(e);
+            appLogOnly(entry);
         }
     }
 
     private long getNextSequence(String taskId) {
-        AtomicLong counter = sequenceCounters.computeIfAbsent(taskId, k -> {
-            Long maxSeq = repository.findMaxSequenceNumber(taskId);
-            return new AtomicLong(maxSeq != null ? maxSeq : 0);
-        });
+        AtomicLong counter = sequenceCounters.computeIfAbsent(taskId, k -> nextSeqForTask(taskId));
         return counter.incrementAndGet();
     }
 

@@ -16,9 +16,12 @@
 
 package ai.kompile.staging.execution;
 
+import ai.kompile.modelmanager.llm.LlmModelSet;
 import ai.kompile.staging.conversion.ggml.GgmlImporter;
 import ai.kompile.staging.conversion.ggml.GgmlModelInfo;
 import ai.kompile.staging.web.dto.*;
+import ai.kompile.utils.inference.InferenceBatchPlanner;
+import org.nd4j.common.config.ND4JSystemProperties;
 import org.eclipse.deeplearning4j.llm.generation.GenerationPipeline;
 import org.eclipse.deeplearning4j.llm.generation.GenerationPipelineConfig;
 import org.eclipse.deeplearning4j.llm.generation.GenerationResult;
@@ -73,6 +76,31 @@ public class LlmExecutionService {
     // Path used to load the current model
     private volatile String currentDecoderPath = null;
 
+    // KV-bucket / DSP-plan shape chosen at load time via InferenceBatchPlanner.
+    // 0 means no model loaded or bucketing not computed yet.
+    private volatile int currentKvBucket = 0;
+
+    // Model context window (max_position_embeddings) for the loaded model.
+    private volatile int currentModelContextWindow = 0;
+
+    // Hidden size for the loaded model (used for memory-ceiling estimation).
+    private volatile int currentHiddenSize = 0;
+
+    // Default sequence buckets for KV-cache / position plan reuse.
+    // Configurable via system property: kompile.llm.seqBuckets (comma-separated ints).
+    private static final String SEQ_BUCKETS_PROP = "kompile.llm.seqBuckets";
+    private static final String SEQ_BUCKETS_DEFAULT = "256,512,1024,2048,4096";
+
+    // Safety fraction for native-memory ceiling estimate.
+    // Configurable via system property: kompile.llm.memorySafetyFraction
+    private static final String SAFETY_FRACTION_PROP = "kompile.llm.memorySafetyFraction";
+    private static final double SAFETY_FRACTION_DEFAULT = 0.5;
+
+    // Activation factor for native-memory ceiling estimate.
+    // Configurable via system property: kompile.llm.activationFactor
+    private static final String ACTIVATION_FACTOR_PROP = "kompile.llm.activationFactor";
+    private static final double ACTIVATION_FACTOR_DEFAULT = 16.0;
+
     // ==================== Model Management ====================
 
     /**
@@ -111,12 +139,36 @@ public class LlmExecutionService {
             // Resolve KV cache strategy
             KvCacheStrategy cacheStrategy = resolveKvCacheStrategy(kvCacheType);
 
-            // Build GenerationPipeline from model path
+            // Resolve model context window and hidden size from LlmModelSet catalogue
+            // (keyed by modelId). Falls back to decoderConfig when set, otherwise uses
+            // a safe conservative default so bucketing still works for unknown models.
+            LlmModelSet modelSet = LlmModelSet.getModelSet(modelId);
+            int modelContextWindow;
+            int hiddenSize;
+            if (modelSet != null) {
+                modelContextWindow = modelSet.getMaxPositionEmbeddings();
+                hiddenSize = modelSet.getHiddenSize();
+            } else {
+                // Caller-supplied decoderConfig.maxContextLength takes priority over defaults.
+                modelContextWindow = decoderConfig.getMaxContextLength() > 0
+                        ? decoderConfig.getMaxContextLength() : 2048;
+                // Hidden size 0 → estimateMaxBatchTokens still runs but is conservative.
+                hiddenSize = 0;
+            }
+
+            // KV-cache / DSP-plan position bucketing via InferenceBatchPlanner.
+            // Rounds up the context window to the nearest configured bucket,
+            // then clamps it by the native-memory ceiling so one request can't
+            // exhaust native memory (org.bytedeco.javacpp.maxphysicalbytes).
+            int kvBucket = computeKvBucket(modelContextWindow, hiddenSize);
+
+            // Build GenerationPipeline from model path with the bucketed maxKvCacheLength.
             SamplingConfig defaultConfig = SamplingConfig.defaultConfig();
             GenerationPipelineConfig config = GenerationPipelineConfig.builder()
                     .decoderPath(modelPath)
                     .samplingConfig(defaultConfig)
                     .kvCacheStrategy(cacheStrategy)
+                    .maxKvCacheLength(kvBucket)
                     .build();
 
             GenerationPipeline pipeline = GenerationPipeline.create(config);
@@ -126,10 +178,14 @@ public class LlmExecutionService {
             currentSamplingConfig.set(defaultConfig);
             this.kvCacheType = kvCacheType != null ? kvCacheType : "STATIC";
             this.currentDecoderPath = modelPath;
+            this.currentKvBucket = kvBucket;
+            this.currentModelContextWindow = modelContextWindow;
+            this.currentHiddenSize = hiddenSize;
 
             long memoryUsage = estimateMemoryUsageMb(null);
 
-            log.info("LLM model loaded successfully: {} (memory ~{}MB)", modelId, memoryUsage);
+            log.info("LLM model loaded successfully: {} (memory ~{}MB, kvBucket={}, contextWindow={})",
+                    modelId, memoryUsage, kvBucket, modelContextWindow);
 
             return LlmModelStatusResponse.builder()
                     .modelId(modelId)
@@ -137,7 +193,9 @@ public class LlmExecutionService {
                     .memoryUsageMb(memoryUsage)
                     .kvCacheType(this.kvCacheType)
                     .decoderPath(modelPath)
-                    .maxContextLength(decoderConfig.getMaxContextLength())
+                    .maxContextLength(decoderConfig.getMaxContextLength() > 0
+                            ? decoderConfig.getMaxContextLength() : modelContextWindow)
+                    .kvBucket(kvBucket)
                     .message("Model loaded successfully")
                     .build();
 
@@ -172,6 +230,9 @@ public class LlmExecutionService {
         String modelId = currentModelId.getAndSet(null);
         currentSamplingConfig.set(null);
         currentDecoderPath = null;
+        currentKvBucket = 0;
+        currentModelContextWindow = 0;
+        currentHiddenSize = 0;
         if (pipeline != null) {
             pipeline.close();
             log.info("Unloaded LLM model: {}", modelId);
@@ -185,6 +246,10 @@ public class LlmExecutionService {
         String modelId = currentModelId.get();
         GenerationPipeline pipeline = currentPipeline.get();
         boolean loaded = pipeline != null && modelId != null;
+        int effectiveMaxContext = loaded
+                ? (decoderConfig.getMaxContextLength() > 0
+                        ? decoderConfig.getMaxContextLength() : currentModelContextWindow)
+                : 0;
 
         return LlmModelStatusResponse.builder()
                 .modelId(modelId)
@@ -192,7 +257,8 @@ public class LlmExecutionService {
                 .memoryUsageMb(loaded ? estimateMemoryUsageMb(null) : 0)
                 .kvCacheType(loaded ? this.kvCacheType : null)
                 .decoderPath(loaded ? this.currentDecoderPath : null)
-                .maxContextLength(loaded ? decoderConfig.getMaxContextLength() : 0)
+                .maxContextLength(effectiveMaxContext)
+                .kvBucket(loaded ? this.currentKvBucket : 0)
                 .message(loaded ? "Model ready" : "No model loaded")
                 .build();
     }
@@ -664,6 +730,108 @@ public class LlmExecutionService {
             }
         }
         return earliestStop < text.length() ? text.substring(0, earliestStop) : text;
+    }
+
+    /**
+     * Parse the comma-separated sequence-bucket system property into a sorted int array.
+     * Falls back to {@link #SEQ_BUCKETS_DEFAULT} when the property is absent or unparseable.
+     */
+    private static int[] parseSeqBuckets() {
+        String raw = System.getProperty(SEQ_BUCKETS_PROP, SEQ_BUCKETS_DEFAULT);
+        String[] parts = raw.split(",");
+        List<Integer> list = new ArrayList<>();
+        for (String part : parts) {
+            String trimmed = part.trim();
+            if (!trimmed.isEmpty()) {
+                try {
+                    int v = Integer.parseInt(trimmed);
+                    if (v > 0) {
+                        list.add(v);
+                    }
+                } catch (NumberFormatException ignored) {
+                    log.warn("Ignoring invalid seq bucket value '{}' in system property {}", trimmed, SEQ_BUCKETS_PROP);
+                }
+            }
+        }
+        if (list.isEmpty()) {
+            // Absolute fallback if the property was set to something unusable
+            return new int[]{256, 512, 1024, 2048, 4096};
+        }
+        int[] result = new int[list.size()];
+        for (int i = 0; i < list.size(); i++) {
+            result[i] = list.get(i);
+        }
+        return result;
+    }
+
+    /**
+     * Compute the KV-cache / DSP-plan position bucket for this model using
+     * {@link InferenceBatchPlanner#bucketFor} and then clamp it by an upper bound
+     * derived from the native-memory ceiling via
+     * {@link InferenceBatchPlanner#estimateMaxBatchTokens}.
+     *
+     * <p>The bucket determines the {@code maxKvCacheLength} passed to
+     * {@link GenerationPipelineConfig}, which (when STATIC KV cache is used)
+     * pre-allocates the KV buffer at exactly that length. Using a small set of
+     * buckets rather than an arbitrary per-request value means ND4J's
+     * DynamicShapePlanExecutor reuses a single execution plan per bucket
+     * instead of building a new one for every request length.</p>
+     *
+     * @param modelContextWindow the model's max_position_embeddings (hard cap)
+     * @param hiddenSize         the model's hidden size; 0 if unknown (skips memory estimate)
+     * @return the effective KV bucket to pass as maxKvCacheLength
+     */
+    private int computeKvBucket(int modelContextWindow, int hiddenSize) {
+        int[] seqBuckets = parseSeqBuckets();
+        double safetyFraction = parseDoubleProperty(SAFETY_FRACTION_PROP, SAFETY_FRACTION_DEFAULT);
+        double activationFactor = parseDoubleProperty(ACTIVATION_FACTOR_PROP, ACTIVATION_FACTOR_DEFAULT);
+
+        // Step 1: bucket the full context window → this gives us the smallest bucket
+        // that covers the model's maximum sequence length.
+        int bucketedContext = InferenceBatchPlanner.bucketFor(modelContextWindow, seqBuckets, modelContextWindow);
+
+        // Step 2: clamp by native-memory ceiling if both hiddenSize > 0 and the
+        // org.bytedeco.javacpp.maxphysicalbytes property is set.
+        int memoryClamped = bucketedContext;
+        if (hiddenSize > 0) {
+            String maxPhysicalProp = System.getProperty(ND4JSystemProperties.JAVACPP_MEMORY_MAX_PHYSICAL_BYTES);
+            long maxPhysicalBytes = InferenceBatchPlanner.parseByteSize(maxPhysicalProp);
+            if (maxPhysicalBytes > 0) {
+                // estimateMaxBatchTokens returns a token budget for the whole batch; for a single
+                // LLM request (rows=1) this bounds the max KV/context length we can afford.
+                long memTokenBudget = InferenceBatchPlanner.estimateMaxBatchTokens(
+                        maxPhysicalBytes, hiddenSize, 4, safetyFraction, activationFactor, modelContextWindow);
+                int memCapContext = (int) Math.min(memTokenBudget, modelContextWindow);
+                int memCappedBucket = InferenceBatchPlanner.bucketFor(memCapContext, seqBuckets, modelContextWindow);
+                memoryClamped = Math.min(bucketedContext, memCappedBucket);
+                if (memoryClamped < bucketedContext) {
+                    log.info("LLM KV bucket memory-clamped: {} → {} (maxphysicalbytes={}, hiddenSize={}, safety={}, activationFactor={})",
+                            bucketedContext, memoryClamped, maxPhysicalBytes, hiddenSize, safetyFraction, activationFactor);
+                }
+            } else if (maxPhysicalProp != null && !maxPhysicalProp.isBlank()) {
+                log.warn("Could not parse org.bytedeco.javacpp.maxphysicalbytes='{}', skipping memory clamp", maxPhysicalProp);
+            }
+        }
+
+        log.info("LLM KV bucket selected: {} (contextWindow={}, hiddenSize={}, seqBuckets={})",
+                memoryClamped, modelContextWindow, hiddenSize, Arrays.toString(seqBuckets));
+        return memoryClamped;
+    }
+
+    /**
+     * Parse a double system property, returning the default value on parse failure or absence.
+     */
+    private static double parseDoubleProperty(String key, double defaultValue) {
+        String raw = System.getProperty(key);
+        if (raw == null || raw.isBlank()) {
+            return defaultValue;
+        }
+        try {
+            return Double.parseDouble(raw.trim());
+        } catch (NumberFormatException e) {
+            log.warn("Could not parse system property {}='{}', using default {}", key, raw, defaultValue);
+            return defaultValue;
+        }
     }
 
     /**

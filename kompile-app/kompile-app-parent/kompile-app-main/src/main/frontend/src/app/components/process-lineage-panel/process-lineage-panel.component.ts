@@ -24,6 +24,7 @@ import { BaseService } from '../../services/base.service';
 
 export interface ProcessLineage {
   basisNodeIds: string[];
+  basisNodeTitles?: string[];
   supportingRuleTexts: string[];
   causalActivityPairs: string[];
   derivationMethod: string;
@@ -36,6 +37,8 @@ export interface SuggestedStep {
   stepType: string;
   description?: string;
   roleBinding?: string;
+  graphNodeIds?: string[];
+  graphNodeTitles?: string[];
   lineageRef?: ProcessLineage;
 }
 
@@ -190,7 +193,8 @@ export interface ProcessSuggestion {
           </span>
         </div>
 
-        <div class="lineage-row" *ngIf="lineage.atomKey">
+        <!-- atomKey: internal PSL formalism — shown only in dev mode -->
+        <div class="lineage-row" *ngIf="lineage.atomKey && showDevDetails">
           <span class="lineage-label">Atom key:</span>
           <code class="atom-key">{{ lineage.atomKey }}</code>
         </div>
@@ -198,10 +202,10 @@ export interface ProcessSuggestion {
         <div class="lineage-block-inner" *ngIf="lineage.basisNodeIds?.length">
           <span class="lineage-label">Basis facts ({{ lineage.basisNodeIds.length }}):</span>
           <div class="chips-row">
-            <span *ngFor="let id of lineage.basisNodeIds.slice(0, 20)"
+            <span *ngFor="let id of lineage.basisNodeIds.slice(0, 20); let i = index"
                   class="node-chip"
                   [matTooltip]="'Node ID: ' + id"
-                  (click)="copyToClipboard(id)">{{ id }}</span>
+                  (click)="copyToClipboard(id)">{{ (lineage.basisNodeTitles && lineage.basisNodeTitles[i]) ? lineage.basisNodeTitles[i] : id }}</span>
             <span *ngIf="lineage.basisNodeIds.length > 20" class="overflow-chip">
               +{{ lineage.basisNodeIds.length - 20 }} more
             </span>
@@ -209,8 +213,15 @@ export interface ProcessSuggestion {
         </div>
 
         <div class="lineage-block-inner" *ngIf="lineage.supportingRuleTexts?.length">
-          <span class="lineage-label">Supporting rules ({{ lineage.supportingRuleTexts.length }}):</span>
-          <pre class="rules-block">{{ lineage.supportingRuleTexts.join('\\n') }}</pre>
+          <span class="lineage-label">Supporting rules:</span>
+          <!-- Human-readable prose summary always shown -->
+          <p class="rules-summary">{{ rulesSummary(lineage.supportingRuleTexts) }}
+            <button mat-button class="dev-toggle-btn" (click)="showDevDetails = !showDevDetails">
+              {{ showDevDetails ? 'Hide details' : 'Show details' }}
+            </button>
+          </p>
+          <!-- Raw PSL rules: dev-only detail view -->
+          <pre *ngIf="showDevDetails" class="rules-block">{{ lineage.supportingRuleTexts.join('\\n') }}</pre>
         </div>
 
         <div class="lineage-block-inner" *ngIf="lineage.causalActivityPairs?.length">
@@ -233,6 +244,8 @@ export class ProcessLineagePanelComponent extends BaseService implements OnInit,
   loading = false;
   error: string | null = null;
   hasLoaded = false;
+  /** When true, low-level PSL formalism (atom key, raw rule text) is shown in the lineage panel. */
+  showDevDetails = false;
 
   constructor(private http: HttpClient) {
     super();
@@ -298,5 +311,29 @@ export class ProcessLineagePanelComponent extends BaseService implements OnInit,
     if (navigator.clipboard) {
       navigator.clipboard.writeText(text);
     }
+  }
+
+  /**
+   * Produces a human-readable prose summary of a set of PSL rules.
+   * Attempts to extract a simple "A often leads to B (NN%)" sentence from the first rule;
+   * falls back to a generic count label when the rule format is unrecognised.
+   *
+   * Example rule: `0.87: Occurs("INVOICE") -> Occurs("PAYMENT") ^2`
+   * Result:        `INVOICE often leads to PAYMENT (87% confidence). 3 supporting rules.`
+   */
+  rulesSummary(rules: string[]): string {
+    if (!rules || rules.length === 0) return '';
+    const count = rules.length;
+    const first = rules[0];
+    // Parse pattern:  <weight>: Occurs("<A>") -> Occurs("<B>") ...
+    const m = first.match(/^([\d.]+):\s*\w+\("([^"]+)"\)\s*->\s*\w+\("([^"]+)"\)/);
+    if (m) {
+      const pct = Math.round(parseFloat(m[1]) * 100);
+      const a = m[2];
+      const b = m[3];
+      const suffix = count > 1 ? ` ${count} supporting rules.` : '';
+      return `${a} often leads to ${b} (${pct}% confidence).${suffix}`;
+    }
+    return `${count} supporting rule${count !== 1 ? 's' : ''}.`;
   }
 }

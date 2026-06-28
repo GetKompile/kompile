@@ -39,6 +39,35 @@ public interface InferredFactStore {
     void store(InferredFact fact);
 
     /**
+     * Persist a batch of inferred facts in a single operation.
+     *
+     * <p>The default implementation calls {@link #store(InferredFact)} for each fact;
+     * implementations that support bulk writes (e.g. JPA {@code saveAll}) should override
+     * this to materialize all facts in a single transaction, which is dramatically faster
+     * for large batches (tens of thousands of atoms).</p>
+     *
+     * <p>When the interrupt flag is set on the calling thread, implementations MUST
+     * clear it before initiating any I/O and re-set it on exit so the caller's
+     * interrupt-handling is preserved without breaking the write.</p>
+     *
+     * @param facts the facts to persist; must not be null; may be empty (no-op)
+     */
+    default void storeAll(Collection<InferredFact> facts) {
+        // Clear interrupt before bulk write so NIO channels are not closed mid-batch;
+        // re-interrupt the thread after the write completes so callers can observe it.
+        boolean interrupted = Thread.interrupted();
+        try {
+            for (InferredFact fact : facts) {
+                store(fact);
+            }
+        } finally {
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
+    /**
      * Retrieve the latest (highest-versioned) inferred fact for the given atom key.
      *
      * @param atomKey the canonical atom key

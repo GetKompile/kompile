@@ -30,19 +30,41 @@ class ModelCapabilityTest {
 
     @Test
     void budgetsDeriveFromRealModelLimits() {
-        // deepseek-chat: 64k context, 8192 max output (the user's opencode-cli model).
+        // deepseek-chat: 64k context, 8192 max output — a small-context model (≤ 200k tokens).
+        // opencode-cli uses deepseek-v4-flash-free which has a 1M-token context (see large-context test).
         ModelCapability cap = new ModelCapability("deepseek-chat", 64_000, 8_192, false);
 
         // Ceiling = (context - output - prompt overhead) * 4 — leaves full room for the output JSON.
         int expectedMax = (64_000 - 8_192 - ModelCapability.PROMPT_OVERHEAD_TOKENS) * ModelCapability.CHARS_PER_TOKEN;
         assertEquals(expectedMax, cap.maxInputChars());
 
-        // Start = output budget in chars (input ≈ the model's whole output budget).
+        // Small-context path: start = output budget in chars (input ≈ the model's whole output budget).
         assertEquals(8_192 * ModelCapability.CHARS_PER_TOKEN, cap.initInputChars());
 
         // Floor = ~the output token count, never above the ceiling.
         assertEquals(8_192, cap.minInputChars());
         assertFalse(cap.local());
+    }
+
+    @Test
+    void largeContextModelGetsLargeInitBudget() {
+        // DeepSeek V4 flash/pro variants have large context windows. This test constructs the
+        // capability directly so it stays focused on the budget formula rather than registry lookup.
+        // The large-context path (contextTokens > 200 000) starts at 10 % of maxInputChars
+        // rather than the tiny output-budget heuristic (which would be just 8 192 * 4 = 32 768 chars).
+        ModelCapability cap = new ModelCapability("deepseek-v4-flash-free", 1_000_000, 8_192, false);
+
+        // maxInputChars = (1 000 000 - 8 192 - 512) * 4 = 3 965 184
+        int expectedMax = (1_000_000 - 8_192 - ModelCapability.PROMPT_OVERHEAD_TOKENS) * ModelCapability.CHARS_PER_TOKEN;
+        assertEquals(expectedMax, cap.maxInputChars());
+
+        // initInputChars = 10 % of maxInputChars (large-context path) — far larger than the old 32 768.
+        int expectedInit = (int) Math.max(cap.minInputChars(), Math.min(cap.maxInputChars(), (long) (expectedMax * 0.10)));
+        assertEquals(expectedInit, cap.initInputChars());
+        assertTrue(cap.initInputChars() > 8_192 * ModelCapability.CHARS_PER_TOKEN,
+                "large-context init must exceed the small-context output-budget heuristic");
+        assertTrue(cap.initInputChars() >= cap.minInputChars(), "init >= min");
+        assertTrue(cap.initInputChars() <= cap.maxInputChars(), "init <= max");
     }
 
     @Test

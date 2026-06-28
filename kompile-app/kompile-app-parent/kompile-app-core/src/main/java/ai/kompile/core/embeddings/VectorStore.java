@@ -434,6 +434,18 @@ public interface VectorStore {
     }
 
     /**
+     * Blocks until all pending async embedding tasks (dispatched by {@link #add(List)}) have
+     * completed and their documents are committed to the store.
+     *
+     * <p>Call this before any step that reads from the vector store (VECTOR_INDEXING, KGE
+     * training) to ensure graph-node embeddings dispatched during GRAPH_PREP are visible.
+     * The default implementation is a no-op; implementations that use async embedding override it.</p>
+     */
+    default void awaitPendingEmbeddings() {
+        // No-op for implementations without async embedding.
+    }
+
+    /**
      * Switches the vector store to use a different index path.
      * <p>
      * This allows dynamic switching between different vector indices at runtime,

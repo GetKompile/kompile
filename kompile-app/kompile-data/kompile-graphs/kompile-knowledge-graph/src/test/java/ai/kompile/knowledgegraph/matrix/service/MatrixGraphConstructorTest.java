@@ -257,10 +257,10 @@ class MatrixGraphConstructorTest {
         @Test
         @DisplayName("continues processing when one document batch fails LLM extraction")
         void continuesOnDocumentFailure() {
-            // The production code batches documents by character budget (BATCH_PROMPT_MAX_CHARS = 300_000).
-            // To ensure doc1 and doc2 are in separate batches, make doc1's text exceed 300k chars.
+            // The production code batches documents by character budget (BATCH_PROMPT_MAX_CHARS = 3_000_000).
+            // To ensure doc1 and doc2 are in separate batches, make doc1's text exceed 3M chars.
             // First batch (doc1) throws, second batch (doc2) succeeds.
-            String longText = "x".repeat(301_000); // exceeds 300_000-char budget
+            String longText = "x".repeat(3_001_000); // exceeds 3_000_000-char budget
             when(callResponseSpec.content())
                     .thenThrow(new RuntimeException("LLM timeout"))
                     .thenReturn(VALID_LLM_RESPONSE);
@@ -510,7 +510,9 @@ class MatrixGraphConstructorTest {
             var result = constructor.constructGraphWithId(List.of(doc), null, null, null);
 
             assertNotNull(result.graphId());
-            assertTrue(result.graphId().startsWith("graph-"));
+            // Per-fact-sheet segmentation: a null factSheetId maps to the stable default graph id
+            // (no more random "graph-<uuid>" ids, so writes land in the graph reads will look in).
+            assertEquals(MatrixKnowledgeGraphService.graphIdForFactSheet(null), result.graphId());
             assertNotNull(result.graph());
             assertEquals(2, result.graph().getEntities().size());
         }

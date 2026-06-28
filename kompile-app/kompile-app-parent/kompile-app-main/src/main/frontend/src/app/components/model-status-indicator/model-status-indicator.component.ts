@@ -572,9 +572,9 @@ export type ModelSourceType = 'staging' | 'archive' | 'default' | 'registry';
   `,
   styles: [`
     .model-status-bar {
-      background: #1a1a1a;
+      background: var(--bg-surface);
       border-radius: 8px;
-      border: 1px solid #333;
+      border: 1px solid var(--border-color);
       overflow: hidden;
       font-size: 12px;
     }
@@ -588,7 +588,7 @@ export type ModelSourceType = 'staging' | 'archive' | 'default' | 'registry';
     }
 
     .status-bar-content:hover {
-      background: #222;
+      background: var(--bg-surface-elevated);
     }
 
     .status-segment {
@@ -601,7 +601,7 @@ export type ModelSourceType = 'staging' | 'archive' | 'default' | 'registry';
     }
 
     .segment-icon {
-      color: #888;
+      color: var(--text-secondary);
       display: flex;
       align-items: center;
     }
@@ -613,14 +613,14 @@ export type ModelSourceType = 'staging' | 'archive' | 'default' | 'registry';
 
     .segment-label {
       font-size: 10px;
-      color: #888;
+      color: var(--text-secondary);
       text-transform: uppercase;
       letter-spacing: 0.5px;
     }
 
     .segment-value {
       font-size: 12px;
-      color: #fff;
+      color: var(--text-primary);
       font-weight: 500;
     }
 
@@ -634,7 +634,7 @@ export type ModelSourceType = 'staging' | 'archive' | 'default' | 'registry';
     .status-dot.green { background: #4caf50; }
     .status-dot.yellow { background: #ff9800; }
     .status-dot.red { background: #f44336; }
-    .status-dot.gray { background: #666; }
+    .status-dot.gray { background: var(--text-tertiary); }
 
     .embedding-segment.ready .segment-icon { color: #4caf50; }
     .embedding-segment.warning .segment-icon { color: #ff9800; }
@@ -646,18 +646,18 @@ export type ModelSourceType = 'staging' | 'archive' | 'default' | 'registry';
 
     .reranker-segment.ready .segment-icon { color: #4caf50; }
     .reranker-segment.warning .segment-icon { color: #ff9800; }
-    .reranker-segment.disabled .segment-icon { color: #666; }
+    .reranker-segment.disabled .segment-icon { color: var(--text-tertiary); }
 
     .divider {
       width: 1px;
       height: 24px;
-      background: #333;
+      background: var(--border-color);
       margin: 0 12px;
     }
 
     .expand-icon {
       margin-left: auto;
-      color: #666;
+      color: var(--text-tertiary);
       transition: transform 0.2s;
     }
 
@@ -666,15 +666,15 @@ export type ModelSourceType = 'staging' | 'archive' | 'default' | 'registry';
     }
 
     .expanded-panel {
-      border-top: 1px solid #333;
+      border-top: 1px solid var(--border-color);
       padding: 16px;
-      background: #111;
+      background: var(--bg-body);
     }
 
     .panel-section {
       margin-bottom: 16px;
       padding-bottom: 16px;
-      border-bottom: 1px solid #222;
+      border-bottom: 1px solid var(--border-color);
     }
 
     .panel-section:last-of-type {
@@ -694,7 +694,7 @@ export type ModelSourceType = 'staging' | 'archive' | 'default' | 'registry';
       margin: 0;
       font-size: 13px;
       font-weight: 600;
-      color: #fff;
+      color: var(--text-primary);
     }
 
     .status-badge {
@@ -722,15 +722,15 @@ export type ModelSourceType = 'staging' | 'archive' | 'default' | 'registry';
 
     .status-badge.disabled {
       background: rgba(102, 102, 102, 0.2);
-      color: #888;
+      color: var(--text-secondary);
     }
 
     .badge {
       font-size: 10px;
       padding: 2px 8px;
       border-radius: 10px;
-      background: #333;
-      color: #aaa;
+      background: var(--bg-surface-elevated);
+      color: var(--text-secondary);
     }
 
     .detail-grid {
@@ -747,13 +747,13 @@ export type ModelSourceType = 'staging' | 'archive' | 'default' | 'registry';
 
     .detail-label {
       font-size: 10px;
-      color: #666;
+      color: var(--text-secondary);
       margin-bottom: 2px;
     }
 
     .detail-value {
       font-size: 12px;
-      color: #ddd;
+      color: var(--text-primary);
       word-break: break-all;
     }
 
@@ -773,12 +773,12 @@ export type ModelSourceType = 'staging' | 'archive' | 'default' | 'registry';
     }
 
     .detail-value.status-na {
-      color: #888;
+      color: var(--text-secondary);
       font-style: italic;
     }
 
     .highlight-row {
-      background: rgba(255, 255, 255, 0.03);
+      background: rgba(128, 128, 128, 0.08);
       padding: 4px 6px;
       border-radius: 4px;
       margin: -2px -6px;
@@ -809,13 +809,14 @@ export type ModelSourceType = 'staging' | 'archive' | 'default' | 'registry';
     }
 
     .action-btn.secondary {
-      background: #333;
-      color: #ddd;
-      border: 1px solid #444;
+      background: var(--bg-surface-elevated);
+      color: var(--text-primary);
+      border: 1px solid var(--border-color);
     }
 
     .action-btn.secondary:hover:not(:disabled) {
-      background: #444;
+      background: var(--bg-surface);
+      border-color: var(--border-focus);
     }
 
     .action-btn:disabled {
@@ -858,9 +859,9 @@ export type ModelSourceType = 'staging' | 'archive' | 'default' | 'registry';
       justify-content: space-between;
       align-items: center;
       padding: 8px 10px;
-      background: #1a1a1a;
+      background: var(--bg-surface);
       border-radius: 4px;
-      border: 1px solid #333;
+      border: 1px solid var(--border-color);
     }
 
     .model-item.active {
@@ -877,14 +878,14 @@ export type ModelSourceType = 'staging' | 'archive' | 'default' | 'registry';
     .model-name {
       font-size: 12px;
       font-weight: 500;
-      color: #fff;
+      color: var(--text-primary);
     }
 
     .model-meta {
       font-size: 10px;
-      color: #888;
+      color: var(--text-secondary);
       padding: 2px 6px;
-      background: #333;
+      background: var(--bg-surface-elevated);
       border-radius: 3px;
     }
 
@@ -919,12 +920,12 @@ export type ModelSourceType = 'staging' | 'archive' | 'default' | 'registry';
 
     .empty-state {
       font-size: 12px;
-      color: #888;
+      color: var(--text-secondary);
       padding: 16px;
       text-align: center;
-      background: #1a1a1a;
+      background: var(--bg-surface);
       border-radius: 4px;
-      border: 1px dashed #333;
+      border: 1px dashed var(--border-color);
       margin-bottom: 12px;
     }
 
@@ -951,7 +952,7 @@ export type ModelSourceType = 'staging' | 'archive' | 'default' | 'registry';
       background: rgba(33, 150, 243, 0.05);
       margin: -16px -16px 16px -16px;
       padding: 16px;
-      border-bottom: 1px solid #333;
+      border-bottom: 1px solid var(--border-color);
     }
 
     .source-details {
@@ -1008,18 +1009,18 @@ export type ModelSourceType = 'staging' | 'archive' | 'default' | 'registry';
 
     .loading-phase {
       font-size: 13px;
-      color: #fff;
+      color: var(--text-primary);
       font-weight: 500;
     }
 
     .loading-message {
       font-size: 12px;
-      color: #aaa;
+      color: var(--text-secondary);
     }
 
     .loading-time {
       font-size: 11px;
-      color: #888;
+      color: var(--text-secondary);
       margin-top: 4px;
     }
 

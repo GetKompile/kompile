@@ -109,8 +109,8 @@ public final class ProcessBpmnExporter {
 
         // Collect all steps in order (across phases) to build the sequence
         List<SuggestedStep> allSteps = new ArrayList<>();
-        // Collect data object refs to emit later
-        List<String[]> dataObjects = new ArrayList<>(); // [doRefId, nodeId, stepId]
+        // Collect data object refs to emit later: [doRefId, displayName, stepId]
+        List<String[]> dataObjects = new ArrayList<>();
 
         for (SuggestedStep step : allStepsInOrder(phases)) {
             allSteps.add(step);
@@ -124,9 +124,15 @@ public final class ProcessBpmnExporter {
                .append("</documentation>\n");
             // DataInputAssociations for graph node references
             if (step.getGraphNodeIds() != null) {
-                for (String nodeId : step.getGraphNodeIds()) {
+                List<String> titles = step.getGraphNodeTitles();
+                for (int i = 0; i < step.getGraphNodeIds().size(); i++) {
+                    String nodeId = step.getGraphNodeIds().get(i);
+                    // Use resolved title when available; fall back to raw id
+                    String displayName = (titles != null && i < titles.size() && titles.get(i) != null
+                            && !titles.get(i).equals(nodeId))
+                            ? titles.get(i) : nodeId;
                     String doRefId = "do_" + safe(nodeId);
-                    dataObjects.add(new String[]{doRefId, nodeId, sid});
+                    dataObjects.add(new String[]{doRefId, displayName, sid});
                     xml.append("      <dataInputAssociation>\n");
                     xml.append("        <sourceRef>").append(doRefId).append("</sourceRef>\n");
                     xml.append("        <targetRef>").append(sid).append("</targetRef>\n");

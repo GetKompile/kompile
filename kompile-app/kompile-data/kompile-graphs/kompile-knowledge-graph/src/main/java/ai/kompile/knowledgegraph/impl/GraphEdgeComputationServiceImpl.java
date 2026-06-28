@@ -16,6 +16,7 @@
 package ai.kompile.knowledgegraph.impl;
 
 import ai.kompile.core.embeddings.EmbeddingModel;
+import ai.kompile.knowledgegraph.confidence.KbConfigManager;
 import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
@@ -53,10 +54,23 @@ public class GraphEdgeComputationServiceImpl implements GraphEdgeComputationServ
     @Autowired(required = false)
     private EmbeddingModel embeddingModel;
 
+    // Hot-reloadable managed config (no @Value, no hard-coded literals). Optional so the service
+    // still functions if the manager bean is absent — it then defaults to star topology.
+    @Autowired(required = false)
+    private KbConfigManager kbConfigManager;
+
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicBoolean cancelled = new AtomicBoolean(false);
     private final AtomicInteger lastEdgesCreated = new AtomicInteger(0);
     private volatile String currentOperation = "idle";
+
+    /** Maximum members per alias bucket that are wired to the hub node in one star pass.
+     *  Buckets exceeding this are logged at WARN and the first N members are linked. */
+    private static final int HUB_MAX_BUCKET_SIZE = 1_000;
+
+    /** Chunk size for {@link KnowledgeGraphService#createEdgesBatch} calls within one bucket,
+     *  bounding the per-call allocation of {@link KnowledgeGraphService.EdgeSpec} lists. */
+    private static final int EDGE_BATCH_CHUNK = 500;
 
     /** All dependencies are field-injected (above) so they survive the @Transactional CGLIB proxy,
      *  which is instantiated via this no-arg constructor — constructor args are NOT applied to the
@@ -105,23 +119,32 @@ public class GraphEdgeComputationServiceImpl implements GraphEdgeComputationServ
             log.info("Computing embedding similarity edges for {} document nodes (factSheetId={}, minSimilarity={})",
                     docNodes.size(), factSheetId, minSimilarity);
 
-            // Compute embeddings for all nodes
+            // Compute embeddings for all nodes in ONE minibatched call. Per-node embed() was a
+            // separate embedding-subprocess round-trip per node — the dominant crawl throughput cost
+            // (hundreds of batch-1 embeds). embedBatch hands the whole set to the subprocess (which
+            // sub-batches internally) and returns one float[] per text, so no INDArray is held here.
             Map<String, float[]> embeddings = new LinkedHashMap<>();
+            List<String> batchTexts = new ArrayList<>(docNodes.size());
+            List<String> batchNodeIds = new ArrayList<>(docNodes.size());
             for (GraphNode node : docNodes) {
                 if (cancelled.get()) break;
                 String text = buildEmbeddingText(node);
                 if (text == null || text.isBlank()) continue;
-                INDArray embedding = null;
+                batchTexts.add(text);
+                batchNodeIds.add(node.getNodeId());
+            }
+            if (!cancelled.get() && !batchTexts.isEmpty()) {
                 try {
-                    embedding = embeddingModel.embed(text);
-                    float[] vector = toUsableEmbeddingVector(embedding, node.getNodeId());
-                    if (vector != null) {
-                        embeddings.put(node.getNodeId(), vector);
+                    List<float[]> vectors = embeddingModel.embedBatch(batchTexts);
+                    int n = vectors == null ? 0 : Math.min(vectors.size(), batchNodeIds.size());
+                    for (int k = 0; k < n; k++) {
+                        float[] vector = toUsableEmbeddingVector(vectors.get(k), batchNodeIds.get(k));
+                        if (vector != null) {
+                            embeddings.put(batchNodeIds.get(k), vector);
+                        }
                     }
                 } catch (Exception e) {
-                    log.debug("Failed to embed node {}: {}", node.getNodeId(), e.getMessage());
-                } finally {
-                    closeQuietly(embedding);
+                    log.warn("Batch embedding failed for {} node(s): {}", batchTexts.size(), e.getMessage());
                 }
             }
 
@@ -190,50 +213,61 @@ public class GraphEdgeComputationServiceImpl implements GraphEdgeComputationServ
         String text = buildEmbeddingText(node);
         if (text == null || text.isBlank()) return;
 
-        float[] nodeEmbedding;
-        INDArray nodeEmbeddingArray = null;
-        try {
-            nodeEmbeddingArray = embeddingModel.embed(text);
-            nodeEmbedding = toUsableEmbeddingVector(nodeEmbeddingArray, nodeId);
-        } catch (Exception e) {
-            log.debug("Failed to embed node {}: {}", nodeId, e.getMessage());
-            return;
-        } finally {
-            closeQuietly(nodeEmbeddingArray);
-        }
-        if (nodeEmbedding == null) return;
-
         Long factSheetId = node.getFactSheetId();
         // Use agnostic seam for node enumeration — nodeRepository is null on the live path.
         List<GraphNode> docNodes = factSheetId != null
                 ? knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, node.getNodeType())
                 : knowledgeGraphService.getNodesByType(node.getNodeType());
+
+        // Collect target node + all candidate nodes into parallel lists for a single embedBatch call.
+        // Index 0 is always the target node; subsequent indices are the other nodes (excluding self).
+        // Per-item embed() was an embedding-subprocess round-trip per node — O(n) IPC cost.
+        // embedBatch sends the entire set in one call; the subprocess sub-batches internally.
+        List<String> batchTexts = new ArrayList<>();
+        List<String> batchNodeIds = new ArrayList<>();
+        batchTexts.add(text);
+        batchNodeIds.add(nodeId); // index 0 = target node
+
         for (GraphNode other : docNodes) {
             if (other.getNodeId().equals(nodeId)) continue;
             String otherText = buildEmbeddingText(other);
             if (otherText == null || otherText.isBlank()) continue;
+            batchTexts.add(otherText);
+            batchNodeIds.add(other.getNodeId());
+        }
 
-            INDArray otherEmbeddingArray = null;
-            try {
-                otherEmbeddingArray = embeddingModel.embed(otherText);
-                float[] otherEmbedding = toUsableEmbeddingVector(otherEmbeddingArray, other.getNodeId());
-                if (otherEmbedding == null) continue;
+        if (batchTexts.size() < 2) return; // only the target node — nothing to compare
 
-                double similarity = cosineSimilarity(nodeEmbedding, otherEmbedding);
-                if (!Double.isFinite(similarity)) continue;
-                if (similarity >= minSimilarity) {
-                    // Agnostic edge-exists check — edgeRepository is null on the live path.
-                    if (knowledgeGraphService.findEdgeBetweenNodesBidirectional(
-                            nodeId, other.getNodeId()).isEmpty()) {
-                        knowledgeGraphService.createEdge(nodeId, other.getNodeId(),
-                                EdgeType.EMBEDDING_SIMILARITY, similarity,
-                                String.format("Cosine similarity: %.3f", similarity));
-                    }
+        List<float[]> vectors;
+        try {
+            vectors = embeddingModel.embedBatch(batchTexts);
+        } catch (Exception e) {
+            log.debug("Failed to embed nodes for {}: {}", nodeId, e.getMessage());
+            return;
+        }
+
+        if (vectors == null || vectors.isEmpty()) return;
+
+        // Index 0 = target node embedding
+        float[] nodeEmbedding = (vectors.size() > 0)
+                ? toUsableEmbeddingVector(vectors.get(0), nodeId) : null;
+        if (nodeEmbedding == null) return;
+
+        int n = Math.min(vectors.size(), batchNodeIds.size());
+        for (int i = 1; i < n; i++) {
+            float[] otherEmbedding = toUsableEmbeddingVector(vectors.get(i), batchNodeIds.get(i));
+            if (otherEmbedding == null) continue;
+
+            double similarity = cosineSimilarity(nodeEmbedding, otherEmbedding);
+            if (!Double.isFinite(similarity)) continue;
+            if (similarity >= minSimilarity) {
+                // Agnostic edge-exists check — edgeRepository is null on the live path.
+                if (knowledgeGraphService.findEdgeBetweenNodesBidirectional(
+                        nodeId, batchNodeIds.get(i)).isEmpty()) {
+                    knowledgeGraphService.createEdge(nodeId, batchNodeIds.get(i),
+                            EdgeType.EMBEDDING_SIMILARITY, similarity,
+                            String.format("Cosine similarity: %.3f", similarity));
                 }
-            } catch (Exception e) {
-                log.debug("Failed to compare node {} with {}: {}", nodeId, other.getNodeId(), e.getMessage());
-            } finally {
-                closeQuietly(otherEmbeddingArray);
             }
         }
     }
@@ -262,6 +296,32 @@ public class GraphEdgeComputationServiceImpl implements GraphEdgeComputationServ
             return null;
         }
 
+        double sumSquares = 0.0;
+        for (int i = 0; i < vector.length; i++) {
+            float value = vector[i];
+            if (!Float.isFinite(value)) {
+                log.debug("Skipping similarity embedding for node {} due non-finite value at [{}]={}",
+                        nodeId, i, value);
+                return null;
+            }
+            sumSquares += (double) value * value;
+        }
+        if (!Double.isFinite(sumSquares) || sumSquares <= 1e-24) {
+            log.debug("Skipping similarity embedding for node {} due unusable magnitude {}", nodeId, sumSquares);
+            return null;
+        }
+        return vector;
+    }
+
+    /**
+     * Validate a {@code float[]} embedding from the batch path — same empty/finite/magnitude checks
+     * as the {@link INDArray} variant, without creating an ND4J array in this JVM.
+     */
+    private float[] toUsableEmbeddingVector(float[] vector, String nodeId) {
+        if (vector == null || vector.length == 0) {
+            log.debug("Skipping similarity embedding for node {} because it is empty", nodeId);
+            return null;
+        }
         double sumSquares = 0.0;
         for (int i = 0; i < vector.length; i++) {
             float value = vector[i];
@@ -468,9 +528,68 @@ public class GraphEdgeComputationServiceImpl implements GraphEdgeComputationServ
         return deleted;
     }
 
+    @Override
+    @Transactional
+    public Map<String, Object> rebuildCrossDocEdges(Long factSheetId, boolean dryRun) {
+        // Collapse the legacy O(k²) clique cross-doc edges and recompute them as a STAR (the fixed
+        // topology). Identify clique cross-doc edges by their description marker; leave entity-mention
+        // SHARED_ENTITY ("Shares N entities") and EMBEDDING_SIMILARITY edges untouched.
+        final String marker = "Name-based cross-doc resolution:";
+        int existing = 0;
+        List<String> toDelete = new ArrayList<>();
+        for (String nodeId : getEdgeSourceNodeIds()) {
+            for (GraphEdge edge : knowledgeGraphService.getEdgesForNode(nodeId)) {
+                if (edge.getEdgeType() == EdgeType.SHARED_ENTITY
+                        && edge.getDescription() != null
+                        && edge.getDescription().startsWith(marker)) {
+                    existing++;
+                    if (!dryRun) toDelete.add(edge.getEdgeId());
+                }
+            }
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("factSheetId", factSheetId);
+        result.put("existingCrossDocEdges", existing);
+        result.put("dryRun", dryRun);
+        if (dryRun) {
+            result.put("action", "dryRun — would delete " + existing
+                    + " clique cross-doc edges then recompute as star");
+            log.info("rebuildCrossDocEdges DRY-RUN: {} clique cross-doc edges present (factSheetId={})",
+                    existing, factSheetId);
+            return result;
+        }
+        int deleted = 0;
+        for (String edgeId : toDelete) {
+            try {
+                knowledgeGraphService.deleteEdge(edgeId);
+                deleted++;
+            } catch (Exception e) {
+                log.debug("rebuildCrossDocEdges: could not delete edge {}: {}", edgeId, e.getMessage());
+            }
+        }
+        // Recompute the cross-doc edges with the STAR topology (linear, not the clique).
+        computeNameBasedCrossDocEdges(factSheetId);
+        int after = 0;
+        for (String nodeId : getEdgeSourceNodeIds()) {
+            for (GraphEdge edge : knowledgeGraphService.getEdgesForNode(nodeId)) {
+                if (edge.getEdgeType() == EdgeType.SHARED_ENTITY
+                        && edge.getDescription() != null
+                        && edge.getDescription().startsWith(marker)) {
+                    after++;
+                }
+            }
+        }
+        result.put("deleted", deleted);
+        result.put("crossDocEdgesAfter", after);
+        result.put("netReduction", existing - after);
+        log.info("rebuildCrossDocEdges: deleted {} clique cross-doc edges, recomputed to {} star edges, "
+                        + "net -{} (factSheetId={})", deleted, after, existing - after, factSheetId);
+        return result;
+    }
+
     /** Returns nodeIds of all DOCUMENT and ENTITY nodes for edge scanning (used by prune/delete). */
     private List<String> getEdgeSourceNodeIds() {
-        List<String> ids = new java.util.ArrayList<>();
+        List<String> ids = new ArrayList<>();
         for (GraphNode n : knowledgeGraphService.getNodesByType(NodeLevel.DOCUMENT)) {
             ids.add(n.getNodeId());
         }
@@ -664,48 +783,136 @@ public class GraphEdgeComputationServiceImpl implements GraphEdgeComputationServ
         // Track already-linked pairs so dual-bucketing (name + email) never creates duplicates.
         Set<String> linkedPairs = new LinkedHashSet<>();
 
+        // Topology is a hot-reloadable managed knob (KbConfig.crossDocStarTopology, default true).
+        // STAR  → O(k) edges per bucket: connect every cross-doc member to a hub. Same connected
+        //         component as a clique (which is the entire point — prevent the ComponentPruner
+        //         treating cross-doc entity islands as singletons), but linear instead of quadratic.
+        // CLIQUE → legacy O(k²): link every pair. Retained as a config fallback only; for generic
+        //         structured values (a spreadsheet "Revenue"/"Total" bucket of hundreds of cells)
+        //         this is what exploded SHARED_ENTITY to ~703k edges.
+        boolean star = (kbConfigManager == null) || kbConfigManager.current().isCrossDocStarTopology();
+
         int edgesCreated = 0;
         for (Map.Entry<String, List<GraphNode>> entry : byNormalizedName.entrySet()) {
+            if (cancelled.get()) return;
             List<GraphNode> group = entry.getValue();
             if (group.size() < 2) continue;
+            String bucketKey = entry.getKey();
 
-            // Only link nodes from DIFFERENT source documents (different externalId prefix)
-            // to avoid noisy self-loops within the same document.
-            for (int i = 0; i < group.size(); i++) {
-                if (cancelled.get()) return;
-                GraphNode a = group.get(i);
-                for (int j = i + 1; j < group.size(); j++) {
-                    GraphNode b = group.get(j);
-                    // Skip if same source document (same sourcePath metadata)
-                    if (sameSourceDoc(a, b)) continue;
-                    // Canonical pair key (smaller nodeId first) — guards against dual-bucketing
-                    // (the same pair appearing under both a "name" bucket and an "email" bucket)
-                    // creating a duplicate edge when the graph store's bidirectional check isn't
-                    // atomic enough across buckets processed in the same transaction.
-                    String pairKey = a.getNodeId().compareTo(b.getNodeId()) <= 0
-                            ? a.getNodeId() + "~" + b.getNodeId()
-                            : b.getNodeId() + "~" + a.getNodeId();
-                    if (!linkedPairs.add(pairKey)) continue; // already processed this pair
-                    // Idempotent: skip if edge already exists in either direction — agnostic seam.
-                    if (knowledgeGraphService.findEdgeBetweenNodesBidirectional(
-                            a.getNodeId(), b.getNodeId()).isPresent()) {
-                        continue;
+            if (star) {
+                // True star topology with a dedicated synthetic hub node per (factSheet, bucket).
+                // Hub type = NodeLevel.ALIAS, keyed deterministically by hubExternalId so the same
+                // crawl data always resolves to the same hub on re-runs (fully idempotent).
+                // Each member emits ONE EdgeType.ALIAS_OF edge (member → hub): O(N) edges per bucket
+                // vs the old O(N²) clique. Members from the same source doc may both connect to the
+                // same hub — they only share the hub, not a direct edge, so no false identity link
+                // is created between them. Skip the bucket if all members are from a single source doc.
+
+                boolean crossDoc = false;
+                for (int k = 1; k < group.size(); k++) {
+                    if (!sameSourceDoc(group.get(0), group.get(k))) {
+                        crossDoc = true;
+                        break;
                     }
-                    try {
-                        knowledgeGraphService.createEdge(
-                                a.getNodeId(), b.getNodeId(),
-                                EdgeType.SHARED_ENTITY, 1.0,
-                                "Name-based cross-doc resolution: " + entry.getKey());
-                        edgesCreated++;
-                    } catch (Exception e) {
-                        log.debug("computeNameBasedCrossDocEdges: could not create edge {} ↔ {}: {}",
-                                a.getNodeId(), b.getNodeId(), e.getMessage());
+                }
+                if (!crossDoc) continue;
+
+                if (group.size() > HUB_MAX_BUCKET_SIZE) {
+                    log.warn("computeNameBasedCrossDocEdges: bucket '{}' has {} members — "
+                            + "capping hub edges at {} to bound memory",
+                            bucketKey, group.size(), HUB_MAX_BUCKET_SIZE);
+                }
+
+                // Hub externalId encodes factSheetId scope to prevent cross-factSheet nodeId clashes.
+                String hubExternalId = (factSheetId != null ? "fs" + factSheetId + "." : "") + bucketKey;
+                GraphNode hub = (factSheetId != null
+                        ? knowledgeGraphService.getNodeByExternalIdInFactSheet(
+                                hubExternalId, NodeLevel.ALIAS, factSheetId)
+                        : knowledgeGraphService.getNodeByExternalId(hubExternalId, NodeLevel.ALIAS))
+                        .orElseGet(() -> {
+                            Map<String, Object> hubMeta = new LinkedHashMap<>();
+                            hubMeta.put("bucket_key", bucketKey);
+                            hubMeta.put("alias_type", "cross_doc_name");
+                            return knowledgeGraphService.createNode(
+                                    NodeLevel.ALIAS, hubExternalId,
+                                    "Alias hub: " + bucketKey,
+                                    "Cross-document canonical alias hub for bucket: " + bucketKey,
+                                    hubMeta, factSheetId);
+                        });
+                String hubId = hub.getNodeId();
+
+                // Collect ALIAS_OF EdgeSpecs for all members (cap at HUB_MAX_BUCKET_SIZE).
+                // linkedPairs guards against the same member appearing in multiple alias buckets
+                // that map to the same hub (e.g. a name bucket and an email bucket that happen
+                // to share a hub key — rare but possible if keys collide after normalisation).
+                List<KnowledgeGraphService.EdgeSpec> edgeSpecs = new ArrayList<>();
+                int processed = 0;
+                for (GraphNode m : group) {
+                    if (cancelled.get()) return;
+                    if (processed++ >= HUB_MAX_BUCKET_SIZE) break;
+                    String memberId = m.getNodeId();
+                    if (memberId == null || memberId.equals(hubId)) continue;
+                    String pairKey = memberId + "~" + hubId;
+                    if (!linkedPairs.add(pairKey)) continue;
+                    edgeSpecs.add(new KnowledgeGraphService.EdgeSpec(memberId, hubId,
+                            EdgeType.ALIAS_OF, 1.0,
+                            "Cross-doc alias resolution: " + bucketKey));
+                }
+
+                // Batch-create edges in bounded chunks to keep per-call allocations small.
+                for (int from = 0; from < edgeSpecs.size(); from += EDGE_BATCH_CHUNK) {
+                    if (cancelled.get()) return;
+                    int to = Math.min(from + EDGE_BATCH_CHUNK, edgeSpecs.size());
+                    edgesCreated += knowledgeGraphService.createEdgesBatch(edgeSpecs.subList(from, to));
+                }
+            } else {
+                // Legacy clique (config fallback): link every cross-doc pair.
+                for (int i = 0; i < group.size() && !cancelled.get(); i++) {
+                    GraphNode a = group.get(i);
+                    for (int j = i + 1; j < group.size() && !cancelled.get(); j++) {
+                        GraphNode b = group.get(j);
+                        if (sameSourceDoc(a, b)) continue;
+                        edgesCreated += tryCreateCrossDocEdge(a, b, bucketKey, linkedPairs);
                     }
                 }
             }
         }
-        log.info("computeNameBasedCrossDocEdges: created {} cross-doc name-resolution edges (factSheetId={})",
-                edgesCreated, factSheetId);
+        log.info("computeNameBasedCrossDocEdges: created {} cross-doc name-resolution edges "
+                        + "(factSheetId={}, topology={})",
+                edgesCreated, factSheetId, star ? "star" : "clique");
+    }
+
+    /**
+     * Create one idempotent cross-doc {@link EdgeType#SHARED_ENTITY} edge between two ENTITY nodes,
+     * sharing the dedup + existence guards across the star and clique paths. Returns 1 if an edge
+     * was created, 0 otherwise (duplicate pair, pre-existing edge, self-pair, or store error).
+     *
+     * @param bucketKey   the normalized-name bucket the pair came from (used in the edge description)
+     * @param linkedPairs canonical {@code "<minId>~<maxId>"} keys already linked this run — guards
+     *                    against the same pair appearing under both a name bucket and an alias bucket
+     *                    when the store's bidirectional check isn't atomic across buckets in one tx
+     */
+    private int tryCreateCrossDocEdge(GraphNode a, GraphNode b, String bucketKey, Set<String> linkedPairs) {
+        if (a == b) return 0;
+        String idA = a.getNodeId();
+        String idB = b.getNodeId();
+        if (idA == null || idB == null || idA.equals(idB)) return 0;
+        String pairKey = idA.compareTo(idB) <= 0 ? idA + "~" + idB : idB + "~" + idA;
+        if (!linkedPairs.add(pairKey)) return 0; // already processed this pair this run
+        // Idempotent: skip if edge already exists in either direction — agnostic seam.
+        if (knowledgeGraphService.findEdgeBetweenNodesBidirectional(idA, idB).isPresent()) {
+            return 0;
+        }
+        try {
+            knowledgeGraphService.createEdge(idA, idB,
+                    EdgeType.SHARED_ENTITY, 1.0,
+                    "Name-based cross-doc resolution: " + bucketKey);
+            return 1;
+        } catch (Exception e) {
+            log.debug("computeNameBasedCrossDocEdges: could not create edge {} ↔ {}: {}",
+                    idA, idB, e.getMessage());
+            return 0;
+        }
     }
 
     /**

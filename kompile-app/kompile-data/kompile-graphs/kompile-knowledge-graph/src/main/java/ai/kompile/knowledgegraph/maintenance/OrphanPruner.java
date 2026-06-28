@@ -116,8 +116,18 @@ public class OrphanPruner {
 
         // ── Step 1: Delegate orphan DECISION to generic policy ───────────────────
         PruneResult decision = evaluatePolicy(factSheetId);
-        List<String> orphanNodeIds = new ArrayList<>(decision.entityIds());
-        log.debug("OrphanPruner: {} orphan entities found for factSheet={}", orphanNodeIds.size(), factSheetId);
+        // Filter to ENTITY-level nodes only: evaluatePolicy now adds DOCUMENT/TABLE structural
+        // anchors to prevent ENTITY nodes connected via CONTAINS edges from being orphaned.
+        // Those anchor node IDs carry the "document_" / "table_" prefix and must NOT be pruned
+        // here (they are structural, not content orphans, and are handled by SnapshotManager).
+        List<String> orphanNodeIds = decision.entityIds().stream()
+                .filter(id -> id != null && id.startsWith(NodeLevel.ENTITY.name().toLowerCase() + "_"))
+                .collect(Collectors.toList());
+        // P3 diagnostic: log at INFO so the node-count change is attributable in the crawl log.
+        // Previously at DEBUG, making it invisible during production crawls and masking large drops.
+        log.info("OrphanPruner: {} orphan ENTITY nodes found for factSheet={} (these will be soft-deleted; "
+                        + "previously-stale nodes past grace period will be hard-deleted in step 2)",
+                orphanNodeIds.size(), factSheetId);
 
         // ── Step 1b: Apply deletions via store API (KG-specific, stays here) ─────
         GraphPruneResult softDeleteResult = knowledgeGraphService.pruneNodes(
@@ -179,7 +189,19 @@ public class OrphanPruner {
                 .filter(n -> !Boolean.TRUE.equals(n.getStale()))
                 .forEach(n -> graph.addEntity(n.getNodeId(), nodeType(n), nodeLabel(n)));
 
-        // Load edges (only those whose endpoints are entity nodes we loaded)
+        // Load DOCUMENT and TABLE structural anchors so that ENTITY nodes connected to them
+        // via CONTAINS or HIERARCHICAL edges are NOT treated as orphans.
+        // Without this, every ENTITY node that has only CONTAINS edges from a parent DOCUMENT
+        // (but no entity-to-entity edges yet) is incorrectly classified as an orphan and
+        // soft-deleted — causing the node count to plummet during early/cold-start crawls where
+        // cross-document shared-entity edges have not yet been computed.
+        for (NodeLevel anchorLevel : java.util.List.of(NodeLevel.DOCUMENT, NodeLevel.TABLE)) {
+            knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, anchorLevel).stream()
+                    .filter(n -> !Boolean.TRUE.equals(n.getStale()))
+                    .forEach(n -> graph.addEntity(n.getNodeId(), nodeType(n), nodeLabel(n)));
+        }
+
+        // Load edges (those whose endpoints are entity OR structural-anchor nodes we loaded)
         for (GraphEdge edge : knowledgeGraphService.getEdgesInFactSheet(factSheetId)) {
             if (edge.getSourceNode() == null || edge.getTargetNode() == null) continue;
             String src = edge.getSourceNode().getNodeId();

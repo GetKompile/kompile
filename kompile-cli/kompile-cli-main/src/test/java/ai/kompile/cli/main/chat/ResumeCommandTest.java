@@ -16,6 +16,7 @@
 package ai.kompile.cli.main.chat;
 
 import ai.kompile.cli.main.chat.format.ConversationExporter;
+import ai.kompile.cli.main.chat.tools.CrossAgentResumeCompactor;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import picocli.CommandLine;
@@ -25,6 +26,7 @@ import java.io.PrintStream;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -80,16 +82,46 @@ class ResumeCommandTest {
                 "resume-session",
                 "opencode",
                 tempDir.resolve("session.json"),
-                "opencode -s resume-session",
+                "opencode --session resume-session",
                 tempDir);
 
         List<String> args = buildAgentCommand("opencode", exportResult);
 
         assertTrue(args.contains("opencode"));
-        assertTrue(args.contains("-s"));
+        assertTrue(args.contains("--session"));
         assertTrue(args.contains("resume-session"));
         assertFalse(args.contains("--dangerously-skip-permissions"),
                 "OpenCode TUI resume does not support --dangerously-skip-permissions");
+    }
+
+    @Test
+    void directResumeCompactsClaudeTranscriptBeforeCodexExport() {
+        String previous = System.getProperty("kompile.codex.model");
+        try {
+            System.setProperty("kompile.codex.model", "gpt-4");
+            List<ChatHistory.Turn> turns = new ArrayList<>();
+            for (int i = 0; i < 30; i++) {
+                turns.add(new ChatHistory.Turn(i % 2 == 0 ? "user" : "assistant",
+                        "claude transcript turn " + i + " " + "payload ".repeat(1_000),
+                        null));
+            }
+            turns.add(new ChatHistory.Turn("user", "latest claude request for codex", null));
+
+            CrossAgentResumeCompactor.Result result = new ResumeCommand()
+                    .compactForTargetAgent(turns, "codex", "claude-code", tempDir);
+
+            assertTrue(result.compacted());
+            assertTrue(result.tokensAfter() <= result.targetBudget().exportTokenBudget());
+            assertTrue(result.turns().get(0).content().contains("[Compacted cross-agent resume context]"));
+            assertEquals("latest claude request for codex",
+                    result.turns().get(result.turns().size() - 1).content());
+        } finally {
+            if (previous == null) {
+                System.clearProperty("kompile.codex.model");
+            } else {
+                System.setProperty("kompile.codex.model", previous);
+            }
+        }
     }
 
     @Test

@@ -66,11 +66,11 @@
             <groupId>ai.kompile</groupId>
             <artifactId>kompile-model-manager</artifactId>
         </dependency>
-        <!-- Model staging: GraphScopedDeployService used by ModelDeploymentHook -->
-        <dependency>
-            <groupId>ai.kompile</groupId>
-            <artifactId>kompile-model-staging</artifactId>
-        </dependency>
+        <!-- kompile-model-staging is a STANDALONE service (separate :8090 subprocess). app-main reaches it
+             over HTTP only (ModelDeploymentHook POSTs /api/staging/graph/.../deploy; KompileLocalModelService
+             uses /v1/models). DO NOT add it as a dependency here — bundling it drags its @SpringBootApplication,
+             controllers, and Angular UI into the app and it hijacks the served root UI.
+             See memory: feedback_model_staging_never_in_app_main. -->
         <dependency>
             <groupId>ai.kompile</groupId>
             <artifactId>kompile-project-store</artifactId>
@@ -472,7 +472,40 @@
             <artifactId>spring-boot-starter-quartz</artifactId>
         </dependency>
 
+        <!-- PTY support for headless interactive agent sessions:
+             PtyProcessBuilder allocates a POSIX PTY master+slave pair so the spawned agent
+             subprocess sees a real TTY (isatty()==true) and enters interactive mode.
+             purejavacomm + jna + jna-platform are transitive runtime deps pulled in by pty4j;
+             jna 5.16.0 is pinned explicitly because the project already uses it at that version
+             and Maven would otherwise downgrade to pty4j's declared 5.12.1. -->
+        <dependency>
+            <groupId>org.jetbrains.pty4j</groupId>
+            <artifactId>pty4j</artifactId>
+            <version>0.12.13</version>
+        </dependency>
+        <dependency>
+            <groupId>net.java.dev.jna</groupId>
+            <artifactId>jna</artifactId>
+            <version>5.16.0</version>
+        </dependency>
+
     </dependencies>
+
+    <repositories>
+        <!--
+            pty4j + its purejavacomm transitive dep (used by HeadlessInteractiveSessionPool's
+            PTY-backed managed interactive sessions) are published to JetBrains' intellij-dependencies
+            repo, NOT Maven Central (purejavacomm 0.0.11.1 is 404 on Central). Declare it so the build
+            resolves reproducibly online instead of relying on a hand-seeded ~/.m2.
+        -->
+        <repository>
+            <id>intellij-dependencies</id>
+            <name>JetBrains IntelliJ Dependencies</name>
+            <url>https://cache-redirector.jetbrains.com/intellij-dependencies</url>
+            <releases><enabled>true</enabled></releases>
+            <snapshots><enabled>false</enabled></snapshots>
+        </repository>
+    </repositories>
 
     <profiles>
         <profile>

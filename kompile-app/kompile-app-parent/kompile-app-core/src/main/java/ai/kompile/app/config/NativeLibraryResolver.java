@@ -16,7 +16,7 @@
 
 package ai.kompile.app.config;
 
-import ai.kompile.cli.common.util.NativeImageInfo;
+import ai.kompile.utils.NativeImageInfo;
 
 import java.io.File;
 import java.io.IOException;

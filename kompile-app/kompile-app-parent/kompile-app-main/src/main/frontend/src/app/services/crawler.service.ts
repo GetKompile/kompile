@@ -131,6 +131,8 @@ export interface CrawlStepInfo {
 
 export interface CrawlJobSummary {
   jobId: string;
+  /** Stable durable id; crawl logs persist under "crawl-<internalJobId>". */
+  internalJobId?: string;
   historyTaskId?: string;
   status: string;
   crawlerId: string;

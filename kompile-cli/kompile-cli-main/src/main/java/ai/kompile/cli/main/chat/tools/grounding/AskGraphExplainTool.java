@@ -27,7 +27,11 @@ import java.util.Map;
  * MCP tool: {@code ask_graph_explain}
  *
  * <p>Produce a derivation trace explaining why the KB believes (or disbelieves)
- * a specific fact via {@code POST /api/kb-grounding/explain}.</p>
+ * a specific fact via the unified {@code POST /api/explain} endpoint.</p>
+ *
+ * <p>The response surfaces the full {@link ai.kompile.graph.reasoning.explain.ReasoningTrail}:
+ * verdict, calibrated confidence, NL summary, derivation-tree JSON, evidence atoms,
+ * activated rules, and the provenance run-id.</p>
  */
 public class AskGraphExplainTool implements CliTool {
 
@@ -47,9 +51,9 @@ public class AskGraphExplainTool implements CliTool {
 
     @Override
     public String description() {
-        return "Produce a derivation trace explaining why the KB believes (or disbelieves) " +
+        return "Produce a derivation trace explaining why the knowledge base believes (or disbelieves) " +
                 "a specific fact. Returns a derivation tree with rule applications and " +
-                "supporting atoms at each hop, plus an NL summary. Use this to audit " +
+                "supporting facts at each hop, plus a natural-language summary. Use this to audit " +
                 "an LLM's reasoning or to present grounded explanations to end users.";
     }
 
@@ -61,7 +65,10 @@ public class AskGraphExplainTool implements CliTool {
 
         props.putObject("atom")
                 .put("type", "string")
-                .put("description", "The atom key to explain, e.g. 'isEmployedBy(Alice, Acme)'.");
+                .put("description", "The atom key or entity id to explain, "
+                        + "e.g. 'isEmployedBy(Alice, Acme)'. "
+                        + "Atom keys (with parentheses) default to GROUNDING mode; "
+                        + "bare entity ids default to HYBRID mode.");
         props.putObject("factSheetId")
                 .put("type", "integer")
                 .put("description", "Fact sheet scope. Null = global.");
@@ -69,6 +76,12 @@ public class AskGraphExplainTool implements CliTool {
                 .put("type", "integer")
                 .put("description", "Maximum derivation hops. Default: 3. Maximum: 5.")
                 .put("default", 3);
+        ObjectNode modeNode = props.putObject("mode");
+        modeNode.put("type", "string");
+        modeNode.put("description", "Reasoning engine override: GROUNDING (KB derivation tree), "
+                + "HYBRID (structural + semantic), or CAUSAL (event attribution). "
+                + "Default: auto-detected from atom shape.");
+        modeNode.putArray("enum").add("GROUNDING").add("HYBRID").add("CAUSAL");
         props.putObject("sessionId")
                 .put("type", "string");
 
@@ -96,13 +109,15 @@ public class AskGraphExplainTool implements CliTool {
         }
 
         try {
+            // POST /api/explain uses "target" (not "atom"); mode is optional
             ObjectNode body = objectMapper.createObjectNode();
-            body.put("atom", atom);
+            body.put("target", atom);
             if (!params.path("factSheetId").isMissingNode()) body.set("factSheetId", params.get("factSheetId"));
             if (!params.path("depth").isMissingNode())       body.set("depth", params.get("depth"));
+            if (!params.path("mode").isMissingNode())        body.set("mode", params.get("mode"));
             if (!params.path("sessionId").isMissingNode())   body.set("sessionId", params.get("sessionId"));
 
-            var resp = backend.post("/api/kb-grounding/explain",
+            var resp = backend.post("/api/explain",
                     objectMapper.writeValueAsString(body), Duration.ofSeconds(30));
 
             if (resp.statusCode() != 200) {
@@ -111,25 +126,58 @@ public class AskGraphExplainTool implements CliTool {
             }
 
             JsonNode result = objectMapper.readTree(resp.body());
-            String verdict  = result.path("verdict").asText("UNKNOWN");
-            double conf     = result.path("confidence").asDouble(0.0);
-            String summary  = result.path("summary").asText("");
-            boolean stale   = result.path("meta").path("stale").asBoolean(false);
+            String verdict        = result.path("verdict").asText("UNKNOWN");
+            double conf           = result.path("confidence").asDouble(0.0);
+            String inferenceMode  = result.path("inferenceMode").asText("");
+            String summary        = result.path("naturalLanguageSummary").asText("");
+            String derivationJson = result.path("derivationTreeJson").asText(null);
+            JsonNode evidenceNode = result.path("evidence");
+            JsonNode rulesNode    = result.path("activatedRules");
+            String runId          = result.path("trail").path("runId").asText("");
 
             StringBuilder sb = new StringBuilder();
-            sb.append("**").append(verdict).append("** — ").append(atom);
+            if (verdict != null && !verdict.isEmpty() && !verdict.equals("UNKNOWN") || conf > 0.0) {
+                sb.append("**").append(verdict).append("** — ");
+            }
+            sb.append(atom);
+            sb.append("\nApproach: ").append(translateInferenceMode(inferenceMode));
             sb.append("\nConfidence: ").append(String.format("%.3f", conf));
-            sb.append("\n\n").append(summary);
-            if (stale) sb.append("\n\nWARNING: KB is pending a cascade update.");
+            if (!runId.isBlank()) sb.append("\nRunId: ").append(runId);
+            if (!summary.isBlank()) sb.append("\n\n").append(summary);
+            if (evidenceNode.isArray() && evidenceNode.size() > 0) {
+                sb.append("\n\nEvidence:");
+                evidenceNode.forEach(e -> sb.append("\n  - ").append(e.asText()));
+            }
+            if (rulesNode.isArray() && rulesNode.size() > 0) {
+                sb.append("\nActivated rules:");
+                rulesNode.forEach(r -> sb.append("\n  - ").append(r.asText()));
+            }
+            if (derivationJson != null && !derivationJson.isBlank()) {
+                sb.append("\n\nDerivation tree:\n").append(derivationJson);
+            }
 
             return ToolResult.success("ask_graph_explain: " + atom, sb.toString(),
-                    Map.of("verdict", verdict, "confidence", conf));
+                    Map.of("verdict", verdict, "confidence", conf,
+                           "inferenceMode", inferenceMode, "runId", runId));
 
         } catch (ConnectException e) {
             return ToolResult.error("Cannot connect to kompile-app. " + e.getMessage());
         } catch (Exception e) {
             return ToolResult.error("ask_graph_explain error: " + e.getMessage());
         }
+    }
+
+    /** Translate internal inference-mode codes to plain language for LLM output. */
+    static String translateInferenceMode(String mode) {
+        if (mode == null || mode.isBlank()) return "auto";
+        return switch (mode.toUpperCase()) {
+            case "GROUNDING" -> "rule-based derivation";
+            case "HYBRID"    -> "structural + semantic analysis";
+            case "CAUSAL"    -> "causal attribution";
+            case "PSL"       -> "soft-rule reasoning";
+            case "MEBN"      -> "probabilistic network reasoning";
+            default          -> mode.toLowerCase();
+        };
     }
 
     private String extractError(String body) {

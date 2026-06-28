@@ -32,6 +32,8 @@ import { MatSelectModule } from '@angular/material/select';
 import { BaseService } from '../../services/base.service';
 import { OpinionDto, StrengthBand } from '../../services/kb-grounding.service';
 import { StrengthBadgeComponent } from '../strength-badge/strength-badge.component';
+import { Citation } from '../../models/api-models';
+import { SourceCitationComponent } from '../source-citation/source-citation.component';
 
 // ── D4: BasisType definitions ─────────────────────────────────────────────────
 
@@ -74,6 +76,14 @@ interface FactOpinionRow {
   baseRate: number | null;
   /** D4: basisType sourced from _basisType in provenanceJson */
   basisType: string | null;
+  /** Source document identifier from _sourceDocumentId in provenanceJson */
+  sourceDocumentId?: string | null;
+  /** Crawl run/job identifier from _crawlRunId in provenanceJson */
+  crawlRunId?: string | null;
+  /** Human-readable source name from _sourceChunkId in provenanceJson */
+  sourceName?: string | null;
+  /** Human-readable label for atomKey (entity titles); falls back to atomKey. */
+  displayLabel?: string | null;
 }
 
 // ── Tier chips ────────────────────────────────────────────────────────────────
@@ -138,6 +148,7 @@ function simplexPoint(
     MatFormFieldModule,
     MatSelectModule,
     StrengthBadgeComponent,
+    SourceCitationComponent,
   ],
   template: `
     <mat-card class="opinion-browser-card">
@@ -275,7 +286,7 @@ function simplexPoint(
           <ng-container matColumnDef="atomKey">
             <th mat-header-cell *matHeaderCellDef>Atom Key</th>
             <td mat-cell *matCellDef="let row" class="atom-key-cell"
-                [matTooltip]="row.atomKey">{{ row.atomKey }}</td>
+                [matTooltip]="row.atomKey">{{ row.displayLabel || row.atomKey }}</td>
           </ng-container>
 
           <!-- D4: basisType column -->
@@ -449,6 +460,10 @@ function simplexPoint(
                     No full opinion available for this fact.
                   </span>
                 </ng-template>
+                <!-- Source citation: full provenance from the fact's provenanceJson -->
+                <app-source-citation [compact]="true"
+                                     [citation]="toCitation(row)">
+                </app-source-citation>
               </div>
             </td>
           </ng-container>
@@ -1072,6 +1087,17 @@ export class OpinionBrowserComponent extends BaseService implements OnInit, OnCh
     if (this.rows.length === 0) return false;
     const specRows = this.rows.filter(r => r.band === 'SPECULATIVE').length;
     return specRows / this.rows.length >= SPECULATIVE_SATURATION_THRESHOLD;
+  }
+
+  /** Map a FactOpinionRow to the Citation shape expected by <app-source-citation>. */
+  toCitation(row: FactOpinionRow): Citation {
+    return {
+      sourceId:   row.sourceDocumentId ?? undefined,
+      sourceName: row.sourceName ?? undefined,
+      crawlRunId: row.crawlRunId ?? undefined,
+      basisType:  row.basisType ?? undefined,
+      confidence: row.confidence,
+    };
   }
 
   // D3: simplex geometry helpers used in the template

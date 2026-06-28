@@ -23,6 +23,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Kompile-managed configuration for the knowledge-base confidence / evidence / learning model.
@@ -84,6 +85,19 @@ public class KbConfig {
     /** Run MEBN finite-difference weight learning once every N cascades. */
     private int mebnLearningInterval = 10;
 
+    /**
+     * When {@code true}, the crawl ENRICHMENT stage auto-builds and registers an
+     * {@link ai.kompile.knowledgegraph.reasoning.MebnTheoryRegistrationService MTheory}
+     * for the fact sheet immediately before MAP re-ground, so STEP 9 (SSBN weight
+     * learning) fires inside the derivation cascade.
+     *
+     * <p><b>DEFAULTS FALSE</b>: SSBN grounding is memory-sensitive (O(k²) node-pair
+     * expansion). Enable only when MEBN weight learning is explicitly desired and the
+     * host has sufficient RAM / a {@link #derivationTimeBudgetMs} guard in place.
+     * A normal crawl is byte-for-byte unchanged when this flag is {@code false}.</p>
+     */
+    private boolean mebnTheoryRegistrationOnCrawlEnabled = false;
+
     // ── Prior-based Opinion prune (Pillar 6 — P6 in PruneCompactOrchestrator) ──────
     /** P6: prune edges whose subjective-logic belief is below this. */
     private double prunePolicyMinBelief = 0.10;
@@ -121,9 +135,81 @@ public class KbConfig {
     /** P3: soft PSL rule weight for DOMAIN/RANGE rules compiled from a bound ontology. */
     private double ontologyRuleWeight = 0.8;
 
+    // ── Derivation / ENRICHMENT budget caps ──────────────────────────────────────
+    /**
+     * Wall-clock time budget (milliseconds) for the entire DERIVATION stage (MAP re-ground +
+     * weight learning + bulk materialization) per fact sheet.  0 = no cap (original unbounded
+     * behaviour).  When the deadline is exceeded the crawl continues with whatever was
+     * persisted before the timeout.
+     *
+     * <p><b>Default 180 s (3 minutes)</b>: with {@code derivationMaxAtoms=5000} the MAP solve
+     * completes in seconds on CPU; 3 minutes is a generous but not runaway bound.  The prior
+     * 30-minute default was raised to compensate for a 50k-atom cap that was too slow —
+     * reducing atoms to 5k makes 3 minutes more than sufficient and prevents the crawl from
+     * hanging for half an hour on every ENRICHMENT run.  Set to 0 to remove the cap for
+     * offline/research runs that intentionally use very large atom sets.</p>
+     */
+    private long derivationTimeBudgetMs = 0L;  // 0 = no timeout: never abandon derivation partway.
+                                               // The previous 180s deadline silently truncated MAP
+                                               // inference; the full solve runs to completion.
+
+    /**
+     * Wall-clock time budget (milliseconds) for the bulk materialization step (storeAll) within
+     * the DERIVATION stage.  0 = no cap (materialization runs to completion or until the outer
+     * {@link #derivationTimeBudgetMs} wall expires).
+     *
+     * <p>This cap protects against runaway I/O when the inferred-fact store is very slow.  It is
+     * separate from the MAP-solve budget so a fast solve followed by a slow store still persists
+     * as many facts as complete within the materialization window before the overall budget fires.</p>
+     */
+    private long derivationMaterializationTimeBudgetMs = 0L;  // no separate cap by default
+
+    /**
+     * Maximum number of PSL weight-learning epochs per DERIVATION call.  Overrides
+     * {@link #pslMaxEpochs} specifically on the crawl / ENRICHMENT path so a long crawl
+     * does not trigger the same epoch count as an offline full-batch fit.
+     * 0 = inherit {@link #pslMaxEpochs} (original behaviour).
+     */
+    private int derivationPslMaxEpochs = 1;  // online-only on the crawl path
+
+    /**
+     * Maximum number of atoms to process per MAP re-ground on the DERIVATION path.
+     * 0 = no cap (original unbounded behaviour).  When the fact store exceeds this,
+     * the program is built from a random sample of this size, preventing multi-hour hangs
+     * on extremely large graphs.
+     *
+     * <p><b>Default lowered from 50 000 → 5 000</b>: the HL-MRF MAP solve is O(atoms²) per
+     * epoch; 50k atoms takes 15-30 minutes on CPU (hence the prior 30-min timeout still
+     * expired with derived=0).  5k atoms completes in seconds while still capturing the most
+     * frequent/impactful inferences.  Raise to 10k–20k once a GPU is available or after
+     * confirming MAP solve time is acceptable.</p>
+     */
+    private int derivationMaxAtoms = 0;   // 0 = unlimited: project the WHOLE graph (nodes + edges).
+                                          // A positive cap truncated to N atoms — and since nodes are
+                                          // projected before edges, any cap < nodeCount starved edges
+                                          // entirely (derivation saw 0 edges → derived nothing). Process
+                                          // the full graph; bound memory by minibatching, not by dropping data.
+
     // ── Hybrid consensus training (HybridConsensusTrainer) ─────────────────────────
     /** How strongly the hybrid reasoner's ranked responses pull the joint-training targets, in [0,1]. */
     private double hybridConsensusWeight = 0.5;
+
+    // ── Cross-doc name-resolution edge topology (computeNameBasedCrossDocEdges) ────
+    /**
+     * Topology for the cross-doc name-resolution SHARED_ENTITY edges.
+     *
+     * <p>When {@code true} (default) each name bucket is linked as a <b>star</b>: every
+     * cross-document member is connected to a hub, which is {@code O(k)} edges that still place
+     * all members in one connected component.  That connectivity is the entire documented purpose
+     * of these edges (it stops the ComponentPruner treating cross-doc entity islands as singletons).</p>
+     *
+     * <p>When {@code false} the legacy <b>clique</b> links every pair — {@code O(k²)} edges.  For
+     * generic structured values (an FP&amp;A spreadsheet value like "Revenue"/"Total"/"0" lands
+     * hundreds of cells in one bucket → a single bucket emits {@code ~k²/2 ≈ 125 000} edges) this
+     * was the dominant source of edge-count explosion (703k of 1.27M edges were SHARED_ENTITY).
+     * The star preserves the identical connected component with linear edges and drops no data.</p>
+     */
+    private boolean crossDocStarTopology = true;
 
     // ── Personal / free email providers (belongs_to_org exclusion list) ───────────
     private List<String> personalEmailDomains = new ArrayList<>(List.of(
@@ -162,13 +248,19 @@ public class KbConfig {
         m.put("kbTrustDefault", trustDefault);
         m.put("kbBelongsToOrgStrength", belongsToOrgStrength);
         m.put("kbMebnLearningInterval", mebnLearningInterval);
+        m.put("kbMebnTheoryRegistrationOnCrawlEnabled", mebnTheoryRegistrationOnCrawlEnabled);
         m.put("kbPrunePolicyMinBelief", prunePolicyMinBelief);
         m.put("kbPrunePolicyMaxUncertainty", prunePolicyMaxUncertainty);
         m.put("kbPrunePolicyMinExpectation", prunePolicyMinExpectation);
         m.put("kbPrunePolicyPruneSuppressedBand", prunePolicyPruneSuppressedBand);
         m.put("kbOntologyGuidedExtractionEnabled", ontologyGuidedExtractionEnabled);
         m.put("kbOntologyRuleWeight", ontologyRuleWeight);
+        m.put("kbDerivationTimeBudgetMs", derivationTimeBudgetMs);
+        m.put("kbDerivationMaterializationTimeBudgetMs", derivationMaterializationTimeBudgetMs);
+        m.put("kbDerivationPslMaxEpochs", derivationPslMaxEpochs);
+        m.put("kbDerivationMaxAtoms", derivationMaxAtoms);
         m.put("kbHybridConsensusWeight", hybridConsensusWeight);
+        m.put("kbCrossDocStarTopology", crossDocStarTopology);
         m.put("kbRuleWeightEstablishedMean", ruleWeightEstablishedMean);
         m.put("kbRuleWeightHighMean", ruleWeightHighMean);
         m.put("kbRuleWeightProbableMean", ruleWeightProbableMean);
@@ -178,7 +270,7 @@ public class KbConfig {
     }
 
     /** The {@code kb*} keys this config owns, so a config push never clobbers other sections of a shared file. */
-    public static java.util.Set<String> keys() {
+    public static Set<String> keys() {
         return defaults().toMap().keySet();
     }
 
@@ -209,13 +301,20 @@ public class KbConfig {
         c.trustDefault = dbl(root, "kbTrustDefault", c.trustDefault, 0.0, 1.0);
         c.belongsToOrgStrength = dbl(root, "kbBelongsToOrgStrength", c.belongsToOrgStrength, 0.0, 1000.0);
         c.mebnLearningInterval = intf(root, "kbMebnLearningInterval", c.mebnLearningInterval, 1, 100_000);
+        c.mebnTheoryRegistrationOnCrawlEnabled = bool(root, "kbMebnTheoryRegistrationOnCrawlEnabled", c.mebnTheoryRegistrationOnCrawlEnabled);
         c.prunePolicyMinBelief = dbl(root, "kbPrunePolicyMinBelief", c.prunePolicyMinBelief, 0.0, 1.0);
         c.prunePolicyMaxUncertainty = dbl(root, "kbPrunePolicyMaxUncertainty", c.prunePolicyMaxUncertainty, 0.0, 1.0);
         c.prunePolicyMinExpectation = dbl(root, "kbPrunePolicyMinExpectation", c.prunePolicyMinExpectation, 0.0, 1.0);
         c.prunePolicyPruneSuppressedBand = bool(root, "kbPrunePolicyPruneSuppressedBand", c.prunePolicyPruneSuppressedBand);
         c.ontologyGuidedExtractionEnabled = bool(root, "kbOntologyGuidedExtractionEnabled", c.ontologyGuidedExtractionEnabled);
         c.ontologyRuleWeight = dbl(root, "kbOntologyRuleWeight", c.ontologyRuleWeight, 0.0, 100.0);
+        c.derivationTimeBudgetMs = lng(root, "kbDerivationTimeBudgetMs", c.derivationTimeBudgetMs, 0L, Long.MAX_VALUE);
+        c.derivationMaterializationTimeBudgetMs = lng(root, "kbDerivationMaterializationTimeBudgetMs",
+                c.derivationMaterializationTimeBudgetMs, 0L, Long.MAX_VALUE);
+        c.derivationPslMaxEpochs = intf(root, "kbDerivationPslMaxEpochs", c.derivationPslMaxEpochs, 0, 100_000);
+        c.derivationMaxAtoms = intf(root, "kbDerivationMaxAtoms", c.derivationMaxAtoms, 0, 10_000_000);
         c.hybridConsensusWeight = dbl(root, "kbHybridConsensusWeight", c.hybridConsensusWeight, 0.0, 1.0);
+        c.crossDocStarTopology = bool(root, "kbCrossDocStarTopology", c.crossDocStarTopology);
         c.ruleWeightEstablishedMean = dbl(root, "kbRuleWeightEstablishedMean", c.ruleWeightEstablishedMean, 0.0, 100.0);
         c.ruleWeightHighMean = dbl(root, "kbRuleWeightHighMean", c.ruleWeightHighMean, 0.0, 100.0);
         c.ruleWeightProbableMean = dbl(root, "kbRuleWeightProbableMean", c.ruleWeightProbableMean, 0.0, 100.0);

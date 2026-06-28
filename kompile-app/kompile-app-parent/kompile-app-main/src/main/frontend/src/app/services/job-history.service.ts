@@ -17,7 +17,7 @@
 import { Injectable } from '@angular/core';
 import { HttpClient, HttpParams } from '@angular/common/http';
 import { Observable, BehaviorSubject } from 'rxjs';
-import { tap } from 'rxjs/operators';
+import { tap, catchError } from 'rxjs/operators';
 import { backendUrl } from './base.service';
 
 export type JobStatus = 'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED' | 'MEMORY_KILLED' | 'PAUSED';
@@ -279,6 +279,51 @@ export interface ResumableCrawlJob {
   historyTaskId?: string;
   hasCheckpoint?: boolean;
   resumedFromJobId?: string;
+}
+
+/**
+ * A unified crawl job that has one or more archived/failed/deferred steps resumable.
+ * Returned by GET /api/unified-crawl/jobs/resumable
+ */
+export interface ResumableUnifiedCrawlJob {
+  jobId: string;
+  name: string;
+  factSheetId?: number | null;
+  archivedSteps: string[];
+  archivedAt?: string;
+  /** Per-step progress details (injected by the UI after fetching job detail). */
+  steps?: UnifiedCrawlStepProgress[];
+  /** Whether step detail has been loaded. */
+  stepsLoaded?: boolean;
+  /** Whether the job step panel is expanded in the UI. */
+  expanded?: boolean;
+}
+
+/**
+ * Minimal per-step progress shape returned inside job detail.
+ */
+export interface UnifiedCrawlStepProgress {
+  stepId: string;
+  displayName: string;
+  stepType: string;
+  status: string;
+  progressPercent: number;
+  totalItems: number;
+  completedItems: number;
+  failedItems: number;
+  message?: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+/**
+ * Minimal job detail shape returned by GET /api/unified-crawl/jobs/{id}
+ */
+export interface UnifiedCrawlJobDetail {
+  jobId: string;
+  name: string;
+  status: string;
+  pipelineSteps?: UnifiedCrawlStepProgress[];
 }
 
 /**
@@ -651,6 +696,39 @@ export class JobHistoryService {
    */
   restartCrawlJob(jobId: string): Observable<any> {
     return this.http.post<any>(`${backendUrl}/crawlers/jobs/${encodeURIComponent(jobId)}/restart`, {});
+  }
+
+  // ===================== UNIFIED CRAWL STEP RESUME =====================
+
+  /**
+   * List unified crawl jobs that have archived/failed steps resumable after a restart.
+   * Backend: GET /api/unified-crawl/jobs/resumable
+   */
+  listResumableUnifiedCrawlJobs(): Observable<ResumableUnifiedCrawlJob[]> {
+    return this.http.get<ResumableUnifiedCrawlJob[]>(`${backendUrl}/unified-crawl/jobs/resumable`);
+  }
+
+  /**
+   * Get per-step detail for a unified crawl job (to inspect step statuses).
+   * Tries the active-job endpoint first; falls back to the history endpoint for
+   * jobs that have completed and are no longer in memory.
+   * Backend: GET /api/unified-crawl/jobs/{jobId} → fallback /jobs/{jobId}/history
+   */
+  getUnifiedCrawlJobDetail(jobId: string): Observable<UnifiedCrawlJobDetail> {
+    const encoded = encodeURIComponent(jobId);
+    return this.http.get<UnifiedCrawlJobDetail>(`${backendUrl}/unified-crawl/jobs/${encoded}`).pipe(
+      catchError(() =>
+        this.http.get<UnifiedCrawlJobDetail>(`${backendUrl}/unified-crawl/jobs/${encoded}/history`)
+      )
+    );
+  }
+
+  /**
+   * Run a previously archived/deferred step for a unified crawl job.
+   * Backend: POST /api/unified-crawl/jobs/{jobId}/steps/{stepId}/run
+   */
+  runUnifiedCrawlStep(jobId: string, stepId: string): Observable<any> {
+    return this.http.post<any>(`${backendUrl}/unified-crawl/jobs/${encodeURIComponent(jobId)}/steps/${encodeURIComponent(stepId)}/run`, {});
   }
 
   // ==================== Embedding Logs ====================

@@ -69,6 +69,7 @@ public final class KnowledgeGraphReasoningAdapter {
 
     /** Materialize the subgraph reachable from {@code seedNodeIds} as a {@link ReasoningGraph}. */
     public ReasoningGraph subgraph(Collection<String> seedNodeIds) {
+        if (seedNodeIds == null) seedNodeIds = java.util.List.of();
         Map<String, GraphNode> discovered = new LinkedHashMap<>();
         Set<String> visited = new HashSet<>();
         Set<String> edgeSeen = new HashSet<>();

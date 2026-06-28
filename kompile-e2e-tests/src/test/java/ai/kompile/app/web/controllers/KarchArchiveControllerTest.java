@@ -15,7 +15,12 @@
  */
 package ai.kompile.app.web.controllers;
 
-import ai.kompile.app.web.dto.karch.*;
+import ai.kompile.app.web.dto.karch.ArchiveInfo;
+import ai.kompile.app.web.dto.karch.ArchiveModelInfo;
+import ai.kompile.app.web.dto.karch.ArchiveStatus;
+import ai.kompile.app.web.dto.karch.ExtractModelRequest;
+import ai.kompile.app.web.dto.karch.ExtractResult;
+import ai.kompile.app.web.dto.karch.LoadArchiveRequest;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -46,7 +51,7 @@ class KarchArchiveControllerTest {
 
     @Test
     void listArchives_returnsOkWithEmptyListWhenNoDirExists() {
-        ResponseEntity<List<KarchArchiveController.ArchiveInfo>> response = controller.listArchives();
+        ResponseEntity<List<ArchiveInfo>> response = controller.listArchives();
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertNotNull(response.getBody());
         // When default archives dir doesn't exist, list is empty
@@ -55,9 +60,9 @@ class KarchArchiveControllerTest {
 
     @Test
     void getStatus_returnsNotLoadedInitially() {
-        ResponseEntity<KarchArchiveController.ArchiveStatus> response = controller.getStatus();
+        ResponseEntity<ArchiveStatus> response = controller.getStatus();
         assertEquals(HttpStatus.OK, response.getStatusCode());
-        KarchArchiveController.ArchiveStatus status = response.getBody();
+        ArchiveStatus status = response.getBody();
         assertNotNull(status);
         assertFalse(status.loaded);
         assertNull(status.archivePath);
@@ -70,7 +75,7 @@ class KarchArchiveControllerTest {
 
     @Test
     void getModels_returnsEmptyListWhenNoArchiveLoaded() {
-        ResponseEntity<List<KarchArchiveController.ArchiveModelInfo>> response = controller.getModels();
+        ResponseEntity<List<ArchiveModelInfo>> response = controller.getModels();
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertNotNull(response.getBody());
         assertTrue(response.getBody().isEmpty());
@@ -78,7 +83,7 @@ class KarchArchiveControllerTest {
 
     @Test
     void getModelsByType_returnsEmptyListWhenNoArchiveLoaded() {
-        ResponseEntity<List<KarchArchiveController.ArchiveModelInfo>> response =
+        ResponseEntity<List<ArchiveModelInfo>> response =
                 controller.getModelsByType("encoder");
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertNotNull(response.getBody());
@@ -87,18 +92,18 @@ class KarchArchiveControllerTest {
 
     @Test
     void loadArchive_returnsBadRequestWhenPathDoesNotExist() {
-        KarchArchiveController.LoadArchiveRequest request = new KarchArchiveController.LoadArchiveRequest();
+        LoadArchiveRequest request = new LoadArchiveRequest();
         request.archivePath = "/nonexistent/path/archive.karch";
 
-        ResponseEntity<KarchArchiveController.ArchiveStatus> response = controller.loadArchive(request);
+        ResponseEntity<ArchiveStatus> response = controller.loadArchive(request);
         assertEquals(HttpStatus.BAD_REQUEST, response.getStatusCode());
     }
 
     @Test
     void unloadArchive_clearsStateAndReturnsNotLoaded() {
-        ResponseEntity<KarchArchiveController.ArchiveStatus> response = controller.unloadArchive();
+        ResponseEntity<ArchiveStatus> response = controller.unloadArchive();
         assertEquals(HttpStatus.OK, response.getStatusCode());
-        KarchArchiveController.ArchiveStatus status = response.getBody();
+        ArchiveStatus status = response.getBody();
         assertNotNull(status);
         assertFalse(status.loaded);
         assertNull(status.archivePath);
@@ -107,11 +112,11 @@ class KarchArchiveControllerTest {
 
     @Test
     void extractModel_returnsBadRequestWhenNoArchiveLoaded() {
-        KarchArchiveController.ExtractModelRequest request = new KarchArchiveController.ExtractModelRequest();
+        ExtractModelRequest request = new ExtractModelRequest();
         request.modelId = "test-model";
         request.destinationPath = null;
 
-        ResponseEntity<KarchArchiveController.ExtractResult> response = controller.extractModel(request);
+        ResponseEntity<ExtractResult> response = controller.extractModel(request);
         assertEquals(HttpStatus.BAD_REQUEST, response.getStatusCode());
     }
 }

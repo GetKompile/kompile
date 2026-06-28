@@ -16,18 +16,39 @@
 
 package ai.kompile.guardrails;
 
+import ai.kompile.cli.common.util.JsonUtils;
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.annotation.PostConstruct;
 import lombok.Data;
-import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Component;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.HashSet;
 import java.util.Set;
 
 /**
- * Configuration properties for guardrails.
+ * Managed configuration for guardrails.
+ * Loaded from and persisted to {@code <dataDir>/config/guardrails-config.json}.
+ * Defaults are preserved when the file is absent.
  */
-@Data
-@ConfigurationProperties(prefix = "kompile.guardrails")
+@Component
 public class GuardrailsProperties {
+
+    private static final Logger log = LoggerFactory.getLogger(GuardrailsProperties.class);
+    private static final String CONFIG_FILENAME = "guardrails-config.json";
+
+    @JsonIgnore
+    private final Path configFilePath;
+
+    @JsonIgnore
+    private final ObjectMapper objectMapper;
 
     /**
      * Whether guardrails are enabled.
@@ -48,6 +69,90 @@ public class GuardrailsProperties {
      * Output guardrail configuration.
      */
     private OutputConfig output = new OutputConfig();
+
+    public GuardrailsProperties(@Value("${kompile.data.dir:#{null}}") String dataDir) {
+        this.objectMapper = JsonUtils.standardMapper();
+        String effectiveDataDir = (dataDir == null || dataDir.isBlank())
+                ? System.getProperty("user.home") + "/.kompile"
+                : dataDir;
+        this.configFilePath = Paths.get(effectiveDataDir, "config", CONFIG_FILENAME);
+        log.info("GuardrailsProperties initialized, config path: {}", configFilePath);
+    }
+
+    /**
+     * Loads configuration from {@code guardrails-config.json} on startup.
+     * When the file is absent the existing field defaults are kept; errors are
+     * logged but never propagated.
+     */
+    @PostConstruct
+    public void load() {
+        if (!Files.exists(configFilePath)) {
+            log.info("No guardrails config found at {} - using defaults", configFilePath);
+            return;
+        }
+        try {
+            objectMapper.readerForUpdating(this).readValue(configFilePath.toFile());
+            log.info("Loaded guardrails config from {}", configFilePath);
+        } catch (IOException e) {
+            log.warn("Could not load guardrails config from {}: {} - using defaults",
+                    configFilePath, e.getMessage());
+        }
+    }
+
+    /**
+     * Persists the current configuration as pretty-printed JSON, creating parent
+     * directories as needed.
+     */
+    public void persist() {
+        try {
+            Path parentDir = configFilePath.getParent();
+            if (!Files.exists(parentDir)) {
+                Files.createDirectories(parentDir);
+                log.info("Created config directory: {}", parentDir);
+            }
+            String json = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(this);
+            Files.writeString(configFilePath, json);
+            log.info("Persisted guardrails config to {}", configFilePath);
+        } catch (IOException e) {
+            log.error("Failed to persist guardrails config to {}: {}", configFilePath, e.getMessage(), e);
+        }
+    }
+
+    // ── Getters / setters ────────────────────────────────────────────────────────
+
+    public boolean isEnabled() {
+        return enabled;
+    }
+
+    public void setEnabled(boolean enabled) {
+        this.enabled = enabled;
+    }
+
+    public int getMaxRetries() {
+        return maxRetries;
+    }
+
+    public void setMaxRetries(int maxRetries) {
+        this.maxRetries = maxRetries;
+    }
+
+    public InputConfig getInput() {
+        return input;
+    }
+
+    public void setInput(InputConfig input) {
+        this.input = input;
+    }
+
+    public OutputConfig getOutput() {
+        return output;
+    }
+
+    public void setOutput(OutputConfig output) {
+        this.output = output;
+    }
+
+    // ── Inner configuration types (unchanged public API) ─────────────────────────
 
     @Data
     public static class InputConfig {

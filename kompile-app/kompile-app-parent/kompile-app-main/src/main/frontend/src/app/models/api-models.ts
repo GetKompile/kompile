@@ -14,22 +14,47 @@
  * limitations under the License.
  */
 
+// Type-only import — zero runtime cost, no circular dependency risk.
+import type { ReasoningTrailDto } from '../services/kb-grounding.service';
+
 // For RAG Service
 export interface RagQuery {
   query: string;
   maxResults?: number;
 }
 
+export interface Citation {
+  sourceId?: string;
+  sourceName?: string;
+  pageNumber?: number;
+  chunkIndex?: number;
+  score?: number;
+  confidence?: number;
+  basisType?: string;
+  crawlRunId?: string;
+  sourceUrl?: string;
+  provenance?: Record<string, any>;
+}
+
 export interface RagResponse {
   query: string;
-  answer: string;
-  retrieved_contexts: RetrievedContext[];
+  answer: {
+    answer: string;
+    formattedContext?: string;
+    retrievedDocs?: RetrievedContext[];
+  };
+  citations?: Array<{ docId?: string; citation?: Citation }>;
 }
 
 export interface RetrievedContext {
-  document_id: string;
-  content: string;
+  id: string;
+  text: string;
   score?: number;
+  citation?: Citation;
+  sourceId?: string;
+  pageNumber?: number;
+  chunkIndex?: number;
+  metadata?: Record<string, any>;
 }
 
 
@@ -2207,6 +2232,10 @@ export interface RetrievedDocument {
   content: string;
   score: number;
   metadata?: { [key: string]: any };
+  citation?: Citation;
+  sourceId?: string;
+  pageNumber?: number;
+  chunkIndex?: number;
 }
 
 /**
@@ -2758,6 +2787,9 @@ export interface LocalAgentMessage {
   /** Retrieved sources from RAG (for footnotes) */
   sources?: RetrievedSource[];
 
+  /** Reasoning traces from kb_verify_explain tool calls during this turn */
+  reasoningTrails?: ReasoningTrailDto[];
+
   /** Token throughput metrics from LLM streaming */
   tokenMetrics?: {
     outputTokens: number;
@@ -2852,6 +2884,15 @@ export interface RetrievedSource {
 
   /** Whether this source is expanded in the UI */
   _expanded?: boolean;
+
+  citation?: Citation;
+  documentId?: string;
+  chunkIndex?: number;
+  sourceType?: string;
+  sourceUrl?: string;
+  filePath?: string;
+  nodeId?: string;
+  provenance?: Record<string, any>;
 }
 
 /**
@@ -6490,4 +6531,22 @@ export interface EntityCategory {
   source?: string;
   children?: EntityCategory[];
   entityCount?: number;
+}
+
+export interface KnowledgeSearchHit {
+  content: string;
+  source?: string;
+  relevance?: number;
+  confidence?: number;
+  documentId?: string;
+  page?: number;
+  chunk?: number;
+  provenance?: Record<string, any>;
+  citation?: Citation;
+}
+
+export interface KnowledgeSearchResponse {
+  results: KnowledgeSearchHit[];
+  summary?: string;
+  graph_context?: string;
 }

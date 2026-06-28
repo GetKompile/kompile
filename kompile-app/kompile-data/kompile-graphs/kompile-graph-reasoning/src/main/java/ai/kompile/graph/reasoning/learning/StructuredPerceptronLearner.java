@@ -197,7 +197,20 @@ public class StructuredPerceptronLearner implements WeightLearner {
             List<GroundRule> batch = subsample(groundRules, rng);
 
             // Per-rule descent gradient = mean(distPred - distGT); shared with PseudolikelihoodLearner.
-            double[] gradient = PslRuleGradient.ruleGradient(rules, batch, predicted, groundTruth);
+            // IMPORTANT: pass currentRules (the rules used to produce groundRules this epoch), NOT the
+            // original `rules`. After epoch 0 the weights diverge, so passing `rules` causes findRuleIndex
+            // to match by the epoch-0 weight and miss every ground rule → gradient-0 → spurious convergence.
+            //
+            // Production path: SameDiffPslWeightGradient for programs with many ground rules (one
+            // autodiff backward pass over K_r weight scalars, backend-agnostic). Falls back to the
+            // scalar PslRuleGradient below the threshold (avoids SameDiff graph-build overhead at
+            // small scale).
+            double[] gradient;
+            if (batch.size() >= SameDiffPslWeightGradient.GROUND_RULE_THRESHOLD) {
+                gradient = SameDiffPslWeightGradient.compute(currentRules, batch, predicted, groundTruth);
+            } else {
+                gradient = PslRuleGradient.ruleGradient(currentRules, batch, predicted, groundTruth);
+            }
 
             // MAP regularization (Gaussian prior on weights): MAP = MLE + log-prior. The penalty
             // (weightPriorStrength/2)*(w[r] - priorMean[r])^2 contributes

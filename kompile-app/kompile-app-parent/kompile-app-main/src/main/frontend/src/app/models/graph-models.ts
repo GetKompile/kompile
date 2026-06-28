@@ -19,10 +19,10 @@
  */
 
 // Node hierarchy levels
-export type NodeLevel = 'SOURCE' | 'DOCUMENT' | 'SNIPPET' | 'ENTITY' | 'CUSTOM' | 'ATTACHMENT' | 'TABLE' | 'IDENTIFIER';
+export type NodeLevel = 'SOURCE' | 'DOCUMENT' | 'SNIPPET' | 'ENTITY' | 'CUSTOM' | 'ATTACHMENT' | 'TABLE' | 'IDENTIFIER' | 'ALIAS';
 
 // Edge relationship types
-export type EdgeType = 'HIERARCHICAL' | 'EMBEDDING_SIMILARITY' | 'SHARED_ENTITY' | 'USER_DEFINED' | 'CITATION' | 'TEMPORAL' | 'CROSS_SOURCE' | 'RESOLVES_TO';
+export type EdgeType = 'HIERARCHICAL' | 'EMBEDDING_SIMILARITY' | 'SHARED_ENTITY' | 'USER_DEFINED' | 'CITATION' | 'TEMPORAL' | 'CROSS_SOURCE' | 'RESOLVES_TO' | 'ALIAS_OF';
 
 /**
  * Graph node representing a source, document, snippet, or entity
@@ -96,6 +96,7 @@ export interface SourceWeight {
   id: number;
   sourceNodeId: string;
   sourceName?: string;
+  sourceType?: string;
   topic?: string;
   userId?: string;
   baseWeight: number;
@@ -245,6 +246,10 @@ export interface SourceWeightPreview {
   sourceName: string;
   sourceType?: string;
   weight: number;
+  /** 0..1 semantic similarity of the query to this source; null when embeddings are unavailable. */
+  relevance?: number | null;
+  /** Final ranking score = weight × relevance (or weight alone when relevance is unavailable). */
+  score?: number;
 }
 
 /**
@@ -331,7 +336,8 @@ export const NODE_COLORS: Record<NodeLevel, string> = {
   CUSTOM: '#607D8B',      // Grey
   TABLE: '#795548',       // Brown
   ATTACHMENT: '#FF5722',  // Deep Orange
-  IDENTIFIER: '#3F51B5'   // Indigo
+  IDENTIFIER: '#3F51B5',  // Indigo
+  ALIAS: '#009688'        // Teal — synthetic cross-doc alias hub
 };
 
 /**
@@ -345,7 +351,8 @@ export const NODE_SIZES: Record<NodeLevel, number> = {
   CUSTOM: 12,
   ATTACHMENT: 10,
   TABLE: 10,
-  IDENTIFIER: 10
+  IDENTIFIER: 10,
+  ALIAS: 14
 };
 
 /**
@@ -359,7 +366,8 @@ export const EDGE_COLORS: Record<EdgeType, string> = {
   CITATION: '#FF5722',             // Deep Orange
   TEMPORAL: '#795548',             // Brown
   CROSS_SOURCE: '#00BCD4',         // Cyan
-  RESOLVES_TO: '#E91E63'           // Pink
+  RESOLVES_TO: '#E91E63',          // Pink
+  ALIAS_OF: '#009688'              // Teal — member → alias hub
 };
 
 /**
@@ -373,7 +381,8 @@ export const EDGE_DASH_PATTERNS: Record<EdgeType, string> = {
   CITATION: '10,5',
   TEMPORAL: '5,2,2,2',
   CROSS_SOURCE: '8,4',
-  RESOLVES_TO: '6,3'
+  RESOLVES_TO: '6,3',
+  ALIAS_OF: '4,3'
 };
 
 export interface ProvenanceCitation {

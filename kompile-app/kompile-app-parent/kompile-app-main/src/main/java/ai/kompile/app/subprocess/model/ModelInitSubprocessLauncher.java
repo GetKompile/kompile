@@ -26,7 +26,7 @@ import ai.kompile.app.subprocess.SubprocessEnvironmentPropagator;
 import ai.kompile.cli.common.logs.AgentLogRecord;
 import ai.kompile.cli.common.logs.SubprocessLogWriter;
 import ai.kompile.cli.common.util.JsonUtils;
-import ai.kompile.cli.common.util.NativeImageInfo;
+import ai.kompile.utils.NativeImageInfo;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;

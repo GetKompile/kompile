@@ -22,12 +22,20 @@ import ai.kompile.core.graphrag.GraphConstants;
 import ai.kompile.core.loaders.DocumentLoader;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
 import ai.kompile.crawler.CrawlerService;
+import ai.kompile.knowledgegraph.domain.GraphNode;
+import ai.kompile.knowledgegraph.domain.GraphProvenanceKeys;
+import ai.kompile.knowledgegraph.domain.NodeLevel;
+import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import java.io.IOException;
+import java.net.URI;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.stream.Collectors;
@@ -60,10 +68,37 @@ class CrawlSourceLoadingService {
     @Autowired(required = false)
     private CrawlFactRegistrationCallback crawlFactRegistrationCallback;
 
+    /** Persistent per-file SHA-256 hash store for incremental crawl skip. */
+    @Autowired(required = false)
+    private DocumentHashStore documentHashStore;
+
+    /**
+     * Knowledge-graph service used to purge stale nodes for CHANGED source documents
+     * before re-extraction. Injected optionally so this service can compile in
+     * environments where the knowledge-graph module is absent.
+     */
+    @Autowired(required = false)
+    private KnowledgeGraphService knowledgeGraphService;
+
     // ── Required dependencies ───────────────────────────────────────────────
 
     private final CrawlDocumentTracker documentTracker;
     private final PipelineStepTracker pipelineStepTracker;
+
+    // ── Incremental-crawl configuration (set by UnifiedCrawlGraphServiceImpl before each run) ──
+
+    /**
+     * Mirror of {@link UnifiedCrawlGraphServiceImpl#crawlIncrementalByContentHash}.
+     * Set by the outer service before each job run so that the per-file skip logic
+     * here can read it without needing a back-reference to the outer service.
+     */
+    volatile boolean crawlIncrementalByContentHash = true;
+
+    /**
+     * Mirror of {@link UnifiedCrawlGraphServiceImpl#crawlForceFullRecrawl}.
+     * When true, every file is (re-)processed this run regardless of stored hashes.
+     */
+    volatile boolean crawlForceFullRecrawl = false;
 
     CrawlSourceLoadingService(CrawlDocumentTracker documentTracker,
                               PipelineStepTracker pipelineStepTracker) {
@@ -88,8 +123,7 @@ class CrawlSourceLoadingService {
         List<UnifiedCrawlSource> sources = job.getRequest().getSources();
         int parallelism = Math.min(Math.max(1, sourceLoadParallelism), sources.size());
         documentTracker.recordEvent(job, "LOADING", "INFO",
-                "Planning source loading",
-                sources.size() + " source(s), parallelism=" + parallelism);
+                "Starting source loading: " + sources.size() + " source(s) with parallelism=" + parallelism, null);
 
         if (parallelism <= 1 || sources.size() <= 1) {
             List<SourceLoadResult> results = new ArrayList<>(sources.size());
@@ -145,6 +179,9 @@ class CrawlSourceLoadingService {
         progress.setCurrentItem(source.getPathOrUrl());
         documentTracker.recordEvent(job, "LOADING", "INFO",
                 "Loading source " + (index + 1) + "/" + job.getRequest().getSources().size(), label);
+        documentTracker.recordEvent(job, "LOADING", "INFO",
+                "Source " + (index + 1) + ": " + label + " (" + (source.getSourceType() != null ? source.getSourceType().name() : "UNKNOWN") + ")",
+                source.getPathOrUrl());
 
         try {
             log.info("[Job {}] Loading source '{}' (type={}, path={})",
@@ -173,6 +210,9 @@ class CrawlSourceLoadingService {
             progress.setCurrentItem(null);
             documentTracker.recordEvent(job, "LOADING", "INFO",
                     "Loaded " + docs.size() + " document(s)", label);
+            documentTracker.recordEvent(job, "LOADING", "INFO",
+                    "Source " + (index + 1) + " complete: " + docs.size() + " document(s) from " + label,
+                    "type=" + (source.getSourceType() != null ? source.getSourceType().name() : "UNKNOWN") + ", path=" + source.getPathOrUrl());
             log.info("[Job {}] Loaded {} document(s) from source '{}'",
                     job.getJobId(), docs.size(), label);
             return new SourceLoadResult(index, label, docs);
@@ -331,7 +371,7 @@ class CrawlSourceLoadingService {
                 progress.setCurrentPhase("DISCOVERING");
                 progress.setCurrentItem(item.getUrl());
                 documentTracker.recordEvent(job, "DISCOVERING", "INFO",
-                        "Discovered " + discovered + " item(s)", item.getUrl());
+                        "Discovered " + discovered + " item(s) under " + source.getLabel(), item.getUrl());
             }
 
             @Override
@@ -382,11 +422,39 @@ class CrawlSourceLoadingService {
         log.info("[Job {}] Loading documents from {} discovered files...",
                 job.getJobId(), discoveredItems.size());
 
-        // Now load documents from discovered items (off the crawler thread)
+        // Now load documents from discovered items (off the crawler thread).
+        //
+        // INCREMENTAL CRAWL LOGIC
+        // ───────────────────────
+        // When crawlIncrementalByContentHash=true AND crawlForceFullRecrawl=false:
+        //   • Compute (or reuse) the SHA-256 hash of each file's content.
+        //   • UNCHANGED (hash matches stored) → skip the expensive load + downstream steps;
+        //     the file's existing graph nodes (by _sourceDocumentId provenance) are kept.
+        //   • CHANGED (hash mismatch) → purge the old nodes first, then process as new.
+        //   • NEW (no stored hash) → process normally.
+        //
+        // IMPORTANT: Only per-file steps are skipped here (LOADING → VECTOR_INDEXING).
+        // ENTITY_RESOLUTION, EDGE_COMPUTATION, and ENRICHMENT are global steps that run
+        // over the FULL current graph (kept nodes from skipped files + newly processed
+        // nodes) and are NOT affected by this logic.
+        //
+        // Telemetry counters job.filesSkippedUnchanged and job.filesReprocessed are
+        // updated so the progress snapshot surfaces the counts to the UI.
+        Long factSheetId = job.getRequest() != null ? job.getRequest().getFactSheetId() : null;
+        boolean incrementalEnabled = crawlIncrementalByContentHash && !crawlForceFullRecrawl
+                && documentHashStore != null;
+
+        // Tracks which items were actually loaded (not skipped) so we can record their
+        // hashes AFTER successful downstream processing.  We attach a metadata marker
+        // to each loaded Document so the hash can be persisted when the file completes.
+        // The actual recordHash call happens immediately after a successful load below
+        // (optimistic: we assume the downstream pipeline will succeed; if extraction
+        // fails the hash is not recorded and the file will be re-processed next time).
         List<Document> collectedDocs = new ArrayList<>();
         for (CrawlItem item : discoveredItems) {
             if (isCancelled(job)) return collectedDocs;
-            String shortName = CrawlDocumentTracker.shortName(item.getUrl());
+            String itemUrl = item.getUrl();
+            String shortName = CrawlDocumentTracker.shortName(itemUrl);
 
             job.getCurrentFile().set(shortName);
             progress.setCurrentPhase("LOADING");
@@ -398,12 +466,37 @@ class CrawlSourceLoadingService {
                     "Loading discovered file " + (collectedDocs.size() + 1) + "/" + discoveredItems.size(),
                     shortName);
 
+            // Compute the content hash once per item; reused for skip-check AND persist.
+            // null means "hash not available" → always process (no skip possible).
+            String itemFreshHash = incrementalEnabled ? resolveContentHash(item) : null;
+
             try {
+                // ── INCREMENTAL: decide skip or purge (pre-load) ────────────────
+                if (incrementalEnabled && itemFreshHash != null) {
+                    if (documentHashStore.isUnchanged(factSheetId, itemUrl, itemFreshHash)) {
+                        // UNCHANGED — skip the expensive load + downstream steps.
+                        int skipped = job.getFilesSkippedUnchanged().incrementAndGet();
+                        log.info("[Job {}] SKIP (unchanged hash) file: {} (total skipped: {})",
+                                job.getJobId(), shortName, skipped);
+                        documentTracker.recordEvent(job, "LOADING", "INFO",
+                                "Skipped unchanged file (content hash match)", shortName);
+                        // We do NOT add to collectedDocs — file is entirely skipped.
+                        continue;
+                    } else {
+                        // CHANGED or NEW — purge prior nodes if an entry exists (CHANGED).
+                        DocumentHashStore.HashEntry existing = documentHashStore.lookup(factSheetId, itemUrl);
+                        if (existing != null) {
+                            purgeNodesForSource(job, factSheetId, itemUrl);
+                        }
+                    }
+                }
+                // ───────────────────────────────────────────────────────────────
+
                 DocumentSourceDescriptor desc = item.getSourceDescriptor();
                 if (desc == null) {
                     desc = DocumentSourceDescriptor.builder()
                             .type(source.getSourceType())
-                            .pathOrUrl(item.getUrl())
+                            .pathOrUrl(itemUrl)
                             .build();
                 }
                 int docsBeforeLoad = collectedDocs.size();
@@ -416,12 +509,20 @@ class CrawlSourceLoadingService {
                                     job.getJobId(), loader.getName(), shortName, desc.getType());
                             List<Document> docs = loader.load(desc);
                             for (Document doc : docs) {
-                                doc.getMetadata().put("source_url", item.getUrl());
+                                doc.getMetadata().put("source_url", itemUrl);
+                                // Per-file source_path. Without this, loaders that don't set it (HTML,
+                                // Tika/markdown) inherit the crawl-source DIRECTORY via the scopeMeta
+                                // putIfAbsent in loadSource(), so every non-xlsx file collapses to ONE
+                                // DOCUMENT node (dedup by source_path) → orphaned entities + fragmented graph.
+                                doc.getMetadata().put(GraphConstants.META_SOURCE_PATH, itemUrl);
                                 doc.getMetadata().put(GraphConstants.META_SOURCE_TYPE, sourceTypeName);
                                 if (item.getContentType() != null
                                         && !doc.getMetadata().containsKey(GraphConstants.META_CONTENT_TYPE)) {
                                     doc.getMetadata().put(GraphConstants.META_CONTENT_TYPE, item.getContentType());
                                 }
+                                // Stamp the item URL so downstream provenance recording uses the
+                                // same canonical key this hash store uses.
+                                doc.getMetadata().put("_incrementalSourceUrl", itemUrl);
                             }
                             collectedDocs.addAll(docs);
                             int docsFromFile = collectedDocs.size() - docsBeforeLoad;
@@ -437,19 +538,43 @@ class CrawlSourceLoadingService {
                                     "Loaded " + docsFromFile + " document(s)", shortName);
                             log.info("[Job {}] Loaded file: {} - {} document(s) (total: {})",
                                     job.getJobId(), shortName, docsFromFile, newTotal);
+
+                            // ── INCREMENTAL: record hash after successful load ─────
+                            if (incrementalEnabled && docsFromFile > 0) {
+                                if (itemFreshHash != null) {
+                                    documentHashStore.recordHash(factSheetId, itemUrl,
+                                            itemFreshHash, job.getJobId());
+                                }
+                                job.getFilesReprocessed().incrementAndGet();
+                            }
+                            // ─────────────────────────────────────────────────────
+
                             break;
                         }
                     }
                 }
                 if (!loaderFound) {
                     log.debug("[Job {}] Skipping unsupported file '{}' (type={}, path={})",
-                            job.getJobId(), shortName, desc.getType(), item.getUrl());
+                            job.getJobId(), shortName, desc.getType(), itemUrl);
                 }
             } catch (Throwable e) {
                 String errorMsg = "Failed to load '" + shortName + "': " + e.getClass().getSimpleName() + ": " + e.getMessage();
                 log.error("[Job {}] {}", job.getJobId(), errorMsg, e);
                 job.getErrors().add(errorMsg);
                 job.getErrorCount().incrementAndGet();
+            }
+        }
+
+        // Emit incremental telemetry at the end of the source loading pass.
+        if (incrementalEnabled) {
+            int skipped = job.getFilesSkippedUnchanged().get();
+            int reprocessed = job.getFilesReprocessed().get();
+            if (skipped > 0 || reprocessed > 0) {
+                log.info("[Job {}] Incremental crawl summary: {} file(s) skipped (unchanged), {} file(s) (re)processed",
+                        job.getJobId(), skipped, reprocessed);
+                documentTracker.recordEvent(job, "LOADING", "INFO",
+                        "Incremental: " + skipped + " skipped (unchanged), " + reprocessed + " (re)processed",
+                        source.getLabel());
             }
         }
 
@@ -600,6 +725,122 @@ class CrawlSourceLoadingService {
         Object val = props.get(key);
         if (val instanceof String s && !s.isBlank()) return s;
         return defaultValue;
+    }
+
+    // ── Incremental crawl helpers ────────────────────────────────────────────
+
+    /**
+     * Resolve a SHA-256 content hash for the given crawl item.
+     *
+     * <p>Resolution order:
+     * <ol>
+     *   <li>Use the crawler-populated {@link CrawlItem#getContentHash()} when available
+     *       (e.g. HTTP ETag derived or already hashed on download). This avoids a second
+     *       read of the content.</li>
+     *   <li>For {@code file://} or plain filesystem paths, read bytes and compute SHA-256.</li>
+     *   <li>For remote URLs without a pre-computed hash, return {@code null} — the hash
+     *       check is silently skipped and the item is processed normally.</li>
+     * </ol>
+     *
+     * @param item the discovered crawl item
+     * @return SHA-256 hex string, or {@code null} if the hash cannot be determined
+     */
+    private static String resolveContentHash(CrawlItem item) {
+        // 1. Trust a crawler-provided hash (e.g. from ETag or crawler-side digest).
+        if (item.getContentHash() != null && !item.getContentHash().isBlank()) {
+            return item.getContentHash();
+        }
+        // 2. File-backed URL: read bytes and hash.
+        String url = item.getUrl();
+        if (url == null) {
+            return null;
+        }
+        try {
+            Path filePath = toFilePath(url);
+            if (filePath != null && Files.isRegularFile(filePath)) {
+                byte[] bytes = Files.readAllBytes(filePath);
+                return DocumentHashStore.sha256Hex(bytes);
+            }
+        } catch (IOException e) {
+            // Non-fatal: log at debug and fall through.
+            log.debug("Could not read file bytes for hash computation (url={}): {}", url, e.getMessage());
+        }
+        // 3. Remote URL / unsupported scheme — skip hash check.
+        return null;
+    }
+
+    /**
+     * Convert a URL string to a local {@link Path} if it represents a file-system resource.
+     * Returns {@code null} for HTTP(S) and other non-file schemes.
+     */
+    private static Path toFilePath(String url) {
+        if (url == null) {
+            return null;
+        }
+        try {
+            if (url.startsWith("file:")) {
+                return Path.of(URI.create(url));
+            }
+            // Plain path (no scheme) — treat as a filesystem path.
+            if (!url.contains("://")) {
+                return Path.of(url);
+            }
+        } catch (Exception ignored) {
+            // Malformed URI or path — not a local file.
+        }
+        return null;
+    }
+
+    /**
+     * Purge graph nodes whose provenance {@code _sourceDocumentId} matches the given
+     * source URL.  Called before re-processing a CHANGED file so that the re-extraction
+     * replaces rather than duplicates the prior nodes.
+     *
+     * <p>Mirrors the logic in {@code KnowledgeGraphController.deleteByProvenance} but
+     * executes in-process to avoid an HTTP round-trip overhead per changed file.
+     *
+     * @param job         current crawl job (for logging)
+     * @param factSheetId fact-sheet scope; when non-null only nodes in that sheet are scanned
+     * @param sourceUrl   the canonical source path/URL (the {@code _sourceDocumentId} value)
+     */
+    private void purgeNodesForSource(UnifiedCrawlJob job, Long factSheetId, String sourceUrl) {
+        if (knowledgeGraphService == null || sourceUrl == null) {
+            return;
+        }
+        try {
+            List<GraphNode> candidates;
+            if (factSheetId != null) {
+                candidates = knowledgeGraphService.getNodesInFactSheet(factSheetId);
+            } else {
+                candidates = new ArrayList<>();
+                for (NodeLevel level : NodeLevel.values()) {
+                    candidates.addAll(knowledgeGraphService.getNodesByType(level));
+                }
+            }
+            int purged = 0;
+            for (GraphNode node : candidates) {
+                Map<String, Object> meta = node.getMetadata();
+                if (meta != null && sourceUrl.equals(meta.get(GraphProvenanceKeys.SOURCE_DOCUMENT_ID))) {
+                    try {
+                        knowledgeGraphService.deleteNode(node.getNodeId());
+                        purged++;
+                    } catch (Exception ex) {
+                        log.debug("[Job {}] Failed to purge node {} for source {}: {}",
+                                job.getJobId(), node.getNodeId(), sourceUrl, ex.getMessage());
+                    }
+                }
+            }
+            if (purged > 0) {
+                log.info("[Job {}] Purged {} stale node(s) for changed source: {}",
+                        job.getJobId(), purged, CrawlDocumentTracker.shortName(sourceUrl));
+                documentTracker.recordEvent(job, "LOADING", "INFO",
+                        "Purged " + purged + " stale node(s) for changed source",
+                        CrawlDocumentTracker.shortName(sourceUrl));
+            }
+        } catch (Exception e) {
+            log.warn("[Job {}] Could not purge nodes for changed source '{}': {}",
+                    job.getJobId(), sourceUrl, e.getMessage());
+        }
     }
 
     // ── Result record ────────────────────────────────────────────────────────

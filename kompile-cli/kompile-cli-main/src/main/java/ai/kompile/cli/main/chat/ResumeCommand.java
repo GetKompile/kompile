@@ -18,6 +18,7 @@ package ai.kompile.cli.main.chat;
 
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.tools.ResumeTool;
+import ai.kompile.cli.main.chat.tools.CrossAgentResumeCompactor;
 import picocli.CommandLine;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -276,7 +277,7 @@ public class ResumeCommand implements Callable<Integer> {
     private int resumeConversation(String sessionId, String agent) {
         try {
             // Short-circuit: if the target agent is opencode and a target session UUID
-            // is specified directly, just launch `opencode -s <uuid>` without exporting.
+            // is specified directly, just launch `opencode --session <uuid>` without exporting.
             if ("opencode".equalsIgnoreCase(agent) && targetSessionId != null && !targetSessionId.isBlank()) {
                 return resumeOpenCodeDirect(targetSessionId);
             }
@@ -359,9 +360,12 @@ public class ResumeCommand implements Callable<Integer> {
             } else {
                 System.out.println("Exporting to " + agent + " native format...");
             }
+            CrossAgentResumeCompactor.Result compaction =
+                    compactForTargetAgent(turns, agent, source, workingDirectory);
+
             ai.kompile.cli.main.chat.format.ConversationExporter.ExportResult exportResult =
                     ai.kompile.cli.main.chat.format.ConversationExporter.exportToAgent(
-                            turns, agent, targetSessionId, source, workingDirectory);
+                            compaction.turns(), agent, targetSessionId, source, workingDirectory);
 
             System.out.println();
             System.out.println("✓ Exported to " + agent + " native format");
@@ -444,9 +448,27 @@ public class ResumeCommand implements Callable<Integer> {
         }
     }
 
+    CrossAgentResumeCompactor.Result compactForTargetAgent(List<ChatHistory.Turn> turns,
+                                                           String targetAgent,
+                                                           String sourceAgent,
+                                                           Path workingDirectory) {
+        CrossAgentResumeCompactor.TargetBudget targetBudget =
+                CrossAgentResumeCompactor.targetBudget(targetAgent, sourceAgent, workingDirectory);
+        CrossAgentResumeCompactor.Result compaction =
+                CrossAgentResumeCompactor.compactToFit(turns, targetBudget);
+        if (compaction.compacted()) {
+            System.out.println(YELLOW + "Compacted transcript for target context: "
+                    + compaction.tokensBefore() + " → " + compaction.tokensAfter()
+                    + " tokens (" + compaction.summarizedTurns() + " older turns, "
+                    + compaction.stages() + " stage" + (compaction.stages() == 1 ? "" : "s")
+                    + ", model " + targetBudget.modelId() + ")" + RESET);
+        }
+        return compaction;
+    }
+
     /**
      * Directly resume an existing OpenCode session by UUID without exporting.
-     * Uses {@code opencode -s <uuid>} to attach to the session.
+     * Uses {@code opencode --session <uuid>} to attach to the session.
      */
     private int resumeOpenCodeDirect(String opencodeSessionId) {
         try {
@@ -473,7 +495,7 @@ public class ResumeCommand implements Callable<Integer> {
 
             List<String> cmd = new ArrayList<>();
             cmd.add("opencode");
-            cmd.add("-s");
+            cmd.add("--session");
             cmd.add(opencodeSessionId);
 
             System.out.println();
@@ -574,7 +596,7 @@ public class ResumeCommand implements Callable<Integer> {
         // Add permission bypass flags via centralized overrides.
         // Insert them before the resume subcommand so they are parsed as global
         // flags (e.g. `codex --dangerously-bypass-approvals-and-sandbox resume ...`).
-        // OpenCode's TUI resume (`opencode -s <id>`) does not accept
+        // OpenCode's TUI resume (`opencode --session <id>`) does not accept
         // `--dangerously-skip-permissions`; that flag is only valid for
         // `opencode run`. Skip it here so the TUI resume actually launches
         // instead of printing the help page and exiting with code 1.

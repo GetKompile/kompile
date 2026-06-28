@@ -46,13 +46,7 @@ public class LlmModelSetDownloader {
     private final Path cacheDirectory;
 
     private LlmModelSetDownloader() {
-        String envDir = System.getenv(ModelConstants.ENV_KOMPILE_MODEL_CACHE_DIR);
-        if (envDir != null && !envDir.isEmpty()) {
-            this.cacheDirectory = Paths.get(envDir);
-        } else {
-            this.cacheDirectory = Paths.get(System.getProperty("user.home"),
-                    ModelConstants.DEFAULT_KOMPILE_MODEL_CACHE_SUBDIR);
-        }
+        this.cacheDirectory = ModelConstants.resolveBaseModelCacheDir();
     }
 
     public static LlmModelSetDownloader getInstance() {

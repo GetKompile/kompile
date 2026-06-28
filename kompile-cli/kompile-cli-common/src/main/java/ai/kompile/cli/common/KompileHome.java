@@ -17,6 +17,8 @@
 package ai.kompile.cli.common;
 
 import java.io.File;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 /**
  * Central location for Kompile home directory paths.
@@ -53,6 +55,67 @@ public final class KompileHome {
         if (dataDir != null && !dataDir.isBlank()) {
             return new File(dataDir);
         }
+        return homeDirectory();
+    }
+
+    /**
+     * The name of the Kompile project manifest file placed at a project root.
+     * Mirrors {@code KompileProjectStore.MANIFEST_FILE} without requiring that
+     * module as a dependency.
+     */
+    private static final String PROJECT_MANIFEST = "kompile.project.json";
+
+    /**
+     * Resolves the effective project data-directory root using the same priority
+     * order that Spring-managed services use, but without requiring the Spring
+     * {@code Environment} or {@code KompileProjectStore}:
+     *
+     * <ol>
+     *   <li>The {@code kompile.data.dir} JVM system property, when set
+     *       (e.g. via {@code -Dkompile.data.dir=&lt;projectDir&gt;}).</li>
+     *   <li>A walk-up from the JVM's current working directory
+     *       ({@code System.getProperty("user.dir")}) looking for a
+     *       {@code kompile.project.json} manifest — the same logic as
+     *       {@code KompileProjectStore.findProjectRoot()}.  This covers the
+     *       common launch pattern where the script {@code cd}s to the project
+     *       root and passes {@code --kompile.data.dir} as a Spring CLI arg
+     *       (which is NOT bridged to a JVM system property).</li>
+     *   <li>Falls back to {@code ~/.kompile} so existing behaviour is preserved
+     *       for CLI invocations that have no project context.</li>
+     * </ol>
+     *
+     * <p>Use this in preference to {@link #resolvedHomeDirectory()} for any
+     * per-project artefact (graph hashes, snapshots, health time-series, …) that
+     * must live alongside the graph files the app already writes correctly to
+     * {@code <projectDir>/data/graph/}.</p>
+     */
+    public static File resolvedProjectDirectory() {
+        // Priority 1: explicit -D system property
+        String dataDirProp = System.getProperty("kompile.data.dir");
+        if (dataDirProp != null && !dataDirProp.isBlank()) {
+            return new File(dataDirProp);
+        }
+
+        String cwd = System.getProperty("user.dir");
+        if (cwd != null && !cwd.isBlank()) {
+            Path cwdPath = Path.of(cwd).toAbsolutePath().normalize();
+            // Priority 2: manifest walk-up from CWD (mirrors KompileProjectStore.findProjectRoot)
+            Path current = cwdPath;
+            while (current != null) {
+                if (Files.isRegularFile(current.resolve(PROJECT_MANIFEST))) {
+                    return current.toFile();
+                }
+                current = current.getParent();
+            }
+            // Priority 3: the CWD itself. Launch scripts `cd` to the project root before starting the
+            // app (see run-cpu.sh), so the CWD is the project dir even when the project has no
+            // kompile.project.json manifest yet (a built project that was never `project init`'d, like
+            // the generated fpna-v7). This keeps per-project artefacts (graph hashes, snapshots) WITH
+            // the project — and clearable alongside data/graph — instead of leaking into ~/.kompile.
+            return cwdPath.toFile();
+        }
+
+        // Priority 4: no working directory at all → ~/.kompile (legacy CLI behaviour)
         return homeDirectory();
     }
 

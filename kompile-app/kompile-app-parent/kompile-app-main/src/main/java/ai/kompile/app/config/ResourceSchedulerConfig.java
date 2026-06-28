@@ -149,6 +149,30 @@ public class ResourceSchedulerConfig {
     @JsonProperty("governorDeferredEmbeddingResumeMs")
     private long governorDeferredEmbeddingResumeMs = 60_000;
 
+    /**
+     * Hard absolute floor for host MemAvailable (Linux {@code /proc/meminfo MemAvailable}) in
+     * megabytes.  When the available RAM falls below this value, {@code admitJob} defers new
+     * work and {@code shouldThrottleHeavyMemory()} returns {@code true} — even if the fractional
+     * RAM-used threshold has not yet been breached.  This prevents OOM crashes on large-model
+     * hosts where a 92% fraction threshold may still leave only a few hundred MB free.
+     *
+     * <p>Set to 0 to disable the absolute floor (fraction-only behaviour, matching the old code).
+     * Default: 8192 MB (8 GB).</p>
+     */
+    @JsonProperty("governorRamFloorMb")
+    private long governorRamFloorMb = 8192;
+
+    /**
+     * When {@code true} (default), heavy in-memory model operations (KGE training, batch
+     * embedding, etc.) are serialized through a single-permit semaphore so at most one such op
+     * runs at a time on the host. This prevents KGE training triggered {@code @Async} after
+     * ENRICHMENT from overlapping an in-flight embedding step — the root cause of the 128 GB OOM
+     * crash.  Set to {@code false} to revert to the old concurrent behaviour (not recommended on
+     * hosts with limited RAM).
+     */
+    @JsonProperty("serializedHeavyOps")
+    private boolean serializedHeavyOps = true;
+
     /** Per-service GPU memory budgets as a fraction of the largest device's total VRAM.
      *  Used to auto-calibrate {@code GpuResourceManager} budgets to the actual hardware. */
     @JsonProperty("gpuBudgetFractions")
@@ -303,6 +327,39 @@ public class ResourceSchedulerConfig {
     /** Seconds the shared backend breaker stays open before it half-opens (auto-reset). */
     @JsonProperty("clusterBackendCooldownSeconds")
     private int clusterBackendCooldownSeconds = 60;
+
+    // --- Subprocess RSS watchdog (parent-side per-process memory limit) ---
+
+    /**
+     * Hard per-subprocess RSS ceiling in megabytes.
+     *
+     * <p>The parent-side {@code SubprocessRssWatchdog} reads each alive subprocess's
+     * {@code VmRSS} from {@code /proc/<pid>/status} on Linux and kills/restarts it
+     * when the value exceeds this limit.  Takes precedence over
+     * {@link #subprocessMaxRssFraction} when both are &gt; 0 and results in a lower
+     * effective limit.  Set to 0 to disable the absolute ceiling and use the
+     * fraction-only limit.</p>
+     *
+     * <p>Default: 0 (disabled — fraction-only).</p>
+     */
+    @JsonProperty("subprocessMaxRssMb")
+    private long subprocessMaxRssMb = 0;
+
+    /**
+     * Per-subprocess RSS fraction of total system RAM at which the watchdog
+     * kills/restarts the subprocess.
+     *
+     * <p>Computed as {@code fraction × system-total-RAM-MB}.  0 disables this
+     * check.  When both {@link #subprocessMaxRssMb} and this field are &gt; 0 the
+     * <em>lower</em> effective limit wins, providing a belt-and-suspenders cap.
+     * A single subprocess consuming &gt; 50% of system RAM is almost certainly a
+     * runaway, so the default of 0.5 is intentionally conservative.
+     * Set to 0 to rely solely on {@link #subprocessMaxRssMb}.</p>
+     *
+     * <p>Default: 0.5 (50% of system RAM).</p>
+     */
+    @JsonProperty("subprocessMaxRssFraction")
+    private double subprocessMaxRssFraction = 0.5;
 
     // --- Computed / non-trivial methods ---
 

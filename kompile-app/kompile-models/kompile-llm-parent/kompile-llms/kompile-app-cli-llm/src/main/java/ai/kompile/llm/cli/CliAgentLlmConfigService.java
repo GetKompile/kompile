@@ -18,6 +18,7 @@ package ai.kompile.llm.cli;
 
 import ai.kompile.core.agent.AgentProvider;
 import ai.kompile.core.agent.CliAgentRegistry;
+import ai.kompile.cli.common.KompileHome;
 import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -235,7 +236,9 @@ public class CliAgentLlmConfigService {
     // ═══════════════════════════════════════════════════════════════════════════
 
     private Path getConfigDir() {
-        return Path.of(System.getProperty("user.home"), ".kompile", "config");
+        // Per-project: honour -Dkompile.data.dir (set by the app/start scripts) via KompileHome,
+        // falling back to the global ~/.kompile/config when no project context is present.
+        return KompileHome.configDirectory().toPath();
     }
 
     private Path getConfigPath() {

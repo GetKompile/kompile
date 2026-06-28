@@ -390,6 +390,19 @@ public class BayesianNetworkService {
         return mTheory.getStatistics();
     }
 
+    /**
+     * Build the MEBN {@link MTheory} (fragment structure — typed variables, roles, context
+     * constraints, parent→child edges with learned strengths) without running inference.
+     * Used by the "MEBN theory structure" UI to surface each fragment's rich relationships.
+     */
+    public MTheory buildMebnTheory(Collection<String> seedNodeIds, int maxDepth, int maxNodes) {
+        return new KgMTheoryBuilder(graphService)
+                .maxDepth(maxDepth)
+                .maxNodes(maxNodes)
+                .withEmpiricalPriors(empiricalPriors)
+                .build(seedNodeIds);
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // SENSITIVITY ANALYSIS & WHAT-IF
     // ═══════════════════════════════════════════════════════════════════════════

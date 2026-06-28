@@ -20,10 +20,8 @@ import ai.kompile.codeindexer.domain.CodeEntity;
 import ai.kompile.codeindexer.domain.CodeEntityRepository;
 import ai.kompile.codeindexer.domain.IndexedDirectory;
 import ai.kompile.knowledgegraph.domain.EdgeType;
-import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
-import ai.kompile.knowledgegraph.repository.GraphEdgeRepository;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -58,17 +56,14 @@ public class GitHistoryGraphBuilder {
 
     private final CodeEntityRepository entityRepository;
     private final KnowledgeGraphService knowledgeGraphService;
-    private final GraphEdgeRepository edgeRepository;
     private final CodebaseIndexer codebaseIndexer;
 
     @Autowired
     public GitHistoryGraphBuilder(CodeEntityRepository entityRepository,
                                   @Autowired(required = false) KnowledgeGraphService knowledgeGraphService,
-                                  @Autowired(required = false) GraphEdgeRepository edgeRepository,
                                   CodebaseIndexer codebaseIndexer) {
         this.entityRepository = entityRepository;
         this.knowledgeGraphService = knowledgeGraphService;
-        this.edgeRepository = edgeRepository;
         this.codebaseIndexer = codebaseIndexer;
     }
 
@@ -80,8 +75,8 @@ public class GitHistoryGraphBuilder {
      * @return Result map with counts of nodes and edges created
      */
     public Map<String, Object> buildGitHistory(String projectId, int maxCommits) {
-        if (knowledgeGraphService == null || edgeRepository == null) {
-            log.debug("KnowledgeGraphService or EdgeRepository not available; skipping git history");
+        if (knowledgeGraphService == null) {
+            log.debug("KnowledgeGraphService not available; skipping git history");
             return Map.of("skipped", true, "reason", "Knowledge graph not available");
         }
 
@@ -333,17 +328,13 @@ public class GitHistoryGraphBuilder {
             if (knowledgeGraphService.edgeExists(sourceNodeId, targetNodeId)) {
                 return 0;
             }
-
-            GraphEdge edge = knowledgeGraphService.createEdge(
-                    sourceNodeId, targetNodeId,
-                    EdgeType.TEMPORAL, 1.0, description);
-
-            // Set the temporal timestamp
-            if (edge != null && occurredAt != null) {
-                edge.setOccurredAt(occurredAt);
-                edgeRepository.save(edge);
-            }
-
+            // Embed the timestamp in the description so it travels with the edge
+            // on the matrix/vector store (which has no separate occurredAt column).
+            String descWithTime = occurredAt != null
+                    ? description + " [at=" + occurredAt + "]"
+                    : description;
+            knowledgeGraphService.createEdge(sourceNodeId, targetNodeId,
+                    EdgeType.TEMPORAL, 1.0, descWithTime);
             return 1;
         } catch (Exception e) {
             log.warn("Failed to create temporal edge {} -> {}: {}",

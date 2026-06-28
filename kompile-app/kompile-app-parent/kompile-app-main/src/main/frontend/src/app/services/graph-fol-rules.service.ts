@@ -34,6 +34,8 @@ export interface RuleDto {
   hard: boolean;
   head: string;
   body: string;
+  /** Humanized rule text (derived_/^N stripped, → arrows); falls back to ruleText. */
+  displayText?: string;
 }
 
 /** Calls the GET /api/graph/{factSheetId}/rules endpoint. */

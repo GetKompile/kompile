@@ -18,6 +18,7 @@ package ai.kompile.knowledgegraph.reasoning;
 import ai.kompile.core.graphrag.conformance.OntologyAxiom;
 import ai.kompile.core.graphrag.conformance.OwlDerivedRuleProvider;
 import ai.kompile.core.graphrag.conformance.OntologyProjectionProvider;
+import ai.kompile.core.reasoning.ReasoningLearningExecutor;
 import ai.kompile.graph.reasoning.confidence.StrengthBand;
 import ai.kompile.graph.reasoning.fol.EntailmentEngine;
 import ai.kompile.graph.reasoning.fol.EntailmentRecord;
@@ -25,9 +26,11 @@ import ai.kompile.graph.reasoning.fol.Fact;
 import ai.kompile.graph.reasoning.fol.FactStore;
 import ai.kompile.graph.reasoning.fol.InferredFact;
 import ai.kompile.graph.reasoning.fol.InferredFactStore;
+import ai.kompile.graph.reasoning.fol.MebnInferenceService;
 import ai.kompile.graph.reasoning.learning.HybridConsensusTrainer;
 import ai.kompile.graph.reasoning.learning.MebnWeightLearner;
 import ai.kompile.graph.reasoning.learning.PslWeightLearningService;
+import ai.kompile.graph.reasoning.learning.SameDiffMebnStrengthLearner;
 import ai.kompile.graph.reasoning.learning.StructuredPerceptronLearner;
 import ai.kompile.knowledgegraph.confidence.KbConfig;
 import ai.kompile.knowledgegraph.confidence.KbConfigManager;
@@ -51,6 +54,7 @@ import ai.kompile.knowledgegraph.grounding.KbCorrectionService;
 import ai.kompile.knowledgegraph.grounding.KbGroundingService;
 import ai.kompile.knowledgegraph.persistence.FileBackedWeightStore;
 import ai.kompile.knowledgegraph.persistence.MebnWeightPersistenceAdapter;
+import ai.kompile.knowledgegraph.persistence.TrainingCheckpointStore;
 import ai.kompile.knowledgegraph.persistence.dual.DualStoreGroundingFactory;
 import ai.kompile.knowledgegraph.staging.ModelTrainedEvent;
 import lombok.extern.slf4j.Slf4j;
@@ -64,9 +68,11 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -244,6 +250,19 @@ public class IncrementalReasoningOrchestrator {
     private final DualStoreGroundingFactory dualStoreFactory;
 
     /**
+     * Optional training checkpoint store — persists per-factSheet cascade position
+     * (cascades completed, PSL weight version, MEBN backup ID) so a timed-out or
+     * killed DERIVATION can resume from the last successful warm-start step rather
+     * than cold-starting from the prior weights.
+     *
+     * <p>Null in plain-Java test contexts (no checkpoint written/read, behaviour unchanged).
+     * Spring-injected in production via field injection to preserve all existing constructors.</p>
+     */
+    @Nullable
+    @Autowired(required = false)
+    TrainingCheckpointStore trainingCheckpointStore;
+
+    /**
      * Build the PSL weight learner from the managed {@link KbConfig}. ALL learner parameters
      * (learning rate, tolerance, batch size, seed, max epochs) and the MAP prior
      * (weightPriorStrength lambda + weightPriorMean) come from config — no hard-coded learner
@@ -318,6 +337,17 @@ public class IncrementalReasoningOrchestrator {
      * Reused across cascades.
      */
     private final MebnWeightLearner mebnWeightLearner = new MebnWeightLearner();
+
+    /**
+     * Optional out-of-process reasoning learning executor (PSL + MEBN).
+     * When non-null (app-main context with {@code kompile.learning.subprocess.enabled=true}),
+     * {@link #doReground} offloads the weight-learning steps to the managed learning subprocess,
+     * bounding SameDiff native memory growth in the main JVM. Null in plain-Java test contexts
+     * and when the subprocess is disabled.
+     */
+    @Nullable
+    @Autowired(required = false)
+    private ReasoningLearningExecutor reasoningLearningExecutor;
 
     /**
      * How many cascades between MEBN weight-learning runs.
@@ -452,6 +482,50 @@ public class IncrementalReasoningOrchestrator {
         }
     }
 
+    // ─── Training checkpoint query API ───────────────────────────────────────────
+
+    /**
+     * Load the persisted training checkpoint for {@code factSheetId}, if any.
+     *
+     * <p>Returns {@link Optional#empty()} when no checkpoint exists (cold-start) or when
+     * the checkpoint store is not wired (plain-Java test contexts).</p>
+     *
+     * @param factSheetId the fact sheet to query
+     * @return the most-recent durable training checkpoint, or empty
+     */
+    public Optional<TrainingCheckpointStore.TrainingCheckpoint> trainingCheckpoint(long factSheetId) {
+        if (trainingCheckpointStore == null) return Optional.empty();
+        return trainingCheckpointStore.load(factSheetId);
+    }
+
+    /**
+     * Return the current in-memory cascade count for {@code factSheetId}, or {@code 0} if
+     * no cascades have run in this JVM session (the durable checkpoint may still have a
+     * non-zero value — call {@link #trainingCheckpoint(long)} for the persisted position).
+     */
+    public long currentCascadeCount(long factSheetId) {
+        AtomicLong counter = cascadeCounters.get(factSheetId);
+        return counter != null ? counter.get() : 0L;
+    }
+
+    /**
+     * Delete the durable training checkpoint for {@code factSheetId} and reset the in-memory
+     * cascade counter to 0, forcing a cold-start on the next DERIVATION run.
+     *
+     * <p>Called by the REST layer when the user explicitly requests a training-position reset
+     * (e.g. via {@code DELETE /api/kb/weights/training-checkpoint/{factSheetId}}). This is the
+     * lightweight alternative to {@link ai.kompile.knowledgegraph.persistence.WeightSessionService#startNewSession}:
+     * it clears the position without touching the weight files themselves.</p>
+     */
+    public void clearTrainingCheckpoint(long factSheetId) {
+        if (trainingCheckpointStore != null) {
+            trainingCheckpointStore.clear(factSheetId);
+        }
+        cascadeCounters.remove(factSheetId);
+        log.info("[IncrementalReasoningOrchestrator] Training checkpoint cleared for factSheet={}; "
+                + "next DERIVATION will cold-start", factSheetId);
+    }
+
     // ─── MEBN registration API ────────────────────────────────────────────────────
 
     /**
@@ -523,7 +597,7 @@ public class IncrementalReasoningOrchestrator {
         if (graphProjector != null) {
             try {
                 int projected = graphProjector.project(factSheetId);
-                log.debug("Grounding cascade for factSheet={}: projected {} graph atoms into FactStore",
+                log.info("Grounding cascade for factSheet={}: projected {} graph atoms into FactStore",
                         factSheetId, projected);
                 Map<String, Object> projData = new java.util.LinkedHashMap<>();
                 projData.put("atomsProjected", projected);
@@ -545,13 +619,16 @@ public class IncrementalReasoningOrchestrator {
         }
 
         if (factStore.isEmpty()) {
-            log.debug("Grounding cascade for factSheet={}: FactStore is empty — skipping MAP solve",
-                    factSheetId);
+            log.info("Grounding cascade for factSheet={}: FactStore is EMPTY after projection — "
+                    + "skipping MAP solve (check graphProjector null={} and graph nodes/edges)",
+                    factSheetId, graphProjector == null);
             publishProgress(factSheetId, runId, trigger,
                     GroundingProgressEvent.STAGE_COMPLETE, GroundingProgressEvent.STATUS_DONE,
                     "FactStore empty — cascade skipped", TOTAL_CASCADE_STEPS - 1, null);
             return RegroundResult.empty();
         }
+        log.info("Grounding cascade for factSheet={}: FactStore has {} atoms; building PSL program",
+                factSheetId, factStore.size());
 
         // ── STEP 2+3: Build PSL program from the observed FactStore ──────────────────
         publishProgress(factSheetId, runId, trigger,
@@ -565,11 +642,33 @@ public class IncrementalReasoningOrchestrator {
         // rule seam described in design spec §7 (P0 build plan item 4).
         loadProjectPslRules(program);
 
+        // Diagnose all-1.0 programs: when every observed atom is at value 1.0 the MAP
+        // solve will also produce targets at 1.0, making loss=0 and versionsWritten=0
+        // on re-runs a certainty. Surface this early so operators don't have to dig.
+        long allOneCount = factStore.allFacts().stream()
+                .filter(f -> f.value() >= 1.0 - VERSION_EPSILON).count();
+        long softFactCount = factStore.allFacts().stream()
+                .filter(f -> f.value() < 1.0 - VERSION_EPSILON).count();
+        if (softFactCount == 0 && !factStore.isEmpty()) {
+            log.info("Grounding cascade factSheet={}: PSL program built — ALL {} observed atoms are "
+                    + "hard-observed (value=1.0, 0 soft). MAP solve will derive targets at 1.0; "
+                    + "PSL loss will be 0.0; weight updates will be zero. "
+                    + "This is a data-coverage gap: edges need confidence < 1.0 to produce "
+                    + "non-trivial inference (see GraphToFactStoreProjector edge confidence path).",
+                    factSheetId, allOneCount);
+        } else if (softFactCount > 0) {
+            log.info("Grounding cascade factSheet={}: PSL program built — hard={} soft={} atoms; "
+                    + "mixed-truth input will produce non-trivial MAP posteriors.",
+                    factSheetId, allOneCount, softFactCount);
+        }
         Map<String, Object> pbData = new java.util.LinkedHashMap<>();
         pbData.put("rulesCount", program.rules().size());
+        pbData.put("observedHard", allOneCount);
+        pbData.put("observedSoft", softFactCount);
         publishProgress(factSheetId, runId, trigger,
                 GroundingProgressEvent.STAGE_PROGRAM_BUILD, GroundingProgressEvent.STATUS_DONE,
-                "PSL program built: " + program.rules().size() + " rule(s)", 1, pbData);
+                "PSL program built: " + program.rules().size() + " rule(s), hard="
+                        + allOneCount + " soft=" + softFactCount, 1, pbData);
 
         // ── STEP 3b-ont (Phase 3): Inject ontology axiom → PSL rules ─────────────────
         // When a bound ontology is present, compile its DOMAIN/RANGE axioms into soft PSL
@@ -606,7 +705,10 @@ public class IncrementalReasoningOrchestrator {
         int reloadedWeights = 0;
         if (kbCfg().isLearningEnabled() && cascadeWeightStore != null && !program.rules().isEmpty()) {
             try {
-                String programKey = factSheetId + "-cascade";
+                // IMPORTANT: programKey MUST match the key used in STEP 5b's save() call below.
+                // Prior bug: this was factSheetId + "-cascade" (dash) while STEP 5b saved with
+                // factSheetId + ":cascade" (colon) → reload always missed. Fixed to use colon.
+                String programKey = factSheetId + ":cascade";
                 Optional<Map<String, Double>> persistedWeights = cascadeWeightStore.latest(programKey);
                 if (persistedWeights.isPresent()) {
                     program = PslWeightLearningService.applyWeights(program, persistedWeights.get());
@@ -627,8 +729,8 @@ public class IncrementalReasoningOrchestrator {
                 "Weight reload: " + reloadedWeights + " weight(s) applied", 3, wrData);
 
         if (program.targetKeys().isEmpty()) {
-            log.debug("Grounding cascade for factSheet={}: no target atoms in program — skipping",
-                    factSheetId);
+            log.info("Grounding cascade for factSheet={}: PSL program has {} rules but no target atoms — skipping MAP solve",
+                    factSheetId, program.rules().size());
             publishProgress(factSheetId, runId, trigger,
                     GroundingProgressEvent.STAGE_COMPLETE, GroundingProgressEvent.STATUS_DONE,
                     "No target atoms — cascade skipped", TOTAL_CASCADE_STEPS - 1, null);
@@ -678,6 +780,19 @@ public class IncrementalReasoningOrchestrator {
                 .collect(Collectors.toCollection(HashSet::new));
         Set<String> newAtomKeys = new HashSet<>();
 
+        // ── BATCHED MATERIALIZATION ────────────────────────────────────────────────
+        // Collect all new InferredFact objects first, then bulk-persist via storeAll().
+        // This replaces 48k individual repo.save() calls (~400-600ms each) with a single
+        // JPA saveAll() call (~seconds total), eliminating the multi-hour materialization
+        // bottleneck.  Audit events and promotion tracking run on the collected list after
+        // the bulk write completes (cheap in-memory operations, no DB per-record cost).
+        //
+        // Interrupt-safety: storeAll() clears the interrupt flag before I/O and re-sets it
+        // on exit, so a future.cancel(true) from GraphHydrationOrchestrator does not close
+        // the shared DB connection mid-batch.
+        record FactWithContext(InferredFact fact, double vBefore, double cBefore) {}
+        java.util.List<FactWithContext> toWrite = new java.util.ArrayList<>();
+
         for (EntailmentRecord record : records) {
             String atomKey = record.groundedRvOrAtomKey();
             double newValue = record.posterior();
@@ -712,35 +827,111 @@ public class IncrementalReasoningOrchestrator {
                     nextVersion,
                     record.computedAt()
             );
-            inferredStore.store(newFact);
-            versionsWritten++;
+            toWrite.add(new FactWithContext(newFact, vBefore, cBefore));
+        }
 
-            // Emit DERIVED audit event after each successful store
-            if (correctionService != null) {
-                correctionService.appendDerivedAuditEvent(
-                        factSheetId, atomKey, vBefore, newValue, cBefore, newValue, runId);
-            }
+        // Bulk persist — single DB round-trip regardless of batch size
+        if (!toWrite.isEmpty()) {
+            java.util.List<InferredFact> bulkFacts = toWrite.stream()
+                    .map(FactWithContext::fact)
+                    .collect(Collectors.toList());
+            // storeAll() handles interrupt-safety internally
+            inferredStore.storeAll(bulkFacts);
+            versionsWritten = bulkFacts.size();
+            log.info("Grounding cascade factSheet={}: bulk-persisted {} InferredFact(s)", factSheetId, versionsWritten);
 
-            // STEP 5c: Fact promotion tracking (6-arg Beta-evidence path)
-            // The 6-arg overload accumulates sourceTrust into evidencePos so that repeated
-            // PSL-inference corroborations climb bands over time (A2 fix — slow-climb).
-            // Source trust for PSL-inferred facts: resolved from SourceTrustResolver
-            // ("PSL_INFERENCE" falls to the default branch → getTrustDefault() = 0.50).
-            // Falls back to KbConfig.getTrustDefault() when no resolver is wired (tests).
-            if (promotionTracker != null) {
-                double sourceTrust = sourceTrustResolver != null
-                        ? sourceTrustResolver.trustFor("PSL_INFERENCE")
-                        : kbCfg().getTrustDefault();
-                promotionTracker.checkPromotion(factSheetId, atomKey, vBefore, newValue, runId, sourceTrust);
+            // Post-write: audit events + promotion tracking (cheap, run after DB write)
+            for (FactWithContext fwc : toWrite) {
+                // Emit DERIVED audit event
+                if (correctionService != null) {
+                    correctionService.appendDerivedAuditEvent(
+                            factSheetId, fwc.fact().atomKey(),
+                            fwc.vBefore(), fwc.fact().value(),
+                            fwc.cBefore(), fwc.fact().value(), runId);
+                }
+
+                // STEP 5c: Fact promotion tracking (6-arg Beta-evidence path)
+                // The 6-arg overload accumulates sourceTrust into evidencePos so that repeated
+                // PSL-inference corroborations climb bands over time (A2 fix — slow-climb).
+                if (promotionTracker != null) {
+                    double sourceTrust = sourceTrustResolver != null
+                            ? sourceTrustResolver.trustFor("PSL_INFERENCE")
+                            : kbCfg().getTrustDefault();
+                    promotionTracker.checkPromotion(factSheetId, fwc.fact().atomKey(),
+                            fwc.vBefore(), fwc.fact().value(), runId, sourceTrust);
+                }
             }
+        }
+
+        // ── TRANSPARENT ZERO DIAGNOSTIC ───────────────────────────────────────────────
+        // When 0 versions are written despite the MAP solve producing records, explain why.
+        // This makes "derived=0" self-diagnosing rather than silently opaque.
+        if (versionsWritten == 0 && !records.isEmpty()) {
+            // Compute how many were skipped by fixed-point epsilon vs. pinned
+            int stableCount = 0;
+            int pinnedCount = 0;
+            int firstNewCount = 0;
+            for (EntailmentRecord record : records) {
+                String atomKey = record.groundedRvOrAtomKey();
+                if (pinGuard != null && pinGuard.isPinned(factSheetId, atomKey)) {
+                    pinnedCount++;
+                } else {
+                    Optional<InferredFact> existing = inferredStore.latest(atomKey);
+                    if (existing.isPresent()
+                            && Math.abs(existing.get().value() - record.posterior()) < VERSION_EPSILON) {
+                        stableCount++;
+                    } else {
+                        firstNewCount++;
+                    }
+                }
+            }
+            // Compute value distribution to diagnose whether everything is at 1.0
+            long atOne = records.stream().filter(r -> r.posterior() >= 1.0 - VERSION_EPSILON).count();
+            long atZero = records.stream().filter(r -> r.posterior() <= VERSION_EPSILON).count();
+            int previousStoreSize = previousAtomKeys.size();
+
+            String zeroDiag;
+            if (stableCount == records.size()) {
+                zeroDiag = "All " + records.size() + " records are STABLE (fixed-point: stored values unchanged "
+                        + "within ε=" + VERSION_EPSILON + "). "
+                        + "Distribution: at-1.0=" + atOne + " at-0.0=" + atZero
+                        + " storeSize=" + previousStoreSize + ". "
+                        + "This is expected on re-crawls of an unchanged graph — prior cascade(s) already "
+                        + "wrote these facts. Weights or graph edits are needed to produce new versions.";
+            } else if (firstNewCount == 0 && pinnedCount > 0) {
+                zeroDiag = "All " + records.size() + " records skipped: " + pinnedCount
+                        + " pinned by human corrections (PinGuard), " + stableCount
+                        + " stable (fixed-point). No derivable updates remain.";
+            } else {
+                zeroDiag = "0 versions written from " + records.size() + " records: "
+                        + "stable=" + stableCount + " pinned=" + pinnedCount
+                        + " unexpectedly-skipped=" + firstNewCount
+                        + " (check VERSION_EPSILON=" + VERSION_EPSILON + ")";
+            }
+            log.info("Grounding cascade factSheet={}: ZERO derived — {}", factSheetId, zeroDiag);
+            publishProgress(factSheetId, runId, trigger,
+                    GroundingProgressEvent.STAGE_MATERIALIZE, GroundingProgressEvent.STATUS_DONE,
+                    "ZERO derived — " + zeroDiag, 5, null);
+        } else if (versionsWritten == 0 && records.isEmpty()) {
+            String noDerivedDiag = "EntailmentEngine produced 0 records from MAP solve. "
+                    + "Possible causes: (1) no target atoms in PSL program (check buildProgramFromFactStore "
+                    + "added derived_X targets), (2) MAP solve returned empty values (check solver logs), "
+                    + "(3) factStore was empty (atomsProjected=0 means graph was not projected).";
+            log.info("Grounding cascade factSheet={}: ZERO derived — {}", factSheetId, noDerivedDiag);
+            publishProgress(factSheetId, runId, trigger,
+                    GroundingProgressEvent.STAGE_MATERIALIZE, GroundingProgressEvent.STATUS_DONE,
+                    "ZERO derived — " + noDerivedDiag, 5, null);
         }
 
         Map<String, Object> matData = new java.util.LinkedHashMap<>();
         matData.put("factsMaterialized", versionsWritten);
         matData.put("recordsProduced", records.size());
+        matData.put("storeSize", previousAtomKeys.size());
+        matData.put("stableFixedPoint", versionsWritten == 0 && !records.isEmpty());
         publishProgress(factSheetId, runId, trigger,
                 GroundingProgressEvent.STAGE_MATERIALIZE, GroundingProgressEvent.STATUS_DONE,
-                "Materialized " + versionsWritten + " fact version(s) (" + records.size() + " records)", 5, matData);
+                "Materialized " + versionsWritten + " fact version(s) (" + records.size() + " records, storeSize="
+                        + previousAtomKeys.size() + ")", 5, matData);
 
         // ── STEP 5c PROMOTION progress event ─────────────────────────────────────────
         // Collect band counts from promotionTracker (if available) and emit PROMOTION event.
@@ -778,9 +969,28 @@ public class IncrementalReasoningOrchestrator {
         // that structural importance. PSL and MEBN then both train against this SINGLE consensus —
         // simultaneous online co-training of every structural parameter, not three disconnected learners
         // on three re-derived target sets. (Embeddings are refreshed by the separate offline KGE job.)
-        long cascadeCount = cascadeCounters
-                .computeIfAbsent(factSheetId, id -> new AtomicLong(0L))
-                .incrementAndGet();
+        //
+        // ── RESUME: seed cascade counter from durable checkpoint on first JVM encounter ──────────────
+        // When trainingCheckpointStore is wired and this is the first time this JVM has seen
+        // factSheetId (counter not yet in cascadeCounters), load the persisted cascadesCompleted
+        // so the in-memory counter continues from where the prior run left off rather than
+        // restarting from 0.  This means the cascadeCount increment below yields
+        // (checkpoint.cascadesCompleted + 1) on the first cascade after a resume, correctly
+        // advancing the in-memory position without repeating already-completed steps.
+        cascadeCounters.computeIfAbsent(factSheetId, id -> {
+            if (trainingCheckpointStore != null) {
+                return trainingCheckpointStore.load(factSheetId)
+                        .map(cp -> {
+                            log.info("[Grounding cascade factSheet={}] Resuming training from checkpoint: " +
+                                    "cascadesCompleted={}, pslVer={}, mebnBackup={}",
+                                    factSheetId, cp.cascadesCompleted(), cp.pslWeightVersion(), cp.mebnBackupId());
+                            return new AtomicLong(cp.cascadesCompleted());
+                        })
+                        .orElse(new AtomicLong(0L));
+            }
+            return new AtomicLong(0L);
+        });
+        long cascadeCount = cascadeCounters.get(factSheetId).incrementAndGet();
         Map<String, Double> observedTargets = buildObservedTargets(factStore);
         Map<String, Double> consensusTargets = kbCfg().isLearningEnabled()
                 ? deriveHybridConsensus(result.values(), observedTargets)
@@ -804,34 +1014,130 @@ public class IncrementalReasoningOrchestrator {
         // persisted weights; 1 step keeps wall-time overhead below 10 ms for typical fact
         // sheets of ≤5000 atoms).
         // Uses cascadeWeightStore resolved above (DualStore preferred; falls back to file-backed).
+        //
+        // ── SUBPROCESS ROUTING: when the ReasoningLearningExecutor is wired (app-main with
+        // kompile.learning.subprocess.enabled=true), the compute-heavy weight-learning step is
+        // offloaded to the managed learning subprocess (same JVM as KGE training) so that the
+        // main app is not burdened. The in-JVM path is the unchanged fallback.
+        //
+        // ── RESUME CHECKPOINT: track the PSL weight version and MEBN backup ID so we can
+        // durably record the training position after each successful cascade for restart-safety.
+        int checkpointPslVersion = 0;          // updated after a successful PSL save
+        String checkpointMebnBackupId = null;  // updated after a successful MEBN persist
         final PslProgram programForSnapshot;
         if (kbCfg().isLearningEnabled() && cascadeWeightStore != null && !program.rules().isEmpty()
                 && !result.values().isEmpty()) {
-            // PSL_LEARNING STARTED fires at the actual weight-training step, NOT before re-ground
-            // (fixing the prior label-timing bug in GraphHydrationOrchestrator.STAGE_WEIGHT_LEARNING).
             publishProgress(factSheetId, runId, trigger,
                     GroundingProgressEvent.STAGE_PSL_LEARNING, GroundingProgressEvent.STATUS_STARTED,
                     "PSL weight learning: 1 mini-batch gradient step", 7, null);
             PslProgram trainedProgram = program;
             try {
-                // Co-train on the hybrid-ranked consensus (observed facts pulled toward the hybrid
-                // reasoner's ranking). Training on MAP posteriors alone is self-training (gradient
-                // dist(innerMAP)-dist(outerMAP) ≈ 0); the consensus moves rule weights toward
-                // explaining both the extracted data and the hybrid structural+semantic ranking.
                 Map<String, Double> softTargets = consensusTargets;
-                // Fall back to MAP posteriors only when the consensus / fact store is empty
                 if (softTargets.isEmpty()) {
                     softTargets = new HashMap<>(result.values());
                 }
-                // Compute per-rule prior means from the band of supporting atoms so that
-                // established rules are not shrunk toward the same small mean as speculative ones.
-                double[] perRuleMeans = computePerRulePriorMeans(program, factStore);
-                // 1 update step: cheap warm-start accumulation, no convergence risk
-                trainedProgram = pslWeightLearner(perRuleMeans).updateOnBatch(program, softTargets, 1);
 
-                // ── REAL weight-delta computation (closes WEIGHT_DELTA_UNAVAILABLE gap) ──────────
-                // The orchestrator has BOTH programs (before=program, after=trainedProgram) so we
-                // can compute per-rule weight deltas directly — no learner API change needed.
+                String programKey = factSheetId + ":cascade";
+
+                // ── SUBPROCESS PATH ──────────────────────────────────────────────────────────
+                // When the learning subprocess is enabled, export the program to the subprocess
+                // which runs StructuredPerceptronLearner and writes the weights to the store.
+                // The main JVM then reads back the new weights and applies them in-memory.
+                // Falls through to the in-JVM path on subprocess failure (non-fatal).
+                boolean ranInSubprocess = false;
+                if (reasoningLearningExecutor != null && fileBackedWeightStore != null) {
+                    try {
+                        // Serialize the PSL program as rule texts + atom declarations.
+                        List<String> ruleTexts = new ArrayList<>(program.rules().size());
+                        for (PslRule r : program.rules()) {
+                            ruleTexts.add(r.toString());
+                        }
+                        Map<String, Double> observedAtomMap = new LinkedHashMap<>();
+                        for (String key : program.observedKeys()) {
+                            observedAtomMap.put(key, program.value(key));
+                        }
+                        List<String> targetAtomList = new ArrayList<>(program.targetKeys());
+
+                        // The weight store base directory for the subprocess to write into.
+                        String weightStoreDirPath = fileBackedWeightStore
+                                .fileWeightStoreFor(String.valueOf(factSheetId))
+                                .baseDir()
+                                .toString();
+
+                        // Per-iteration crawl UI callback: update the LEARNING step with PSL progress.
+                        final String pslCrawlJobId = runId; // use runId as job key for cascade events
+                        ReasoningLearningExecutor.ProgressCallback pslCallback =
+                                (cJobId, epoch, totalEpochs, loss) -> {
+                                    publishProgress(factSheetId, runId, trigger,
+                                            GroundingProgressEvent.STAGE_PSL_LEARNING,
+                                            GroundingProgressEvent.STATUS_RUNNING,
+                                            "PSL iteration " + epoch + "/" + totalEpochs
+                                                    + " loss=" + String.format("%.4f", loss),
+                                            7, null);
+                                };
+
+                        log.info("Grounding cascade factSheet={}: routing PSL weight learning to subprocess",
+                                factSheetId);
+                        ReasoningLearningExecutor.LearningResult pslResult =
+                                reasoningLearningExecutor.runPslLearning(
+                                        pslCrawlJobId, factSheetId,
+                                        ruleTexts, observedAtomMap, targetAtomList, softTargets,
+                                        programKey, weightStoreDirPath,
+                                        1, kbCfg().getPslLearningRate(),
+                                        pslCallback);
+
+                        if (pslResult.success()) {
+                            // Reload the weights the subprocess just wrote and apply in-memory.
+                            Optional<Map<String, Double>> updatedWeights =
+                                    cascadeWeightStore.latest(programKey);
+                            if (updatedWeights.isPresent()) {
+                                trainedProgram = PslWeightLearningService.applyWeights(
+                                        program, updatedWeights.get());
+                            }
+                            checkpointPslVersion = cascadeWeightStore.latestVersion(programKey);
+                            ranInSubprocess = true;
+                            // Transparent loss=0 diagnosis: when loss is exactly 0.0, this means
+                            // MAP posteriors match the consensus targets perfectly — most often because
+                            // ALL facts were projected as hard-observed (value=1.0), the MAP solve
+                            // pushes derived_X atoms to 1.0, and the consensus is also 1.0.
+                            // The learner gradient is zero so weights are not updated.
+                            // This is NOT a learner bug but a data signal: the graph needs edges
+                            // with confidence < 1.0 for the gradient to be non-zero.
+                            if (pslResult.finalLoss() == 0.0) {
+                                log.info("Grounding cascade factSheet={}: PSL subprocess done (loss=0.0). "
+                                        + "Zero loss indicates MAP posteriors == consensus targets "
+                                        + "(likely all-1.0 hard facts). PSL weights unchanged. "
+                                        + "No action needed — this is the correct fixed-point for a "
+                                        + "fully-certain graph. Weights will update when soft-truth edges appear.",
+                                        factSheetId);
+                            } else {
+                                log.info("Grounding cascade factSheet={}: PSL subprocess done (loss={})",
+                                        factSheetId, pslResult.finalLoss());
+                            }
+                        } else {
+                            log.warn("Grounding cascade factSheet={}: PSL subprocess failed ({}), "
+                                    + "falling through to in-JVM path",
+                                    factSheetId, pslResult.errorMessage());
+                        }
+                    } catch (Exception subEx) {
+                        log.warn("Grounding cascade factSheet={}: PSL subprocess error ({}), "
+                                + "falling through to in-JVM path",
+                                factSheetId, subEx.getMessage());
+                    }
+                }
+
+                // ── IN-JVM PATH (fallback or when subprocess is absent) ──────────────────────
+                if (!ranInSubprocess) {
+                    double[] perRuleMeans = computePerRulePriorMeans(program, factStore);
+                    trainedProgram = pslWeightLearner(perRuleMeans).updateOnBatch(program, softTargets, 1);
+                    int savedVersion = cascadeWeightStore.save(programKey, trainedProgram.rules());
+                    checkpointPslVersion = savedVersion;
+                    log.info("Grounding cascade factSheet={}: PSL in-JVM weight training done "
+                            + "({} rules persisted, v{})",
+                            factSheetId, trainedProgram.rules().size(), savedVersion);
+                }
+
+                // ── REAL weight-delta computation (applies to both paths) ─────────────────────
                 int rulesUpdated = 0;
                 double sumDelta = 0.0;
                 double maxDelta = 0.0;
@@ -850,42 +1156,33 @@ public class IncrementalReasoningOrchestrator {
                 }
                 double meanDelta = (rulesUpdated > 0) ? sumDelta / rulesUpdated : 0.0;
 
-                // Persist the updated weights via whichever store was resolved above
-                String programKey = factSheetId + ":cascade";
-                int savedVersion = cascadeWeightStore.save(programKey, trainedProgram.rules());
-                log.debug("Grounding cascade factSheet={}: PSL weight training done ({} rules persisted, v{})",
-                        factSheetId, trainedProgram.rules().size(), savedVersion);
-
-                // Emit PSL_LEARNING DONE with real weight delta metrics
-                Map<String, Object> pslData = new java.util.LinkedHashMap<>();
+                Map<String, Object> pslData = new LinkedHashMap<>();
                 pslData.put("rulesUpdated", rulesUpdated);
                 pslData.put("meanWeightDelta", meanDelta);
                 pslData.put("maxWeightDelta", maxDelta);
-                pslData.put("savedVersion", savedVersion);
+                pslData.put("savedVersion", checkpointPslVersion);
+                pslData.put("subprocess", ranInSubprocess);
                 publishProgress(factSheetId, runId, trigger,
                         GroundingProgressEvent.STAGE_PSL_LEARNING, GroundingProgressEvent.STATUS_DONE,
                         "PSL weight update: " + rulesUpdated + " rule(s) changed (meanΔ="
-                                + String.format("%.4f", meanDelta) + " maxΔ=" + String.format("%.4f", maxDelta) + ")",
+                                + String.format("%.4f", meanDelta) + " maxΔ=" + String.format("%.4f", maxDelta)
+                                + (ranInSubprocess ? " [subprocess]" : "") + ")",
                         7, pslData);
 
-                // STEP 5b-event: publish ModelTrainedEvent so app-main can stage the artifact.
-                // Only when file-backed store is the active store (dualStoreFactory path does not
-                // expose a file artifact path here; KGE covers that separately).
                 if (fileBackedWeightStore != null && dualStoreFactory == null) {
                     try {
                         Path artifactPath = fileBackedWeightStore.pslArtifactPath(
-                                String.valueOf(factSheetId), programKey, savedVersion);
+                                String.valueOf(factSheetId), programKey, checkpointPslVersion);
                         eventPublisher.publishEvent(
                                 new ModelTrainedEvent(this, "psl", factSheetId, artifactPath, "psl-cascade"));
                         log.debug("Grounding cascade factSheet={}: published ModelTrainedEvent(psl, v{})",
-                                factSheetId, savedVersion);
+                                factSheetId, checkpointPslVersion);
                     } catch (Exception e) {
                         log.warn("Grounding cascade factSheet={}: could not publish PSL ModelTrainedEvent — {}",
                                 factSheetId, e.getMessage());
                     }
                 }
 
-                // STEP 5b audit: emit WEIGHT_TUNED event for each changed rule
                 if (correctionService != null) {
                     emitWeightTunedAuditEvents(factSheetId, program, trainedProgram, runId);
                 }
@@ -895,7 +1192,6 @@ public class IncrementalReasoningOrchestrator {
                 publishProgress(factSheetId, runId, trigger,
                         GroundingProgressEvent.STAGE_PSL_LEARNING, GroundingProgressEvent.STATUS_ERROR,
                         "PSL learning failed: " + e.getMessage(), 7, null);
-                // Non-fatal: inference result already materialized; keep un-trained program
             }
             programForSnapshot = trainedProgram;
         } else {
@@ -995,10 +1291,10 @@ public class IncrementalReasoningOrchestrator {
         // ── STEP 9 (L1): Online MEBN weight learning — incremental, EVERY cascade ────────────
         // MEBN finite-difference is O(|edges|) inferences per step. Under partial observability there is
         // no complete target to converge to, so we take ONE warm-started online step per cascade
-        // (maxEpochs=1) that ACCUMULATES across cascades — the parameter analogue of the Beta-evidence
-        // fact accumulation, NOT a from-scratch re-fit. Co-trains on the SAME consensus signal as PSL.
-        // Weights are loaded + persisted each cascade (warm-start ← persisted, durable small JSON); the
-        // model artifact is re-staged only every getMebnLearningInterval() cascades to bound staging churn.
+        // (maxEpochs=1) that ACCUMULATES across cascades. Co-trains on the SAME consensus signal as PSL.
+        // SameDiffMebnStrengthLearner creates a new SameDiff computation graph per epoch — the native
+        // ND4J allocations are memory-risky in the main JVM. When ReasoningLearningExecutor is present,
+        // the SameDiff step is offloaded to the bounded learning subprocess (same memory cap as KGE).
         if (kbCfg().isLearningEnabled() && mebnWeightAdapter != null) {
             MTheory theory = mebnTheories.get(factSheetId);
             ReasoningGraph mebnGraph = mebnGraphs.get(factSheetId);
@@ -1007,20 +1303,98 @@ public class IncrementalReasoningOrchestrator {
                         GroundingProgressEvent.STAGE_MEBN_LEARNING, GroundingProgressEvent.STATUS_STARTED,
                         "MEBN online weight step (cascade " + cascadeCount + ")", 11, null);
                 try {
-                    // Snapshot edge strengths BEFORE learning to compute real strength deltas.
                     Map<String, Double> strengthsBefore = snapshotEdgeStrengths(theory);
-
-                    // Warm-start from previously persisted strengths (survives process restarts).
                     mebnWeightAdapter.load(factSheetId, theory);
-                    // Co-train MEBN on the shared consensus (same signal PSL used); fall back to MAP
-                    // posteriors only if the consensus / fact store is empty.
                     Map<String, Double> observations = consensusTargets.isEmpty()
                             ? new HashMap<>(result.values()) : consensusTargets;
-                    // ONE online step — the cost lever under partial observability.
-                    mebnWeightLearner.learn(theory, mebnGraph, observations, 1);
-                    mebnWeightAdapter.persist(factSheetId, theory);
 
-                    // Snapshot edge strengths AFTER learning to compute real strength deltas.
+                    // ── SUBPROCESS PATH ──────────────────────────────────────────────────────
+                    // When the learning subprocess is enabled, export the edge strengths and the
+                    // pre-computed tensor batch to the subprocess, which runs the SameDiff autodiff
+                    // gradient step in a bounded native JVM, then writes mebn-weights.json. The
+                    // main JVM reloads via mebnWeightAdapter.load() after.
+                    boolean mebnRanInSubprocess = false;
+                    if (reasoningLearningExecutor != null) {
+                        try {
+                            // Collect edges and current strengths.
+                            List<MebnWeightLearner.Edge> edges =
+                                    SameDiffMebnStrengthLearner.collectEdges(theory);
+                            if (!edges.isEmpty()) {
+                                int M = edges.size();
+                                List<String> edgeKeys = new ArrayList<>(M);
+                                List<Double> currentStrengthsList = new ArrayList<>(M);
+                                for (MebnWeightLearner.Edge e : edges) {
+                                    // Key format matches what the subprocess writes back:
+                                    // "fragName:parent->child" — matches snapshotEdgeStrengths key
+                                    edgeKeys.add(e.mfrag().getName() + ":" + e.parent() + "->" + e.child());
+                                    currentStrengthsList.add(e.mfrag().getEdgeStrength(e.parent(), e.child()));
+                                }
+
+                                // Pre-compute the [E × M] tensor batch in the main JVM
+                                // (requires one MEBN inference call — stays in main JVM).
+                                MebnInferenceService inferSvc = new MebnInferenceService();
+                                Map<String, Double> posteriors = inferSvc.infer(mebnGraph, theory, Map.of());
+
+                                SameDiffMebnStrengthLearner.TensorBatch batch =
+                                        SameDiffMebnStrengthLearner.buildTensorBatch(
+                                                edges, posteriors, observations);
+
+                                if (batch.rowCount() > 0) {
+                                    Path mebnWeightsPath = mebnWeightAdapter.mebnArtifactPath(factSheetId);
+
+                                    final String mebnCrawlJobId = runId;
+                                    ReasoningLearningExecutor.ProgressCallback mebnCallback =
+                                            (cJobId, epoch, totalEpochs, loss) -> {
+                                                publishProgress(factSheetId, runId, trigger,
+                                                        GroundingProgressEvent.STAGE_MEBN_LEARNING,
+                                                        GroundingProgressEvent.STATUS_RUNNING,
+                                                        "MEBN epoch " + epoch + "/" + totalEpochs
+                                                                + " loss=" + String.format("%.4f", loss),
+                                                        11, null);
+                                            };
+
+                                    log.info("Grounding cascade factSheet={}: routing MEBN strength learning to subprocess",
+                                            factSheetId);
+                                    ReasoningLearningExecutor.LearningResult mebnResult =
+                                            reasoningLearningExecutor.runMebnLearning(
+                                                    mebnCrawlJobId, factSheetId,
+                                                    edgeKeys, currentStrengthsList,
+                                                    batch.pParentMatrix(), batch.targetMatrix(),
+                                                    mebnWeightsPath.toString(),
+                                                    1, kbCfg().getPslLearningRate(), mebnCallback);
+
+                                    if (mebnResult.success()) {
+                                        // Reload the updated strengths the subprocess wrote.
+                                        mebnWeightAdapter.load(factSheetId, theory);
+                                        checkpointMebnBackupId = "cascade-" + cascadeCount;
+                                        mebnRanInSubprocess = true;
+                                        log.info("Grounding cascade factSheet={}: MEBN subprocess done (loss={})",
+                                                factSheetId, mebnResult.finalLoss());
+                                    } else {
+                                        log.warn("Grounding cascade factSheet={}: MEBN subprocess failed ({}), "
+                                                + "falling through to in-JVM path",
+                                                factSheetId, mebnResult.errorMessage());
+                                    }
+                                } else {
+                                    log.debug("Grounding cascade factSheet={}: MEBN tensor batch empty, "
+                                            + "falling through to in-JVM path", factSheetId);
+                                }
+                            }
+                        } catch (Exception subEx) {
+                            log.warn("Grounding cascade factSheet={}: MEBN subprocess error ({}), "
+                                    + "falling through to in-JVM path",
+                                    factSheetId, subEx.getMessage());
+                        }
+                    }
+
+                    // ── IN-JVM PATH (fallback or when subprocess is absent) ─────────────────
+                    if (!mebnRanInSubprocess) {
+                        mebnWeightLearner.learn(theory, mebnGraph, observations, 1);
+                        mebnWeightAdapter.persist(factSheetId, theory);
+                        checkpointMebnBackupId = "cascade-" + cascadeCount;
+                    }
+
+                    // Compute strength deltas for progress event (both paths).
                     Map<String, Double> strengthsAfter = snapshotEdgeStrengths(theory);
                     double sumStrengthDelta = 0.0;
                     double maxStrengthDelta = 0.0;
@@ -1041,19 +1415,18 @@ public class IncrementalReasoningOrchestrator {
                     log.debug("Grounding cascade factSheet={}: MEBN online step done (cascade {})",
                             factSheetId, cascadeCount);
 
-                    Map<String, Object> mebnData = new java.util.LinkedHashMap<>();
+                    Map<String, Object> mebnData = new LinkedHashMap<>();
                     mebnData.put("cascadeCount", cascadeCount);
                     mebnData.put("edgesUpdated", edgesUpdated);
                     mebnData.put("meanStrengthDelta", meanStrengthDelta);
                     mebnData.put("maxStrengthDelta", maxStrengthDelta);
+                    mebnData.put("subprocess", mebnRanInSubprocess);
                     publishProgress(factSheetId, runId, trigger,
                             GroundingProgressEvent.STAGE_MEBN_LEARNING, GroundingProgressEvent.STATUS_DONE,
                             "MEBN step done: " + edgesUpdated + " edge(s) updated (meanΔ="
-                                    + String.format("%.4f", meanStrengthDelta) + ")", 11, mebnData);
+                                    + String.format("%.4f", meanStrengthDelta) + ")"
+                                    + (mebnRanInSubprocess ? " [subprocess]" : ""), 11, mebnData);
 
-                    // STEP 9-event: re-stage the artifact on the first cascade (so even short crawls get
-                    // an initial staged model) and then every interval (not every cascade) so app-main
-                    // staging is not churned by per-cascade online steps.
                     if (cascadeCount == 1L || cascadeCount % Math.max(1, kbCfg().getMebnLearningInterval()) == 0) {
                         try {
                             Path mebnArtifact = mebnWeightAdapter.mebnArtifactPath(factSheetId);
@@ -1072,7 +1445,6 @@ public class IncrementalReasoningOrchestrator {
                     publishProgress(factSheetId, runId, trigger,
                             GroundingProgressEvent.STAGE_MEBN_LEARNING, GroundingProgressEvent.STATUS_ERROR,
                             "MEBN step failed: " + e.getMessage(), 11, null);
-                    // Non-fatal: inference already complete
                 }
             } else {
                 publishProgress(factSheetId, runId, trigger,
@@ -1083,6 +1455,27 @@ public class IncrementalReasoningOrchestrator {
             publishProgress(factSheetId, runId, trigger,
                     GroundingProgressEvent.STAGE_MEBN_LEARNING, GroundingProgressEvent.STATUS_DONE,
                     "MEBN learning skipped (learning disabled or no adapter)", 11, null);
+        }
+
+        // ── TRAINING CHECKPOINT: persist position after a successful cascade ─────────
+        // Write (or update) the durable training checkpoint so a DERIVATION that is killed or
+        // timed-out between cascades can resume from this position rather than cold-starting.
+        // Only written when training ran (PSL saved a new version OR MEBN persisted a step);
+        // skipped when learning is disabled or the checkpoint store is not wired (tests).
+        if (trainingCheckpointStore != null
+                && kbCfg().isLearningEnabled()
+                && (checkpointPslVersion > 0 || checkpointMebnBackupId != null)) {
+            try {
+                String pslKeyForCp = factSheetId + ":cascade";
+                TrainingCheckpointStore.TrainingCheckpoint cp = TrainingCheckpointStore.of(
+                        factSheetId, cascadeCount, pslKeyForCp,
+                        checkpointPslVersion, checkpointMebnBackupId);
+                trainingCheckpointStore.save(cp);
+            } catch (Exception e) {
+                // Non-fatal: checkpoint is best-effort durability, not required for correctness
+                log.warn("[Grounding cascade factSheet={}] Could not write training checkpoint: {}",
+                        factSheetId, e.getMessage());
+            }
         }
 
         // ── COMPLETE ─────────────────────────────────────────────────────────────────

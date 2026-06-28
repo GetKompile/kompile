@@ -53,6 +53,7 @@ public class SubprocessRegistry {
     private static final int FORCE_KILL_WAIT_SECONDS = 2;
 
     private final ConcurrentHashMap<String, TrackedProcess> processes = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, RestartableSubprocess> restartHandlers = new ConcurrentHashMap<>();
     private volatile boolean shutdownHookRegistered = false;
 
     public SubprocessRegistry() {
@@ -210,6 +211,53 @@ public class SubprocessRegistry {
     public boolean isReady(String id) {
         TrackedProcess tracked = processes.get(id);
         return tracked != null && tracked.readyAt != null;
+    }
+
+    /**
+     * Register a restart handler for a subprocess.
+     *
+     * <p>Launchers that implement {@link RestartableSubprocess} call this on startup
+     * so the parent-side watchdog can trigger a restart without knowing the concrete
+     * launcher type.
+     *
+     * @param id      the same id passed to {@link #register(String, Process, String)}
+     * @param handler the launcher that can restart the subprocess
+     */
+    public void registerRestartHandler(String id, RestartableSubprocess handler) {
+        restartHandlers.put(id, handler);
+        logger.debug("Restart handler registered: id={}", id);
+    }
+
+    /**
+     * Look up the restart handler for the given subprocess id.
+     *
+     * @param id subprocess id
+     * @return the handler, or empty if none was registered
+     */
+    public Optional<RestartableSubprocess> getRestartHandler(String id) {
+        return Optional.ofNullable(restartHandlers.get(id));
+    }
+
+    /**
+     * Fallback for subprocesses that have no registered {@link RestartableSubprocess}:
+     * forcibly destroy the OS process via {@link Process#destroyForcibly()}.
+     *
+     * <p>The watchdog calls this when no restart handler is registered, ensuring
+     * even unregistered runaway subprocesses are killed.
+     *
+     * @param id subprocess id
+     * @return {@code true} if the process was found and destroyed, {@code false} if
+     *         not tracked or already dead
+     */
+    public boolean forceDestroyProcess(String id) {
+        TrackedProcess tracked = processes.get(id);
+        if (tracked == null || !tracked.process.isAlive()) {
+            return false;
+        }
+        logger.warn("Force-destroying subprocess without restart handler: id={}, PID={}, type={}",
+                id, tracked.process.pid(), tracked.type);
+        tracked.process.destroyForcibly();
+        return true;
     }
 
     /**

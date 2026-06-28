@@ -46,8 +46,9 @@ class KbWeightsControllerMebnTest {
     @BeforeEach
     void setUp() throws Exception {
         adapter = adapterFor(tempDir.toString());
-        // weightStore = null (PSL), mebnWeightPersistenceAdapter = the real adapter
-        controller = new KbWeightsController(null, adapter);
+        // weightStore = null (PSL), mebnWeightPersistenceAdapter = the real adapter;
+        // weightSessionService + reasoningOrchestrator = null (not exercised by these MEBN tests)
+        controller = new KbWeightsController(null, adapter, null, null);
     }
 
     // ── Adapter absent ────────────────────────────────────────────────────────
@@ -59,7 +60,7 @@ class KbWeightsControllerMebnTest {
         @Test
         @DisplayName("returns 503 when MebnWeightPersistenceAdapter is null")
         void noAdapter_returns503() {
-            KbWeightsController nullAdapter = new KbWeightsController(null, null);
+            KbWeightsController nullAdapter = new KbWeightsController(null, null, null, null);
             ResponseEntity<List<KbWeightsController.MebnWeightRow>> resp =
                     nullAdapter.getMebnWeights(1L);
             assertEquals(HttpStatus.SERVICE_UNAVAILABLE, resp.getStatusCode());

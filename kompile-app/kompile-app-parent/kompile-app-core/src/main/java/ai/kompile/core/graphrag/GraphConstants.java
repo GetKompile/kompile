@@ -888,4 +888,46 @@ public final class GraphConstants {
     public static final String SOURCE_PDF_EXTRACTOR = "pdf-metadata-extractor";
     public static final String SOURCE_GWORKSPACE_EXTRACTOR = "gworkspace-rule-extractor";
     public static final String SOURCE_AUDIO_EXTRACTOR = "audio-transcript-extractor";
+
+    // ── Entity-type normalisation ───────────────────────────────────────
+
+    /**
+     * Normalises a raw entity-type string produced by LLM extraction, OCR, or structured-doc
+     * extractors so that junk values (e.g. {@code entity_entity_number}) never reach the graph
+     * store.  Rules applied in order:
+     * <ol>
+     *   <li>Trim leading/trailing whitespace.</li>
+     *   <li>null or blank → {@code "entity"}.</li>
+     *   <li>Strip PSL atom-breaking characters: {@code ( ) ,}.</li>
+     *   <li>Collapse <em>consecutive</em> duplicate tokens (split on {@code _}):
+     *       {@code entity_entity_number} → {@code entity_number}.</li>
+     *   <li>If result is blank after the above → {@code "entity"}.</li>
+     * </ol>
+     * The method is deterministic, idempotent, and conservative: it does NOT change
+     * case, strip meaningful single tokens, or alter non-adjacent duplicate sequences.
+     *
+     * @param type raw type string (may be null)
+     * @return normalised type, never null, never blank
+     */
+    public static String normalizeEntityType(String type) {
+        if (type == null || type.isBlank()) {
+            return "entity";
+        }
+        String trimmed = type.trim();
+        // Strip PSL atom-breaking characters
+        String clean = trimmed.replace("(", "").replace(")", "").replace(",", "");
+        // Collapse consecutive duplicate tokens on '_'
+        String[] tokens = clean.split("_", -1);
+        StringBuilder sb = new StringBuilder();
+        String prev = null;
+        for (String token : tokens) {
+            if (!token.equalsIgnoreCase(prev)) {
+                if (sb.length() > 0) sb.append('_');
+                sb.append(token);
+                prev = token;
+            }
+        }
+        String result = sb.toString();
+        return result.isBlank() ? "entity" : result;
+    }
 }

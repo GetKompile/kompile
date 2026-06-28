@@ -17,14 +17,17 @@ package ai.kompile.knowledgegraph.impl;
 
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.SourceWeight;
+import ai.kompile.knowledgegraph.domain.SourceWeightView;
 import ai.kompile.knowledgegraph.repository.SourceWeightRepository;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import ai.kompile.knowledgegraph.service.SourceWeightingService;
+import ai.kompile.core.embeddings.EmbeddingModel;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.nd4j.linalg.api.ndarray.INDArray;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -47,6 +50,15 @@ public class SourceWeightingServiceImpl implements SourceWeightingService {
 
     @Value("${kompile.source-weighting.topic-relevance-factor:0.3}")
     private double topicRelevanceFactor;
+
+    /**
+     * Optional embedding model used to score query↔source semantic relevance in
+     * {@link #previewWeightedSearch}. Field-injected and {@code required = false} so the
+     * service still starts when embeddings are disabled — relevance then falls back to
+     * weight-only ranking.
+     */
+    @Autowired(required = false)
+    private EmbeddingModel embeddingModel;
 
     @Autowired
     public SourceWeightingServiceImpl(SourceWeightRepository weightRepository,
@@ -113,6 +125,34 @@ public class SourceWeightingServiceImpl implements SourceWeightingService {
     @Transactional(readOnly = true)
     public List<SourceWeight> getAllWeightsForSource(String sourceNodeId) {
         return weightRepository.findBySourceNodeId(sourceNodeId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<SourceWeightView> listAllSourcesWithWeights() {
+        List<GraphNode> sources = knowledgeGraphService.getAllSources();
+
+        // Build a map: sourceNodeId → the best configured global weight (topic=null)
+        Map<String, SourceWeight> configuredGlobalWeights = new HashMap<>();
+        for (GraphNode source : sources) {
+            List<SourceWeight> weights = weightRepository.findEnabledWeightsForSource(source.getNodeId());
+            weights.stream()
+                    .filter(sw -> sw.getTopic() == null)
+                    .findFirst()
+                    .ifPresent(sw -> configuredGlobalWeights.put(source.getNodeId(), sw));
+        }
+
+        return sources.stream()
+                .map(source -> {
+                    SourceWeight configured = configuredGlobalWeights.get(source.getNodeId());
+                    return configured != null
+                            ? SourceWeightView.from(configured)
+                            : SourceWeightView.defaultFor(source, defaultWeight);
+                })
+                .sorted((a, b) -> Double.compare(
+                        b.effectiveWeight() != null ? b.effectiveWeight() : defaultWeight,
+                        a.effectiveWeight() != null ? a.effectiveWeight() : defaultWeight))
+                .collect(Collectors.toList());
     }
 
     @Override
@@ -269,34 +309,118 @@ public class SourceWeightingServiceImpl implements SourceWeightingService {
     @Override
     @Transactional(readOnly = true)
     public Map<String, Object> previewWeightedSearch(String query, int maxResults) {
-        // This would normally integrate with the vector store
-        // For now, return a placeholder showing how weights would be applied
-
         List<GraphNode> sources = knowledgeGraphService.getAllSources();
         List<String> sourceIds = sources.stream().map(GraphNode::getNodeId).collect(Collectors.toList());
 
+        // Configured (or default) weight per source. Semantics unchanged — weight only.
         Map<String, Double> weights = computeQueryWeights(query, sourceIds);
+
+        // Semantic relevance of the query against each source's text. Empty (so we fall back
+        // to weight-only ranking) when the embedding model is unavailable.
+        Map<String, Double> relevanceById = computeQueryRelevance(query, sources);
+        boolean relevanceApplied = !relevanceById.isEmpty();
 
         List<Map<String, Object>> sourceWeights = sources.stream()
             .map(source -> {
+                double weight = weights.getOrDefault(source.getNodeId(), defaultWeight);
+                Double relevance = relevanceById.get(source.getNodeId());
+                // Final ranking score: the configured weight scaled by query relevance when
+                // available; otherwise the weight alone.
+                double score = relevance != null ? weight * relevance : weight;
+
                 Map<String, Object> info = new LinkedHashMap<>();
                 info.put("sourceId", source.getNodeId());
                 info.put("sourceName", source.getTitle());
                 info.put("sourceType", source.getSourceType());
-                info.put("weight", weights.getOrDefault(source.getNodeId(), defaultWeight));
+                info.put("weight", weight);
+                info.put("relevance", relevance); // null when embeddings unavailable
+                info.put("score", score);
                 return info;
             })
             .sorted((a, b) -> Double.compare(
-                (Double) b.get("weight"),
-                (Double) a.get("weight")))
+                (Double) b.get("score"),
+                (Double) a.get("score")))
             .collect(Collectors.toList());
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("query", query);
         result.put("maxResults", maxResults);
         result.put("sourceWeights", sourceWeights);
-        result.put("note", "Actual search results would have their scores multiplied by these weights");
+        result.put("note", relevanceApplied
+            ? "Ranked by semantic relevance to your query × the configured source weight. "
+              + "Real search results would have their scores multiplied by these weights."
+            : "Embedding model unavailable — ranked by configured weight only "
+              + "(query relevance not applied).");
 
         return result;
+    }
+
+    /**
+     * Cosine similarity of the query against each source's text (title + description), computed
+     * with ND4J in one vectorized pass: every source is embedded into a single [N, dim] matrix,
+     * the rows are L2-normalized, and a single {@code Sᵤ · qᵤ} matmul against the unit query
+     * vector yields all N similarities at once. (The embedding model bounds its own forward-pass
+     * batching internally, so there is no need to mini-batch here.) Returns an empty map —
+     * signalling callers to fall back to weight-only ranking — when embeddings are unavailable
+     * or the text cannot be embedded.
+     */
+    private Map<String, Double> computeQueryRelevance(String query, List<GraphNode> sources) {
+        if (embeddingModel == null || query == null || query.isBlank() || sources.isEmpty()) {
+            return Map.of();
+        }
+        INDArray sourceEmb = null, queryEmb = null, qUnitCol = null, rowNorms = null, sims = null;
+        try {
+            if (!embeddingModel.isInitialized()) {
+                return Map.of();
+            }
+            List<String> texts = sources.stream().map(this::sourceText).collect(Collectors.toList());
+
+            sourceEmb = embeddingModel.embed(texts);   // [N, dim] — one batched forward pass
+            queryEmb = embeddingModel.embed(query);    // [dim] (or [1, dim])
+            if (sourceEmb == null || sourceEmb.isEmpty() || queryEmb == null || queryEmb.isEmpty()) {
+                return Map.of();
+            }
+
+            // cosine = (S . q_unit) / ||S||_row : one matmul for all dot products, one norm2
+            // reduction for all row norms, one elementwise divide. q_unit is a [dim, 1] column.
+            qUnitCol = queryEmb.div(queryEmb.norm2Number().doubleValue() + 1e-12)
+                               .reshape(sourceEmb.size(1), 1);                    // [dim, 1]
+            sims = sourceEmb.mmul(qUnitCol);                                      // dot products, [N, 1]
+            rowNorms = sourceEmb.norm2(1).reshape(sourceEmb.size(0), 1).add(1e-12); // [N, 1]
+            sims.divi(rowNorms);                                                  // cosine per source, [N, 1]
+
+            double[] simArr = sims.toDoubleVector();
+            Map<String, Double> relevance = new HashMap<>(simArr.length);
+            for (int i = 0; i < simArr.length; i++) {
+                // Clamp to [0,1]: a negative cosine means "unrelated", treat as 0.
+                relevance.put(sources.get(i).getNodeId(), Math.max(0.0, Math.min(1.0, simArr[i])));
+            }
+            return relevance;
+        } catch (Exception e) {
+            log.warn("Semantic relevance unavailable for weighted-search preview: {}", e.getMessage());
+            return Map.of();
+        } finally {
+            closeQuietly(sourceEmb, queryEmb, qUnitCol, rowNorms, sims);
+        }
+    }
+
+    /** Text used for semantic matching of a source: its title plus description. */
+    private String sourceText(GraphNode node) {
+        String title = node.getTitle() != null ? node.getTitle() : "";
+        String desc = node.getDescription() != null ? node.getDescription() : "";
+        String text = (title + " " + desc).trim();
+        if (!text.isEmpty()) {
+            return text;
+        }
+        return node.getNodeId() != null ? node.getNodeId() : "";
+    }
+
+    /** Closes ND4J arrays best-effort, skipping nulls and already-closed buffers. */
+    private static void closeQuietly(INDArray... arrays) {
+        for (INDArray a : arrays) {
+            if (a != null && !a.wasClosed()) {
+                try { a.close(); } catch (Exception ignore) { /* best-effort native cleanup */ }
+            }
+        }
     }
 }

@@ -42,6 +42,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.OptionalDouble;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.stream.Collectors;
@@ -79,6 +80,13 @@ public class KbGroundingService {
     // ── Per-factSheet state map ──────────────────────────────────────────────────
 
     private final ConcurrentHashMap<Long, FactSheetKbState> stateMap = new ConcurrentHashMap<>();
+
+    /**
+     * Per-factSheet stale flag: true when a mutation has been observed but the re-ground
+     * cascade has not yet completed. Set by {@link #markStale}, cleared by {@link #clearStale}.
+     * Read by the REST controller to surface {@code stale=true} in verify/explain responses.
+     */
+    private final ConcurrentHashMap<Long, AtomicBoolean> staleFlags = new ConcurrentHashMap<>();
 
     /**
      * Per-factSheet epoch: the runId of the last completed grounding cascade.
@@ -518,6 +526,60 @@ public class KbGroundingService {
     public String currentEpoch(long factSheetId) {
         AtomicReference<String> ref = epochMap.get(factSheetId);
         return (ref == null) ? "" : ref.get();
+    }
+
+    // ── Stale-flag API (used by GroundingCascadeHook and KbGroundingController) ───
+
+    /**
+     * Mark the grounding state for {@code factSheetId} as stale — i.e., a graph mutation has
+     * been observed but the re-ground cascade has not yet completed. Safe to call from any thread.
+     *
+     * @param factSheetId the affected fact sheet
+     */
+    public void markStale(long factSheetId) {
+        staleFlags.computeIfAbsent(factSheetId, id -> new AtomicBoolean(false)).set(true);
+    }
+
+    /**
+     * Clear the stale flag for {@code factSheetId} — called by the cascade hook when a full
+     * re-ground has successfully completed. Safe to call from any thread.
+     *
+     * @param factSheetId the affected fact sheet
+     */
+    public void clearStale(long factSheetId) {
+        AtomicBoolean flag = staleFlags.get(factSheetId);
+        if (flag != null) {
+            flag.set(false);
+        }
+    }
+
+    /**
+     * Return {@code true} if the KB for {@code factSheetId} has been mutated since the last
+     * completed re-ground. Returns {@code false} if no flag has been set (i.e., state is fresh
+     * or no grounding has ever been triggered).
+     *
+     * @param factSheetId the fact sheet id
+     * @return whether the grounding state is stale
+     */
+    public boolean isStale(long factSheetId) {
+        AtomicBoolean flag = staleFlags.get(factSheetId);
+        return flag != null && flag.get();
+    }
+
+    /**
+     * Drop the cached {@link FactSheetKbState} for {@code factSheetId} so the next call to
+     * {@link #getState} creates a fresh state. Used after a snapshot restore where the entire
+     * graph has been replaced and the in-memory fact stores are no longer valid.
+     *
+     * <p>The stale flag is also cleared because the new graph has not been grounded yet — the
+     * caller is expected to schedule a cascade immediately after calling this method.</p>
+     *
+     * @param factSheetId the fact sheet whose state should be evicted
+     */
+    public void resetState(long factSheetId) {
+        stateMap.remove(factSheetId);
+        clearStale(factSheetId);
+        log.info("KbGroundingService: evicted cached KB state for factSheet={} (snapshot restore)", factSheetId);
     }
 
     // ── Internal helpers ──────────────────────────────────────────────────────────

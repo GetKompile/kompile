@@ -46,7 +46,8 @@ public record ExplainResponse(
     /** Construct a response directly from a ReasoningTrail, flattening key fields. */
     public static ExplainResponse fromTrail(ReasoningTrail trail) {
         String derivationJson = trail.hasDerivationTree()
-                ? trail.derivationTree().toJson()
+                ? trail.derivationTree().toJsonWithTitlesAndRules(
+                        trail.atomKeyToTitle(), trail.ruleToHumanized())
                 : null;
         return new ExplainResponse(
                 trail.targetId(),
@@ -65,7 +66,8 @@ public record ExplainResponse(
     /** Construct with an explicit GROUNDING verdict. */
     public static ExplainResponse fromTrailWithVerdict(ReasoningTrail trail, String verdict) {
         String derivationJson = trail.hasDerivationTree()
-                ? trail.derivationTree().toJson()
+                ? trail.derivationTree().toJsonWithTitlesAndRules(
+                        trail.atomKeyToTitle(), trail.ruleToHumanized())
                 : null;
         return new ExplainResponse(
                 trail.targetId(),

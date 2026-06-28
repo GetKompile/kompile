@@ -78,19 +78,7 @@ public class KompileModelManager {
      * Otherwise, defaults to ~/.kompile/models.
      */
     public KompileModelManager() {
-        String cacheDirEnv = System.getenv(ENV_KOMPILE_MODEL_CACHE_DIR);
-        if (cacheDirEnv != null && !cacheDirEnv.trim().isEmpty()) {
-            this.baseCachePath = Paths.get(cacheDirEnv.trim());
-        } else {
-            this.baseCachePath = Paths.get(System.getProperty("user.home"), DEFAULT_KOMPILE_MODEL_CACHE_SUBDIR);
-        }
-        this.objectMapper = JsonUtils.standardMapper();
-        try {
-            Files.createDirectories(this.baseCachePath);
-        } catch (IOException e) {
-            throw new RuntimeException("Failed to create base model cache directory: " + this.baseCachePath, e);
-        }
-        LOGGER.info("KompileModelManager initialized. Cache path: {}", this.baseCachePath.toAbsolutePath());
+        this(ModelConstants.resolveBaseModelCacheDir());
     }
 
     /**

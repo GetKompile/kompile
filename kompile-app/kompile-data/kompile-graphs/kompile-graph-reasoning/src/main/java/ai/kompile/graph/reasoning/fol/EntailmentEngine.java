@@ -28,6 +28,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Facade for producing {@link EntailmentRecord}s from either MEBN or PSL inference,
@@ -56,6 +58,8 @@ public final class EntailmentEngine {
 
     private static final Logger log = LoggerFactory.getLogger(EntailmentEngine.class);
     private static final double ACTIVATION_THRESHOLD = 0.1; // rule is "activated" if dist < threshold
+    /** Matches PSL synthetic constant tokens of the form {@code n0}, {@code n1}, etc. */
+    private static final Pattern CONSTANT_PATTERN = Pattern.compile("n\\d+");
 
     private EntailmentEngine() {}
 
@@ -202,12 +206,40 @@ public final class EntailmentEngine {
      */
     public static List<EntailmentRecord> entailFromPslResult(
             PslProgram program, HlMrfMapInference.Result result, FactStore factStore, String runId) {
+        return entailFromPslResult(program, result, factStore, runId, Map.of(), Map.of());
+    }
+
+    /**
+     * As {@link #entailFromPslResult(PslProgram, HlMrfMapInference.Result, FactStore, String)} but
+     * translates the opaque PSL synthetic constants ({@code n0}, {@code n1}, …) in atom keys and rule
+     * display strings to human-readable values before building the records.
+     *
+     * <ul>
+     *   <li>{@code constantToEntityId} — maps {@code n0} → stable entity id; used to rewrite atom
+     *       keys and supporting-fact keys so downstream consumers see e.g. {@code State(entity-42)}
+     *       instead of {@code State(n0)}.</li>
+     *   <li>{@code constantToLabel} — maps {@code n0} → human-readable label (e.g. "Alice Smith");
+     *       used only to rewrite the rule display strings for readability. If a constant is absent
+     *       from either map, the original token is left unchanged.</li>
+     * </ul>
+     *
+     * @param program            the grounded PSL program
+     * @param result             MAP inference result
+     * @param factStore          optional fact store (may be null)
+     * @param runId              run identifier stamped on every record
+     * @param constantToEntityId map from synthetic PSL constant to entity id (stable external key)
+     * @param constantToLabel    map from synthetic PSL constant to human-readable display label
+     * @return one {@link EntailmentRecord} per target atom, with translated keys
+     */
+    public static List<EntailmentRecord> entailFromPslResult(
+            PslProgram program, HlMrfMapInference.Result result, FactStore factStore, String runId,
+            Map<String, String> constantToEntityId, Map<String, String> constantToLabel) {
 
         Map<String, Double> values = result.values();
         List<GroundRule> groundRules = result.groundRules();
         Set<String> observedKeys = program.observedKeys();
 
-        // Build index: for each head atom -> list of ground rules that fired for it
+        // Build index: for each head atom (raw PSL key) -> list of ground rules that fired for it
         Map<String, List<GroundRule>> headToRules = new HashMap<>();
         Map<String, Set<String>> headToObservedAtoms = new HashMap<>();
 
@@ -235,22 +267,25 @@ public final class EntailmentEngine {
         Instant now = Instant.now();
         List<EntailmentRecord> records = new ArrayList<>();
 
-        for (String atomKey : program.targetKeys()) {
-            double posterior = values.getOrDefault(atomKey, 0.0);
+        for (String rawAtomKey : program.targetKeys()) {
+            double posterior = values.getOrDefault(rawAtomKey, 0.0);
 
-            // Activated rules that have this atom in the head
+            // Translate the atom key (raw PSL constant) to a stable entity-id-based key
+            String atomKey = translateConstants(rawAtomKey, constantToEntityId);
+
+            // Activated rules translated to human-readable labels
             List<String> activatedRules = new ArrayList<>();
-            List<GroundRule> relevantRules = headToRules.getOrDefault(atomKey, List.of());
+            List<GroundRule> relevantRules = headToRules.getOrDefault(rawAtomKey, List.of());
             for (GroundRule gr : relevantRules) {
-                activatedRules.add(gr.display());
+                activatedRules.add(translateConstants(gr.display(), constantToLabel));
             }
 
-            // Supporting facts: observed atoms in rules for this atom, intersected with factStore
+            // Supporting facts translated to entity-id-based keys
             List<String> supportingFactKeys = new ArrayList<>();
-            Set<String> observedInBody = headToObservedAtoms.getOrDefault(atomKey, Set.of());
+            Set<String> observedInBody = headToObservedAtoms.getOrDefault(rawAtomKey, Set.of());
             for (String obsKey : observedInBody) {
                 if (factStore == null || factStore.factFor(obsKey).isPresent()) {
-                    supportingFactKeys.add(obsKey);
+                    supportingFactKeys.add(translateConstants(obsKey, constantToEntityId));
                 }
             }
 
@@ -266,5 +301,22 @@ public final class EntailmentEngine {
 
         log.info("EntailmentEngine PSL run={} produced {} records", runId, records.size());
         return records;
+    }
+
+    /**
+     * Replace every {@code n\d+} token in {@code text} with the corresponding value from
+     * {@code map}; tokens absent from the map are left unchanged.
+     */
+    private static String translateConstants(String text, Map<String, String> map) {
+        if (map.isEmpty()) return text;
+        Matcher m = CONSTANT_PATTERN.matcher(text);
+        StringBuilder sb = new StringBuilder();
+        while (m.find()) {
+            String token = m.group();
+            String replacement = map.getOrDefault(token, token);
+            m.appendReplacement(sb, Matcher.quoteReplacement(replacement));
+        }
+        m.appendTail(sb);
+        return sb.toString();
     }
 }

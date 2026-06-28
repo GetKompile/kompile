@@ -16,6 +16,7 @@
 
 package ai.kompile.app.web.controllers;
 
+import ai.kompile.core.citation.CitationDto;
 import ai.kompile.core.evaluation.GraphEvaluationContext;
 import ai.kompile.core.evaluation.GraphEvaluationResult;
 import ai.kompile.core.evaluation.GraphEvaluator;
@@ -25,6 +26,8 @@ import ai.kompile.core.graphrag.model.Graph;
 import ai.kompile.core.graphrag.model.Relationship;
 import ai.kompile.core.graphrag.model.schema.SchemaEnforcementMode;
 import ai.kompile.core.retrievers.RetrievedDoc;
+import ai.kompile.core.source.SourceMetadataConstants;
+import ai.kompile.knowledgegraph.citation.CitationSupport;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -108,8 +111,15 @@ public class GraphEvalController {
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("success", true);
 
-            // Serialize extracted graph
-            result.put("extractedGraph", graphToMap(extracted));
+            // Build source citation for the single inline document so each entity
+            // carries provenance back to this eval run's source text.
+            CitationDto sourceCitation = CitationSupport.from(
+                    Map.of(SourceMetadataConstants.SOURCE_ID, docId,
+                           SourceMetadataConstants.SOURCE_FILENAME, "Inline eval text"),
+                    null, null);
+
+            // Serialize extracted graph (entities include per-entity citation)
+            result.put("extractedGraph", graphToMap(extracted, sourceCitation));
 
             // Parse ground truth if provided
             @SuppressWarnings("unchecked")
@@ -217,10 +227,12 @@ public class GraphEvalController {
 
     // ─── Serialization helpers ──────────────────────────────────────────
 
-    private Map<String, Object> graphToMap(Graph graph) {
+    private Map<String, Object> graphToMap(Graph graph, CitationDto sourceCitation) {
         Map<String, Object> map = new LinkedHashMap<>();
         map.put("entities", graph.getEntities() != null
-                ? graph.getEntities().stream().map(this::entityToMap).collect(Collectors.toList())
+                ? graph.getEntities().stream()
+                        .map(e -> entityToMap(e, sourceCitation))
+                        .collect(Collectors.toList())
                 : List.of());
         map.put("relationships", graph.getRelationships() != null
                 ? graph.getRelationships().stream().map(this::relationshipToMap).collect(Collectors.toList())
@@ -228,13 +240,29 @@ public class GraphEvalController {
         return map;
     }
 
-    private Map<String, Object> entityToMap(Entity e) {
+    private Map<String, Object> entityToMap(Entity e, CitationDto sourceCitation) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("id", e.getId());
         m.put("title", e.getTitle());
         m.put("type", e.getType());
         if (e.getDescription() != null) m.put("description", e.getDescription());
         if (e.getConfidence() != null) m.put("confidence", e.getConfidence());
+        // Stamp per-entity source provenance: reuse the source citation but override
+        // the confidence field with the entity's own extraction confidence.
+        if (sourceCitation != null) {
+            CitationDto entityCitation = new CitationDto(
+                    sourceCitation.sourceId(),
+                    sourceCitation.sourceName(),
+                    sourceCitation.pageNumber(),
+                    sourceCitation.chunkIndex(),
+                    sourceCitation.score(),
+                    e.getConfidence(),
+                    sourceCitation.basisType(),
+                    sourceCitation.crawlRunId(),
+                    sourceCitation.sourceUrl(),
+                    sourceCitation.provenance());
+            m.put("citation", entityCitation);
+        }
         return m;
     }
 

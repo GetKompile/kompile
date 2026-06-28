@@ -358,18 +358,27 @@ public abstract class SameDiffEncoder<RETURN_TYPE> implements AutoCloseable {
      * Flag to enable/disable graph optimization at load time.
      * When enabled, applies fusion optimizations (matmul+add -> xw_plus_b, etc.)
      * to improve inference performance.
-     * Default is false - models are loaded as-is unless pre-optimized.
+     *
+     * <p>Default is <b>true</b> — the SDZ graph is fused via {@link #applyGraphOptimization()}
+     * on first load, which reduces cold-start latency (~4 min → significantly shorter).
+     * If optimization fails the original un-fused model is kept, so enabling by default is safe.
+     *
+     * <p>Set system property {@code kompile.embedding.samediff.optimizeOnLoad=false} or call
+     * {@link #setOptimizeOnLoad(boolean)} to opt out (e.g. for debugging or benchmarking).
      */
-    private static volatile boolean optimizeOnLoad = false;
+    private static volatile boolean optimizeOnLoad =
+            !"false".equalsIgnoreCase(System.getProperty("kompile.embedding.samediff.optimizeOnLoad", "true"));
 
     /**
      * Enable or disable graph optimization when loading models.
      * When enabled, applies optimizations like:
-     * - matmul + add fusion into xw_plus_b
-     * - constant folding
-     * - dead code elimination
+     * <ul>
+     *   <li>matmul + add fusion into xw_plus_b</li>
+     *   <li>constant folding</li>
+     *   <li>dead code elimination</li>
+     * </ul>
      *
-     * @param optimize true to apply optimizations at load time
+     * @param optimize true to apply optimizations at load time (default true)
      */
     public static void setOptimizeOnLoad(boolean optimize) {
         optimizeOnLoad = optimize;
@@ -378,7 +387,7 @@ public abstract class SameDiffEncoder<RETURN_TYPE> implements AutoCloseable {
 
     /**
      * Check if graph optimization on load is enabled.
-     * @return true if models are optimized when loaded
+     * @return true if models are optimized when loaded (default true)
      */
     public static boolean isOptimizeOnLoad() {
         return optimizeOnLoad;
@@ -1407,32 +1416,8 @@ public abstract class SameDiffEncoder<RETURN_TYPE> implements AutoCloseable {
      */
     protected void forceWorkspaceCleanup() {
         try {
-            // Only clear InferenceSession cache - this releases cached OpContexts
-            // without destroying the entire workspace infrastructure
             if (this.sameDiffModel != null) {
-                try {
-                    // Use reflection to call clearOpContexts() or similar method
-                    // to release cached operation contexts without full reinitialization
-                    java.lang.reflect.Method clearMethod = null;
-
-                    // Try to find a sessions clearing method
-                    try {
-                        clearMethod = this.sameDiffModel.getClass().getMethod("clearOpInputs");
-                    } catch (NoSuchMethodException e1) {
-                        try {
-                            clearMethod = this.sameDiffModel.getClass().getMethod("clearArrayHolders");
-                        } catch (NoSuchMethodException e2) {
-                            // No clear method available - this is OK, just skip
-                        }
-                    }
-
-                    if (clearMethod != null) {
-                        clearMethod.invoke(this.sameDiffModel);
-                        LOG.trace("[{}] Cleared SameDiff caches", modelIdentifier);
-                    }
-                } catch (Exception e) {
-                    LOG.trace("[{}] Could not clear SameDiff caches: {}", modelIdentifier, e.getMessage());
-                }
+                clearSessionCaches();
             }
 
             // Only invoke GC every 100 cleanups to avoid excessive overhead
@@ -1444,6 +1429,162 @@ public abstract class SameDiffEncoder<RETURN_TYPE> implements AutoCloseable {
         } catch (Exception e) {
             LOG.debug("[{}] Error during cleanup: {}", modelIdentifier, e.getMessage());
         }
+    }
+
+    /**
+     * Clear the InferenceSession's accumulated intermediate activation arrays
+     * (nodeValueOutputs) to prevent per-call native memory accumulation, while
+     * deliberately PRESERVING the compiled DSP plan cache.
+     *
+     * <h3>Why plan-preservation matters</h3>
+     * <p>SameDiff's {@code DynamicShapePlanExecutor} compiles an execution plan the first
+     * time a given input shape is seen and caches it in the InferenceSession.  Compilation
+     * "protects" the model's 600–700 constant/variable {@code DataBuffer}s for the plan's
+     * lifetime by incrementing their reference counts.  If the plan cache is cleared on
+     * every call (which {@code clearAllCaches()} does), a new plan is compiled per request:
+     * each compile creates a fresh set of protected DataBuffers and the old set lingers
+     * until GC catches up.  At ~2 s/request this accumulates DataBuffer garbage faster
+     * than GC can collect it → Java heap OOM in the 4 g embedding subprocess.</p>
+     *
+     * <h3>Clear-path priority</h3>
+     * <ol>
+     *   <li><b>{@code clearNodeOutputsOnly()}</b> — clears {@code nodeValueOutputs} (the
+     *       ~47 MB/batch activation leak) <em>without</em> touching the plan cache.
+     *       Preferred.</li>
+     *   <li><b>Direct field clear via reflection</b> — if the method is absent (very old
+     *       ND4J), access {@code nodeValueOutputs} directly and call {@code .clear()}.
+     *       Still plan-safe.</li>
+     *   <li><b>{@code clearAllCaches()}</b> — last resort only; clears the plan cache,
+     *       so the NEXT call will recompile.  Accepted once per shape (warm-up cycle) but
+     *       catastrophic if the plan shape never stabilises.</li>
+     * </ol>
+     *
+     * <p>Additionally, {@code SameDiff.clearOpInputs()} clears placeholder arrays held
+     * on the model-level {@code placeholdersPerThread} map (safe in all cases).</p>
+     *
+     * <p>This method must be called AFTER all embedding values have been extracted into
+     * heap {@code float[]} arrays. Calling it before extraction frees activation buffers
+     * that extraction still needs and causes "Input argument closed before call" errors.</p>
+     */
+    // One-time flag so the clear-path confirmation log is emitted once per encoder lifetime.
+    private final AtomicBoolean clearPathLogged = new AtomicBoolean(false);
+
+    protected void clearSessionCaches() {
+        if (this.sameDiffModel == null) return;
+        try {
+            // 1. Clear model-level placeholder arrays (fast, clears placeholdersPerThread)
+            boolean clearedOpInputs = false;
+            try {
+                java.lang.reflect.Method clearOpInputs =
+                        this.sameDiffModel.getClass().getMethod("clearOpInputs");
+                clearOpInputs.invoke(this.sameDiffModel);
+                clearedOpInputs = true;
+                LOG.trace("[{}] clearOpInputs() done", modelIdentifier);
+            } catch (NoSuchMethodException ignored) {
+                // Not present in this build — safe to skip
+            }
+
+            // 2. Get the InferenceSession and clear ONLY activation outputs.
+            //    PRIORITY: clearNodeOutputsOnly → direct field clear → clearAllCaches (last resort).
+            //    clearAllCaches() also wipes the compiled DSP plan, forcing per-request
+            //    recompilation and causing the heap OOM described in the method Javadoc.
+            String clearPath = "no-clear";
+            try {
+                java.lang.reflect.Method getSession =
+                        this.sameDiffModel.getClass().getMethod("getOrCreateSession");
+                Object session = getSession.invoke(this.sameDiffModel);
+                if (session != null) {
+                    // PREFERRED: clearNodeOutputsOnly — frees nodeValueOutputs, keeps plan cache.
+                    boolean clearedNodes = false;
+                    try {
+                        java.lang.reflect.Method clearNodes =
+                                session.getClass().getMethod("clearNodeOutputsOnly");
+                        clearNodes.invoke(session);
+                        clearPath = "clearNodeOutputsOnly";
+                        clearedNodes = true;
+                        LOG.trace("[{}] InferenceSession.clearNodeOutputsOnly() done", modelIdentifier);
+                    } catch (NoSuchMethodException ignored) {
+                        // Method not present in this ND4J build — try direct field access.
+                    }
+
+                    if (!clearedNodes) {
+                        // FALLBACK: directly clear the nodeValueOutputs map field so the plan
+                        // cache (a separate field/structure) is never touched.
+                        boolean clearedField = false;
+                        try {
+                            java.lang.reflect.Field nvof = findFieldInHierarchy(session.getClass(), "nodeValueOutputs");
+                            if (nvof != null) {
+                                nvof.setAccessible(true);
+                                Object map = nvof.get(session);
+                                if (map instanceof java.util.Map<?, ?> m) {
+                                    m.clear();
+                                    clearPath = "nodeValueOutputs-field-direct";
+                                    clearedField = true;
+                                    LOG.trace("[{}] nodeValueOutputs.clear() via field reflection done", modelIdentifier);
+                                }
+                            }
+                        } catch (Exception fieldEx) {
+                            LOG.trace("[{}] Direct nodeValueOutputs clear failed: {}", modelIdentifier, fieldEx.getMessage());
+                        }
+
+                        if (!clearedField) {
+                            // LAST RESORT: clearAllCaches() — will also clear the plan cache,
+                            // causing one recompile next call.  Accepted here only because we have
+                            // no other way to free the activation leak.
+                            try {
+                                java.lang.reflect.Method clearAll =
+                                        session.getClass().getMethod("clearAllCaches");
+                                clearAll.invoke(session);
+                                clearPath = "clearAllCaches (last-resort — plan cache also cleared, expect 1 recompile)";
+                                LOG.trace("[{}] InferenceSession.clearAllCaches() done (last-resort)", modelIdentifier);
+                            } catch (NoSuchMethodException ignored2) {
+                                clearPath = "no-method-found (WARN: activation leak not mitigated)";
+                            }
+                        }
+                    }
+                } else {
+                    clearPath = "session-null";
+                }
+            } catch (NoSuchMethodException ignored) {
+                // getOrCreateSession not present — no per-call session to clear
+                clearPath = "no-getOrCreateSession";
+            }
+
+            // Emit the confirmation log exactly once per encoder lifetime so it is visible
+            // at startup without flooding per-batch output.
+            if (clearPathLogged.compareAndSet(false, true)) {
+                if (clearPath.startsWith("clearNodeOutputsOnly") || clearPath.startsWith("nodeValueOutputs-field")) {
+                    LOG.info("[{}] embedding session cache clear active: {} (plan cache preserved, clearOpInputs={})",
+                            modelIdentifier, clearPath, clearedOpInputs);
+                } else if (clearPath.startsWith("clearAllCaches")) {
+                    LOG.warn("[{}] embedding session cache clear active: clearAllCaches (LAST RESORT) — "
+                            + "plan cache is also cleared on every call; DSP plan will recompile next call; "
+                            + "upgrade nd4j for clearNodeOutputsOnly to prevent per-request recompilation",
+                            modelIdentifier);
+                } else {
+                    LOG.warn("[{}] embedding session cache clear: no effective clear method found (path={}) — "
+                            + "activation leak NOT mitigated; check nd4j-api version",
+                            modelIdentifier, clearPath);
+                }
+            }
+        } catch (Exception e) {
+            LOG.trace("[{}] Could not clear SameDiff session caches: {}", modelIdentifier, e.getMessage());
+        }
+    }
+
+    /**
+     * Walk the class hierarchy to find a field by name (including superclasses).
+     * Returns the first match or {@code null} if not found.
+     */
+    private static java.lang.reflect.Field findFieldInHierarchy(Class<?> clazz, String fieldName) {
+        for (Class<?> c = clazz; c != null && c != Object.class; c = c.getSuperclass()) {
+            try {
+                return c.getDeclaredField(fieldName);
+            } catch (NoSuchFieldException ignored) {
+                // Continue up the hierarchy
+            }
+        }
+        return null;
     }
 
     /**

@@ -23,6 +23,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -33,9 +34,19 @@ import java.util.stream.Collectors;
 
 /**
  * JPA-based implementation of the KnowledgeGraphService interface.
- * MatrixKnowledgeGraphService is the primary implementation.
+ *
+ * <p><b>DISABLED</b> — {@link ai.kompile.knowledgegraph.matrix.service.MatrixKnowledgeGraphService}
+ * is the {@code @Primary} active implementation. This class is kept as a compile reference and
+ * fallback; it will only be instantiated if {@code kompile.jpa.graph.enabled=true} is set
+ * explicitly (not the default). The JPA graph tables ({@code graph_nodes}, {@code graph_edges},
+ * {@code entity_mentions}) are empty on the live matrix/vector store path.</p>
+ *
+ * @deprecated Use {@link ai.kompile.knowledgegraph.matrix.service.MatrixKnowledgeGraphService} via the
+ *     {@link KnowledgeGraphService} interface.
  */
+@Deprecated
 @Service
+@ConditionalOnProperty(name = "kompile.jpa.graph.enabled", havingValue = "true")
 @Slf4j
 public class KnowledgeGraphServiceImpl implements KnowledgeGraphService {
 
@@ -619,8 +630,8 @@ public class KnowledgeGraphServiceImpl implements KnowledgeGraphService {
             nodes.add(nodeRepository.findByNodeId(rootNodeId).orElseThrow());
             nodes.addAll(getConnectedNodes(rootNodeId, depth));
 
-            // Limit nodes
-            if (nodes.size() > maxNodes) {
+            // maxNodes <= 0 means unlimited — apply limit only when explicitly requested
+            if (maxNodes > 0 && nodes.size() > maxNodes) {
                 nodes = nodes.subList(0, maxNodes);
             }
 
@@ -631,11 +642,12 @@ public class KnowledgeGraphServiceImpl implements KnowledgeGraphService {
                              nodeIds.contains(e.getTargetNode().getNodeId()))
                 .collect(Collectors.toList());
         } else {
-            // Get all nodes with limit
-            nodes = nodeRepository.findAll();
-            if (nodes.size() > maxNodes) {
+            // Get all nodes; maxNodes <= 0 means unlimited
+            List<GraphNode> allNodes = nodeRepository.findAll();
+            int totalAvailable = allNodes.size();
+            if (maxNodes > 0 && totalAvailable > maxNodes) {
                 // Prioritize sources and documents
-                nodes = nodes.stream()
+                nodes = allNodes.stream()
                     .sorted((a, b) -> {
                         int typeOrder = getTypeOrder(a.getNodeType()) - getTypeOrder(b.getNodeType());
                         if (typeOrder != 0) return typeOrder;
@@ -643,6 +655,8 @@ public class KnowledgeGraphServiceImpl implements KnowledgeGraphService {
                     })
                     .limit(maxNodes)
                     .collect(Collectors.toList());
+            } else {
+                nodes = allNodes;
             }
 
             Set<String> nodeIds = nodes.stream().map(GraphNode::getNodeId).collect(Collectors.toSet());
@@ -661,13 +675,20 @@ public class KnowledgeGraphServiceImpl implements KnowledgeGraphService {
             .map(this::edgeToVisualizationMap)
             .collect(Collectors.toList());
 
+        // Include totalAvailable so the UI can show "showing N of M" when bounded
+        long totalNodeCount = nodeRepository.count();
+        long totalEdgeCount = edgeRepository.count();
+        Map<String, Object> metadata = new HashMap<>();
+        metadata.put("nodeCount", nodes.size());
+        metadata.put("edgeCount", edges.size());
+        metadata.put("totalAvailableNodes", totalNodeCount);
+        metadata.put("totalAvailableEdges", totalEdgeCount);
+        metadata.put("bounded", maxNodes > 0 && nodes.size() < totalNodeCount);
+
         Map<String, Object> result = new HashMap<>();
         result.put("nodes", nodeData);
         result.put("edges", edgeData);
-        result.put("metadata", Map.of(
-            "nodeCount", nodes.size(),
-            "edgeCount", edges.size()
-        ));
+        result.put("metadata", metadata);
 
         return result;
     }
@@ -696,6 +717,7 @@ public class KnowledgeGraphServiceImpl implements KnowledgeGraphService {
             case SNIPPET -> 5;
             case ATTACHMENT -> 6;
             case IDENTIFIER -> 7;
+            case ALIAS -> 8;
         };
     }
 

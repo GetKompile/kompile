@@ -263,8 +263,9 @@ export class GraphService extends BaseService {
   /**
    * Get D3-formatted visualization data, optionally filtered by time range
    */
-  getVisualizationData(rootNodeId?: string, depth: number = 2, maxNodes: number = 100,
+  getVisualizationData(rootNodeId?: string, depth: number = 2, maxNodes: number = 0,
                        from?: string, to?: string): Observable<D3VisualizationData> {
+    // maxNodes=0 means unlimited — never silently truncate.
     let params = new HttpParams()
       .set('depth', depth.toString())
       .set('maxNodes', maxNodes.toString());
@@ -290,6 +291,40 @@ export class GraphService extends BaseService {
   getStatistics(): Observable<GraphStatistics> {
     return this.http.get<GraphStatistics>(`${this.backendUrl}${this.apiPath}/statistics`)
       .pipe(catchError(this.handleError));
+  }
+
+  /**
+   * Get a top-K visualization seeded by a centrality metric (LOD entry point).
+   * Backend: GET /api/knowledge-graph/visualization/top-k?k=&metric=&factSheetId=
+   */
+  getTopKVisualization(k: number, metric: 'pagerank' | 'degree' | 'betweenness', factSheetId?: number): Observable<D3VisualizationData> {
+    let params = new HttpParams()
+      .set('k', k.toString())
+      .set('metric', metric);
+    if (factSheetId != null) {
+      params = params.set('factSheetId', factSheetId.toString());
+    }
+    return this.http.get<RawVisualizationResponse>(`${this.backendUrl}${this.apiPath}/visualization/top-k`, { params })
+      .pipe(
+        map(response => this.transformVisualizationData(response)),
+        catchError(this.handleError)
+      );
+  }
+
+  /**
+   * Get the 1-hop neighborhood of a node for load-on-demand expansion.
+   * Backend: GET /api/knowledge-graph/nodes/{nodeId}/expand?maxNeighbors=&edgeTypes=
+   */
+  getNodeNeighborhood(nodeId: string, maxNeighbors: number = 50, edgeTypes?: EdgeType[] | string[]): Observable<D3VisualizationData> {
+    let params = new HttpParams().set('maxNeighbors', maxNeighbors.toString());
+    if (edgeTypes && edgeTypes.length > 0) {
+      params = params.set('edgeTypes', edgeTypes.join(','));
+    }
+    return this.http.get<RawVisualizationResponse>(`${this.backendUrl}${this.apiPath}/nodes/${nodeId}/expand`, { params })
+      .pipe(
+        map(response => this.transformVisualizationData(response)),
+        catchError(this.handleError)
+      );
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -367,7 +402,8 @@ export class GraphService extends BaseService {
   /**
    * Get D3-formatted visualization data for a specific fact sheet
    */
-  getFactSheetVisualizationData(factSheetId: number, maxNodes: number = 500, maxEdges: number = 1000): Observable<D3VisualizationData> {
+  getFactSheetVisualizationData(factSheetId: number, maxNodes: number = 0, maxEdges: number = 0): Observable<D3VisualizationData> {
+    // maxNodes/maxEdges=0 means unlimited — no silent truncation.
     const params = new HttpParams()
       .set('maxNodes', maxNodes.toString())
       .set('maxEdges', maxEdges.toString());

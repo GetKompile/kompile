@@ -836,7 +836,7 @@ public class InitProjectCommand implements Callable<Integer> {
             addKnownModule(extras, "ocr-models");
             addKnownModule(extras, "ocr-integration");
         }
-        if (inferredCodingProject != null) {
+        if (inferProject && inferredCodingProject != null) {
             addKnownModule(extras, "code-indexer");
         }
         if (extras.isEmpty()) {
@@ -1050,7 +1050,7 @@ public class InitProjectCommand implements Callable<Integer> {
         List<KompileProjectPipeline> pipelines = new ArrayList<>();
         List<KompileProjectScript> scripts = new ArrayList<>();
         List<KompileProjectWorkflow> workflows = new ArrayList<>();
-        if (inferredModels != null) {
+        if (inferProject && inferredModels != null) {
             for (KompileProjectModel model : inferredModels) {
                 addDetectedModelIfMissing(models, model);
             }
@@ -1094,7 +1094,7 @@ public class InitProjectCommand implements Callable<Integer> {
         if (!workflows.isEmpty()) {
             request.setWorkflows(workflows);
         }
-        if (inferredCodingProject != null) {
+        if (inferProject && inferredCodingProject != null) {
             request.setCodingProjects(List.of(inferredCodingProject));
         }
 

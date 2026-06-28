@@ -16,13 +16,24 @@
 
 package ai.kompile.embedding.anserini.config;
 
+import ai.kompile.cli.common.util.JsonUtils;
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.annotation.PostConstruct;
 import lombok.Data;
+import lombok.EqualsAndHashCode;
+import lombok.ToString;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.boot.context.properties.ConfigurationProperties;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
+import org.springframework.stereotype.Component;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -31,19 +42,35 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * Configuration for Anserini-based embedding models.
  */
-@Configuration(proxyBeanMethods = false)
-@ConditionalOnClass(name = "ai.kompile.embedding.anserini.AnseriniEmbeddingModelImpl")
-@ConditionalOnProperty(name = "kompile.embedding.anserini.enabled", havingValue = "true", matchIfMissing = true)
 public class AnseriniEmbeddingConfiguration {
 
-
-
     /**
-     * Configuration properties for Anserini embedding.
+     * Managed-JSON configuration properties for Anserini embedding.
+     * <p>
+     * Configuration is loaded from {@code <dataDir>/config/embedding-anserini-config.json} at
+     * startup and can be persisted back via {@link #persist()}. When the file is
+     * absent the class field defaults are used unchanged.
+     * </p>
      */
     @Data
-    @ConfigurationProperties(prefix = "kompile.embedding.anserini")
+    @Component
+    @ConditionalOnClass(name = "ai.kompile.embedding.anserini.AnseriniEmbeddingModelImpl")
+    @JsonIgnoreProperties(ignoreUnknown = true)
     public static class AnseriniEmbeddingProperties {
+
+        private static final Logger log = LoggerFactory.getLogger(AnseriniEmbeddingProperties.class);
+        private static final String CONFIG_FILENAME = "embedding-anserini-config.json";
+
+        @JsonIgnore
+        @EqualsAndHashCode.Exclude
+        @ToString.Exclude
+        private final Path configFilePath;
+
+        @JsonIgnore
+        @EqualsAndHashCode.Exclude
+        @ToString.Exclude
+        private final ObjectMapper objectMapper;
+
         /**
          * Whether Anserini embedding is enabled.
          */
@@ -165,50 +192,69 @@ public class AnseriniEmbeddingConfiguration {
          * The actual max is computed dynamically based on available memory.
          * Set to 0 or negative to use pure memory-based calculation.
          *
-         * Default: 0 (memory-based)
+         * <p><b>OOM safety:</b> This value is forwarded to the embedding subprocess as the
+         * {@code absoluteMaxBatchSize} parameter of {@code GenericDenseSameDiffEncoder.configureBatchSize()}.
+         * The old hardcoded value of 8192 caused 36 GB native forward-pass activations and
+         * crashed the host. The default here is conservative (same as {@code baseMaxBatchSize})
+         * and should be tuned per hardware.
+         *
+         * Default: 0 (falls back to baseMaxBatchSize — NOT memory-heap-scaled 8192)
          */
         private int absoluteMaxBatchSize = 0;
 
         /**
-         * Gets the absolute maximum batch size, calculated based on available heap memory.
-         * This allows higher batch sizes on systems with more RAM.
+         * Heap size in MB for the embedding subprocess JVM.
+         * Passed as {@code -Xmx}/{@code -Xms} to the subprocess.
          *
-         * <p>Memory-based scaling:
-         * <ul>
-         *   <li>4GB heap → 512 max</li>
-         *   <li>8GB heap → 1024 max</li>
-         *   <li>16GB heap → 2048 max</li>
-         *   <li>32GB heap → 4096 max</li>
-         *   <li>64GB+ heap → 8192 max</li>
-         * </ul>
+         * Default: 4096 (4 GB)
+         */
+        private int subprocessHeapMb = 4096;
+
+        /**
+         * JavaCPP maxphysicalbytes cap for the embedding subprocess, in MB.
+         * Passed as {@code -Dorg.bytedeco.javacpp.maxphysicalbytes=<N>m} to the subprocess
+         * so native activation memory is bounded even if the JVM heap limit is not triggered.
+         * A value of 0 means "4 × subprocessHeapMb" (the default multiplier).
          *
-         * @return computed absolute max batch size
+         * Default: 0 (auto = 4 × subprocessHeapMb)
+         */
+        private long subprocessMaxPhysicalMb = 0;
+
+        /**
+         * Returns the effective JavaCPP maxphysicalbytes value in MB.
+         * Uses {@code subprocessMaxPhysicalMb} if > 0, otherwise 4 × {@code subprocessHeapMb}.
+         */
+        public long getEffectiveSubprocessMaxPhysicalMb() {
+            if (subprocessMaxPhysicalMb > 0) {
+                return subprocessMaxPhysicalMb;
+            }
+            // Ceiling for the embedding subprocess's native memory. With per-batch session-cache clearing
+            // (InferenceSession.clearAllCaches between batches) the encode is bounded to ~model-resident +
+            // one batch's activations (the ~47MB/batch is reclaimed each batch, not accumulated), so a 32GB
+            // ceiling has ample headroom; the reactive OOM-split guard + RSS watchdog are backstops.
+            return Math.max(32768L, (long) subprocessHeapMb * 8L);
+        }
+
+        /**
+         * Gets the absolute maximum batch size sent to the encoder subprocess.
+         *
+         * <p><b>OOM safety note:</b> The old auto-scaling implementation grew this to 8192
+         * based on JVM heap (NOT native memory), which caused ~36 GB transformer forward-pass
+         * activations and crashed the host. The new default is conservative: if
+         * {@code absoluteMaxBatchSize} is not set (0), this returns {@code baseMaxBatchSize}
+         * (same value passed as the ordinary max). Operators who want larger values should
+         * set {@code absoluteMaxBatchSize} explicitly in embedding-anserini-config.json.
+         *
+         * @return the configured or defaulted absolute max batch size
          */
         public int getAbsoluteMaxBatchSize() {
-            // If explicitly configured, use that as a ceiling
+            // If explicitly configured and positive, use it.
             if (absoluteMaxBatchSize > 0) {
                 return absoluteMaxBatchSize;
             }
-
-            // Calculate based on available heap memory
-            Runtime runtime = Runtime.getRuntime();
-            long maxHeapMb = runtime.maxMemory() / (1024 * 1024);
-
-            if (maxHeapMb >= 64 * 1024) {      // 64GB+
-                return 8192;
-            } else if (maxHeapMb >= 32 * 1024) { // 32GB
-                return 4096;
-            } else if (maxHeapMb >= 16 * 1024) { // 16GB
-                return 2048;
-            } else if (maxHeapMb >= 8 * 1024) {  // 8GB
-                return 1024;
-            } else if (maxHeapMb >= 4 * 1024) {  // 4GB
-                return 512;
-            } else if (maxHeapMb >= 2 * 1024) {  // 2GB
-                return 256;
-            } else {
-                return 128; // Minimum safe default
-            }
+            // Default: same as baseMaxBatchSize — the native-memory pressure guard in the
+            // encoder will halve further if needed, but we do not auto-inflate to 8192.
+            return Math.max(1, baseMaxBatchSize);
         }
 
         /**
@@ -242,6 +288,22 @@ public class AnseriniEmbeddingConfiguration {
          * Default: 60000 (60 seconds) - general requests should complete quickly
          */
         private long requestTimeoutMs = 60000;
+
+        /**
+         * Timeout in milliseconds for the LoadModel request specifically.
+         * CPU SameDiff/DSP model warm-up can take ~111s or more; the general
+         * {@code requestTimeoutMs} (60s) fires before load completes and triggers
+         * a crash-loop.  This separate knob lets model load succeed without
+         * raising the timeout for all other short-lived requests.
+         *
+         * <p>Configurable via the JSON config file.
+         *
+         * <p>Set to 0 or negative to fall back to {@code requestTimeoutMs}
+         * (or no timeout if that is also 0).
+         *
+         * Default: 240000 (4 minutes) — covers observed ~111s CPU warm-up with ample headroom.
+         */
+        private long loadModelTimeoutMs = 240000;
 
         /**
          * Timeout in milliseconds for subprocess heartbeat detection.
@@ -278,6 +340,58 @@ public class AnseriniEmbeddingConfiguration {
          * These take precedence over global settings.
          */
         private final Map<String, BatchSizeOverride> modelOverrides = new ConcurrentHashMap<>();
+
+        public AnseriniEmbeddingProperties(@Value("${kompile.data.dir:#{null}}") String dataDir) {
+            String effectiveDataDir = dataDir;
+            if (effectiveDataDir == null || effectiveDataDir.isBlank()) {
+                effectiveDataDir = System.getProperty("user.home") + "/.kompile";
+            }
+            this.objectMapper = JsonUtils.newStandardMapper();
+            this.configFilePath = Paths.get(effectiveDataDir, "config", CONFIG_FILENAME);
+            log.info("AnseriniEmbeddingProperties initialized, config path: {}", configFilePath);
+        }
+
+        /**
+         * Loads the JSON config file on startup, overlaying values onto this instance.
+         * When the file is absent all field defaults are kept as-is. Never throws.
+         */
+        @PostConstruct
+        public void init() {
+            if (!Files.exists(configFilePath)) {
+                log.info("No Anserini embedding config found at {} — using defaults", configFilePath);
+                return;
+            }
+            try {
+                String json = Files.readString(configFilePath);
+                // readerForUpdating calls setters on *this* for each present key;
+                // absent keys keep their existing (default) values.
+                objectMapper.readerForUpdating(this).readValue(json);
+                log.info("Loaded Anserini embedding config from {}: enabled={}, modelIdentifier={}",
+                        configFilePath, enabled, modelIdentifier);
+            } catch (IOException e) {
+                log.warn("Could not read Anserini embedding config from {} — using defaults: {}",
+                        configFilePath, e.getMessage());
+            }
+        }
+
+        /**
+         * Persists the current field values to {@code <dataDir>/config/embedding-anserini-config.json}
+         * as pretty-printed JSON. Parent directories are created if absent.
+         */
+        public void persist() {
+            try {
+                Path parent = configFilePath.getParent();
+                if (!Files.exists(parent)) {
+                    Files.createDirectories(parent);
+                    log.info("Created config directory: {}", parent);
+                }
+                String json = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(this);
+                Files.writeString(configFilePath, json);
+                log.info("Persisted Anserini embedding config to {}", configFilePath);
+            } catch (IOException e) {
+                log.error("Failed to persist Anserini embedding config to {}: {}", configFilePath, e.getMessage(), e);
+            }
+        }
 
         /**
          * Gets the effective optimal batch size for a model.
@@ -426,14 +540,5 @@ public class AnseriniEmbeddingConfiguration {
         public static BatchSizeOverride of(int optimalBatchSize, int maxBatchSize, double memoryScaleFactor) {
             return new BatchSizeOverride(optimalBatchSize, maxBatchSize, memoryScaleFactor);
         }
-    }
-
-    /**
-     * Creates the configuration properties bean.
-     */
-    @Bean
-    @ConfigurationProperties(prefix = "kompile.embedding.anserini")
-    public AnseriniEmbeddingProperties anseriniEmbeddingProperties() {
-        return new AnseriniEmbeddingProperties();
     }
 }

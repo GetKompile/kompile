@@ -16,15 +16,48 @@
 
 package ai.kompile.evaluation;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.annotation.PostConstruct;
 import lombok.Data;
-import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Component;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 
 /**
- * Configuration properties for RAG evaluation.
+ * Managed-JSON config service for RAG evaluation settings.
+ * Configuration is loaded from and persisted to
+ * {@code <dataDir>/config/evaluation-config.json} rather than
+ * application.properties.
  */
 @Data
-@ConfigurationProperties(prefix = "kompile.evaluation")
+@Component
+@JsonIgnoreProperties({"configFilePath", "objectMapper"})
 public class EvaluationProperties {
+
+    private static final Logger log = LoggerFactory.getLogger(EvaluationProperties.class);
+    private static final String CONFIG_FILENAME = "evaluation-config.json";
+
+    private Path configFilePath;
+    private ObjectMapper objectMapper;
+
+    @Autowired
+    public EvaluationProperties(@Value("${kompile.data.dir:#{null}}") String dataDir) {
+        String effectiveDataDir = dataDir;
+        if (effectiveDataDir == null || effectiveDataDir.isBlank()) {
+            effectiveDataDir = System.getProperty("user.home") + "/.kompile";
+        }
+        this.configFilePath = Paths.get(effectiveDataDir, "config", CONFIG_FILENAME);
+        this.objectMapper = new ObjectMapper();
+        log.info("EvaluationProperties initialized, config path: {}", configFilePath);
+    }
 
     /**
      * Whether evaluation is enabled.
@@ -85,6 +118,45 @@ public class EvaluationProperties {
      * Relationship presence evaluation configuration.
      */
     private EvaluatorConfig relationshipPresence = new EvaluatorConfig();
+
+    /**
+     * Loads configuration from the JSON file if it exists.
+     * Field defaults are preserved when the file is absent or unreadable.
+     */
+    @PostConstruct
+    public void loadConfig() {
+        if (!Files.exists(configFilePath)) {
+            log.info("No evaluation config found at {} - using defaults", configFilePath);
+            return;
+        }
+        try {
+            String json = Files.readString(configFilePath);
+            objectMapper.readerForUpdating(this).readValue(json);
+            log.info("Loaded evaluation config from {}", configFilePath);
+        } catch (IOException e) {
+            log.error("Failed to load evaluation config from {}: {} - using defaults",
+                    configFilePath, e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Persists current field values to the JSON config file.
+     * Parent directories are created automatically.
+     */
+    public void persist() {
+        try {
+            Path parentDir = configFilePath.getParent();
+            if (!Files.exists(parentDir)) {
+                Files.createDirectories(parentDir);
+                log.info("Created config directory: {}", parentDir);
+            }
+            String json = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(this);
+            Files.writeString(configFilePath, json);
+            log.info("Persisted evaluation config to {}", configFilePath);
+        } catch (IOException e) {
+            log.error("Failed to persist evaluation config to {}: {}", configFilePath, e.getMessage(), e);
+        }
+    }
 
     @Data
     public static class EvaluatorConfig {

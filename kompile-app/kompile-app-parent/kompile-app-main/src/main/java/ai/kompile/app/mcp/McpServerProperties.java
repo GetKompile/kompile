@@ -16,32 +16,40 @@
 
 package ai.kompile.app.mcp;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.annotation.PostConstruct;
 import lombok.Getter;
 import lombok.Setter;
-import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+
 /**
- * Configuration properties for the MCP (Model Context Protocol) server.
- *
- * Configuration prefix: mcp.server
- *
- * Example configuration:
- * <pre>
- * mcp.server.enabled=true
- * mcp.server.name=kompile-mcp-server
- * mcp.server.version=1.0.0
- * mcp.server.transport=sse
- * mcp.server.sse.endpoint=/mcp/sse
- * mcp.server.sse.message-endpoint=/mcp/message
- * mcp.server.sse.timeout=300000
- * </pre>
+ * Managed-JSON configuration service for the MCP (Model Context Protocol) server.
+ * Reads from and persists to &lt;dataDir&gt;/config/mcp-server-config.json.
+ * Eliminates application.properties-based configuration under the mcp.server.* prefix.
  */
 @Component
-@ConfigurationProperties(prefix = "mcp.server")
 @Getter
 @Setter
 public class McpServerProperties {
+
+    private static final Logger log = LoggerFactory.getLogger(McpServerProperties.class);
+    public static final String CONFIG_FILENAME = "mcp-server-config.json";
+
+    @JsonIgnore
+    private final ObjectMapper objectMapper;
+
+    @JsonIgnore
+    private final Path configFilePath;
 
     /**
      * Whether the MCP server is enabled.
@@ -72,6 +80,98 @@ public class McpServerProperties {
      * Action logging configuration.
      */
     private ActionLog actionLog = new ActionLog();
+
+    public McpServerProperties(@Value("${kompile.data.dir:#{null}}") String dataDir) {
+        this.objectMapper = new ObjectMapper();
+
+        String effectiveDataDir = dataDir;
+        if (effectiveDataDir == null || effectiveDataDir.isBlank()) {
+            effectiveDataDir = System.getProperty("user.home") + "/.kompile";
+        }
+        this.configFilePath = Paths.get(effectiveDataDir, "config", CONFIG_FILENAME);
+        log.info("McpServerProperties initialized, config path: {}", configFilePath);
+    }
+
+    /**
+     * Loads persisted configuration on startup.
+     * Overlays values from the JSON file onto the field defaults.
+     * When the file is absent keeps the field defaults. Never throws.
+     */
+    @PostConstruct
+    public void load() {
+        if (!Files.exists(configFilePath)) {
+            log.info("No persisted MCP server config found at {} - using defaults", configFilePath);
+            return;
+        }
+        try {
+            String json = Files.readString(configFilePath);
+            log.info("Loading MCP server config from {} ({} bytes)", configFilePath, json.length());
+            JsonNode node = objectMapper.readTree(json);
+
+            if (node.has("enabled")) {
+                this.enabled = node.get("enabled").asBoolean(this.enabled);
+            }
+            if (node.has("name") && !node.get("name").isNull()) {
+                this.name = node.get("name").asText(this.name);
+            }
+            if (node.has("version") && !node.get("version").isNull()) {
+                this.version = node.get("version").asText(this.version);
+            }
+            if (node.has("transport") && !node.get("transport").isNull()) {
+                this.transport = node.get("transport").asText(this.transport);
+            }
+            if (node.has("sse") && !node.get("sse").isNull()) {
+                JsonNode sseNode = node.get("sse");
+                Sse loadedSse = new Sse();
+                if (sseNode.has("endpoint") && !sseNode.get("endpoint").isNull()) {
+                    loadedSse.setEndpoint(sseNode.get("endpoint").asText(loadedSse.getEndpoint()));
+                }
+                if (sseNode.has("messageEndpoint") && !sseNode.get("messageEndpoint").isNull()) {
+                    loadedSse.setMessageEndpoint(sseNode.get("messageEndpoint").asText(loadedSse.getMessageEndpoint()));
+                }
+                if (sseNode.has("timeout")) {
+                    loadedSse.setTimeout(sseNode.get("timeout").asLong(loadedSse.getTimeout()));
+                }
+                this.sse = loadedSse;
+            }
+            if (node.has("actionLog") && !node.get("actionLog").isNull()) {
+                JsonNode alNode = node.get("actionLog");
+                ActionLog loadedAl = new ActionLog();
+                if (alNode.has("enabled")) {
+                    loadedAl.setEnabled(alNode.get("enabled").asBoolean(loadedAl.isEnabled()));
+                }
+                if (alNode.has("maxEntries")) {
+                    loadedAl.setMaxEntries(alNode.get("maxEntries").asInt(loadedAl.getMaxEntries()));
+                }
+                if (alNode.has("retentionHours")) {
+                    loadedAl.setRetentionHours(alNode.get("retentionHours").asInt(loadedAl.getRetentionHours()));
+                }
+                this.actionLog = loadedAl;
+            }
+            log.info("MCP server config loaded: enabled={}, transport={}, name={}", enabled, transport, name);
+        } catch (IOException e) {
+            log.error("Failed to load MCP server config from {}: {} - using defaults", configFilePath, e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Persists current field values to configFilePath as pretty-printed JSON.
+     * Creates parent directories if they do not exist. Never throws.
+     */
+    public void persist() {
+        try {
+            Path parentDir = configFilePath.getParent();
+            if (!Files.exists(parentDir)) {
+                Files.createDirectories(parentDir);
+                log.info("Created config directory: {}", parentDir);
+            }
+            String json = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(this);
+            Files.writeString(configFilePath, json);
+            log.info("Persisted MCP server config to {}", configFilePath);
+        } catch (IOException e) {
+            log.error("Failed to persist MCP server config to {}: {}", configFilePath, e.getMessage(), e);
+        }
+    }
 
     /**
      * SSE transport configuration.

@@ -24,6 +24,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.lang.management.BufferPoolMXBean;
+import java.lang.management.GarbageCollectorMXBean;
 import java.lang.management.ManagementFactory;
 import java.util.List;
 import java.util.concurrent.Executors;
@@ -120,6 +121,15 @@ public class SubprocessMemoryWatchdog implements AutoCloseable {
     // Velocity-based early warning
     private final AtomicBoolean rapidMemoryGrowth = new AtomicBoolean(false);
     private static final double RAPID_GROWTH_THRESHOLD_PERCENT_PER_SECOND = 5.0; // 5% per second is dangerous
+
+    // GC-churn detection: fraction of wall-clock spent in GC over the last check interval. Sustained
+    // high churn (heap thrashing) degrades throughput and precedes batch failures/retries, so we
+    // surface it as a health WARN. Threshold configurable; default 0.5 (50% of the interval in GC).
+    private volatile long lastGcCheckTimeMs = 0;
+    private volatile long lastGcCollectionTimeMs = 0;
+    private final AtomicBoolean gcChurn = new AtomicBoolean(false);
+    private final double gcChurnThresholdFraction =
+            parseFractionProperty("kompile.subprocess.gcChurnThresholdFraction", 0.5);
 
     // State flags
     private final AtomicBoolean shouldStop = new AtomicBoolean(false);
@@ -500,6 +510,31 @@ public class SubprocessMemoryWatchdog implements AutoCloseable {
     /**
      * Main memory check logic.
      */
+    /** Sum of GC collection time across all collectors (ms); -1 entries are treated as 0. */
+    private static long totalGcCollectionTimeMs() {
+        long total = 0;
+        for (GarbageCollectorMXBean gc : ManagementFactory.getGarbageCollectorMXBeans()) {
+            long t = gc.getCollectionTime();
+            if (t > 0) {
+                total += t;
+            }
+        }
+        return total;
+    }
+
+    /** Parse a 0..1 fraction system property; clamps to [0,1], falls back to {@code def}. */
+    private static double parseFractionProperty(String key, double def) {
+        try {
+            String v = System.getProperty(key);
+            if (v == null || v.isBlank()) {
+                return def;
+            }
+            return Math.max(0.0, Math.min(1.0, Double.parseDouble(v.trim())));
+        } catch (NumberFormatException e) {
+            return def;
+        }
+    }
+
     private void checkMemory() {
         try {
             MemorySnapshot snapshot = captureSnapshot();
@@ -535,6 +570,36 @@ public class SubprocessMemoryWatchdog implements AutoCloseable {
             }
             lastVelocityCheckTimeMs = now;
             lastHeapUsagePercent = usagePercent;
+
+            // GC churn: fraction of the last interval spent in garbage collection. Sustained high
+            // churn means the heap is thrashing — it slows the subprocess and tends to precede
+            // batch failures/retries (e.g. UnsupportedOperationException on a stressed workspace).
+            // Surface it as a WARN (with hysteresis) so the pressure is visible before it bites.
+            long gcNow = totalGcCollectionTimeMs();
+            if (lastGcCheckTimeMs > 0) {
+                long wallDelta = now - lastGcCheckTimeMs;
+                long gcDelta = Math.max(0, gcNow - lastGcCollectionTimeMs);
+                if (wallDelta > 0) {
+                    double gcFraction = (double) gcDelta / wallDelta;
+                    if (gcFraction >= gcChurnThresholdFraction) {
+                        if (!gcChurn.get()) {
+                            gcChurn.set(true);
+                            logger.warn("GC CHURN DETECTED: {}% of the last {}ms spent in GC ({}ms) "
+                                    + "— heap pressure degrading throughput (heap at {}%)",
+                                    String.format("%.0f", gcFraction * 100), wallDelta, gcDelta,
+                                    String.format("%.1f", usagePercent));
+                        }
+                    } else if (gcFraction < gcChurnThresholdFraction - 0.1) {
+                        if (gcChurn.get()) {
+                            gcChurn.set(false);
+                            logger.info("GC churn subsided: {}% of last interval in GC",
+                                    String.format("%.0f", gcFraction * 100));
+                        }
+                    }
+                }
+            }
+            lastGcCheckTimeMs = now;
+            lastGcCollectionTimeMs = gcNow;
 
             // Check kill threshold first (most severe) - HEAP
             if (memoryKillThresholdPercent > 0 && usagePercent >= memoryKillThresholdPercent) {

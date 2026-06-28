@@ -1,0 +1,5 @@
+# Seeds the irreducible Spring framework bootstrap defaults (datasource, web server, MCP server,
+# per-project data root) so app-main and every generated RAG instance run with NO application.properties.
+# Lives in app-main so subprocesses (app-core-only) are not affected. Lowest precedence — explicit sources win.
+org.springframework.boot.env.EnvironmentPostProcessor=\
+  ai.kompile.app.config.KompileBootstrapEnvironmentPostProcessor

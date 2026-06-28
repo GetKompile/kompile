@@ -158,10 +158,20 @@ public class CliTranscriptSyncService {
                         totalImported++;
                         status.sourceImported++;
                     } catch (Exception e) {
-                        totalFailed++;
-                        status.sourceFailed++;
-                        log.warn("CLI transcript sync: failed to import session {} from {}: {}",
-                                session.sessionId(), adapter.id(), e.getMessage());
+                        String msg = e.getMessage();
+                        if (msg != null && msg.contains("No messages found")) {
+                            // Expected empty/placeholder session (e.g. opencode probe/test sessions with no
+                            // turns) — this is a SKIP, not a failure. Log at DEBUG so it doesn't flood the log
+                            // at WARN every 5-min sync cycle (was ~115 WARN lines/run), and don't inflate the
+                            // failure count with non-failures.
+                            log.debug("CLI transcript sync: skipped empty session {} from {}",
+                                    session.sessionId(), adapter.id());
+                        } else {
+                            totalFailed++;
+                            status.sourceFailed++;
+                            log.warn("CLI transcript sync: failed to import session {} from {}: {}",
+                                    session.sessionId(), adapter.id(), msg);
+                        }
                     }
 
                     // Publish progress every 5 sessions or on the last one

@@ -25,6 +25,7 @@ import ai.kompile.core.graphrag.model.Relationship;
 import ai.kompile.core.graphrag.model.schema.GraphSchema;
 import ai.kompile.core.graphrag.model.schema.SchemaEnforcementMode;
 import ai.kompile.core.llm.chat.LLMChat;
+import ai.kompile.core.llm.fallback.LlmFallbackExecutor;
 import ai.kompile.core.retrievers.RetrievedDoc;
 import ai.kompile.knowledgegraph.matrix.model.AdjacencyMatrixGraph;
 import ai.kompile.knowledgegraph.matrix.model.MatrixGraphNode;
@@ -35,7 +36,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -55,7 +55,6 @@ import java.util.stream.Collectors;
  * </p>
  */
 @Service
-@Primary
 @Slf4j
 public class MatrixGraphConstructor implements GraphConstructor {
 
@@ -73,6 +72,15 @@ public class MatrixGraphConstructor implements GraphConstructor {
      */
     @Autowired(required = false)
     private LlmTranscriptLogger transcriptLogger;
+
+    /**
+     * Optional model-fallback executor injected by kompile-app-main.
+     * When present, LLM calls in {@code extractBatched} are routed through this executor
+     * which automatically retries with the next agent/model on timeout or throttle signals.
+     * When absent, a direct {@code llmChat} call is used as before.
+     */
+    @Autowired(required = false)
+    private LlmFallbackExecutor fallbackExecutor;
 
     /** No-arg constructor for Spring. */
     public MatrixGraphConstructor() {}
@@ -101,7 +109,7 @@ public class MatrixGraphConstructor implements GraphConstructor {
     @Override
     public Graph constructGraphFromDocs(List<RetrievedDoc> docs, GraphSchema schema,
                                          SchemaEnforcementMode enforcementMode) {
-        String graphId = "graph-" + UUID.randomUUID();
+        String graphId = MatrixKnowledgeGraphService.graphIdForFactSheet(null);
         AdjacencyMatrixGraph matrixGraph = graphStore.createGraph(graphId, null);
 
         List<ExtractedGraphDTO.ExtractedEntity> allEntities = new ArrayList<>();
@@ -177,7 +185,7 @@ public class MatrixGraphConstructor implements GraphConstructor {
     public GraphConstructionResult constructGraphWithId(List<RetrievedDoc> docs, GraphSchema schema,
                                                          SchemaEnforcementMode enforcementMode,
                                                          Long factSheetId) {
-        String graphId = "graph-" + (factSheetId != null ? factSheetId + "-" : "") + UUID.randomUUID();
+        String graphId = MatrixKnowledgeGraphService.graphIdForFactSheet(factSheetId);
         AdjacencyMatrixGraph matrixGraph = graphStore.createGraph(graphId, factSheetId);
 
         List<ExtractedGraphDTO.ExtractedEntity> allEntities = new ArrayList<>();
@@ -243,16 +251,21 @@ public class MatrixGraphConstructor implements GraphConstructor {
     public record GraphConstructionResult(String graphId, Graph graph) {}
 
     /**
-     * Maximum characters per batched LLM prompt. LLMs easily handle 100k+ tokens, so we batch
-     * aggressively to minimize API round-trips.
+     * Maximum characters per batched LLM prompt for the constructor's internal re-batching.
      *
-     * <p>This is an upper safety bound on the constructor's <em>internal</em> re-batching only. The
-     * caller (e.g. {@code GraphExtractionOrchestrator}) is the real sizing authority — it now hands
-     * us output-token-safe, adaptively-sized batches — so this ceiling is raised well above the
-     * orchestrator's max char budget to ensure we never re-split a batch the caller deliberately
-     * sized. Keep it ≥ the orchestrator's remote {@code maxChars} cap.</p>
+     * <p>This is a <em>pass-through safety ceiling</em> only — the caller
+     * ({@link ai.kompile.crawl.graph.GraphExtractionOrchestrator}) is the real sizing authority.
+     * It hands us output-token-safe, adaptively-sized batches via the AIMD char sizer, so this
+     * value must be large enough to <em>never</em> re-split a batch the caller deliberately sized.</p>
+     *
+     * <p>Raised from 300 000 to 3 000 000 chars (≈ 750 000 tokens) so a 1 M-token-context model
+     * (e.g. DeepSeek V4 / opencode-cli) receives the full orchestrator batch in a single LLM call
+     * rather than being silently re-split here. The orchestrator's own yield-gated AIMD sizer
+     * (starting at ~10 % of {@code maxInputChars} ≈ 396 k chars for DeepSeek) enforces the
+     * real per-call budget; this constant just ensures the constructor does not undo that work.
+     * For small-context models the orchestrator batch is already small, so this cap is never hit.</p>
      */
-    private static final int BATCH_PROMPT_MAX_CHARS = 300_000;
+    private static final int BATCH_PROMPT_MAX_CHARS = 3_000_000;
 
     /**
      * Extracts entities and relationships from docs by batching multiple documents
@@ -319,7 +332,12 @@ public class MatrixGraphConstructor implements GraphConstructor {
 
                 long llmCallStart = System.currentTimeMillis();
                 try {
-                    jsonResponse = llmChat.prompt().user(prompt).call().content();
+                    if (fallbackExecutor != null) {
+                        jsonResponse = fallbackExecutor.executeWithFallback(prompt, "graph-constructor",
+                                r -> parseExtractionResponse(r) != null);
+                    } else {
+                        jsonResponse = llmChat.prompt().user(prompt).call().content();
+                    }
                     llmSuccess = jsonResponse != null && !jsonResponse.isBlank();
                 } catch (Exception llmEx) {
                     llmErrorMsg = llmEx.getMessage() != null ? llmEx.getMessage() : llmEx.getClass().getSimpleName();
@@ -422,7 +440,7 @@ public class MatrixGraphConstructor implements GraphConstructor {
                                          SchemaEnforcementMode enforcementMode,
                                          boolean skipEmbedding, boolean skipMatrixGraph,
                                          ProgressListener progressListener) {
-        String graphId = skipMatrixGraph ? null : "graph-" + UUID.randomUUID();
+        String graphId = skipMatrixGraph ? null : MatrixKnowledgeGraphService.graphIdForFactSheet(null);
         if (!skipMatrixGraph) {
             graphStore.createGraph(graphId, null);
         }

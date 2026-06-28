@@ -24,6 +24,7 @@ import ai.kompile.knowledgegraph.grounding.FactSheetKbState;
 import ai.kompile.knowledgegraph.grounding.KbGroundingService;
 import ai.kompile.knowledgegraph.reasoning.IncrementalReasoningOrchestrator;
 import ai.kompile.knowledgegraph.reasoning.OntologyToPslRuleCompiler;
+import ai.kompile.knowledgegraph.reasoning.TraceHumanizer;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -110,6 +111,11 @@ public class GraphRulesController {
     @Value("${kompile.data.dir:#{null}}")
     String dataDir;
 
+    /** Optional: humanizes raw PSL rule text for the rules browser. Null-safe. */
+    @Nullable
+    @Autowired(required = false)
+    private TraceHumanizer traceHumanizer;
+
     @Autowired
     public GraphRulesController(KbGroundingService kbGroundingService) {
         this.kbGroundingService = kbGroundingService;
@@ -138,7 +144,7 @@ public class GraphRulesController {
             if (!factStore.isEmpty()) {
                 PslProgram program = IncrementalReasoningOrchestrator.buildProgramFromFactStore(factStore);
                 for (PslRule rule : program.rules()) {
-                    rules.add(RuleDto.fromPslRule(rule, "PSL"));
+                    rules.add(RuleDto.fromPslRule(rule, "PSL", traceHumanizer));
                 }
                 log.debug("GraphRulesController: factSheet={} — {} PSL rules from FactStore",
                         factSheetId, program.rules().size());
@@ -163,7 +169,7 @@ public class GraphRulesController {
                         for (String ruleStr : ruleStrings) {
                             try {
                                 PslRule parsed = PslRule.parse(ruleStr);
-                                rules.add(RuleDto.fromPslRule(parsed, "ONTOLOGY"));
+                                rules.add(RuleDto.fromPslRule(parsed, "ONTOLOGY", traceHumanizer));
                             } catch (Exception parseEx) {
                                 log.warn("GraphRulesController: could not parse ontology rule '{}' — {}",
                                         ruleStr, parseEx.getMessage());
@@ -194,7 +200,7 @@ public class GraphRulesController {
                                      if (trimmed.isEmpty() || trimmed.startsWith("#")) continue;
                                      try {
                                          PslRule parsed = PslRule.parse(trimmed);
-                                         rules.add(RuleDto.fromPslRule(parsed, "FILE_PSL"));
+                                         rules.add(RuleDto.fromPslRule(parsed, "FILE_PSL", traceHumanizer));
                                      } catch (Exception parseEx) {
                                          log.warn("GraphRulesController: could not parse FILE_PSL rule '{}' — {}",
                                                  trimmed, parseEx.getMessage());
@@ -233,7 +239,9 @@ public class GraphRulesController {
             double weight,
             boolean hard,
             String head,
-            String body
+            String body,
+            /** Humanized rule text (derived_/^N stripped, → arrows); falls back to ruleText. */
+            String displayText
     ) {
         /**
          * Build a {@link RuleDto} from a {@link PslRule} and its source kind tag.
@@ -242,7 +250,7 @@ public class GraphRulesController {
          * " & " (body), consistent with the canonical PSL text format. For 0-atom sides an
          * empty string is returned.</p>
          */
-        static RuleDto fromPslRule(PslRule rule, String kind) {
+        static RuleDto fromPslRule(PslRule rule, String kind, TraceHumanizer humanizer) {
             String headStr = rule.head().stream()
                     .map(Object::toString)
                     .reduce((a, b) -> a + " | " + b)
@@ -251,13 +259,16 @@ public class GraphRulesController {
                     .map(Object::toString)
                     .reduce((a, b) -> a + " & " + b)
                     .orElse("");
+            String ruleText = rule.toString();
+            String display = humanizer != null ? humanizer.humanizeRule(ruleText) : ruleText;
             return new RuleDto(
                     kind,
-                    rule.toString(),
+                    ruleText,
                     rule.weight(),
                     rule.hard(),
                     headStr,
-                    bodyStr
+                    bodyStr,
+                    display
             );
         }
     }

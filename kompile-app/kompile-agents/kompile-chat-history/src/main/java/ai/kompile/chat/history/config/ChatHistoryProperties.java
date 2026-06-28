@@ -16,17 +16,52 @@
 
 package ai.kompile.chat.history.config;
 
+import ai.kompile.cli.common.util.JsonUtils;
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.annotation.PostConstruct;
+import lombok.AccessLevel;
 import lombok.Data;
-import org.springframework.boot.context.properties.ConfigurationProperties;
+import lombok.EqualsAndHashCode;
+import lombok.Getter;
+import lombok.Setter;
+import lombok.ToString;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 
 /**
  * Configuration properties for chat history.
+ * Values are loaded from {@code <dataDir>/config/chat-history-config.json} on startup
+ * and can be persisted back via {@link #persist()}.
  */
 @Data
 @Component
-@ConfigurationProperties(prefix = "kompile.chat.history")
 public class ChatHistoryProperties {
+
+    private static final Logger log = LoggerFactory.getLogger(ChatHistoryProperties.class);
+    private static final String CONFIG_FILENAME = "chat-history-config.json";
+
+    @JsonIgnore
+    @Getter(AccessLevel.NONE)
+    @Setter(AccessLevel.NONE)
+    @EqualsAndHashCode.Exclude
+    @ToString.Exclude
+    private Path configFilePath;
+
+    @JsonIgnore
+    @Getter(AccessLevel.NONE)
+    @Setter(AccessLevel.NONE)
+    @EqualsAndHashCode.Exclude
+    @ToString.Exclude
+    private ObjectMapper objectMapper;
 
     /**
      * Enable or disable chat history feature.
@@ -122,4 +157,54 @@ public class ChatHistoryProperties {
      * Maximum number of transcripts to keep (newest first). 0 disables count-based cleanup.
      */
     private int cleanupMaxPerSource = 1000;
+
+    @Autowired
+    public ChatHistoryProperties(@Value("${kompile.data.dir:#{null}}") String dataDir) {
+        this.objectMapper = JsonUtils.standardMapper();
+        String effectiveDataDir = (dataDir == null || dataDir.isBlank())
+                ? System.getProperty("user.home") + "/.kompile"
+                : dataDir;
+        this.configFilePath = Paths.get(effectiveDataDir, "config", CONFIG_FILENAME);
+        log.info("ChatHistoryProperties initialized, config path: {}", configFilePath);
+    }
+
+    /**
+     * Loads configuration from {@code <dataDir>/config/chat-history-config.json} on startup.
+     * Overlays file values onto this bean; if the file is absent or unreadable the
+     * field defaults declared above are preserved unchanged.
+     */
+    @PostConstruct
+    public void loadConfig() {
+        if (!Files.exists(configFilePath)) {
+            log.info("No chat-history config file found at {} - using defaults", configFilePath);
+            return;
+        }
+        try {
+            String json = Files.readString(configFilePath);
+            log.info("Loading chat-history config from {} ({} bytes)", configFilePath, json.length());
+            objectMapper.readerForUpdating(this).readValue(json);
+            log.info("Chat-history config loaded successfully");
+        } catch (IOException e) {
+            log.warn("Failed to read chat-history config from {} - using defaults: {}", configFilePath, e.getMessage());
+        }
+    }
+
+    /**
+     * Persists the current field values to {@code <dataDir>/config/chat-history-config.json}
+     * as pretty-printed JSON, creating parent directories as needed.
+     */
+    public void persist() {
+        try {
+            Path parent = configFilePath.getParent();
+            if (!Files.exists(parent)) {
+                Files.createDirectories(parent);
+                log.info("Created config directory: {}", parent);
+            }
+            String json = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(this);
+            Files.writeString(configFilePath, json);
+            log.info("Persisted chat-history config to {}", configFilePath);
+        } catch (IOException e) {
+            log.error("Failed to persist chat-history config to {}: {}", configFilePath, e.getMessage(), e);
+        }
+    }
 }

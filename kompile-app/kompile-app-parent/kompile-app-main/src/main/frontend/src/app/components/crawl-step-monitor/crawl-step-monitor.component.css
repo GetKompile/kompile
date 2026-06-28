@@ -238,6 +238,11 @@
   overflow: hidden;
   max-height: 360px;
 }
+/* In compact mode (fact-sheet inline card) cap height so the card doesn't explode. */
+.csm-transcripts.csm-transcripts-compact {
+  max-height: 220px;
+  overflow-y: auto;
+}
 
 /* ── Enrichment sub-stage panel ── */
 .csm-enrich-section { margin-bottom: 2px; }
@@ -342,6 +347,65 @@
   background: rgba(198, 40, 40, 0.12);
   color: #c62828;
 }
+
+/* ── Resource & model-routing decisions ── */
+.csm-badge-resource { background: rgba(103, 58, 183, 0.12); color: #512da8; }
+.csm-resource-badge-live {
+  font-size: 0.6rem;
+  font-weight: 700;
+  color: #fff;
+  background: #512da8;
+  border-radius: 8px;
+  padding: 0 6px;
+  line-height: 14px;
+  animation: csm-pulse 1.6s ease-in-out infinite;
+}
+
+.csm-resource-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 200px;
+  overflow-y: auto;
+  font-size: 0.74rem;
+  margin-top: 2px;
+}
+
+.csm-resource-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.csm-resource-row mat-icon { font-size: 15px; width: 15px; height: 15px; }
+.csm-resource-icon { flex: 0 0 auto; color: var(--text-secondary); }
+.csm-resource-time { color: var(--text-tertiary); min-width: 52px; flex: 0 0 auto; }
+.csm-resource-phase { font-weight: 600; flex: 0 0 auto; }
+.csm-resource-delta { font-variant-numeric: tabular-nums; flex: 0 0 auto; }
+.csm-resource-reason { color: var(--text-secondary); flex: 0 0 auto; }
+.csm-resource-mem { color: #ef6c00; font-weight: 600; flex: 0 0 auto; font-size: 0.72rem; }
+.csm-resource-msg { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.csm-resource-detail { color: var(--text-tertiary); margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 35%; }
+
+/* Memory-pressure tuning row inherits direction colour from tuning-* */
+.csm-resource-tuning.tuning-down .csm-resource-icon { color: #ef6c00; }
+.csm-resource-tuning.tuning-up   .csm-resource-icon { color: #2e7d32; }
+.csm-resource-tuning.tuning-down { background: rgba(239, 108, 0, 0.06); }
+
+/* RESOURCE_GATE events: orange-tinted */
+.csm-resource-gate {
+  background: rgba(239, 108, 0, 0.07);
+}
+.csm-resource-gate .csm-resource-icon { color: #ef6c00; }
+.csm-resource-gate .csm-resource-phase { color: #ef6c00; }
+
+/* MODEL_ROUTING events: purple-tinted */
+.csm-resource-routing {
+  background: rgba(103, 58, 183, 0.06);
+}
+.csm-resource-routing .csm-resource-icon { color: #512da8; }
+.csm-resource-routing .csm-resource-phase { color: #512da8; }
 
 /* ── Documents ── */
 .csm-doc-row { display: flex; align-items: center; gap: 8px; padding: 2px 6px; }

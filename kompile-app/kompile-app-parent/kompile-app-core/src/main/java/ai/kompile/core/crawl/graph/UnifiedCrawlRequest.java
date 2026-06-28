@@ -256,5 +256,30 @@ public class UnifiedCrawlRequest {
         /** Safety cap on chunks packed into one extraction batch (the model-derived char budget is the
          *  primary control; this prevents item count binding before the char budget). */
         private Integer graphExtractionMaxItemsPerBatch;
+
+        /**
+         * Per-request override: when {@code Boolean.FALSE}, disable incremental content-hash
+         * skipping for this crawl even if {@code crawlIncrementalByContentHash=true} globally.
+         * When {@code Boolean.TRUE}, enable it even if the global flag is off.
+         * {@code null} = use global setting (default).
+         */
+        private Boolean incrementalByContentHash;
+
+        /**
+         * When true, force a full re-crawl for this request — every file is (re-)processed
+         * and the hash store is updated, regardless of the global
+         * {@code crawlForceFullRecrawl} flag. {@code null} = use global setting (default).
+         */
+        private Boolean forceFullRecrawl;
+
+        /**
+         * [FIX-4] When {@code Boolean.TRUE}, clear the fact sheet's graph at the very start
+         * of this crawl (before LOADING) — the crawl starts from a clean slate.
+         * When {@code Boolean.FALSE} or {@code null}, merge/update (default, non-destructive).
+         *
+         * <p>This is a destructive per-request opt-in. Use only when you need a full graph
+         * replacement rather than incremental enrichment.</p>
+         */
+        private Boolean clearGraphBeforeRun;
     }
 }

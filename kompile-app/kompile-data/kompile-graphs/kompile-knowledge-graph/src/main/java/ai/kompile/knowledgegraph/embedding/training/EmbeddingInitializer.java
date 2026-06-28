@@ -34,7 +34,11 @@ public class EmbeddingInitializer {
      */
     public static INDArray xavierUniform(int numEmbeddings, int embeddingDim) {
         double limit = Math.sqrt(6.0 / embeddingDim);
-        return Nd4j.rand(numEmbeddings, embeddingDim).mul(2 * limit).sub(limit);
+        // In-place: allocate once, scale/shift without transient copies.
+        INDArray out = Nd4j.rand(numEmbeddings, embeddingDim);
+        out.muli(2 * limit);
+        out.subi(limit);
+        return out;
     }
 
     /**
@@ -47,7 +51,11 @@ public class EmbeddingInitializer {
      */
     public static INDArray uniformTransE(int numEmbeddings, int embeddingDim) {
         double limit = 1.0 / embeddingDim;
-        return Nd4j.rand(numEmbeddings, embeddingDim).mul(2 * limit).sub(limit);
+        // In-place: allocate once, scale/shift without transient copies.
+        INDArray out = Nd4j.rand(numEmbeddings, embeddingDim);
+        out.muli(2 * limit);
+        out.subi(limit);
+        return out;
     }
 
     /**
@@ -59,7 +67,11 @@ public class EmbeddingInitializer {
      * @return Initialized embedding matrix
      */
     public static INDArray uniform(int numEmbeddings, int embeddingDim, double bound) {
-        return Nd4j.rand(numEmbeddings, embeddingDim).mul(2 * bound).sub(bound);
+        // In-place: allocate once, scale/shift without transient copies.
+        INDArray out = Nd4j.rand(numEmbeddings, embeddingDim);
+        out.muli(2 * bound);
+        out.subi(bound);
+        return out;
     }
 
     /**
@@ -72,13 +84,16 @@ public class EmbeddingInitializer {
      * @return Initialized embedding matrix
      */
     public static INDArray uniformRotatE(int numEmbeddings, int embeddingDim, boolean forRelation) {
+        INDArray out = Nd4j.rand(numEmbeddings, embeddingDim);
         if (forRelation) {
-            // Relations are phases in [0, 2π]
-            return Nd4j.rand(numEmbeddings, embeddingDim).mul(2 * Math.PI);
+            // Relations are phases in [0, 2π] — in-place: allocate once, scale without transient copy.
+            out.muli(2 * Math.PI);
         } else {
-            // Entities are uniform in [-1, 1]
-            return Nd4j.rand(numEmbeddings, embeddingDim).mul(2).sub(1);
+            // Entities are uniform in [-1, 1] — in-place: allocate once, scale/shift without transient copies.
+            out.muli(2);
+            out.subi(1);
         }
+        return out;
     }
 
     /**
@@ -89,19 +104,24 @@ public class EmbeddingInitializer {
      */
     public static INDArray normalizeRows(INDArray embeddings) {
         INDArray norms = embeddings.norm2(1);
-        // Avoid division by zero
-        norms = norms.add(1e-10);
+        // Avoid division by zero — addi is in-place so no second INDArray is allocated.
+        norms.addi(1e-10);
         return embeddings.divColumnVector(norms);
     }
 
     /**
      * L2-normalizes each row in place.
      *
+     * <p>Avoids the native-memory orphan produced by the old {@code norms = norms.add(eps)}
+     * pattern: that call created a NEW {@link INDArray} and left the original {@code norms}
+     * (from {@code norm2(1)}) unreachable without {@code close()}.  The replacement uses
+     * {@code addi(eps)} so the addition happens in-place on the single {@code norms} array.
+     *
      * @param embeddings The embedding matrix to normalize in place
      */
     public static void normalizeRowsInPlace(INDArray embeddings) {
         INDArray norms = embeddings.norm2(1);
-        norms = norms.add(1e-10);
+        norms.addi(1e-10);   // in-place: no second INDArray created, no orphaned allocation
         embeddings.diviColumnVector(norms);
     }
 }

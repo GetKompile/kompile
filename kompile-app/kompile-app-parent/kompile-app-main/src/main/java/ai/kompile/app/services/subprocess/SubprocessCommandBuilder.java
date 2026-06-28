@@ -17,7 +17,7 @@
 package ai.kompile.app.services.subprocess;
 
 import ai.kompile.app.subprocess.SubprocessEnvironmentPropagator;
-import ai.kompile.cli.common.util.NativeImageInfo;
+import ai.kompile.utils.NativeImageInfo;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;

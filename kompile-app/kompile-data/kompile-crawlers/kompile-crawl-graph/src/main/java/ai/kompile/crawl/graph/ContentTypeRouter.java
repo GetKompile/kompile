@@ -76,6 +76,17 @@ class ContentTypeRouter {
      * graphs, and filters images/charts from the text pipeline.
      */
     List<Document> routeByContentType(UnifiedCrawlJob job, List<Document> documents) {
+        return routeByContentType(job, documents, null);
+    }
+
+    /**
+     * Classify and route documents to the correct pipeline. Routing is PURE classification — the
+     * graph-node persistence it discovers (formula/table/cell graphs, document nodes) is COLLECTED,
+     * not executed here. When {@code deferredSink} is non-null those persistence operations are
+     * appended to it for the caller to run as its own linear, post-routing step (so the slow
+     * per-node embedding never blocks routing). When null they run inline (legacy/standalone use).
+     */
+    List<Document> routeByContentType(UnifiedCrawlJob job, List<Document> documents, List<Runnable> deferredSink) {
         if (documents == null || documents.isEmpty()) return List.of();
         if (job != null && isCancelled(job)) {
             return List.of();
@@ -94,9 +105,10 @@ class ContentTypeRouter {
         Long factSheetId = jobFactSheetId(job);
         String crawlSource = "crawl:" + jobId;
         int totalDocs = documents.size();
-        // For large batches, reduce recordDocumentProgress frequency to avoid
-        // per-document synchronized+Instant.now() overhead in pure classification
-        boolean recordEveryDoc = totalDocs <= 50;
+        int routedToText = 0;
+        int routedToGraphOnly = 0;
+        // Throttle: emit per-doc if ≤50 docs, else every 2% (at least every 1)
+        int emitEvery = totalDocs <= 50 ? 1 : Math.max(1, totalDocs / 50);
 
         for (int docIdx = 0; docIdx < totalDocs; docIdx++) {
             Document doc = documents.get(docIdx);
@@ -106,10 +118,11 @@ class ContentTypeRouter {
             int routedCountBefore = result.size();
             Map<String, Object> meta = doc.getMetadata();
             String contentType = meta != null ? (String) meta.get(GraphConstants.META_CONTENT_TYPE) : null;
-            if (recordEveryDoc || docIdx % 50 == 0) {
-                documentTracker.recordDocumentProgress(job, doc, "ROUTING", "RUNNING", 0, 0, 0,
-                        "Routing content type " + (contentType != null ? contentType : "text"),
-                        null, null, false);
+            if (docIdx % emitEvery == 0 || docIdx == 0) {
+                String shortName = resolveShortName(meta);
+                documentTracker.recordEvent(job, "ROUTING", "INFO",
+                        "Routing " + (docIdx + 1) + "/" + totalDocs + ": " + shortName + " → " + (contentType != null ? contentType : "text"),
+                        null);
             }
 
             // Extract common graph JSON values once per document
@@ -241,15 +254,20 @@ class ContentTypeRouter {
                 }
                 result.add(doc);
             }
-            if (recordEveryDoc || docIdx % 50 == 0 || docIdx == totalDocs - 1) {
-                documentTracker.recordDocumentProgress(job, doc, "ROUTING", "COMPLETED", 0, 0, 0,
-                        "Routed to " + (result.size() > routedCountBefore ? "text pipeline" : "graph-only pipeline"),
-                        null, null, false);
-            }
+            boolean addedToText = result.size() > routedCountBefore;
+            if (addedToText) { routedToText++; } else { routedToGraphOnly++; }
         }
 
-        // Execute deferred DB writes in parallel — these are independent I/O operations
-        if (!deferredDbWrites.isEmpty()) {
+        documentTracker.recordEvent(job, "ROUTING", "INFO",
+                "Content routing complete: " + totalDocs + " docs → " + routedToText + " text pipeline, " + routedToGraphOnly + " graph-only",
+                "text=" + routedToText + ", graphOnly=" + routedToGraphOnly + ", total=" + totalDocs);
+
+        // Graph-node persistence does NOT belong in routing. Hand it to the caller's dedicated
+        // post-routing step when a sink is provided (keeps routing pure + fast); otherwise run it
+        // inline for legacy/standalone callers.
+        if (deferredSink != null) {
+            deferredSink.addAll(deferredDbWrites);
+        } else if (!deferredDbWrites.isEmpty()) {
             deferredDbWrites.parallelStream().forEach(task -> {
                 try {
                     task.run();
@@ -445,6 +463,8 @@ class ContentTypeRouter {
         if (knowledgeGraphService == null) return;
 
         String jobId = job != null ? job.getJobId() : null;
+        documentTracker.recordEvent(job, "ROUTING", "INFO",
+                "Registering " + documents.size() + " unique source paths as DOCUMENT graph nodes", null);
 
         // Phase 1: Pre-collect unique source paths with their first-seen document.
         // This avoids iterating all documents when only unique source paths need DB writes.
@@ -505,12 +525,22 @@ class ContentTypeRouter {
         }
         if (!registeredSources.isEmpty()) {
             log.info("[Job {}] Registered {} DOCUMENT graph nodes", jobId, registeredSources.size());
+            documentTracker.recordEvent(job, "ROUTING", "INFO",
+                    "Registered " + registeredSources.size() + " DOCUMENT graph node(s)", null);
         }
     }
+
+    /** Maximum number of SnippetSpecs per createSnippetNodesBatch RPC to bound payload size. */
+    private static final int SNIPPET_BATCH_SIZE = 500;
 
     /**
      * Creates SNIPPET graph nodes for each chunk with a CONTAINS edge back to
      * the parent DOCUMENT node, providing chunk→document provenance.
+     *
+     * <p>Uses {@link KnowledgeGraphService#createSnippetNodesBatch} to collapse thousands
+     * of per-snippet RPC calls (one HTTP round-trip each) into batches of at most
+     * {@value #SNIPPET_BATCH_SIZE}, which is the dominant GRAPH_PREP bottleneck for large
+     * document sets.</p>
      */
     void registerSnippetNodes(UnifiedCrawlJob job, List<Document> chunkedDocuments) {
         if (knowledgeGraphService == null || chunkedDocuments == null) return;
@@ -524,7 +554,13 @@ class ContentTypeRouter {
         // lookups down to one per unique source.
         Map<String, Optional<GraphNode>> parentDocCache = new HashMap<>();
 
+        // Accumulation buffers for the current batch
+        List<KnowledgeGraphService.SnippetSpec> batchSpecs = new ArrayList<>(SNIPPET_BATCH_SIZE);
+        // Parallel list tracking (chunkDocId, snippetId) for markPassageGraphIndexed
+        List<String[]> batchTracking = new ArrayList<>(SNIPPET_BATCH_SIZE);
+
         int snippetCount = 0;
+
         for (int i = 0; i < chunkedDocuments.size(); i++) {
             Document chunk = chunkedDocuments.get(i);
             Map<String, Object> meta = chunk.getMetadata();
@@ -546,19 +582,28 @@ class ContentTypeRouter {
                 String preview = content != null && content.length() > 200
                         ? content.substring(0, 200) + "..." : content;
 
-                knowledgeGraphService.createSnippetNode(parentDoc.get(), snippetId, preview, i);
-                snippetCount++;
+                GraphNode parent = parentDoc.get();
+                Long parentFsId = parent.getFactSheetId() != null ? parent.getFactSheetId() : factSheetId;
+                batchSpecs.add(new KnowledgeGraphService.SnippetSpec(
+                        parent.getExternalId(), parentFsId, snippetId, preview, i));
 
-                // Mark this passage as graph-indexed in the cross-index tracker
-                if (crawlIndexTrackingCallback != null) {
-                    String chunkDocId = chunk.getId();
-                    if (chunkDocId != null) {
-                        crawlIndexTrackingCallback.markPassageGraphIndexed(chunkDocId, snippetId);
-                    }
+                String chunkDocId = chunk.getId();
+                batchTracking.add(new String[]{chunkDocId, snippetId});
+
+                // Flush when the batch is full
+                if (batchSpecs.size() >= SNIPPET_BATCH_SIZE) {
+                    snippetCount += flushSnippetBatch(jobId, batchSpecs, batchTracking);
+                    batchSpecs = new ArrayList<>(SNIPPET_BATCH_SIZE);
+                    batchTracking = new ArrayList<>(SNIPPET_BATCH_SIZE);
                 }
             } catch (Exception e) {
                 log.debug("[Job {}] Failed to register SNIPPET node for chunk {}: {}", jobId, i, e.getMessage());
             }
+        }
+
+        // Flush remaining
+        if (!batchSpecs.isEmpty()) {
+            snippetCount += flushSnippetBatch(jobId, batchSpecs, batchTracking);
         }
 
         if (snippetCount > 0) {
@@ -570,6 +615,38 @@ class ContentTypeRouter {
                 markDocumentsGraphIndexedInCrossIndex(job, chunkedDocuments, snippetCount);
             }
         }
+    }
+
+    /**
+     * Flushes one batch of SnippetSpecs via createSnippetNodesBatch and fires
+     * markPassageGraphIndexed for each successfully created node.
+     *
+     * @return number of snippets successfully created
+     */
+    private int flushSnippetBatch(String jobId,
+                                   List<KnowledgeGraphService.SnippetSpec> specs,
+                                   List<String[]> tracking) {
+        try {
+            knowledgeGraphService.createSnippetNodesBatch(specs);
+        } catch (Exception e) {
+            log.debug("[Job {}] Failed to register SNIPPET batch ({} nodes): {}",
+                    jobId, specs.size(), e.getMessage());
+            return 0;
+        }
+        if (crawlIndexTrackingCallback != null) {
+            for (String[] pair : tracking) {
+                String chunkDocId = pair[0];
+                String snippetId  = pair[1];
+                if (chunkDocId != null) {
+                    try {
+                        crawlIndexTrackingCallback.markPassageGraphIndexed(chunkDocId, snippetId);
+                    } catch (Exception ignored) {
+                        // best-effort
+                    }
+                }
+            }
+        }
+        return specs.size();
     }
 
     /**
@@ -622,6 +699,23 @@ class ContentTypeRouter {
                     ? Arrays.asList(headerStr.split(",")) : List.of();
             String fullContent = meta.get("full_table_content") instanceof String
                     ? (String) meta.get("full_table_content") : null;
+            // Reconstruct a minimal markdown from headers when full content is absent
+            if ((fullContent == null || fullContent.isBlank()) && !headers.isEmpty()) {
+                StringBuilder mdSb = new StringBuilder("|");
+                for (String h : headers) {
+                    mdSb.append(' ').append(h.replace("|", "\\|").trim()).append(" |");
+                }
+                mdSb.append("\n|");
+                for (int i = 0; i < headers.size(); i++) mdSb.append(" --- |");
+                mdSb.append('\n');
+                fullContent = mdSb.toString();
+            }
+            // No content AND no headers → skip; an empty TABLE node is noise
+            if ((fullContent == null || fullContent.isBlank()) && headers.isEmpty()) {
+                log.debug("[Job {}] Skipping empty TABLE node for '{}' (no content, no headers)",
+                        jobId, tableTitle);
+                return;
+            }
             String preview = fullContent != null && fullContent.length() > 500
                     ? fullContent.substring(0, 500) + "..." : fullContent;
 
@@ -782,6 +876,10 @@ class ContentTypeRouter {
             }
 
             if (entities != null) {
+                // PASS 1 — assemble node specs (metadata assembly unchanged). Persistence is deferred
+                // so all cell/formula nodes for this graph are written in ONE batched store call below,
+                // instead of one Lucene add per node (the dominant ROUTING-phase cost).
+                List<KnowledgeGraphService.NodeSpec> specs = new ArrayList<>(entities.size());
                 for (Map<String, Object> entity : entities) {
                     if (job != null && isCancelled(job)) {
                         return GraphPersistenceHelper.GraphPersistResult.empty();
@@ -813,10 +911,34 @@ class ContentTypeRouter {
                             entityMeta.put("cell_reference", externalId.substring(cellIdx + 5));
                         }
                     }
+                    // Pin TABLE, SHEET, CELL, HEADER_CELL and similar structural nodes so the
+                    // ComponentPruner never soft-marks them stale.  These nodes are the product
+                    // of structured extraction (TableCellGraphBuilder) and must survive even when
+                    // embeddings or cross-document edges are offline.
+                    if (nodeLevel == NodeLevel.TABLE
+                            || "SHEET".equalsIgnoreCase(type)
+                            || "CELL".equalsIgnoreCase(type)
+                            || "HEADER_CELL".equalsIgnoreCase(type)
+                            || "HEADER".equalsIgnoreCase(type)) {
+                        entityMeta.put("_pinned", Boolean.TRUE);
+                    }
+                    specs.add(new KnowledgeGraphService.NodeSpec(nodeLevel, externalId, title, description, entityMeta));
+                }
 
-                    // Create or update node — factSheetId-scoped duplicate detection + update on re-ingest
-                    GraphNode created = knowledgeGraphService.createNode(
-                            nodeLevel, externalId, title, description, entityMeta, factSheetId);
+                // BATCH CREATE — one store write for every cell/formula/sheet node in this graph.
+                // Node IDs are deterministic, so this is semantically identical to looping createNode.
+                List<GraphNode> createdNodes = knowledgeGraphService.createNodesBatch(specs, factSheetId);
+
+                // PASS 2 — register IDs and link nodes. Edges are in-memory adjacency (cheap), so they
+                // stay per-edge. Iterating in the same (TABLE/SHEET-first) order means a CELL's parent
+                // TABLE is already registered in sheetNameToTableNodeId before the CELL references it.
+                for (int i = 0; i < createdNodes.size(); i++) {
+                    KnowledgeGraphService.NodeSpec spec = specs.get(i);
+                    GraphNode created = createdNodes.get(i);
+                    String externalId = spec.externalId();
+                    String title = spec.title();
+                    String type = (String) entities.get(i).getOrDefault("type", "CELL");
+                    NodeLevel nodeLevel = spec.nodeType();
                     externalToNodeId.put(externalId, created.getNodeId());
                     if (job != null) job.incrementEntityType(type);
 
@@ -903,24 +1025,35 @@ class ContentTypeRouter {
             log.info("[Job {}] Persisted formula graph: {} entities, {} relationships", jobId, entityCount, relCount);
             return new GraphPersistenceHelper.GraphPersistResult(entityCount, relCount);
         } catch (Exception e) {
-            log.warn("[Job {}] Failed to persist formula graph: {}", jobId, e.getMessage());
+            // Log the full root cause — getCause() unwraps any RuntimeException wrapper so the
+            // real failure (NPE, JSON parse error, RPC error, etc.) is not swallowed.
+            Throwable root = e.getCause() != null ? e.getCause() : e;
+            log.warn("[Job {}] Failed to persist {} ({}): {} — root: {} {}",
+                    jobId, metadataKey, sourcePath,
+                    e.getMessage(),
+                    root.getClass().getSimpleName(), root.getMessage(), e);
             if (job != null && !isCancelled(job)) {
-                documentTracker.recordDocumentProgress(job,
-                        sourcePath != null ? sourcePath : metadataKey + ":" + Integer.toHexString(graphJson.hashCode()),
-                        documentTracker.documentFileName(Map.of(GraphConstants.META_SOURCE_PATH, sourcePath != null ? sourcePath : ""), sourcePath),
-                        sourcePath,
-                        null,
-                        metadataKey,
-                        null,
-                        "STRUCTURAL_GRAPH",
-                        "FAILED",
-                        0,
-                        0,
-                        0,
-                        "Failed to persist " + metadataKey,
-                        e.getMessage(),
-                        List.of(metadataKey),
-                        true);
+                try {
+                    documentTracker.recordDocumentProgress(job,
+                            sourcePath != null ? sourcePath : metadataKey + ":" + Integer.toHexString(graphJson.hashCode()),
+                            documentTracker.documentFileName(Map.of(GraphConstants.META_SOURCE_PATH, sourcePath != null ? sourcePath : ""), sourcePath),
+                            sourcePath,
+                            null,
+                            metadataKey,
+                            null,
+                            "STRUCTURAL_GRAPH",
+                            "FAILED",
+                            0,
+                            0,
+                            0,
+                            "Failed to persist " + metadataKey,
+                            root.getClass().getSimpleName() + ": " + root.getMessage(),
+                            List.of(metadataKey),
+                            true);
+                } catch (Exception trackerEx) {
+                    log.debug("[Job {}] Could not record document progress for {} failure: {}",
+                            jobId, metadataKey, trackerEx.getMessage());
+                }
             }
             return GraphPersistenceHelper.GraphPersistResult.empty();
         }
@@ -999,6 +1132,18 @@ class ContentTypeRouter {
     // ═══════════════════════════════════════════════════════════════════
     // PRIVATE HELPERS
     // ═══════════════════════════════════════════════════════════════════
+
+    private static String resolveShortName(Map<String, Object> meta) {
+        if (meta == null) return "unknown";
+        for (String key : new String[]{"source_filename", "fileName", "source_path", "source"}) {
+            Object val = meta.get(key);
+            if (val instanceof String s && !s.isBlank()) {
+                int slash = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\'));
+                return slash >= 0 && slash < s.length() - 1 ? s.substring(slash + 1) : s;
+            }
+        }
+        return "unknown";
+    }
 
     private boolean isCancelled(UnifiedCrawlJob job) {
         if (job == null) return false;

@@ -20,7 +20,7 @@ import ai.kompile.app.config.IngestConfiguration;
 import ai.kompile.app.config.KompileServerConstants;
 import ai.kompile.app.config.Nd4jEnvironmentConfig;
 import ai.kompile.app.config.SubprocessExecutableConfig;
-import ai.kompile.cli.common.util.NativeImageInfo;
+import ai.kompile.utils.NativeImageInfo;
 import ai.kompile.app.facts.domain.FactSheet;
 import ai.kompile.app.facts.service.FactSheetService;
 import ai.kompile.app.ingest.domain.IngestEvent;

@@ -3,6 +3,13 @@
  *  Licensed under the Apache License, Version 2.0
  */
 
+import { Citation } from './api-models';
+
+export interface EvalRetrievedDoc {
+  text: string;
+  citation?: Citation;
+}
+
 export interface EvalDebuggerStatus {
   available: boolean;
   evaluationAvailable: boolean;
@@ -34,7 +41,7 @@ export interface TestCaseResult {
   prompt: string;
   expectedAnswer: string;
   actualAnswer: string;
-  retrievedDocuments: string[];
+  retrievedDocuments: EvalRetrievedDoc[];
   success: boolean;
   passed: boolean;
   error?: string;

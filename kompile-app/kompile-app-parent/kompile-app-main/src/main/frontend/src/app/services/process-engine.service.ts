@@ -35,18 +35,63 @@ export interface OntologySchema {
   metadata?: Record<string, any>;
 }
 
+/** Verbatim citation of the source evidence that produced a derived ontology element. */
+export interface ProvenanceCitation {
+  /** Source type enum value as serialized by the backend (e.g. DOCUMENT, CONVERSATION). */
+  sourceType?: string;
+  /** Source identifier, e.g. "FP&A_Close_SOP_v3.2.docx". */
+  sourceId?: string;
+  /** Location within the source, e.g. "§3.2", "cell D60". */
+  location?: string;
+  /** Verbatim quote or summary of the extracted claim. */
+  extractedText?: string;
+  /** Confidence [0..1] of the extraction. */
+  confidence?: number;
+  /** ISO-8601 timestamp when the claim was extracted. */
+  extractedAt?: string;
+  /** SHA-256 of the source document at extraction time. */
+  contentHash?: string;
+  /** Knowledge graph node ID of the source document. */
+  graphNodeId?: string;
+}
+
 export interface EntityTypeDefinition {
   name: string;
   description?: string;
+  /** Classification bucket: REFERENCE, TRANSACTIONAL, PATTERN, CONTROL, METRIC, ACTOR. */
   classification?: string;
+  /** Derivation confidence [0..1] — backend serializes the primitive double. */
+  confidence?: number;
+  /** Which cross-customer template seeded this entity type. */
+  templateSource?: string;
+  templateVersion?: number;
   fields?: FieldDefinition[];
   rules?: ValidationRule[];
+  provenance?: ProvenanceCitation[];
 }
 
 export interface FieldDefinition {
   name: string;
+  /** FieldType enum serialized as string (e.g. STRING, NUMBER, BOOLEAN, ENUM, ENUM_ARRAY, DATE). */
   type: string;
   required?: boolean;
+  /** Marks the field as a primary-key component. */
+  primaryKey?: boolean;
+  /** Prevents the field value from being changed after creation. */
+  immutable?: boolean;
+  /** Maximum character length (STRING fields). */
+  maxLength?: number;
+  /** Validation regex pattern. */
+  regex?: string;
+  /** Foreign key reference, e.g. "CurrencyRegistry.code". */
+  fkReference?: string;
+  /** Allowed values for ENUM / ENUM_ARRAY fields. */
+  enumValues?: string[];
+  /** Minimum numeric value. */
+  min?: number;
+  /** Maximum numeric value. */
+  max?: number;
+  defaultValue?: string;
   description?: string;
 }
 
@@ -62,11 +107,22 @@ export interface RelationshipTypeDefinition {
 }
 
 export interface ValidationRule {
+  id?: string;
   name: string;
-  type?: string;
-  severity?: string;
-  expression?: string;
   description?: string;
+  /** RuleType enum value as string (e.g. RANGE, FORMAT, REFERENTIAL, COMPLETENESS, BALANCE). */
+  ruleType?: string;
+  /** Executable expression compatible with CEL / SpEL. */
+  expression?: string;
+  /** RuleSeverity enum value as string: INFO, WARNING, ERROR, CRITICAL. */
+  severity?: string;
+  /** Action on violation: "escalate", "auto_correct", "halt", "log". */
+  onViolation?: string;
+  /** Role or person to escalate to when the rule fires. */
+  escalateTo?: string;
+  /** Runtime parameters such as thresholds, budgets, etc. */
+  parameters?: Record<string, any>;
+  provenance?: ProvenanceCitation[];
 }
 
 /** Request to derive an ontology from a fact sheet's crawl graph (LLM-prompt or wizard mode). */

@@ -106,9 +106,11 @@ public class McpToolInjection {
         String agent = agentName != null ? agentName.toLowerCase(Locale.ROOT) : "qwen";
         String mode = (sseUrl != null && !sseUrl.isBlank()) ? "sse" : "stdio";
 
-        // For stdio mode, resolve the CLI launcher
+        // For stdio mode, resolve the CLI launcher. Codex also requires this
+        // even when an SSE URL was detected because Codex's url transport is
+        // streamable HTTP, not SSE.
         McpToolInjectionSupport.CliLauncher launcher = null;
-        if ("stdio".equals(mode)) {
+        if ("stdio".equals(mode) || agent.contains("codex")) {
             launcher = McpToolInjectionSupport.findCliLauncher();
             if (launcher == null) {
                 System.err.println("[MCP] Warning: Could not resolve kompile CLI launcher for MCP injection");
@@ -451,25 +453,24 @@ public class McpToolInjection {
         }
 
         // Append the kompile MCP server section.
-        // Codex infers stdio from presence of command/args — do NOT add type = "stdio".
-        // For SSE, codex uses url key (no type key needed either).
+        // Codex 0.142+ treats a url entry as streamable HTTP, not SSE. The
+        // kompile app currently advertises /mcp/sse, so giving that URL to
+        // Codex makes startup fail during the initialized notification. Use
+        // the CLI stdio bridge consistently; it can still auto-detect a
+        // running kompile-app for backend-backed tools.
         toml.append("[mcp_servers.kompile]\n");
-        if (sseUrl != null && !sseUrl.isBlank()) {
-            toml.append("url = \"").append(escapeToml(sseUrl)).append("\"\n");
-        } else {
-            List<String> fullArgs = launcher.buildArgs(workingDir);
-            toml.append("command = \"").append(escapeToml(launcher.command())).append("\"\n");
-            toml.append("args = [");
-            for (int i = 0; i < fullArgs.size(); i++) {
-                if (i > 0) toml.append(", ");
-                toml.append("\"").append(escapeToml(fullArgs.get(i))).append("\"");
-            }
-            toml.append("]\n");
+        List<String> fullArgs = launcher.buildArgs(workingDir);
+        toml.append("command = \"").append(escapeToml(launcher.command())).append("\"\n");
+        toml.append("args = [");
+        for (int i = 0; i < fullArgs.size(); i++) {
+            if (i > 0) toml.append(", ");
+            toml.append("\"").append(escapeToml(fullArgs.get(i))).append("\"");
         }
+        toml.append("]\n");
 
         Files.writeString(configFile, toml.toString());
 
-        System.err.println("[MCP] Injected kompile MCP tools (" + (sseUrl != null ? "sse" : "stdio") + ") into " + configFile);
+        System.err.println("[MCP] Injected kompile MCP tools (stdio) into " + configFile);
         System.err.flush();
 
         return configFile;

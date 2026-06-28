@@ -97,7 +97,7 @@ public class McpUrlResolver {
 
         for (int port : PROBE_PORTS) {
             if (probeKompileApp(port)) {
-                System.out.println(DIM + "Auto-detected kompile-app on port " + port + RESET);
+                System.err.println(DIM + "Auto-detected kompile-app on port " + port + RESET);
                 return "http://localhost:" + port + "/mcp/sse";
             }
         }

@@ -25,6 +25,6 @@ import java.util.List;
 @Component
 @ConfigurationProperties(prefix = "app.document")
 public class AppDocumentSourceProperties {
-    private List<String> sources; // Comma-separated in properties, Spring converts to List
-    private String uploadsPath;
+    private List<String> sources = List.of("./data/input_documents/sample.txt", "./data/input_documents/sample.pdf"); // Comma-separated in properties, Spring converts to List
+    private String uploadsPath = "./data/input_documents/uploads";
 }

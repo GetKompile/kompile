@@ -66,12 +66,13 @@ class MatrixKnowledgeGraphServiceEmbeddingTest {
     @Test
     void exportNodeEmbeddings_filtersByFactSheetAndSkipsZeroRows() {
         AdjacencyMatrixGraph graph = mock(AdjacencyMatrixGraph.class);
-        when(graphStore.loadGraph(DEFAULT_GRAPH_ID)).thenReturn(Optional.of(graph));
+        // exportNodeEmbeddings(1L) reads the segmented graph "factsheet_1"
+        when(graphStore.loadGraph("factsheet_1")).thenReturn(Optional.of(graph));
 
         MatrixGraphNode n1 = MatrixGraphNode.builder().nodeId("n1").factSheetId(1L).build();
         MatrixGraphNode n2 = MatrixGraphNode.builder().nodeId("n2").factSheetId(1L).build(); // zero row
         MatrixGraphNode n3 = MatrixGraphNode.builder().nodeId("n3").factSheetId(2L).build(); // other fact sheet
-        when(graphStore.getAllNodes(DEFAULT_GRAPH_ID)).thenReturn(List.of(n1, n2, n3));
+        when(graphStore.getAllNodes("factsheet_1")).thenReturn(List.of(n1, n2, n3));
 
         when(graph.getNodeEmbedding("n1")).thenReturn(Nd4j.create(new float[]{1f, 2f, 3f}, new long[]{3}));
         when(graph.getNodeEmbedding("n2")).thenReturn(Nd4j.zeros(3));

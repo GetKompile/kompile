@@ -114,15 +114,32 @@ public class CrawlProgressSseController {
     /**
      * Per-job stream: receives progress events for a single crawl job only.
      *
-     * @param jobId the crawl job to track
+     * <p>The {@code jobId} path variable may be either the internal UUID (what events use)
+     * or a scheduler ID such as {@code "crawl-55ef8175"} (what the UI passes after receiving
+     * the start-response).  We resolve it to the canonical internal UUID before registering
+     * the emitter so the emitter key always matches the UUID carried by
+     * {@link CrawlProgressEvent#getJobId()}.  Both keys point to the same emitter list so
+     * clients using either form receive events.</p>
+     *
+     * @param jobId the crawl job to track (scheduler ID or internal UUID)
      */
     @GetMapping(value = "/stream/{jobId}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter streamJob(@PathVariable String jobId) {
+        // Resolve scheduler-id (e.g. "crawl-55ef8175") → internal UUID that events carry
+        String resolvedJobId = (crawlService != null) ? crawlService.resolveJobId(jobId) : jobId;
+
         SseEmitter emitter = new SseEmitter(SSE_TIMEOUT_MS);
-        registerForJob(jobId, emitter);
-        sendInitialSnapshotForJob(jobId, emitter);
-        log.debug("New per-job SSE subscriber for jobId='{}' (total={})",
-                jobId, jobEmitters.getOrDefault(jobId, new CopyOnWriteArrayList<>()).size());
+        // Register under the resolved (internal) UUID — this is what progress events use
+        registerForJob(resolvedJobId, emitter);
+        // Also register under the original (possibly scheduler) ID as an alias so either
+        // form can be used by existing UI code without migration
+        if (!resolvedJobId.equals(jobId)) {
+            registerForJob(jobId, emitter);
+        }
+        sendInitialSnapshotForJob(resolvedJobId, emitter);
+        log.debug("New per-job SSE subscriber for jobId='{}' (resolved='{}', total={})",
+                jobId, resolvedJobId,
+                jobEmitters.getOrDefault(resolvedJobId, new CopyOnWriteArrayList<>()).size());
         return emitter;
     }
 

@@ -17,6 +17,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -229,6 +230,82 @@ public record DerivationTree(
         StringBuilder sb = new StringBuilder();
         renderJson(sb, 0);
         return sb.toString();
+    }
+
+    /**
+     * Produce the same structural JSON as {@link #toJson()} but with an optional {@code "title"}
+     * field on each node when a mapping exists in {@code atomKeyToTitle}.
+     *
+     * <p>The title is omitted when absent from the map or when it is identical to the atom key
+     * (no new information). This allows callers to pass a title map built by translating PSL
+     * synthetic constants to human-readable entity labels without duplicating any output.</p>
+     *
+     * @param atomKeyToTitle map from atom key to a human-readable title; may be empty but not null
+     * @return JSON string
+     */
+    public String toJsonWithTitles(Map<String, String> atomKeyToTitle) {
+        StringBuilder sb = new StringBuilder();
+        renderJsonWithTitles(sb, 0, atomKeyToTitle, Map.of());
+        return sb.toString();
+    }
+
+    /**
+     * Produce the same structural JSON as {@link #toJsonWithTitles(Map)} but also humanizes
+     * the {@code "rule"} field on each tree node via {@code ruleToHumanized}.
+     *
+     * <p>When a node's {@code ruleApplied} string is present in {@code ruleToHumanized} the
+     * mapped value is emitted instead of the raw PSL rule, so the frontend tooltip shows
+     * e.g. {@code "weight 0.8: entity → derived entity"} rather than the opaque
+     * {@code "0.8: entity(?X) -> derived_entity(?X) ^1"}.
+     * Entries absent from the map fall through to the raw string (safe default).</p>
+     *
+     * @param atomKeyToTitle  map from atom key to human-readable title; may be empty but not null
+     * @param ruleToHumanized map from raw rule string to humanized label; may be empty but not null
+     * @return JSON string
+     */
+    public String toJsonWithTitlesAndRules(Map<String, String> atomKeyToTitle,
+                                           Map<String, String> ruleToHumanized) {
+        StringBuilder sb = new StringBuilder();
+        renderJsonWithTitles(sb, 0, atomKeyToTitle, ruleToHumanized);
+        return sb.toString();
+    }
+
+    private void renderJsonWithTitles(StringBuilder sb, int indent,
+                                      Map<String, String> titleMap,
+                                      Map<String, String> ruleMap) {
+        String pad = "  ".repeat(indent);
+        String inner = "  ".repeat(indent + 1);
+        sb.append(pad).append('{').append('\n');
+        appendJsonStr(sb, inner, "atom", atomKey);
+        String title = titleMap.get(atomKey);
+        if (title != null && !title.equals(atomKey)) {
+            sb.append(",\n");
+            appendJsonStr(sb, inner, "title", title);
+        }
+        sb.append(",\n");
+        sb.append(inner).append('"').append("confidence").append("\": ").append(confidence);
+        if (ruleApplied != null) {
+            sb.append(",\n");
+            String displayRule = ruleMap.getOrDefault(ruleApplied, ruleApplied);
+            appendJsonStr(sb, inner, "rule", displayRule);
+        }
+        if (sourceProvenance != null) {
+            sb.append(",\n");
+            appendJsonStr(sb, inner, "source", sourceProvenance);
+        }
+        sb.append(",\n");
+        sb.append(inner).append("\"children\": [");
+        if (!children.isEmpty()) {
+            sb.append('\n');
+            for (int i = 0; i < children.size(); i++) {
+                children.get(i).renderJsonWithTitles(sb, indent + 2, titleMap, ruleMap);
+                if (i < children.size() - 1) sb.append(',');
+                sb.append('\n');
+            }
+            sb.append(inner);
+        }
+        sb.append("]\n");
+        sb.append(pad).append('}');
     }
 
     private void renderJson(StringBuilder sb, int indent) {

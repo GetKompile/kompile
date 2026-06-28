@@ -110,7 +110,7 @@ type ViewMode = 'list' | 'create' | 'detail' | 'derivePrompt' | 'deriveWizard' |
                 <span>{{ countRules(ont) }} rules</span>
               </div>
             </div>
-            <div class="card-id" *ngIf="ont.id">ID: {{ ont.id }}</div>
+            <div class="card-id" *ngIf="ont.id" [title]="'Ontology ID: ' + ont.id">ID: {{ ont.id | slice:0:8 }}…</div>
           </div>
         </div>
       </div>
@@ -433,23 +433,54 @@ type ViewMode = 'list' | 'create' | 'detail' | 'derivePrompt' | 'deriveWizard' |
             <mat-expansion-panel-header>
               <mat-panel-title>{{ et.name }}</mat-panel-title>
               <mat-panel-description>
+                <span *ngIf="et.classification"
+                      style="display:inline-block;padding:1px 7px;border-radius:8px;background:rgba(102,126,234,0.15);font-size:11px;margin-right:8px;">{{ et.classification }}</span>
+                <span *ngIf="et.confidence && et.confidence > 0" class="conf-badge">{{ (et.confidence * 100).toFixed(0) }}% conf.</span>
                 {{ et.fields?.length || 0 }} fields &bull; {{ et.rules?.length || 0 }} rules
               </mat-panel-description>
             </mat-expansion-panel-header>
 
             <p *ngIf="et.description" class="et-description">{{ et.description }}</p>
 
+            <!-- Provenance Sources -->
+            <div *ngIf="et.provenance?.length" class="prov-section">
+              <div class="sub-heading">Sources</div>
+              <div *ngFor="let p of (et.provenance | slice:0:3)" class="prov-item">
+                <mat-icon class="prov-icon">article</mat-icon>
+                <div class="prov-body">
+                  <span class="prov-source-id" *ngIf="p.sourceId">{{ p.sourceId }}</span>
+                  <span class="prov-meta">
+                    <ng-container *ngIf="p.location"> · {{ p.location }}</ng-container>
+                    <ng-container *ngIf="p.confidence && p.confidence > 0"> · {{ (p.confidence * 100).toFixed(0) }}% conf.</ng-container>
+                  </span>
+                  <span class="prov-quote" *ngIf="p.extractedText">{{ p.extractedText }}</span>
+                </div>
+              </div>
+            </div>
+
             <!-- Fields -->
             <div *ngIf="et.fields?.length" class="fields-section">
               <div class="sub-heading">Fields</div>
               <div class="fields-list">
-                <div *ngFor="let f of et.fields" class="field-item">
-                  <span class="field-name">{{ f.name }}</span>
-                  <mat-chip-set>
-                    <mat-chip class="chip-type">{{ f.type }}</mat-chip>
-                    <mat-chip *ngIf="f.required" class="chip-required">required</mat-chip>
-                  </mat-chip-set>
-                  <span class="field-desc" *ngIf="f.description">{{ f.description }}</span>
+                <div *ngFor="let f of et.fields" class="field-item-block">
+                  <div class="field-item">
+                    <span class="field-name">{{ f.name }}</span>
+                    <mat-chip-set>
+                      <mat-chip class="chip-type">{{ f.type }}</mat-chip>
+                      <mat-chip *ngIf="f.required" class="chip-required">required</mat-chip>
+                      <mat-chip *ngIf="f.primaryKey" class="chip-pk">PK</mat-chip>
+                      <mat-chip *ngIf="f.immutable" class="chip-immutable">immutable</mat-chip>
+                    </mat-chip-set>
+                    <span class="field-constraint field-fk" *ngIf="f.fkReference" [matTooltip]="'FK → ' + f.fkReference">→ {{ f.fkReference }}</span>
+                    <span class="field-constraint field-regex" *ngIf="f.regex" [matTooltip]="'Regex: ' + f.regex">{{ f.regex }}</span>
+                    <span class="field-constraint field-range" *ngIf="f.min != null || f.max != null">{{ f.min != null ? f.min : '…' }}–{{ f.max != null ? f.max : '…' }}</span>
+                    <span class="field-desc" *ngIf="f.description">{{ f.description }}</span>
+                  </div>
+                  <div *ngIf="f.enumValues?.length" class="field-enum-row">
+                    <mat-chip-set>
+                      <mat-chip *ngFor="let v of f.enumValues" class="chip-enum">{{ v }}</mat-chip>
+                    </mat-chip-set>
+                  </div>
                 </div>
               </div>
             </div>
@@ -463,8 +494,14 @@ type ViewMode = 'list' | 'create' | 'detail' | 'derivePrompt' | 'deriveWizard' |
                     {{ r.severity === 'ERROR' ? 'error' : 'warning' }}
                   </mat-icon>
                   <div class="rule-info">
-                    <span class="rule-name">{{ r.name }}</span>
-                    <span class="rule-expr" *ngIf="r.expression">{{ r.expression }}</span>
+                    <div class="rule-header-row">
+                      <span class="rule-name">{{ r.name }}</span>
+                      <span *ngIf="r.ruleType" class="rule-type-badge">{{ r.ruleType }}</span>
+                    </div>
+                    <span class="rule-desc" *ngIf="r.description" style="opacity:0.85;font-size:12px;">{{ r.description }}</span>
+                    <span class="rule-action" *ngIf="r.onViolation">On violation: {{ r.onViolation }}<ng-container *ngIf="r.escalateTo"> → {{ r.escalateTo }}</ng-container></span>
+                    <span class="rule-expr" *ngIf="r.expression" style="opacity:0.6;font-family:monospace;font-size:11px;">{{ r.expression }}</span>
+                    <span class="rule-prov" *ngIf="r.provenance?.length">Source: {{ r.provenance?.[0]?.sourceId }}<ng-container *ngIf="r.provenance?.[0]?.location"> · {{ r.provenance?.[0]?.location }}</ng-container></span>
                   </div>
                 </div>
               </div>
@@ -491,6 +528,31 @@ type ViewMode = 'list' | 'create' | 'detail' | 'derivePrompt' | 'deriveWizard' |
           No entity types defined.
         </div>
 
+        <!-- Relationship Types -->
+        <div *ngIf="selectedOntology.relationshipTypes?.length">
+          <mat-divider class="section-divider"></mat-divider>
+          <div class="section-heading">
+            <mat-icon>share</mat-icon>
+            <span>Relationship Types ({{ selectedOntology.relationshipTypes?.length }})</span>
+          </div>
+          <div class="rel-types-list">
+            <div *ngFor="let rt of selectedOntology.relationshipTypes" class="rel-type-item">
+              <div class="rel-type-header">
+                <span class="rel-label">{{ rt.type || rt.name }}</span>
+                <mat-chip-set *ngIf="rt.cardinality">
+                  <mat-chip class="chip-type">{{ rt.cardinality }}</mat-chip>
+                </mat-chip-set>
+              </div>
+              <div class="rel-route">
+                <span class="rel-entity">{{ rt.sourceEntityType }}</span>
+                <mat-icon class="rel-arrow-icon">arrow_forward</mat-icon>
+                <span class="rel-entity">{{ rt.targetEntityType }}</span>
+              </div>
+              <span class="rel-desc" *ngIf="rt.description">{{ rt.description }}</span>
+            </div>
+          </div>
+        </div>
+
         <!-- Global Rules -->
         <div *ngIf="selectedOntology.globalRules?.length" class="global-rules-section">
           <mat-divider class="section-divider"></mat-divider>
@@ -504,8 +566,14 @@ type ViewMode = 'list' | 'create' | 'detail' | 'derivePrompt' | 'deriveWizard' |
                 {{ r.severity === 'ERROR' ? 'error' : 'warning' }}
               </mat-icon>
               <div class="rule-info">
-                <span class="rule-name">{{ r.name }}</span>
-                <span class="rule-expr" *ngIf="r.expression">{{ r.expression }}</span>
+                <div class="rule-header-row">
+                  <span class="rule-name">{{ r.name }}</span>
+                  <span *ngIf="r.ruleType" class="rule-type-badge">{{ r.ruleType }}</span>
+                </div>
+                <span class="rule-desc" *ngIf="r.description" style="opacity:0.85;font-size:12px;">{{ r.description }}</span>
+                <span class="rule-action" *ngIf="r.onViolation">On violation: {{ r.onViolation }}<ng-container *ngIf="r.escalateTo"> → {{ r.escalateTo }}</ng-container></span>
+                <span class="rule-expr" *ngIf="r.expression" style="opacity:0.6;font-family:monospace;font-size:11px;">{{ r.expression }}</span>
+                <span class="rule-prov" *ngIf="r.provenance?.length">Source: {{ r.provenance?.[0]?.sourceId }}<ng-container *ngIf="r.provenance?.[0]?.location"> · {{ r.provenance?.[0]?.location }}</ng-container></span>
               </div>
             </div>
           </div>
@@ -628,6 +696,56 @@ type ViewMode = 'list' | 'create' | 'detail' | 'derivePrompt' | 'deriveWizard' |
 
     .global-rules-section { margin-top: 8px; }
     .empty-sub { font-size: 13px; color: #666; padding: 8px 0; }
+
+    /* Confidence badge on entity-type panel header */
+    .conf-badge {
+      display: inline-block; padding: 1px 7px; border-radius: 8px;
+      background: rgba(129,199,132,0.15); color: #81c784; font-size: 11px; margin-right: 8px;
+    }
+
+    /* Provenance / Sources section inside entity panel */
+    .prov-section { margin: 8px 0 12px; }
+    .prov-item { display: flex; align-items: flex-start; gap: 8px; padding: 4px 0; font-size: 12px; }
+    .prov-icon { font-size: 16px; width: 16px; height: 16px; color: #7986cb; flex-shrink: 0; margin-top: 1px; }
+    .prov-body { display: flex; flex-direction: column; gap: 2px; }
+    .prov-source-id { font-weight: 500; color: #b0bec5; }
+    .prov-meta { font-size: 11px; color: #888; }
+    .prov-quote { font-size: 11px; color: #aaa; font-style: italic; margin-top: 2px; }
+
+    /* Field constraint tokens */
+    .field-item-block { display: flex; flex-direction: column; gap: 2px; padding: 3px 0; }
+    .field-constraint { font-size: 11px; color: #999; }
+    .field-fk { color: #90caf9; }
+    .field-regex { font-family: 'JetBrains Mono', monospace; color: #ce93d8; }
+    .field-range { color: #ffcc80; }
+    .field-enum-row { padding: 0 0 4px 4px; }
+    .chip-pk { background: rgba(255,213,79,0.2) !important; color: #ffd54f !important; font-size: 11px !important; min-height: 22px !important; }
+    .chip-immutable { background: rgba(206,147,216,0.15) !important; color: #ce93d8 !important; font-size: 11px !important; min-height: 22px !important; }
+    .chip-fk { background: rgba(144,202,249,0.12) !important; color: #90caf9 !important; font-size: 11px !important; min-height: 22px !important; }
+    .chip-enum { background: rgba(165,214,167,0.12) !important; color: #a5d6a7 !important; font-size: 11px !important; min-height: 22px !important; }
+
+    /* Rule: ruleType badge, action line, provenance line */
+    .rule-header-row { display: flex; align-items: center; gap: 8px; }
+    .rule-type-badge {
+      display: inline-block; padding: 1px 6px; border-radius: 6px;
+      background: rgba(144,202,249,0.12); color: #90caf9; font-size: 10px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.4px;
+    }
+    .rule-action { font-size: 11px; color: #ffb74d; margin-top: 2px; }
+    .rule-prov { font-size: 11px; color: #888; margin-top: 2px; }
+
+    /* Relationship types section */
+    .rel-types-list { display: flex; flex-direction: column; gap: 8px; }
+    .rel-type-item {
+      background: #1a1a2e; border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 6px; padding: 8px 12px; display: flex; flex-direction: column; gap: 4px;
+    }
+    .rel-type-header { display: flex; align-items: center; gap: 10px; }
+    .rel-label { font-weight: 600; font-size: 13px; font-family: 'JetBrains Mono', monospace; color: #90caf9; }
+    .rel-route { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+    .rel-entity { color: #e0e0e0; }
+    .rel-arrow-icon { font-size: 16px; width: 16px; height: 16px; color: #666; }
+    .rel-desc { font-size: 11px; color: #888; }
   `]
 })
 export class ProcessOntologyComponent implements OnInit, OnDestroy {

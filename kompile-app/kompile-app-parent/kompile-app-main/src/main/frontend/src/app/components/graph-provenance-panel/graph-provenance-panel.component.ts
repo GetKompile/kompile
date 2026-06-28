@@ -30,6 +30,8 @@ import { GraphProvenanceService, NodeProvenance, ProvenancePurgeResult } from '.
 import { GraphService } from '../../services/graph.service';
 import { GraphNode } from '../../models/graph-models';
 import { UnifiedCrawlService, JobSummary } from '../../services/unified-crawl.service';
+import { Citation } from '../../models/api-models';
+import { SourceCitationComponent } from '../source-citation/source-citation.component';
 
 /**
  * Provenance browsing + purge (graph-as-asset Phase 3/8): search for a node, trace it to its source
@@ -50,7 +52,8 @@ import { UnifiedCrawlService, JobSummary } from '../../services/unified-crawl.se
     MatSelectModule,
     MatCheckboxModule,
     MatProgressSpinnerModule,
-    MatSnackBarModule
+    MatSnackBarModule,
+    SourceCitationComponent
   ],
   templateUrl: './graph-provenance-panel.component.html',
   styleUrls: ['./graph-provenance-panel.component.css']
@@ -121,6 +124,22 @@ export class GraphProvenancePanelComponent implements OnInit {
 
   provEntries(p: NodeProvenance): { key: string; value: any }[] {
     return Object.entries(p.provenance || {}).map(([key, value]) => ({ key, value }));
+  }
+
+  /**
+   * Build a Citation from NodeProvenance for display via SourceCitationComponent.
+   * sourceTitle/sourceType are the richest source-doc fields available here.
+   * crawlRunId and basisType are read from the provenance map (reserved key names).
+   */
+  toCitation(p: NodeProvenance): Citation {
+    const prov = p.provenance || {};
+    return {
+      sourceName: p.sourceTitle,
+      sourceId: p.sourceNodeId,
+      basisType: prov['_basisType'] ?? prov['basisType'],
+      crawlRunId: prov['crawlRunId'],
+      provenance: Object.keys(prov).length > 0 ? prov : undefined
+    };
   }
 
   runPurge(dryRun: boolean): void {

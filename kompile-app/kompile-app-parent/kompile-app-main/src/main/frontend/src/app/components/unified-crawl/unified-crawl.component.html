@@ -24,366 +24,21 @@
           </button>
         </div>
       </div>
-      <mat-tab-group [(selectedIndex)]="activeTab">
-        <!-- New Job Tab -->
-        <mat-tab label="New Crawl Job">
-          <div class="tab-content">
-            <mat-card>
-              <mat-card-header>
-                <mat-card-title>Unified Crawl-to-Graph</mat-card-title>
-                <mat-card-subtitle>Crawl multiple sources and automatically build a knowledge graph + vector index</mat-card-subtitle>
-              </mat-card-header>
-              <mat-card-content>
-                <!-- Job name -->
-                <mat-form-field appearance="outline" class="full-width">
-                  <mat-label>Job Name</mat-label>
-                  <input matInput [(ngModel)]="jobName" placeholder="e.g., Company Knowledge Base">
-                </mat-form-field>
-
-                <div class="target-sheet" *ngIf="activeFactSheet">
-                  <mat-icon>folder_special</mat-icon>
-                  <span>{{ activeFactSheet.name }}</span>
-                </div>
-
-                <!-- Sources -->
-                <h3>Sources
-                  <button mat-icon-button color="primary" (click)="addSource()" matTooltip="Add source">
-                    <mat-icon>add_circle</mat-icon>
-                  </button>
-                </h3>
-
-                <div *ngFor="let source of sources; let i = index" class="source-card">
-                  <mat-expansion-panel [expanded]="i === sources.length - 1">
-                    <mat-expansion-panel-header>
-                      <mat-panel-title>
-                        <mat-icon class="source-icon">{{ getSourceIcon(source.sourceType) }}</mat-icon>
-                        {{ source.label || 'Source ' + (i + 1) }}
-                      </mat-panel-title>
-                      <mat-panel-description>
-                        {{ source.sourceType || 'Not configured' }}
-                        <span *ngIf="source.pathOrUrl"> &mdash; {{ source.pathOrUrl | slice:0:40 }}</span>
-                      </mat-panel-description>
-                    </mat-expansion-panel-header>
-
-                    <div class="source-form">
-                      <div class="form-row">
-                        <mat-form-field appearance="outline">
-                          <mat-label>Label</mat-label>
-                          <input matInput [(ngModel)]="source.label" placeholder="e.g., Project docs">
-                        </mat-form-field>
-
-                        <mat-form-field appearance="outline">
-                          <mat-label>Source Type</mat-label>
-                          <mat-select [(ngModel)]="source.sourceType">
-                            <mat-option *ngFor="let st of availableSourceTypes" [value]="st.type"
-                                        [disabled]="!st.available">
-                              {{ st.displayName }}
-                              <span *ngIf="!st.available" class="unavailable">(not available)</span>
-                            </mat-option>
-                          </mat-select>
-                        </mat-form-field>
-                      </div>
-
-                      <mat-form-field appearance="outline" class="full-width">
-                        <mat-label>Path or URL</mat-label>
-                        <input matInput [(ngModel)]="source.pathOrUrl"
-                               placeholder="e.g., /data/docs or https://example.com">
-                      </mat-form-field>
-
-                      <div class="form-row">
-                        <mat-form-field appearance="outline">
-                          <mat-label>Max Depth</mat-label>
-                          <input matInput type="number" [(ngModel)]="source.maxDepth" min="0" max="10">
-                        </mat-form-field>
-
-                        <mat-form-field appearance="outline">
-                          <mat-label>Max Documents (0 = unlimited)</mat-label>
-                          <input matInput type="number" [(ngModel)]="source.maxDocuments" min="0">
-                        </mat-form-field>
-                      </div>
-
-                      <mat-form-field appearance="outline" class="full-width">
-                        <mat-label>Properties JSON</mat-label>
-                        <textarea matInput rows="3" [(ngModel)]="source.propertiesJson"
-                                  placeholder='{"crawlerId":"filesystem","folder":"Inbox"}'></textarea>
-                      </mat-form-field>
-
-                      <button mat-button color="warn" (click)="removeSource(i)">
-                        <mat-icon>delete</mat-icon> Remove Source
-                      </button>
-                    </div>
-                  </mat-expansion-panel>
-                </div>
-
-                <div *ngIf="sources.length === 0" class="empty-state">
-                  <mat-icon>source</mat-icon>
-                  <p>No sources added yet. Click + to add a source.</p>
-                </div>
-
-                <mat-divider class="section-divider"></mat-divider>
-
-                <!-- Graph Extraction Settings -->
-                <h3>
-                  <mat-slide-toggle [(ngModel)]="graphEnabled" color="primary">
-                    Graph Extraction
-                  </mat-slide-toggle>
-                </h3>
-
-                <div *ngIf="graphEnabled" class="settings-section">
-                  <div class="form-row">
-                    <mat-form-field appearance="outline">
-                      <mat-label>LLM Provider</mat-label>
-                      <mat-select [(ngModel)]="graphLlmProvider" (selectionChange)="onGraphLlmProviderChange()">
-                        <mat-option value="default">Default</mat-option>
-                        <mat-option *ngFor="let p of graphModelProviders" [value]="p.id">
-                          {{ p.name }}
-                        </mat-option>
-                      </mat-select>
-                    </mat-form-field>
-
-                    <mat-form-field appearance="outline">
-                      <mat-label>Model Name (optional)</mat-label>
-                      <mat-select *ngIf="graphAvailableModels.length > 0" [(ngModel)]="graphModelName">
-                        <mat-option value="">None (provider default)</mat-option>
-                        <mat-option *ngFor="let m of graphAvailableModels" [value]="m.id">
-                          {{ m.name || m.id }}
-                        </mat-option>
-                      </mat-select>
-                      <input *ngIf="graphAvailableModels.length === 0" matInput [(ngModel)]="graphModelName"
-                             placeholder="Leave blank for provider default">
-                    </mat-form-field>
-                  </div>
-
-                  <mat-form-field appearance="outline" class="full-width">
-                    <mat-label>Schema Preset</mat-label>
-                    <input matInput [(ngModel)]="graphSchemaPresetId" placeholder="fpna-cpg-channel-v1">
-                  </mat-form-field>
-
-                  <mat-form-field appearance="outline" class="full-width">
-                    <mat-label>Entity Types (comma-separated)</mat-label>
-                    <input matInput [(ngModel)]="graphEntityTypesStr"
-                           placeholder="e.g., PERSON, ORGANIZATION, PRODUCT, CONCEPT">
-                  </mat-form-field>
-
-                  <mat-form-field appearance="outline" class="full-width">
-                    <mat-label>Relationship Types (comma-separated, optional)</mat-label>
-                    <input matInput [(ngModel)]="graphRelTypesStr"
-                           placeholder="e.g., WORKS_AT, LOCATED_IN, DEPENDS_ON">
-                  </mat-form-field>
-
-                  <div class="form-row">
-                    <mat-form-field appearance="outline">
-                      <mat-label>Schema Mode</mat-label>
-                      <mat-select [(ngModel)]="graphSchemaMode">
-                        <mat-option value="NONE">None</mat-option>
-                        <mat-option value="LENIENT">Lenient</mat-option>
-                        <mat-option value="STRICT">Strict</mat-option>
-                      </mat-select>
-                    </mat-form-field>
-
-                    <mat-form-field appearance="outline">
-                      <mat-label>Min Confidence</mat-label>
-                      <input matInput type="number" [(ngModel)]="graphMinConfidence" min="0" max="1" step="0.1">
-                    </mat-form-field>
-                  </div>
-
-                  <mat-slide-toggle [(ngModel)]="graphEntityResolution" color="primary">
-                    Entity Resolution (merge duplicates across sources)
-                  </mat-slide-toggle>
-
-                  <div *ngIf="graphEntityResolution" class="form-row">
-                    <mat-form-field appearance="outline">
-                      <mat-label>Resolution Threshold</mat-label>
-                      <input matInput type="number" [(ngModel)]="graphEntityResolutionSimilarityThreshold" min="0" max="1" step="0.01">
-                    </mat-form-field>
-
-                    <mat-slide-toggle [(ngModel)]="graphEntityResolutionUseEmbeddings" color="primary">
-                      Use Embeddings
-                    </mat-slide-toggle>
-
-                    <mat-form-field appearance="outline">
-                      <mat-label>Embedding Threshold</mat-label>
-                      <input matInput type="number" [(ngModel)]="graphEntityResolutionEmbeddingThreshold" min="0" max="1" step="0.01">
-                    </mat-form-field>
-                  </div>
-                </div>
-
-                <mat-divider class="section-divider"></mat-divider>
-
-                <!-- Vector Indexing Settings -->
-                <h3>
-                  <mat-slide-toggle [(ngModel)]="indexEnabled" color="primary">
-                    Vector Indexing
-                  </mat-slide-toggle>
-                </h3>
-
-                <div *ngIf="indexEnabled" class="settings-section">
-                  <mat-form-field appearance="outline" class="full-width">
-                    <mat-label>Collection Name</mat-label>
-                    <input matInput [(ngModel)]="indexCollectionName" placeholder="e.g., my-knowledge-base">
-                  </mat-form-field>
-                  <div class="form-row">
-                    <mat-form-field appearance="outline">
-                      <mat-label>Embedding Batch Size</mat-label>
-                      <input matInput type="number" [(ngModel)]="embeddingBatchSize" min="0">
-                    </mat-form-field>
-                    <mat-form-field appearance="outline">
-                      <mat-label>Max Embedding Batch</mat-label>
-                      <input matInput type="number" [(ngModel)]="maxEmbeddingBatchSize" min="0">
-                    </mat-form-field>
-                  </div>
-                  <mat-slide-toggle [(ngModel)]="adaptiveBatching" color="primary">
-                    Adaptive batching under memory pressure
-                  </mat-slide-toggle>
-                </div>
-
-                <!-- Processing Routes -->
-                <h3>
-                  <mat-slide-toggle [(ngModel)]="processingRouteEnabled" color="primary">
-                    Processing Routes
-                  </mat-slide-toggle>
-                </h3>
-
-                <div *ngIf="processingRouteEnabled" class="settings-section">
-                  <mat-form-field appearance="outline" class="full-width">
-                    <mat-label>PDF Routing Mode</mat-label>
-                    <mat-select [(ngModel)]="pdfRoutingMode">
-                      <mat-option value="AUTO">Auto — classify PDFs, text-only to cheap parser, images to VLM</mat-option>
-                      <mat-option value="FORCE_VLM">Force VLM — all PDFs through VLM pipeline</mat-option>
-                      <mat-option value="FORCE_TEXT">Force Text — all PDFs through text extraction only</mat-option>
-                      <mat-option value="DISABLED">Disabled — no PDF-specific routing</mat-option>
-                    </mat-select>
-                  </mat-form-field>
-
-                  <mat-slide-toggle [(ngModel)]="extractTablesFromTextPdfs" color="primary">
-                    Extract tables from text PDFs (via Tabula)
-                  </mat-slide-toggle>
-
-                  <mat-slide-toggle [(ngModel)]="fallbackEnabled" color="primary" class="fallback-toggle">
-                    Enable capacity-based fallback routing
-                  </mat-slide-toggle>
-
-                  <div *ngIf="fallbackEnabled" class="backends-section">
-                    <p class="hint-text">
-                      When local model capacity is exhausted, requests fall back through this chain.
-                      Lower priority number = preferred backend.
-                    </p>
-
-                    <div *ngFor="let backend of backends; let i = index" class="backend-row">
-                      <mat-form-field appearance="outline">
-                        <mat-label>Backend ID</mat-label>
-                        <input matInput [(ngModel)]="backend.id" placeholder="e.g., local-vlm">
-                      </mat-form-field>
-                      <mat-form-field appearance="outline">
-                        <mat-label>Type</mat-label>
-                        <mat-select [(ngModel)]="backend.type">
-                          <mat-option value="LOCAL_MODEL">Local Model</mat-option>
-                          <mat-option value="CLI_AGENT">CLI Agent</mat-option>
-                          <mat-option value="API_AGENT">API Agent</mat-option>
-                        </mat-select>
-                      </mat-form-field>
-                      <mat-form-field appearance="outline">
-                        <mat-label>Priority</mat-label>
-                        <input matInput type="number" [(ngModel)]="backend.priority" min="1">
-                      </mat-form-field>
-                      <mat-form-field appearance="outline">
-                        <mat-label>Max Concurrent</mat-label>
-                        <input matInput type="number" [(ngModel)]="backend.maxConcurrent" min="0">
-                      </mat-form-field>
-                      <mat-form-field appearance="outline">
-                        <mat-label>Rate Limit (rpm)</mat-label>
-                        <input matInput type="number" [(ngModel)]="backend.requestsPerMinute" min="0">
-                      </mat-form-field>
-                      <mat-form-field appearance="outline" *ngIf="backend.type === 'CLI_AGENT'">
-                        <mat-label>Agent Name</mat-label>
-                        <input matInput [(ngModel)]="backend.agentName" placeholder="e.g., claude-cli">
-                      </mat-form-field>
-                      <mat-form-field appearance="outline" *ngIf="backend.type === 'API_AGENT'">
-                        <mat-label>Endpoint URL</mat-label>
-                        <input matInput [(ngModel)]="backend.endpointUrl" placeholder="e.g., https://api.openai.com/v1">
-                      </mat-form-field>
-                      <mat-form-field appearance="outline" *ngIf="backend.type === 'API_AGENT'">
-                        <mat-label>Model</mat-label>
-                        <input matInput [(ngModel)]="backend.modelName" placeholder="e.g., gpt-4o">
-                      </mat-form-field>
-                      <button mat-icon-button color="warn" (click)="removeBackend(i)">
-                        <mat-icon>delete</mat-icon>
-                      </button>
-                    </div>
-
-                    <button mat-stroked-button color="primary" (click)="addBackend()">
-                      <mat-icon>add</mat-icon> Add Backend
-                    </button>
-                  </div>
-                </div>
-
-                <!-- Pipeline Steps Selection -->
-                <div *ngIf="stepCatalog.length > 0">
-                  <mat-divider class="section-divider"></mat-divider>
-                  <h3>Pipeline Steps</h3>
-                  <p class="hint-text">Foundational steps always run. For optional steps, choose Run, Archive (skip now, run later), or Skip.</p>
-                  <div class="step-selection-grid">
-                    <div *ngFor="let step of stepCatalog" class="step-selection-row"
-                         [class.step-selection-foundational]="step.foundational"
-                         [class.step-selection-blocked]="!step.foundational && isStepDependencyBlocked(step)">
-                      <mat-icon class="step-sel-icon">{{ getStepTypeIcon(step.stepType) }}</mat-icon>
-                      <div class="step-sel-info">
-                        <span class="step-sel-name">{{ step.displayName }}</span>
-                        <span class="step-sel-type" [class]="getStepTypeClass(step.stepType)">{{ step.stepType }}</span>
-                        <span *ngIf="step.dependsOn.length > 0" class="step-sel-deps">
-                          depends on: {{ step.dependsOn.join(', ') }}
-                        </span>
-                      </div>
-                      <div class="step-sel-controls">
-                        <ng-container *ngIf="step.foundational">
-                          <span class="step-sel-locked"><mat-icon inline>lock</mat-icon> Run (required)</span>
-                        </ng-container>
-                        <ng-container *ngIf="!step.foundational">
-                          <button mat-stroked-button
-                                  [class.step-sel-active]="stepSelections[step.id] === 'run'"
-                                  [disabled]="isStepDependencyBlocked(step)"
-                                  (click)="setStepSelection(step.id, 'run')">
-                            Run
-                          </button>
-                          <button mat-stroked-button
-                                  *ngIf="step.archivable"
-                                  [class.step-sel-active-archive]="stepSelections[step.id] === 'archive'"
-                                  [disabled]="isStepDependencyBlocked(step)"
-                                  (click)="setStepSelection(step.id, 'archive')">
-                            Archive
-                          </button>
-                          <button mat-stroked-button
-                                  [class.step-sel-active-skip]="stepSelections[step.id] === 'skip' || isStepDependencyBlocked(step)"
-                                  (click)="setStepSelection(step.id, 'skip')">
-                            Skip
-                          </button>
-                        </ng-container>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-              </mat-card-content>
-              <mat-card-actions align="end">
-                <mat-slide-toggle *ngIf="clusterWorkerCount > 0"
-                                  [(ngModel)]="distributeAcrossWorkers" color="primary"
-                                  style="margin-right: 16px;"
-                                  matTooltip="Fan the sources across the {{ clusterWorkerCount }} live cluster worker(s); progress merges into one job in the Crawlers panel.">
-                  Distribute across {{ clusterWorkerCount }} worker{{ clusterWorkerCount === 1 ? '' : 's' }}
-                </mat-slide-toggle>
-                <button mat-raised-button color="primary"
-                        [disabled]="sources.length === 0 || isStarting"
-                        (click)="startJob()">
-                  <mat-icon>{{ distributeAcrossWorkers && clusterWorkerCount > 0 ? 'hub' : 'play_arrow' }}</mat-icon>
-                  {{ isStarting
-                       ? 'Starting...'
-                       : (distributeAcrossWorkers && clusterWorkerCount > 0 ? 'Start Distributed Crawl' : 'Start Crawl') }}
-                </button>
-              </mat-card-actions>
-            </mat-card>
+      <div class="page-header">
+        <div class="page-header-info">
+          <mat-icon>travel_explore</mat-icon>
+          <div>
+            <h2 class="page-header-title">Unified Crawl-to-Graph</h2>
+            <span class="page-header-sub">Crawl multiple sources and automatically build a knowledge graph + vector index.</span>
           </div>
-        </mat-tab>
+        </div>
+        <button mat-raised-button color="primary" class="new-crawl-btn" (click)="launchCrawl()" [disabled]="isStarting">
+          <mat-icon>add</mat-icon>
+          {{ isStarting ? 'Starting…' : 'New Crawl' }}
+        </button>
+      </div>
 
+      <mat-tab-group [(selectedIndex)]="activeTab">
         <!-- Jobs Tab -->
         <mat-tab>
           <ng-template mat-tab-label>
@@ -433,10 +88,13 @@
 
             <div *ngIf="jobs.length === 0" class="empty-state">
               <mat-icon>work_outline</mat-icon>
-              <p>No crawl jobs yet. Start one from the "New Crawl Job" tab.</p>
+              <p>No crawl jobs yet. Click <strong>New Crawl</strong> to start one.</p>
+              <button mat-stroked-button color="primary" (click)="launchCrawl()">
+                <mat-icon>add</mat-icon> New Crawl
+              </button>
             </div>
 
-            <mat-card *ngFor="let job of jobs" class="job-card" (click)="selectJob(job.jobId)">
+            <mat-card *ngFor="let job of jobs; trackBy: trackByJobId" class="job-card" (click)="selectJob(job.jobId)">
               <mat-card-header>
                 <mat-card-title>
                   {{ job.name || 'Unnamed Job' }}
@@ -694,33 +352,19 @@
                   </span>
                 </div>
 
-                <!-- Pipeline steps strip -->
-                <div class="step-strip" *ngIf="job.pipelineSteps && job.pipelineSteps.length > 0">
-                  <div *ngFor="let step of getVisiblePipelineSteps(job.pipelineSteps)"
-                       class="step-pill"
-                       [ngClass]="getStepStatusClass(step.status)">
-                    <div class="step-pill-header">
-                      <mat-icon>{{ getStepTypeIcon(step.stepType) }}</mat-icon>
-                      <span class="step-name">{{ step.displayName }}</span>
-                      <span class="step-type" [class]="getStepTypeClass(step.stepType)">{{ step.stepType }}</span>
-                    </div>
-                    <mat-progress-bar mode="determinate" [value]="step.progressPercent || 0"></mat-progress-bar>
-                    <div class="step-pill-meta">
-                      <span>{{ step.completedItems || 0 }}/{{ step.totalItems || 0 }}</span>
-                      <span *ngIf="step.failedItems">{{ step.failedItems }} failed</span>
-                      <span *ngIf="step.totalBatches">Batches {{ step.completedBatches || 0 }}/{{ step.totalBatches }}</span>
-                      <span *ngIf="getStepThroughput(step)" class="step-throughput">{{ getStepThroughput(step) }}</span>
-                      <span *ngIf="step.elapsedMs">{{ formatElapsed(step.elapsedMs) }}</span>
-                    </div>
-                    <div *ngIf="isStepRunNowEligible(step.status)" class="step-pill-run-now">
-                      <button mat-stroked-button class="run-now-btn"
-                              [disabled]="isStepActionInProgress(job.jobId, step.stepId)"
-                              (click)="runStep(job.jobId, step.stepId); $event.stopPropagation()">
-                        <mat-icon>play_circle</mat-icon>
-                        {{ step.status === 'ARCHIVED' ? 'Run archived' : 'Run now' }}
-                      </button>
-                    </div>
-                  </div>
+                <!-- Pipeline steps — shared CrawlStepMonitor (compact; same component as Fact Sheets + Job Detail) -->
+                <div class="step-strip" *ngIf="job.pipelineSteps && job.pipelineSteps.length > 0"
+                     (click)="$event.stopPropagation()">
+                  <app-crawl-step-monitor
+                    [steps]="job.pipelineSteps"
+                    [job]="job"
+                    [jobId]="job.jobId"
+                    [taskId]="'crawl-' + (job.internalJobId || job.jobId)"
+                    [isJobRunning]="job.status === 'RUNNING' || job.status === 'PENDING'"
+                    [compact]="true"
+                    [runningStepIds]="getRunningStepIds(job.jobId)"
+                    (runStepRequested)="runStep($event.jobId, $event.stepId)">
+                  </app-crawl-step-monitor>
                 </div>
                 <mat-progress-bar *ngIf="job.status === 'RUNNING' || job.status === 'PENDING'"
                                   [mode]="job.progressPercent !== undefined && job.progressPercent > 0 ? 'determinate' : 'indeterminate'"
@@ -943,6 +587,7 @@
                     [jobId]="selectedJob.jobId"
                     [taskId]="getCrawlHistoryTaskId(selectedJob.jobId)"
                     [isJobRunning]="isCrawlJobRunning(selectedJob.status)"
+                    [runningStepIds]="getRunningStepIds(selectedJob.jobId)"
                     (runStepRequested)="runStep($event.jobId, $event.stepId)">
                   </app-crawl-step-monitor>
                 </div>

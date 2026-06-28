@@ -17,6 +17,7 @@ package ai.kompile.knowledgegraph.controller;
 
 import ai.kompile.knowledgegraph.domain.*;
 import ai.kompile.knowledgegraph.service.*;
+import java.util.stream.Collectors;
 import ai.kompile.knowledgegraph.service.GraphBuildingService.BuildConfig;
 import ai.kompile.knowledgegraph.service.GraphBuildingService.BuildStatus;
 import ai.kompile.knowledgegraph.service.SourceLinkingService.LinkingConfig;
@@ -297,13 +298,16 @@ public class KnowledgeGraphController {
     // ═══════════════════════════════════════════════════════════════════════════
 
     @GetMapping("/weights")
-    public ResponseEntity<List<SourceWeight>> listWeights(
+    public ResponseEntity<List<SourceWeightView>> listWeights(
             @RequestParam(required = false, name = "sourceId") String sourceId) {
         if (sourceId != null) {
-            return ResponseEntity.ok(weightingService.getAllWeightsForSource(sourceId));
+            // All configured weights for a specific source (may be multiple topic-scoped rows)
+            List<SourceWeightView> views = weightingService.getAllWeightsForSource(sourceId)
+                    .stream().map(SourceWeightView::from).collect(Collectors.toList());
+            return ResponseEntity.ok(views);
         }
-        // Return all topic weights
-        return ResponseEntity.ok(List.of());
+        // All SOURCE nodes with their current effective weights (configured or default)
+        return ResponseEntity.ok(weightingService.listAllSourcesWithWeights());
     }
 
     @GetMapping("/weights/{sourceId}")
@@ -383,13 +387,57 @@ public class KnowledgeGraphController {
     public ResponseEntity<Map<String, Object>> getVisualizationData(
             @RequestParam(required = false, name = "rootNodeId") String rootNodeId,
             @RequestParam(defaultValue = "2", name = "depth") int depth,
-            @RequestParam(defaultValue = "100", name = "maxNodes") int maxNodes,
+            @RequestParam(defaultValue = "0", name = "maxNodes") int maxNodes,
             @RequestParam(required = false, name = "from") @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime from,
             @RequestParam(required = false, name = "to") @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime to) {
+        // maxNodes <= 0 means unlimited — never silently cap the graph.
         if (from != null && to != null) {
             return ResponseEntity.ok(graphService.getVisualizationDataInTimeRange(from, to, maxNodes));
         }
         return ResponseEntity.ok(graphService.getVisualizationData(rootNodeId, depth, maxNodes));
+    }
+
+    /**
+     * LOD endpoint 1 — Top-K-by-centrality visualization.
+     *
+     * <p>Returns a bounded visualization seeded by the top-K graph nodes ranked by the requested
+     * centrality metric, plus the induced subgraph edges between them. Designed as the initial
+     * "seed" view for the Sigma.js/WebGL visualizer on large graphs where dumping every node
+     * is prohibitively expensive. {@code statistics.totalAvailableNodes} carries the full graph
+     * node count so the UI can show "showing K of N".</p>
+     *
+     * @param k           maximum nodes to return (default 200, capped at 5000)
+     * @param metric      centrality metric: "pagerank" (default) | "degree" | "betweenness"
+     * @param factSheetId optional fact-sheet scope; omit to query across all graphs
+     */
+    @GetMapping("/visualization/top-k")
+    public ResponseEntity<Map<String, Object>> getTopKVisualization(
+            @RequestParam(defaultValue = "200", name = "k") int k,
+            @RequestParam(defaultValue = "pagerank", name = "metric") String metric,
+            @RequestParam(required = false, name = "factSheetId") Long factSheetId) {
+        k = Math.min(Math.max(k, 1), 5000);
+        return ResponseEntity.ok(graphService.getTopKVisualizationData(factSheetId, k, metric));
+    }
+
+    /**
+     * LOD endpoint 2 — 1-hop neighborhood expand.
+     *
+     * <p>Returns the seed node plus its immediate neighbors (capped at {@code maxNeighbors},
+     * sorted by edge weight desc) and all connecting edges in the standard viz shape. Used by
+     * the Sigma.js visualizer to progressively expand the graph on node-click without
+     * triggering a full-graph dump.</p>
+     *
+     * @param nodeId       the node to expand
+     * @param maxNeighbors cap on returned neighbors (default 50, capped at 500)
+     * @param edgeTypes    optional comma-separated edge-type filter (omit = all types)
+     */
+    @GetMapping("/nodes/{nodeId}/expand")
+    public ResponseEntity<Map<String, Object>> expandNeighborhood(
+            @PathVariable("nodeId") String nodeId,
+            @RequestParam(defaultValue = "50", name = "maxNeighbors") int maxNeighbors,
+            @RequestParam(required = false, name = "edgeTypes") List<String> edgeTypes) {
+        maxNeighbors = Math.min(Math.max(maxNeighbors, 1), 500);
+        return ResponseEntity.ok(graphService.expandNeighborhoodVisualization(nodeId, maxNeighbors, edgeTypes));
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

@@ -23,11 +23,17 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.io.BufferedReader;
+import java.io.IOException;
 import java.io.InputStreamReader;
+import java.nio.file.FileVisitOption;
+import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -1803,18 +1809,34 @@ public class LocalCodeIndexTool implements CliTool {
         String query = params.path("query").asText("");
         Path projectRoot = Path.of(cwd);
 
-        // Find all pom.xml files
+        // Find all pom.xml files. Use walkFileTree (not Files.walk) so excluded build/data
+        // directories prune the SUBTREE — a filtered Files.walk still descends into them, which
+        // on a large repo means walking gigabytes of git-ignored model builds to find poms.
         List<Path> pomFiles = new ArrayList<>();
-        try (java.util.stream.Stream<Path> walkStream = Files.walk(projectRoot, 10)) {
-            walkStream
-                    .filter(p -> p.getFileName().toString().equals("pom.xml"))
-                    .filter(p -> {
-                        String rel = projectRoot.relativize(p).toString();
-                        return !rel.contains("target/") && !rel.contains("node_modules/")
-                                && !rel.contains(".git/");
-                    })
-                    .forEach(pomFiles::add);
-        }
+        SearchExclusions.GitignoreDirFilter pomGitFilter = SearchExclusions.loadGitignoreDirFilter(projectRoot);
+        Files.walkFileTree(projectRoot, EnumSet.noneOf(FileVisitOption.class), 10, new SimpleFileVisitor<>() {
+            @Override
+            public FileVisitResult preVisitDirectory(Path d, BasicFileAttributes attrs) {
+                if (d.equals(projectRoot)) return FileVisitResult.CONTINUE;
+                String name = d.getFileName() != null ? d.getFileName().toString() : "";
+                if (SearchExclusions.isExcludedDir(name)
+                        || pomGitFilter.isIgnoredDir(projectRoot.relativize(d).toString(), name)) {
+                    return FileVisitResult.SKIP_SUBTREE;
+                }
+                return FileVisitResult.CONTINUE;
+            }
+
+            @Override
+            public FileVisitResult visitFile(Path f, BasicFileAttributes attrs) {
+                if (f.getFileName().toString().equals("pom.xml")) pomFiles.add(f);
+                return FileVisitResult.CONTINUE;
+            }
+
+            @Override
+            public FileVisitResult visitFileFailed(Path f, IOException exc) {
+                return FileVisitResult.CONTINUE;
+            }
+        });
 
         if (pomFiles.isEmpty()) {
             return ToolResult.success("modules",

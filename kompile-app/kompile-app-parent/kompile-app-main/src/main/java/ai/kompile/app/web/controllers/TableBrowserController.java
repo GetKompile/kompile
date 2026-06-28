@@ -174,8 +174,8 @@ public class TableBrowserController {
         }
     }
 
-    @GetMapping("/{tableId}")
-    public ResponseEntity<Map<String, Object>> getTable(@PathVariable String tableId) {
+    @GetMapping("/detail")
+    public ResponseEntity<Map<String, Object>> getTable(@RequestParam String tableId) {
         try {
             // Primary path: look up TABLE graph node from vector store (SINGLE SOURCE OF TRUTH).
             var graphNode = knowledgeGraphService.getNode(tableId);
@@ -231,9 +231,9 @@ public class TableBrowserController {
     // ANALYZE
     // ═══════════════════════════════════════════════════════════════════════════
 
-    @PostMapping("/{tableId}/analyze")
+    @PostMapping("/analyze")
     public ResponseEntity<Map<String, Object>> analyzeTable(
-            @PathVariable String tableId,
+            @RequestParam String tableId,
             @RequestBody(required = false) Map<String, String> body) {
         String column = body != null ? body.get("column") : null;
 
@@ -282,9 +282,9 @@ public class TableBrowserController {
     // FILTER
     // ═══════════════════════════════════════════════════════════════════════════
 
-    @PostMapping("/{tableId}/filter")
+    @PostMapping("/filter")
     public ResponseEntity<Map<String, Object>> filterTable(
-            @PathVariable String tableId,
+            @RequestParam String tableId,
             @RequestBody Map<String, String> body) {
         String column = body.get("column");
         String operator = body.get("operator");
@@ -324,9 +324,9 @@ public class TableBrowserController {
     // SORT
     // ═══════════════════════════════════════════════════════════════════════════
 
-    @PostMapping("/{tableId}/sort")
+    @PostMapping("/sort")
     public ResponseEntity<Map<String, Object>> sortTable(
-            @PathVariable String tableId,
+            @RequestParam String tableId,
             @RequestBody Map<String, Object> body) {
         String column = (String) body.get("column");
         boolean descending = Boolean.TRUE.equals(body.get("descending"));
@@ -373,9 +373,9 @@ public class TableBrowserController {
     // EXPORT
     // ═══════════════════════════════════════════════════════════════════════════
 
-    @PostMapping("/{tableId}/export")
+    @PostMapping("/export")
     public ResponseEntity<Map<String, Object>> exportTable(
-            @PathVariable String tableId,
+            @RequestParam String tableId,
             @RequestBody Map<String, String> body) {
         String format = body.getOrDefault("format", "csv");
 

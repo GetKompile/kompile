@@ -22,15 +22,17 @@ import ai.kompile.core.kgembedding.KGEmbeddingAlgorithm;
 import ai.kompile.core.kgembedding.KGEmbeddingModel;
 import ai.kompile.core.retrievers.DocumentRetriever;
 import ai.kompile.core.retrievers.RetrievedDoc;
+import ai.kompile.core.source.SourceMetadataConstants;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
+import ai.kompile.knowledgegraph.domain.GraphProvenanceKeys;
+import ai.kompile.knowledgegraph.domain.NodeLevel;
 import ai.kompile.knowledgegraph.embedding.config.KGEmbeddingConfigService;
 import ai.kompile.knowledgegraph.embedding.config.KGEmbeddingConfigService.GraphRAGConfig;
 import ai.kompile.knowledgegraph.embedding.impl.RotatEModel;
 import ai.kompile.knowledgegraph.embedding.impl.TransEModel;
 import ai.kompile.knowledgegraph.embedding.service.KGEmbeddingStorageService;
-import ai.kompile.knowledgegraph.repository.GraphEdgeRepository;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
+import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
 import org.slf4j.Logger;
@@ -64,8 +66,7 @@ public class KGEmbeddingRetriever implements DocumentRetriever {
 
     private static final Logger log = LoggerFactory.getLogger(KGEmbeddingRetriever.class);
 
-    private final GraphNodeRepository nodeRepository;
-    private final GraphEdgeRepository edgeRepository;
+    private final KnowledgeGraphService knowledgeGraphService;
     private final KGEmbeddingStorageService storageService;
     private final KGEmbeddingConfigService configService;
     private final EmbeddingModel textEmbeddingModel;
@@ -78,15 +79,13 @@ public class KGEmbeddingRetriever implements DocumentRetriever {
 
     @Autowired
     public KGEmbeddingRetriever(
-            GraphNodeRepository nodeRepository,
-            GraphEdgeRepository edgeRepository,
+            KnowledgeGraphService knowledgeGraphService,
             KGEmbeddingStorageService storageService,
             KGEmbeddingConfigService configService,
             @Autowired(required = false) EmbeddingModel textEmbeddingModel,
             @Autowired(required = false) @org.springframework.beans.factory.annotation.Qualifier("baseDocumentRetriever") DocumentRetriever baseRetriever
     ) {
-        this.nodeRepository = nodeRepository;
-        this.edgeRepository = edgeRepository;
+        this.knowledgeGraphService = knowledgeGraphService;
         this.storageService = storageService;
         this.configService = configService;
         this.textEmbeddingModel = textEmbeddingModel;
@@ -183,7 +182,7 @@ public class KGEmbeddingRetriever implements DocumentRetriever {
         }
 
         // Get all entities with KG embeddings
-        List<GraphNode> nodesWithEmbeddings = nodeRepository.findByFactSheetIdAndKgEmbeddingNotNull(factSheetId);
+        List<GraphNode> nodesWithEmbeddings = knowledgeGraphService.findNodesWithKgEmbedding(factSheetId);
 
         if (nodesWithEmbeddings.isEmpty()) {
             log.debug("No nodes with KG embeddings found");
@@ -247,7 +246,7 @@ public class KGEmbeddingRetriever implements DocumentRetriever {
         // Split query into keywords
         String[] keywords = query.toLowerCase().split("\\s+");
 
-        List<GraphNode> entities = nodeRepository.findEntitiesByFactSheet(factSheetId);
+        List<GraphNode> entities = knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY);
         List<ScoredEntity> scored = new ArrayList<>();
 
         for (GraphNode entity : entities) {
@@ -297,18 +296,21 @@ public class KGEmbeddingRetriever implements DocumentRetriever {
             Set<String> nextFrontier = new HashSet<>();
 
             for (String entity : currentFrontier) {
-                // Method 1: Use graph edges directly
-                List<GraphEdge> outgoingEdges = edgeRepository.findBySourceNodeTitleAndFactSheetId(entity, factSheetId);
-                List<GraphEdge> incomingEdges = edgeRepository.findByTargetNodeTitleAndFactSheetId(entity, factSheetId);
-
-                for (GraphEdge edge : outgoingEdges) {
-                    if (edge.getTargetNode() != null) {
-                        nextFrontier.add(edge.getTargetNode().getTitle());
-                    }
-                }
-                for (GraphEdge edge : incomingEdges) {
-                    if (edge.getSourceNode() != null) {
-                        nextFrontier.add(edge.getSourceNode().getTitle());
+                // Method 1: Use graph edges directly via the seam.
+                // Search for nodes whose title matches 'entity', then walk their edges.
+                List<GraphNode> matchingNodes = knowledgeGraphService.searchNodes(entity, null, 5);
+                for (GraphNode matchNode : matchingNodes) {
+                    if (!entity.equalsIgnoreCase(matchNode.getTitle())) continue;
+                    List<GraphEdge> edges = knowledgeGraphService.getEdgesForNodeInFactSheet(matchNode.getNodeId(), factSheetId);
+                    for (GraphEdge edge : edges) {
+                        if (edge.getTargetNode() != null && edge.getTargetNode().getNodeId() != null) {
+                            knowledgeGraphService.getNode(edge.getTargetNode().getNodeId())
+                                    .ifPresent(n -> { if (n.getTitle() != null) nextFrontier.add(n.getTitle()); });
+                        }
+                        if (edge.getSourceNode() != null && edge.getSourceNode().getNodeId() != null) {
+                            knowledgeGraphService.getNode(edge.getSourceNode().getNodeId())
+                                    .ifPresent(n -> { if (n.getTitle() != null) nextFrontier.add(n.getTitle()); });
+                        }
                     }
                 }
 
@@ -351,8 +353,9 @@ public class KGEmbeddingRetriever implements DocumentRetriever {
      * Gets common relation types used in the knowledge graph.
      */
     private Set<String> getCommonRelationTypes(Long factSheetId) {
-        List<GraphEdge> edges = edgeRepository.findByFactSheetId(factSheetId);
+        List<GraphEdge> edges = knowledgeGraphService.getEdgesInFactSheet(factSheetId);
         return edges.stream()
+                .filter(e -> e.getEdgeType() != null)
                 .map(e -> e.getEdgeType().name())
                 .collect(Collectors.toSet());
     }
@@ -373,9 +376,10 @@ public class KGEmbeddingRetriever implements DocumentRetriever {
             entityScores.put(se.entityName, se.score);
         }
 
-        // Get nodes for all expanded entities
-        List<GraphNode> allNodes = nodeRepository.findByFactSheetId(factSheetId);
+        // Get nodes for all expanded entities (search ENTITY nodes in this fact sheet)
+        List<GraphNode> allNodes = knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY);
         Map<String, GraphNode> nodeByTitle = allNodes.stream()
+                .filter(n -> n.getTitle() != null)
                 .collect(Collectors.toMap(GraphNode::getTitle, n -> n, (a, b) -> a));
 
         for (String entityName : expandedEntities) {
@@ -395,14 +399,15 @@ public class KGEmbeddingRetriever implements DocumentRetriever {
             }
 
             // Add relationship context
-            List<GraphEdge> edges = edgeRepository.findBySourceNodeIdOrTargetNodeId(node.getId());
+            List<GraphEdge> edges = knowledgeGraphService.getEdgesForNodeInFactSheet(node.getNodeId(), factSheetId);
             if (!edges.isEmpty()) {
                 contextBuilder.append("Relationships:\n");
                 for (GraphEdge edge : edges) {
-                    String sourceName = edge.getSourceNode() != null ? edge.getSourceNode().getTitle() : "?";
-                    String targetName = edge.getTargetNode() != null ? edge.getTargetNode().getTitle() : "?";
+                    String sourceName = resolveTitle(edge.getSourceNode());
+                    String targetName = resolveTitle(edge.getTargetNode());
+                    String edgeTypeName = edge.getEdgeType() != null ? edge.getEdgeType().name() : "RELATED_TO";
                     contextBuilder.append("  - ").append(sourceName)
-                            .append(" [").append(edge.getEdgeType().name()).append("] ")
+                            .append(" [").append(edgeTypeName).append("] ")
                             .append(targetName).append("\n");
                 }
             }
@@ -419,6 +424,37 @@ public class KGEmbeddingRetriever implements DocumentRetriever {
             metadata.put("fact_sheet_id", factSheetId);
             if (node.getKgEmbeddingAlgorithm() != null) {
                 metadata.put("kg_algorithm", node.getKgEmbeddingAlgorithm().name());
+            }
+
+            // Source attribution: use externalId as the stable source identifier
+            String externalId = node.getExternalId();
+            if (externalId != null && !externalId.isBlank()) {
+                metadata.put(SourceMetadataConstants.SOURCE_ID, externalId);
+            }
+
+            // Copy provenance keys and chunk-location fields from the node's metadata map.
+            // GraphNode.getMetadata() deserialises metadataJson — null values are guarded
+            // because RetrievedDoc rejects them.
+            Map<String, Object> nodeMeta = node.getMetadata();
+            if (nodeMeta != null && !nodeMeta.isEmpty()) {
+                for (String provKey : GraphProvenanceKeys.ALL) {
+                    Object val = nodeMeta.get(provKey);
+                    if (val != null) {
+                        metadata.put(provKey, val);
+                    }
+                }
+                // Citation fields: page/chunk location and original filename
+                for (String citeKey : new String[]{
+                        SourceMetadataConstants.PAGE_NUMBER,
+                        SourceMetadataConstants.CHUNK_INDEX,
+                        SourceMetadataConstants.SOURCE_FILENAME,
+                        SourceMetadataConstants.SOURCE_PATH,
+                        SourceMetadataConstants.SOURCE_URL}) {
+                    Object val = nodeMeta.get(citeKey);
+                    if (val != null) {
+                        metadata.put(citeKey, val);
+                    }
+                }
             }
 
             docs.add(RetrievedDoc.builder()
@@ -581,6 +617,18 @@ public class KGEmbeddingRetriever implements DocumentRetriever {
             double score,
             INDArray kgEmbedding
     ) {}
+
+    /** Resolve a display title from a partial GraphNode stub (nodeId only). */
+    private String resolveTitle(GraphNode stub) {
+        if (stub == null) return "?";
+        if (stub.getTitle() != null && !stub.getTitle().isEmpty()) return stub.getTitle();
+        if (stub.getNodeId() != null) {
+            return knowledgeGraphService.getNode(stub.getNodeId())
+                    .map(n -> n.getTitle() != null ? n.getTitle() : stub.getNodeId())
+                    .orElse(stub.getNodeId());
+        }
+        return "?";
+    }
 
     /**
      * Clears the cached models for a fact sheet.

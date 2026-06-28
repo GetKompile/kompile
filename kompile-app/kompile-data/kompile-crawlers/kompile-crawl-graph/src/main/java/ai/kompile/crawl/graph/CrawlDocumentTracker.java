@@ -16,14 +16,18 @@
 
 package ai.kompile.crawl.graph;
 
+import ai.kompile.core.crawl.graph.CrawlProgressEvent;
 import ai.kompile.core.crawl.graph.UnifiedCrawlJob;
 import ai.kompile.core.graphrag.GraphConstants;
 import ai.kompile.core.retrievers.RetrievedDoc;
 import org.springframework.ai.document.Document;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Tracks per-document progress and provides document key/name utilities.
@@ -33,6 +37,12 @@ import java.util.*;
 class CrawlDocumentTracker {
 
     private static final int MAX_RECENT_EVENTS = 120;
+
+    /** Live SSE push of recorded activity so EVERY step streams in real time, not just at phase boundaries. */
+    @Autowired(required = false)
+    private ApplicationEventPublisher eventPublisher;
+    private final ConcurrentHashMap<String, Long> lastLivePublishNanos = new ConcurrentHashMap<>();
+    private static final long LIVE_PUBLISH_THROTTLE_NANOS = 300_000_000L; // ~3 pushes/sec/job; WARN/ERROR bypass
 
     // Pre-allocated key arrays for stringMeta — avoids varargs String[] allocation per call
     static final String[] META_KEYS_SOURCE_TYPE = {GraphConstants.META_SOURCE_TYPE, "source_type"};
@@ -69,6 +79,30 @@ class CrawlDocumentTracker {
             } catch (Exception ignored) {
                 // Concurrent modification — safe to skip, next caller will trim
             }
+        }
+        publishLive(job, level, message);
+    }
+
+    /**
+     * Stream recorded activity live to SSE subscribers (CrawlProgressEvent.PROGRESS carrying the full
+     * snapshot), throttled to ~3x/sec per job so any step that records an event shows up in real time.
+     * WARN/ERROR push immediately. Without this, sub-phase events (routing, text conversion, source
+     * discovery) only reached the UI at phase boundaries — i.e. the steps looked "completely silent".
+     */
+    private void publishLive(UnifiedCrawlJob job, String level, String message) {
+        if (eventPublisher == null) return;
+        String jobId = job.getJobId();
+        if (jobId == null) return;
+        boolean important = "ERROR".equalsIgnoreCase(level) || "WARN".equalsIgnoreCase(level);
+        long now = System.nanoTime();
+        Long last = lastLivePublishNanos.get(jobId);
+        if (!important && last != null && (now - last) < LIVE_PUBLISH_THROTTLE_NANOS) return;
+        lastLivePublishNanos.put(jobId, now);
+        try {
+            eventPublisher.publishEvent(new CrawlProgressEvent(
+                    this, jobId, job.toProgressSnapshot(), CrawlProgressEvent.EventType.PROGRESS, message));
+        } catch (Exception ignored) {
+            // best-effort live push
         }
     }
 

@@ -41,7 +41,15 @@ public record ResourceSnapshot(
         PressureLevel heapPressure,
         PressureLevel nativePressure,
         List<GpuSnapshot> gpus,
-        boolean gpuBackendAvailable) {
+        boolean gpuBackendAvailable,
+        /**
+         * Raw MemAvailable from Linux {@code /proc/meminfo} in bytes, or {@code -1L} on
+         * non-Linux hosts or when the value could not be read. Used by the resource governor's
+         * hard OOM-floor check ({@code governorRamFloorMb}) in addition to the fractional
+         * threshold. A value of {@code -1L} means the floor check is skipped (safe default on
+         * non-Linux platforms).
+         */
+        long memAvailableBytes) {
 
     /** Ordered severity of a single resource dimension. */
     public enum PressureLevel {
@@ -83,10 +91,15 @@ public record ResourceSnapshot(
         return worst;
     }
 
+    /** Convenience accessor: MemAvailable in megabytes, or {@code -1L} when unavailable. */
+    public long memAvailableMb() {
+        return memAvailableBytes < 0 ? -1L : memAvailableBytes / (1024L * 1024L);
+    }
+
     /** Safe sentinel used when telemetry has not yet run or is unavailable (CPU-only, errors). */
     public static ResourceSnapshot unavailable() {
         return new ResourceSnapshot(0L, -1.0, 0.0, 0.0, 0.0,
                 PressureLevel.NOMINAL, PressureLevel.NOMINAL, PressureLevel.NOMINAL, PressureLevel.NOMINAL,
-                List.of(), false);
+                List.of(), false, -1L);
     }
 }

@@ -11,6 +11,8 @@
 import { Component, OnDestroy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
+import { Citation } from '../../models/api-models';
+import { SourceCitationComponent } from '../source-citation/source-citation.component';
 import { MatCardModule } from '@angular/material/card';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
@@ -70,7 +72,8 @@ interface HistoryEntry {
     MatSelectModule,
     MatSlideToggleModule,
     StrengthBadgeComponent,
-    ReasoningTrailComponent
+    ReasoningTrailComponent,
+    SourceCitationComponent
   ],
   template: `
     <div class="grounding-console">
@@ -169,21 +172,32 @@ interface HistoryEntry {
               <!-- Result -->
               <div class="verify-result result-block" *ngIf="verifyResult">
                 <div class="result-label">Result</div>
+                <div *ngIf="verifyResult.meta?.stale" class="stale-notice">
+                  <mat-chip class="stale-chip" disabled>
+                    <mat-icon>update</mat-icon>
+                    Result may be stale — re-grounding pending
+                  </mat-chip>
+                </div>
                 <div class="verdict-card" [class]="'verdict-' + verifyResult.verdict.toLowerCase()">
                   <span class="verdict-label">{{ verifyResult.verdict }}</span>
                   <app-strength-badge [band]="getBand(verifyResult.confidence)"></app-strength-badge>
-                  <span class="conf">{{ (verifyResult.confidence * 100).toFixed(0) }}% confidence</span>
+                  <span class="conf" matTooltip="Raw confidence straight from the reasoning engine">{{ (verifyResult.confidence * 100).toFixed(0) }}% confidence</span>
+                  <span class="conf calibrated" *ngIf="verifyResult.calibratedConfidence !== undefined"
+                        matTooltip="Adjusted for how reliable similar predictions have proven to be (calibrated)">
+                    · {{ (verifyResult.calibratedConfidence * 100).toFixed(0) }}% calibrated
+                  </span>
                 </div>
-                <div class="evidence-list" *ngIf="verifyResult.evidence?.length">
+                <div class="evidence-list" *ngIf="verifyResult.evidenceAtoms?.length">
                   <strong>Supporting evidence:</strong>
                   <mat-chip-set>
-                    <mat-chip *ngFor="let e of verifyResult.evidence!.slice(0, 5)">{{ e }}</mat-chip>
+                    <mat-chip *ngFor="let e of verifyResult.evidenceAtoms!.slice(0, 5)">{{ e }}</mat-chip>
                   </mat-chip-set>
                 </div>
-                <div class="provenance-note" *ngIf="verifyResult.provenance">
+                <div class="provenance-note" *ngIf="verifyResult.sourceProvenance?.length">
                   <mat-icon class="tiny-icon">source</mat-icon>
-                  Provenance: {{ verifyResult.provenance }}
+                  Provenance: {{ verifyResult.sourceProvenance?.join(', ') }}
                 </div>
+                <app-source-citation [citation]="verifyToCitation()" [compact]="true"></app-source-citation>
               </div>
             </div>
           </mat-expansion-panel>
@@ -326,6 +340,7 @@ interface HistoryEntry {
               <app-reasoning-trail
                 [trail]="explainTrail"
                 [loading]="explainLoading"
+                [stale]="explainStale"
                 mode="full">
               </app-reasoning-trail>
             </div>
@@ -457,6 +472,7 @@ export class GroundingConsolePanelComponent implements OnDestroy {
   explainDepth = 3;
   explainLoading = false;
   explainTrail: ReasoningTrailDto | null = null;
+  explainStale = false;
 
   // Shared
   factSheetId: number | null = null;
@@ -476,6 +492,18 @@ export class GroundingConsolePanelComponent implements OnDestroy {
 
   getBand(confidence: number): StrengthBand {
     return confidenceToStrengthBand(confidence);
+  }
+
+  verifyToCitation(): Citation | null {
+    if (!this.verifyResult) return null;
+    const prov: Record<string, any> = {};
+    if (this.verifyResult.sourceProvenance?.length) {
+      this.verifyResult.sourceProvenance.forEach((p, i) => { prov[`source_${i}`] = p; });
+    }
+    return {
+      confidence: this.verifyResult.calibratedConfidence,
+      provenance: Object.keys(prov).length ? prov : undefined
+    };
   }
 
   addConjunct(): void {
@@ -559,12 +587,14 @@ export class GroundingConsolePanelComponent implements OnDestroy {
     if (!this.explainAtom.trim()) return;
     this.explainLoading = true;
     this.explainTrail = null;
+    this.explainStale = false;
     this.kbGrounding.explain({ atom: this.explainAtom.trim(), factSheetId: this.factSheetId, depth: this.explainDepth })
       .pipe(takeUntil(this.destroy$))
       .subscribe({
         next: resp => {
           this.explainLoading = false;
           this.explainTrail = resp.trail ?? null;
+          this.explainStale = resp.meta?.stale ?? false;
           this.addHistory('explain', this.explainAtom, resp.naturalLanguageSummary ?? 'Explained');
         },
         error: err => {

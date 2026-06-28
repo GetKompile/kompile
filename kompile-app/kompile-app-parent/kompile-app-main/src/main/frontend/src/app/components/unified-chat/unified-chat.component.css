@@ -2860,6 +2860,15 @@
   opacity: 0.7;
 }
 
+.graph-rag-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  user-select: none;
+  margin-left: auto;
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════════
    RESPONSIVE
    ═══════════════════════════════════════════════════════════════════════════════ */

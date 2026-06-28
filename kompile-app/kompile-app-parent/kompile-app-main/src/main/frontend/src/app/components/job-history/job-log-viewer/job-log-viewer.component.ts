@@ -140,6 +140,14 @@ export class JobLogViewerComponent implements OnInit, OnDestroy, OnChanges, Afte
     // Setup log batching for WebSocket streaming
     this.setupLogBatching();
 
+    // Source-filtered views (e.g. LLM transcripts) are a single pre-filtered stream; the default
+    // INFO/WARN/ERROR level filter can hide transcript entries (logged below INFO), so they only
+    // surface as a badge dot on an unselected level chip. Show all levels by default for these views
+    // so the transcript is visible the moment it lands instead of needing a click to reveal it.
+    if (this.source) {
+      this.selectedLevels = new Set<LogLevel>(this.allLevels);
+    }
+
     // Initial load if taskId is provided
     if (this.taskId) {
       // If job is running, start in tail mode with WebSocket streaming

@@ -1,0 +1,149 @@
+.fallback-panel {
+  position: relative;
+  padding: 8px 0;
+}
+
+.loading-overlay {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 32px 0;
+}
+
+.panel-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.hint-icon {
+  font-size: 18px;
+  color: var(--muted-fg, #888);
+  vertical-align: middle;
+  cursor: default;
+}
+
+.hint-text {
+  font-size: 12px;
+  color: var(--muted-fg, #888);
+  margin: 4px 0 8px 0;
+}
+
+.section-divider {
+  margin: 12px 0 !important;
+}
+
+.form-row {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+
+.form-row mat-form-field {
+  flex: 1;
+  min-width: 200px;
+}
+
+.chain-header h4 {
+  margin: 0 0 4px 0;
+  font-weight: 500;
+}
+
+.chain-header .hint-text {
+  margin: 0 0 12px 0;
+}
+
+.empty-chain {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted-fg, #888);
+  font-size: 13px;
+  padding: 8px 0 12px 0;
+}
+
+.empty-chain mat-icon {
+  font-size: 20px;
+}
+
+.chain-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.chain-entry {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--surface-card, rgba(0, 0, 0, 0.03));
+  border: 1px solid var(--border-color, rgba(0, 0, 0, 0.1));
+  border-radius: 6px;
+  padding: 8px 12px;
+}
+
+.chain-entry-order {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 40px;
+}
+
+.chain-index {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--primary, #1976d2);
+  line-height: 1;
+  margin-bottom: 2px;
+}
+
+.chain-reorder-buttons {
+  display: flex;
+  flex-direction: column;
+}
+
+.chain-reorder-buttons button.reorder-btn {
+  width: 24px;
+  height: 24px;
+  line-height: 24px;
+}
+
+.chain-reorder-buttons button.reorder-btn mat-icon {
+  font-size: 16px;
+  height: 16px;
+  width: 16px;
+  line-height: 16px;
+}
+
+.chain-agent-field {
+  flex: 2;
+  min-width: 160px;
+}
+
+.chain-model-field {
+  flex: 3;
+  min-width: 180px;
+}
+
+.remove-btn {
+  flex-shrink: 0;
+}
+
+.unavailable-tag {
+  font-size: 11px;
+  color: var(--muted-fg, #888);
+}
+
+.add-entry-btn {
+  margin-bottom: 4px;
+}
+
+.panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-top: 4px;
+}

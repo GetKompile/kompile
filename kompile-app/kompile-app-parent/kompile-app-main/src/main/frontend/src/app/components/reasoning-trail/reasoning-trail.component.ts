@@ -11,6 +11,7 @@
 import { Component, Input, OnChanges, SimpleChanges, OnDestroy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
+import { SourceCitationComponent } from '../source-citation/source-citation.component';
 import { MatExpansionModule } from '@angular/material/expansion';
 import { MatChipsModule } from '@angular/material/chips';
 import { MatIconModule } from '@angular/material/icon';
@@ -34,7 +35,8 @@ import { StrengthBadgeComponent } from '../strength-badge/strength-badge.compone
     MatChipsModule,
     MatIconModule,
     MatTooltipModule,
-    StrengthBadgeComponent
+    StrengthBadgeComponent,
+    SourceCitationComponent
   ],
   template: `
     <div class="reasoning-trail" [class.compact]="mode === 'compact'" [class.full]="mode === 'full'">
@@ -52,6 +54,22 @@ import { StrengthBadgeComponent } from '../strength-badge/strength-badge.compone
 
       <!-- Trail content -->
       <ng-container *ngIf="!loading && trail">
+        <!-- Stale notice: shown when a mutation occurred after this trace was computed -->
+        <div *ngIf="stale" class="stale-notice">
+          <mat-chip class="stale-chip" disabled>
+            <mat-icon>update</mat-icon>
+            Trace may be stale — re-grounding pending
+          </mat-chip>
+        </div>
+
+        <!-- How this conclusion was reached -->
+        <div class="inference-mode-row" *ngIf="trail.inferenceMode"
+             style="display:flex;align-items:center;gap:4px;margin:2px 0 6px;font-size:12px;opacity:0.85;"
+             matTooltip="The reasoning method that produced this conclusion">
+          <mat-icon style="font-size:15px;width:15px;height:15px;">psychology_alt</mat-icon>
+          <span><strong>Method:</strong> {{ modeLabel(trail.inferenceMode) }}</span>
+        </div>
+
         <!-- Natural language summary -->
         <blockquote class="trail-summary" *ngIf="trail.naturalLanguageSummary">
           {{ trail.naturalLanguageSummary }}
@@ -64,12 +82,22 @@ import { StrengthBadgeComponent } from '../strength-badge/strength-badge.compone
           <app-strength-badge [band]="getBand(trail.confidence)"></app-strength-badge>
         </div>
 
-        <!-- Confidence breakdown bar (full mode only) -->
-        <div class="breakdown-bar" *ngIf="mode === 'full' && trail.breakdown">
-          <div class="breakdown-segment" *ngFor="let seg of breakdownSegments(trail.breakdown)"
-               [style.width]="seg.pct + '%'"
-               [style.background]="seg.color"
-               [matTooltip]="seg.label + ': ' + (seg.value * 100).toFixed(0) + '%'">
+        <!-- Confidence breakdown (full mode only): which signals contributed, and how much -->
+        <div class="breakdown-block" *ngIf="mode === 'full' && trail.breakdown && breakdownSegments(trail.breakdown).length">
+          <span class="section-label" matTooltip="Each signal's share of the overall confidence">Signal breakdown</span>
+          <div class="breakdown-bar">
+            <div class="breakdown-segment" *ngFor="let seg of breakdownSegments(trail.breakdown)"
+                 [style.width]="seg.pct + '%'"
+                 [style.background]="seg.color"
+                 [matTooltip]="seg.label + ': ' + (seg.value * 100).toFixed(0) + '%'">
+            </div>
+          </div>
+          <div class="breakdown-legend" style="display:flex;flex-wrap:wrap;gap:10px;margin-top:5px;font-size:11px;">
+            <span class="legend-item" *ngFor="let seg of breakdownSegments(trail.breakdown)"
+                  style="display:inline-flex;align-items:center;gap:4px;">
+              <span [style.background]="seg.color" style="width:9px;height:9px;border-radius:2px;display:inline-block;"></span>
+              {{ seg.label }} · {{ (seg.value * 100).toFixed(0) }}%
+            </span>
           </div>
         </div>
 
@@ -106,9 +134,12 @@ import { StrengthBadgeComponent } from '../strength-badge/strength-badge.compone
       <!-- Tree node template (recursive) -->
       <ng-template #treeNode let-node="node" let-depth="depth">
         <div class="tree-node" [style.padding-left]="(depth * 16) + 'px'">
-          <span class="tree-atom" [matTooltip]="node.rule || ''">{{ node.atom }}</span>
+          <span class="tree-atom" [matTooltip]="node.atom + (node.rule ? ' | ' + node.rule : '')">{{ node.title || node.atom }}</span>
           <span class="tree-conf">[{{ (node.confidence * 100).toFixed(0) }}%]</span>
-          <span class="tree-source" *ngIf="node.source">{{ node.source }}</span>
+          <app-source-citation *ngIf="node.source"
+            [citation]="{ sourceName: node.source }"
+            [compact]="true">
+          </app-source-citation>
         </div>
         <ng-container *ngIf="node.children">
           <ng-container *ngFor="let child of node.children">
@@ -124,12 +155,26 @@ export class ReasoningTrailComponent implements OnChanges, OnDestroy {
   @Input() trail: ReasoningTrailDto | null = null;
   @Input() loading = false;
   @Input() mode: 'compact' | 'full' = 'compact';
+  /** When true, shows a notice that this trace was computed before a pending re-ground completes. */
+  @Input() stale = false;
 
   ngOnChanges(_changes: SimpleChanges): void {}
   ngOnDestroy(): void {}
 
   getBand(confidence: number): StrengthBand {
     return confidenceToStrengthBand(confidence);
+  }
+
+  /** Human-readable label for the reasoning method that produced this trail. */
+  modeLabel(mode: string | undefined | null): string {
+    switch ((mode || '').toUpperCase()) {
+      case 'GROUNDING': return 'Rule-based grounding';
+      case 'HYBRID': return 'Hybrid (structure + meaning)';
+      case 'CAUSAL': return 'Causal attribution';
+      case 'PSL': return 'PSL soft logic';
+      case 'MEBN': return 'Bayesian network (MEBN)';
+      default: return mode || '';
+    }
   }
 
   get evidenceSlice(): string[] {

@@ -16,6 +16,7 @@
 
 package ai.kompile.app.subprocess;
 
+import ai.kompile.vectorstore.anserini.AnseriniVectorStoreAutoConfiguration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -26,6 +27,12 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.FilterType;
 import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.PropertySource;
+import org.springframework.context.annotation.Bean;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
+import org.springframework.jdbc.datasource.DriverManagerDataSource;
+
+import javax.sql.DataSource;
 
 /**
  * Minimal Spring configuration for the graph subprocess.
@@ -78,15 +85,67 @@ import org.springframework.context.annotation.PropertySource;
         @ComponentScan.Filter(type = FilterType.REGEX, pattern = ".*KnowledgeGraphController.*"),
         @ComponentScan.Filter(type = FilterType.REGEX, pattern = ".*FactSheetGraphController.*"),
         @ComponentScan.Filter(type = FilterType.REGEX, pattern = ".*GraphIOController.*"),
-        @ComponentScan.Filter(type = FilterType.REGEX, pattern = ".*KnowledgeGraphBuilderController.*")
+        @ComponentScan.Filter(type = FilterType.REGEX, pattern = ".*KnowledgeGraphBuilderController.*"),
+        // Exclude the JPA/builder graph path + JPA-backed services — they need a DataSource the subprocess
+        // intentionally lacks (the main app holds the H2 file lock). The @Primary live path is the Lucene
+        // matrix store; the matrix store + services depend on NONE of these (verified), so excluding is safe.
+        @ComponentScan.Filter(type = FilterType.REGEX, pattern = "ai\\.kompile\\.knowledgegraph\\.builder\\..*"),
+        @ComponentScan.Filter(type = FilterType.REGEX, pattern = "ai\\.kompile\\.knowledgegraph\\.persistence\\..*"),
+        @ComponentScan.Filter(type = FilterType.REGEX, pattern = "ai\\.kompile\\.knowledgegraph\\.io\\..*"),
+        @ComponentScan.Filter(type = FilterType.REGEX, pattern = "ai\\.kompile\\.knowledgegraph\\.tool\\..*"),
+        @ComponentScan.Filter(type = FilterType.REGEX, pattern = ".*NamedGraphServiceImpl"),
+        @ComponentScan.Filter(type = FilterType.REGEX, pattern = ".*SourceWeightingServiceImpl"),
+        // KGE (knowledge-graph embedding: RotatE/TransE training, job tracking, config persistence) is a
+        // JPA/JDBC-backed subsystem and a SEPARATE concern from the matrix graph store. The three matrix
+        // services (constructor/rag/kg) import NONE of ai.kompile.knowledgegraph.embedding (verified), so the
+        // whole package is excluded with ONE filter rather than chasing individual @Service beans that each
+        // inject an EntityManagerFactory/JdbcTemplate (KGEmbeddingConfigService, KGEmbeddingJobService,
+        // KGEmbeddingSchemaBridgeService, the JPA KG-embedding adapter, …). KGE training runs in the main app.
+        @ComponentScan.Filter(type = FilterType.REGEX, pattern = "ai\\.kompile\\.knowledgegraph\\.embedding\\..*"),
+        // Graph maintenance (snapshots/restore/compaction/health/orphan-pruning) is an ADMIN subsystem that
+        // runs in the MAIN app — its SnapshotManager REQUIRES GraphIOService + GraphEmbeddingSidecar (in the
+        // excluded io/ package). The matrix store path consumes NONE of maintenance.* (verified: only
+        // GraphMaintenanceController + maintenance-internal beans reference it). In the split architecture the
+        // main app's SnapshotManager reaches the subprocess-resident graph through the @Primary service client,
+        // so snapshot/restore still works end-to-end without standing maintenance up inside the subprocess.
+        @ComponentScan.Filter(type = FilterType.REGEX, pattern = "ai\\.kompile\\.knowledgegraph\\.maintenance\\..*")
     }
 )
 @EnableConfigurationProperties
 @PropertySource(value = "classpath:application.properties", ignoreResourceNotFound = true)
 @Import({
-    JacksonAutoConfiguration.class
+    JacksonAutoConfiguration.class,
+    AnseriniVectorStoreAutoConfiguration.class
 })
 public class SubprocessGraphConfiguration {
 
     private static final Logger logger = LoggerFactory.getLogger(SubprocessGraphConfiguration.class);
+
+    /**
+     * Throwaway in-memory H2 {@link DataSource} for the few scanned beans that inject one
+     * (e.g. KGEmbeddingSchemaBridgeService). The matrix subsystem uses Lucene, not JPA, so this db
+     * stays empty — and being IN-MEMORY it never opens the main app's H2 file (which the main app
+     * holds locked). Keeps the subprocess self-contained without standing up full JPA/Hibernate.
+     */
+    @Bean
+    public DataSource subprocessGraphDataSource() {
+        DriverManagerDataSource ds = new DriverManagerDataSource();
+        ds.setDriverClassName("org.h2.Driver");
+        ds.setUrl("jdbc:h2:mem:graph-subprocess;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE");
+        ds.setUsername("sa");
+        ds.setPassword("");
+        return ds;
+    }
+
+    /** JdbcTemplate over the throwaway in-memory DataSource for scanned beans that inject one. */
+    @Bean
+    public JdbcTemplate subprocessGraphJdbcTemplate(DataSource dataSource) {
+        return new JdbcTemplate(dataSource);
+    }
+
+    /** NamedParameterJdbcTemplate over the same throwaway DataSource. */
+    @Bean
+    public NamedParameterJdbcTemplate subprocessGraphNamedJdbcTemplate(DataSource dataSource) {
+        return new NamedParameterJdbcTemplate(dataSource);
+    }
 }

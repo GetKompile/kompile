@@ -88,7 +88,8 @@ class PassthroughSessionManagerTest {
                 agentRegistry,
                 agentChatService,
                 streamParser,
-                chatHistoryService
+                chatHistoryService,
+                null  // toolCallWriterService — optional, not needed for these tests
         );
     }
 

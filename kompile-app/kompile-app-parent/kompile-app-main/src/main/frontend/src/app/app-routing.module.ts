@@ -24,6 +24,7 @@ import { ToolsHubComponent } from './components/tools-hub/tools-hub.component';
 import { DeveloperHubComponent } from './components/developer-hub/developer-hub.component';
 import { KClawHubComponent } from './components/kclaw-hub/kclaw-hub.component';
 import { SettingsComponent } from './components/settings/settings.component';
+import { GroundingConsolePanelComponent } from './components/grounding-console-panel/grounding-console-panel.component';
 
 const routes: Routes = [
   { path: '', redirectTo: 'chat', pathMatch: 'full' },
@@ -34,6 +35,7 @@ const routes: Routes = [
   { path: 'settings', component: SettingsComponent, data: { title: 'Settings' } },
   { path: 'developer', component: DeveloperHubComponent, data: { title: 'Developer' } },
   { path: 'kclaw', component: KClawHubComponent, data: { title: 'KClaw' } },
+  { path: 'grounding', component: GroundingConsolePanelComponent, data: { title: 'Grounding' } },
   { path: '**', redirectTo: 'chat' }
 ];
 

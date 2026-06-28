@@ -15,6 +15,7 @@
  */
 package ai.kompile.tool.knowledge;
 
+import ai.kompile.core.citation.CitationDto;
 import ai.kompile.core.graphrag.GraphRagService;
 import ai.kompile.core.graphrag.query.GraphRagQuery;
 import ai.kompile.core.graphrag.query.GraphRagResult;
@@ -24,6 +25,8 @@ import ai.kompile.core.mcp.optimization.McpOptimizationConfigProvider;
 import ai.kompile.core.retrievers.DocumentRetriever;
 import ai.kompile.core.retrievers.NoOpDocumentRetrieverImpl;
 import ai.kompile.core.retrievers.RetrievedDoc;
+import ai.kompile.knowledgegraph.citation.CitationSupport;
+import ai.kompile.knowledgegraph.domain.GraphProvenanceKeys;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
 import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -281,6 +284,38 @@ public class UnifiedKnowledgeTool {
         if (doc.getScore() != null) {
             entry.put("relevance", Math.round(doc.getScore() * 100.0) / 100.0);
         }
+
+        // Citation fields: expose document identity so agents can cite sources
+        doc.getSourceId().ifPresent(sid -> entry.put("documentId", sid));
+        doc.getPageNumber().ifPresent(pg -> entry.put("page", pg));
+        doc.getChunkIndex().ifPresent(idx -> entry.put("chunk", idx));
+
+        // Provenance sub-map: extract any graph-provenance keys stored in doc metadata
+        Map<String, Object> docMeta = doc.getMetadata();
+        Double confValue = null;
+        if (docMeta != null && !docMeta.isEmpty()) {
+            // Confidence from metadata (stored by grounding/extraction pipeline)
+            Object conf = docMeta.get("confidence");
+            if (conf instanceof Number) {
+                confValue = ((Number) conf).doubleValue();
+                entry.put("confidence", confValue);
+            }
+
+            Map<String, Object> prov = new LinkedHashMap<>();
+            for (String key : GraphProvenanceKeys.ALL) {
+                Object val = docMeta.get(key);
+                if (val != null) {
+                    prov.put(key.substring(1), val);
+                }
+            }
+            if (!prov.isEmpty()) {
+                entry.put("provenance", prov);
+            }
+        }
+
+        // Uniform citation object
+        CitationDto citation = CitationSupport.from(docMeta, doc.getScore(), confValue);
+        entry.put("citation", citation);
 
         // Internal fields for dedup
         entry.put("_id", doc.getId());

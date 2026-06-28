@@ -441,8 +441,10 @@ class KbOpinionBrowserControllerTest {
         KbOpinionBrowserController.FactOpinionRow row = new KbOpinionBrowserController.FactOpinionRow(
                 "test:atom", 0.5, "PROBABLE", "NONE", 0,
                 0.6, 0.2, 0.2, 0.7, 0.5,
-                "PSL_INFERENCE");
+                "PSL_INFERENCE", null, null, null, null);
         assertEquals("test:atom", row.atomKey());
         assertEquals("PSL_INFERENCE", row.basisType());
+        assertNull(row.sourceDocumentId());
+        assertNull(row.crawlRunId());
     }
 }

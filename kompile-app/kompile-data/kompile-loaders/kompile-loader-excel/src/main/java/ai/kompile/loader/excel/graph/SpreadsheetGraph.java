@@ -179,9 +179,26 @@ public class SpreadsheetGraph {
         graph.setEntities(new ArrayList<>());
         graph.setRelationships(new ArrayList<>());
 
+        // Pre-group cells by sheet so we can build per-sheet markdown grids before
+        // creating sheet entities (sheet entities must carry fullTableContent so the
+        // TABLE node that GraphPersistenceHelper promotes them to actually has a grid).
+        Map<String, List<CellNode>> cellsBySheet = new LinkedHashMap<>();
+        for (CellNode cell : cells.values()) {
+            cellsBySheet.computeIfAbsent(cell.getSheetName(), k -> new ArrayList<>()).add(cell);
+        }
+        Map<String, String> sheetMarkdowns = new LinkedHashMap<>();
+        for (Map.Entry<String, List<CellNode>> entry : cellsBySheet.entrySet()) {
+            sheetMarkdowns.put(entry.getKey(), buildSheetMarkdown(entry.getValue()));
+        }
+
         // Create sheet entities as composite containers
         Map<String, Entity> sheetEntities = new LinkedHashMap<>();
         for (String sheetName : getSheetNames()) {
+            String sheetMarkdown = sheetMarkdowns.getOrDefault(sheetName, "");
+            if (sheetMarkdown.isEmpty()) {
+                // No non-empty cells → skip this sheet; a content-less TABLE node is noise.
+                continue;
+            }
             Entity sheetEntity = new Entity();
             sheetEntity.setId(ns + "sheet:" + sheetName);
             sheetEntity.setTitle(sheetName);
@@ -192,6 +209,18 @@ public class SpreadsheetGraph {
             sheetMeta.put("isComposite", true);
             sheetMeta.put("workbook", workbookName != null ? workbookName : "unknown");
             sheetMeta.put(PROP_ENTITY_SOURCE, SOURCE_EXCEL_LOADER);
+            // Attach the reconstructed markdown grid so the TABLE node the persistence
+            // layer promotes this SHEET to actually renders in the index-browser Tables tab.
+            sheetMeta.put("fullTableContent", sheetMarkdown);
+            List<CellNode> sheetCellList = cellsBySheet.getOrDefault(sheetName, List.of());
+            int maxRow = sheetCellList.stream()
+                    .filter(c -> c.getDisplayValue() != null && !c.getDisplayValue().isBlank())
+                    .mapToInt(CellNode::getRow).max().orElse(0);
+            int maxColIdx = sheetCellList.stream()
+                    .filter(c -> c.getDisplayValue() != null && !c.getDisplayValue().isBlank())
+                    .mapToInt(c -> columnLetterToIndex(c.getColumn()) + 1).max().orElse(0);
+            sheetMeta.put("rowCount", Math.min(maxRow, MAX_SHEET_TABLE_ROWS));
+            sheetMeta.put("columnCount", Math.min(maxColIdx, MAX_SHEET_TABLE_COLS));
             sheetEntity.setMetadata(sheetMeta);
             graph.getEntities().add(sheetEntity);
             sheetEntities.put(sheetName, sheetEntity);
@@ -199,9 +228,29 @@ public class SpreadsheetGraph {
 
         // Create cell entities
         for (CellNode cell : cells.values()) {
+            // Skip genuinely empty cells — no value, no formula, not a named range. Empty grid cells
+            // are spreadsheet sparsity (noise), not knowledge; don't materialise them as graph nodes.
+            String cellVal = cell.getDisplayValue();
+            boolean cellHasValue = cellVal != null && !cellVal.isBlank();
+            boolean cellHasFormula = cell.getFormula() != null && !cell.getFormula().isBlank();
+            if (!cellHasValue && !cellHasFormula && !cell.isNamedRange()) {
+                continue;
+            }
             Entity cellEntity = new Entity();
             cellEntity.setId(ns + "cell:" + cell.getCellReference());
-            cellEntity.setTitle(cell.getCellReference());
+            // Title by the cell's VALUE (or named-range name), not the opaque coordinate — so process
+            // maps, the visualizer, and LLM discovery show "Net revenue" instead of "AU!E10"/"CELL".
+            // The coordinate stays on the id, description, and cell_reference metadata.
+            String dispVal = cell.getDisplayValue();
+            String cellLabel;
+            if (cell.isNamedRange() && cell.getNamedRangeName() != null && !cell.getNamedRangeName().isBlank()) {
+                cellLabel = cell.getNamedRangeName();
+            } else if (dispVal != null && !dispVal.isBlank()) {
+                cellLabel = dispVal.length() > 60 ? dispVal.substring(0, 57) + "…" : dispVal;
+            } else {
+                cellLabel = cell.getCellReference();
+            }
+            cellEntity.setTitle(cellLabel);
 
             if (cell.isNamedRange()) {
                 cellEntity.setType(ENTITY_NAMED_RANGE);
@@ -528,6 +577,105 @@ public class SpreadsheetGraph {
 
         return graph;
     }
+
+    // ─── Sheet → markdown grid helpers ────────────────────────────────────────
+
+    /** Maximum rows included when reconstructing a sheet as a markdown table. */
+    private static final int MAX_SHEET_TABLE_ROWS = 200;
+    /** Maximum columns included when reconstructing a sheet as a markdown table. */
+    private static final int MAX_SHEET_TABLE_COLS = 60;
+
+    /**
+     * Converts a column letter string (A, B, …, Z, AA, AB, …) to a zero-based column index.
+     */
+    private static int columnLetterToIndex(String column) {
+        if (column == null || column.isBlank()) return 0;
+        int result = 0;
+        for (char c : column.toUpperCase().toCharArray()) {
+            result = result * 26 + (c - 'A' + 1);
+        }
+        return result - 1;
+    }
+
+    /**
+     * Sanitizes a cell value for embedding inside a GFM markdown table cell.
+     */
+    private static String sanitizeMdCell(String s) {
+        if (s == null || s.isEmpty()) return "";
+        return s.replace("\r", " ").replace("\n", " ").replace("|", "\\|").trim();
+    }
+
+    /**
+     * Reconstructs a GFM markdown table from the non-empty cells of a single worksheet.
+     * Row 0 (the topmost occupied row) becomes the header row; all subsequent rows are data rows.
+     * Returns an empty string when the sheet has no non-empty cells (caller skips the entity).
+     * Output is capped at {@link #MAX_SHEET_TABLE_ROWS} rows × {@link #MAX_SHEET_TABLE_COLS} columns.
+     */
+    private static String buildSheetMarkdown(List<CellNode> sheetCells) {
+        List<CellNode> nonEmpty = sheetCells.stream()
+                .filter(c -> c.getDisplayValue() != null && !c.getDisplayValue().isBlank())
+                .collect(Collectors.toList());
+        if (nonEmpty.isEmpty()) return "";
+
+        int maxRow1Based = nonEmpty.stream().mapToInt(CellNode::getRow).max().orElse(1);
+        int maxColIdx = nonEmpty.stream()
+                .mapToInt(c -> columnLetterToIndex(c.getColumn())).max().orElse(0);
+
+        int cappedRows = Math.min(maxRow1Based, MAX_SHEET_TABLE_ROWS);
+        int cappedCols = Math.min(maxColIdx + 1, MAX_SHEET_TABLE_COLS);
+        boolean truncated = maxRow1Based > MAX_SHEET_TABLE_ROWS || (maxColIdx + 1) > MAX_SHEET_TABLE_COLS;
+
+        // Build sparse grid (rows are 1-based in CellNode → convert to 0-based index)
+        String[][] grid = new String[cappedRows][cappedCols];
+        for (CellNode cell : nonEmpty) {
+            int r = cell.getRow() - 1;
+            int c = columnLetterToIndex(cell.getColumn());
+            if (r < cappedRows && c < cappedCols) {
+                grid[r][c] = cell.getDisplayValue();
+            }
+        }
+
+        // Trim fully-empty trailing rows and columns
+        int lastRow = -1;
+        int lastCol = -1;
+        for (int r = 0; r < cappedRows; r++) {
+            for (int c = 0; c < cappedCols; c++) {
+                if (grid[r][c] != null && !grid[r][c].isBlank()) {
+                    if (r > lastRow) lastRow = r;
+                    if (c > lastCol) lastCol = c;
+                }
+            }
+        }
+        if (lastRow < 0) return "";
+
+        int usedRows = lastRow + 1;
+        int usedCols = lastCol + 1;
+
+        StringBuilder sb = new StringBuilder();
+        // Row 0 → header row
+        sb.append('|');
+        for (int c = 0; c < usedCols; c++) {
+            sb.append(' ').append(sanitizeMdCell(grid[0][c])).append(" |");
+        }
+        sb.append('\n').append('|');
+        for (int c = 0; c < usedCols; c++) sb.append(" --- |");
+        sb.append('\n');
+        // Data rows
+        for (int r = 1; r < usedRows; r++) {
+            sb.append('|');
+            for (int c = 0; c < usedCols; c++) {
+                sb.append(' ').append(sanitizeMdCell(grid[r][c])).append(" |");
+            }
+            sb.append('\n');
+        }
+        if (truncated) {
+            sb.append("_(truncated to ").append(MAX_SHEET_TABLE_ROWS)
+              .append(" rows × ").append(MAX_SHEET_TABLE_COLS).append(" cols)_\n");
+        }
+        return sb.toString();
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
 
     /**
      * Parse sheet name from a cell reference like "Sheet1!A1" or "'Sheet Name'!A1:B10".

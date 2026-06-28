@@ -64,4 +64,31 @@ public interface ResourceGovernorAdapter {
      * @return {@code true} if the workload should be deferred and retried later
      */
     boolean shouldDeferLocalWork(String workloadKind);
+
+    /**
+     * Whether ANY heavy in-memory operation (KGE training, batch embedding, etc.) should be
+     * throttled or blocked right now because host RAM is below the hard absolute floor
+     * ({@code governorRamFloorMb}) or the fractional RAM pressure is at/above HIGH.
+     *
+     * <p>Unlike {@link #shouldDeferLocalWork}, this method is stage-agnostic and is consulted
+     * before starting any heavy-memory op regardless of GPU availability. It exposes the OOM
+     * floor added to the resource governor so that crawl-graph and knowledge-graph modules
+     * (which cannot see app-main types) can query it without depending on the concrete
+     * {@code ResourceGovernor}.</p>
+     *
+     * @return {@code true} if the host is too memory-constrained to safely start a heavy op
+     */
+    default boolean shouldThrottleHeavyMemory() {
+        return false; // safe default when governor is absent / CPU-only
+    }
+
+    /**
+     * Human-readable reason for the most recent memory-throttle decision, or {@code null} when
+     * the governor is not throttling. Useful for DECISION event messages.
+     *
+     * @return reason string (e.g. {@code "MemAvailable 6200 MB < floor 8192 MB"}) or {@code null}
+     */
+    default String memoryPressureReason() {
+        return null;
+    }
 }

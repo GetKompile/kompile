@@ -166,6 +166,8 @@ describe('GraphVisualizerComponent', () => {
   beforeEach(async () => {
     graphServiceSpy = jasmine.createSpyObj('GraphService', [
       'getVisualizationData',
+      'getStatistics',
+      'getTopKVisualization',
       'getFactSheetVisualizationData',
       'buildFactSheetGraph',
       'getFactSheetBuildStatus',
@@ -193,6 +195,8 @@ describe('GraphVisualizerComponent', () => {
 
     // Default return values
     graphServiceSpy.getVisualizationData.and.returnValue(of(mockD3Data));
+    graphServiceSpy.getStatistics.and.returnValue(of({ totalNodes: 0, totalAvailableNodes: 0 } as any));
+    graphServiceSpy.getTopKVisualization.and.returnValue(of(mockD3Data));
     graphServiceSpy.getFactSheetVisualizationData.and.returnValue(of(mockD3Data));
     graphServiceSpy.getAncestors.and.returnValue(of([]));
     weightServiceSpy.getWeights.and.returnValue(of(mockSourceWeights));
@@ -1269,10 +1273,10 @@ describe('GraphVisualizerComponent', () => {
       expect(component.maxDepth).toBe(2);
     }));
 
-    it('should reset maxNodes to 100', fakeAsync(() => {
+    it('should reset maxNodes to 500', fakeAsync(() => {
       component.resetFilters();
       tick();
-      expect(component.maxNodes).toBe(100);
+      expect(component.maxNodes).toBe(500);
     }));
 
     it('should clear searchQuery', fakeAsync(() => {
@@ -1638,8 +1642,8 @@ describe('GraphVisualizerComponent', () => {
       expect(component.maxDepth).toBe(2);
     });
 
-    it('default maxNodes should be 100', () => {
-      expect(component.maxNodes).toBe(100);
+    it('default maxNodes should be 500', () => {
+      expect(component.maxNodes).toBe(500);
     });
   });
 

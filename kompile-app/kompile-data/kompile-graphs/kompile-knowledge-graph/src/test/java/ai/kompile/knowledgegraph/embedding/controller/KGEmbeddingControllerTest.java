@@ -27,7 +27,7 @@ import ai.kompile.knowledgegraph.embedding.domain.KGEmbeddingJob;
 import ai.kompile.knowledgegraph.embedding.domain.KGEmbeddingJob.JobStatus;
 import ai.kompile.knowledgegraph.embedding.service.KGEmbeddingJobService;
 import ai.kompile.knowledgegraph.embedding.service.KGEmbeddingStorageService;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
+import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -63,7 +63,7 @@ class KGEmbeddingControllerTest {
     private KGEmbeddingStorageService storageService;
 
     @Mock
-    private GraphNodeRepository nodeRepository;
+    private KnowledgeGraphService knowledgeGraphService;
 
     @Mock
     private KGEmbeddingConfigService configService;
@@ -74,7 +74,7 @@ class KGEmbeddingControllerTest {
 
     @BeforeEach
     void setUp() {
-        controller = new KGEmbeddingController(jobService, storageService, nodeRepository, configService);
+        controller = new KGEmbeddingController(jobService, storageService, knowledgeGraphService, configService);
 
         // Stub config service defaults
         when(configService.getConfig()).thenReturn(DEFAULT_CONFIG);
@@ -182,7 +182,7 @@ class KGEmbeddingControllerTest {
     @Test
     void getEntityEmbeddings_withMatchingNodes_returns200() {
         GraphNode node = buildNodeWithEmbedding("Alice");
-        when(nodeRepository.findByFactSheetIdAndKgEmbeddingNotNull(1L)).thenReturn(List.of(node));
+        when(knowledgeGraphService.findNodesWithKgEmbedding(1L)).thenReturn(List.of(node));
 
         ResponseEntity<List<KGEmbeddingController.EntityEmbeddingDTO>> response =
                 controller.getEntityEmbeddings(1L, null, 0, 50);
@@ -196,7 +196,7 @@ class KGEmbeddingControllerTest {
     void getEntityEmbeddings_withSearchFilter_filtersResults() {
         GraphNode aliceNode = buildNodeWithEmbedding("Alice");
         GraphNode bobNode = buildNodeWithEmbedding("Bob");
-        when(nodeRepository.findByFactSheetIdAndKgEmbeddingNotNull(1L))
+        when(knowledgeGraphService.findNodesWithKgEmbedding(1L))
                 .thenReturn(List.of(aliceNode, bobNode));
 
         ResponseEntity<List<KGEmbeddingController.EntityEmbeddingDTO>> response =
@@ -210,7 +210,7 @@ class KGEmbeddingControllerTest {
     @Test
     void getEntityEmbeddings_withPaginationBeyondEnd_returnsEmpty() {
         GraphNode node = buildNodeWithEmbedding("Alice");
-        when(nodeRepository.findByFactSheetIdAndKgEmbeddingNotNull(1L)).thenReturn(List.of(node));
+        when(knowledgeGraphService.findNodesWithKgEmbedding(1L)).thenReturn(List.of(node));
 
         // Page 10 beyond results
         ResponseEntity<List<KGEmbeddingController.EntityEmbeddingDTO>> response =

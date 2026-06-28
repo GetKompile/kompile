@@ -16,6 +16,7 @@
 
 package ai.kompile.core.graphrag.query;
 
+import ai.kompile.core.citation.CitationDto;
 import ai.kompile.core.graphrag.model.Community;
 import ai.kompile.core.graphrag.model.Entity;
 import ai.kompile.core.graphrag.model.Relationship;
@@ -65,6 +66,13 @@ public class GraphRagResult {
      * Source text chunks that contributed to the answer.
      */
     private List<String> sourceChunks;
+
+    /**
+     * Structured citation references parallel to {@link #sourceChunks}.
+     * Each entry carries source identity, page/chunk coordinates, provenance metadata,
+     * and calibrated confidence. Populated when node metadata is available.
+     */
+    private List<CitationDto> sourceChunkRefs;
 
     /**
      * The search type that was used to produce this result.

@@ -60,6 +60,7 @@ import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -98,6 +99,16 @@ class GraphExtractionOrchestrator {
     private static final long PROGRESS_EVENT_INTERVAL_NANOS = 250_000_000L; // 250ms
     private volatile long lastProgressEventNanos = 0L;
 
+    /**
+     * Optional SSE notifier injected by {@link UnifiedCrawlGraphServiceImpl} before each extraction
+     * call and cleared afterwards. When set, the orchestrator's {@link #updateProgress} fires it on
+     * every throttled tick so the crawl-step-monitor receives live PROGRESS SSE events — and therefore
+     * polls the REST snapshot — during graph-extraction waves. Without this, the front-end sees no
+     * events during extraction and the adaptive batch-sizing telemetry stays invisible until the step
+     * completes.
+     */
+    volatile Consumer<UnifiedCrawlJob> progressNotifier = null;
+
     // -------------------------------------------------------------------------
     // Configuration — synced from the parent orchestrator on each extraction call
     // -------------------------------------------------------------------------
@@ -122,13 +133,32 @@ class GraphExtractionOrchestrator {
      *  backoff + wait-for-capacity) before being deferred. Catches fast transients within the run. */
     volatile int maxInPhaseGraphRetryPasses = 2;
     volatile long graphRetryBackoffMs = 2000;
-    // Configurable truncation limits for inline LLM extraction.
-    // Defaults equal the former hard-coded values so behaviour is unchanged unless configured.
-    volatile int maxCharsPerChunk = 12_000;
-    volatile int maxCharsPerChunkVlm = 16_000;
+    // Per-chunk truncation ceiling for the inline-LLM extraction path (extractGraphViaLlmDocument /
+    // extractGraphViaLlmChunkGroup). Raised from 12 000 / 16 000 → 50 000 / 60 000 chars so
+    // large-context CLI agents (DeepSeek V4 / opencode-cli ~1 M tokens) receive substantial text
+    // per call instead of being capped at the old ~3-chunk / 11.8 k-char average.
+    // CrawlRuntimeConfigManager syncs these from the project/global config on every crawl start,
+    // so projects targeting small/local models can override back to 12 000 in their .kompile config.
+    volatile int maxCharsPerChunk = 50_000;
+    volatile int maxCharsPerChunkVlm = 60_000;
     // Number of document chunks to group into a single LLM prompt call.
     // 1 (default) = one call per chunk — byte-for-byte identical to the prior behaviour.
     volatile int graphExtractionChunksPerPrompt = 1;
+    /**
+     * Maximum split depth for rebatch-on-failure in the inline-LLM multi-chunk path.
+     * When a group of N chunks fails (timeout / empty / parse-error), the group is halved and each
+     * half retried; halving recurses up to this depth before treating individual chunks as failed.
+     * Depth=4 allows splitting down to 1 from groups of up to 2^4=16 (a group of 32 has a natural
+     * intermediate via the charBudget ceiling).  Set to 0 to disable rebatching.
+     * Synced from crawlGraphExtractionMaxRebatchDepth in the project/global config.
+     */
+    volatile int maxRebatchDepth = 4;
+    /**
+     * Wholesale-failure threshold for the finish-early guard: skip downstream semantic steps
+     * when entities==0 AND (failedChunks/totalChunks) >= this fraction.
+     * Synced from crawlGraphExtractionWholesaleFailureThreshold (default 1.0 = only when all chunks fail).
+     */
+    volatile double wholesaleFailureThreshold = 1.0;
 
     // -------------------------------------------------------------------------
     // Dependencies
@@ -486,7 +516,10 @@ class GraphExtractionOrchestrator {
         // Remote: cap at the configured remote parallelism (few fat calls — each remote call is costly).
         // Local: the configured graphExtractionParallelism (small fast calls pipeline well). Both come
         // from project/global .kompile config + per-job overrides.
-        int resolvedParallelism = resolveGraphExtractionParallelism(job, totalBatches);
+        // Pass totalDocs as the third argument so the item-count lower bound can correct the
+        // char-budget wave estimate for small-document corpora on large-context models (where
+        // the char estimate collapses to 1 and would incorrectly cap parallelism to 1).
+        int resolvedParallelism = resolveGraphExtractionParallelism(job, totalBatches, totalDocs);
         int parallelism = remoteBackend
                 ? Math.min(resolvedParallelism, Math.max(1, graphExtractionRemoteParallelism))
                 : resolvedParallelism;
@@ -639,6 +672,46 @@ class GraphExtractionOrchestrator {
                             memoryMonitor.updateMemorySnapshot(job);
                             double heapPct = job.getMemoryUsagePercent().get() / 100.0;
                             long batchElapsed = System.currentTimeMillis() - batchStartTime;
+                            // ── Fix llmCallsTotal=0: MatrixGraphConstructor makes LLM calls internally
+                            // and never flows through CrawlLlmDispatcher.recordLlmCall. Record a
+                            // per-batch synthetic call so llmCallsTotal/llmCallsSucceeded and
+                            // recentLlmCalls are populated. backendId comes from the config's extraction
+                            // model provider (opencode-cli, etc.); model name from config if set.
+                            {
+                                int batchEntities = graph != null && graph.getEntities() != null
+                                        ? graph.getEntities().size() : 0;
+                                int batchRels = graph != null && graph.getRelationships() != null
+                                        ? graph.getRelationships().size() : 0;
+                                String gcBackendId = config != null && config.getLlmProvider() != null
+                                        && !config.getLlmProvider().isBlank()
+                                        ? config.getLlmProvider() : "graph-constructor";
+                                String gcModel = config != null && config.getModelName() != null
+                                        ? config.getModelName() : null;
+                                String gcBackendLabel = gcModel != null
+                                        ? gcBackendId + "/" + gcModel : gcBackendId;
+                                int promptChars = (int) Math.min(Integer.MAX_VALUE, batch.cost());
+                                // Response size: rough estimate based on extracted output
+                                int responseChars = (batchEntities + batchRels) * 80;
+                                boolean batchSuccess = graph != null;
+                                UnifiedCrawlJob.LlmCallRecord constructorRecord =
+                                        UnifiedCrawlJob.LlmCallRecord.builder()
+                                        .timestamp(Instant.now())
+                                        .backendId(gcBackendLabel)
+                                        .taskType("graph-extraction")
+                                        .latencyMs(batchElapsed)
+                                        .inputTokens(Math.max(0L, promptChars / 4L))
+                                        .outputTokens(Math.max(0L, responseChars / 4L))
+                                        .success(batchSuccess)
+                                        .timedOut(false)
+                                        .rateLimited(false)
+                                        .circuitBroken(false)
+                                        .errorCategory(batchSuccess ? null : "BAD_RESPONSE")
+                                        .errorMessage(batchSuccess ? null : "GraphConstructor returned null graph")
+                                        .promptChars(promptChars)
+                                        .responseChars(responseChars)
+                                        .build();
+                                job.recordLlmCall(constructorRecord);
+                            }
                             UnifiedCrawlJob.TuningDecision parallelismDecision =
                                     outerAdvisor.afterBatchComplete(batchElapsed, heapPct);
                             if (parallelismDecision != null) {
@@ -1084,23 +1157,37 @@ class GraphExtractionOrchestrator {
                             "Completed inline LLM batch " + batch.index() + "/" + batches.size());
                 }));
             }
-            for (Future<?> future : futures) {
+            // Index-based loop so we can map timed-out futures back to their batch docs
+            // and add them to `failed` (pre-fix: timeouts silently dropped all chunks in the batch).
+            for (int fi = 0; fi < futures.size(); fi++) {
                 if (isCancelled(job)) break;
+                Future<?> future = futures.get(fi);
+                CostBatch<Document> timedOutBatch = batches.get(fi);
                 try {
                     future.get(graphExtractionBatchTimeoutSeconds, TimeUnit.SECONDS);
                 } catch (TimeoutException e) {
                     future.cancel(false);
-                    job.getErrors().add("Inline LLM extraction batch timed out after "
-                            + (graphExtractionBatchTimeoutSeconds / 60) + "min");
+                    int batchTimeout = graphExtractionBatchTimeoutSeconds;
+                    log.warn("[Job {}] Inline LLM extraction batch {}/{} timed out after {}s — adding {} chunk(s) to failed for rebatch/retry",
+                            job.getJobId(), timedOutBatch.index(), batches.size(), batchTimeout, timedOutBatch.items().size());
+                    job.getErrors().add("Inline LLM extraction batch " + timedOutBatch.index() + "/" + batches.size()
+                            + " timed out after " + (batchTimeout / 60) + "min");
                     job.getErrorCount().incrementAndGet();
                     documentTracker.recordEvent(job, "GRAPH_EXTRACTION", "ERROR",
-                            "Inline LLM extraction batch timed out", null);
+                            "Inline LLM extraction batch timed out",
+                            "batch=" + timedOutBatch.index() + "/" + batches.size()
+                                    + ", chunks=" + timedOutBatch.items().size() + " queued for rebatch/retry");
+                    // Add all timed-out docs to failed so the re-accumulation loop can retry them
+                    // per-chunk (splitting down to size-1 via the rebatch path).
+                    failed.addAll(timedOutBatch.items());
                 } catch (ExecutionException e) {
                     Throwable cause = e.getCause() != null ? e.getCause() : e;
-                    log.warn("[Job {}] Inline LLM extraction batch failed: {}",
-                            job.getJobId(), cause.getMessage());
+                    log.warn("[Job {}] Inline LLM extraction batch {}/{} failed: {}",
+                            job.getJobId(), timedOutBatch.index(), batches.size(), cause.getMessage());
                     job.getErrors().add("Inline LLM extraction batch failed: " + cause.getMessage());
                     job.getErrorCount().incrementAndGet();
+                    // Add all docs from the failed batch to failed for rebatch/retry
+                    failed.addAll(timedOutBatch.items());
                 }
             }
         } catch (InterruptedException e) {
@@ -1247,11 +1334,13 @@ class GraphExtractionOrchestrator {
                                 try {
                                     String entityType = graphPersistenceHelper.safeEntityType(entity.type());
                                     Map<String, Object> entityMeta = new LinkedHashMap<>();
-                                    entityMeta.put("entity_type", entity.type());
+                                    entityMeta.put("entity_type", entityType);
                                     entityMeta.put(GraphConstants.META_SOURCE, jobId);
                                     entityMeta.put("extraction_method", "llm");
                                     if (sourcePath != null) entityMeta.put(GraphConstants.META_SOURCE_PATH, sourcePath);
                                     if (entity.properties() != null) entityMeta.putAll(entity.properties());
+                                    // Re-assert after properties merge so LLM can't overwrite with a junk value.
+                                    entityMeta.put("entity_type", entityType);
                                     // Provenance under the reserved keys (read by /nodes/{id}/provenance, travels via export).
                                     entityMeta.putAll(GraphProvenanceKeys.crawl(jobId, sourcePath, doc.getId(), config.getModelName()));
 
@@ -1282,13 +1371,24 @@ class GraphExtractionOrchestrator {
                                                 null);
                                         String description = graphPersistenceHelper.semanticRelationDescription(
                                                 "Document contains " + entityType + " " + entity.name(), inlineContainsLabel);
+                                        // A2: stamp Opinion + provenance onto the doc→entity CONTAINS edge from inline
+                                        // single-chunk LLM extraction. The hardcoded 1.0 was the bug: it caused
+                                        // GraphToFactStoreProjector to treat every CONTAINS atom as hard-observed
+                                        // (value >= 0.99 → Fact.observed), leaving the PSL MAP gradient at 0 so
+                                        // derivation wrote 0 new inferred facts. Route through the stamper
+                                        // (LLM_EXTRACTION basis, W=2.0) so the edge carries a Beta-MAP confidence.
+                                        Map<String, Object> containsMeta = graphPersistenceHelper.metadataProperties(
+                                                "entityType", entity.type(),
+                                                "entityName", entity.name());
+                                        double containsWeight = confidenceStamper != null
+                                                ? confidenceStamper.stampEdgeConfidence(
+                                                        containsMeta, "LLM_EXTRACTION", entity.confidence())
+                                                : (entity.confidence() != null ? entity.confidence() : 0.5);
                                         String metaJson = graphPersistenceHelper.semanticRelationMetadataJson(jobId, sourcePath,
-                                                "inline_llm", sourcePath, entity.id(), inlineContainsLabel, description, null,
-                                                graphPersistenceHelper.metadataProperties(
-                                                        "entityType", entity.type(),
-                                                        "entityName", entity.name()));
+                                                "inline_llm", sourcePath, entity.id(), inlineContainsLabel, description,
+                                                containsWeight, containsMeta);
                                         knowledgeGraphService.createEdgeWithMetadata(parentNodeId, node.getNodeId(),
-                                                EdgeType.CONTAINS, 1.0, inlineContainsLabel, description, metaJson,
+                                                EdgeType.CONTAINS, containsWeight, inlineContainsLabel, description, metaJson,
                                                 EdgeProvenance.EXTRACTED, factSheetId);
                                     }
                                 } catch (Exception e) {
@@ -1408,6 +1508,31 @@ class GraphExtractionOrchestrator {
             ConcurrentHashMap<String, Optional<GraphNode>> parentDocCache,
             ConcurrentHashMap<String, Optional<GraphNode>> entityNodeCache,
             Long factSheetId) {
+        // Public entry: start recursive rebatch at depth 0.
+        return extractGraphViaLlmChunkGroup(group, baseDocIndex, totalDocuments, config,
+                targetGraph, job, parentDocCache, entityNodeCache, factSheetId, 0);
+    }
+
+    /**
+     * Internal recursive implementation of multi-chunk LLM extraction with rebatch-on-failure.
+     *
+     * <p>When a group of N chunks fails (timeout / empty / parse-error), the group is halved and
+     * each half is retried independently. Halving recurses up to {@link #maxRebatchDepth} levels
+     * before a chunk is declared individually failed (size-1 is the terminal base case that
+     * delegates to {@link #extractGraphViaLlmDocument}). A group of 32 failing at depth 0 →
+     * 16→8→4→2→1, so even a single salvageable chunk in a bad batch will be rescued.</p>
+     */
+    private List<Document> extractGraphViaLlmChunkGroup(
+            List<Document> group,
+            int baseDocIndex,
+            int totalDocuments,
+            GraphExtractionConfig config,
+            Graph targetGraph,
+            UnifiedCrawlJob job,
+            ConcurrentHashMap<String, Optional<GraphNode>> parentDocCache,
+            ConcurrentHashMap<String, Optional<GraphNode>> entityNodeCache,
+            Long factSheetId,
+            int rebatchDepth) {
 
         List<Document> failed = new ArrayList<>();
         if (group == null || group.isEmpty()) {
@@ -1610,11 +1735,13 @@ class GraphExtractionOrchestrator {
                             try {
                                 String entityType = graphPersistenceHelper.safeEntityType(entity.type());
                                 Map<String, Object> entityMeta = new LinkedHashMap<>();
-                                entityMeta.put("entity_type", entity.type());
+                                entityMeta.put("entity_type", entityType);
                                 entityMeta.put(GraphConstants.META_SOURCE, jobId);
                                 entityMeta.put("extraction_method", "llm_multi");
                                 if (sourcePath != null) entityMeta.put(GraphConstants.META_SOURCE_PATH, sourcePath);
                                 if (entity.properties() != null) entityMeta.putAll(entity.properties());
+                                // Re-assert after properties merge so LLM can't overwrite with a junk value.
+                                entityMeta.put("entity_type", entityType);
                                 // Provenance under the reserved keys (read by /nodes/{id}/provenance, travels via export).
                                 entityMeta.putAll(GraphProvenanceKeys.crawl(jobId, sourcePath, doc.getId(), config.getModelName()));
 
@@ -1639,12 +1766,19 @@ class GraphExtractionOrchestrator {
                                             factSheetId, "inline_llm_multi", sourcePath, null);
                                     String description = graphPersistenceHelper.semanticRelationDescription(
                                             "Document contains " + entityType + " " + entity.name(), inlineContainsLabel);
+                                    // A2 (multi-chunk): same fix as single-chunk — stamp Opinion onto the
+                                    // doc→entity CONTAINS edge so the PSL MAP gradient is non-zero.
+                                    Map<String, Object> multiContainsMeta = graphPersistenceHelper.metadataProperties(
+                                            "entityType", entity.type(), "entityName", entity.name());
+                                    double multiContainsWeight = confidenceStamper != null
+                                            ? confidenceStamper.stampEdgeConfidence(
+                                                    multiContainsMeta, "LLM_EXTRACTION", entity.confidence())
+                                            : (entity.confidence() != null ? entity.confidence() : 0.5);
                                     String metaJson = graphPersistenceHelper.semanticRelationMetadataJson(jobId, sourcePath,
-                                            "inline_llm_multi", sourcePath, entity.id(), inlineContainsLabel, description, null,
-                                            graphPersistenceHelper.metadataProperties(
-                                                    "entityType", entity.type(), "entityName", entity.name()));
+                                            "inline_llm_multi", sourcePath, entity.id(), inlineContainsLabel, description,
+                                            multiContainsWeight, multiContainsMeta);
                                     knowledgeGraphService.createEdgeWithMetadata(parentNodeId, node.getNodeId(),
-                                            EdgeType.CONTAINS, 1.0, inlineContainsLabel, description, metaJson,
+                                            EdgeType.CONTAINS, multiContainsWeight, inlineContainsLabel, description, metaJson,
                                             EdgeProvenance.EXTRACTED, factSheetId);
                                 }
                             } catch (Exception ex) {
@@ -1686,34 +1820,89 @@ class GraphExtractionOrchestrator {
             } // end validation retry loop
 
             if (!groupSucceeded) {
-                // LLM returned no usable result for the whole group — add all docs to failed.
-                job.getErrorCount().incrementAndGet();
-                for (Document doc : group) {
-                    documentTracker.recordDocumentProgress(job, doc, "GRAPH_EXTRACTION", "FAILED", 0, 0, 0,
-                            "LLM multi-chunk extraction returned no result",
-                            "LLM returned null/empty — check LLM configuration",
-                            EXTRACTORS_INLINE_LLM, true);
-                    if (!failed.contains(doc)) failed.add(doc);
+                // The whole group produced nothing. Try rebatching — split into halves and retry each.
+                // This rescues chunks that succeed in smaller context (oversized batches → truncation
+                // → parse failure → zero output). Recurse until size==1 (falls to per-doc path above)
+                // or depth exceeds maxRebatchDepth. A group of 32 failing at depth 0 follows:
+                // 32 → 16 → 8 → 4 → 2 → 1 (per-doc). If group.size()==1 we already delegated above.
+                if (group.size() > 1 && rebatchDepth < maxRebatchDepth && !isCancelled(job)) {
+                    int half = group.size() / 2;
+                    List<Document> firstHalf = group.subList(0, half);
+                    List<Document> secondHalf = group.subList(half, group.size());
+                    log.info("[Job {}] Rebatching group of {} chunks (depth {}/{}) → halves {}/{}",
+                            job.getJobId(), group.size(), rebatchDepth, maxRebatchDepth,
+                            firstHalf.size(), secondHalf.size());
+                    documentTracker.recordEvent(job, "GRAPH_EXTRACTION", "WARN",
+                            "Rebatching failed multi-chunk group",
+                            "size=" + group.size() + " → " + firstHalf.size() + "+" + secondHalf.size()
+                                    + ", depth=" + rebatchDepth + "/" + maxRebatchDepth);
+                    // Recurse each half; failures bubble up from the sub-calls.
+                    List<Document> firstFailed = extractGraphViaLlmChunkGroup(
+                            new ArrayList<>(firstHalf), baseDocIndex, totalDocuments,
+                            config, targetGraph, job, parentDocCache, entityNodeCache, factSheetId,
+                            rebatchDepth + 1);
+                    List<Document> secondFailed = extractGraphViaLlmChunkGroup(
+                            new ArrayList<>(secondHalf), baseDocIndex + half, totalDocuments,
+                            config, targetGraph, job, parentDocCache, entityNodeCache, factSheetId,
+                            rebatchDepth + 1);
+                    for (Document d : firstFailed)  { if (!failed.contains(d)) failed.add(d); }
+                    for (Document d : secondFailed) { if (!failed.contains(d)) failed.add(d); }
+                } else {
+                    // Terminal: depth limit reached or size==1 unexpectedly (safety guard).
+                    job.getErrorCount().incrementAndGet();
+                    for (Document doc : group) {
+                        documentTracker.recordDocumentProgress(job, doc, "GRAPH_EXTRACTION", "FAILED", 0, 0, 0,
+                                "LLM multi-chunk extraction returned no result (rebatch depth " + rebatchDepth + "/" + maxRebatchDepth + ")",
+                                "LLM returned null/empty — check LLM configuration",
+                                EXTRACTORS_INLINE_LLM, true);
+                        if (!failed.contains(doc)) failed.add(doc);
+                    }
                 }
             }
         } catch (Exception e) {
             String errorDetail = e.getMessage() != null ? e.getMessage()
                     : e.getClass().getSimpleName() + " at " + (e.getStackTrace().length > 0 ? e.getStackTrace()[0] : "unknown");
-            log.warn("[Job {}] Multi-chunk graph extraction failed for group: {}", job.getJobId(), errorDetail, e);
-            job.getErrors().add("Multi-chunk graph extraction failed: " + errorDetail);
-            job.getErrorCount().incrementAndGet();
-            for (Document doc : group) {
-                if (!failed.contains(doc)) {
-                    documentTracker.recordDocumentProgress(job, doc, "GRAPH_EXTRACTION", "FAILED", 0, 0, 0,
-                            "Multi-chunk graph extraction failed", errorDetail, EXTRACTORS_INLINE_LLM, true);
-                    failed.add(doc);
+            log.warn("[Job {}] Multi-chunk graph extraction failed for group of {} (depth {}): {}",
+                    job.getJobId(), group.size(), rebatchDepth, errorDetail, e);
+            // On exception, also attempt to rebatch rather than immediately failing all docs.
+            if (group.size() > 1 && rebatchDepth < maxRebatchDepth && !isCancelled(job)) {
+                int half = group.size() / 2;
+                log.info("[Job {}] Rebatching after exception, group {} → halves {}/{} (depth {}/{})",
+                        job.getJobId(), group.size(), half, group.size() - half, rebatchDepth, maxRebatchDepth);
+                documentTracker.recordEvent(job, "GRAPH_EXTRACTION", "WARN",
+                        "Rebatching after exception in multi-chunk group",
+                        "size=" + group.size() + " → halves, depth=" + rebatchDepth + "/" + maxRebatchDepth
+                                + ", error=" + errorDetail);
+                List<Document> firstFailed = extractGraphViaLlmChunkGroup(
+                        new ArrayList<>(group.subList(0, half)), baseDocIndex, totalDocuments,
+                        config, targetGraph, job, parentDocCache, entityNodeCache, factSheetId,
+                        rebatchDepth + 1);
+                List<Document> secondFailed = extractGraphViaLlmChunkGroup(
+                        new ArrayList<>(group.subList(half, group.size())), baseDocIndex + half, totalDocuments,
+                        config, targetGraph, job, parentDocCache, entityNodeCache, factSheetId,
+                        rebatchDepth + 1);
+                for (Document d : firstFailed)  { if (!failed.contains(d)) failed.add(d); }
+                for (Document d : secondFailed) { if (!failed.contains(d)) failed.add(d); }
+            } else {
+                job.getErrors().add("Multi-chunk graph extraction failed: " + errorDetail);
+                job.getErrorCount().incrementAndGet();
+                for (Document doc : group) {
+                    if (!failed.contains(doc)) {
+                        documentTracker.recordDocumentProgress(job, doc, "GRAPH_EXTRACTION", "FAILED", 0, 0, 0,
+                                "Multi-chunk graph extraction failed", errorDetail, EXTRACTORS_INLINE_LLM, true);
+                        failed.add(doc);
+                    }
                 }
             }
         } finally {
-            incrementGraphChunksProcessed(job, group.size());
-            updateProgress(job, "GRAPH_EXTRACTION", estimateProgress(job),
-                    "Completed graph group " + (baseDocIndex + 1) + "-"
-                            + (baseDocIndex + group.size()) + "/" + totalDocuments, null);
+            // Progress increment: only at depth 0 (the top-level call for this group) to avoid
+            // double-counting from sub-calls. At depth > 0 the recursion is part of the same group.
+            if (rebatchDepth == 0) {
+                incrementGraphChunksProcessed(job, group.size());
+                updateProgress(job, "GRAPH_EXTRACTION", estimateProgress(job),
+                        "Completed graph group " + (baseDocIndex + 1) + "-"
+                                + (baseDocIndex + group.size()) + "/" + totalDocuments, null);
+            }
         }
         return failed;
     }
@@ -1962,6 +2151,22 @@ class GraphExtractionOrchestrator {
     }
 
     private int resolveGraphExtractionParallelism(UnifiedCrawlJob job, int plannedBatchCount) {
+        return resolveGraphExtractionParallelism(job, plannedBatchCount, 0);
+    }
+
+    /**
+     * Resolve effective graph extraction parallelism, applying GPU/memory guards only for local
+     * inference and using the best available batch-count estimate to avoid capping parallelism
+     * too aggressively for item-limited batches on large-context models.
+     *
+     * @param job               running crawl job
+     * @param plannedBatchCount char-budget wave estimate (may be 1 for small-doc corpora on big models)
+     * @param totalItemCount    total items to extract; when > 0, used to compute an item-based batch
+     *                          count that lower-bounds the parallelism cap so small docs with a large
+     *                          char budget don't spuriously collapse to parallelism=1
+     */
+    private int resolveGraphExtractionParallelism(UnifiedCrawlJob job, int plannedBatchCount,
+                                                   int totalItemCount) {
         int configured = Math.max(1, graphExtractionParallelism);
         // When GraphConstructor persists its own matrix graph and embeds inline,
         // reduce parallelism to avoid GPU/OpenMP contention. The default unified
@@ -1970,13 +2175,31 @@ class GraphExtractionOrchestrator {
         if (graphConstructor != null && graphConstructorPersistMatrixGraph && !graphConstructorSkipEmbedding) {
             configured = Math.min(configured, 2);
         }
-        memoryMonitor.updateMemorySnapshot(job);
-        // Only force to 1 at CRITICAL memory pressure, not just the wait threshold
-        if (memoryCriticalThresholdPercent > 0
-                && job.getMemoryUsagePercent().get() >= memoryCriticalThresholdPercent) {
-            configured = 1;
+        // For remote CLI backends (opencode, deepseek-cli, etc.) the actual work runs in an
+        // out-of-process subprocess; JVM heap pressure is irrelevant to model throughput and
+        // should not gate parallelism. Only apply the critical-memory cap for local GPU/in-process
+        // inference where heap and device memory are genuinely shared with the JVM.
+        boolean isLocalInference = graphConstructor != null && graphConstructorPersistMatrixGraph;
+        if (isLocalInference) {
+            memoryMonitor.updateMemorySnapshot(job);
+            if (memoryCriticalThresholdPercent > 0
+                    && job.getMemoryUsagePercent().get() >= memoryCriticalThresholdPercent) {
+                configured = 1;
+            }
         }
-        return Math.max(1, Math.min(configured, Math.max(1, plannedBatchCount)));
+        // The char-budget plannedBatchCount can undercount badly for small-document corpora on
+        // large-context models: ceil(200 docs × 2 000 chars / 400 000 initChars) = 1, even though
+        // the actual item-limited wave count is ceil(200 / maxItems=8) = 25. This incorrectly caps
+        // parallelism to min(3, 1) = 1. When totalItemCount is provided, compute the item-based
+        // lower bound and use whichever is larger.
+        int effectiveBatchCount = plannedBatchCount;
+        if (totalItemCount > 0) {
+            int itemBasedBatches = Math.max(1,
+                    (totalItemCount + Math.max(1, graphExtractionBatchSize) - 1)
+                    / Math.max(1, graphExtractionBatchSize));
+            effectiveBatchCount = Math.max(plannedBatchCount, itemBasedBatches);
+        }
+        return Math.max(1, Math.min(configured, Math.max(1, effectiveBatchCount)));
     }
 
     // -------------------------------------------------------------------------
@@ -2372,6 +2595,13 @@ class GraphExtractionOrchestrator {
                 documentTracker.recordEvent(job, phase, "INFO", message, details);
             }
             pipelineStepTracker.updatePipelineStepFromCounters(job, phase, message, details);
+            // Notify the SSE controller so the front-end polls the REST snapshot (which carries
+            // adaptiveBatchSize, recentTuningDecisions, etc.) — makes adaptive batch telemetry
+            // visible in the crawl-step-monitor during extraction, not only after it completes.
+            Consumer<UnifiedCrawlJob> notifier = progressNotifier;
+            if (notifier != null) {
+                try { notifier.accept(job); } catch (Exception ignored) {}
+            }
         }
     }
 
@@ -2562,9 +2792,15 @@ class GraphExtractionOrchestrator {
         private int consecutiveLowMemoryBatches;
         private long lastRampTime;
         private static final long RAMP_COOLDOWN_MS = 12_000;
-        private static final double CRITICAL_THRESHOLD = 0.82;
-        private static final double HIGH_THRESHOLD = 0.70;
-        private static final double LOW_THRESHOLD = 0.60;
+        // Thresholds calibrated for remote CLI backends (opencode/deepseek) where the JVM heap
+        // is NOT the bottleneck — the subprocess does all inference. Normal post-startup JVM heap
+        // sits at 70-82%, which is NOT a signal of extraction pressure. Only trip the critical
+        // reduction at ≥ 92% (genuine GC stall territory) and hold at ≥ 87% (near-critical).
+        // For local GPU inference these are still safe: if GPU OOM were happening the JVM heap
+        // would spike much higher (native memory pressure shows up as heap pressure via GC).
+        private static final double CRITICAL_THRESHOLD = 0.92;
+        private static final double HIGH_THRESHOLD = 0.87;
+        private static final double LOW_THRESHOLD = 0.80;
         private static final int RAMP_AFTER_LOW_COUNT = 2;
 
         OuterParallelismAdvisor(int initialParallelism) {

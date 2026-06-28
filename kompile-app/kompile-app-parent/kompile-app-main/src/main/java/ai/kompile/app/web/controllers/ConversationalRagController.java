@@ -16,7 +16,9 @@
 
 package ai.kompile.app.web.controllers;
 
+import ai.kompile.core.citation.CitationDto;
 import ai.kompile.core.embeddings.ScoredDocument;
+import ai.kompile.knowledgegraph.citation.CitationSupport;
 import ai.kompile.utils.StringUtils;
 import ai.kompile.core.rag.ConversationalRagOptions;
 import ai.kompile.core.rag.ConversationalRagResult;
@@ -315,7 +317,9 @@ public class ConversationalRagController {
 
         public static ChatResponse fromResult(String conversationId, ConversationalRagResult result, KVCacheStats kvCacheStats) {
             List<DocumentDto> docs = result.retrievedDocuments().stream()
-                    .map(sd -> new DocumentDto(sd.getId(), sd.getText(), sd.score(), sd.getMetadata()))
+                    .map(sd -> new DocumentDto(
+                            sd.getId(), sd.getText(), sd.score(), sd.getMetadata(),
+                            CitationSupport.from(sd.getMetadata(), sd.score(), null)))
                     .toList();
 
             QueryMetadata queryMeta = null;
@@ -361,7 +365,8 @@ public class ConversationalRagController {
             String id,
             String content,
             double score,
-            Map<String, Object> metadata
+            Map<String, Object> metadata,
+            CitationDto citation
     ) {}
 
     /**

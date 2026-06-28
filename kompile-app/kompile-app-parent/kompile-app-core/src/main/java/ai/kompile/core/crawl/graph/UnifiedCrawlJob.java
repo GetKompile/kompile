@@ -134,6 +134,20 @@ public class UnifiedCrawlJob {
     @Builder.Default
     private AtomicInteger graphExtractionParseFailures = new AtomicInteger(0);
 
+    /**
+     * Files skipped during LOADING because their SHA-256 content hash matched the
+     * stored hash from a previous crawl (incremental crawl mode).
+     */
+    @Builder.Default
+    private AtomicInteger filesSkippedUnchanged = new AtomicInteger(0);
+
+    /**
+     * Files that were re-processed (either new or changed) in incremental crawl mode.
+     * When incremental mode is disabled every loaded file counts as re-processed.
+     */
+    @Builder.Default
+    private AtomicInteger filesReprocessed = new AtomicInteger(0);
+
     /** Per-entity-type counts accumulated during extraction (e.g. REGIONAL_FORECAST: 50, CELL: 200) */
     @Builder.Default
     private Map<String, AtomicLong> entityTypeCounts = new ConcurrentHashMap<>();
@@ -1048,6 +1062,9 @@ public class UnifiedCrawlJob {
                 .reroutedItems(reroutedItems.get())
                 .droppedItems(droppedItems.get())
                 .recentRerouteEvents(recentRerouteEvents.isEmpty() ? null : new ArrayList<>(recentRerouteEvents))
+                // Incremental crawl telemetry
+                .filesSkippedUnchanged(filesSkippedUnchanged.get())
+                .filesReprocessed(filesReprocessed.get())
                 // Retry / fallback
                 .retriedBatches(retriedBatches.get())
                 .retriedItems(retriedItems.get())
@@ -1169,6 +1186,9 @@ public class UnifiedCrawlJob {
         private long reroutedItems;
         private long droppedItems;
         private List<RerouteEvent> recentRerouteEvents;
+        // Incremental crawl telemetry
+        private int filesSkippedUnchanged;
+        private int filesReprocessed;
         // Retry / fallback
         private long retriedBatches;
         private long retriedItems;

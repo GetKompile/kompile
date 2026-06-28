@@ -16,17 +16,17 @@
 package ai.kompile.knowledgegraph.impl;
 
 import ai.kompile.core.embeddings.EmbeddingModel;
+import ai.kompile.knowledgegraph.confidence.KbConfig;
+import ai.kompile.knowledgegraph.confidence.KbConfigManager;
 import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
-import ai.kompile.knowledgegraph.repository.EntityMentionRepository;
-import ai.kompile.knowledgegraph.repository.GraphEdgeRepository;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
@@ -40,6 +40,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -48,19 +49,14 @@ import static org.mockito.Mockito.*;
 /**
  * Unit tests for {@link GraphEdgeComputationServiceImpl}.
  *
- * All repositories and services are Mockito mocks.
- * The optional {@code embeddingModel} and {@code entityMentionRepository} fields
- * are injected via reflection when needed.
+ * The impl uses no-arg constructor + @Autowired field injection.
+ * knowledgeGraphService and embeddingModel are injected via reflection in setUp / per-test.
+ * entityMentionRepository no longer exists in the impl — all shared-entity detection
+ * goes through knowledgeGraphService.findNodePairsWithSharedEntities.
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
 class GraphEdgeComputationServiceImplTest {
-
-    @Mock
-    private GraphNodeRepository nodeRepository;
-
-    @Mock
-    private GraphEdgeRepository edgeRepository;
 
     @Mock
     private KnowledgeGraphService knowledgeGraphService;
@@ -68,14 +64,13 @@ class GraphEdgeComputationServiceImplTest {
     @Mock
     private EmbeddingModel embeddingModel;
 
-    @Mock
-    private EntityMentionRepository entityMentionRepository;
-
     private GraphEdgeComputationServiceImpl service;
 
     @BeforeEach
-    void setUp() {
-        service = new GraphEdgeComputationServiceImpl(nodeRepository, edgeRepository, knowledgeGraphService);
+    void setUp() throws Exception {
+        // No-arg constructor — @Autowired fields injected below via reflection
+        service = new GraphEdgeComputationServiceImpl();
+        injectField("knowledgeGraphService", knowledgeGraphService);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -103,14 +98,18 @@ class GraphEdgeComputationServiceImplTest {
                 .build();
     }
 
-    private GraphEdge dummyEdge(EdgeType type, Double weight, LocalDateTime computedAt) {
+    private GraphEdge dummyEdge(String edgeId, EdgeType type, Double weight, LocalDateTime computedAt) {
         return GraphEdge.builder()
                 .id(1L)
-                .edgeId("edge-1")
+                .edgeId(edgeId)
                 .edgeType(type)
                 .weight(weight)
                 .computedAt(computedAt)
                 .build();
+    }
+
+    private GraphEdge dummyEdge(EdgeType type, Double weight, LocalDateTime computedAt) {
+        return dummyEdge("edge-" + System.nanoTime(), type, weight, computedAt);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -120,13 +119,10 @@ class GraphEdgeComputationServiceImplTest {
     @Test
     void embeddingSimilarity_skipsWhenEmbeddingModelIsNull() {
         // embeddingModel NOT injected — field stays null
-        when(nodeRepository.findByNodeType(NodeLevel.DOCUMENT))
-                .thenReturn(List.of(documentNode("n1", "Doc1"), documentNode("n2", "Doc2")));
-
+        // impl returns early when embeddingModel == null, before calling knowledgeGraphService
         service.computeEmbeddingSimilarityEdges(0.7, 10);
 
-        // Should not touch nodes or edges when no embedding model
-        verify(nodeRepository, never()).findByNodeType(any());
+        verify(knowledgeGraphService, never()).getNodesByType(any());
         verify(knowledgeGraphService, never()).createEdge(any(), any(), any(), any(), any());
     }
 
@@ -134,7 +130,8 @@ class GraphEdgeComputationServiceImplTest {
     void embeddingSimilarity_returnsEarlyWhenFewerThan2DocumentNodes() throws Exception {
         injectField("embeddingModel", embeddingModel);
 
-        when(nodeRepository.findByNodeType(NodeLevel.DOCUMENT))
+        // impl calls knowledgeGraphService.getNodesByType(DOCUMENT) — not nodeRepository
+        when(knowledgeGraphService.getNodesByType(NodeLevel.DOCUMENT))
                 .thenReturn(List.of(documentNode("n1", "Doc1")));
 
         service.computeEmbeddingSimilarityEdges(0.7, 10);
@@ -149,16 +146,16 @@ class GraphEdgeComputationServiceImplTest {
 
         GraphNode n1 = documentNode("n1", "Doc1");
         GraphNode n2 = documentNode("n2", "Doc2");
-        when(nodeRepository.findByNodeType(NodeLevel.DOCUMENT)).thenReturn(List.of(n1, n2));
+        // impl calls knowledgeGraphService.getNodesByType(DOCUMENT)
+        when(knowledgeGraphService.getNodesByType(NodeLevel.DOCUMENT)).thenReturn(List.of(n1, n2));
 
-        // Two identical unit vectors → cosine similarity = 1.0
-        // Use separate instances so closing one doesn't affect the other
-        INDArray vec1 = Nd4j.create(new float[]{1.0f, 0.0f, 0.0f});
-        INDArray vec2 = Nd4j.create(new float[]{1.0f, 0.0f, 0.0f});
-        when(embeddingModel.embed("Doc1 Description of Doc1 Preview of Doc1")).thenReturn(vec1);
-        when(embeddingModel.embed("Doc2 Description of Doc2 Preview of Doc2")).thenReturn(vec2);
+        // impl batches all node texts in ONE embedBatch call (returns one float[] per text, in
+        // docNodes order). Two identical unit vectors → cosine similarity = 1.0.
+        when(embeddingModel.embedBatch(anyList()))
+                .thenReturn(List.of(new float[]{1.0f, 0.0f, 0.0f}, new float[]{1.0f, 0.0f, 0.0f}));
 
-        when(edgeRepository.findEdgeBetweenNodesBidirectional("n1", "n2"))
+        // impl calls knowledgeGraphService.findEdgeBetweenNodesBidirectional (returns Optional)
+        when(knowledgeGraphService.findEdgeBetweenNodesBidirectional("n1", "n2"))
                 .thenReturn(Optional.empty());
 
         service.computeEmbeddingSimilarityEdges(0.7, 10);
@@ -173,7 +170,7 @@ class GraphEdgeComputationServiceImplTest {
 
         GraphNode n1 = documentNode("n1", "Doc1");
         GraphNode n2 = documentNode("n2", "Doc2");
-        when(nodeRepository.findByNodeType(NodeLevel.DOCUMENT)).thenReturn(List.of(n1, n2));
+        when(knowledgeGraphService.getNodesByType(NodeLevel.DOCUMENT)).thenReturn(List.of(n1, n2));
 
         // Orthogonal vectors → cosine similarity = 0.0
         INDArray vec1 = Nd4j.create(new float[]{1.0f, 0.0f, 0.0f});
@@ -192,15 +189,14 @@ class GraphEdgeComputationServiceImplTest {
 
         GraphNode n1 = documentNode("n1", "Doc1");
         GraphNode n2 = documentNode("n2", "Doc2");
-        when(nodeRepository.findByNodeType(NodeLevel.DOCUMENT)).thenReturn(List.of(n1, n2));
+        when(knowledgeGraphService.getNodesByType(NodeLevel.DOCUMENT)).thenReturn(List.of(n1, n2));
 
-        // Use thenAnswer to return fresh instances so closing one doesn't affect the other
         when(embeddingModel.embed(anyString()))
                 .thenAnswer(inv -> Nd4j.create(new float[]{1.0f, 0.0f, 0.0f}));
 
-        // Edge already exists bidirectionally
+        // Edge already exists bidirectionally — impl checks via knowledgeGraphService.findEdgeBetweenNodesBidirectional
         GraphEdge existingEdge = dummyEdge(EdgeType.EMBEDDING_SIMILARITY, 0.95, null);
-        when(edgeRepository.findEdgeBetweenNodesBidirectional("n1", "n2"))
+        when(knowledgeGraphService.findEdgeBetweenNodesBidirectional("n1", "n2"))
                 .thenReturn(Optional.of(existingEdge));
 
         service.computeEmbeddingSimilarityEdges(0.7, 10);
@@ -223,13 +219,14 @@ class GraphEdgeComputationServiceImplTest {
         GraphNode n1 = documentNode("n1", "A");
         GraphNode n2 = documentNode("n2", "B");
         GraphNode n3 = documentNode("n3", "C");
-        when(nodeRepository.findByNodeType(NodeLevel.DOCUMENT)).thenReturn(List.of(n1, n2, n3));
+        when(knowledgeGraphService.getNodesByType(NodeLevel.DOCUMENT)).thenReturn(List.of(n1, n2, n3));
 
-        // Use thenAnswer to return a fresh INDArray instance each call,
-        // so closing one embedded array doesn't affect subsequent lookups
-        when(embeddingModel.embed(anyString()))
-                .thenAnswer(inv -> Nd4j.create(new float[]{1.0f, 0.0f, 0.0f}));
-        when(edgeRepository.findEdgeBetweenNodesBidirectional(anyString(), anyString()))
+        // impl batches all three node texts in one embedBatch call (one float[] per text, in order).
+        when(embeddingModel.embedBatch(anyList()))
+                .thenReturn(List.of(new float[]{1.0f, 0.0f, 0.0f},
+                        new float[]{1.0f, 0.0f, 0.0f},
+                        new float[]{1.0f, 0.0f, 0.0f}));
+        when(knowledgeGraphService.findEdgeBetweenNodesBidirectional(anyString(), anyString()))
                 .thenReturn(Optional.empty());
 
         service.computeEmbeddingSimilarityEdges(0.7, 1);
@@ -244,7 +241,7 @@ class GraphEdgeComputationServiceImplTest {
     void embeddingSimilarity_setsRunningStatusDuringComputation() throws Exception {
         injectField("embeddingModel", embeddingModel);
 
-        when(nodeRepository.findByNodeType(NodeLevel.DOCUMENT))
+        when(knowledgeGraphService.getNodesByType(NodeLevel.DOCUMENT))
                 .thenReturn(Collections.emptyList());
 
         assertFalse(service.isComputationRunning(), "Should be idle before starting");
@@ -260,7 +257,7 @@ class GraphEdgeComputationServiceImplTest {
 
         GraphNode n1 = documentNode("n1", "Doc1");
         GraphNode n2 = documentNode("n2", "Doc2");
-        when(nodeRepository.findByNodeType(NodeLevel.DOCUMENT)).thenReturn(List.of(n1, n2));
+        when(knowledgeGraphService.getNodesByType(NodeLevel.DOCUMENT)).thenReturn(List.of(n1, n2));
 
         // Simulate an embedding exception
         when(embeddingModel.embed(anyString())).thenThrow(new RuntimeException("embed failed"));
@@ -275,29 +272,24 @@ class GraphEdgeComputationServiceImplTest {
     // ═══════════════════════════════════════════════════════════════════════════
 
     @Test
-    void sharedEntity_skipsWhenEntityMentionRepositoryIsNull() {
-        // entityMentionRepository NOT injected — field stays null
+    void sharedEntity_skipsWhenNoPairsFound() {
+        // impl uses knowledgeGraphService.findNodePairsWithSharedEntities — no entityMentionRepository
+        when(knowledgeGraphService.findNodePairsWithSharedEntities(2))
+                .thenReturn(Collections.emptyList());
+
         service.computeSharedEntityEdges(2);
 
         verify(knowledgeGraphService, never()).createEdge(any(), any(), any(), any(), any());
     }
 
     @Test
-    void sharedEntity_createsEdgeForPairsWithSharedEntities() throws Exception {
-        injectField("entityMentionRepository", entityMentionRepository);
-
-        GraphNode n1 = documentNode("n1", "Doc1");
-        GraphNode n2 = documentNode("n2", "Doc2");
-
-        // Pair: (n1.id=X, n2.id=Y, sharedCount=5)
-        Object[] pair = new Object[]{n1.getId(), n2.getId(), 5L};
-        List<Object[]> pairs = Collections.singletonList(pair);
-        when(entityMentionRepository.findNodePairsWithSharedEntities(2))
-                .thenReturn(pairs);
-
-        when(nodeRepository.findById(n1.getId())).thenReturn(Optional.of(n1));
-        when(nodeRepository.findById(n2.getId())).thenReturn(Optional.of(n2));
-        when(edgeRepository.findEdgeBetweenNodesBidirectional("n1", "n2"))
+    void sharedEntity_createsEdgeForPairsWithSharedEntities() {
+        // pair[0]/pair[1] must be Strings (resolveNodeId skips non-String values)
+        Object[] pair = new Object[]{"n1", "n2", 5L};
+        when(knowledgeGraphService.findNodePairsWithSharedEntities(2))
+                .thenReturn(Collections.singletonList(pair));
+        // impl uses findEdgeBetweenNodesBidirectional (returns Optional) — not edgeRepository
+        when(knowledgeGraphService.findEdgeBetweenNodesBidirectional("n1", "n2"))
                 .thenReturn(Optional.empty());
 
         service.computeSharedEntityEdges(2);
@@ -307,20 +299,12 @@ class GraphEdgeComputationServiceImplTest {
     }
 
     @Test
-    void sharedEntity_calculatesWeightCorrectly_belowCap() throws Exception {
-        injectField("entityMentionRepository", entityMentionRepository);
-
-        GraphNode n1 = documentNode("n1", "Doc1");
-        GraphNode n2 = documentNode("n2", "Doc2");
-
+    void sharedEntity_calculatesWeightCorrectly_belowCap() {
         // sharedCount=5 → weight = 5/10.0 = 0.5
-        Object[] pair = new Object[]{n1.getId(), n2.getId(), 5L};
-        List<Object[]> pairs = Collections.singletonList(pair);
-        when(entityMentionRepository.findNodePairsWithSharedEntities(2))
-                .thenReturn(pairs);
-        when(nodeRepository.findById(n1.getId())).thenReturn(Optional.of(n1));
-        when(nodeRepository.findById(n2.getId())).thenReturn(Optional.of(n2));
-        when(edgeRepository.findEdgeBetweenNodesBidirectional("n1", "n2"))
+        Object[] pair = new Object[]{"n1", "n2", 5L};
+        when(knowledgeGraphService.findNodePairsWithSharedEntities(2))
+                .thenReturn(Collections.singletonList(pair));
+        when(knowledgeGraphService.findEdgeBetweenNodesBidirectional("n1", "n2"))
                 .thenReturn(Optional.empty());
 
         service.computeSharedEntityEdges(2);
@@ -332,20 +316,12 @@ class GraphEdgeComputationServiceImplTest {
     }
 
     @Test
-    void sharedEntity_calculatesWeightCorrectly_cappedAt1() throws Exception {
-        injectField("entityMentionRepository", entityMentionRepository);
-
-        GraphNode n1 = documentNode("n1", "Doc1");
-        GraphNode n2 = documentNode("n2", "Doc2");
-
+    void sharedEntity_calculatesWeightCorrectly_cappedAt1() {
         // sharedCount=15 → raw=1.5, capped to 1.0
-        Object[] pair = new Object[]{n1.getId(), n2.getId(), 15L};
-        List<Object[]> pairs = Collections.singletonList(pair);
-        when(entityMentionRepository.findNodePairsWithSharedEntities(2))
-                .thenReturn(pairs);
-        when(nodeRepository.findById(n1.getId())).thenReturn(Optional.of(n1));
-        when(nodeRepository.findById(n2.getId())).thenReturn(Optional.of(n2));
-        when(edgeRepository.findEdgeBetweenNodesBidirectional("n1", "n2"))
+        Object[] pair = new Object[]{"n1", "n2", 15L};
+        when(knowledgeGraphService.findNodePairsWithSharedEntities(2))
+                .thenReturn(Collections.singletonList(pair));
+        when(knowledgeGraphService.findEdgeBetweenNodesBidirectional("n1", "n2"))
                 .thenReturn(Optional.empty());
 
         service.computeSharedEntityEdges(2);
@@ -357,21 +333,13 @@ class GraphEdgeComputationServiceImplTest {
     }
 
     @Test
-    void sharedEntity_doesNotCreateDuplicateEdge() throws Exception {
-        injectField("entityMentionRepository", entityMentionRepository);
+    void sharedEntity_doesNotCreateDuplicateEdge() {
+        Object[] pair = new Object[]{"n1", "n2", 5L};
+        when(knowledgeGraphService.findNodePairsWithSharedEntities(2))
+                .thenReturn(Collections.singletonList(pair));
 
-        GraphNode n1 = documentNode("n1", "Doc1");
-        GraphNode n2 = documentNode("n2", "Doc2");
-
-        Object[] pair = new Object[]{n1.getId(), n2.getId(), 5L};
-        List<Object[]> pairs = Collections.singletonList(pair);
-        when(entityMentionRepository.findNodePairsWithSharedEntities(2))
-                .thenReturn(pairs);
-        when(nodeRepository.findById(n1.getId())).thenReturn(Optional.of(n1));
-        when(nodeRepository.findById(n2.getId())).thenReturn(Optional.of(n2));
-
-        // Edge already exists
-        when(edgeRepository.findEdgeBetweenNodesBidirectional("n1", "n2"))
+        // Edge already exists — impl checks via findEdgeBetweenNodesBidirectional
+        when(knowledgeGraphService.findEdgeBetweenNodesBidirectional("n1", "n2"))
                 .thenReturn(Optional.of(dummyEdge(EdgeType.SHARED_ENTITY, 0.5, null)));
 
         service.computeSharedEntityEdges(2);
@@ -380,10 +348,20 @@ class GraphEdgeComputationServiceImplTest {
     }
 
     @Test
-    void sharedEntity_setsRunningStatusCorrectly() throws Exception {
-        injectField("entityMentionRepository", entityMentionRepository);
+    void sharedEntity_skipsNonStringNodeIds() {
+        // Long IDs are skipped by resolveNodeId — impl only handles String pair elements
+        Object[] pair = new Object[]{100L, 200L, 5L};
+        when(knowledgeGraphService.findNodePairsWithSharedEntities(2))
+                .thenReturn(Collections.singletonList(pair));
 
-        when(entityMentionRepository.findNodePairsWithSharedEntities(anyInt()))
+        service.computeSharedEntityEdges(2);
+
+        verify(knowledgeGraphService, never()).createEdge(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void sharedEntity_setsRunningStatusCorrectly() {
+        when(knowledgeGraphService.findNodePairsWithSharedEntities(anyInt()))
                 .thenReturn(Collections.emptyList());
 
         assertFalse(service.isComputationRunning(), "Should be idle before starting");
@@ -393,28 +371,41 @@ class GraphEdgeComputationServiceImplTest {
         assertFalse(service.isComputationRunning(), "Should be idle after completion");
     }
 
+    @Test
+    void sharedEntity_noEdgesCreatedWhenNoPairsFound() {
+        when(knowledgeGraphService.findNodePairsWithSharedEntities(anyInt()))
+                .thenReturn(Collections.emptyList());
+
+        service.computeSharedEntityEdges(2);
+
+        verify(knowledgeGraphService, never()).createEdge(any(), any(), any(), any(), any());
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // pruneWeakEdges
     // ═══════════════════════════════════════════════════════════════════════════
 
     @Test
     void pruneWeakEdges_deletesEdgesBelowMinWeight() {
-        GraphEdge weakSimilarityEdge = dummyEdge(EdgeType.EMBEDDING_SIMILARITY, 0.3, null);
-        GraphEdge strongSimilarityEdge = dummyEdge(EdgeType.EMBEDDING_SIMILARITY, 0.9, null);
-        GraphEdge weakSharedEdge = dummyEdge(EdgeType.SHARED_ENTITY, 0.2, null);
+        // impl scans via knowledgeGraphService.getNodesByType(DOCUMENT) + getNodesByType(ENTITY)
+        // then getEdgesForNode(nodeId) per node, then deleteEdge(edge.getEdgeId())
+        GraphNode docNode = documentNode("doc1", "Doc1");
+        GraphEdge weakEdge = dummyEdge("weak-1", EdgeType.EMBEDDING_SIMILARITY, 0.3, null);
+        GraphEdge strongEdge = dummyEdge("strong-1", EdgeType.EMBEDDING_SIMILARITY, 0.9, null);
+        GraphEdge weakShared = dummyEdge("weak-2", EdgeType.SHARED_ENTITY, 0.2, null);
 
-        when(edgeRepository.findByEdgeType(EdgeType.EMBEDDING_SIMILARITY))
-                .thenReturn(List.of(weakSimilarityEdge, strongSimilarityEdge));
-        when(edgeRepository.findByEdgeType(EdgeType.SHARED_ENTITY))
-                .thenReturn(List.of(weakSharedEdge));
+        when(knowledgeGraphService.getNodesByType(NodeLevel.DOCUMENT)).thenReturn(List.of(docNode));
+        when(knowledgeGraphService.getNodesByType(NodeLevel.ENTITY)).thenReturn(List.of());
+        when(knowledgeGraphService.getEdgesForNode("doc1"))
+                .thenReturn(List.of(weakEdge, strongEdge, weakShared));
 
         int pruned = service.pruneWeakEdges(0.5, null);
 
-        // weakSimilarityEdge (0.3 < 0.5) and weakSharedEdge (0.2 < 0.5) are pruned
+        // weakEdge (0.3 < 0.5) and weakShared (0.2 < 0.5) are pruned
         assertEquals(2, pruned);
-        verify(edgeRepository).delete(weakSimilarityEdge);
-        verify(edgeRepository, never()).delete(strongSimilarityEdge);
-        verify(edgeRepository).delete(weakSharedEdge);
+        verify(knowledgeGraphService).deleteEdge("weak-1");
+        verify(knowledgeGraphService, never()).deleteEdge("strong-1");
+        verify(knowledgeGraphService).deleteEdge("weak-2");
     }
 
     @Test
@@ -423,46 +414,47 @@ class GraphEdgeComputationServiceImplTest {
         LocalDateTime staleTime = LocalDateTime.now().minusDays(7);
         LocalDateTime freshTime = LocalDateTime.now();
 
-        GraphEdge staleEdge = dummyEdge(EdgeType.EMBEDDING_SIMILARITY, 0.9, staleTime);
-        GraphEdge freshEdge = dummyEdge(EdgeType.EMBEDDING_SIMILARITY, 0.9, freshTime);
+        GraphNode docNode = documentNode("doc1", "Doc1");
+        GraphEdge staleEdge = dummyEdge("stale-1", EdgeType.EMBEDDING_SIMILARITY, 0.9, staleTime);
+        GraphEdge freshEdge = dummyEdge("fresh-1", EdgeType.EMBEDDING_SIMILARITY, 0.9, freshTime);
 
-        when(edgeRepository.findByEdgeType(EdgeType.EMBEDDING_SIMILARITY))
+        when(knowledgeGraphService.getNodesByType(NodeLevel.DOCUMENT)).thenReturn(List.of(docNode));
+        when(knowledgeGraphService.getNodesByType(NodeLevel.ENTITY)).thenReturn(List.of());
+        when(knowledgeGraphService.getEdgesForNode("doc1"))
                 .thenReturn(List.of(staleEdge, freshEdge));
-        when(edgeRepository.findByEdgeType(EdgeType.SHARED_ENTITY))
-                .thenReturn(Collections.emptyList());
 
         int pruned = service.pruneWeakEdges(0.1, olderThan);
 
         assertEquals(1, pruned);
-        verify(edgeRepository).delete(staleEdge);
-        verify(edgeRepository, never()).delete(freshEdge);
+        verify(knowledgeGraphService).deleteEdge("stale-1");
+        verify(knowledgeGraphService, never()).deleteEdge("fresh-1");
     }
 
     @Test
     void pruneWeakEdges_returnsZeroWhenNothingToPrune() {
-        GraphEdge strongEdge = dummyEdge(EdgeType.EMBEDDING_SIMILARITY, 0.9, LocalDateTime.now());
+        GraphNode docNode = documentNode("doc1", "Doc1");
+        GraphEdge strongEdge = dummyEdge("strong-1", EdgeType.EMBEDDING_SIMILARITY, 0.9, LocalDateTime.now());
 
-        when(edgeRepository.findByEdgeType(EdgeType.EMBEDDING_SIMILARITY))
-                .thenReturn(List.of(strongEdge));
-        when(edgeRepository.findByEdgeType(EdgeType.SHARED_ENTITY))
-                .thenReturn(Collections.emptyList());
+        when(knowledgeGraphService.getNodesByType(NodeLevel.DOCUMENT)).thenReturn(List.of(docNode));
+        when(knowledgeGraphService.getNodesByType(NodeLevel.ENTITY)).thenReturn(List.of());
+        when(knowledgeGraphService.getEdgesForNode("doc1")).thenReturn(List.of(strongEdge));
 
         int pruned = service.pruneWeakEdges(0.5, null);
 
         assertEquals(0, pruned);
-        verify(edgeRepository, never()).delete(any(GraphEdge.class));
+        verify(knowledgeGraphService, never()).deleteEdge(any());
     }
 
     @Test
     void pruneWeakEdges_returnsCorrectTotalCount() {
-        GraphEdge e1 = dummyEdge(EdgeType.EMBEDDING_SIMILARITY, 0.2, null);
-        GraphEdge e2 = dummyEdge(EdgeType.EMBEDDING_SIMILARITY, 0.3, null);
-        GraphEdge e3 = dummyEdge(EdgeType.SHARED_ENTITY, 0.1, null);
+        GraphNode docNode = documentNode("doc1", "Doc1");
+        GraphEdge e1 = dummyEdge("e1", EdgeType.EMBEDDING_SIMILARITY, 0.2, null);
+        GraphEdge e2 = dummyEdge("e2", EdgeType.EMBEDDING_SIMILARITY, 0.3, null);
+        GraphEdge e3 = dummyEdge("e3", EdgeType.SHARED_ENTITY, 0.1, null);
 
-        when(edgeRepository.findByEdgeType(EdgeType.EMBEDDING_SIMILARITY))
-                .thenReturn(List.of(e1, e2));
-        when(edgeRepository.findByEdgeType(EdgeType.SHARED_ENTITY))
-                .thenReturn(List.of(e3));
+        when(knowledgeGraphService.getNodesByType(NodeLevel.DOCUMENT)).thenReturn(List.of(docNode));
+        when(knowledgeGraphService.getNodesByType(NodeLevel.ENTITY)).thenReturn(List.of());
+        when(knowledgeGraphService.getEdgesForNode("doc1")).thenReturn(List.of(e1, e2, e3));
 
         int pruned = service.pruneWeakEdges(0.5, null);
 
@@ -475,31 +467,33 @@ class GraphEdgeComputationServiceImplTest {
 
     @Test
     void deleteAllComputedEdges_deletesBothEdgeTypes() {
-        GraphEdge simEdge1 = dummyEdge(EdgeType.EMBEDDING_SIMILARITY, 0.8, null);
-        GraphEdge simEdge2 = dummyEdge(EdgeType.EMBEDDING_SIMILARITY, 0.6, null);
-        GraphEdge sharedEdge = dummyEdge(EdgeType.SHARED_ENTITY, 0.5, null);
+        GraphNode docNode = documentNode("doc1", "Doc1");
+        GraphEdge simEdge1 = dummyEdge("sim-1", EdgeType.EMBEDDING_SIMILARITY, 0.8, null);
+        GraphEdge simEdge2 = dummyEdge("sim-2", EdgeType.EMBEDDING_SIMILARITY, 0.6, null);
+        GraphEdge sharedEdge = dummyEdge("shared-1", EdgeType.SHARED_ENTITY, 0.5, null);
 
-        when(edgeRepository.findByEdgeType(EdgeType.EMBEDDING_SIMILARITY))
-                .thenReturn(List.of(simEdge1, simEdge2));
-        when(edgeRepository.findByEdgeType(EdgeType.SHARED_ENTITY))
-                .thenReturn(List.of(sharedEdge));
+        when(knowledgeGraphService.getNodesByType(NodeLevel.DOCUMENT)).thenReturn(List.of(docNode));
+        when(knowledgeGraphService.getNodesByType(NodeLevel.ENTITY)).thenReturn(List.of());
+        when(knowledgeGraphService.getEdgesForNode("doc1"))
+                .thenReturn(List.of(simEdge1, simEdge2, sharedEdge));
 
         int deleted = service.deleteAllComputedEdges();
 
         assertEquals(3, deleted);
-        verify(edgeRepository).deleteAll(List.of(simEdge1, simEdge2));
-        verify(edgeRepository).deleteAll(List.of(sharedEdge));
+        verify(knowledgeGraphService).deleteEdge("sim-1");
+        verify(knowledgeGraphService).deleteEdge("sim-2");
+        verify(knowledgeGraphService).deleteEdge("shared-1");
     }
 
     @Test
     void deleteAllComputedEdges_returnsCorrectTotalCount() {
-        when(edgeRepository.findByEdgeType(EdgeType.EMBEDDING_SIMILARITY))
-                .thenReturn(List.of(
-                        dummyEdge(EdgeType.EMBEDDING_SIMILARITY, 0.9, null),
-                        dummyEdge(EdgeType.EMBEDDING_SIMILARITY, 0.7, null)));
-        when(edgeRepository.findByEdgeType(EdgeType.SHARED_ENTITY))
-                .thenReturn(List.of(
-                        dummyEdge(EdgeType.SHARED_ENTITY, 0.5, null)));
+        GraphNode docNode = documentNode("doc1", "Doc1");
+        when(knowledgeGraphService.getNodesByType(NodeLevel.DOCUMENT)).thenReturn(List.of(docNode));
+        when(knowledgeGraphService.getNodesByType(NodeLevel.ENTITY)).thenReturn(List.of());
+        when(knowledgeGraphService.getEdgesForNode("doc1")).thenReturn(List.of(
+                dummyEdge("e1", EdgeType.EMBEDDING_SIMILARITY, 0.9, null),
+                dummyEdge("e2", EdgeType.EMBEDDING_SIMILARITY, 0.7, null),
+                dummyEdge("e3", EdgeType.SHARED_ENTITY, 0.5, null)));
 
         int deleted = service.deleteAllComputedEdges();
 
@@ -508,10 +502,8 @@ class GraphEdgeComputationServiceImplTest {
 
     @Test
     void deleteAllComputedEdges_returnsZeroWhenNoEdgesExist() {
-        when(edgeRepository.findByEdgeType(EdgeType.EMBEDDING_SIMILARITY))
-                .thenReturn(Collections.emptyList());
-        when(edgeRepository.findByEdgeType(EdgeType.SHARED_ENTITY))
-                .thenReturn(Collections.emptyList());
+        when(knowledgeGraphService.getNodesByType(NodeLevel.DOCUMENT)).thenReturn(Collections.emptyList());
+        when(knowledgeGraphService.getNodesByType(NodeLevel.ENTITY)).thenReturn(Collections.emptyList());
 
         int deleted = service.deleteAllComputedEdges();
 
@@ -531,7 +523,9 @@ class GraphEdgeComputationServiceImplTest {
         assertTrue(status.containsKey("cancelled"), "status should have 'cancelled'");
         assertTrue(status.containsKey("lastEdgesCreated"), "status should have 'lastEdgesCreated'");
         assertTrue(status.containsKey("embeddingModelAvailable"), "status should have 'embeddingModelAvailable'");
-        assertTrue(status.containsKey("entityMentionRepoAvailable"), "status should have 'entityMentionRepoAvailable'");
+        // Note: 'entityMentionRepoAvailable' was removed — impl no longer has entityMentionRepository
+        assertFalse(status.containsKey("entityMentionRepoAvailable"),
+                "entityMentionRepoAvailable should NOT be present (field removed in refactor)");
     }
 
     @Test
@@ -543,7 +537,6 @@ class GraphEdgeComputationServiceImplTest {
         assertFalse((Boolean) status.get("cancelled"));
         assertEquals(0, status.get("lastEdgesCreated"));
         assertFalse((Boolean) status.get("embeddingModelAvailable"));
-        assertFalse((Boolean) status.get("entityMentionRepoAvailable"));
     }
 
     @Test
@@ -553,15 +546,6 @@ class GraphEdgeComputationServiceImplTest {
         Map<String, Object> status = service.getComputationStatus();
 
         assertTrue((Boolean) status.get("embeddingModelAvailable"));
-    }
-
-    @Test
-    void getComputationStatus_entityMentionRepoAvailableWhenInjected() throws Exception {
-        injectField("entityMentionRepository", entityMentionRepository);
-
-        Map<String, Object> status = service.getComputationStatus();
-
-        assertTrue((Boolean) status.get("entityMentionRepoAvailable"));
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -574,8 +558,8 @@ class GraphEdgeComputationServiceImplTest {
 
         Field cancelledField = GraphEdgeComputationServiceImpl.class.getDeclaredField("cancelled");
         cancelledField.setAccessible(true);
-        java.util.concurrent.atomic.AtomicBoolean cancelled =
-                (java.util.concurrent.atomic.AtomicBoolean) cancelledField.get(service);
+        AtomicBoolean cancelled =
+                (AtomicBoolean) cancelledField.get(service);
 
         assertTrue(cancelled.get(), "cancelled flag should be true after cancelComputation()");
     }
@@ -590,19 +574,14 @@ class GraphEdgeComputationServiceImplTest {
     }
 
     @Test
-    void cancelComputation_preventsSubsequentSharedEntityProcessing() throws Exception {
-        injectField("entityMentionRepository", entityMentionRepository);
-
-        GraphNode n1 = documentNode("n1", "Doc1");
-        GraphNode n2 = documentNode("n2", "Doc2");
-        Object[] pair = new Object[]{n1.getId(), n2.getId(), 5L};
-        List<Object[]> pairs = Collections.singletonList(pair);
-
-        when(entityMentionRepository.findNodePairsWithSharedEntities(anyInt()))
-                .thenReturn(pairs);
-        when(nodeRepository.findById(n1.getId())).thenReturn(Optional.of(n1));
-        when(nodeRepository.findById(n2.getId())).thenReturn(Optional.of(n2));
-        when(edgeRepository.findEdgeBetweenNodesBidirectional(anyString(), anyString()))
+    void cancelComputation_preventsSubsequentSharedEntityProcessing() {
+        // impl: cancelled flag is reset to false at the START of computeSharedEntityEdges,
+        // then processing occurs. So cancelling BEFORE the call means pairs ARE processed
+        // (cancelled=false is set inside the method). This is correct behaviour.
+        Object[] pair = new Object[]{"n1", "n2", 5L};
+        when(knowledgeGraphService.findNodePairsWithSharedEntities(anyInt()))
+                .thenReturn(Collections.singletonList(pair));
+        when(knowledgeGraphService.findEdgeBetweenNodesBidirectional(anyString(), anyString()))
                 .thenReturn(Optional.empty());
 
         // Cancel before starting
@@ -610,11 +589,7 @@ class GraphEdgeComputationServiceImplTest {
 
         service.computeSharedEntityEdges(2);
 
-        // The cancelled flag is cleared at the start of computeSharedEntityEdges,
-        // but because we cancelled BEFORE running, the method should reset cancelled=false
-        // and then process. Verify the method executed (running was false, so it proceeds).
-        // The cancelled flag is reset to false inside the method, so the pair is processed.
-        // This is correct behaviour: cancel only affects already-running computation.
+        // The cancelled flag is reset inside computeSharedEntityEdges, so the pair is processed.
         verify(knowledgeGraphService, times(1))
                 .createEdge(any(), any(), eq(EdgeType.SHARED_ENTITY), anyDouble(), anyString());
     }
@@ -632,7 +607,7 @@ class GraphEdgeComputationServiceImplTest {
     void isComputationRunning_returnsFalseAfterCompletedRun() throws Exception {
         injectField("embeddingModel", embeddingModel);
 
-        when(nodeRepository.findByNodeType(NodeLevel.DOCUMENT))
+        when(knowledgeGraphService.getNodesByType(NodeLevel.DOCUMENT))
                 .thenReturn(Collections.emptyList());
 
         service.computeEmbeddingSimilarityEdges(0.7, 10);
@@ -641,10 +616,8 @@ class GraphEdgeComputationServiceImplTest {
     }
 
     @Test
-    void isComputationRunning_returnsFalseAfterSharedEntityRun() throws Exception {
-        injectField("entityMentionRepository", entityMentionRepository);
-
-        when(entityMentionRepository.findNodePairsWithSharedEntities(anyInt()))
+    void isComputationRunning_returnsFalseAfterSharedEntityRun() {
+        when(knowledgeGraphService.findNodePairsWithSharedEntities(anyInt()))
                 .thenReturn(Collections.emptyList());
 
         service.computeSharedEntityEdges(2);
@@ -662,7 +635,7 @@ class GraphEdgeComputationServiceImplTest {
 
         GraphNode n1 = documentNode("n1", "Doc1");
         GraphNode n2 = documentNode("n2", "Doc2");
-        when(nodeRepository.findByNodeType(NodeLevel.DOCUMENT)).thenReturn(List.of(n1, n2));
+        when(knowledgeGraphService.getNodesByType(NodeLevel.DOCUMENT)).thenReturn(List.of(n1, n2));
 
         // First node returns null — should be skipped gracefully
         when(embeddingModel.embed("Doc1 Description of Doc1 Preview of Doc1")).thenReturn(null);
@@ -676,18 +649,268 @@ class GraphEdgeComputationServiceImplTest {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // sharedEntity: no pairs found
+    // computeNameBasedCrossDocEdges — STAR topology with dedicated hub nodes
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private GraphNode entityNode(String nodeId, String title, String entityType, String sourcePath) {
+        return GraphNode.builder()
+                .id((long) (Math.abs(nodeId.hashCode()) % 100_000))
+                .nodeId(nodeId)
+                .externalId(sourcePath + "/" + nodeId)
+                .nodeType(NodeLevel.ENTITY)
+                .title(title)
+                .metadataJson("{\"entity_type\":\"" + entityType + "\",\"source_path\":\"" + sourcePath + "\"}")
+                .build();
+    }
+
+    /** Builds a synthetic NodeLevel.ALIAS hub node with a given nodeId. */
+    private GraphNode aliasHubNode(String nodeId) {
+        return GraphNode.builder()
+                .id((long) (Math.abs(nodeId.hashCode()) % 100_000))
+                .nodeId(nodeId)
+                .externalId(nodeId)
+                .nodeType(NodeLevel.ALIAS)
+                .title("Alias hub: " + nodeId)
+                .build();
+    }
+
+    /**
+     * Stub the get-or-create hub sequence used by the star topology.
+     * getNodeByExternalIdInFactSheet returns empty (hub not yet created) →
+     * createNode returns the provided hub.
+     */
+    private void stubHubCreation(GraphNode hub, Long factSheetId) {
+        when(knowledgeGraphService.getNodeByExternalIdInFactSheet(
+                anyString(), eq(NodeLevel.ALIAS), eq(factSheetId)))
+                .thenReturn(Optional.empty());
+        when(knowledgeGraphService.createNode(
+                eq(NodeLevel.ALIAS), anyString(), anyString(), anyString(), any(), eq(factSheetId)))
+                .thenReturn(hub);
+    }
+
+    @Test
+    void nameBasedCrossDoc_starTopology_linksAsStarNotClique() {
+        // 3 ENTITY nodes, same normalised name+type, 3 DIFFERENT source docs.
+        // A clique would emit 3 edges (n1-n2, n1-n3, n2-n3); the dedicated-hub star emits N = 3
+        // ALIAS_OF edges (one per member → hub), never a member↔member edge.
+        GraphNode n1 = entityNode("n1", "Alice Smith", "PERSON", "doc1.pdf");
+        GraphNode n2 = entityNode("n2", "Alice Smith", "PERSON", "doc2.pdf");
+        GraphNode n3 = entityNode("n3", "Alice Smith", "PERSON", "doc3.pdf");
+        GraphNode hub = aliasHubNode("alias_hub_alice");
+
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(1L, NodeLevel.ENTITY))
+                .thenReturn(List.of(n1, n2, n3));
+        stubHubCreation(hub, 1L);
+        when(knowledgeGraphService.createEdgesBatch(anyList())).thenReturn(3);
+
+        // kbConfigManager is NOT injected → star topology is the null-safe default.
+        service.computeNameBasedCrossDocEdges(1L);
+
+        // Exactly one createEdgesBatch call (bucket fits within EDGE_BATCH_CHUNK = 500).
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<KnowledgeGraphService.EdgeSpec>> captor =
+                ArgumentCaptor.forClass(List.class);
+        verify(knowledgeGraphService, atLeastOnce()).createEdgesBatch(captor.capture());
+
+        // All captured specs must be member → hub with EdgeType.ALIAS_OF.
+        List<KnowledgeGraphService.EdgeSpec> specs = captor.getAllValues().stream()
+                .flatMap(List::stream)
+                .toList();
+        assertEquals(3, specs.size(), "Expected N=3 ALIAS_OF edges (one per member)");
+        specs.forEach(s -> {
+            assertEquals("alias_hub_alice", s.targetNodeId(),
+                    "All edges must point TO the hub, not member↔member");
+            assertEquals(EdgeType.ALIAS_OF, s.edgeType());
+        });
+        // The O(k²) clique edge n2↔n3 (or any SHARED_ENTITY direct edge) is NEVER created.
+        verify(knowledgeGraphService, never())
+                .createEdge(anyString(), anyString(), eq(EdgeType.SHARED_ENTITY), anyDouble(), anyString());
+    }
+
+    @Test
+    void nameBasedCrossDoc_starTopology_sameSrcMembersAlsoLinkToHub() {
+        // n1 and n4 both come from doc1; n2=doc2, n3=doc3. Same name "Acme Corp".
+        // The bucket IS cross-doc (n2 and n3 differ), so the hub is created.
+        // All 4 members — including same-source n1 and n4 — each emit one ALIAS_OF edge to the hub.
+        // n1↔n4 are NOT linked to each other (no false identity link), just both point to hub.
+        GraphNode n1 = entityNode("n1", "Acme Corp", "ORGANIZATION", "doc1.pdf");
+        GraphNode n2 = entityNode("n2", "Acme Corp", "ORGANIZATION", "doc2.pdf");
+        GraphNode n3 = entityNode("n3", "Acme Corp", "ORGANIZATION", "doc3.pdf");
+        GraphNode n4 = entityNode("n4", "Acme Corp", "ORGANIZATION", "doc1.pdf");
+        GraphNode hub = aliasHubNode("alias_hub_acme");
+
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(1L, NodeLevel.ENTITY))
+                .thenReturn(List.of(n1, n2, n3, n4));
+        stubHubCreation(hub, 1L);
+        when(knowledgeGraphService.createEdgesBatch(anyList())).thenReturn(4);
+
+        service.computeNameBasedCrossDocEdges(1L);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<KnowledgeGraphService.EdgeSpec>> captor =
+                ArgumentCaptor.forClass(List.class);
+        verify(knowledgeGraphService, atLeastOnce()).createEdgesBatch(captor.capture());
+
+        List<KnowledgeGraphService.EdgeSpec> specs = captor.getAllValues().stream()
+                .flatMap(List::stream)
+                .toList();
+        assertEquals(4, specs.size(), "All 4 members should link to hub (N edges, not N-1)");
+        specs.forEach(s -> {
+            assertEquals("alias_hub_acme", s.targetNodeId(), "All specs must target the hub");
+            assertEquals(EdgeType.ALIAS_OF, s.edgeType());
+        });
+        // Direct entity↔entity SHARED_ENTITY edges must never be emitted — including n1↔n4.
+        verify(knowledgeGraphService, never())
+                .createEdge(anyString(), anyString(), eq(EdgeType.SHARED_ENTITY), anyDouble(), anyString());
+    }
+
+    @Test
+    void nameBasedCrossDoc_cliqueTopology_stillAvailableViaConfig() throws Exception {
+        // With star DISABLED via the managed config, the legacy clique links all 3 cross-doc pairs.
+        GraphNode n1 = entityNode("n1", "Alice Smith", "PERSON", "doc1.pdf");
+        GraphNode n2 = entityNode("n2", "Alice Smith", "PERSON", "doc2.pdf");
+        GraphNode n3 = entityNode("n3", "Alice Smith", "PERSON", "doc3.pdf");
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(1L, NodeLevel.ENTITY))
+                .thenReturn(List.of(n1, n2, n3));
+        when(knowledgeGraphService.findEdgeBetweenNodesBidirectional(anyString(), anyString()))
+                .thenReturn(Optional.empty());
+
+        KbConfig clique = KbConfig.defaults();
+        clique.setCrossDocStarTopology(false);
+        KbConfigManager mgr = mock(KbConfigManager.class);
+        when(mgr.current()).thenReturn(clique);
+        injectField("kbConfigManager", mgr);
+
+        service.computeNameBasedCrossDocEdges(1L);
+
+        // Clique = N(N-1)/2 = 3 edges.
+        verify(knowledgeGraphService, times(3))
+                .createEdge(anyString(), anyString(), eq(EdgeType.SHARED_ENTITY), anyDouble(), anyString());
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // computeNameBasedCrossDocEdges — star topology edge cases (added tests)
     // ═══════════════════════════════════════════════════════════════════════════
 
     @Test
-    void sharedEntity_noEdgesCreatedWhenNoPairsFound() throws Exception {
-        injectField("entityMentionRepository", entityMentionRepository);
+    void nameBasedCrossDoc_hubIdempotency_sameHubReusedOnSecondRun() {
+        // The hub externalId is deterministic: "fs<factSheetId>.<bucketKey>".
+        // On a re-run, getNodeByExternalIdInFactSheet returns the existing hub and
+        // createNode must NOT be called again.  Verifies hub idempotency across runs.
+        GraphNode n1 = entityNode("n1", "Alice Smith", "PERSON", "doc1.pdf");
+        GraphNode n2 = entityNode("n2", "Alice Smith", "PERSON", "doc2.pdf");
+        GraphNode hub = aliasHubNode("fs1.alice smith|person");
 
-        when(entityMentionRepository.findNodePairsWithSharedEntities(anyInt()))
-                .thenReturn(Collections.emptyList());
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(1L, NodeLevel.ENTITY))
+                .thenReturn(List.of(n1, n2));
 
-        service.computeSharedEntityEdges(2);
+        // First run: hub not yet present → createNode is called.
+        // Second run: hub already present → createNode must NOT be called again.
+        when(knowledgeGraphService.getNodeByExternalIdInFactSheet(
+                anyString(), eq(NodeLevel.ALIAS), eq(1L)))
+                .thenReturn(Optional.empty())    // first call (first run)
+                .thenReturn(Optional.of(hub));   // second call (second run)
 
-        verify(knowledgeGraphService, never()).createEdge(any(), any(), any(), any(), any());
+        when(knowledgeGraphService.createNode(
+                eq(NodeLevel.ALIAS), anyString(), anyString(), anyString(), any(), eq(1L)))
+                .thenReturn(hub);
+        when(knowledgeGraphService.createEdgesBatch(anyList())).thenReturn(2);
+
+        service.computeNameBasedCrossDocEdges(1L); // first run: creates hub
+        service.computeNameBasedCrossDocEdges(1L); // second run: hub already exists
+
+        // createNode for the hub must be called exactly once across both runs.
+        verify(knowledgeGraphService, times(1))
+                .createNode(eq(NodeLevel.ALIAS), anyString(), anyString(), anyString(), any(), eq(1L));
+    }
+
+    @Test
+    void nameBasedCrossDoc_factSheetScoping_sameNameDistinctHubsPerFactSheet() {
+        // The hub externalId encodes the factSheetId: "fs1.<bucketKey>" vs "fs2.<bucketKey>".
+        // Same bucket-key value under two different factSheetIds must produce TWO DISTINCT hubs,
+        // never a cross-factSheet node clash.
+        GraphNode n1 = entityNode("n1", "Alice Smith", "PERSON", "doc1.pdf");
+        GraphNode n2 = entityNode("n2", "Alice Smith", "PERSON", "doc2.pdf");
+        GraphNode n3 = entityNode("n3", "Alice Smith", "PERSON", "doc3.pdf");
+        GraphNode n4 = entityNode("n4", "Alice Smith", "PERSON", "doc4.pdf");
+        GraphNode hub1 = aliasHubNode("hub-fs1");
+        GraphNode hub2 = aliasHubNode("hub-fs2");
+
+        // factSheet 1 setup
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(1L, NodeLevel.ENTITY))
+                .thenReturn(List.of(n1, n2));
+        when(knowledgeGraphService.getNodeByExternalIdInFactSheet(
+                contains("fs1."), eq(NodeLevel.ALIAS), eq(1L)))
+                .thenReturn(Optional.empty());
+        when(knowledgeGraphService.createNode(
+                eq(NodeLevel.ALIAS), contains("fs1."), anyString(), anyString(), any(), eq(1L)))
+                .thenReturn(hub1);
+
+        // factSheet 2 setup
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(2L, NodeLevel.ENTITY))
+                .thenReturn(List.of(n3, n4));
+        when(knowledgeGraphService.getNodeByExternalIdInFactSheet(
+                contains("fs2."), eq(NodeLevel.ALIAS), eq(2L)))
+                .thenReturn(Optional.empty());
+        when(knowledgeGraphService.createNode(
+                eq(NodeLevel.ALIAS), contains("fs2."), anyString(), anyString(), any(), eq(2L)))
+                .thenReturn(hub2);
+
+        when(knowledgeGraphService.createEdgesBatch(anyList())).thenReturn(2);
+
+        service.computeNameBasedCrossDocEdges(1L);
+        service.computeNameBasedCrossDocEdges(2L);
+
+        // Each factSheet must have produced its own distinct hub node.
+        ArgumentCaptor<String> extIdCaptor = ArgumentCaptor.forClass(String.class);
+        verify(knowledgeGraphService, times(2))
+                .createNode(eq(NodeLevel.ALIAS), extIdCaptor.capture(),
+                        anyString(), anyString(), any(), any());
+
+        List<String> capturedIds = extIdCaptor.getAllValues();
+        assertTrue(capturedIds.stream().anyMatch(id -> id.startsWith("fs1.")),
+                "factSheet 1 hub must have externalId starting with 'fs1.'");
+        assertTrue(capturedIds.stream().anyMatch(id -> id.startsWith("fs2.")),
+                "factSheet 2 hub must have externalId starting with 'fs2.'");
+        assertNotEquals(capturedIds.get(0), capturedIds.get(1),
+                "Different factSheetIds must produce distinct hub externalIds (no cross-factSheet clash)");
+    }
+
+    @Test
+    void nameBasedCrossDoc_bucketCap_1001MembersCappedAt1000Edges() {
+        // HUB_MAX_BUCKET_SIZE = 1000: a bucket with 1001 members must emit exactly 1000 ALIAS_OF
+        // edges (the first 1000 processed) and silently skip the 1001st, bounding memory.
+        // Each of the 1001 nodes comes from a different source doc (all cross-doc).
+        java.util.List<GraphNode> members = new java.util.ArrayList<>(1001);
+        for (int i = 0; i < 1001; i++) {
+            members.add(entityNode("n" + i, "CommonName", "CONCEPT", "doc" + i + ".pdf"));
+        }
+
+        GraphNode hub = aliasHubNode("fs99.commonname|concept");
+
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(99L, NodeLevel.ENTITY))
+                .thenReturn(members);
+        when(knowledgeGraphService.getNodeByExternalIdInFactSheet(
+                anyString(), eq(NodeLevel.ALIAS), eq(99L)))
+                .thenReturn(Optional.empty());
+        when(knowledgeGraphService.createNode(
+                eq(NodeLevel.ALIAS), anyString(), anyString(), anyString(), any(), eq(99L)))
+                .thenReturn(hub);
+        // createEdgesBatch is called in EDGE_BATCH_CHUNK=500 slices; stub to return batch size.
+        when(knowledgeGraphService.createEdgesBatch(anyList()))
+                .thenAnswer(inv -> ((java.util.List<?>) inv.getArgument(0)).size());
+
+        service.computeNameBasedCrossDocEdges(99L);
+
+        // Collect all EdgeSpec lists passed to createEdgesBatch across all batch calls.
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<java.util.List<KnowledgeGraphService.EdgeSpec>> captor =
+                ArgumentCaptor.forClass(java.util.List.class);
+        verify(knowledgeGraphService, atLeastOnce()).createEdgesBatch(captor.capture());
+
+        int totalEdges = captor.getAllValues().stream().mapToInt(java.util.List::size).sum();
+        assertEquals(1000, totalEdges,
+                "A bucket with 1001 members must be capped at exactly 1000 ALIAS_OF edges "
+                        + "(HUB_MAX_BUCKET_SIZE); got " + totalEdges);
     }
 }

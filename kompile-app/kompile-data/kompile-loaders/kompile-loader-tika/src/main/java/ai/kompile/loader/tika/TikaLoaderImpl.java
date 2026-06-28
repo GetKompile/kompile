@@ -518,6 +518,12 @@ public class TikaLoaderImpl implements DocumentLoader {
         for (int i = 1; i < rows.size(); i++) {
             builder.addRow(rows.get(i));
         }
+        // Populate full_table_content so ContentTypeRouter can use it for richer embeddings
+        // and promoteTableToGraphNode can reconstruct a minimal markdown if the cell graph is absent.
+        String fullTableContent = TableCellGraphBuilder.toMarkdown(rows, true);
+        if (!fullTableContent.isEmpty()) {
+            meta.put("full_table_content", fullTableContent);
+        }
         var graph = builder.build();
         if (!graph.getEntities().isEmpty()) {
             meta.put(GraphConstants.META_TABLE_GRAPH, TableCellGraphBuilder.toJson(graph));
