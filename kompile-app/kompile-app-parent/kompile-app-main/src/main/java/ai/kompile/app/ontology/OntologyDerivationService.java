@@ -22,6 +22,7 @@ import ai.kompile.app.web.dto.ontology.OntologyCandidatesResponse;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.core.graphrag.agent.ExtractionLlmService;
 import ai.kompile.core.graphrag.agent.ExtractionLlmServiceRegistry;
+import ai.kompile.core.graphrag.typing.GraphNodeTypes;
 import ai.kompile.core.llm.chat.LLMChat;
 import ai.kompile.knowledgegraph.service.FactSheetGraphService;
 import ai.kompile.process.ontology.Cardinality;
@@ -43,6 +44,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -94,6 +96,8 @@ public class OntologyDerivationService {
                 {
                   "name": "PascalCaseTypeName",
                   "description": "string",
+                  "aliases": ["original crawl labels, abbreviations, translated labels, spelling variants"],
+                  "localizedLabels": {"BCP-47 language tag": "native label"},
                   "classification": "one of REFERENCE | TRANSACTIONAL | PATTERN | CONTROL | METRIC | ACTOR",
                   "parentType": "PascalCase name of the broader type this one is-a (subClassOf), or null",
                   "confidence": 0.0,
@@ -141,7 +145,10 @@ public class OntologyDerivationService {
 
             Hard requirements:
             - Ground every entity type in the supplied concepts/labels; do not invent unrelated domains.
-            - Use concise PascalCase entity names and camelCase field names.
+            - Use concise PascalCase entity names and camelCase field names where the source text is
+              Latin-script. Preserve non-Latin type names when no faithful Latin-script canonical name
+              is present.
+            - Preserve source-language labels as aliases/localizedLabels; do not translate away evidence.
             - Give every entity type exactly one field with "primaryKey": true.
             - Use only the enum values listed above, spelled exactly (UPPERCASE).
             - Emit "relationshipTypes" and rules only when the user asks for them.
@@ -379,7 +386,9 @@ public class OntologyDerivationService {
                                             boolean includeRelationships) {
         List<String> names = !seeds.isEmpty()
                 ? seeds
-                : ctx.concepts.stream().map(ConceptStat::name).collect(Collectors.toList());
+                : structuralEntityTypeNames(ctx);
+        Map<String, String> parentByType = structuralParentByType(ctx);
+        Map<String, Double> confidenceByType = structuralConfidenceByType(ctx);
 
         List<EntityTypeDefinition> entityTypes = names.stream()
                 .map(OntologyDerivationService::toPascalCase)
@@ -389,8 +398,10 @@ public class OntologyDerivationService {
                 .map(name -> EntityTypeDefinition.builder()
                         .name(name)
                         .description("Derived from crawl graph concept '" + name + "'.")
+                        .aliases(structuralAliasesFor(name, ctx))
                         .classification(guessClassification(name))
-                        .confidence(0.4)
+                        .parentType(parentByType.get(name))
+                        .confidence(confidenceByType.getOrDefault(name, 0.4d))
                         .fields(List.of(
                                 FieldDefinition.builder().name("id").type(FieldType.STRING)
                                         .primaryKey(true).required(true).description("Unique identifier.").build(),
@@ -451,6 +462,68 @@ public class OntologyDerivationService {
         if (type == null || type.isBlank()) return false;
         String u = type.toUpperCase().replace('-', '_');
         return TRANSITIVE_NAME_HINTS.stream().anyMatch(u::contains);
+    }
+
+    private static List<String> structuralEntityTypeNames(GraphContext ctx) {
+        LinkedHashSet<String> names = new LinkedHashSet<>();
+        names.addAll(ctx.typeMentions.keySet());
+        ctx.typeHierarchy.forEach((child, parent) -> {
+            names.add(child);
+            names.add(parent);
+        });
+        ctx.concepts.stream().map(ConceptStat::name).forEach(names::add);
+        return new ArrayList<>(names);
+    }
+
+    private static Map<String, String> structuralParentByType(GraphContext ctx) {
+        Map<String, String> parentByType = new LinkedHashMap<>();
+        ctx.typeHierarchy.forEach((child, parent) -> {
+            String childName = toPascalCase(child);
+            String parentName = toPascalCase(parent);
+            if (!childName.isBlank() && !parentName.isBlank() && !childName.equalsIgnoreCase(parentName)) {
+                parentByType.putIfAbsent(childName, parentName);
+            }
+        });
+        return parentByType;
+    }
+
+    private static Map<String, Double> structuralConfidenceByType(GraphContext ctx) {
+        Map<String, Double> confidenceByType = new LinkedHashMap<>();
+        double denominator = Math.max(1.0d, ctx.entityCount);
+        ctx.typeMentions.forEach((rawType, mentions) -> {
+            String typeName = toPascalCase(rawType);
+            if (typeName.isBlank()) {
+                return;
+            }
+            double support = Math.max(0.0d, mentions == null ? 0.0d : mentions.doubleValue()) / denominator;
+            confidenceByType.put(typeName, Math.min(0.95d, Math.max(0.55d, 0.55d + support * 0.4d)));
+        });
+        ctx.typeHierarchy.forEach((child, parent) -> {
+            confidenceByType.putIfAbsent(toPascalCase(child), 0.55d);
+            confidenceByType.putIfAbsent(toPascalCase(parent), 0.55d);
+        });
+        return confidenceByType;
+    }
+
+    private static List<String> structuralAliasesFor(String canonicalName, GraphContext ctx) {
+        if (canonicalName == null || canonicalName.isBlank() || ctx == null || ctx.typeMentions == null) {
+            return null;
+        }
+        LinkedHashSet<String> aliases = new LinkedHashSet<>();
+        ctx.typeMentions.keySet().forEach(raw -> {
+            if (canonicalName.equals(toPascalCase(raw)) && !canonicalName.equals(raw)) {
+                aliases.add(raw);
+            }
+        });
+        ctx.typeHierarchy.forEach((child, parent) -> {
+            if (canonicalName.equals(toPascalCase(child)) && !canonicalName.equals(child)) {
+                aliases.add(child);
+            }
+            if (canonicalName.equals(toPascalCase(parent)) && !canonicalName.equals(parent)) {
+                aliases.add(parent);
+            }
+        });
+        return aliases.isEmpty() ? null : new ArrayList<>(aliases);
     }
 
     // ─────────────────────────────────────────────────────────────────────────────
@@ -569,6 +642,8 @@ public class OntologyDerivationService {
 
         List<String> entityLabels = new ArrayList<>();
         List<String> exampleLinks = new ArrayList<>();
+        Map<String, Long> typeMentions = new LinkedHashMap<>();
+        Map<String, String> typeHierarchy = new LinkedHashMap<>();
         try {
             FactSheetGraphService.GraphVisualizationData viz =
                     graphService.getVisualizationData(factSheetId, 150, 80);
@@ -584,6 +659,13 @@ public class OntologyDerivationService {
                             && !label.isBlank() && entityLabels.size() < MAX_ENTITY_LABELS_IN_PROMPT
                             && !entityLabels.contains(label)) {
                         entityLabels.add(label);
+                    }
+                    Map<String, Object> metadata = stringMap(node.get("metadata"));
+                    for (String typeName : GraphNodeTypes.resolveTypeMemberships(metadata)) {
+                        typeMentions.merge(typeName, 1L, Long::sum);
+                    }
+                    for (GraphNodeTypes.TypeHierarchyEdge hierarchy : GraphNodeTypes.resolveTypeHierarchy(metadata)) {
+                        typeHierarchy.putIfAbsent(hierarchy.type(), hierarchy.parentType());
                     }
                 }
                 for (Map<String, Object> edge : nonNull(viz.edges())) {
@@ -614,7 +696,7 @@ public class OntologyDerivationService {
                 asLong(stats.get("distinctConcepts")),
                 asLong(stats.get("totalNodes")),
                 asLong(stats.get("totalEdges")),
-                concepts, entityLabels, edgesByType, exampleLinks);
+                concepts, entityLabels, typeMentions, typeHierarchy, edgesByType, exampleLinks);
     }
 
     private List<OntologyCandidatesResponse.RelationshipHint> buildRelationshipHints(
@@ -715,22 +797,21 @@ public class OntologyDerivationService {
         if (raw == null || raw.isBlank()) {
             return "";
         }
-        String[] tokens = raw.trim().split("[^A-Za-z0-9]+");
+        String[] tokens = raw.trim().split("[^\\p{L}\\p{N}]+");
         StringBuilder sb = new StringBuilder();
         for (String token : tokens) {
             if (token.isBlank()) {
                 continue;
             }
-            sb.append(Character.toUpperCase(token.charAt(0)));
-            if (token.length() > 1) {
-                sb.append(token.substring(1));
-            }
+            int first = token.codePointAt(0);
+            sb.appendCodePoint(Character.toTitleCase(first));
+            sb.append(token.substring(Character.charCount(first)));
         }
         String result = sb.toString();
         if (result.isEmpty()) {
             return "";
         }
-        if (!Character.isLetter(result.charAt(0))) {
+        if (!Character.isLetter(result.codePointAt(0))) {
             result = "Entity" + result;
         }
         return result;
@@ -800,6 +881,19 @@ public class OntologyDerivationService {
         return value == null ? "" : value.toString().trim();
     }
 
+    private static Map<String, Object> stringMap(Object raw) {
+        if (!(raw instanceof Map<?, ?> map)) {
+            return Map.of();
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : map.entrySet()) {
+            if (entry.getKey() != null && entry.getValue() != null) {
+                result.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+        }
+        return result;
+    }
+
     // ─────────────────────────────────────────────────────────────────────────────
     // Internal value types
     // ─────────────────────────────────────────────────────────────────────────────
@@ -815,6 +909,8 @@ public class OntologyDerivationService {
             long totalEdges,
             List<ConceptStat> concepts,
             List<String> entityLabels,
+            Map<String, Long> typeMentions,
+            Map<String, String> typeHierarchy,
             Map<String, Long> edgesByType,
             List<String> exampleLinks) {
     }

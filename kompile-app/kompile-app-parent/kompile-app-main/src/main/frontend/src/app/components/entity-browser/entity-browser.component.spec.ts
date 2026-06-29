@@ -21,12 +21,14 @@ import { of } from 'rxjs';
 
 import { EntityBrowserComponent } from './entity-browser.component';
 import { GraphService } from '../../services/graph.service';
+import { GraphOntologyService } from '../../services/graph-ontology.service';
 import { GraphNode } from '../../models/graph-models';
 
 describe('EntityBrowserComponent', () => {
   let component: EntityBrowserComponent;
   let fixture: ComponentFixture<EntityBrowserComponent>;
   let graphServiceSpy: jasmine.SpyObj<GraphService>;
+  let ontologyServiceSpy: jasmine.SpyObj<GraphOntologyService>;
 
   // Helper to create a minimal valid GraphNode for testing
   function makeNode(overrides: Partial<GraphNode> & { nodeId: string; title: string }): GraphNode {
@@ -70,6 +72,7 @@ describe('EntityBrowserComponent', () => {
       'getNodes', 'getEdges', 'getAllEdges', 'getStatistics',
       'deleteNode', 'deleteEdge', 'getConnectedNodes', 'getNode'
     ]);
+    ontologyServiceSpy = jasmine.createSpyObj('GraphOntologyService', ['classify']);
 
     graphServiceSpy.getNodes.and.returnValue(of(mockEntities));
     graphServiceSpy.getStatistics.and.returnValue(of(mockStatistics));
@@ -80,6 +83,17 @@ describe('EntityBrowserComponent', () => {
       const node = mockEntities.find(e => e.nodeId === nodeId);
       return of(node || mockEntities[0]);
     });
+    ontologyServiceSpy.classify.and.returnValue(of({
+      factSheetId: 1,
+      ontologyBound: true,
+      ontologyName: 'crawl-derived',
+      inferredTypeCount: 2,
+      inferredRelationCount: 0,
+      entitiesClassified: 2,
+      edgesMaterialized: 0,
+      consistent: true,
+      reasonerActive: true
+    }));
 
     await TestBed.configureTestingModule({
       imports: [
@@ -88,7 +102,8 @@ describe('EntityBrowserComponent', () => {
       ],
       providers: [
         provideNoopAnimations(),
-        { provide: GraphService, useValue: graphServiceSpy }
+        { provide: GraphService, useValue: graphServiceSpy },
+        { provide: GraphOntologyService, useValue: ontologyServiceSpy }
       ]
     }).compileComponents();
 
@@ -131,13 +146,39 @@ describe('EntityBrowserComponent', () => {
       expect(component.allEdgeTypes).toContain('CROSS_SOURCE');
     });
 
-    it('should have 5 node types total', () => {
-      expect(component.allNodeTypes.length).toBe(5);
+    it('should have 7 node types total', () => {
+      expect(component.allNodeTypes.length).toBe(7);
     });
 
     it('should have 7 edge types total', () => {
       expect(component.allEdgeTypes.length).toBe(7);
     });
+  });
+
+  describe('schema enrichment', () => {
+    it('does not run without a fact sheet', () => {
+      component.factSheetId = null;
+
+      component.generateSchemaAndTypes();
+
+      expect(ontologyServiceSpy.classify).not.toHaveBeenCalled();
+    });
+
+    it('runs classification and refreshes entity data', fakeAsync(() => {
+      component.factSheetId = 9;
+      fixture.detectChanges();
+      tick();
+      graphServiceSpy.getNodes.calls.reset();
+      graphServiceSpy.getStatistics.calls.reset();
+
+      component.generateSchemaAndTypes();
+      tick();
+
+      expect(ontologyServiceSpy.classify).toHaveBeenCalledWith(9);
+      expect(graphServiceSpy.getNodes).toHaveBeenCalled();
+      expect(graphServiceSpy.getStatistics).toHaveBeenCalled();
+      expect(component.schemaEnriching).toBeFalse();
+    }));
   });
 
   // ═══════════════════════════════════════════════════════════════════════════

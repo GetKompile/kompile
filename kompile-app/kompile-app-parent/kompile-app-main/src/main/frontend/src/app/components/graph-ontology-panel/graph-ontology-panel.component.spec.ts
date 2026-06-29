@@ -14,7 +14,7 @@ import { NoopAnimationsModule } from '@angular/platform-browser/animations';
 import { of, throwError } from 'rxjs';
 
 import { GraphOntologyPanelComponent } from './graph-ontology-panel.component';
-import { GraphOntologyService, GraphConformanceReport } from '../../services/graph-ontology.service';
+import { GraphOntologyService, GraphConformanceReport, OwlReasoningStatus } from '../../services/graph-ontology.service';
 import { ProcessEngineService, OntologySchema } from '../../services/process-engine.service';
 import { MatSnackBar } from '@angular/material/snack-bar';
 
@@ -51,6 +51,22 @@ function makeOntology(overrides: Partial<OntologySchema> = {}): OntologySchema {
   };
 }
 
+function makeOwlStatus(overrides: Partial<OwlReasoningStatus> = {}): OwlReasoningStatus {
+  return {
+    factSheetId: 1,
+    ontologyBound: true,
+    ontologyName: 'Test Ontology',
+    classCount: 2,
+    objectPropertyCount: 1,
+    dataPropertyCount: 0,
+    axiomCount: 3,
+    entailmentsMaterialized: 1,
+    consistent: true,
+    reasonerActive: true,
+    ...overrides,
+  };
+}
+
 // ─── Test suite ───────────────────────────────────────────────────────────────
 
 describe('GraphOntologyPanelComponent', () => {
@@ -62,12 +78,43 @@ describe('GraphOntologyPanelComponent', () => {
   let snackBarSpy: jasmine.SpyObj<MatSnackBar>;
 
   beforeEach(async () => {
-    ontologyServiceSpy = jasmine.createSpyObj('GraphOntologyService', ['conformance', 'bind', 'unbind']);
+    ontologyServiceSpy = jasmine.createSpyObj('GraphOntologyService', [
+      'conformance', 'bind', 'unbind', 'owl', 'classify', 'classifyOwlOnly', 'induceTypes'
+    ]);
     processEngineSpy   = jasmine.createSpyObj('ProcessEngineService', ['listOntologies', 'deriveOntology']);
     snackBarSpy        = jasmine.createSpyObj('MatSnackBar', ['open']);
 
     // Default happy-path returns
     ontologyServiceSpy.conformance.and.returnValue(of(makeReport()));
+    ontologyServiceSpy.owl.and.returnValue(of(makeOwlStatus()));
+    ontologyServiceSpy.classify.and.returnValue(of({
+      factSheetId: 1,
+      ontologyBound: true,
+      ontologyName: 'Test Ontology',
+      inferredTypeCount: 2,
+      inferredRelationCount: 1,
+      entitiesClassified: 2,
+      edgesMaterialized: 1,
+      consistent: true,
+      reasonerActive: true,
+    }));
+    ontologyServiceSpy.classifyOwlOnly.and.returnValue(of({
+      factSheetId: 1,
+      ontologyBound: true,
+      ontologyName: 'Test Ontology',
+      inferredTypeCount: 2,
+      inferredRelationCount: 1,
+      entitiesClassified: 2,
+      edgesMaterialized: 1,
+      consistent: true,
+      reasonerActive: true,
+    }));
+    ontologyServiceSpy.induceTypes.and.returnValue(of({
+      changed: false,
+      aliasesAdded: 0,
+      typesAdded: 0,
+      version: 1,
+    }));
     processEngineSpy.listOntologies.and.returnValue(of([]));
 
     await TestBed.configureTestingModule({
@@ -230,6 +277,103 @@ describe('GraphOntologyPanelComponent', () => {
 
       const req = processEngineSpy.deriveOntology.calls.mostRecent().args[0];
       expect(req.includeRelationships).toBeTrue();
+    }));
+  });
+
+  describe('schema generation', () => {
+    it('calls classify endpoint and refreshes conformance + OWL status', fakeAsync(() => {
+      component.factSheetId = 3;
+      ontologyServiceSpy.conformance.calls.reset();
+      ontologyServiceSpy.owl.calls.reset();
+
+      component.classify();
+      tick();
+
+      expect(ontologyServiceSpy.classify).toHaveBeenCalledWith(3);
+      expect(ontologyServiceSpy.conformance).toHaveBeenCalledWith(3);
+      expect(ontologyServiceSpy.owl).toHaveBeenCalledWith(3);
+      expect(component.classifying).toBeFalse();
+    }));
+
+    it('runs OWL-only classification without LLM type induction', fakeAsync(() => {
+      component.factSheetId = 3;
+      ontologyServiceSpy.conformance.calls.reset();
+      ontologyServiceSpy.owl.calls.reset();
+
+      component.runOwlOnly();
+      tick();
+
+      expect(ontologyServiceSpy.classifyOwlOnly).toHaveBeenCalledWith(3);
+      expect(ontologyServiceSpy.induceTypes).not.toHaveBeenCalled();
+      expect(ontologyServiceSpy.conformance).toHaveBeenCalledWith(3);
+      expect(ontologyServiceSpy.owl).toHaveBeenCalledWith(3);
+      expect(component.owlClassifying).toBeFalse();
+    }));
+
+    it('runs LLM schema update after OWL and re-runs OWL when schema changed', fakeAsync(() => {
+      component.factSheetId = 3;
+      ontologyServiceSpy.classifyOwlOnly.calls.reset();
+      ontologyServiceSpy.classifyOwlOnly.and.returnValues(
+        of({
+          factSheetId: 3,
+          ontologyBound: true,
+          ontologyName: 'Test Ontology',
+          inferredTypeCount: 1,
+          inferredRelationCount: 0,
+          entitiesClassified: 1,
+          edgesMaterialized: 0,
+          consistent: true,
+          reasonerActive: true,
+        }),
+        of({
+          factSheetId: 3,
+          ontologyBound: true,
+          ontologyName: 'Test Ontology',
+          inferredTypeCount: 2,
+          inferredRelationCount: 1,
+          entitiesClassified: 2,
+          edgesMaterialized: 1,
+          consistent: true,
+          reasonerActive: true,
+        })
+      );
+      ontologyServiceSpy.induceTypes.and.returnValue(of({
+        changed: true,
+        aliasesAdded: 2,
+        typesAdded: 1,
+        version: 2,
+      }));
+
+      component.induceTypes();
+      tick();
+
+      expect(ontologyServiceSpy.classifyOwlOnly).toHaveBeenCalledTimes(2);
+      expect(ontologyServiceSpy.induceTypes).toHaveBeenCalledWith(3);
+      expect(component.inducingTypes).toBeFalse();
+    }));
+
+    it('does not run LLM type induction when preliminary OWL has no ontology', fakeAsync(() => {
+      component.factSheetId = 3;
+      ontologyServiceSpy.classifyOwlOnly.calls.reset();
+      ontologyServiceSpy.induceTypes.calls.reset();
+      ontologyServiceSpy.classifyOwlOnly.and.returnValue(of({
+        factSheetId: 3,
+        ontologyBound: false,
+        ontologyName: null,
+        inferredTypeCount: 0,
+        inferredRelationCount: 0,
+        entitiesClassified: 0,
+        edgesMaterialized: 0,
+        consistent: true,
+        reasonerActive: false,
+      }));
+
+      component.induceTypes();
+      tick();
+
+      expect(ontologyServiceSpy.classifyOwlOnly).toHaveBeenCalledTimes(1);
+      expect(ontologyServiceSpy.induceTypes).not.toHaveBeenCalled();
+      expect(component.inducingTypes).toBeFalse();
     }));
   });
 });

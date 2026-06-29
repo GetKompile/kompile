@@ -29,9 +29,9 @@ import org.slf4j.LoggerFactory;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -52,12 +52,10 @@ import java.util.UUID;
  *   <li><b>FOL rule compilation (all other RL rules)</b>: {@link OwlRlRuleCompiler} translates
  *       the TBox axioms into {@link ai.kompile.graph.reasoning.fol.FolRule}s, which are run
  *       through {@link FolInferenceService#inferFacts(ReasoningGraph, FolRuleSet)}.
- *       The resulting {@link InferredFact}s are mapped to {@link OwlRlResult} fields:
- *       <ul>
- *         <li>{@code Type_*(n)} atoms with value ≥ 0.5 → {@link OwlRlResult#inferredTypes()}</li>
- *         <li>{@code Cons_cax_dw_*} atoms whose antecedent fired but consequent = 0 →
- *             {@link OwlRlResult#inconsistencies()}</li>
- *       </ul>
+ *       The resulting {@link InferredFact}s are mapped best-effort, while crisp OWL-RL type
+ *       memberships ({@code cax-sco}, {@code prp-dom}, {@code prp-rng}, and {@code cls-oo})
+ *       are materialised directly from the ABox/TBox so result extraction does not depend on
+ *       PSL constant decoding.
  *   </li>
  * </ol>
  *
@@ -127,20 +125,21 @@ public final class OwlRlReasoner implements OwlReasoner {
         log.debug("FolInferenceService emitted {} inferred facts", facts.size());
 
         // ── Step 4: map InferredFacts → result components ────────────────────────
-        Map<String, String> inferredTypes      = new LinkedHashMap<>();
+        Map<String, List<String>> inferredTypes = new LinkedHashMap<>();
         List<OwlInconsistency> inconsistencies = new ArrayList<>();
 
         mapFacts(facts, ontology, inferredTypes, inconsistencies);
+        mergeInferredTypes(inferredTypes, computeTypeEntailments(workingGraph, ontology));
 
         // Also scan for cax-dw violations using a direct KB-level check:
         // The FOL engine's grounding may not always surface violated falsehood consequents
         // as Type_ atoms, so we run an independent disjointness scan here.
-        detectDisjointViolations(graph, ontology, inconsistencies);
+        detectDisjointViolations(graph, ontology, inferredTypes, inconsistencies);
 
         log.info("OWL RL result: {} transitive edges, {} inferred types, {} inconsistencies",
-                transitiveRelations.size(), inferredTypes.size(), inconsistencies.size());
+                transitiveRelations.size(), inferredTypeCount(inferredTypes), inconsistencies.size());
 
-        return OwlRlResult.of(transitiveRelations, inferredTypes, inconsistencies);
+        return OwlRlResult.ofMultiTypes(transitiveRelations, inferredTypes, inconsistencies);
     }
 
     // ─── BFS transitive closure ───────────────────────────────────────────────────
@@ -257,7 +256,7 @@ public final class OwlRlReasoner implements OwlReasoner {
      *
      * <h3>Atom key patterns</h3>
      * <ul>
-     *   <li>{@code Type_TYPENAME(nX)} with value ≥ 0.5 → {@link OwlRlResult#inferredTypes()}
+     *   <li>{@code Type_TYPENAME(nX)} with value ≥ 0.5 → {@link OwlRlResult#inferredTypeCandidates()}
      *       (entityId → class local name)</li>
      *   <li>{@code Cons_cax_dw_*(nX,nY)} with value &lt; 0.5 → the consequent of a
      *       disjointness rule failed, but the antecedent was true → inconsistency.
@@ -265,13 +264,12 @@ public final class OwlRlReasoner implements OwlReasoner {
      *       so we cross-check with {@link #detectDisjointViolations} instead.</li>
      * </ul>
      *
-     * <p>The {@link FolInferenceService} emits {@code Type_TYPENAME(constant)} atoms
-     * (added by {@code addTypeAtoms} in the service) with value 1.0 for observed types.
-     * Rules that drive new type memberships increase the soft-truth of those atoms.
-     * We accept atoms with value ≥ 0.5 as confirmed inferred types.</p>
+     * <p>This mapper remains a best-effort compatibility path for any future FOL output that
+     * exposes {@code Type_*} targets. The authoritative OWL-RL type memberships are produced by
+     * {@link #computeTypeEntailments(ReasoningGraph, OwlOntology)}.</p>
      */
     private void mapFacts(List<InferredFact> facts, OwlOntology ontology,
-                           Map<String, String> inferredTypes,
+                           Map<String, List<String>> inferredTypes,
                            List<OwlInconsistency> inconsistencies) {
         for (InferredFact fact : facts) {
             String key = fact.atomKey();
@@ -293,11 +291,203 @@ public final class OwlRlReasoner implements OwlReasoner {
                     if (entityId != null && !typeName.startsWith("_fp_") && !typeName.startsWith("_ifp_")) {
                         // Resolve to class IRI if possible
                         String classIri = resolveClassIri(typeName, ontology);
-                        inferredTypes.putIfAbsent(entityId, classIri);
+                        addInferredType(inferredTypes, entityId, classIri);
                     }
                 }
             }
         }
+    }
+
+    private static void addInferredType(Map<String, List<String>> inferredTypes,
+                                        String entityId,
+                                        String classIri) {
+        if (entityId == null || classIri == null) return;
+        List<String> entityTypes = inferredTypes.computeIfAbsent(entityId, ignored -> new ArrayList<>());
+        if (!entityTypes.contains(classIri)) {
+            entityTypes.add(classIri);
+        }
+    }
+
+    private static int inferredTypeCount(Map<String, List<String>> inferredTypes) {
+        return inferredTypes.values().stream().mapToInt(List::size).sum();
+    }
+
+    /**
+     * Compute crisp OWL-RL ABox type entailments directly from the graph and ontology.
+     *
+     * <p>The FOL/PSL path is still useful for shared rule infrastructure, but inferred
+     * {@code Type_*} atoms are difficult to map back to entity ids because the PSL builder
+     * uses generated constants. OWL-RL type propagation is deterministic, so we materialise it
+     * here from asserted entity memberships plus ontology class/property closure.</p>
+     */
+    private Map<String, List<String>> computeTypeEntailments(ReasoningGraph graph, OwlOntology ontology) {
+        Map<String, Set<String>> assertedTypes = new LinkedHashMap<>();
+        Map<String, Set<String>> candidateTypes = new LinkedHashMap<>();
+
+        for (var entity : graph.entities()) {
+            Set<String> asserted = new LinkedHashSet<>();
+            for (String membership : entity.typeMemberships()) {
+                String classIri = resolveClassIri(membership, ontology);
+                if (classIri != null && !classIri.isBlank()) {
+                    asserted.add(classIri);
+                }
+            }
+            assertedTypes.put(entity.id(), asserted);
+            candidateTypes.put(entity.id(), new LinkedHashSet<>(asserted));
+        }
+
+        addDomainRangeTypeEntailments(graph, ontology, candidateTypes);
+
+        Map<String, List<String>> inferred = new LinkedHashMap<>();
+        for (Map.Entry<String, Set<String>> entry : candidateTypes.entrySet()) {
+            String entityId = entry.getKey();
+            Set<String> asserted = assertedTypes.getOrDefault(entityId, Set.of());
+            Set<String> closure = closeClassTypes(entry.getValue(), ontology);
+            for (String classIri : closure) {
+                if (!asserted.contains(classIri)) {
+                    addInferredType(inferred, entityId, classIri);
+                }
+            }
+        }
+        return inferred;
+    }
+
+    private void addDomainRangeTypeEntailments(ReasoningGraph graph,
+                                               OwlOntology ontology,
+                                               Map<String, Set<String>> candidateTypes) {
+        for (GraphRelation rel : graph.relations()) {
+            for (OwlObjectProperty prop : entailedProperties(rel.type(), ontology)) {
+                if (prop.domainClassIri() != null) {
+                    addCandidateType(candidateTypes, rel.sourceId(),
+                            resolveClassIri(prop.domainClassIri(), ontology));
+                }
+                if (prop.rangeClassIri() != null) {
+                    addCandidateType(candidateTypes, rel.targetId(),
+                            resolveClassIri(prop.rangeClassIri(), ontology));
+                }
+            }
+        }
+    }
+
+    private Set<String> closeClassTypes(Set<String> seedTypes, OwlOntology ontology) {
+        Map<String, Set<String>> edges = classEntailmentEdges(ontology);
+        Set<String> closure = new LinkedHashSet<>();
+        Deque<String> queue = new ArrayDeque<>();
+        for (String seed : seedTypes) {
+            String classIri = resolveClassIri(seed, ontology);
+            if (classIri != null && closure.add(classIri)) {
+                queue.add(classIri);
+            }
+        }
+
+        while (!queue.isEmpty()) {
+            String current = queue.poll();
+            for (String next : edges.getOrDefault(current, Set.of())) {
+                String nextIri = resolveClassIri(next, ontology);
+                if (nextIri != null && closure.add(nextIri)) {
+                    queue.add(nextIri);
+                }
+            }
+        }
+        return closure;
+    }
+
+    private Map<String, Set<String>> classEntailmentEdges(OwlOntology ontology) {
+        Map<String, Set<String>> edges = new LinkedHashMap<>();
+        for (OwlClass owlClass : ontology.classes().values()) {
+            String classIri = owlClass.classIri();
+            for (String superClassIri : owlClass.subClassOfIris()) {
+                addEntailmentEdge(edges, classIri, resolveClassIri(superClassIri, ontology));
+            }
+            for (String equivalentClassIri : owlClass.equivalentClassIris()) {
+                String equivalent = resolveClassIri(equivalentClassIri, ontology);
+                addEntailmentEdge(edges, classIri, equivalent);
+                addEntailmentEdge(edges, equivalent, classIri);
+            }
+        }
+        return edges;
+    }
+
+    private Set<OwlObjectProperty> entailedProperties(String relationType, OwlOntology ontology) {
+        Set<String> seeds = new LinkedHashSet<>();
+        for (OwlObjectProperty prop : ontology.objectProperties().values()) {
+            if (matchesProperty(relationType, prop)) {
+                seeds.add(prop.propertyIri());
+            }
+        }
+        if (seeds.isEmpty()) {
+            return Set.of();
+        }
+
+        Map<String, Set<String>> edges = propertyEntailmentEdges(ontology);
+        Set<String> closure = new LinkedHashSet<>();
+        Deque<String> queue = new ArrayDeque<>(seeds);
+        while (!queue.isEmpty()) {
+            String current = queue.poll();
+            if (!closure.add(current)) {
+                continue;
+            }
+            for (String next : edges.getOrDefault(current, Set.of())) {
+                if (!closure.contains(next)) {
+                    queue.add(next);
+                }
+            }
+        }
+
+        Set<OwlObjectProperty> properties = new LinkedHashSet<>();
+        for (String propertyIri : closure) {
+            OwlObjectProperty prop = ontology.objectProperties().get(propertyIri);
+            if (prop != null) {
+                properties.add(prop);
+            }
+        }
+        return properties;
+    }
+
+    private Map<String, Set<String>> propertyEntailmentEdges(OwlOntology ontology) {
+        Map<String, Set<String>> edges = new LinkedHashMap<>();
+        for (OwlObjectProperty prop : ontology.objectProperties().values()) {
+            String propertyIri = prop.propertyIri();
+            for (String superPropertyIri : prop.subPropertyOfIris()) {
+                addEntailmentEdge(edges, propertyIri, superPropertyIri);
+            }
+            for (String equivalentPropertyIri : prop.equivalentPropertyIris()) {
+                addEntailmentEdge(edges, propertyIri, equivalentPropertyIri);
+                addEntailmentEdge(edges, equivalentPropertyIri, propertyIri);
+            }
+        }
+        return edges;
+    }
+
+    private static void mergeInferredTypes(Map<String, List<String>> target,
+                                           Map<String, List<String>> source) {
+        for (Map.Entry<String, List<String>> entry : source.entrySet()) {
+            for (String classIri : entry.getValue()) {
+                addInferredType(target, entry.getKey(), classIri);
+            }
+        }
+    }
+
+    private static void addCandidateType(Map<String, Set<String>> candidateTypes,
+                                         String entityId,
+                                         String classIri) {
+        if (entityId == null || classIri == null || classIri.isBlank()) return;
+        candidateTypes.computeIfAbsent(entityId, ignored -> new LinkedHashSet<>()).add(classIri);
+    }
+
+    private static void addEntailmentEdge(Map<String, Set<String>> edges,
+                                          String from,
+                                          String to) {
+        if (from == null || from.isBlank() || to == null || to.isBlank()) return;
+        edges.computeIfAbsent(from, ignored -> new LinkedHashSet<>()).add(to);
+    }
+
+    private static boolean matchesProperty(String relationType, OwlObjectProperty prop) {
+        if (relationType == null || relationType.isBlank()) return false;
+        String normalized = relationType.trim();
+        return normalized.equals(prop.propertyIri())
+                || normalized.equalsIgnoreCase(prop.localName())
+                || rawLocalName(normalized).equalsIgnoreCase(prop.localName());
     }
 
     /**
@@ -339,11 +529,19 @@ public final class OwlRlReasoner implements OwlReasoner {
     }
 
     /** Resolve a class local name to its IRI using the ontology, or return the name as-is. */
-    private String resolveClassIri(String localName, OwlOntology ontology) {
+    private static String resolveClassIri(String localName, OwlOntology ontology) {
+        if (localName == null) return null;
+        String normalized = localName.trim();
+        if (normalized.isEmpty()) return normalized;
+        OwlClass directClass = ontology.classes().get(normalized);
+        if (directClass != null) return directClass.classIri();
         for (OwlClass cls : ontology.classes().values()) {
-            if (localName.equals(cls.localName())) return cls.classIri();
+            if (normalized.equalsIgnoreCase(cls.localName())
+                    || normalized.equalsIgnoreCase(cls.classIri())) {
+                return cls.classIri();
+            }
         }
-        return localName;
+        return normalized;
     }
 
     // ─── Direct disjointness scan ─────────────────────────────────────────────────
@@ -360,8 +558,10 @@ public final class OwlRlReasoner implements OwlReasoner {
      * <p>Detected violations are added to {@code inconsistencies}; duplicates (same entity +
      * same rule) are suppressed.</p>
      */
-    private void detectDisjointViolations(ReasoningGraph graph, OwlOntology ontology,
-                                           List<OwlInconsistency> inconsistencies) {
+    void detectDisjointViolations(ReasoningGraph graph,
+                                  OwlOntology ontology,
+                                  Map<String, List<String>> inferredTypes,
+                                  List<OwlInconsistency> inconsistencies) {
         // Collect disjoint pairs as (localNameA, localNameB) with A < B alphabetically
         List<String[]> disjointPairs = new ArrayList<>();
         Set<String> seen = new HashSet<>();
@@ -385,32 +585,19 @@ public final class OwlRlReasoner implements OwlReasoner {
 
         Set<String> addedKeys = new HashSet<>();
         for (var entity : graph.entities()) {
-            String entityType = entity.type();
-            if (entityType == null || entityType.isEmpty()) continue;
+            Set<String> entityTypes = new HashSet<>();
+            for (String membership : entity.typeMemberships()) {
+                addClassMembership(entityTypes, membership, ontology);
+            }
+            for (String inferredType : inferredTypes.getOrDefault(entity.id(), List.of())) {
+                addClassMembership(entityTypes, inferredType, ontology);
+            }
+            if (entityTypes.isEmpty()) continue;
 
             for (String[] pair : disjointPairs) {
                 String a = pair[0];
                 String b = pair[1];
-                boolean inA = a.equalsIgnoreCase(entityType);
-                boolean inB = b.equalsIgnoreCase(entityType);
-                if (!inA && !inB) continue;
-
-                // Check if the entity also has a relation or another type-assertion
-                // that places it in the other class. Since our graph model uses a single
-                // type() field per entity, we look for multi-type via inferredTypes or
-                // a special attribute "additionalType".
-                // For crisp entities with a single type field: an entity can only be in
-                // one of the two disjoint classes via type(). A violation can occur if:
-                // (a) type() == one class AND there exists an inferred type == the other class
-                // (b) the entity was explicitly multi-typed via attributes.
-                // We detect (a) by checking if the other disjoint class was also inferred.
-                // For test coverage: build a direct check using entity attributes too.
-                String otherClass = inA ? b : a;
-                // Check attribute "additionalType" for multi-type support
-                String addType = entity.stringAttribute("additionalType");
-                boolean inOther = (addType != null && otherClass.equalsIgnoreCase(addType));
-
-                if (inOther) {
+                if (hasClassMembership(entityTypes, a) && hasClassMembership(entityTypes, b)) {
                     String violKey = "cax-dw-" + entity.id() + "-" + a + "-" + b;
                     if (addedKeys.add(violKey)) {
                         inconsistencies.add(OwlInconsistency.crisp(
@@ -424,12 +611,31 @@ public final class OwlRlReasoner implements OwlReasoner {
         }
     }
 
+    private static void addClassMembership(Set<String> entityTypes, String rawType, OwlOntology ontology) {
+        if (rawType == null || rawType.isBlank()) return;
+        entityTypes.add(localNameFromIri(rawType.trim(), ontology));
+    }
+
+    private static boolean hasClassMembership(Set<String> entityTypes, String className) {
+        for (String entityType : entityTypes) {
+            if (entityType.equalsIgnoreCase(className)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /**
      * Resolve a class IRI to its local name using the ontology registry or IRI extraction.
      */
     private static String localNameFromIri(String iri, OwlOntology ontology) {
         OwlClass cls = ontology.classes().get(iri);
         if (cls != null) return cls.localName();
+        return rawLocalName(iri);
+    }
+
+    private static String rawLocalName(String iri) {
+        if (iri == null) return null;
         int hash = iri.lastIndexOf('#');
         if (hash >= 0 && hash < iri.length() - 1) return iri.substring(hash + 1);
         int slash = iri.lastIndexOf('/');

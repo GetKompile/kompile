@@ -31,6 +31,13 @@
       </div>
     </div>
     <div class="header-actions">
+      <button mat-stroked-button color="primary" class="schema-action"
+              (click)="generateSchemaAndTypes()"
+              [disabled]="schemaEnriching || factSheetId == null"
+              matTooltip="Generate crawl schema, entity type candidates, and type hierarchy for this fact sheet">
+        <mat-icon>{{ schemaEnriching ? 'hourglass_empty' : 'schema' }}</mat-icon>
+        <span>{{ schemaEnriching ? 'Generating...' : 'Generate schema' }}</span>
+      </button>
       <button mat-icon-button (click)="refreshData()" matTooltip="Refresh">
         <mat-icon>refresh</mat-icon>
       </button>

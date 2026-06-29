@@ -22,6 +22,7 @@ import ai.kompile.graph.reasoning.model.SimpleGraphRelation;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -53,6 +54,7 @@ class OwlRlReasonerTest {
     // ─── Shared IRI helpers ───────────────────────────────────────────────────────
 
     private static final String ANIMAL_IRI  = OwlIri.classIri("Animal");
+    private static final String MAMMAL_IRI  = OwlIri.classIri("Mammal");
     private static final String DOG_IRI     = OwlIri.classIri("Dog");
     private static final String PERSON_IRI  = OwlIri.classIri("Person");
     private static final String ROBOT_IRI   = OwlIri.classIri("Robot");
@@ -65,26 +67,40 @@ class OwlRlReasonerTest {
     private static final String HAS_CHILD_IRI   = OwlIri.propIri("hasChild");
     private static final String WORKS_WITH_IRI  = OwlIri.propIri("worksWith");
     private static final String MANAGES_IRI     = OwlIri.propIri("manages");
+    private static final String DIRECTLY_MANAGES_IRI = OwlIri.propIri("directlyManages");
 
     private final OwlRlReasoner reasoner = new OwlRlReasoner();
+
+    @Test
+    @DisplayName("OwlRlResult preserves all inferred classes with a legacy first-type view")
+    void resultPreservesMultipleInferredTypes() {
+        OwlRlResult result = OwlRlResult.ofMultiTypes(
+                List.of(),
+                Map.of("rex", List.of(MAMMAL_IRI, ANIMAL_IRI)),
+                List.of());
+
+        assertEquals(2, result.inferredTypeCount());
+        assertEquals(MAMMAL_IRI, result.inferredTypes().get("rex"),
+                "Legacy inferredTypes() should expose the first candidate for existing callers");
+        assertEquals(List.of(MAMMAL_IRI, ANIMAL_IRI), result.inferredTypeCandidates().get("rex"),
+                "Full candidate view must retain every inferred class for the entity");
+    }
 
     // ─── T1: cax-sco — subClassOf type propagation ───────────────────────────────
 
     /**
      * {@code cax-sco}: entity typed {@code Dog} (Dog ⊑ Animal) is inferred to also be an Animal.
      *
-     * <p>The rule compiler emits:
-     * {@code hasType(X, Dog) → hasType(X, Animal)}.
-     * The FOL engine evaluates this over all entity pairs (X,Y). When the antecedent is true
-     * for Fido (Dog), the consequent must hold — the inferred type is recorded in
-     * {@link OwlRlResult#inferredTypes()}.</p>
+     * <p>The reasoner materializes the crisp OWL-RL type closure into
+     * {@link OwlRlResult#inferredTypeCandidates()} without depending on PSL soft-truth extraction.</p>
      */
     @Test
     @DisplayName("cax-sco: Dog ⊑ Animal → entity typed Dog inferred as Animal")
     void t1_caxSco_dogSubclassAnimal() {
         OwlOntology ontology = OwlOntology.anonymous()
                 .addClass(OwlClass.of(ANIMAL_IRI).build())
-                .addClass(OwlClass.of(DOG_IRI).subClassOf(ANIMAL_IRI).build())
+                .addClass(OwlClass.of(MAMMAL_IRI).subClassOf(ANIMAL_IRI).build())
+                .addClass(OwlClass.of(DOG_IRI).subClassOf(MAMMAL_IRI).build())
                 .build();
 
         MutableReasoningGraph graph = new MutableReasoningGraph();
@@ -94,6 +110,15 @@ class OwlRlReasonerTest {
         // Verify the rule was compiled
         assertTrue(rules.rules().stream().anyMatch(r -> r.name().contains("cax-sco")),
                 "Compiler must emit a cax-sco rule for Dog ⊑ Animal");
+
+        OwlRlResult result = reasoner.reason(graph, ontology);
+        List<String> fidoTypes = result.inferredTypeCandidates().getOrDefault("fido", List.of());
+        assertTrue(fidoTypes.contains(MAMMAL_IRI),
+                "Dog membership must infer the direct superclass Mammal");
+        assertTrue(fidoTypes.contains(ANIMAL_IRI),
+                "Dog membership must infer the transitive superclass Animal");
+        assertFalse(fidoTypes.contains(DOG_IRI),
+                "The asserted Dog membership should not be re-emitted as an inferred candidate");
     }
 
     // ─── T2: prp-dom — domain typing ─────────────────────────────────────────────
@@ -103,12 +128,11 @@ class OwlRlReasonerTest {
      * An entity {@code alice} that has an outgoing {@code manages} edge must be inferred as
      * an {@code Employee}.
      *
-     * <p>We verify the rule is compiled (the FOL engine's type inference relies on
-     * the PSL grounding which assigns soft-truth; verifying rule presence guarantees
-     * the inference path exists).</p>
+     * <p>The compiler still emits the corresponding rule, but the result assertion verifies the
+     * deterministic OWL-RL ABox type materialization path.</p>
      */
     @Test
-    @DisplayName("prp-dom: manages property domain=Employee → rule compiled")
+    @DisplayName("prp-dom: manages property domain=Employee → source inferred as Employee")
     void t2_prpDom_domainTypeRule() {
         OwlObjectProperty manages = OwlObjectProperty.of(MANAGES_IRI)
                 .domain(EMPLOYEE_IRI)
@@ -129,8 +153,8 @@ class OwlRlReasonerTest {
 
         // Run the full reasoner — result should have no errors
         OwlRlResult result = reasoner.reason(graph, ontology);
-        // The result must be non-null; type inference result depends on FOL grounding
-        assertTrue(result != null, "Result must not be null");
+        assertTrue(result.inferredTypeCandidates().getOrDefault("alice", List.of()).contains(EMPLOYEE_IRI),
+                "A manages source must be inferred as the property's Employee domain");
     }
 
     // ─── T3: prp-rng — range typing ──────────────────────────────────────────────
@@ -141,7 +165,7 @@ class OwlRlReasonerTest {
      * {@code Person}.
      */
     @Test
-    @DisplayName("prp-rng: worksWith property range=Person → rule compiled")
+    @DisplayName("prp-rng: worksWith property range=Person → target inferred as Person")
     void t3_prpRng_rangeTypeRule() {
         OwlObjectProperty worksWith = OwlObjectProperty.of(WORKS_WITH_IRI)
                 .range(PERSON_IRI)
@@ -151,9 +175,66 @@ class OwlRlReasonerTest {
                 .addObjectProperty(worksWith)
                 .build();
 
+        MutableReasoningGraph graph = new MutableReasoningGraph();
+        graph.addEntity("alice", "Unknown", "Alice");
+        graph.addEntity("bob",   "Unknown", "Bob");
+        graph.addRelation("r1", "alice", "bob", "worksWith", 1.0);
+
         FolRuleSet rules = new OwlRlRuleCompiler().compile(ontology);
         assertTrue(rules.rules().stream().anyMatch(r -> r.name().startsWith("prp-rng-worksWith")),
                 "Compiler must emit prp-rng-worksWith rule");
+
+        OwlRlResult result = reasoner.reason(graph, ontology);
+        assertTrue(result.inferredTypeCandidates().getOrDefault("bob", List.of()).contains(PERSON_IRI),
+                "A worksWith target must be inferred as the property's Person range");
+    }
+
+    @Test
+    @DisplayName("cls-oo: Human equivalentClass Person → type propagation is bidirectional")
+    void clsOo_equivalentClassBidirectionalTypePropagation() {
+        OwlOntology ontology = OwlOntology.anonymous()
+                .addClass(OwlClass.of(HUMAN_IRI).equivalentClass(PERSON_IRI).build())
+                .addClass(OwlClass.of(PERSON_IRI).build())
+                .build();
+
+        MutableReasoningGraph graph = new MutableReasoningGraph();
+        graph.addEntity("alice", "Human", "Alice");
+        graph.addEntity("bob", "Person", "Bob");
+
+        OwlRlResult result = reasoner.reason(graph, ontology);
+        assertTrue(result.inferredTypeCandidates().getOrDefault("alice", List.of()).contains(PERSON_IRI),
+                "Human membership must infer equivalent Person membership");
+        assertTrue(result.inferredTypeCandidates().getOrDefault("bob", List.of()).contains(HUMAN_IRI),
+                "Person membership must infer equivalent Human membership");
+    }
+
+    @Test
+    @DisplayName("prp-dom/rng: subPropertyOf inherits super-property domain and range typing")
+    void prpDomRng_subPropertyInheritsDomainAndRangeTyping() {
+        OwlObjectProperty manages = OwlObjectProperty.of(MANAGES_IRI)
+                .domain(EMPLOYEE_IRI)
+                .range(PERSON_IRI)
+                .build();
+        OwlObjectProperty directlyManages = OwlObjectProperty.of(DIRECTLY_MANAGES_IRI)
+                .subPropertyOf(MANAGES_IRI)
+                .build();
+        OwlOntology ontology = OwlOntology.anonymous()
+                .addClass(OwlClass.of(EMPLOYEE_IRI).build())
+                .addClass(OwlClass.of(PERSON_IRI).build())
+                .addObjectProperty(manages)
+                .addObjectProperty(directlyManages)
+                .build();
+
+        MutableReasoningGraph graph = new MutableReasoningGraph();
+        graph.addEntity("alice", "Unknown", "Alice");
+        graph.addEntity("bob", "Unknown", "Bob");
+        graph.addRelation("r1", "alice", "bob", "directlyManages", 1.0);
+
+        OwlRlResult result = reasoner.reason(graph, ontology);
+        assertTrue(result.inferredTypeCandidates().getOrDefault("alice", List.of()).contains(EMPLOYEE_IRI),
+                "A directlyManages source must inherit Employee typing from manages domain");
+        assertTrue(result.inferredTypeCandidates().getOrDefault("bob", List.of()).contains(PERSON_IRI),
+                "A directlyManages target must inherit Person typing from manages range");
     }
 
     // ─── T4: prp-trp BFS — 3-node chain a→b→c ───────────────────────────────────
@@ -376,6 +457,39 @@ class OwlRlReasonerTest {
                 "Inconsistency must identify the violating entity");
         assertEquals(1.0, violation.violationDegree(), 0.001,
                 "cax-dw violation must be crisp (degree=1.0)");
+    }
+
+    @Test
+    @DisplayName("cax-dw: inferred candidate disjoint with declared type → OwlInconsistency")
+    void caxDw_inferredTypeCandidateDisjointWithDeclaredType() {
+        OwlClass person = OwlClass.of(PERSON_IRI)
+                .disjointWith(ROBOT_IRI)
+                .build();
+        OwlClass robot = OwlClass.of(ROBOT_IRI)
+                .disjointWith(PERSON_IRI)
+                .build();
+        OwlOntology ontology = OwlOntology.anonymous()
+                .addClass(person)
+                .addClass(robot)
+                .build();
+
+        MutableReasoningGraph graph = new MutableReasoningGraph();
+        graph.addEntity("cyborg-2", "Person", "Cyborg");
+
+        List<OwlInconsistency> inconsistencies = new ArrayList<>();
+        reasoner.detectDisjointViolations(
+                graph,
+                ontology,
+                Map.of("cyborg-2", List.of(ROBOT_IRI)),
+                inconsistencies);
+
+        assertFalse(inconsistencies.isEmpty(),
+                "A declared Person with inferred Robot membership must violate Person disjointWith Robot");
+        OwlInconsistency violation = inconsistencies.get(0);
+        assertEquals("cax-dw", violation.ruleId(),
+                "Inconsistency rule id must be 'cax-dw'");
+        assertEquals("cyborg-2", violation.entityId(),
+                "Inconsistency must identify the violating entity");
     }
 
     // ─── T9: prp-fp — functional property smoke test ─────────────────────────────

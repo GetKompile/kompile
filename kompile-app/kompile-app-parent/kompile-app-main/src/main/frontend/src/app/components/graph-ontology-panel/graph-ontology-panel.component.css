@@ -277,6 +277,22 @@ body.dark-theme .empty-graph-notice {
   margin-left: 4px;
 }
 
+.owl-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.owl-actions button {
+  min-height: 36px;
+}
+
+.owl-actions mat-icon {
+  margin-right: 4px;
+}
+
 /* Inactive / not-bound state */
 .owl-inactive {
   display: flex;

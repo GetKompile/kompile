@@ -24,6 +24,7 @@ import ai.kompile.core.graphrag.agent.ExtractionLlmServiceRegistry;
 import ai.kompile.core.llm.chat.LLMChat;
 import ai.kompile.knowledgegraph.service.FactSheetGraphService;
 import ai.kompile.process.ontology.EntityClassification;
+import ai.kompile.process.ontology.EntityTypeDefinition;
 import ai.kompile.process.ontology.OntologySchema;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -133,6 +134,31 @@ class OntologyDerivationServiceTest {
     }
 
     @Test
+    void derive_withoutLlm_buildsParentTypesFromCrawlHierarchyMetadata() {
+        when(graphService.getVisualizationData(eq(1L), anyInt(), anyInt()))
+                .thenReturn(new FactSheetGraphService.GraphVisualizationData(
+                        List.of(Map.of(
+                                "id", "wine-red",
+                                "type", "ENTITY",
+                                "label", "Cabernet",
+                                "metadata", Map.of(
+                                        "entity_category", "Wine",
+                                        "entity_type", "Red Wine"))),
+                        List.of(),
+                        Map.of()));
+
+        OntologySchema schema = service.derive(req(1L, null, null, null));
+
+        Map<String, EntityTypeDefinition> byName = schema.getEntityTypes().stream()
+                .collect(java.util.stream.Collectors.toMap(EntityTypeDefinition::getName, e -> e));
+        assertTrue(byName.containsKey("RedWine"));
+        assertTrue(byName.containsKey("Wine"));
+        assertEquals("Wine", byName.get("RedWine").getParentType());
+        assertTrue(byName.get("RedWine").getConfidence() > 0.55d,
+                "crawl-backed type should get a stronger structural confidence than generic concepts");
+    }
+
+    @Test
     void derive_whenLlmReturnsGarbage_fallsBackToStructural() {
         LLMChat llm = mock(LLMChat.class, RETURNS_DEEP_STUBS);
         when(llm.prompt().system(anyString()).user(anyString()).call().content())
@@ -189,6 +215,8 @@ class OntologyDerivationServiceTest {
         assertEquals("CustomerAccount", OntologyDerivationService.toPascalCase("customer account"));
         assertEquals("SalesOrder", OntologyDerivationService.toPascalCase("sales-order"));
         assertEquals("Entity1Thing", OntologyDerivationService.toPascalCase("1 thing"));
+        assertEquals("赤ワイン", OntologyDerivationService.toPascalCase("赤ワイン"));
+        assertEquals("VinRouge", OntologyDerivationService.toPascalCase("vin rouge"));
     }
 
     @Test

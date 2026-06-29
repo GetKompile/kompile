@@ -15,8 +15,11 @@
  */
 package ai.kompile.core.graphrag.typing;
 
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Canonical resolution of a knowledge-graph node's semantic entity type from its metadata map.
@@ -40,6 +43,10 @@ public final class GraphNodeTypes {
     private static final List<String> TYPE_KEYS = List.of("entity_type", "entityType");
     private static final List<String> SUBTYPE_KEYS = List.of("entity_subtype", "entitySubtype");
 
+    /** Specific-to-broad is-a edge extracted from crawl type metadata. */
+    public record TypeHierarchyEdge(String type, String parentType, String typeKey, String parentKey) {
+    }
+
     /**
      * Resolve the semantic entity type from a node's metadata, in precedence order:
      * category keys → type keys → subtype keys → {@code fallback}.
@@ -59,6 +66,43 @@ public final class GraphNodeTypes {
         return value != null ? value : fallback;
     }
 
+    /**
+     * Return crisp type memberships present on a graph node, ordered from most specific to broadest.
+     *
+     * <p>Unlike {@link #resolveEntityType(Map, String)}, which preserves the legacy category-first
+     * conformance type, this method is intended for reasoning. If all three crawl keys are present,
+     * the order is {@code entity_subtype}, {@code entity_type}, {@code entity_category}.</p>
+     */
+    public static List<String> resolveTypeMemberships(Map<String, Object> metadata) {
+        LinkedHashSet<String> types = new LinkedHashSet<>();
+        addIfPresent(types, firstNonBlank(metadata, SUBTYPE_KEYS));
+        addIfPresent(types, firstNonBlank(metadata, TYPE_KEYS));
+        addIfPresent(types, firstNonBlank(metadata, CATEGORY_KEYS));
+        return List.copyOf(types);
+    }
+
+    /**
+     * Extract specific-to-broad hierarchy links from crawl metadata. Examples:
+     * {@code entity_type=RedWine, entity_category=Wine} yields {@code RedWine -> Wine};
+     * {@code entity_subtype=Cabernet, entity_type=RedWine} yields {@code Cabernet -> RedWine}.
+     */
+    public static List<TypeHierarchyEdge> resolveTypeHierarchy(Map<String, Object> metadata) {
+        String category = firstNonBlank(metadata, CATEGORY_KEYS);
+        String type = firstNonBlank(metadata, TYPE_KEYS);
+        String subtype = firstNonBlank(metadata, SUBTYPE_KEYS);
+
+        List<TypeHierarchyEdge> hierarchy = new ArrayList<>(2);
+        if (different(subtype, type)) {
+            hierarchy.add(new TypeHierarchyEdge(subtype, type, "entity_subtype", "entity_type"));
+        }
+        if (different(type, category)) {
+            hierarchy.add(new TypeHierarchyEdge(type, category, "entity_type", "entity_category"));
+        } else if (type == null && different(subtype, category)) {
+            hierarchy.add(new TypeHierarchyEdge(subtype, category, "entity_subtype", "entity_category"));
+        }
+        return List.copyOf(hierarchy);
+    }
+
     private static String firstNonBlank(Map<String, Object> metadata, List<String> keys) {
         if (metadata == null) {
             return null;
@@ -70,5 +114,15 @@ public final class GraphNodeTypes {
             }
         }
         return null;
+    }
+
+    private static void addIfPresent(Set<String> types, String value) {
+        if (value != null && !value.isBlank()) {
+            types.add(value);
+        }
+    }
+
+    private static boolean different(String child, String parent) {
+        return child != null && parent != null && !child.equalsIgnoreCase(parent);
     }
 }

@@ -103,12 +103,25 @@
         </mat-card-title>
       </mat-card-header>
       <mat-card-content>
-        <!-- Run classification on demand (auto-provisions a structural ontology if none is bound) -->
+        <!-- Generate crawl schema/type materialization on demand (auto-provisions a structural ontology if none is bound) -->
         <div class="owl-actions">
-          <button mat-stroked-button color="primary" (click)="classify()" [disabled]="classifying || owlLoading"
-                  matTooltip="Run OWL classification now: infer is-a types + has-a transitive closure over this graph and save them back">
-            <mat-icon>{{ classifying ? 'hourglass_empty' : 'auto_fix_high' }}</mat-icon>
-            {{ classifying ? 'Classifying…' : 'Classify entities' }}
+          <button mat-raised-button color="primary" (click)="classify()"
+                  [disabled]="classifying || owlClassifying || inducingTypes || owlLoading"
+                  matTooltip="Run the full schema pass: OWL, LLM schema update, then OWL inference again if the schema changed">
+            <mat-icon>{{ classifying ? 'hourglass_empty' : 'schema' }}</mat-icon>
+            {{ classifying ? 'Generating...' : 'Schema + LLM + OWL' }}
+          </button>
+          <button mat-stroked-button (click)="runOwlOnly()"
+                  [disabled]="classifying || owlClassifying || inducingTypes || owlLoading"
+                  matTooltip="Run only OWL classification and materialize inferred is-a and has-a relationships">
+            <mat-icon>{{ owlClassifying ? 'hourglass_empty' : 'account_tree' }}</mat-icon>
+            {{ owlClassifying ? 'Running...' : 'OWL only' }}
+          </button>
+          <button mat-stroked-button color="accent" (click)="induceTypes()"
+                  [disabled]="classifying || owlClassifying || inducingTypes || owlLoading"
+                  matTooltip="Run OWL, apply LLM schema/type induction, then re-run OWL if new types or aliases were added">
+            <mat-icon>{{ inducingTypes ? 'hourglass_empty' : 'auto_awesome' }}</mat-icon>
+            {{ inducingTypes ? 'Updating...' : 'LLM schema update' }}
           </button>
         </div>
 

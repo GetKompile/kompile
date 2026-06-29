@@ -18,9 +18,11 @@ package ai.kompile.app.ontology;
 import ai.kompile.app.web.dto.ontology.OwlClassificationResponse;
 import ai.kompile.app.web.dto.ontology.OwlReasoningResponse;
 import ai.kompile.core.graphrag.conformance.OwlDerivedRuleProvider;
+import ai.kompile.core.graphrag.typing.GraphNodeTypes;
 import ai.kompile.graph.reasoning.mebn.type.owl.OwlOntology;
 import ai.kompile.graph.reasoning.mebn.type.owl.OwlRlReasoner;
 import ai.kompile.graph.reasoning.mebn.type.owl.OwlRlResult;
+import ai.kompile.graph.reasoning.model.GraphEntity;
 import ai.kompile.graph.reasoning.model.GraphRelation;
 import ai.kompile.graph.reasoning.model.MutableReasoningGraph;
 import ai.kompile.graph.reasoning.model.ReasoningGraph;
@@ -30,6 +32,7 @@ import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
+import ai.kompile.process.ontology.EntityTypeDefinition;
 import ai.kompile.process.ontology.OntologySchema;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -42,6 +45,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -139,14 +143,14 @@ public class OwlReasoningService implements OwlDerivedRuleProvider {
         OwlOntology tbox = bridge.toOwlOntology(schema);
         ReasoningGraph abox = buildAbox(factSheetId);
         OwlRlResult result = reasoner.reason(abox, tbox);
-        MaterializationStats stats = materializeInferences(factSheetId, result);
+        MaterializationStats stats = materializeInferences(factSheetId, schema, result);
         log.info("OwlReasoningService.classify factSheet={}: {} entities typed, {} has-a edges materialized",
                 factSheetId, stats.entitiesClassified(), stats.edgesMaterialized());
         return OwlClassificationResponse.builder()
                 .factSheetId(factSheetId)
                 .ontologyBound(true)
                 .ontologyName(schema.getName() != null ? schema.getName() : schema.getId())
-                .inferredTypeCount(result.inferredTypes().size())
+                .inferredTypeCount(result.inferredTypeCount())
                 .inferredRelationCount(result.inferredRelations().size())
                 .entitiesClassified(stats.entitiesClassified())
                 .edgesMaterialized(stats.edgesMaterialized())
@@ -191,13 +195,16 @@ public class OwlReasoningService implements OwlDerivedRuleProvider {
         // Inferred types: entity is inferred to belong to a class → soft typing rule
         // Format: "<weight>: has_type_CLASSNAME(?X) ^2" (a "belief" rule; no antecedent,
         // acts as a soft prior for the inferred membership)
-        for (Map.Entry<String, String> entry : result.inferredTypes().entrySet()) {
-            String classIri = entry.getValue();
-            String localName = localNameFromIri(classIri);
-            if (localName == null || localName.isBlank()) continue;
-            String normalized = localName.toLowerCase().replaceAll("[^a-z0-9_]", "_");
-            rules.add(ruleWeight + ": has_type_" + normalized + "(?X) ^2");
+        Set<String> inferredTypeRuleNames = new LinkedHashSet<>();
+        for (Map.Entry<String, List<String>> entry : result.inferredTypeCandidates().entrySet()) {
+            for (String classIri : entry.getValue()) {
+                String localName = localNameFromIri(classIri);
+                if (localName == null || localName.isBlank()) continue;
+                inferredTypeRuleNames.add(localName.toLowerCase().replaceAll("[^a-z0-9_]", "_"));
+            }
         }
+        inferredTypeRuleNames.forEach(normalized ->
+                rules.add(ruleWeight + ": has_type_" + normalized + "(?X) ^2"));
 
         // Transitive-closure edges become subPropertyOf / chain rules at the PSL level:
         // emit "rel_TYPE(?X, ?Z)" soft rules for each unique (type, source-class, target-class)
@@ -214,7 +221,7 @@ public class OwlReasoningService implements OwlDerivedRuleProvider {
                 });
 
         // Persist the entailments back into the graph (best-effort) so they're queryable + visible.
-        materializeInferences(factSheetId, result);
+        materializeInferences(factSheetId, schemaOpt.get(), result);
 
         log.debug("OwlReasoningService.owlDerivedPslRules: {} PSL rules from OWL RL for factSheetId={}",
                 rules.size(), factSheetId);
@@ -234,10 +241,10 @@ public class OwlReasoningService implements OwlDerivedRuleProvider {
         int dataPropCount       = tbox.dataProperties().size();
         // Axiom count = structural axioms in the TBox (classes + properties + inferred subClassOf)
         int axiomCount          = classCount + objectPropCount + dataPropCount
-                                  + result.inferredTypes().size();
+                                  + result.inferredTypeCount();
 
         int entailments         = result.inferredRelations().size()
-                                  + result.inferredTypes().size();
+                                  + result.inferredTypeCount();
 
         // Inconsistencies → DTO entries
         List<OwlReasoningResponse.InconsistencyEntry> inconsistencies =
@@ -259,7 +266,7 @@ public class OwlReasoningService implements OwlDerivedRuleProvider {
                 .dataPropertyCount(dataPropCount)
                 .axiomCount(axiomCount)
                 .entailmentsMaterialized(entailments)
-                .inferredTypeCount(result.inferredTypes().size())
+                .inferredTypeCount(result.inferredTypeCount())
                 .inferredRelationCount(result.inferredRelations().size())
                 .consistent(result.isConsistent())
                 .inconsistencies(inconsistencies)
@@ -297,11 +304,13 @@ public class OwlReasoningService implements OwlDerivedRuleProvider {
 
         // 2. Inferred types from OWL RL (entity membership assertions)
         if (samples.size() < MAX_SAMPLE_ENTAILMENTS) {
-            for (var entry : result.inferredTypes().entrySet()) {
-                if (samples.size() >= MAX_SAMPLE_ENTAILMENTS) break;
-                String entityId   = entry.getKey();
-                String classLocal = localNameFromIri(entry.getValue());
-                samples.add(entityId + " ∈ " + (classLocal != null ? classLocal : entry.getValue()));
+            for (var entry : result.inferredTypeCandidates().entrySet()) {
+                String entityId = entry.getKey();
+                for (String classIri : entry.getValue()) {
+                    if (samples.size() >= MAX_SAMPLE_ENTAILMENTS) break;
+                    String classLocal = localNameFromIri(classIri);
+                    samples.add(entityId + " ∈ " + (classLocal != null ? classLocal : classIri));
+                }
             }
         }
 
@@ -361,10 +370,29 @@ public class OwlReasoningService implements OwlDerivedRuleProvider {
             return abox;
         }
         for (GraphNode node : knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY)) {
-            String type = entityType(node);
-            if (type == null || node.getNodeId() == null) continue;
+            if (node.getNodeId() == null) continue;
+            Map<String, Object> metadata = nonNullMetadata(node);
+            String type = primaryReasoningType(metadata);
             String label = node.getTitle() != null ? node.getTitle() : node.getNodeId();
-            abox.addEntity(node.getNodeId(), type, label);
+            List<String> typeMemberships = GraphNodeTypes.resolveTypeMemberships(metadata);
+            if (!typeMemberships.isEmpty()) {
+                metadata = new LinkedHashMap<>(metadata);
+                metadata.putIfAbsent("entity_types", typeMemberships);
+            }
+            GraphEntity entity = GraphEntity.builder(node.getNodeId())
+                    .type(type)
+                    .label(label)
+                    .attributes(metadata)
+                    .build();
+            if (entity.typeMemberships().isEmpty()) continue;
+            if (entity.type() == null || entity.type().isBlank()) {
+                entity = GraphEntity.builder(node.getNodeId())
+                        .type(entity.typeMemberships().iterator().next())
+                        .label(label)
+                        .attributes(metadata)
+                        .build();
+            }
+            abox.addEntity(entity);
         }
         for (GraphEdge edge : knowledgeGraphService.getEdgesInFactSheet(factSheetId)) {
             if (Boolean.TRUE.equals(edge.getStale())) continue;
@@ -383,11 +411,21 @@ public class OwlReasoningService implements OwlDerivedRuleProvider {
         return abox;
     }
 
-    /** Ontology entity type from a node's {@code entity_type} metadata (written at extraction). */
-    private static String entityType(GraphNode node) {
-        if (node == null || node.getMetadata() == null) return null;
-        Object val = node.getMetadata().get("entity_type");
-        return (val instanceof String s && !s.isBlank()) ? s.trim() : null;
+    /** Primary reasoning type from the full crawl type chain, preferring the most specific type. */
+    private static String primaryReasoningType(Map<String, Object> metadata) {
+        List<String> memberships = GraphNodeTypes.resolveTypeMemberships(metadata);
+        return memberships.isEmpty() ? null : memberships.get(0);
+    }
+
+    private static Map<String, Object> nonNullMetadata(GraphNode node) {
+        if (node == null || node.getMetadata() == null) return Map.of();
+        Map<String, Object> clean = new LinkedHashMap<>();
+        node.getMetadata().forEach((key, value) -> {
+            if (key != null && value != null) {
+                clean.put(key, value);
+            }
+        });
+        return clean;
     }
 
     /**
@@ -396,7 +434,7 @@ public class OwlReasoningService implements OwlDerivedRuleProvider {
      * {@link GraphEdge}s (idempotent on the endpoint pair), and inferred is-a types are recorded in the
      * entity nodes' {@code owlInferredTypes} metadata. Never throws into the enrichment pass.
      */
-    private MaterializationStats materializeInferences(long factSheetId, OwlRlResult result) {
+    private MaterializationStats materializeInferences(long factSheetId, OntologySchema schema, OwlRlResult result) {
         if (knowledgeGraphService == null || result == null) return new MaterializationStats(0, 0);
         int edges = 0;
         try {
@@ -416,7 +454,8 @@ public class OwlReasoningService implements OwlDerivedRuleProvider {
                         null, EdgeProvenance.INFERRED, factSheetId);
                 edges++;
             }
-            int typed = materializeInferredTypes(factSheetId, result.inferredTypes());
+            int typed = materializeInferredTypes(factSheetId, result.inferredTypeCandidates(),
+                    schemaParentByType(schema));
             if (edges > 0 || typed > 0) {
                 log.info("Materialized OWL inferences for factSheet={}: {} transitive has-a edges, {} typed entities",
                         factSheetId, edges, typed);
@@ -431,14 +470,21 @@ public class OwlReasoningService implements OwlDerivedRuleProvider {
     /** Counts from a materialization pass — surfaced by the on-demand {@link #classify(long)} run. */
     private record MaterializationStats(int edgesMaterialized, int entitiesClassified) {}
 
+    private record InferredTypeCandidate(String localName, String classIri) {}
+
     /** Record inferred is-a class memberships in entity nodes' {@code owlInferredTypes} metadata. */
-    private int materializeInferredTypes(long factSheetId, Map<String, String> inferredTypes) {
+    private int materializeInferredTypes(long factSheetId, Map<String, ?> inferredTypes) {
+        return materializeInferredTypes(factSheetId, inferredTypes, Map.of());
+    }
+
+    /** Record inferred is-a class memberships and schema/crawl hierarchy metadata on entity nodes. */
+    private int materializeInferredTypes(long factSheetId,
+                                         Map<String, ?> inferredTypes,
+                                         Map<String, String> parentByType) {
         if (inferredTypes == null || inferredTypes.isEmpty()) return 0;
-        Map<String, LinkedHashSet<String>> byEntity = new LinkedHashMap<>();
-        for (Map.Entry<String, String> e : inferredTypes.entrySet()) {
-            String localName = localNameFromIri(e.getValue());
-            if (e.getKey() == null || localName == null || localName.isBlank()) continue;
-            byEntity.computeIfAbsent(e.getKey(), k -> new LinkedHashSet<>()).add(localName);
+        Map<String, LinkedHashSet<InferredTypeCandidate>> byEntity = new LinkedHashMap<>();
+        for (Map.Entry<String, ?> e : inferredTypes.entrySet()) {
+            appendInferredTypeCandidates(byEntity, e.getKey(), e.getValue());
         }
         if (byEntity.isEmpty()) return 0;
         Map<String, GraphNode> nodesById = knowledgeGraphService
@@ -447,7 +493,7 @@ public class OwlReasoningService implements OwlDerivedRuleProvider {
                 .collect(Collectors.toMap(GraphNode::getNodeId, n -> n, (a, b) -> a));
         int updated = 0;
         int cap = 1000;
-        for (Map.Entry<String, LinkedHashSet<String>> e : byEntity.entrySet()) {
+        for (Map.Entry<String, LinkedHashSet<InferredTypeCandidate>> e : byEntity.entrySet()) {
             if (updated >= cap) {
                 log.warn("OWL inferred-type materialization capped at {} entities for factSheet={}", cap, factSheetId);
                 break;
@@ -456,10 +502,314 @@ public class OwlReasoningService implements OwlDerivedRuleProvider {
             if (node == null) continue;
             Map<String, Object> meta = node.getMetadata() != null
                     ? new HashMap<>(node.getMetadata()) : new HashMap<>();
-            meta.put("owlInferredTypes", new ArrayList<>(e.getValue()));
+            List<String> localNames = e.getValue().stream()
+                    .map(InferredTypeCandidate::localName)
+                    .distinct()
+                    .toList();
+            meta.put("owlInferredTypes", new ArrayList<>(localNames));
+            meta.put("ontology.typeCandidates", mergeOwlTypeCandidates(
+                    meta.get("ontology.typeCandidates"), e.getValue()));
+            List<Object> hierarchy = mergeTypeHierarchy(
+                    meta.get("ontology.typeHierarchy"),
+                    crawlTypeHierarchyMetadata(meta),
+                    owlTypeHierarchyMetadata(meta, e.getValue(), parentByType));
+            if (!hierarchy.isEmpty()) {
+                meta.put("ontology.typeHierarchy", hierarchy);
+            }
             knowledgeGraphService.updateNode(e.getKey(), null, null, meta);
             updated++;
         }
         return updated;
+    }
+
+    private static Map<String, String> schemaParentByType(OntologySchema schema) {
+        if (schema == null || schema.getEntityTypes() == null) {
+            return Map.of();
+        }
+        Map<String, String> parents = new LinkedHashMap<>();
+        for (EntityTypeDefinition entityType : schema.getEntityTypes()) {
+            if (entityType == null || entityType.getName() == null || entityType.getName().isBlank()
+                    || entityType.getParentType() == null || entityType.getParentType().isBlank()) {
+                continue;
+            }
+            parents.put(entityType.getName(), entityType.getParentType());
+        }
+        return parents;
+    }
+
+    private static List<Map<String, Object>> crawlTypeHierarchyMetadata(Map<String, Object> metadata) {
+        List<Map<String, Object>> result = new ArrayList<>();
+        Double confidence = doubleValue(firstNonNull(metadata,
+                "ontology.typeConfidence", "typeConfidence", "typeInferenceScore", "gnn.score", "kge.score", "confidence"));
+        for (GraphNodeTypes.TypeHierarchyEdge hierarchy : GraphNodeTypes.resolveTypeHierarchy(metadata)) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("type", hierarchy.type());
+            row.put("parentType", hierarchy.parentType());
+            row.put("depth", 1);
+            if (confidence != null) {
+                row.put("confidence", confidence);
+            }
+            row.put("source", "crawl-schema");
+            row.put("basis", hierarchy.typeKey() + "/" + hierarchy.parentKey());
+            row.put("evidence", List.of(
+                    hierarchy.typeKey() + "=" + hierarchy.type(),
+                    hierarchy.parentKey() + "=" + hierarchy.parentType()));
+            result.add(row);
+        }
+        return result;
+    }
+
+    private static List<Map<String, Object>> owlTypeHierarchyMetadata(
+            Map<String, Object> metadata,
+            LinkedHashSet<InferredTypeCandidate> inferredTypes,
+            Map<String, String> parentByType) {
+        if (inferredTypes == null || inferredTypes.isEmpty() || parentByType == null || parentByType.isEmpty()) {
+            return List.of();
+        }
+        LinkedHashSet<String> knownTypes = new LinkedHashSet<>(GraphNodeTypes.resolveTypeMemberships(metadata));
+        inferredTypes.stream().map(InferredTypeCandidate::localName).forEach(knownTypes::add);
+
+        LinkedHashSet<String> inferredLocalNames = inferredTypes.stream()
+                .map(InferredTypeCandidate::localName)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        Map<String, String> iriByLocalName = inferredTypes.stream()
+                .collect(Collectors.toMap(InferredTypeCandidate::localName, InferredTypeCandidate::classIri, (a, b) -> a,
+                        LinkedHashMap::new));
+
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (String type : knownTypes) {
+            String parent = parentByType.get(type);
+            if (parent == null || parent.isBlank() || type.equalsIgnoreCase(parent)) {
+                continue;
+            }
+            if (!knownTypes.contains(parent) && !inferredLocalNames.contains(parent)) {
+                continue;
+            }
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("type", type);
+            row.put("parentType", parent);
+            row.put("depth", 1);
+            row.put("confidence", 1.0d);
+            row.put("source", "owl-rl");
+            row.put("basis", "schema-parentType");
+            String evidence = iriByLocalName.getOrDefault(parent, "parentType:" + type + "->" + parent);
+            row.put("evidence", List.of(evidence));
+            result.add(row);
+        }
+        return result;
+    }
+
+    @SafeVarargs
+    private static List<Object> mergeTypeHierarchy(Object existing, List<Map<String, Object>>... additions) {
+        List<Object> hierarchy = new ArrayList<>();
+        LinkedHashSet<String> seen = new LinkedHashSet<>();
+        appendExistingTypeHierarchy(hierarchy, seen, existing);
+        for (List<Map<String, Object>> rows : additions) {
+            if (rows == null) {
+                continue;
+            }
+            for (Map<String, Object> row : rows) {
+                if (row != null && seen.add(typeHierarchyKey(row))) {
+                    hierarchy.add(row);
+                }
+            }
+        }
+        return hierarchy;
+    }
+
+    private static void appendExistingTypeHierarchy(List<Object> hierarchy,
+                                                    LinkedHashSet<String> seen,
+                                                    Object existing) {
+        if (existing instanceof List<?> list) {
+            for (Object item : list) {
+                appendExistingTypeHierarchy(hierarchy, seen, item);
+            }
+            return;
+        }
+        if (existing instanceof Map<?, ?> rawMap) {
+            Map<String, Object> row = stringKeyMap(rawMap);
+            if (seen.add(typeHierarchyKey(row))) {
+                hierarchy.add(row);
+            }
+            return;
+        }
+        if (existing instanceof String s && !s.isBlank() && seen.add(s.trim())) {
+            hierarchy.add(s.trim());
+        }
+    }
+
+    private static String typeHierarchyKey(Map<String, Object> row) {
+        return String.valueOf(firstNonNull(row, "type", "childType", "subType", "subtype", "sourceType"))
+                + "->"
+                + String.valueOf(firstNonNull(row, "parentType", "superType", "supertype", "category", "targetType"))
+                + "|"
+                + String.valueOf(firstNonNull(row, "source", "inferenceSource", "engine", "model"));
+    }
+
+    private static void appendInferredTypeCandidates(
+            Map<String, LinkedHashSet<InferredTypeCandidate>> byEntity,
+            String entityId,
+            Object rawTypes) {
+        if (entityId == null || rawTypes == null) return;
+        if (rawTypes instanceof Iterable<?> iterable) {
+            for (Object rawType : iterable) {
+                appendInferredTypeCandidate(byEntity, entityId, rawType);
+            }
+            return;
+        }
+        appendInferredTypeCandidate(byEntity, entityId, rawTypes);
+    }
+
+    private static void appendInferredTypeCandidate(
+            Map<String, LinkedHashSet<InferredTypeCandidate>> byEntity,
+            String entityId,
+            Object rawType) {
+        if (!(rawType instanceof String classIri) || classIri.isBlank()) return;
+        String localName = localNameFromIri(classIri);
+        if (localName == null || localName.isBlank()) return;
+        byEntity.computeIfAbsent(entityId, k -> new LinkedHashSet<>())
+                .add(new InferredTypeCandidate(localName, classIri));
+    }
+
+    private static List<Object> mergeOwlTypeCandidates(Object existing,
+                                                        LinkedHashSet<InferredTypeCandidate> inferredTypes) {
+        List<Object> candidates = new ArrayList<>();
+        LinkedHashSet<String> seen = new LinkedHashSet<>();
+        if (existing instanceof List<?> list) {
+            for (Object item : list) {
+                appendExistingTypeCandidate(candidates, seen, item);
+            }
+        } else if (existing != null) {
+            appendExistingTypeCandidate(candidates, seen, existing);
+        }
+        for (InferredTypeCandidate inferredType : inferredTypes) {
+            Map<String, Object> owlCandidate = owlTypeCandidateMetadata(inferredType);
+            if (seen.add(typeCandidateKey(owlCandidate))) {
+                candidates.add(owlCandidate);
+            }
+        }
+        return candidates;
+    }
+
+    private static void appendExistingTypeCandidate(List<Object> candidates,
+                                                    LinkedHashSet<String> seen,
+                                                    Object existing) {
+        if (existing instanceof Map<?, ?> rawMap) {
+            Map<String, Object> map = stringKeyMap(rawMap);
+            if (hasCandidateType(map)) {
+                if (seen.add(typeCandidateKey(map))) {
+                    candidates.add(map);
+                }
+                return;
+            }
+            for (Map.Entry<String, Object> entry : map.entrySet()) {
+                Map<String, Object> normalized = typeCandidateMapEntry(entry.getKey(), entry.getValue());
+                if (normalized != null && seen.add(typeCandidateKey(normalized))) {
+                    candidates.add(normalized);
+                }
+            }
+            return;
+        }
+        if (existing instanceof String type && !type.isBlank()) {
+            Map<String, Object> normalized = new LinkedHashMap<>();
+            normalized.put("type", type.trim());
+            if (seen.add(typeCandidateKey(normalized))) {
+                candidates.add(normalized);
+            }
+        }
+    }
+
+    private static Map<String, Object> typeCandidateMapEntry(String type, Object value) {
+        if (type == null || type.isBlank()) {
+            return null;
+        }
+        Map<String, Object> normalized = new LinkedHashMap<>();
+        normalized.put("type", type.trim());
+        if (value instanceof Number number) {
+            normalized.put("confidence", number.doubleValue());
+        } else if (value instanceof Map<?, ?> nested) {
+            Map<String, Object> nestedMap = stringKeyMap(nested);
+            Object confidence = firstNonNull(nestedMap,
+                    "confidence", "score", "probability", "posterior", "truthValue");
+            if (confidence instanceof Number number) {
+                normalized.put("confidence", number.doubleValue());
+            }
+            copyIfPresent(nestedMap, normalized, "source", "source", "inferenceSource", "engine", "model");
+            copyIfPresent(nestedMap, normalized, "basis", "basis", "basisType", "reason", "ruleId");
+            Object evidence = firstNonNull(nestedMap, "evidence", "evidenceIds", "findings", "bindings");
+            if (evidence != null) {
+                normalized.put("evidence", evidence);
+            }
+        }
+        return normalized;
+    }
+
+    private static Map<String, Object> stringKeyMap(Map<?, ?> rawMap) {
+        Map<String, Object> map = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : rawMap.entrySet()) {
+            if (entry.getKey() != null && entry.getValue() != null) {
+                map.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+        }
+        return map;
+    }
+
+    private static boolean hasCandidateType(Map<String, Object> map) {
+        return firstNonNull(map, "type", "candidateType", "typeName", "inferredType", "label", "iri") != null;
+    }
+
+    private static Object firstNonNull(Map<String, Object> map, String... keys) {
+        for (String key : keys) {
+            Object value = map.get(key);
+            if (value != null) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private static Double doubleValue(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Number number) {
+            return number.doubleValue();
+        }
+        try {
+            return Double.parseDouble(String.valueOf(value));
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    private static void copyIfPresent(Map<String, Object> from,
+                                      Map<String, Object> to,
+                                      String targetKey,
+                                      String... sourceKeys) {
+        Object value = firstNonNull(from, sourceKeys);
+        if (value != null) {
+            to.put(targetKey, value);
+        }
+    }
+
+    private static String typeCandidateKey(Map<String, Object> candidate) {
+        return String.valueOf(firstNonNull(candidate,
+                "type", "candidateType", "typeName", "inferredType", "label", "iri"))
+                + "|"
+                + String.valueOf(firstNonNull(candidate, "source", "inferenceSource", "engine", "model"))
+                + "|"
+                + String.valueOf(firstNonNull(candidate, "basis", "basisType", "reason", "ruleId"));
+    }
+
+    private static Map<String, Object> owlTypeCandidateMetadata(InferredTypeCandidate inferredType) {
+        Map<String, Object> candidate = new LinkedHashMap<>();
+        candidate.put("type", inferredType.localName());
+        candidate.put("confidence", 1.0d);
+        candidate.put("source", "owl-rl");
+        candidate.put("basis", "class-subsumption");
+        if (inferredType.classIri() != null && !inferredType.classIri().isBlank()) {
+            candidate.put("evidence", List.of(inferredType.classIri()));
+        }
+        return candidate;
     }
 }

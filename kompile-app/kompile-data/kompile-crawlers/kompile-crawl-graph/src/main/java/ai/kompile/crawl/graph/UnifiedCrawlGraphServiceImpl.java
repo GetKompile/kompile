@@ -197,7 +197,7 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
     @Autowired(required = false)
     private KnowledgeGraphService knowledgeGraphService;
 
-    /** Optional app-main hook that derives + binds an ontology so OWL reasoning/classification runs. */
+    /** Optional app-main hook that derives/binds crawl schema and materializes type hierarchy metadata. */
     @Autowired(required = false)
     private OntologyAutoProvisioner ontologyAutoProvisioner;
 
@@ -2227,8 +2227,8 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                 if (graphHydrationOrchestrator != null && knowledgeGraphService != null) {
                     Long factSheetId = jobFactSheetId(job);
                     if (factSheetId != null) {
-                        // deriveOntology step: derive + bind a structural ontology before reground so
-                        // OWL is-a/has-a reasoning + classification operate over the crawled graph.
+                        // deriveOntology step: derive/bind structural schema and materialize crawl
+                        // entity types + type hierarchy before regrounding.
                         if (ontologyAutoProvisioner != null
                                 && !Boolean.FALSE.equals(job.getRequest().getDeriveOntology())) {
                             try {

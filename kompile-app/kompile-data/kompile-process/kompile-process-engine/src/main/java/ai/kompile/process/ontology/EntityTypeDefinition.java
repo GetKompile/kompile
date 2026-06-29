@@ -23,6 +23,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * Defines an entity type in the ontology (e.g., RegionalForecast, ChannelTaxonomy, SKUMaster).
@@ -38,6 +39,13 @@ public class EntityTypeDefinition {
     /** Entity type name, e.g., "ChannelTaxonomy". */
     private String name;
     private String description;
+    /**
+     * Alternate labels that should resolve to this canonical type. These can include crawl-native
+     * names, abbreviations, translated labels, and spelling variants.
+     */
+    private List<String> aliases;
+    /** Optional language-tagged labels, e.g. {@code {"fr": "Vin rouge", "ja": "赤ワイン"}}. */
+    private Map<String, String> localizedLabels;
     /** Classification bucket: REFERENCE, TRANSACTIONAL, PATTERN, CONTROL, METRIC, ACTOR. */
     private EntityClassification classification;
     /** Which cross-customer template seeded this entity type. */

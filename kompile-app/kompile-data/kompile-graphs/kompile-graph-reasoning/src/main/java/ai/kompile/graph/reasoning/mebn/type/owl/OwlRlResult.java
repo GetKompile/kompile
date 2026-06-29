@@ -17,7 +17,10 @@ package ai.kompile.graph.reasoning.mebn.type.owl;
 
 import ai.kompile.graph.reasoning.model.GraphRelation;
 
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -35,8 +38,10 @@ import java.util.Objects;
  *   <li>{@link #inferredRelations()} — new graph relations derived by RL entailment rules
  *       (e.g. transitive closure edges, symmetric inverses, domain/range type assertions
  *       expressed as typing relations).</li>
- *   <li>{@link #inferredTypes()} — entity ID → inferred class IRI mappings derived by
+ *   <li>{@link #inferredTypeCandidates()} — entity ID → all inferred class IRI mappings derived by
  *       {@code cax-sco}, {@code prp-dom}, {@code prp-rng}, and {@code cls-oo} rules.</li>
+ *   <li>{@link #inferredTypes()} — legacy entity ID → first inferred class IRI view for older
+ *       callers that cannot yet consume multiple memberships per entity.</li>
  *   <li>{@link #inconsistencies()} — constraint violations produced by {@code cax-dw}
  *       (disjoint-class) and other consistency-checking rules.</li>
  * </ul>
@@ -47,16 +52,18 @@ public final class OwlRlResult {
 
     private final List<GraphRelation> inferredRelations;
     private final Map<String, String> inferredTypes;
+    private final Map<String, List<String>> inferredTypeCandidates;
     private final List<OwlInconsistency> inconsistencies;
 
     private OwlRlResult(
             List<GraphRelation> inferredRelations,
-            Map<String, String> inferredTypes,
+            Map<String, List<String>> inferredTypeCandidates,
             List<OwlInconsistency> inconsistencies) {
         this.inferredRelations = Collections.unmodifiableList(
                 Objects.requireNonNull(inferredRelations, "inferredRelations"));
-        this.inferredTypes     = Collections.unmodifiableMap(
-                Objects.requireNonNull(inferredTypes,     "inferredTypes"));
+        this.inferredTypeCandidates = immutableTypeCandidates(
+                Objects.requireNonNull(inferredTypeCandidates, "inferredTypeCandidates"));
+        this.inferredTypes     = Collections.unmodifiableMap(firstTypeView(this.inferredTypeCandidates));
         this.inconsistencies   = Collections.unmodifiableList(
                 Objects.requireNonNull(inconsistencies,   "inconsistencies"));
     }
@@ -70,11 +77,26 @@ public final class OwlRlResult {
     public List<GraphRelation> inferredRelations() { return inferredRelations; }
 
     /**
-     * Entity-ID → inferred class IRI mappings produced by
+     * Legacy entity-ID → first inferred class IRI mappings produced by
      * {@code cax-sco} (subclass propagation), {@code prp-dom} (domain typing),
      * {@code prp-rng} (range typing), and {@code cls-oo} (equivalence propagation).
+     *
+     * <p>Use {@link #inferredTypeCandidates()} when all inferred memberships matter.</p>
      */
     public Map<String, String> inferredTypes() { return inferredTypes; }
+
+    /**
+     * Entity-ID → all inferred class IRI memberships produced by OWL reasoning.
+     *
+     * <p>Insertion order is preserved per entity so the first item matches the legacy
+     * {@link #inferredTypes()} view.</p>
+     */
+    public Map<String, List<String>> inferredTypeCandidates() { return inferredTypeCandidates; }
+
+    /** Total inferred type memberships across all entities. */
+    public int inferredTypeCount() {
+        return inferredTypeCandidates.values().stream().mapToInt(List::size).sum();
+    }
 
     /**
      * Constraint violations detected during inference, most commonly from
@@ -99,9 +121,30 @@ public final class OwlRlResult {
             List<GraphRelation> inferredRelations,
             Map<String, String> inferredTypes,
             List<OwlInconsistency> inconsistencies) {
+        Map<String, List<String>> candidates = new LinkedHashMap<>();
+        inferredTypes.forEach((entityId, classIri) -> {
+            if (entityId != null && classIri != null) {
+                candidates.put(entityId, List.of(classIri));
+            }
+        });
+        return ofMultiTypes(inferredRelations, candidates, inconsistencies);
+    }
+
+    /**
+     * Build an {@link OwlRlResult} with multiple inferred type memberships per entity.
+     *
+     * @param inferredRelations new relations (copied defensively)
+     * @param inferredTypes     entity type memberships (copied defensively)
+     * @param inconsistencies   violations (copied defensively)
+     * @return an immutable result
+     */
+    public static OwlRlResult ofMultiTypes(
+            List<GraphRelation> inferredRelations,
+            Map<String, ? extends Collection<String>> inferredTypes,
+            List<OwlInconsistency> inconsistencies) {
         return new OwlRlResult(
                 List.copyOf(inferredRelations),
-                Map.copyOf(inferredTypes),
+                copyTypeCandidates(inferredTypes),
                 List.copyOf(inconsistencies));
     }
 
@@ -114,8 +157,42 @@ public final class OwlRlResult {
     public String toString() {
         return "OwlRlResult{"
                 + "inferredRelations=" + inferredRelations.size()
-                + ", inferredTypes="   + inferredTypes.size()
+                + ", inferredTypes="   + inferredTypeCount()
                 + ", inconsistencies=" + inconsistencies.size()
                 + "}";
+    }
+
+    private static Map<String, List<String>> copyTypeCandidates(
+            Map<String, ? extends Collection<String>> inferredTypes) {
+        Map<String, List<String>> copy = new LinkedHashMap<>();
+        Objects.requireNonNull(inferredTypes, "inferredTypes").forEach((entityId, classIris) -> {
+            if (entityId == null || classIris == null) return;
+            List<String> clean = new ArrayList<>();
+            for (String classIri : classIris) {
+                if (classIri != null && !clean.contains(classIri)) {
+                    clean.add(classIri);
+                }
+            }
+            if (!clean.isEmpty()) {
+                copy.put(entityId, List.copyOf(clean));
+            }
+        });
+        return copy;
+    }
+
+    private static Map<String, List<String>> immutableTypeCandidates(Map<String, List<String>> inferredTypes) {
+        Map<String, List<String>> copy = new LinkedHashMap<>();
+        inferredTypes.forEach((entityId, classIris) -> copy.put(entityId, List.copyOf(classIris)));
+        return Collections.unmodifiableMap(copy);
+    }
+
+    private static Map<String, String> firstTypeView(Map<String, List<String>> inferredTypes) {
+        Map<String, String> firstTypes = new LinkedHashMap<>();
+        inferredTypes.forEach((entityId, classIris) -> {
+            if (!classIris.isEmpty()) {
+                firstTypes.put(entityId, classIris.get(0));
+            }
+        });
+        return firstTypes;
     }
 }

@@ -57,7 +57,7 @@ export interface OwlReasoningStatus {
   reasonerActive: boolean;
 }
 
-/** Result of POST /api/graph-ontology/classify — the on-demand OWL classification run. */
+/** Result of POST /api/graph-ontology/classify — the full schema + OWL classification run. */
 export interface OwlClassificationResult {
   factSheetId: number;
   ontologyBound: boolean;
@@ -68,6 +68,32 @@ export interface OwlClassificationResult {
   edgesMaterialized: number;
   consistent: boolean;
   reasonerActive: boolean;
+}
+
+/** Result of POST /api/graph-ontology/types/induce — the LLM schema/type enrichment pass. */
+export interface OntologyTypeInductionResult {
+  changed: boolean;
+  aliasesAdded: number;
+  typesAdded: number;
+  version: number;
+}
+
+export interface TypedEntityMatch {
+  nodeId: string;
+  title?: string;
+  matchedTypes: string[];
+  directTypes: string[];
+  inheritedTypes: string[];
+  confidence: number;
+}
+
+export interface TypedEntityMatchResponse {
+  factSheetId: number;
+  queryType: string;
+  resolvedType: string;
+  includeInherited: boolean;
+  matchCount: number;
+  matches: TypedEntityMatch[];
 }
 
 /** Mirrors ai.kompile.app.web.dto.ontology.GraphConformanceReport. */
@@ -127,9 +153,33 @@ export class GraphOntologyService extends BaseService {
       `${this.backendUrl}/graph-ontology/owl`, { params: { factSheetId } });
   }
 
-  /** Run OWL classification on demand + persist the results (POST /api/graph-ontology/classify). */
+  /** Run the full schema pass: OWL, LLM schema update, then OWL again if changed. */
   classify(factSheetId: number): Observable<OwlClassificationResult> {
     return this.http.post<OwlClassificationResult>(
       `${this.backendUrl}/graph-ontology/classify`, {}, { params: { factSheetId } });
+  }
+
+  /** Run only OWL classification and persist inferred is-a / has-a closure results. */
+  classifyOwlOnly(factSheetId: number): Observable<OwlClassificationResult> {
+    return this.http.post<OwlClassificationResult>(
+      `${this.backendUrl}/graph-ontology/owl/classify`, {}, { params: { factSheetId } });
+  }
+
+  /** Run only the post-OWL LLM schema/type induction pass. */
+  induceTypes(factSheetId: number): Observable<OntologyTypeInductionResult> {
+    return this.http.post<OntologyTypeInductionResult>(
+      `${this.backendUrl}/graph-ontology/types/induce`, {}, { params: { factSheetId } });
+  }
+
+  /** Find entities that directly have or inherit a canonical type/alias/localized label. */
+  entitiesByType(
+    factSheetId: number,
+    type: string,
+    includeInherited = true,
+    minConfidence = 0
+  ): Observable<TypedEntityMatchResponse> {
+    return this.http.get<TypedEntityMatchResponse>(
+      `${this.backendUrl}/graph-ontology/types/entities`,
+      { params: { factSheetId, type, includeInherited, minConfidence } });
   }
 }

@@ -28,6 +28,8 @@ import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 import { MatDividerModule } from '@angular/material/divider';
 import { GraphOntologyService, GraphConformanceReport, OwlReasoningStatus } from '../../services/graph-ontology.service';
 import { ProcessEngineService, OntologySchema, DeriveOntologyRequest } from '../../services/process-engine.service';
+import { of } from 'rxjs';
+import { map, switchMap } from 'rxjs/operators';
 
 /**
  * Bind a governing ontology to a fact sheet's graph and show the conformance report (graph-as-asset
@@ -66,6 +68,8 @@ export class GraphOntologyPanelComponent implements OnInit, OnChanges {
   owlStatus: OwlReasoningStatus | null = null;
   owlLoading = false;
   classifying = false;
+  owlClassifying = false;
+  inducingTypes = false;
 
   // D4: "Derive from graph" state
   deriving = false;
@@ -133,7 +137,7 @@ export class GraphOntologyPanelComponent implements OnInit, OnChanges {
     });
   }
 
-  /** Run OWL classification (is-a realization + has-a closure) over this graph and persist it. */
+  /** Generate crawl schema/type materialization (is-a realization + has-a closure) and persist it. */
   classify(): void {
     if (this.factSheetId == null) return;
     this.classifying = true;
@@ -141,13 +145,78 @@ export class GraphOntologyPanelComponent implements OnInit, OnChanges {
       next: (r) => {
         this.classifying = false;
         if (!r.ontologyBound) {
-          this.ok('Nothing to classify — no ontology bound and no entities to derive one from');
+          this.ok('No schema generated: no ontology bound and no entities to derive one from');
         } else {
-          this.ok(`Classified ${r.entitiesClassified} entities, inferred ${r.edgesMaterialized} has-a edges`);
+          this.ok(`Generated schema types for ${r.entitiesClassified} entities, inferred ${r.edgesMaterialized} has-a edges`);
         }
+        this.loadConformance();
         this.loadOwlStatus();
       },
-      error: (e) => { this.classifying = false; this.error('Classification failed', e); }
+      error: (e) => { this.classifying = false; this.error('Schema generation failed', e); }
+    });
+  }
+
+  /** Run only OWL classification/materialization and persist inferred graph facts. */
+  runOwlOnly(): void {
+    if (this.factSheetId == null) return;
+    this.owlClassifying = true;
+    this.ontologyService.classifyOwlOnly(this.factSheetId).subscribe({
+      next: (r) => {
+        this.owlClassifying = false;
+        if (!r.ontologyBound) {
+          this.ok('OWL skipped: no ontology bound and no entities to derive one from');
+        } else {
+          this.ok(`OWL inferred ${r.inferredTypeCount} types and ${r.inferredRelationCount} relationships`);
+        }
+        this.loadConformance();
+        this.loadOwlStatus();
+      },
+      error: (e) => { this.owlClassifying = false; this.error('OWL inference failed', e); }
+    });
+  }
+
+  /**
+   * Run the LLM schema update path explicitly. OWL runs before induction so the LLM sees current
+   * typed evidence, and runs again after a schema change so inferred relationships surface in the UI.
+   */
+  induceTypes(): void {
+    if (this.factSheetId == null || this.inducingTypes) return;
+    const factSheetId = this.factSheetId;
+    this.inducingTypes = true;
+
+    this.ontologyService.classifyOwlOnly(factSheetId).pipe(
+      switchMap((firstPass) => {
+        if (!firstPass.ontologyBound) {
+          return of({
+            induction: { changed: false, aliasesAdded: 0, typesAdded: 0, version: 0 },
+            classification: firstPass
+          });
+        }
+        return this.ontologyService.induceTypes(factSheetId).pipe(
+          switchMap((induction) => {
+            if (!induction.changed) {
+              return of({ induction, classification: firstPass });
+            }
+            return this.ontologyService.classifyOwlOnly(factSheetId).pipe(
+              map((classification) => ({ induction, classification }))
+            );
+          })
+        );
+      })
+    ).subscribe({
+      next: ({ induction, classification }) => {
+        this.inducingTypes = false;
+        if (!classification.ontologyBound) {
+          this.ok('LLM schema update skipped: no ontology bound and no entities to derive one from');
+        } else if (induction.changed) {
+          this.ok(`LLM schema update added ${induction.typesAdded} types and ${induction.aliasesAdded} aliases`);
+        } else {
+          this.ok('LLM schema update found no new schema gaps; OWL inference refreshed');
+        }
+        this.loadConformance();
+        this.loadOwlStatus();
+      },
+      error: (e) => { this.inducingTypes = false; this.error('LLM schema update failed', e); }
     });
   }
 

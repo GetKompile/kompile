@@ -44,6 +44,7 @@ import { TableRendererComponent } from '../table-renderer/table-renderer.compone
 
 import { GraphService } from '../../services/graph.service';
 import { BayesianService } from '../../services/bayesian.service';
+import { GraphOntologyService } from '../../services/graph-ontology.service';
 import {
   GraphNode,
   GraphEdge,
@@ -131,6 +132,7 @@ export class EntityBrowserComponent implements OnInit, OnDestroy {
   // State
   loading = false;
   loadingConnections = false;
+  schemaEnriching = false;
   selectedTabIndex = 0;
   viewMode: 'list' | 'grid' = 'list';
 
@@ -186,6 +188,7 @@ export class EntityBrowserComponent implements OnInit, OnDestroy {
   constructor(
     private graphService: GraphService,
     private bayesianService: BayesianService,
+    private ontologyService: GraphOntologyService,
     private snackBar: MatSnackBar,
     private dialog: MatDialog
   ) {}
@@ -764,5 +767,34 @@ export class EntityBrowserComponent implements OnInit, OnDestroy {
     if (this.selectedTabIndex === 1) {
       this.loadConnections();
     }
+  }
+
+  generateSchemaAndTypes(): void {
+    if (this.factSheetId == null || this.schemaEnriching) {
+      return;
+    }
+    this.schemaEnriching = true;
+    this.ontologyService.classify(this.factSheetId)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (result) => {
+          this.schemaEnriching = false;
+          if (!result.ontologyBound) {
+            this.snackBar.open('No schema generated: no ontology bound and no entities to derive one from',
+              'Dismiss', { duration: 3000 });
+          } else {
+            this.snackBar.open(
+              `Generated schema types for ${result.entitiesClassified} entities`,
+              'Dismiss',
+              { duration: 3000 });
+          }
+          this.refreshData();
+        },
+        error: (err) => {
+          console.error('Failed to generate schema and types:', err);
+          this.schemaEnriching = false;
+          this.snackBar.open('Failed to generate schema and types', 'Dismiss', { duration: 3000 });
+        }
+      });
   }
 }

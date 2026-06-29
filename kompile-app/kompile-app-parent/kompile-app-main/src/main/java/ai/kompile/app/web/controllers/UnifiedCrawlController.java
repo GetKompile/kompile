@@ -24,6 +24,8 @@ import ai.kompile.app.ingest.domain.IndexingJobHistory;
 import ai.kompile.app.ingest.domain.IndexingJobHistory.FailureReason;
 import ai.kompile.app.ingest.service.IndexingJobHistoryService;
 import ai.kompile.app.ingest.service.JobLogService;
+import ai.kompile.app.ontology.OntologySchemaEnrichmentService;
+import ai.kompile.app.web.dto.ontology.OwlClassificationResponse;
 import ai.kompile.app.web.dto.IngestProgressUpdate;
 import ai.kompile.app.services.GraphSchemaPresetService;
 import ai.kompile.app.services.scheduler.ResourceAwareJobScheduler;
@@ -132,6 +134,9 @@ public class UnifiedCrawlController {
 
     @Autowired(required = false)
     private GraphHydrationOrchestrator hydrationOrchestrator;
+
+    @Autowired(required = false)
+    private OntologySchemaEnrichmentService schemaEnrichmentService;
 
     /** Resolved uploads directory for file-based crawl jobs */
     private Path uploadsPath;
@@ -1016,6 +1021,7 @@ public class UnifiedCrawlController {
                             "error", "Cannot determine factSheetId for job " + jobId
                                     + " — start a new crawl to associate a fact sheet"));
                 }
+                OwlClassificationResponse schemaResult = runSchemaEnrichmentForHistoryRerun(normalizedStep, factSheetId);
                 HydrationResult result = runHydrationStep(normalizedStep, factSheetId);
                 // Build a human-readable summary exposing all the counts so "0 derived" is explainable.
                 String hydrationMsg = normalizedStep + " re-run: derived=" + result.relationsDerived()
@@ -1025,6 +1031,7 @@ public class UnifiedCrawlController {
                         + " merges=" + result.mergesPerformed()
                         + " orphans=" + result.orphansRemoved()
                         + " stages=" + result.stagesRun()
+                        + schemaRerunSummary(schemaResult)
                         + " (factSheet=" + factSheetId + ")";
                 // Update in-memory step (if the job is still alive) and persist to history.
                 persistStepResultToHistory(resolvedId, normalizedStep, hydrationMsg,
@@ -1034,6 +1041,8 @@ public class UnifiedCrawlController {
                         "stagesRun", result.stagesRun(),
                         "relationsDerived", result.relationsDerived(),
                         "factsMaterialized", result.factsMaterialized(),
+                        "schemaEntitiesClassified", schemaResult == null ? 0 : schemaResult.getEntitiesClassified(),
+                        "schemaEdgesMaterialized", schemaResult == null ? 0 : schemaResult.getEdgesMaterialized(),
                         "message", hydrationMsg));
             }
 
@@ -1208,6 +1217,31 @@ public class UnifiedCrawlController {
             case "ONTOLOGY_CONFORMANCE"   -> hydrationOrchestrator.runOntologyConformanceOnly(fsId);
             default -> throw new IllegalArgumentException("Unknown hydration step: " + normalizedStep);
         };
+    }
+
+    /**
+     * History re-runs of ENRICHMENT should match the normal crawl enrichment pass: update schema
+     * richness, materialize inferred types/relations, then run graph hydration.
+     */
+    private OwlClassificationResponse runSchemaEnrichmentForHistoryRerun(String normalizedStep, Long factSheetId) {
+        if (!"ENRICHMENT".equals(normalizedStep)) {
+            return null;
+        }
+        if (schemaEnrichmentService == null) {
+            log.info("[Step re-run] OntologySchemaEnrichmentService not available; skipping schema pass for ENRICHMENT");
+            return null;
+        }
+        log.info("[Step re-run] Running OWL + LLM schema enrichment before ENRICHMENT hydration for factSheet={}",
+                factSheetId);
+        return schemaEnrichmentService.generateSchemaAndTypes(factSheetId);
+    }
+
+    private static String schemaRerunSummary(OwlClassificationResponse schemaResult) {
+        if (schemaResult == null) {
+            return "";
+        }
+        return " schemaTypes=" + schemaResult.getEntitiesClassified()
+                + " schemaEdges=" + schemaResult.getEdgesMaterialized();
     }
 
     @PostMapping("/jobs/cleanup")

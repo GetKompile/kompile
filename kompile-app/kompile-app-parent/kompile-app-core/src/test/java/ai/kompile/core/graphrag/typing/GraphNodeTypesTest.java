@@ -18,6 +18,7 @@ package ai.kompile.core.graphrag.typing;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -44,6 +45,40 @@ class GraphNodeTypesTest {
     @Test
     void usesFallbackWhenNoTypeKeyPresent() {
         assertEquals("ENTITY", GraphNodeTypes.resolveEntityType(Map.of("foo", "bar"), "ENTITY"));
+    }
+
+    @Test
+    void resolvesReasoningTypeMembershipsSpecificToBroad() {
+        assertEquals(List.of("Cabernet", "RedWine", "Wine"),
+                GraphNodeTypes.resolveTypeMemberships(Map.of(
+                        "entity_subtype", "Cabernet",
+                        "entity_type", "RedWine",
+                        "entity_category", "Wine")));
+    }
+
+    @Test
+    void resolvesHierarchySpecificToBroad() {
+        List<GraphNodeTypes.TypeHierarchyEdge> hierarchy = GraphNodeTypes.resolveTypeHierarchy(Map.of(
+                "entity_subtype", "Cabernet",
+                "entity_type", "RedWine",
+                "entity_category", "Wine"));
+
+        assertEquals(2, hierarchy.size());
+        assertEquals("Cabernet", hierarchy.get(0).type());
+        assertEquals("RedWine", hierarchy.get(0).parentType());
+        assertEquals("RedWine", hierarchy.get(1).type());
+        assertEquals("Wine", hierarchy.get(1).parentType());
+    }
+
+    @Test
+    void hierarchyFallsBackFromSubtypeToCategoryWhenTypeMissing() {
+        List<GraphNodeTypes.TypeHierarchyEdge> hierarchy = GraphNodeTypes.resolveTypeHierarchy(Map.of(
+                "entity_subtype", "RedWine",
+                "entity_category", "Wine"));
+
+        assertEquals(1, hierarchy.size());
+        assertEquals("RedWine", hierarchy.get(0).type());
+        assertEquals("Wine", hierarchy.get(0).parentType());
     }
 
     @Test

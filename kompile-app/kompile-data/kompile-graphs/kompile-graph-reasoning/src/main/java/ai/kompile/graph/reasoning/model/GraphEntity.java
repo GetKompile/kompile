@@ -16,6 +16,9 @@
 package ai.kompile.graph.reasoning.model;
 
 import java.time.Instant;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -47,6 +50,49 @@ public interface GraphEntity {
      * Never {@code null} (use {@code ""} when unknown).
      */
     String type();
+
+    /**
+     * All crisp type memberships known for this entity.
+     *
+     * <p>The first membership is always {@link #type()} when present. Additional memberships are
+     * read from store-agnostic metadata conventions such as {@code additionalTypes},
+     * {@code owlInferredTypes}, and deterministic/declared rows in {@code ontology.typeCandidates}.
+     * Probabilistic neural/LLM candidates are deliberately not promoted to crisp memberships unless
+     * they are explicitly marked asserted/declared/observed.</p>
+     */
+    default Set<String> typeMemberships() {
+        LinkedHashSet<String> memberships = new LinkedHashSet<>();
+        addTypeMembership(memberships, type());
+        Map<String, Object> attrs = attributes();
+        addTypeMemberships(memberships, attrs.get("additionalType"));
+        addTypeMemberships(memberships, attrs.get("additional_type"));
+        addTypeMemberships(memberships, attrs.get("additionalTypes"));
+        addTypeMemberships(memberships, attrs.get("additional_types"));
+        addTypeMemberships(memberships, attrs.get("entity_types"));
+        addTypeMemberships(memberships, attrs.get("ontology.inferredTypes"));
+        addTypeMemberships(memberships, attrs.get("owlInferredTypes"));
+        addTypeMemberships(memberships, attrs.get("owl.inferredTypes"));
+        addTypeMemberships(memberships, attrs.get("inferredTypes"));
+        addTypeMemberships(memberships, attrs.get("inferred_types"));
+        addTypeMemberships(memberships, attrs.get("typeClosure"));
+        addAssertedTypeCandidates(memberships, attrs.get("ontology.typeCandidates"));
+        addAssertedTypeCandidates(memberships, attrs.get("ontology.inferredTypeCandidates"));
+        addAssertedTypeCandidates(memberships, attrs.get("typeCandidates"));
+        addAssertedTypeCandidates(memberships, attrs.get("inferredTypeCandidates"));
+        addAssertedTypeCandidates(memberships, attrs.get("type_candidates"));
+        return Collections.unmodifiableSet(memberships);
+    }
+
+    /** Whether {@link #typeMemberships()} contains {@code typeName}, case-insensitively. */
+    default boolean hasTypeMembership(String typeName) {
+        if (typeName == null || typeName.isBlank()) return false;
+        for (String membership : typeMemberships()) {
+            if (typeName.equalsIgnoreCase(membership)) {
+                return true;
+            }
+        }
+        return false;
+    }
 
     /** Human-readable label/title. Never {@code null} (use {@code ""} when unknown). */
     String label();
@@ -179,5 +225,111 @@ public interface GraphEntity {
     /** Start a fluent builder for an entity with the given id. */
     static GraphEntityBuilder builder(String id) {
         return new GraphEntityBuilder(id);
+    }
+
+    private static void addTypeMemberships(LinkedHashSet<String> memberships, Object raw) {
+        if (raw instanceof Iterable<?> iterable) {
+            for (Object item : iterable) {
+                addTypeMemberships(memberships, item);
+            }
+            return;
+        }
+        if (raw instanceof String s && s.contains(",")) {
+            for (String part : s.split(",")) {
+                addTypeMembership(memberships, part);
+            }
+            return;
+        }
+        addTypeMembership(memberships, raw);
+    }
+
+    private static void addTypeMembership(LinkedHashSet<String> memberships, Object raw) {
+        if (raw == null) return;
+        String type = String.valueOf(raw).trim();
+        if (!type.isEmpty()) {
+            memberships.add(type);
+        }
+    }
+
+    private static void addAssertedTypeCandidates(LinkedHashSet<String> memberships, Object raw) {
+        if (raw instanceof Iterable<?> iterable) {
+            for (Object item : iterable) {
+                addAssertedTypeCandidates(memberships, item);
+            }
+            return;
+        }
+        if (!(raw instanceof Map<?, ?> rawMap)) {
+            return;
+        }
+        Map<String, Object> map = stringKeyMap(rawMap);
+        Object directType = firstNonNull(map, "type", "candidateType", "typeName", "inferredType", "label", "iri");
+        if (directType != null) {
+            if (isAssertedTypeCandidate(map)) {
+                addTypeMembership(memberships, directType);
+            }
+            return;
+        }
+        for (Map.Entry<String, Object> entry : map.entrySet()) {
+            if (entry.getValue() instanceof Map<?, ?> nested) {
+                Map<String, Object> candidate = stringKeyMap(nested);
+                candidate.putIfAbsent("type", entry.getKey());
+                if (isAssertedTypeCandidate(candidate)) {
+                    addTypeMembership(memberships, entry.getKey());
+                }
+            }
+        }
+    }
+
+    private static boolean isAssertedTypeCandidate(Map<String, Object> candidate) {
+        Object asserted = firstNonNull(candidate,
+                "asserted", "declared", "observed", "isAsserted", "isDeclared", "isObserved");
+        if (truthy(asserted)) return true;
+
+        Object confidence = firstNonNull(candidate, "confidence", "score", "probability", "posterior", "truthValue");
+        if (confidence instanceof Number number && number.doubleValue() < 0.999d) {
+            return false;
+        }
+
+        Object source = firstNonNull(candidate, "source", "inferenceSource", "engine", "model");
+        if (!(source instanceof String sourceName)) {
+            return false;
+        }
+        String normalized = sourceName.trim().toLowerCase();
+        return normalized.equals("owl-rl")
+                || normalized.equals("owl-dl")
+                || normalized.equals("ontology")
+                || normalized.equals("schema")
+                || normalized.equals("declared")
+                || normalized.equals("observed")
+                || normalized.equals("manual");
+    }
+
+    private static boolean truthy(Object raw) {
+        if (raw instanceof Boolean b) return b;
+        if (raw instanceof String s) {
+            String normalized = s.trim().toLowerCase();
+            return normalized.equals("true") || normalized.equals("yes") || normalized.equals("1");
+        }
+        return false;
+    }
+
+    private static Map<String, Object> stringKeyMap(Map<?, ?> rawMap) {
+        Map<String, Object> converted = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : rawMap.entrySet()) {
+            if (entry.getKey() != null) {
+                converted.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+        }
+        return converted;
+    }
+
+    private static Object firstNonNull(Map<String, Object> map, String... keys) {
+        for (String key : keys) {
+            Object value = map.get(key);
+            if (value != null) {
+                return value;
+            }
+        }
+        return null;
     }
 }
