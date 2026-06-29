@@ -176,7 +176,24 @@ public final class TypeRegistry {
      * @return a fully constructed {@link TypeHierarchy}
      */
     public TypeHierarchy buildFor(ReasoningGraph graph) {
+        return buildFor(graph, Map.of());
+    }
+
+    /**
+     * As {@link #buildFor(ReasoningGraph)}, but additionally treats each {@code (typeName →
+     * entityIds)} entry of {@code extraMembersByType} as membership. Used to fold OWL-RL inferred
+     * types (an entity classified into a type it is not explicitly typed as) into the hierarchy, so
+     * subsumption grounding sees those entities under the inferred type and all its supertypes.
+     *
+     * @param graph              the source graph (never {@code null})
+     * @param extraMembersByType extra {@code typeName → entityIds} memberships (e.g. OWL-inferred
+     *                           types); may be empty, never {@code null}
+     * @return a fully constructed {@link TypeHierarchy}
+     */
+    public TypeHierarchy buildFor(ReasoningGraph graph,
+                                  Map<String, ? extends java.util.Collection<String>> extraMembersByType) {
         Objects.requireNonNull(graph, "graph");
+        Objects.requireNonNull(extraMembersByType, "extraMembersByType");
 
         // Step 1: collect all type names
         Map<String, TypeNode>  nodes     = new LinkedHashMap<>();
@@ -200,10 +217,30 @@ public final class TypeRegistry {
             }
         }
 
+        // From extra (e.g. OWL-inferred) memberships — declare any not-yet-known type
+        for (String typeName : extraMembersByType.keySet()) {
+            if (typeName == null || typeName.isBlank()) continue;
+            String lower = typeName.toLowerCase();
+            if (!nodes.containsKey(lower)) {
+                nodes.put(lower, new TypeNode(typeName));
+                canonical.put(lower, typeName);
+            }
+        }
+
         // Step 2: populate entity IDs from graph
         for (GraphEntity entity : graph.entities()) {
             String lower = entity.type().toLowerCase();
             nodes.get(lower).addEntityId(entity.id());
+        }
+
+        // Step 2b: add extra (OWL-inferred) memberships
+        for (Map.Entry<String, ? extends java.util.Collection<String>> e : extraMembersByType.entrySet()) {
+            if (e.getKey() == null || e.getValue() == null) continue;
+            TypeNode node = nodes.get(e.getKey().toLowerCase());
+            if (node == null) continue;
+            for (String entityId : e.getValue()) {
+                if (entityId != null) node.addEntityId(entityId);
+            }
         }
 
         // Step 3: wire parent/child links from registry declarations

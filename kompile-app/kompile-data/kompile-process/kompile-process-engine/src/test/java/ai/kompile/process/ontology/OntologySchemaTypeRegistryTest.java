@@ -56,4 +56,24 @@ class OntologySchemaTypeRegistryTest {
         assertTrue(hierarchy.allTypeNames().isEmpty(),
                 "Null schema over an empty graph yields an empty hierarchy");
     }
+
+    @Test
+    void inferredMembers_addEntitiesToTypesTheyAreNotExplicitlyTypedAs() {
+        OntologySchema schema = OntologySchema.builder()
+                .name("functional-typing")
+                .entityTypes(List.of(EntityTypeDefinition.builder().name("Packaging").build()))
+                .build();
+
+        // paper1 is graph-typed "OfficeSupply" but OWL-inferred to ALSO be "Packaging".
+        MutableReasoningGraph graph = new MutableReasoningGraph()
+                .addEntity("paper1", "OfficeSupply", "Printer paper");
+
+        TypeHierarchy hierarchy = OntologySchemaTypeRegistry.toHierarchy(
+                schema, graph, java.util.Map.of("Packaging", List.of("paper1")));
+
+        assertTrue(hierarchy.entitiesOfType("Packaging", false).contains("paper1"),
+                "An OWL-inferred member should belong to its inferred type even without explicit typing");
+        assertTrue(hierarchy.entitiesOfType("OfficeSupply", false).contains("paper1"),
+                "Exact graph membership is preserved");
+    }
 }

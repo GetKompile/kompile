@@ -12,6 +12,10 @@ package ai.kompile.app.web.controllers.explain;
 import ai.kompile.knowledgegraph.reasoning.KnowledgeGraphReasoningAdapter;
 import ai.kompile.knowledgegraph.reasoning.TraceHumanizer;
 import ai.kompile.app.ontology.GraphOntologyBindingService;
+import ai.kompile.app.ontology.OwlOntologyBridge;
+import ai.kompile.graph.reasoning.mebn.type.owl.OwlOntology;
+import ai.kompile.graph.reasoning.mebn.type.owl.OwlRlReasoner;
+import ai.kompile.graph.reasoning.mebn.type.owl.OwlRlResult;
 import ai.kompile.process.ontology.OntologySchema;
 import ai.kompile.process.ontology.OntologySchemaTypeRegistry;
 import ai.kompile.graph.reasoning.model.ReasoningGraph;
@@ -40,6 +44,7 @@ import org.springframework.stereotype.Component;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -87,6 +92,14 @@ public class ExplainOrchestrator {
     @org.springframework.lang.Nullable
     private final GraphOntologyBindingService ontologyBindingService;
 
+    /**
+     * Optional — converts the active {@link OntologySchema} to an OWL TBox so MEBN type-hierarchy
+     * resolution can fold OWL-RL inferred types (over the real subgraph) into subsumption grounding.
+     * Null in plain-lib/test contexts → declared is-a only.
+     */
+    @org.springframework.lang.Nullable
+    private final OwlOntologyBridge owlOntologyBridge;
+
     /** Primary Spring constructor: all dependencies including TraceHumanizer. */
     @Autowired
     public ExplainOrchestrator(KbGroundingService groundingService,
@@ -95,7 +108,8 @@ public class ExplainOrchestrator {
                                PslReasoningService pslService,
                                BayesianNetworkService bayesianService,
                                @org.springframework.lang.Nullable TraceHumanizer traceHumanizer,
-                               @org.springframework.lang.Nullable GraphOntologyBindingService ontologyBindingService) {
+                               @org.springframework.lang.Nullable GraphOntologyBindingService ontologyBindingService,
+                               @org.springframework.lang.Nullable OwlOntologyBridge owlOntologyBridge) {
         this.groundingService = groundingService;
         this.graphService = graphService;
         this.attributionService = attributionService;
@@ -103,6 +117,7 @@ public class ExplainOrchestrator {
         this.bayesianService = bayesianService;
         this.traceHumanizer = traceHumanizer;
         this.ontologyBindingService = ontologyBindingService;
+        this.owlOntologyBridge = owlOntologyBridge;
     }
 
     /** Test / legacy constructor: no TraceHumanizer (falls back to empty maps). */
@@ -111,7 +126,7 @@ public class ExplainOrchestrator {
                                EventAttributionService attributionService,
                                PslReasoningService pslService,
                                BayesianNetworkService bayesianService) {
-        this(groundingService, graphService, attributionService, pslService, bayesianService, null, null);
+        this(groundingService, graphService, attributionService, pslService, bayesianService, null, null, null);
     }
 
     /**
@@ -462,18 +477,52 @@ public class ExplainOrchestrator {
             return null;
         }
         OntologySchema schema = ontologyBindingService.resolveActiveOntology(factSheetId).orElse(null);
-        if (schema == null || schema.getEntityTypes() == null) {
-            return null;
-        }
-        boolean hasIsA = schema.getEntityTypes().stream()
-                .anyMatch(e -> e != null && e.getParentType() != null && !e.getParentType().isBlank());
-        if (!hasIsA) {
+        if (schema == null) {
             return null;
         }
         ReasoningGraph rg = new KnowledgeGraphReasoningAdapter(graphService)
                 .maxDepth(3).maxNodes(100)
                 .subgraph(seeds);
-        return OntologySchemaTypeRegistry.toHierarchy(schema, rg);
+
+        // OWL-RL inferred types over the REAL subgraph: an entity the reasoner classifies into a type
+        // becomes groundable under that type (and its supertypes), beyond declared parentType is-a.
+        Map<String, List<String>> inferredMembers = owlInferredMembers(schema, rg);
+
+        boolean hasIsA = schema.getEntityTypes() != null && schema.getEntityTypes().stream()
+                .anyMatch(e -> e != null && e.getParentType() != null && !e.getParentType().isBlank());
+        if (!hasIsA && inferredMembers.isEmpty()) {
+            return null; // nothing to navigate → exact-type grounding (unchanged)
+        }
+        return OntologySchemaTypeRegistry.toHierarchy(schema, rg, inferredMembers);
+    }
+
+    /** OWL-RL inferred type memberships ({@code typeName → entityIds}) over the real ABox, or empty. */
+    private Map<String, List<String>> owlInferredMembers(OntologySchema schema, ReasoningGraph abox) {
+        if (owlOntologyBridge == null) {
+            return Map.of();
+        }
+        try {
+            OwlOntology tbox = owlOntologyBridge.toOwlOntology(schema);
+            OwlRlResult owl = new OwlRlReasoner().reason(abox, tbox);
+            Map<String, List<String>> byType = new LinkedHashMap<>();
+            for (Map.Entry<String, String> e : owl.inferredTypes().entrySet()) {
+                String typeName = localName(e.getValue());
+                if (e.getKey() == null || typeName == null || typeName.isBlank()) continue;
+                byType.computeIfAbsent(typeName, k -> new ArrayList<>()).add(e.getKey());
+            }
+            return byType;
+        } catch (RuntimeException ex) {
+            log.debug("OWL-RL inference for MEBN type hierarchy failed (ontology '{}'): {}",
+                    schema.getId(), ex.getMessage());
+            return Map.of();
+        }
+    }
+
+    /** Local name of an IRI: the substring after the last '#' or '/'. */
+    private static String localName(String iri) {
+        if (iri == null) return null;
+        int h = Math.max(iri.lastIndexOf('#'), iri.lastIndexOf('/'));
+        return (h >= 0 && h < iri.length() - 1) ? iri.substring(h + 1) : iri;
     }
 
     private ReasoningTrail mebnTrail(String target, long factSheetId) {

@@ -13,7 +13,9 @@ import ai.kompile.graph.reasoning.mebn.type.TypeHierarchy;
 import ai.kompile.graph.reasoning.mebn.type.TypeRegistry;
 import ai.kompile.graph.reasoning.model.ReasoningGraph;
 
+import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Bridges a declarative {@link OntologySchema} onto the graph-reasoning {@link TypeRegistry} /
@@ -74,5 +76,20 @@ public final class OntologySchemaTypeRegistry {
      */
     public static TypeHierarchy toHierarchy(OntologySchema schema, ReasoningGraph graph) {
         return toRegistry(schema).buildFor(graph);
+    }
+
+    /**
+     * As {@link #toHierarchy(OntologySchema, ReasoningGraph)}, but additionally folds OWL-RL inferred
+     * type memberships ({@code typeName → entityIds}) into the hierarchy, so entities classified by
+     * the OWL reasoner — not only those declared via {@code parentType} — drive subsumption grounding.
+     *
+     * @param schema                the ontology schema ({@code null} → membership-only hierarchy)
+     * @param graph                 the source graph providing base membership (never {@code null})
+     * @param inferredMembersByType OWL-inferred {@code typeName → entityIds}; may be empty
+     * @return a fully merged hierarchy, ready for {@code SSBNGenerator.typeHierarchy(...)}
+     */
+    public static TypeHierarchy toHierarchy(OntologySchema schema, ReasoningGraph graph,
+                                            Map<String, ? extends Collection<String>> inferredMembersByType) {
+        return toRegistry(schema).buildFor(graph, inferredMembersByType);
     }
 }
