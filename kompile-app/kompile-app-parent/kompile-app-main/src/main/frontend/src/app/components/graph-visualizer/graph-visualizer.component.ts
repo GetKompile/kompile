@@ -45,6 +45,7 @@ import { MarkdownRendererComponent } from '../markdown-renderer/markdown-rendere
 import { TableRendererComponent } from '../table-renderer/table-renderer.component';
 import { KbContextPanelComponent } from '../kb-context-panel/kb-context-panel.component';
 import { SourceLinkingPanelComponent } from './source-linking-panel.component';
+import { GraphOntologyPanelComponent } from '../graph-ontology-panel/graph-ontology-panel.component';
 import { SourceCitationComponent } from '../source-citation/source-citation.component';
 import { ReasoningTrailComponent } from '../reasoning-trail/reasoning-trail.component';
 
@@ -104,6 +105,7 @@ import {
     TableRendererComponent,
     KbContextPanelComponent,
     SourceLinkingPanelComponent,
+    GraphOntologyPanelComponent,
     SourceCitationComponent,
     ReasoningTrailComponent
   ],
@@ -1093,6 +1095,13 @@ import {
                 <app-source-linking-panel
                   [factSheetId]="factSheetId">
                 </app-source-linking-panel>
+              </div>
+            </mat-tab>
+            <!-- Ontology / OWL Reasoning Tab -->
+            <mat-tab label="Ontology">
+              <div class="panel-content">
+                <app-graph-ontology-panel [factSheetId]="factSheetId">
+                </app-graph-ontology-panel>
               </div>
             </mat-tab>
           </mat-tab-group>

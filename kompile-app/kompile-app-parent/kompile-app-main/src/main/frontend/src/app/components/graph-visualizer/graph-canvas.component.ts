@@ -900,7 +900,14 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
     if (this.provenanceOverlayEnabled && this.isDerivedNode(node)) {
       return '#ce93d8';
     }
-    // 8. Default: type color
+    // 8. Default: ENTITY nodes are colored by their semantic entity_type (stable palette hash),
+    //    so the ontological type is visible at a glance; other node levels use the NodeLevel color.
+    if (node.type === 'ENTITY') {
+      const et = node.metadata?.['entity_type'];
+      if (et) {
+        return COMMUNITY_PALETTE[Math.floor(this.hashToUnit(et, 0) * COMMUNITY_PALETTE.length) % COMMUNITY_PALETTE.length];
+      }
+    }
     return NODE_COLORS[node.type] || '#999999';
   }
 
