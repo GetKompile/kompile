@@ -107,6 +107,13 @@ public class UnifiedCrawlRequest {
     @Builder.Default
     private int maxValidationRetries = 2;
 
+    /**
+     * When not {@code false}, the crawl derives + binds a structural ontology from the built graph
+     * during ENRICHMENT, so OWL is-a/has-a reasoning + entity classification operate automatically.
+     * Default (null) = enabled.
+     */
+    private Boolean deriveOntology;
+
     // ---- Modular step selection ----
 
     /**

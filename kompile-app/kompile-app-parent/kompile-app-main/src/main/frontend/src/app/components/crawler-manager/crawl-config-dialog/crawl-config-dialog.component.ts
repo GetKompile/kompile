@@ -145,6 +145,8 @@ export class CrawlConfigDialogComponent implements OnInit {
 
   // ── Graph Extraction ──
   graphEnabled = true;
+  /** Derive + bind a structural ontology during enrichment (enables OWL is-a/has-a + classification). */
+  deriveOntology = true;
   graphSchemaPresetId = '';
   graphEntityTypes = '';
   graphRelationshipTypes = '';
@@ -390,6 +392,7 @@ export class CrawlConfigDialogComponent implements OnInit {
     req.graphExtraction = this.buildGraphExtraction();
     req.preprocessing = this.buildPreprocessing();
     req.processingRoute = this.buildProcessingRoute();
+    (req as any).deriveOntology = this.deriveOntology;
 
     const pipelines = this.buildPipelines();
     if (pipelines.length > 0) {

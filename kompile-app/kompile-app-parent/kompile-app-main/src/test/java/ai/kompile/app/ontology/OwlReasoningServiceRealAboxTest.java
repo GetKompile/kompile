@@ -59,7 +59,7 @@ class OwlReasoningServiceRealAboxTest {
                 .build();
 
         GraphOntologyBindingService binding = mock(GraphOntologyBindingService.class);
-        when(binding.autoProvisionStructuralOntology(7L)).thenReturn(Optional.of(schema));
+        when(binding.resolveActiveOntology(7L)).thenReturn(Optional.of(schema));
 
         // Real crawled entities a, b, c connected by a CONTAINS chain a→b→c.
         GraphNode a = entityNode("a");

@@ -57,6 +57,19 @@ export interface OwlReasoningStatus {
   reasonerActive: boolean;
 }
 
+/** Result of POST /api/graph-ontology/classify — the on-demand OWL classification run. */
+export interface OwlClassificationResult {
+  factSheetId: number;
+  ontologyBound: boolean;
+  ontologyName: string | null;
+  inferredTypeCount: number;
+  inferredRelationCount: number;
+  entitiesClassified: number;
+  edgesMaterialized: number;
+  consistent: boolean;
+  reasonerActive: boolean;
+}
+
 /** Mirrors ai.kompile.app.web.dto.ontology.GraphConformanceReport. */
 export interface GraphConformanceReport {
   factSheetId: number;
@@ -112,5 +125,11 @@ export class GraphOntologyService extends BaseService {
   owl(factSheetId: number): Observable<OwlReasoningStatus> {
     return this.http.get<OwlReasoningStatus>(
       `${this.backendUrl}/graph-ontology/owl`, { params: { factSheetId } });
+  }
+
+  /** Run OWL classification on demand + persist the results (POST /api/graph-ontology/classify). */
+  classify(factSheetId: number): Observable<OwlClassificationResult> {
+    return this.http.post<OwlClassificationResult>(
+      `${this.backendUrl}/graph-ontology/classify`, {}, { params: { factSheetId } });
   }
 }

@@ -37,6 +37,7 @@ import ai.kompile.crawl.graph.preprocessing.PreprocessingPipelineRunner;
 import ai.kompile.knowledgegraph.embedding.domain.KGEmbeddingJob;
 import ai.kompile.knowledgegraph.matrix.store.MatrixGraphStore;
 import ai.kompile.knowledgegraph.resolution.GraphCompactionService;
+import ai.kompile.core.graphrag.conformance.OntologyAutoProvisioner;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -195,6 +196,10 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
 
     @Autowired(required = false)
     private KnowledgeGraphService knowledgeGraphService;
+
+    /** Optional app-main hook that derives + binds an ontology so OWL reasoning/classification runs. */
+    @Autowired(required = false)
+    private OntologyAutoProvisioner ontologyAutoProvisioner;
 
     /**
      * Optional matrix graph store — in subprocess mode this is {@code SubprocessMatrixGraphStore}
@@ -2222,6 +2227,17 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                 if (graphHydrationOrchestrator != null && knowledgeGraphService != null) {
                     Long factSheetId = jobFactSheetId(job);
                     if (factSheetId != null) {
+                        // deriveOntology step: derive + bind a structural ontology before reground so
+                        // OWL is-a/has-a reasoning + classification operate over the crawled graph.
+                        if (ontologyAutoProvisioner != null
+                                && !Boolean.FALSE.equals(job.getRequest().getDeriveOntology())) {
+                            try {
+                                ontologyAutoProvisioner.provisionOntology(factSheetId);
+                            } catch (RuntimeException e) {
+                                log.warn("[Job {}] deriveOntology step failed (continuing enrichment): {}",
+                                        job.getJobId(), e.toString());
+                            }
+                        }
                         try {
                             updateProgress(job, "ENRICHMENT", 83, "Starting graph hydration enrichment", null);
                             updatePipelineStep(job, "ENRICHMENT",

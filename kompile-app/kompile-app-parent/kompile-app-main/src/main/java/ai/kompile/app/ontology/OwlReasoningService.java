@@ -15,6 +15,7 @@
  */
 package ai.kompile.app.ontology;
 
+import ai.kompile.app.web.dto.ontology.OwlClassificationResponse;
 import ai.kompile.app.web.dto.ontology.OwlReasoningResponse;
 import ai.kompile.core.graphrag.conformance.OwlDerivedRuleProvider;
 import ai.kompile.graph.reasoning.mebn.type.owl.OwlOntology;
@@ -122,6 +123,39 @@ public class OwlReasoningService implements OwlDerivedRuleProvider {
     }
 
     /**
+     * Run OWL classification (realization) on demand over the fact sheet's real graph and persist the
+     * results — inferred is-a type memberships + has-a transitive-closure edges. Auto-provisions a
+     * structural ontology if none is bound, so there is always something to classify against.
+     *
+     * @param factSheetId the fact sheet to classify
+     * @return a summary of what was classified + materialized
+     */
+    public OwlClassificationResponse classify(long factSheetId) {
+        Optional<OntologySchema> schemaOpt = bindingService.autoProvisionStructuralOntology(factSheetId);
+        if (schemaOpt.isEmpty()) {
+            return OwlClassificationResponse.unbound(factSheetId);
+        }
+        OntologySchema schema = schemaOpt.get();
+        OwlOntology tbox = bridge.toOwlOntology(schema);
+        ReasoningGraph abox = buildAbox(factSheetId);
+        OwlRlResult result = reasoner.reason(abox, tbox);
+        MaterializationStats stats = materializeInferences(factSheetId, result);
+        log.info("OwlReasoningService.classify factSheet={}: {} entities typed, {} has-a edges materialized",
+                factSheetId, stats.entitiesClassified(), stats.edgesMaterialized());
+        return OwlClassificationResponse.builder()
+                .factSheetId(factSheetId)
+                .ontologyBound(true)
+                .ontologyName(schema.getName() != null ? schema.getName() : schema.getId())
+                .inferredTypeCount(result.inferredTypes().size())
+                .inferredRelationCount(result.inferredRelations().size())
+                .entitiesClassified(stats.entitiesClassified())
+                .edgesMaterialized(stats.edgesMaterialized())
+                .consistent(result.isConsistent())
+                .reasonerActive(true)
+                .build();
+    }
+
+    /**
      * Implements {@link OwlDerivedRuleProvider}: derives additional PSL rule strings from the
      * OWL RL entailment for {@code factSheetId}.
      *
@@ -139,9 +173,10 @@ public class OwlReasoningService implements OwlDerivedRuleProvider {
      */
     @Override
     public List<String> owlDerivedPslRules(long factSheetId, double ruleWeight) {
-        // Auto-provision + bind a structural ontology if none is bound, so enrichment OWL reasoning
-        // operates on a real TBox instead of silently no-opping.
-        Optional<OntologySchema> schemaOpt = bindingService.autoProvisionStructuralOntology(factSheetId);
+        // Reason over whatever ontology is bound. Provisioning is explicit — the crawl's deriveOntology
+        // enrichment step + the Classify action both bind via OntologyAutoProvisioner — so this is not
+        // a side-effect of rule generation.
+        Optional<OntologySchema> schemaOpt = bindingService.resolveActiveOntology(factSheetId);
         if (schemaOpt.isEmpty()) return List.of();
 
         OwlOntology tbox = bridge.toOwlOntology(schemaOpt.get());
@@ -361,10 +396,10 @@ public class OwlReasoningService implements OwlDerivedRuleProvider {
      * {@link GraphEdge}s (idempotent on the endpoint pair), and inferred is-a types are recorded in the
      * entity nodes' {@code owlInferredTypes} metadata. Never throws into the enrichment pass.
      */
-    private void materializeInferences(long factSheetId, OwlRlResult result) {
-        if (knowledgeGraphService == null || result == null) return;
+    private MaterializationStats materializeInferences(long factSheetId, OwlRlResult result) {
+        if (knowledgeGraphService == null || result == null) return new MaterializationStats(0, 0);
+        int edges = 0;
         try {
-            int edges = 0;
             int edgeCap = 5000;
             for (GraphRelation rel : result.inferredRelations()) {
                 if (edges >= edgeCap) {
@@ -386,10 +421,15 @@ public class OwlReasoningService implements OwlDerivedRuleProvider {
                 log.info("Materialized OWL inferences for factSheet={}: {} transitive has-a edges, {} typed entities",
                         factSheetId, edges, typed);
             }
+            return new MaterializationStats(edges, typed);
         } catch (RuntimeException e) {
             log.warn("Materializing OWL inferences failed for factSheet={}: {}", factSheetId, e.toString());
+            return new MaterializationStats(edges, 0);
         }
     }
+
+    /** Counts from a materialization pass — surfaced by the on-demand {@link #classify(long)} run. */
+    private record MaterializationStats(int edgesMaterialized, int entitiesClassified) {}
 
     /** Record inferred is-a class memberships in entity nodes' {@code owlInferredTypes} metadata. */
     private int materializeInferredTypes(long factSheetId, Map<String, String> inferredTypes) {

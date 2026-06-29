@@ -16,9 +16,11 @@
 package ai.kompile.app.web.controllers;
 
 import ai.kompile.app.ontology.OwlReasoningService;
+import ai.kompile.app.web.dto.ontology.OwlClassificationResponse;
 import ai.kompile.app.web.dto.ontology.OwlReasoningResponse;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -77,5 +79,18 @@ public class OwlReasoningController {
             @RequestParam long factSheetId) {
         OwlReasoningResponse response = owlReasoningService.reason(factSheetId);
         return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Run OWL classification (realization) on demand and persist the results — inferred is-a types +
+     * has-a transitive-closure edges — returning a summary. Auto-provisions a structural ontology if
+     * none is bound.
+     *
+     * @param factSheetId the fact sheet to classify
+     * @return HTTP 200 with the {@link OwlClassificationResponse} body
+     */
+    @PostMapping("/classify")
+    public ResponseEntity<OwlClassificationResponse> classify(@RequestParam long factSheetId) {
+        return ResponseEntity.ok(owlReasoningService.classify(factSheetId));
     }
 }

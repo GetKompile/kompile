@@ -18,6 +18,7 @@ package ai.kompile.app.ontology;
 import ai.kompile.app.web.dto.ontology.GraphConformanceReport;
 import ai.kompile.core.graphrag.conformance.GraphConformanceChecker;
 import ai.kompile.core.graphrag.conformance.GraphConformanceSummary;
+import ai.kompile.core.graphrag.conformance.OntologyAutoProvisioner;
 import ai.kompile.core.graphrag.conformance.OntologyAxiom;
 import ai.kompile.core.graphrag.conformance.OntologyProjectionProvider;
 import ai.kompile.core.graphrag.typing.GraphNodeTypes;
@@ -64,7 +65,8 @@ import java.util.Optional;
  */
 @Slf4j
 @Service
-public class GraphOntologyBindingService implements GraphConformanceChecker, OntologyProjectionProvider {
+public class GraphOntologyBindingService
+        implements GraphConformanceChecker, OntologyProjectionProvider, OntologyAutoProvisioner {
 
     /** Cap on per-report violation detail so the response stays bounded on large graphs. */
     private static final int MAX_VIOLATIONS = 200;
@@ -341,6 +343,12 @@ public class GraphOntologyBindingService implements GraphConformanceChecker, Ont
             log.warn("Auto-provision of structural ontology failed for factSheet={}: {}", factSheetId, e.toString());
             return Optional.empty();
         }
+    }
+
+    /** {@link OntologyAutoProvisioner} SPI — the crawl's deriveOntology enrichment step calls this. */
+    @Override
+    public void provisionOntology(long factSheetId) {
+        autoProvisionStructuralOntology(factSheetId);
     }
 
     /** Clear any explicit ontology binding on the fact sheet's named graph(s). */

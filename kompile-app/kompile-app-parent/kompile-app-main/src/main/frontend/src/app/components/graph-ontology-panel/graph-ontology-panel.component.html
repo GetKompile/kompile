@@ -103,6 +103,15 @@
         </mat-card-title>
       </mat-card-header>
       <mat-card-content>
+        <!-- Run classification on demand (auto-provisions a structural ontology if none is bound) -->
+        <div class="owl-actions">
+          <button mat-stroked-button color="primary" (click)="classify()" [disabled]="classifying || owlLoading"
+                  matTooltip="Run OWL classification now: infer is-a types + has-a transitive closure over this graph and save them back">
+            <mat-icon>{{ classifying ? 'hourglass_empty' : 'auto_fix_high' }}</mat-icon>
+            {{ classifying ? 'Classifying…' : 'Classify entities' }}
+          </button>
+        </div>
+
         <!-- Not active / no ontology bound -->
         <ng-container *ngIf="!owlStatus || !owlStatus.reasonerActive || !owlStatus.ontologyBound">
           <div class="owl-inactive">

@@ -65,6 +65,7 @@ export class GraphOntologyPanelComponent implements OnInit, OnChanges {
   // OWL reasoning status
   owlStatus: OwlReasoningStatus | null = null;
   owlLoading = false;
+  classifying = false;
 
   // D4: "Derive from graph" state
   deriving = false;
@@ -129,6 +130,24 @@ export class GraphOntologyPanelComponent implements OnInit, OnChanges {
     this.ontologyService.unbind(this.factSheetId).subscribe({
       next: () => { this.binding = false; this.ok('Ontology unbound'); this.loadConformance(); },
       error: (e) => { this.binding = false; this.error('Unbind failed', e); }
+    });
+  }
+
+  /** Run OWL classification (is-a realization + has-a closure) over this graph and persist it. */
+  classify(): void {
+    if (this.factSheetId == null) return;
+    this.classifying = true;
+    this.ontologyService.classify(this.factSheetId).subscribe({
+      next: (r) => {
+        this.classifying = false;
+        if (!r.ontologyBound) {
+          this.ok('Nothing to classify — no ontology bound and no entities to derive one from');
+        } else {
+          this.ok(`Classified ${r.entitiesClassified} entities, inferred ${r.edgesMaterialized} has-a edges`);
+        }
+        this.loadOwlStatus();
+      },
+      error: (e) => { this.classifying = false; this.error('Classification failed', e); }
     });
   }
 

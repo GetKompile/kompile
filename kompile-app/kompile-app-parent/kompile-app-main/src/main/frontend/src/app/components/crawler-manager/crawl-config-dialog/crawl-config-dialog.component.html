@@ -200,6 +200,13 @@
           <span class="toggle-desc">Extract entities and relationships via LLM</span>
         </div>
 
+        <div class="toggle-row" *ngIf="graphEnabled">
+          <mat-slide-toggle [(ngModel)]="deriveOntology" color="primary">
+            Derive ontology
+          </mat-slide-toggle>
+          <span class="toggle-desc">Build + bind a structural ontology during enrichment so OWL is-a/has-a reasoning and entity classification run automatically</span>
+        </div>
+
         <div *ngIf="graphEnabled" class="config-section">
           <h4 class="sub-header">LLM Configuration</h4>
           <div class="form-row">
