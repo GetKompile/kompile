@@ -678,6 +678,16 @@ public class FactSheetGraphServiceImpl implements FactSheetGraphService {
         if (edge.getDescription() != null) {
             d3Edge.put("description", edge.getDescription());
         }
+        // Semantic relation + provenance so the visualizer can label and distinguish OWL-inferred
+        // (has-a transitive-closure) edges from asserted ones.
+        if (edge.getRelationType() != null) {
+            d3Edge.put("relationType", edge.getRelationType());
+        }
+        if (edge.getProvenanceType() != null) {
+            String pt = edge.getProvenanceType().name();
+            d3Edge.put("provenanceType", pt);
+            d3Edge.put("inferred", "INFERRED".equals(pt));
+        }
         return d3Edge;
     }
 

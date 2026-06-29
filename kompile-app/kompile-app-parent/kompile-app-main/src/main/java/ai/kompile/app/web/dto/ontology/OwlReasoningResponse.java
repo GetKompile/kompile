@@ -38,6 +38,8 @@ import java.util.List;
  *   "dataPropertyCount":      number,
  *   "axiomCount":             number,
  *   "entailmentsMaterialized": number,
+ *   "inferredTypeCount":      number,
+ *   "inferredRelationCount":  number,
  *   "consistent":             boolean,
  *   "inconsistencies":        [{ "description": string }],
  *   "sampleEntailments":      [string],
@@ -79,6 +81,12 @@ public class OwlReasoningResponse {
      * (transitive closure edges + inferred type assertions).
      */
     int entailmentsMaterialized;
+
+    /** Number of instance-level inferred type assertions (is-a) from the OWL RL pass. */
+    int inferredTypeCount;
+
+    /** Number of inferred transitive-closure relations (has-a) from the OWL RL pass. */
+    int inferredRelationCount;
 
     /** {@code true} if the OWL RL reasoner found no inconsistencies. */
     boolean consistent;

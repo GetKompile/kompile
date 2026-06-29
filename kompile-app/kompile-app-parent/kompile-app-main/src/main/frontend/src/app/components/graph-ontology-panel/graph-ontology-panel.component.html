@@ -30,7 +30,8 @@
                   [disabled]="binding || !report?.ontologyBound">
             <mat-icon>link_off</mat-icon> Unbind
           </button>
-          <button mat-icon-button (click)="loadConformance()" [disabled]="loading" matTooltip="Re-check conformance">
+          <button mat-icon-button (click)="loadConformance(); loadOwlStatus()" [disabled]="loading || owlLoading"
+                  matTooltip="Re-check conformance + re-run OWL reasoning">
             <mat-icon>refresh</mat-icon>
           </button>
           <mat-spinner *ngIf="loading || binding" diameter="22"></mat-spinner>
@@ -140,6 +141,16 @@
             <div class="owl-stat" matTooltip="New facts the OWL reasoner inferred from the axioms">
               <span class="owl-stat-value">{{ owlStatus.entailmentsMaterialized }}</span>
               <span class="owl-stat-label">Entailments</span>
+            </div>
+            <div class="owl-stat" *ngIf="owlStatus.inferredTypeCount != null"
+                 matTooltip="Instance-level inferred is-a type memberships (subClassOf classification over the real graph)">
+              <span class="owl-stat-value">{{ owlStatus.inferredTypeCount }}</span>
+              <span class="owl-stat-label">is-a types</span>
+            </div>
+            <div class="owl-stat" *ngIf="owlStatus.inferredRelationCount != null"
+                 matTooltip="Inferred has-a transitive-closure relations (materialized as INFERRED edges in the graph)">
+              <span class="owl-stat-value">{{ owlStatus.inferredRelationCount }}</span>
+              <span class="owl-stat-label">has-a closure</span>
             </div>
           </div>
 

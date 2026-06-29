@@ -435,6 +435,9 @@ type ViewMode = 'list' | 'create' | 'detail' | 'derivePrompt' | 'deriveWizard' |
               <mat-panel-description>
                 <span *ngIf="et.classification"
                       style="display:inline-block;padding:1px 7px;border-radius:8px;background:rgba(102,126,234,0.15);font-size:11px;margin-right:8px;">{{ et.classification }}</span>
+                <span *ngIf="et.parentType"
+                      matTooltip="is-a (OWL subClassOf) parent type"
+                      style="display:inline-block;padding:1px 7px;border-radius:8px;background:rgba(118,75,162,0.18);font-size:11px;margin-right:8px;">⊑ {{ et.parentType }}</span>
                 <span *ngIf="et.confidence && et.confidence > 0" class="conf-badge">{{ (et.confidence * 100).toFixed(0) }}% conf.</span>
                 {{ et.fields?.length || 0 }} fields &bull; {{ et.rules?.length || 0 }} rules
               </mat-panel-description>
@@ -541,6 +544,10 @@ type ViewMode = 'list' | 'create' | 'detail' | 'derivePrompt' | 'deriveWizard' |
                 <span class="rel-label">{{ rt.type || rt.name }}</span>
                 <mat-chip-set *ngIf="rt.cardinality">
                   <mat-chip class="chip-type">{{ rt.cardinality }}</mat-chip>
+                </mat-chip-set>
+                <mat-chip-set *ngIf="rt.transitive">
+                  <mat-chip class="chip-pk"
+                            matTooltip="owl:TransitiveProperty — has-a / part-of closure (A→B, B→C ⇒ A→C)">transitive</mat-chip>
                 </mat-chip-set>
               </div>
               <div class="rel-route">

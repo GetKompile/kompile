@@ -104,6 +104,10 @@ const MFRAG_ACCENT_COLORS: string[] = [
                 [style.border-style]="getEdgeBorderStyle(edgeType)"></span>
           <span class="legend-label">{{formatEdgeType(edgeType)}}</span>
         </div>
+        <div class="legend-item" matTooltip="OWL-RL inferred has-a transitive-closure edges">
+          <span class="legend-line" style="border-color:#B388FF;border-style:solid;"></span>
+          <span class="legend-label">Inferred (OWL)</span>
+        </div>
         <ng-container *ngIf="posteriorOverlay || priorOverlay || mebnMfragMap || findingNodeMap">
           <div class="legend-title">Bayesian</div>
           <div class="legend-item" *ngIf="priorOverlay">
@@ -698,7 +702,7 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
       if (!this.graph.hasEdge(edgeKey)) {
         try {
           this.graph.addEdgeWithKey(edgeKey, srcKey, tgtKey, {
-            color: EDGE_COLORS[link.type] || '#999999',
+            color: link.inferred ? '#B388FF' : (EDGE_COLORS[link.type] || '#999999'),
             size: Math.max(0.5, (link.weight || 1) * 1.5),
             type: 'line',
           });
@@ -800,7 +804,7 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
       if (this.graph.hasEdge(edgeKey)) continue;
       try {
         this.graph.addEdgeWithKey(edgeKey, srcKey, tgtKey, {
-          color: EDGE_COLORS[link.type] || '#999999',
+          color: link.inferred ? '#B388FF' : (EDGE_COLORS[link.type] || '#999999'),
           size: Math.max(0.5, (link.weight || 1) * 1.5),
           type: 'line',
         });

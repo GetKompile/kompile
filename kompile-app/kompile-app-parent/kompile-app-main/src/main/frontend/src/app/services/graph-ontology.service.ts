@@ -47,6 +47,10 @@ export interface OwlReasoningStatus {
   dataPropertyCount: number;
   axiomCount: number;
   entailmentsMaterialized: number;
+  /** Instance-level inferred type assertions (is-a) from the OWL RL pass. */
+  inferredTypeCount?: number;
+  /** Inferred transitive-closure relations (has-a) from the OWL RL pass. */
+  inferredRelationCount?: number;
   consistent: boolean;
   inconsistencies?: { description: string }[];
   sampleEntailments?: string[];

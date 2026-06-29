@@ -196,6 +196,12 @@ export interface D3Link {
   weight: number;
   label?: string;
   occurredAt?: string;
+  /** Semantic relationship type (e.g. "CONTAINS"), distinct from the structural EdgeType. */
+  relationType?: string;
+  /** Epistemic provenance: EXTRACTED | INFERRED | AMBIGUOUS. */
+  provenanceType?: string;
+  /** True when this edge was inferred by OWL-RL (has-a transitive closure). */
+  inferred?: boolean;
 }
 
 /**

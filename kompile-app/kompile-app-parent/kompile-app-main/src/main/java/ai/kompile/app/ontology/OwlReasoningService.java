@@ -112,10 +112,11 @@ public class OwlReasoningService implements OwlDerivedRuleProvider {
 
         OwlOntology tbox = bridge.toOwlOntology(schema);
 
-        // ABox is empty: we reason purely over the TBox axioms (structural entailment)
-        MutableReasoningGraph emptyABox = new MutableReasoningGraph();
+        // Reason over the REAL crawled ABox so the response reflects actual instance-level entailments
+        // (transitive closure + inferred types), not just TBox structure.
+        ReasoningGraph abox = buildAbox(factSheetId);
 
-        OwlRlResult result = reasoner.reason(emptyABox, tbox);
+        OwlRlResult result = reasoner.reason(abox, tbox);
 
         return buildResponse(factSheetId, schema, tbox, result);
     }
@@ -223,6 +224,8 @@ public class OwlReasoningService implements OwlDerivedRuleProvider {
                 .dataPropertyCount(dataPropCount)
                 .axiomCount(axiomCount)
                 .entailmentsMaterialized(entailments)
+                .inferredTypeCount(result.inferredTypes().size())
+                .inferredRelationCount(result.inferredRelations().size())
                 .consistent(result.isConsistent())
                 .inconsistencies(inconsistencies)
                 .sampleEntailments(sampleEntailments)

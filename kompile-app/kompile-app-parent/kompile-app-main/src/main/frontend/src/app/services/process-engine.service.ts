@@ -60,6 +60,8 @@ export interface EntityTypeDefinition {
   description?: string;
   /** Classification bucket: REFERENCE, TRANSACTIONAL, PATTERN, CONTROL, METRIC, ACTOR. */
   classification?: string;
+  /** Parent type name (OWL subClassOf / is-a) — the broader type this one specialises. */
+  parentType?: string;
   /** Derivation confidence [0..1] — backend serializes the primitive double. */
   confidence?: number;
   /** Which cross-customer template seeded this entity type. */
@@ -103,6 +105,8 @@ export interface RelationshipTypeDefinition {
   sourceEntityType: string;
   targetEntityType: string;
   cardinality?: string;
+  /** owl:TransitiveProperty (has-a / part-of): A→B and B→C imply A→C. */
+  transitive?: boolean;
   description?: string;
 }
 
