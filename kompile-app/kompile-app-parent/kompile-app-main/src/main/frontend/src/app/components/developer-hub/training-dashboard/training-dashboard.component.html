@@ -20,16 +20,16 @@
     <div class="header-title">
       <mat-icon>insights</mat-icon>
       <span>Training Dashboard</span>
-      <span class="job-id-chip">{{ job?.taskId }}</span>
-      <span class="status-chip" [ngClass]="'status-' + (job?.status || '').toLowerCase()">{{ job?.status }}</span>
+      <span class="job-id-chip">{{ job.taskId }}</span>
+      <span class="status-chip" [ngClass]="'status-' + (job.status || '').toLowerCase()">{{ job.status }}</span>
       <span *ngIf="isLive && connected" class="live-indicator">
         <span class="live-dot"></span> LIVE
       </span>
     </div>
     <div class="header-info">
-      <span class="info-item"><strong>Model:</strong> {{ job?.modelId }}</span>
-      <span class="info-item"><strong>Type:</strong> {{ job?.trainingType }}</span>
-      <span *ngIf="job?.peftType" class="info-item"><strong>PEFT:</strong> {{ job?.peftType }}</span>
+      <span class="info-item"><strong>Model:</strong> {{ job.modelId }}</span>
+      <span class="info-item"><strong>Type:</strong> {{ job.trainingType }}</span>
+      <span *ngIf="job?.peftType" class="info-item"><strong>PEFT:</strong> {{ job.peftType }}</span>
     </div>
   </div>
 
@@ -57,12 +57,12 @@
     <div class="metric-card">
       <div class="metric-label">Step</div>
       <div class="metric-value">{{ currentStep }}</div>
-      <div class="metric-sub" *ngIf="job?.totalSteps">/ {{ job?.totalSteps }}</div>
+      <div class="metric-sub" *ngIf="job?.totalSteps">/ {{ job.totalSteps }}</div>
     </div>
     <div class="metric-card">
       <div class="metric-label">Epoch</div>
       <div class="metric-value">{{ currentEpoch }}</div>
-      <div class="metric-sub" *ngIf="job?.totalEpochs">/ {{ job?.totalEpochs }}</div>
+      <div class="metric-sub" *ngIf="job?.totalEpochs">/ {{ job.totalEpochs }}</div>
     </div>
     <div class="metric-card highlight-loss">
       <div class="metric-label">Train Loss</div>
@@ -98,11 +98,11 @@
   <!-- Progress Bar (for active jobs) -->
   <div class="progress-section" *ngIf="job?.totalEpochs && (isLive || job?.currentEpoch)">
     <div class="progress-labels">
-      <span>Epoch {{ currentEpoch || job?.currentEpoch || 0 }} / {{ job?.totalEpochs }}</span>
-      <span>{{ ((currentEpoch || job?.currentEpoch || 0) / (job?.totalEpochs || 1) * 100) | number:'1.0-0' }}%</span>
+      <span>Epoch {{ currentEpoch || job.currentEpoch || 0 }} / {{ job.totalEpochs }}</span>
+      <span>{{ ((currentEpoch || job.currentEpoch || 0) / (job.totalEpochs || 1) * 100) | number:'1.0-0' }}%</span>
     </div>
     <mat-progress-bar mode="determinate"
-      [value]="((currentEpoch || job?.currentEpoch || 0) / (job?.totalEpochs || 1)) * 100">
+      [value]="((currentEpoch || job.currentEpoch || 0) / (job.totalEpochs || 1)) * 100">
     </mat-progress-bar>
   </div>
 
@@ -165,7 +165,7 @@
     <div class="chart-panel">
       <div class="chart-title">
         <mat-icon>trending_up</mat-icon> Gradient Norm
-        <span class="chart-subtitle" *ngIf="job?.maxGradNorm">Clip threshold: {{ job?.maxGradNorm }}</span>
+        <span class="chart-subtitle" *ngIf="job?.maxGradNorm">Clip threshold: {{ job.maxGradNorm }}</span>
       </div>
       <div class="chart-container" #gradNormChart></div>
     </div>
@@ -341,16 +341,16 @@
       <mat-icon>settings</mat-icon> Training Configuration
     </div>
     <div class="config-grid">
-      <div class="config-item"><span class="ck">Batch Size</span><span class="cv">{{ job?.batchSize || '-' }}</span></div>
-      <div class="config-item"><span class="ck">Grad Accum Steps</span><span class="cv">{{ job?.gradientAccumulationSteps || '-' }}</span></div>
-      <div class="config-item"><span class="ck">LR Schedule</span><span class="cv">{{ job?.lrSchedule || '-' }}</span></div>
-      <div class="config-item"><span class="ck">Warmup Ratio</span><span class="cv">{{ job?.warmupRatio || '-' }}</span></div>
-      <div class="config-item"><span class="ck">Max Grad Norm</span><span class="cv">{{ job?.maxGradNorm || '-' }}</span></div>
-      <div class="config-item"><span class="ck">FP16</span><span class="cv">{{ job?.fp16 ?? '-' }}</span></div>
-      <div class="config-item"><span class="ck">BF16</span><span class="cv">{{ job?.bf16 ?? '-' }}</span></div>
-      <div class="config-item"><span class="ck">PEFT Type</span><span class="cv">{{ job?.peftType || '-' }}</span></div>
-      <div class="config-item" *ngIf="job?.nd4jBackend"><span class="ck">ND4J Backend</span><span class="cv">{{ job?.nd4jBackend }}</span></div>
-      <div class="config-item" *ngIf="job?.outputModelPath"><span class="ck">Output</span><span class="cv monospace">{{ job?.outputModelPath }}</span></div>
+      <div class="config-item"><span class="ck">Batch Size</span><span class="cv">{{ job.batchSize || '-' }}</span></div>
+      <div class="config-item"><span class="ck">Grad Accum Steps</span><span class="cv">{{ job.gradientAccumulationSteps || '-' }}</span></div>
+      <div class="config-item"><span class="ck">LR Schedule</span><span class="cv">{{ job.lrSchedule || '-' }}</span></div>
+      <div class="config-item"><span class="ck">Warmup Ratio</span><span class="cv">{{ job.warmupRatio || '-' }}</span></div>
+      <div class="config-item"><span class="ck">Max Grad Norm</span><span class="cv">{{ job.maxGradNorm || '-' }}</span></div>
+      <div class="config-item"><span class="ck">FP16</span><span class="cv">{{ job.fp16 ?? '-' }}</span></div>
+      <div class="config-item"><span class="ck">BF16</span><span class="cv">{{ job.bf16 ?? '-' }}</span></div>
+      <div class="config-item"><span class="ck">PEFT Type</span><span class="cv">{{ job.peftType || '-' }}</span></div>
+      <div class="config-item" *ngIf="job?.nd4jBackend"><span class="ck">ND4J Backend</span><span class="cv">{{ job.nd4jBackend }}</span></div>
+      <div class="config-item" *ngIf="job?.outputModelPath"><span class="ck">Output</span><span class="cv monospace">{{ job.outputModelPath }}</span></div>
     </div>
   </div>
 
@@ -374,9 +374,9 @@
   <!-- Error Section -->
   <div class="error-section" *ngIf="job?.failureReason && job?.failureReason !== 'NONE'">
     <div class="error-title">
-      <mat-icon color="warn">error</mat-icon> Failure: {{ job?.failureReason }}
+      <mat-icon color="warn">error</mat-icon> Failure: {{ job.failureReason }}
     </div>
-    <div class="error-detail" *ngIf="job?.errorType">{{ job?.errorType }}: {{ job?.errorMessage }}</div>
-    <pre class="error-stack" *ngIf="job?.stackTrace">{{ job?.stackTrace }}</pre>
+    <div class="error-detail" *ngIf="job?.errorType">{{ job.errorType }}: {{ job.errorMessage }}</div>
+    <pre class="error-stack" *ngIf="job?.stackTrace">{{ job.stackTrace }}</pre>
   </div>
 </div>

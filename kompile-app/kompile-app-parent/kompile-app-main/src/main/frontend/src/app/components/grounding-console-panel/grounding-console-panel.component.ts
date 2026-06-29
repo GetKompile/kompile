@@ -195,7 +195,7 @@ interface HistoryEntry {
                 </div>
                 <div class="provenance-note" *ngIf="verifyResult.sourceProvenance?.length">
                   <mat-icon class="tiny-icon">source</mat-icon>
-                  Provenance: {{ verifyResult.sourceProvenance?.join(', ') }}
+                  Provenance: {{ verifyResult.sourceProvenance.join(', ') }}
                 </div>
                 <app-source-citation [citation]="verifyToCitation()" [compact]="true"></app-source-citation>
               </div>
@@ -256,7 +256,7 @@ interface HistoryEntry {
                 </button>
               </div>
 
-              <button mat-raised-button color="primary" (click)="doQuery()" [disabled]="queryLoading || !conjuncts[0]?.predicate?.trim()">
+              <button mat-raised-button color="primary" (click)="doQuery()" [disabled]="queryLoading || !conjuncts[0].predicate.trim()">
                 <mat-spinner diameter="18" *ngIf="queryLoading"></mat-spinner>
                 <mat-icon *ngIf="!queryLoading">play_arrow</mat-icon>
                 Run Query
@@ -422,7 +422,7 @@ interface HistoryEntry {
                   <span class="assert-msg" *ngIf="assertResult.message">— {{ assertResult.message }}</span>
                 </div>
                 <div class="value-change" *ngIf="assertResult.accepted && assertResult.previousValue !== undefined">
-                  Previous value: <code>{{ assertResult.previousValue?.toFixed(2) }}</code>
+                  Previous value: <code>{{ assertResult.previousValue.toFixed(2) }}</code>
                   → New value: <code>{{ assertResult.newValue.toFixed(2) }}</code>
                 </div>
               </div>

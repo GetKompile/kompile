@@ -149,12 +149,12 @@
               <div class="compare-card contextualized" *ngIf="compareResult.contextualized">
                 <h4>Contextualized</h4>
                 <div class="stats">
-                  <span>{{ compareResult.contextualized?.length }} chars</span>
-                  <span>{{ compareResult.contextualized?.wordCount }} words</span>
-                  <span class="added">+{{ compareResult.contextualized?.addedLength }} chars</span>
-                  <span class="added">+{{ compareResult.contextualized?.addedWords }} words</span>
+                  <span>{{ compareResult.contextualized.length }} chars</span>
+                  <span>{{ compareResult.contextualized.wordCount }} words</span>
+                  <span class="added">+{{ compareResult.contextualized.addedLength }} chars</span>
+                  <span class="added">+{{ compareResult.contextualized.addedWords }} words</span>
                 </div>
-                <pre>{{ compareResult.contextualized?.text }}</pre>
+                <pre>{{ compareResult.contextualized.text }}</pre>
               </div>
             </div>
           </div>

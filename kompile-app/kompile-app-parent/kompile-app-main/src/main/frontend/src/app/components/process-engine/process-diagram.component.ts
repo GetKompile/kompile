@@ -91,7 +91,7 @@ import { MermaidRendererComponent } from './mermaid-renderer.component';
           <div class="action-buttons">
             <button mat-raised-button color="primary"
                     (click)="startGeneration()"
-                    [disabled]="isStreaming || !promptText?.trim() || !selectedAgent">
+                    [disabled]="isStreaming || !promptText.trim() || !selectedAgent">
               <mat-icon>play_arrow</mat-icon>
               Generate
             </button>
@@ -169,7 +169,7 @@ import { MermaidRendererComponent } from './mermaid-renderer.component';
                 <button mat-menu-item *ngFor="let s of savedSessions"
                         (click)="loadSession(s)">
                   <mat-icon>{{ getStatusIcon(s.status) }}</mat-icon>
-                  <span>{{ s.title || s.prompt?.substring(0, 40) || 'Untitled' }}
+                  <span>{{ s.title || s.prompt.substring(0, 40) || 'Untitled' }}
                     <small class="session-date">{{ s.createdAt | date:'short' }}</small>
                   </span>
                 </button>

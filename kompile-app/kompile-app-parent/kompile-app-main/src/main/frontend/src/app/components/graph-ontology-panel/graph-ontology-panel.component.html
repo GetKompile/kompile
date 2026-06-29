@@ -233,7 +233,7 @@
                   <tr *ngFor="let v of r.violations">
                     <td>{{ v.title || v.nodeId }}</td>
                     <td>{{ v.entityType }}<span class="badge" *ngIf="v.unknownType">unknown</span></td>
-                    <td>{{ v.messages?.join('; ') }}</td>
+                    <td>{{ v.messages.join('; ') }}</td>
                   </tr>
                 </tbody>
               </table>

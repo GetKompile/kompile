@@ -71,7 +71,7 @@
           </mat-form-field>
           <button mat-flat-button color="primary"
                   (click)="onCustomModelSubmit(agent.agentName)"
-                  [disabled]="!customModels[agent.agentName]?.trim()">
+                  [disabled]="!customModels[agent.agentName].trim()">
             Apply
           </button>
         </div>

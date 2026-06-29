@@ -149,7 +149,7 @@
       <div class="detail-row"><span class="dk">Error Type</span><span class="dv">{{ selectedJob.errorType || '-' }}</span></div>
       <div class="detail-row"><span class="dk">Error</span><span class="dv error-text">{{ selectedJob.errorMessage || '-' }}</span></div>
       <div class="stack-trace" *ngIf="selectedJob?.stackTrace">
-        <pre>{{ selectedJob?.stackTrace }}</pre>
+        <pre>{{ selectedJob.stackTrace }}</pre>
       </div>
     </div>
 
@@ -157,9 +157,9 @@
     <div class="restart-section" *ngIf="selectedJob?.restartAttempts">
       <h5><mat-icon>restart_alt</mat-icon> Restart History</h5>
       <div class="detail-grid">
-        <div class="detail-row"><span class="dk">Attempts</span><span class="dv">{{ selectedJob?.restartAttempts }} / {{ selectedJob?.maxRestartAttempts }}</span></div>
-        <div class="detail-row"><span class="dk">Last Restart</span><span class="dv">{{ selectedJob?.lastRestartTime || '-' }}</span></div>
-        <div class="detail-row"><span class="dk">Recovered</span><span class="dv">{{ selectedJob?.recoveredAfterRestart ? 'Yes' : 'No' }}</span></div>
+        <div class="detail-row"><span class="dk">Attempts</span><span class="dv">{{ selectedJob.restartAttempts }} / {{ selectedJob.maxRestartAttempts }}</span></div>
+        <div class="detail-row"><span class="dk">Last Restart</span><span class="dv">{{ selectedJob.lastRestartTime || '-' }}</span></div>
+        <div class="detail-row"><span class="dk">Recovered</span><span class="dv">{{ selectedJob.recoveredAfterRestart ? 'Yes' : 'No' }}</span></div>
       </div>
     </div>
   </div>

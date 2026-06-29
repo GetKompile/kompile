@@ -307,7 +307,7 @@
           Lifecycle Tracking
         </mat-panel-title>
         <mat-panel-description>
-          {{ config.summary?.lifecycle?.enabled ? 'Enabled' : 'Disabled' }}
+          {{ config.summary.lifecycle.enabled ? 'Enabled' : 'Disabled' }}
         </mat-panel-description>
       </mat-expansion-panel-header>
 
@@ -325,11 +325,11 @@
 
         <div class="tracker-chips" *ngIf="config.summary?.lifecycle?.enabled">
           <mat-chip-set>
-            <mat-chip [class.active]="config.summary?.trackers?.ndArrayTracking">NDArray</mat-chip>
-            <mat-chip [class.active]="config.summary?.trackers?.dataBufferTracking">DataBuffer</mat-chip>
-            <mat-chip [class.active]="config.summary?.trackers?.tadCacheTracking">TAD Cache</mat-chip>
-            <mat-chip [class.active]="config.summary?.trackers?.shapeCacheTracking">Shape Cache</mat-chip>
-            <mat-chip [class.active]="config.summary?.trackers?.opContextTracking">OpContext</mat-chip>
+            <mat-chip [class.active]="config.summary.trackers.ndArrayTracking">NDArray</mat-chip>
+            <mat-chip [class.active]="config.summary.trackers.dataBufferTracking">DataBuffer</mat-chip>
+            <mat-chip [class.active]="config.summary.trackers.tadCacheTracking">TAD Cache</mat-chip>
+            <mat-chip [class.active]="config.summary.trackers.shapeCacheTracking">Shape Cache</mat-chip>
+            <mat-chip [class.active]="config.summary.trackers.opContextTracking">OpContext</mat-chip>
           </mat-chip-set>
         </div>
       </div>
@@ -871,43 +871,43 @@
         <div class="summary-section">
           <h4>Threads</h4>
           <table>
-            <tr><td>Max Threads:</td><td>{{ config.summary?.threads?.maxThreads }}</td></tr>
-            <tr><td>Max Master Threads:</td><td>{{ config.summary?.threads?.maxMasterThreads }}</td></tr>
-            <tr><td>Available Processors:</td><td>{{ config.summary?.threads?.availableProcessors }}</td></tr>
+            <tr><td>Max Threads:</td><td>{{ config.summary.threads.maxThreads }}</td></tr>
+            <tr><td>Max Master Threads:</td><td>{{ config.summary.threads.maxMasterThreads }}</td></tr>
+            <tr><td>Available Processors:</td><td>{{ config.summary.threads.availableProcessors }}</td></tr>
           </table>
         </div>
 
         <div class="summary-section">
           <h4>BLAS/OMP</h4>
           <table>
-            <tr><td>OpenMP Threads:</td><td>{{ config.summary?.blas?.ompNumThreads }}</td></tr>
-            <tr><td>OpenBLAS Threads:</td><td>{{ config.summary?.blas?.openBlasThreads }}</td></tr>
-            <tr><td>BLAS Serialization:</td><td>{{ config.summary?.blas?.serializationEnabled ? 'Enabled' : 'Disabled' }}</td></tr>
+            <tr><td>OpenMP Threads:</td><td>{{ config.summary.blas.ompNumThreads }}</td></tr>
+            <tr><td>OpenBLAS Threads:</td><td>{{ config.summary.blas.openBlasThreads }}</td></tr>
+            <tr><td>BLAS Serialization:</td><td>{{ config.summary.blas.serializationEnabled ? 'Enabled' : 'Disabled' }}</td></tr>
           </table>
         </div>
 
         <div class="summary-section">
           <h4>Memory Limits</h4>
           <table>
-            <tr><td>Max Primary:</td><td>{{ formatMemory(bytesToMb(config.actual?.maxPrimaryMemory || 0)) }}</td></tr>
-            <tr><td>Max Special:</td><td>{{ formatMemory(bytesToMb(config.actual?.maxSpecialMemory || 0)) }}</td></tr>
-            <tr><td>Max Device:</td><td>{{ formatMemory(bytesToMb(config.actual?.maxDeviceMemory || 0)) }}</td></tr>
+            <tr><td>Max Primary:</td><td>{{ formatMemory(bytesToMb(config.actual.maxPrimaryMemory || 0)) }}</td></tr>
+            <tr><td>Max Special:</td><td>{{ formatMemory(bytesToMb(config.actual.maxSpecialMemory || 0)) }}</td></tr>
+            <tr><td>Max Device:</td><td>{{ formatMemory(bytesToMb(config.actual.maxDeviceMemory || 0)) }}</td></tr>
           </table>
         </div>
 
         <div class="summary-section">
           <h4>JavaCPP</h4>
           <table>
-            <tr><td>Logger Debug:</td><td>{{ config.summary?.javacpp?.loggerDebug ? 'Yes' : 'No' }}</td></tr>
-            <tr><td>Paths First:</td><td>{{ config.summary?.javacpp?.pathsFirst ? 'Yes' : 'No' }}</td></tr>
+            <tr><td>Logger Debug:</td><td>{{ config.summary.javacpp.loggerDebug ? 'Yes' : 'No' }}</td></tr>
+            <tr><td>Paths First:</td><td>{{ config.summary.javacpp.pathsFirst ? 'Yes' : 'No' }}</td></tr>
           </table>
         </div>
 
         <div class="summary-section">
           <h4>Config File</h4>
-          <p class="config-path">{{ config.summary?.configFilePath }}</p>
-          <mat-chip [class.active]="config.summary?.configFileExists">
-            {{ config.summary?.configFileExists ? 'Exists' : 'Not found' }}
+          <p class="config-path">{{ config.summary.configFilePath }}</p>
+          <mat-chip [class.active]="config.summary.configFileExists">
+            {{ config.summary.configFileExists ? 'Exists' : 'Not found' }}
           </mat-chip>
         </div>
       </div>

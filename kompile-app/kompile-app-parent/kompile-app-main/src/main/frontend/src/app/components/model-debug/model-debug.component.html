@@ -365,66 +365,66 @@
       <div class="service-state-grid" *ngIf="!serviceStateLoading">
 
         <!-- Embedding Model State -->
-        <mat-card class="service-state-card" [class.state-loaded]="serviceState.embeddingModel?.loaded" [class.state-not-loaded]="!serviceState.embeddingModel?.loaded">
+        <mat-card class="service-state-card" [class.state-loaded]="serviceState.embeddingModel.loaded" [class.state-not-loaded]="!serviceState.embeddingModel.loaded">
           <mat-card-header>
-            <mat-icon mat-card-avatar [class]="getServiceStateColorClass(serviceState.embeddingModel?.loaded || false)">
-              {{ getServiceStateIcon(serviceState.embeddingModel?.loaded || false) }}
+            <mat-icon mat-card-avatar [class]="getServiceStateColorClass(serviceState.embeddingModel.loaded || false)">
+              {{ getServiceStateIcon(serviceState.embeddingModel.loaded || false) }}
             </mat-icon>
             <mat-card-title>Embedding Model</mat-card-title>
             <mat-card-subtitle *ngIf="serviceState.embeddingModel?.loaded">
-              {{ serviceState.embeddingModel?.primary?.class || 'Unknown' }}
+              {{ serviceState.embeddingModel.primary?.class || 'Unknown' }}
             </mat-card-subtitle>
             <mat-card-subtitle *ngIf="!serviceState.embeddingModel?.loaded">
-              {{ serviceState.embeddingModel?.reason || 'Not Loaded' }}
+              {{ serviceState.embeddingModel.reason || 'Not Loaded' }}
             </mat-card-subtitle>
           </mat-card-header>
           <mat-card-content *ngIf="serviceState.embeddingModel?.loaded && serviceState.embeddingModel?.primary">
             <div class="state-details">
               <div class="detail-row" *ngIf="serviceState.embeddingModel?.primary?.activeModelId">
                 <span class="detail-label">Active Model ID:</span>
-                <span class="detail-value model-id">{{ serviceState.embeddingModel?.primary?.activeModelId }}</span>
+                <span class="detail-value model-id">{{ serviceState.embeddingModel.primary?.activeModelId }}</span>
               </div>
               <div class="detail-row" *ngIf="serviceState.embeddingModel?.primary?.encoderType">
                 <span class="detail-label">Encoder Type:</span>
-                <span class="detail-value">{{ serviceState.embeddingModel?.primary?.encoderType }}</span>
+                <span class="detail-value">{{ serviceState.embeddingModel.primary?.encoderType }}</span>
               </div>
               <div class="detail-row">
                 <span class="detail-label">Dimensions:</span>
-                <span class="detail-value">{{ serviceState.embeddingModel?.primary?.dimensions }}d</span>
+                <span class="detail-value">{{ serviceState.embeddingModel.primary?.dimensions }}d</span>
               </div>
               <div class="detail-row" *ngIf="serviceState.embeddingModel?.primary?.optimalBatchSize">
                 <span class="detail-label">Optimal Batch Size:</span>
-                <span class="detail-value">{{ serviceState.embeddingModel?.primary?.optimalBatchSize }}</span>
+                <span class="detail-value">{{ serviceState.embeddingModel.primary?.optimalBatchSize }}</span>
               </div>
               <div class="detail-row" *ngIf="serviceState.embeddingModel?.primary?.maxBatchSize">
                 <span class="detail-label">Max Batch Size:</span>
-                <span class="detail-value">{{ serviceState.embeddingModel?.primary?.maxBatchSize }}</span>
+                <span class="detail-value">{{ serviceState.embeddingModel.primary?.maxBatchSize }}</span>
               </div>
               <div class="detail-row" *ngIf="serviceState.embeddingModel?.primary?.batchConfig">
                 <span class="detail-label">Batch Size (512 tokens):</span>
-                <span class="detail-value">optimal {{ serviceState.embeddingModel?.primary?.batchConfig?.optimal512Tokens }}, max {{ serviceState.embeddingModel?.primary?.batchConfig?.max512Tokens }}</span>
+                <span class="detail-value">optimal {{ serviceState.embeddingModel.primary?.batchConfig?.optimal512Tokens }}, max {{ serviceState.embeddingModel.primary?.batchConfig?.max512Tokens }}</span>
               </div>
               <div class="model-info-section" *ngIf="serviceState.embeddingModel?.primary?.modelInfo">
                 <div class="detail-row">
                   <span class="detail-label">Source:</span>
-                  <span class="detail-value">{{ serviceState.embeddingModel?.primary?.modelInfo?.source || 'N/A' }}</span>
+                  <span class="detail-value">{{ serviceState.embeddingModel.primary?.modelInfo?.source || 'N/A' }}</span>
                 </div>
                 <div class="detail-row" *ngIf="serviceState.embeddingModel?.primary?.modelInfo?.subprocessMode">
                   <span class="detail-label">Subprocess Mode:</span>
-                  <span class="detail-value" [class.yes]="serviceState.embeddingModel?.primary?.modelInfo?.subprocessRunning" [class.no]="!serviceState.embeddingModel?.primary?.modelInfo?.subprocessRunning">
-                    {{ serviceState.embeddingModel?.primary?.modelInfo?.subprocessRunning ? 'Running' : 'Not Running' }}
+                  <span class="detail-value" [class.yes]="serviceState.embeddingModel.primary?.modelInfo?.subprocessRunning" [class.no]="!serviceState.embeddingModel.primary?.modelInfo?.subprocessRunning">
+                    {{ serviceState.embeddingModel.primary?.modelInfo?.subprocessRunning ? 'Running' : 'Not Running' }}
                   </span>
                 </div>
                 <div class="detail-row" *ngIf="serviceState.embeddingModel?.primary?.modelInfo?.subprocessMode && serviceState.embeddingModel?.primary?.modelInfo?.subprocessModelLoaded !== undefined">
                   <span class="detail-label">Model Loaded:</span>
-                  <span class="detail-value" [class.yes]="serviceState.embeddingModel?.primary?.modelInfo?.subprocessModelLoaded" [class.no]="!serviceState.embeddingModel?.primary?.modelInfo?.subprocessModelLoaded">
-                    {{ serviceState.embeddingModel?.primary?.modelInfo?.subprocessModelLoaded ? 'Yes' : 'No' }}
+                  <span class="detail-value" [class.yes]="serviceState.embeddingModel.primary?.modelInfo?.subprocessModelLoaded" [class.no]="!serviceState.embeddingModel.primary?.modelInfo?.subprocessModelLoaded">
+                    {{ serviceState.embeddingModel.primary?.modelInfo?.subprocessModelLoaded ? 'Yes' : 'No' }}
                   </span>
                 </div>
                 <div class="detail-row" *ngIf="serviceState.embeddingModel?.primary?.modelInfo?.initialized !== undefined">
                   <span class="detail-label">Initialized:</span>
-                  <span class="detail-value" [class.yes]="serviceState.embeddingModel?.primary?.modelInfo?.initialized" [class.no]="!serviceState.embeddingModel?.primary?.modelInfo?.initialized">
-                    {{ serviceState.embeddingModel?.primary?.modelInfo?.initialized ? 'Yes' : 'No' }}
+                  <span class="detail-value" [class.yes]="serviceState.embeddingModel.primary?.modelInfo?.initialized" [class.no]="!serviceState.embeddingModel.primary?.modelInfo?.initialized">
+                    {{ serviceState.embeddingModel.primary?.modelInfo?.initialized ? 'Yes' : 'No' }}
                   </span>
                 </div>
               </div>
@@ -473,41 +473,41 @@
         </mat-card>
 
         <!-- Vector Store State -->
-        <mat-card class="service-state-card" [class.state-loaded]="serviceState.vectorStore?.loaded" [class.state-not-loaded]="!serviceState.vectorStore?.loaded">
+        <mat-card class="service-state-card" [class.state-loaded]="serviceState.vectorStore.loaded" [class.state-not-loaded]="!serviceState.vectorStore.loaded">
           <mat-card-header>
-            <mat-icon mat-card-avatar [class]="getServiceStateColorClass(serviceState.vectorStore?.loaded || false)">
-              {{ getServiceStateIcon(serviceState.vectorStore?.loaded || false) }}
+            <mat-icon mat-card-avatar [class]="getServiceStateColorClass(serviceState.vectorStore.loaded || false)">
+              {{ getServiceStateIcon(serviceState.vectorStore.loaded || false) }}
             </mat-icon>
             <mat-card-title>Vector Store</mat-card-title>
             <mat-card-subtitle *ngIf="serviceState.vectorStore?.loaded">
-              {{ serviceState.vectorStore?.primary?.class || 'Unknown' }}
+              {{ serviceState.vectorStore.primary?.class || 'Unknown' }}
             </mat-card-subtitle>
             <mat-card-subtitle *ngIf="!serviceState.vectorStore?.loaded">
-              {{ serviceState.vectorStore?.reason || 'Not Loaded' }}
+              {{ serviceState.vectorStore.reason || 'Not Loaded' }}
             </mat-card-subtitle>
           </mat-card-header>
           <mat-card-content *ngIf="serviceState.vectorStore?.loaded && serviceState.vectorStore?.primary">
             <div class="state-details">
               <div class="detail-row" *ngIf="serviceState.vectorStore?.primary?.indexPath">
                 <span class="detail-label">Index Path:</span>
-                <span class="detail-value path">{{ serviceState.vectorStore?.primary?.indexPath }}</span>
+                <span class="detail-value path">{{ serviceState.vectorStore.primary?.indexPath }}</span>
               </div>
               <div class="detail-row" *ngIf="serviceState.vectorStore?.primary?.documentCount !== undefined">
                 <span class="detail-label">Document Count:</span>
-                <span class="detail-value">{{ serviceState.vectorStore?.primary?.documentCount }}</span>
+                <span class="detail-value">{{ serviceState.vectorStore.primary?.documentCount }}</span>
               </div>
               <div class="detail-row" *ngIf="serviceState.vectorStore?.primary?.modelTracking?.encoderModelId">
                 <span class="detail-label">Encoder Model ID:</span>
-                <span class="detail-value model-id">{{ serviceState.vectorStore?.primary?.modelTracking?.encoderModelId }}</span>
+                <span class="detail-value model-id">{{ serviceState.vectorStore.primary?.modelTracking?.encoderModelId }}</span>
               </div>
               <div class="detail-row" *ngIf="serviceState.vectorStore?.primary?.modelTracking?.rerankerModelId">
                 <span class="detail-label">Reranker Model ID:</span>
-                <span class="detail-value model-id">{{ serviceState.vectorStore?.primary?.modelTracking?.rerankerModelId }}</span>
+                <span class="detail-value model-id">{{ serviceState.vectorStore.primary?.modelTracking?.rerankerModelId }}</span>
               </div>
               <div class="detail-row" *ngIf="serviceState.vectorStore?.primary?.rerankingAvailable !== undefined">
                 <span class="detail-label">Reranking Available:</span>
-                <span class="detail-value" [class.yes]="serviceState.vectorStore?.primary?.rerankingAvailable" [class.no]="!serviceState.vectorStore?.primary?.rerankingAvailable">
-                  {{ serviceState.vectorStore?.primary?.rerankingAvailable ? 'Yes' : 'No' }}
+                <span class="detail-value" [class.yes]="serviceState.vectorStore.primary?.rerankingAvailable" [class.no]="!serviceState.vectorStore.primary?.rerankingAvailable">
+                  {{ serviceState.vectorStore.primary?.rerankingAvailable ? 'Yes' : 'No' }}
                 </span>
               </div>
               <div class="detail-row warning" *ngIf="serviceState.vectorStore?.primary?.usingFallbackIndex">
@@ -523,32 +523,32 @@
         </mat-card>
 
         <!-- Reranker State -->
-        <mat-card class="service-state-card" [class.state-loaded]="serviceState.reranker?.loaded" [class.state-not-loaded]="!serviceState.reranker?.loaded">
+        <mat-card class="service-state-card" [class.state-loaded]="serviceState.reranker.loaded" [class.state-not-loaded]="!serviceState.reranker.loaded">
           <mat-card-header>
-            <mat-icon mat-card-avatar [class]="getServiceStateColorClass(serviceState.reranker?.loaded || false)">
-              {{ getServiceStateIcon(serviceState.reranker?.loaded || false) }}
+            <mat-icon mat-card-avatar [class]="getServiceStateColorClass(serviceState.reranker.loaded || false)">
+              {{ getServiceStateIcon(serviceState.reranker.loaded || false) }}
             </mat-icon>
             <mat-card-title>Reranker Service</mat-card-title>
             <mat-card-subtitle *ngIf="serviceState.reranker?.loaded">
-              {{ serviceState.reranker?.class || 'Unknown' }}
+              {{ serviceState.reranker.class || 'Unknown' }}
             </mat-card-subtitle>
             <mat-card-subtitle *ngIf="!serviceState.reranker?.loaded">
-              {{ serviceState.reranker?.reason || 'Not Loaded' }}
+              {{ serviceState.reranker.reason || 'Not Loaded' }}
             </mat-card-subtitle>
           </mat-card-header>
           <mat-card-content *ngIf="serviceState.reranker?.loaded">
             <div class="state-details">
               <div class="detail-row" *ngIf="serviceState.reranker?.supportedTypeCount">
                 <span class="detail-label">Supported Types:</span>
-                <span class="detail-value">{{ serviceState.reranker?.supportedTypeCount }}</span>
+                <span class="detail-value">{{ serviceState.reranker.supportedTypeCount }}</span>
               </div>
               <div class="detail-row" *ngIf="serviceState.reranker?.defaultConfig?.type">
                 <span class="detail-label">Default Type:</span>
-                <span class="detail-value">{{ serviceState.reranker?.defaultConfig?.type }}</span>
+                <span class="detail-value">{{ serviceState.reranker.defaultConfig?.type }}</span>
               </div>
               <div class="detail-row" *ngIf="serviceState.reranker?.defaultConfig?.topK">
                 <span class="detail-label">Default Top-K:</span>
-                <span class="detail-value">{{ serviceState.reranker?.defaultConfig?.topK }}</span>
+                <span class="detail-value">{{ serviceState.reranker.defaultConfig?.topK }}</span>
               </div>
               <div class="reranker-types" *ngIf="serviceState.reranker?.supportedTypes?.length">
                 <span class="types-label">Available Types:</span>
@@ -566,28 +566,28 @@
         </mat-card>
 
         <!-- Document Retriever State -->
-        <mat-card class="service-state-card" [class.state-loaded]="serviceState.documentRetriever?.loaded" [class.state-not-loaded]="!serviceState.documentRetriever?.loaded">
+        <mat-card class="service-state-card" [class.state-loaded]="serviceState.documentRetriever.loaded" [class.state-not-loaded]="!serviceState.documentRetriever.loaded">
           <mat-card-header>
-            <mat-icon mat-card-avatar [class]="getServiceStateColorClass(serviceState.documentRetriever?.loaded || false)">
-              {{ getServiceStateIcon(serviceState.documentRetriever?.loaded || false) }}
+            <mat-icon mat-card-avatar [class]="getServiceStateColorClass(serviceState.documentRetriever.loaded || false)">
+              {{ getServiceStateIcon(serviceState.documentRetriever.loaded || false) }}
             </mat-icon>
             <mat-card-title>Document Retriever</mat-card-title>
             <mat-card-subtitle *ngIf="serviceState.documentRetriever?.loaded">
-              {{ serviceState.documentRetriever?.primary?.class || 'Unknown' }}
+              {{ serviceState.documentRetriever.primary?.class || 'Unknown' }}
             </mat-card-subtitle>
             <mat-card-subtitle *ngIf="!serviceState.documentRetriever?.loaded">
-              {{ serviceState.documentRetriever?.reason || 'Not Loaded' }}
+              {{ serviceState.documentRetriever.reason || 'Not Loaded' }}
             </mat-card-subtitle>
           </mat-card-header>
           <mat-card-content *ngIf="serviceState.documentRetriever?.loaded && serviceState.documentRetriever?.primary">
             <div class="state-details">
               <div class="detail-row">
                 <span class="detail-label">Class:</span>
-                <span class="detail-value">{{ serviceState.documentRetriever?.primary?.fullClass }}</span>
+                <span class="detail-value">{{ serviceState.documentRetriever.primary?.fullClass }}</span>
               </div>
               <div class="detail-row" *ngIf="serviceState.documentRetriever?.totalRetrievers">
                 <span class="detail-label">Total Retrievers:</span>
-                <span class="detail-value">{{ serviceState.documentRetriever?.totalRetrievers }}</span>
+                <span class="detail-value">{{ serviceState.documentRetriever.totalRetrievers }}</span>
               </div>
             </div>
           </mat-card-content>
@@ -761,7 +761,7 @@
               </div>
               <div class="date-info" *ngIf="model.metadata?.installedAt || model.promotedAt">
                 <mat-icon>schedule</mat-icon>
-                <span>{{ formatPromotedDate(model.metadata?.installedAt || model.promotedAt) }}</span>
+                <span>{{ formatPromotedDate(model.metadata.installedAt || model.promotedAt) }}</span>
               </div>
             </div>
           </div>
@@ -1280,12 +1280,12 @@
               </mat-card-header>
               <mat-card-content>
                 <div class="backend-info-grid">
-                  <mat-chip color="primary" selected>{{ nd4jEnvironment.backendInfo?.backend || 'Unknown' }}</mat-chip>
-                  <mat-chip [color]="nd4jEnvironment.backendInfo?.isCPU ? 'primary' : 'accent'" selected>
-                    {{ nd4jEnvironment.backendInfo?.isCPU ? 'CPU Backend' : 'GPU Backend' }}
+                  <mat-chip color="primary" selected>{{ nd4jEnvironment.backendInfo.backend || 'Unknown' }}</mat-chip>
+                  <mat-chip [color]="nd4jEnvironment.backendInfo.isCPU ? 'primary' : 'accent'" selected>
+                    {{ nd4jEnvironment.backendInfo.isCPU ? 'CPU Backend' : 'GPU Backend' }}
                   </mat-chip>
                   <mat-chip *ngIf="nd4jEnvironment.backendInfo?.blasVersion">
-                    BLAS {{ nd4jEnvironment.backendInfo?.blasVersion }}
+                    BLAS {{ nd4jEnvironment.backendInfo.blasVersion }}
                   </mat-chip>
                 </div>
 
@@ -1293,8 +1293,8 @@
                 <div class="read-only-info" *ngIf="nd4jEnvironment.readOnlyInfo">
                   <div class="info-item" *ngIf="nd4jEnvironment.readOnlyInfo?.debugAndVerbose !== undefined">
                     <span class="info-label">Debug & Verbose Active:</span>
-                    <mat-chip [color]="nd4jEnvironment.readOnlyInfo?.debugAndVerbose ? 'warn' : 'primary'" selected>
-                      {{ nd4jEnvironment.readOnlyInfo?.debugAndVerbose ? 'Yes' : 'No' }}
+                    <mat-chip [color]="nd4jEnvironment.readOnlyInfo.debugAndVerbose ? 'warn' : 'primary'" selected>
+                      {{ nd4jEnvironment.readOnlyInfo.debugAndVerbose ? 'Yes' : 'No' }}
                     </mat-chip>
                   </div>
                 </div>
@@ -1573,28 +1573,28 @@
               <div class="info-grid">
                 <div class="info-item">
                   <span class="info-label">Backend</span>
-                  <span class="info-value">{{ profilingMetrics.backend?.backend }}</span>
+                  <span class="info-value">{{ profilingMetrics.backend.backend }}</span>
                 </div>
                 <div class="info-item">
                   <span class="info-label">CPU Mode</span>
-                  <mat-chip [color]="profilingMetrics.backend?.isCPU ? 'primary' : 'accent'" selected>
-                    {{ profilingMetrics.backend?.isCPU ? 'CPU' : 'GPU' }}
+                  <mat-chip [color]="profilingMetrics.backend.isCPU ? 'primary' : 'accent'" selected>
+                    {{ profilingMetrics.backend.isCPU ? 'CPU' : 'GPU' }}
                   </mat-chip>
                 </div>
                 <div class="info-item">
                   <span class="info-label">BLAS Version</span>
-                  <span class="info-value">{{ profilingMetrics.backend?.blasVersion }}</span>
+                  <span class="info-value">{{ profilingMetrics.backend.blasVersion }}</span>
                 </div>
                 <div class="info-item">
                   <span class="info-label">BLAS Enabled</span>
-                  <mat-chip [color]="profilingMetrics.blas?.blasEnabled ? 'primary' : 'warn'" selected>
-                    {{ profilingMetrics.blas?.blasEnabled ? 'Yes' : 'No' }}
+                  <mat-chip [color]="profilingMetrics.blas.blasEnabled ? 'primary' : 'warn'" selected>
+                    {{ profilingMetrics.blas.blasEnabled ? 'Yes' : 'No' }}
                   </mat-chip>
                 </div>
                 <div class="info-item">
                   <span class="info-label">Helpers Allowed</span>
-                  <mat-chip [color]="profilingMetrics.blas?.helpersAllowed ? 'primary' : 'warn'" selected>
-                    {{ profilingMetrics.blas?.helpersAllowed ? 'Yes' : 'No' }}
+                  <mat-chip [color]="profilingMetrics.blas.helpersAllowed ? 'primary' : 'warn'" selected>
+                    {{ profilingMetrics.blas.helpersAllowed ? 'Yes' : 'No' }}
                   </mat-chip>
                 </div>
               </div>
@@ -1615,7 +1615,7 @@
                 <mat-form-field appearance="outline">
                   <mat-label>Max Threads</mat-label>
                   <input matInput type="number" min="1" max="128"
-                         [value]="profilingMetrics.threads?.maxThreads"
+                         [value]="profilingMetrics.threads.maxThreads"
                          (blur)="updateThreadConfig('maxThreads', $any($event.target).value)">
                   <mat-hint>Limit BLAS threads per operation</mat-hint>
                 </mat-form-field>
@@ -1623,7 +1623,7 @@
                 <mat-form-field appearance="outline">
                   <mat-label>Max Master Threads</mat-label>
                   <input matInput type="number" min="1" max="128"
-                         [value]="profilingMetrics.threads?.maxMasterThreads"
+                         [value]="profilingMetrics.threads.maxMasterThreads"
                          (blur)="updateThreadConfig('maxMasterThreads', $any($event.target).value)">
                   <mat-hint>Limit master thread pool size</mat-hint>
                 </mat-form-field>
@@ -1631,11 +1631,11 @@
                 <div class="thread-info">
                   <div class="info-item">
                     <span class="info-label">Available Processors</span>
-                    <span class="info-value">{{ profilingMetrics.threads?.availableProcessors }}</span>
+                    <span class="info-value">{{ profilingMetrics.threads.availableProcessors }}</span>
                   </div>
                   <div class="info-item">
                     <span class="info-label">Active Thread Count</span>
-                    <span class="info-value">{{ profilingMetrics.threads?.activeThreadCount }}</span>
+                    <span class="info-value">{{ profilingMetrics.threads.activeThreadCount }}</span>
                   </div>
                 </div>
               </div>
@@ -1677,11 +1677,11 @@
               <div class="info-grid">
                 <div class="info-item">
                   <span class="info-label">TAD Threshold</span>
-                  <span class="info-value">{{ profilingMetrics.thresholds?.tadThreshold }}</span>
+                  <span class="info-value">{{ profilingMetrics.thresholds.tadThreshold }}</span>
                 </div>
                 <div class="info-item">
                   <span class="info-label">Elementwise Threshold</span>
-                  <span class="info-value">{{ profilingMetrics.thresholds?.elementwiseThreshold }}</span>
+                  <span class="info-value">{{ profilingMetrics.thresholds.elementwiseThreshold }}</span>
                 </div>
               </div>
             </mat-card-content>
@@ -1876,7 +1876,7 @@
                   <mat-progress-bar mode="determinate" [value]="getMemoryUsage()"
                                     [color]="getMemoryUsage() > 85 ? 'warn' : 'primary'"></mat-progress-bar>
                   <div class="gauge-detail">
-                    {{ systemResources.memory?.heap?.usedMB | number }}MB / {{ systemResources.memory?.heap?.maxMB | number }}MB
+                    {{ systemResources.memory.heap.usedMB | number }}MB / {{ systemResources.memory.heap.maxMB | number }}MB
                   </div>
                 </div>
               </mat-card-content>
@@ -1892,7 +1892,7 @@
                   <mat-progress-bar mode="determinate" [value]="getSystemMemoryUsage()"
                                     [color]="getSystemMemoryUsage() > 90 ? 'warn' : 'primary'"></mat-progress-bar>
                   <div class="gauge-detail">
-                    {{ systemResources?.memory?.system?.usedMB | number }}MB / {{ systemResources?.memory?.system?.totalMB | number }}MB
+                    {{ systemResources.memory.system?.usedMB | number }}MB / {{ systemResources.memory.system?.totalMB | number }}MB
                   </div>
                 </div>
               </mat-card-content>
@@ -1901,9 +1901,9 @@
             <mat-card class="gauge-card">
               <mat-card-content>
                 <div class="gauge">
-                  <div class="gauge-value">{{ systemResources.threads?.threadCount || 0 }}</div>
+                  <div class="gauge-value">{{ systemResources.threads.threadCount || 0 }}</div>
                   <div class="gauge-label">Active Threads</div>
-                  <div class="gauge-detail">Peak: {{ systemResources.threads?.peakThreadCount || 0 }}</div>
+                  <div class="gauge-detail">Peak: {{ systemResources.threads.peakThreadCount || 0 }}</div>
                 </div>
               </mat-card-content>
             </mat-card>

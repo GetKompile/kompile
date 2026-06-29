@@ -39,7 +39,7 @@
           </button>
           <span *ngIf="oauthStatus[channel.channelName]?.connected" class="connected-badge">
             <mat-icon color="primary">check_circle</mat-icon>
-            Connected{{ oauthStatus[channel.channelName]?.teamName ? ' - ' + oauthStatus[channel.channelName]?.teamName : '' }}
+            Connected{{ oauthStatus[channel.channelName].teamName ? ' - ' + oauthStatus[channel.channelName].teamName : '' }}
             <button mat-icon-button color="warn" (click)="disconnectOAuth(channel.channelName)" matTooltip="Disconnect">
               <mat-icon>link_off</mat-icon>
             </button>

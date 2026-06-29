@@ -763,11 +763,11 @@
                       </div>
                       <div class="doc-stat">
                         <mat-icon>format_align_left</mat-icon>
-                        <span>{{ doc.contentStats?.lineCount || 0 | number }} lines</span>
+                        <span>{{ doc.contentStats.lineCount || 0 | number }} lines</span>
                       </div>
                       <div class="doc-stat">
                         <mat-icon>short_text</mat-icon>
-                        <span>{{ doc.contentStats?.wordCount || 0 | number }} words</span>
+                        <span>{{ doc.contentStats.wordCount || 0 | number }} words</span>
                       </div>
                       <div class="doc-stat" *ngIf="doc.contentStats?.hasEncodingIssues">
                         <mat-icon color="warn">warning</mat-icon>
@@ -812,7 +812,7 @@
             <mat-tab>
               <ng-template mat-tab-label>
                 <mat-icon>content_cut</mat-icon>
-                <span>Chunkers ({{ analysisResult.availableChunkers?.length || 0 }})</span>
+                <span>Chunkers ({{ analysisResult.availableChunkers.length || 0 }})</span>
               </ng-template>
               <div class="tab-content">
                 <div class="selected-item-banner" *ngIf="analysisResult.selectedChunker">
@@ -844,7 +844,7 @@
             <mat-tab>
               <ng-template mat-tab-label>
                 <mat-icon>view_list</mat-icon>
-                <span>Chunks ({{ analysisResult.chunks?.length || 0 }})</span>
+                <span>Chunks ({{ analysisResult.chunks.length || 0 }})</span>
               </ng-template>
               <div class="tab-content">
                 <div *ngIf="!analysisResult.chunks?.length" class="no-items">

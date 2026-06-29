@@ -534,7 +534,7 @@
                 </div>
                 <div *ngIf="def.description" class="task-def-desc">{{ def.description }}</div>
                 <div class="task-def-meta">
-                  <span *ngIf="def.command" class="task-def-cmd">{{ def.command | slice:0:60 }}{{ (def.command?.length || 0) > 60 ? '...' : '' }}</span>
+                  <span *ngIf="def.command" class="task-def-cmd">{{ def.command | slice:0:60 }}{{ (def.command.length || 0) > 60 ? '...' : '' }}</span>
                   <span *ngIf="def.agentName">Agent: {{ def.agentName }}</span>
                   <span *ngIf="def.timeoutSeconds">Timeout: {{ def.timeoutSeconds }}s</span>
                   <span *ngIf="def.retryCount">Retries: {{ def.retryCount }}</span>
@@ -1093,7 +1093,7 @@
                 </div>
                 <div *ngIf="session.initialPrompt" class="task-command">
                   <label>Prompt:</label>
-                  <code>{{ session.initialPrompt | slice:0:100 }}{{ (session.initialPrompt?.length || 0) > 100 ? '...' : '' }}</code>
+                  <code>{{ session.initialPrompt | slice:0:100 }}{{ (session.initialPrompt.length || 0) > 100 ? '...' : '' }}</code>
                 </div>
                 <div class="task-meta">
                   <span *ngIf="session.startTime">Started: {{ session.startTime | date:'medium' }}</span>
@@ -1163,7 +1163,7 @@
                   <span *ngIf="trigger.enabled === false" class="status-badge status-stopped">Disabled</span>
                 </div>
                 <div *ngIf="trigger.promptTemplate" class="task-def-desc">
-                  {{ trigger.promptTemplate | slice:0:80 }}{{ (trigger.promptTemplate?.length || 0) > 80 ? '...' : '' }}
+                  {{ trigger.promptTemplate | slice:0:80 }}{{ (trigger.promptTemplate.length || 0) > 80 ? '...' : '' }}
                 </div>
               </div>
             </div>

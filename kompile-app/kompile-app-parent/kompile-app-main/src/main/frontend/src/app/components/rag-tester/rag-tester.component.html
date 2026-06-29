@@ -52,18 +52,18 @@
             </span>
           </div>
         </div>
-        <div class="status-item" [class.available]="status.reranker?.available" [class.unavailable]="!status.reranker?.available">
-          <mat-icon>{{ status.reranker?.available ? 'check_circle' : 'cancel' }}</mat-icon>
+        <div class="status-item" [class.available]="status.reranker.available" [class.unavailable]="!status.reranker.available">
+          <mat-icon>{{ status.reranker.available ? 'check_circle' : 'cancel' }}</mat-icon>
           <div class="status-info">
             <span class="status-label">Reranker</span>
-            <span class="status-class">{{ status.reranker?.class || 'N/A' }}</span>
+            <span class="status-class">{{ status.reranker.class || 'N/A' }}</span>
           </div>
         </div>
-        <div class="status-item" [class.available]="status.graphRag?.available" [class.unavailable]="!status.graphRag?.available">
-          <mat-icon>{{ status.graphRag?.available ? 'check_circle' : 'cancel' }}</mat-icon>
+        <div class="status-item" [class.available]="status.graphRag.available" [class.unavailable]="!status.graphRag.available">
+          <mat-icon>{{ status.graphRag.available ? 'check_circle' : 'cancel' }}</mat-icon>
           <div class="status-info">
             <span class="status-label">Knowledge Graph RAG</span>
-            <span class="status-class">{{ status.graphRag?.class || 'N/A' }}</span>
+            <span class="status-class">{{ status.graphRag.class || 'N/A' }}</span>
           </div>
         </div>
       </div>

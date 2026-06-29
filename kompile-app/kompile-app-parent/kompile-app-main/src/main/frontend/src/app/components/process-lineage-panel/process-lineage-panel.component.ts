@@ -144,7 +144,7 @@ export interface ProcessSuggestion {
               <mat-expansion-panel *ngFor="let phase of process.phases" class="phase-panel">
                 <mat-expansion-panel-header>
                   <mat-panel-title>{{ phase.name }}</mat-panel-title>
-                  <mat-panel-description>{{ phase.steps?.length ?? 0 }} step(s)</mat-panel-description>
+                  <mat-panel-description>{{ phase.steps.length ?? 0 }} step(s)</mat-panel-description>
                 </mat-expansion-panel-header>
 
                 <div *ngFor="let step of phase.steps" class="step-row">

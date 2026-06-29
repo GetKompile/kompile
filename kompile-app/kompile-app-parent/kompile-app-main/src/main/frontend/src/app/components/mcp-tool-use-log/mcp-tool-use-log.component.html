@@ -22,21 +22,21 @@
       <div class="stat-label">Total Calls</div>
     </div>
     <div class="stat-card">
-      <div class="stat-value">{{ stats.byActionType?.['READ'] || 0 }}</div>
+      <div class="stat-value">{{ stats.byActionType['READ'] || 0 }}</div>
       <div class="stat-label">
         <mat-icon class="stat-icon" style="color: #16a34a">visibility</mat-icon>
         Reads
       </div>
     </div>
     <div class="stat-card">
-      <div class="stat-value">{{ stats.byActionType?.['WRITE'] || 0 }}</div>
+      <div class="stat-value">{{ stats.byActionType['WRITE'] || 0 }}</div>
       <div class="stat-label">
         <mat-icon class="stat-icon" style="color: #2563eb">edit</mat-icon>
         Writes
       </div>
     </div>
     <div class="stat-card">
-      <div class="stat-value">{{ stats.byActionType?.['EXECUTE'] || 0 }}</div>
+      <div class="stat-value">{{ stats.byActionType['EXECUTE'] || 0 }}</div>
       <div class="stat-label">
         <mat-icon class="stat-icon" style="color: #ea580c">play_arrow</mat-icon>
         Executes

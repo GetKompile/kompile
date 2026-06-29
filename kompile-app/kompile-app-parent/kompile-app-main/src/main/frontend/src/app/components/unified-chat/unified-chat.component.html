@@ -148,7 +148,7 @@
                 </span>
               </span>
               <span class="chat-meta">
-                {{ session.messageCount ?? session.messages?.length ?? 0 }} msgs · {{ formatSessionDate(session.updatedAt) }}
+                {{ session.messageCount ?? session.messages.length ?? 0 }} msgs · {{ formatSessionDate(session.updatedAt) }}
               </span>
               <span class="chat-preview" *ngIf="!session.synced && getSessionPreview(session)">{{ getSessionPreview(session) }}</span>
             </div>
@@ -477,7 +477,7 @@
           <div class="model-switch-dropdown" *ngIf="showModelSwitchDropdown">
             <div class="model-switch-option"
               *ngFor="let m of activeModelContext.availableEmbeddingModels"
-              [class.current]="m === activeModelContext.embedding?.modelId"
+              [class.current]="m === activeModelContext.embedding.modelId"
               (click)="switchEmbeddingModel(m)">
               {{ m }}
               <span class="current-badge" *ngIf="m === activeModelContext.embedding?.modelId">current</span>

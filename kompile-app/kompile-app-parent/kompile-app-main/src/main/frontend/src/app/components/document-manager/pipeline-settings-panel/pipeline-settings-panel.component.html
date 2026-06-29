@@ -94,7 +94,7 @@
         <div class="stage-header">
           <mat-icon>{{ getStageIcon('extraction') }}</mat-icon>
           <h4>Extraction</h4>
-          <span class="thread-count">{{ config.extraction?.threads || 1 }} thread(s)</span>
+          <span class="thread-count">{{ config.extraction.threads || 1 }} thread(s)</span>
         </div>
         <div class="stage-options">
           <mat-form-field appearance="outline" *ngIf="availableLoaders.length > 0">
@@ -120,7 +120,7 @@
         <div class="stage-header">
           <mat-icon>{{ getStageIcon('tokenization') }}</mat-icon>
           <h4>Tokenization</h4>
-          <span class="thread-count">{{ config.tokenization?.threads || 2 }} thread(s)</span>
+          <span class="thread-count">{{ config.tokenization.threads || 2 }} thread(s)</span>
         </div>
         <div class="stage-options">
           <mat-slide-toggle
@@ -150,7 +150,7 @@
         <div class="stage-header">
           <mat-icon>{{ getStageIcon('chunking') }}</mat-icon>
           <h4>Chunking</h4>
-          <span class="thread-count">{{ config.chunking?.threads || 4 }} thread(s)</span>
+          <span class="thread-count">{{ config.chunking.threads || 4 }} thread(s)</span>
         </div>
         <div class="stage-options">
           <mat-form-field appearance="outline">
@@ -179,7 +179,7 @@
         <div class="stage-header">
           <mat-icon>{{ getStageIcon('embedding') }}</mat-icon>
           <h4>Embedding (Neural Network Inference)</h4>
-          <span class="thread-count">{{ config.embedding?.threads || 2 }} thread(s)</span>
+          <span class="thread-count">{{ config.embedding.threads || 2 }} thread(s)</span>
         </div>
         <div class="stage-options">
           <mat-form-field appearance="outline">

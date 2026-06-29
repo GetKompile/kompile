@@ -82,7 +82,7 @@
               </span>
             </td>
             <td class="file-cell" [title]="job.fileName">
-              {{ job.fileName | slice:0:40 }}{{ (job.fileName?.length || 0) > 40 ? '...' : '' }}
+              {{ job.fileName | slice:0:40 }}{{ (job.fileName.length || 0) > 40 ? '...' : '' }}
             </td>
             <td>
               <div class="progress-cell">
@@ -163,7 +163,7 @@
               </span>
             </td>
             <td class="file-cell" [title]="job.seed">
-              {{ job.seed | slice:0:50 }}{{ (job.seed?.length || 0) > 50 ? '...' : '' }}
+              {{ job.seed | slice:0:50 }}{{ (job.seed.length || 0) > 50 ? '...' : '' }}
             </td>
             <td>{{ job.crawlerId || 'auto' }}</td>
             <td>

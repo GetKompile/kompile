@@ -212,7 +212,7 @@
             <div class="card-body">
               <h3 class="card-title">{{ entity.title || entity.nodeId }}</h3>
               <p class="card-description" *ngIf="entity.description">
-                {{ entity.description | slice:0:80 }}{{ (entity.description?.length || 0) > 80 ? '...' : '' }}
+                {{ entity.description | slice:0:80 }}{{ (entity.description.length || 0) > 80 ? '...' : '' }}
               </p>
             </div>
             <div class="card-footer">
@@ -524,8 +524,8 @@
                 <mat-icon>arrow_back</mat-icon>
               </span>
               <span class="connected-node"
-                    (click)="selectEntityByNodeId(edge.sourceNodeId === selectedEntity?.nodeId ? edge.targetNodeId : edge.sourceNodeId)">
-                {{ getNodeLabel(edge.sourceNodeId === selectedEntity?.nodeId ? edge.targetNodeId : edge.sourceNodeId) }}
+                    (click)="selectEntityByNodeId(edge.sourceNodeId === selectedEntity.nodeId ? edge.targetNodeId : edge.sourceNodeId)">
+                {{ getNodeLabel(edge.sourceNodeId === selectedEntity.nodeId ? edge.targetNodeId : edge.sourceNodeId) }}
               </span>
             </div>
             <span class="edge-weight">{{ edge.weight | number:'1.2-2' }}</span>

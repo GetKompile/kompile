@@ -648,10 +648,10 @@
                       <div class="detailed-worker-status" *ngIf="upload.stats?.workerStatuses as workers">
                         <div class="worker-status-row" *ngFor="let worker of workers; trackBy: trackByWorkerId"
                           [ngClass]="{'worker-active': worker.status === 'processing'}">
-                          <span class="worker-id-badge" [ngClass]="'type-' + worker.workerType?.toUpperCase()">
+                          <span class="worker-id-badge" [ngClass]="'type-' + worker.workerType.toUpperCase()">
                             {{ worker.workerType }}-{{ worker.workerId }}
                           </span>
-                          <span class="worker-status-indicator" [ngClass]="'status-' + worker.status?.toUpperCase()">
+                          <span class="worker-status-indicator" [ngClass]="'status-' + worker.status.toUpperCase()">
                             {{ worker.status }}
                           </span>
                           <span class="worker-processed-count">
@@ -1138,7 +1138,7 @@
                       {{ formatCrawlPhase(job.currentPhase) }}
                     </span>
                     <span *ngIf="job.currentFile" style="font-size:0.7rem;color:var(--text-tertiary)">
-                      {{ job.currentFile | slice:0:30 }}{{ (job.currentFile?.length || 0) > 30 ? '...' : '' }}
+                      {{ job.currentFile | slice:0:30 }}{{ (job.currentFile.length || 0) > 30 ? '...' : '' }}
                     </span>
                     <span *ngIf="job.elapsedMs" style="font-size:0.7rem;color:var(--text-tertiary)">
                       {{ formatElapsedTime(job.elapsedMs) }}
@@ -1217,7 +1217,7 @@
                     <span class="event-phase-tag">{{ event.phase }}</span>
                     <span class="event-message">{{ event.message }}</span>
                     <span class="event-details" *ngIf="event.details" [matTooltip]="event.details">
-                      {{ event.details | slice:0:80 }}{{ (event.details?.length || 0) > 80 ? '...' : '' }}
+                      {{ event.details | slice:0:80 }}{{ (event.details.length || 0) > 80 ? '...' : '' }}
                     </span>
                   </div>
                 </div>
@@ -1709,8 +1709,8 @@
         <mat-card-content>
           <div class="active-models-grid">
             <!-- Sheet Encoder Override -->
-            <div class="active-model-item encoder" [class.has-override]="activeSheet?.embeddingModel"
-                 [class.needs-reindex]="activeSheet?.needsReindex">
+            <div class="active-model-item encoder" [class.has-override]="activeSheet.embeddingModel"
+                 [class.needs-reindex]="activeSheet.needsReindex">
               <div class="model-header">
                 <mat-icon>memory</mat-icon>
                 <span class="model-type">Embedding Model</span>
@@ -1718,15 +1718,15 @@
                           matTooltip="Reindex required: configured model differs from indexed model">warning</mat-icon>
               </div>
               <div class="model-value">
-                <span class="model-name" *ngIf="activeSheet?.embeddingModel">{{ activeSheet?.embeddingModel }}</span>
+                <span class="model-name" *ngIf="activeSheet?.embeddingModel">{{ activeSheet.embeddingModel }}</span>
                 <span class="model-name default-text" *ngIf="!activeSheet?.embeddingModel">Using System Default</span>
                 <mat-chip *ngIf="activeSheet?.embeddingModel" class="override-chip">Override</mat-chip>
                 <mat-chip *ngIf="!activeSheet?.embeddingModel" class="default-chip">Default</mat-chip>
               </div>
               <div class="model-details" *ngIf="activeSheet?.embeddingModel">
-                <span class="model-source">Source: {{ activeSheet?.embeddingModelSource || 'registry' }}</span>
+                <span class="model-source">Source: {{ activeSheet.embeddingModelSource || 'registry' }}</span>
                 <span class="model-archive" *ngIf="activeSheet?.embeddingArchiveId">Archive: {{
-                  activeSheet?.embeddingArchiveId }}</span>
+                  activeSheet.embeddingArchiveId }}</span>
               </div>
 
               <!-- Indexed With Model Info -->
@@ -1734,12 +1734,12 @@
                 <div class="indexed-model-row" *ngIf="activeSheet?.indexedWithModel">
                   <mat-icon class="indexed-icon">check_circle</mat-icon>
                   <span class="indexed-label">Indexed with:</span>
-                  <span class="indexed-value">{{ activeSheet?.indexedWithModel }}</span>
+                  <span class="indexed-value">{{ activeSheet.indexedWithModel }}</span>
                 </div>
                 <div class="indexed-model-row" *ngIf="activeSheet?.indexedAt">
                   <mat-icon class="indexed-icon">schedule</mat-icon>
                   <span class="indexed-label">Last indexed:</span>
-                  <span class="indexed-value">{{ activeSheet?.indexedAt | date:'medium' }}</span>
+                  <span class="indexed-value">{{ activeSheet.indexedAt | date:'medium' }}</span>
                 </div>
               </div>
 
@@ -1750,9 +1750,9 @@
                   <span class="warning-title">Reindex Required</span>
                   <span class="warning-message">
                     The configured embedding model
-                    <strong>{{ activeSheet?.embeddingModel || 'default' }}</strong>
+                    <strong>{{ activeSheet.embeddingModel || 'default' }}</strong>
                     differs from the model used for indexing
-                    <strong>{{ activeSheet?.indexedWithModel || 'unknown' }}</strong>.
+                    <strong>{{ activeSheet.indexedWithModel || 'unknown' }}</strong>.
                     Search results may be incorrect until you rebuild the vector store.
                   </span>
                   <button mat-stroked-button color="warn" class="reindex-button"
@@ -1765,13 +1765,13 @@
             </div>
 
             <!-- Sheet Reranker Override -->
-            <div class="active-model-item reranker" [class.has-override]="activeSheet?.rerankingEnabled">
+            <div class="active-model-item reranker" [class.has-override]="activeSheet.rerankingEnabled">
               <div class="model-header">
                 <mat-icon>swap_vert</mat-icon>
                 <span class="model-type">Reranker Override</span>
               </div>
               <div class="model-value">
-                <span class="model-name" *ngIf="activeSheet?.rerankingEnabled">{{ activeSheet?.rerankerType ||
+                <span class="model-name" *ngIf="activeSheet?.rerankingEnabled">{{ activeSheet.rerankerType ||
                   'Enabled' }}</span>
                 <span class="model-name default-text" *ngIf="!activeSheet?.rerankingEnabled">Using System
                   Default</span>
@@ -1780,9 +1780,9 @@
               </div>
               <div class="model-details"
                 *ngIf="activeSheet?.rerankingEnabled && activeSheet?.rerankerType === 'cross_encoder'">
-                <span class="model-type-info">Cross-Encoder: {{ activeSheet?.crossEncoderModel || 'Default'
+                <span class="model-type-info">Cross-Encoder: {{ activeSheet.crossEncoderModel || 'Default'
                   }}</span>
-                <span class="model-topk" *ngIf="activeSheet?.rerankTopK">Top-K: {{ activeSheet?.rerankTopK }}</span>
+                <span class="model-topk" *ngIf="activeSheet?.rerankTopK">Top-K: {{ activeSheet.rerankTopK }}</span>
               </div>
             </div>
           </div>
@@ -2033,7 +2033,7 @@
                 <span class="warning-title">Reindex Required</span>
                 <span class="warning-message">
                   Changing the embedding model will invalidate the existing vector store.
-                  <strong>{{ activeSheet?.indexedCount }}</strong> indexed document(s) will need to be reindexed.
+                  <strong>{{ activeSheet.indexedCount }}</strong> indexed document(s) will need to be reindexed.
                 </span>
               </div>
             </div>

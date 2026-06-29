@@ -105,7 +105,7 @@ import { GraphNodePopoverComponent } from './graph-node-popover.component';
         <div class="step-timeline" *ngIf="run.stepExecutions?.length">
           <div *ngFor="let step of run.stepExecutions; let i = index; let last = last"
                class="timeline-node-group">
-            <div [class]="'timeline-node timeline-' + step.status?.toLowerCase()"
+            <div [class]="'timeline-node timeline-' + step.status.toLowerCase()"
                  [matTooltip]="step.stepName + ' — ' + step.status"
                  (click)="selectStep(i)">
               <mat-icon class="node-icon">{{ stepStatusIcon(step.status) }}</mat-icon>
@@ -124,7 +124,7 @@ import { GraphNodePopoverComponent } from './graph-node-popover.component';
             <mat-icon>info</mat-icon>
             {{ selectedStep.stepName || selectedStep.stepId }}
           </h4>
-          <mat-chip class="status-chip small-chip" [ngClass]="'status-' + selectedStep.status?.toLowerCase()">
+          <mat-chip class="status-chip small-chip" [ngClass]="'status-' + selectedStep.status.toLowerCase()">
             {{ selectedStep.status }}
           </mat-chip>
         </div>
@@ -352,13 +352,13 @@ import { GraphNodePopoverComponent } from './graph-node-popover.component';
 
         <div *ngIf="riskAssessment" class="risk-results">
           <div class="risk-overview">
-            <div class="risk-score-card" [class]="'risk-' + riskAssessment.riskLevel?.toLowerCase()">
+            <div class="risk-score-card" [class]="'risk-' + riskAssessment.riskLevel.toLowerCase()">
               <span class="risk-score-value">{{(riskAssessment.overallRiskScore * 100).toFixed(0)}}%</span>
               <span class="risk-score-label">{{riskAssessment.riskLevel}} risk</span>
             </div>
             <div class="risk-stats">
-              <span>{{riskAssessment.alerts?.length || 0}} alerts</span>
-              <span>{{riskAssessment.highRiskStepIds?.length || 0}} high-risk steps</span>
+              <span>{{riskAssessment.alerts.length || 0}} alerts</span>
+              <span>{{riskAssessment.highRiskStepIds.length || 0}} high-risk steps</span>
               <span>{{riskAssessment.computationTimeMs}}ms</span>
               <span class="run-alert-ts" *ngIf="riskAssessment.computedAt">{{riskAssessment.computedAt | slice:0:19}}</span>
             </div>
@@ -453,7 +453,7 @@ import { GraphNodePopoverComponent } from './graph-node-popover.component';
           <div *ngIf="riskAssessment.alerts?.length" class="alerts-list">
             <h5>Alerts</h5>
             <div *ngFor="let alert of riskAssessment.alerts" class="alert-card"
-                 [class]="'alert-' + alert.severity?.toLowerCase()">
+                 [class]="'alert-' + alert.severity.toLowerCase()">
               <div class="alert-header">
                 <mat-icon>{{alert.severity === 'CRITICAL' ? 'error' :
                   alert.severity === 'HIGH' ? 'warning' : 'info'}}</mat-icon>
@@ -553,7 +553,7 @@ import { GraphNodePopoverComponent } from './graph-node-popover.component';
 
           <!-- Attribution chains -->
           <div *ngIf="stepAttributionResult.attribution" class="step-attr-section">
-            <h5>Why this step? ({{stepAttributionResult.attribution.chains?.length || 0}} chains)</h5>
+            <h5>Why this step? ({{stepAttributionResult.attribution.chains.length || 0}} chains)</h5>
             <div *ngIf="stepAttributionResult.attribution.synthesizedExplanation" class="attr-explanation">
               {{stepAttributionResult.attribution.synthesizedExplanation}}
             </div>
@@ -564,7 +564,7 @@ import { GraphNodePopoverComponent } from './graph-node-popover.component';
                 {{(chain.overallConfidence * 100).toFixed(0)}}% {{chain.confidenceBand}}
               </span>
               <span class="chain-path-text">
-                {{chain.rootCauseTitle}} → {{chain.hops?.length || 0}} hops → {{chain.targetEventTitle}}
+                {{chain.rootCauseTitle}} → {{chain.hops.length || 0}} hops → {{chain.targetEventTitle}}
               </span>
             </div>
           </div>
@@ -641,7 +641,7 @@ import { GraphNodePopoverComponent } from './graph-node-popover.component';
 
           <!-- Predictions -->
           <div *ngIf="stepAttributionResult.prediction" class="step-attr-section">
-            <h5>What next? ({{stepAttributionResult.prediction.predictions?.length || 0}} predictions)</h5>
+            <h5>What next? ({{stepAttributionResult.prediction.predictions.length || 0}} predictions)</h5>
             <div *ngIf="stepAttributionResult.prediction.synthesizedForecast" class="attr-explanation">
               {{stepAttributionResult.prediction.synthesizedForecast}}
             </div>

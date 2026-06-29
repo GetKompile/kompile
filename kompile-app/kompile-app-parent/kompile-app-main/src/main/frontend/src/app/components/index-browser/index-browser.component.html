@@ -994,7 +994,7 @@
             <div class="table-card-headers">
               <mat-chip-listbox>
                 <mat-chip *ngFor="let h of t.headers?.slice(0, 6)" class="header-chip">{{ h }}</mat-chip>
-                <mat-chip *ngIf="(t.headers?.length || 0) > 6" class="header-chip-more">+{{ (t.headers?.length || 0) - 6 }}</mat-chip>
+                <mat-chip *ngIf="(t.headers?.length || 0) > 6" class="header-chip-more">+{{ (t.headers.length || 0) - 6 }}</mat-chip>
               </mat-chip-listbox>
             </div>
             <div class="table-card-preview">

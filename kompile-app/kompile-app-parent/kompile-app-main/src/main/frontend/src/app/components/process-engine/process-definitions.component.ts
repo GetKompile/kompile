@@ -264,13 +264,13 @@ type ViewMode = 'list' | 'create' | 'detail';
 
         <div *ngIf="definitionRisk" class="risk-panel">
           <div class="risk-overview">
-            <div class="risk-score-card" [class]="'risk-' + definitionRisk.riskLevel?.toLowerCase()">
+            <div class="risk-score-card" [class]="'risk-' + definitionRisk.riskLevel.toLowerCase()">
               <span class="risk-score-value">{{ (definitionRisk.overallRiskScore * 100).toFixed(0) }}%</span>
               <span class="risk-score-label">{{ definitionRisk.riskLevel }} risk</span>
             </div>
             <div class="risk-stats">
-              <span>{{ definitionRisk.alerts?.length || 0 }} alerts</span>
-              <span>{{ definitionRisk.highRiskStepIds?.length || 0 }} high-risk steps</span>
+              <span>{{ definitionRisk.alerts.length || 0 }} alerts</span>
+              <span>{{ definitionRisk.highRiskStepIds.length || 0 }} high-risk steps</span>
             </div>
           </div>
 
@@ -336,7 +336,7 @@ type ViewMode = 'list' | 'create' | 'detail';
           <div *ngIf="definitionRisk.alerts?.length" class="risk-alerts">
             <span class="risk-section-label">Alerts</span>
             <div *ngFor="let alert of definitionRisk.alerts" class="risk-alert-card"
-                 [class]="'alert-' + alert.severity?.toLowerCase()">
+                 [class]="'alert-' + alert.severity.toLowerCase()">
               <div class="alert-header-row">
                 <mat-icon>{{ alert.severity === 'CRITICAL' ? 'error' :
                   alert.severity === 'HIGH' ? 'warning' : 'info' }}</mat-icon>

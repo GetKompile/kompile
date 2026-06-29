@@ -657,8 +657,8 @@
               <td>{{ entry.value.peakGpuMemoryBytes ? (entry.value.peakGpuMemoryBytes / 1048576 | number:'1.0-0') : '-' }}</td>
               <td>{{ entry.value.estimatedHeapBytes ? (entry.value.estimatedHeapBytes / 1048576 | number:'1.0-0') : '-' }}</td>
               <td>{{ entry.value.concurrentAllowed ? 'Yes (max ' + entry.value.maxConcurrent + ')' : 'No' }}</td>
-              <td>{{ entry.value.conflictsWith?.length ? entry.value.conflictsWith.join(', ') : '-' }}</td>
-              <td>{{ entry.value.batchableWith?.length ? entry.value.batchableWith.join(', ') : '-' }}</td>
+              <td>{{ entry.value.conflictsWith.length ? entry.value.conflictsWith.join(', ') : '-' }}</td>
+              <td>{{ entry.value.batchableWith.length ? entry.value.batchableWith.join(', ') : '-' }}</td>
             </tr>
             <tr *ngIf="entry.value.phaseProfiles?.length" class="phase-detail-row">
               <td colspan="7">

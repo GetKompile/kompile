@@ -98,7 +98,7 @@ type ViewMode = 'list' | 'create' | 'detail';
               </div>
               <div class="stat" *ngIf="ctrl.expression">
                 <mat-icon>code</mat-icon>
-                <span class="expr-preview">{{ ctrl.expression | slice:0:40 }}{{ (ctrl.expression?.length || 0) > 40 ? '...' : '' }}</span>
+                <span class="expr-preview">{{ ctrl.expression | slice:0:40 }}{{ (ctrl.expression.length || 0) > 40 ? '...' : '' }}</span>
               </div>
               <div class="stat" *ngIf="ctrl.regulatoryReference">
                 <mat-icon>policy</mat-icon>
@@ -184,7 +184,7 @@ type ViewMode = 'list' | 'create' | 'detail';
 
         <div class="editor-actions">
           <button mat-button (click)="backToList()">Cancel</button>
-          <button mat-raised-button color="primary" (click)="createControl()" [disabled]="saving || !newControl.name?.trim()">
+          <button mat-raised-button color="primary" (click)="createControl()" [disabled]="saving || !newControl.name.trim()">
             <mat-icon>save</mat-icon> {{ saving ? 'Saving...' : 'Create' }}
           </button>
         </div>
@@ -309,7 +309,7 @@ type ViewMode = 'list' | 'create' | 'detail';
               <div *ngFor="let chain of failureAlert.causalChains; let i = index" class="chain-card">
                 <span class="chain-index">{{ i + 1 }}</span>
                 <span class="chain-detail">
-                  {{ chain.rootCauseTitle }} → {{ chain.hops?.length || 0 }} hops → {{ chain.targetEventTitle }}
+                  {{ chain.rootCauseTitle }} → {{ chain.hops.length || 0 }} hops → {{ chain.targetEventTitle }}
                 </span>
                 <span class="chain-conf" [style.color]="chain.overallConfidence >= 0.7 ? '#ef5350' : chain.overallConfidence >= 0.4 ? '#ffb74d' : '#66bb6a'">
                   {{ (chain.overallConfidence * 100).toFixed(0) }}%

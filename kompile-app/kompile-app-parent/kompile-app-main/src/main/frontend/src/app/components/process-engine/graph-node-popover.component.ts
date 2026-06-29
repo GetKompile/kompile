@@ -48,7 +48,7 @@ import { GraphNode } from '../../models/graph-models';
       <div class="popover-content" *ngIf="node && !loading && !error">
         <!-- Header -->
         <div class="popover-header">
-          <mat-chip class="type-chip" [ngClass]="'type-' + node.nodeType?.toLowerCase()">
+          <mat-chip class="type-chip" [ngClass]="'type-' + node.nodeType.toLowerCase()">
             {{ node.nodeType }}
           </mat-chip>
           <button mat-icon-button class="close-btn" (click)="close()">
@@ -132,7 +132,7 @@ import { GraphNode } from '../../models/graph-models';
         <!-- Content Preview -->
         <div class="content-preview" *ngIf="node.contentPreview">
           <span class="meta-label">Preview</span>
-          <pre class="preview-text">{{ node.contentPreview | slice:0:300 }}{{ (node.contentPreview?.length || 0) > 300 ? '...' : '' }}</pre>
+          <pre class="preview-text">{{ node.contentPreview | slice:0:300 }}{{ (node.contentPreview.length || 0) > 300 ? '...' : '' }}</pre>
         </div>
 
         <!-- Action -->

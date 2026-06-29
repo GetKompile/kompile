@@ -150,8 +150,8 @@ import { ProcessEngineService, ExcelConversionResult } from '../../services/proc
       <div class="artifact-footer" *ngIf="editableCode">
         <div class="footer-info">
           <mat-chip-set *ngIf="conversionResult">
-            <mat-chip>{{ conversionResult.inputCells?.length || 0 }} inputs</mat-chip>
-            <mat-chip>{{ conversionResult.outputCells?.length || 0 }} outputs</mat-chip>
+            <mat-chip>{{ conversionResult.inputCells.length || 0 }} inputs</mat-chip>
+            <mat-chip>{{ conversionResult.outputCells.length || 0 }} outputs</mat-chip>
             <mat-chip>{{ conversionResult.formulaCount || 0 }} formulas</mat-chip>
           </mat-chip-set>
         </div>

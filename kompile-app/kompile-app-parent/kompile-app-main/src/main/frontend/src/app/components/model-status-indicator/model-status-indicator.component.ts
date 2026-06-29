@@ -534,19 +534,19 @@ export type ModelSourceType = 'staging' | 'archive' | 'default' | 'registry';
           <div class="detail-grid" *ngIf="modelStatus">
             <div class="detail-row">
               <span class="detail-label">Embedding Model:</span>
-              <span class="detail-value">{{ modelStatus?.embedding?.configuredModel || '(default)' }}</span>
+              <span class="detail-value">{{ modelStatus.embedding.configuredModel || '(default)' }}</span>
             </div>
             <div class="detail-row">
               <span class="detail-label">Reranking:</span>
-              <span class="detail-value">{{ modelStatus?.crossEncoder?.rerankingEnabled ? 'Enabled' : 'Disabled' }}</span>
+              <span class="detail-value">{{ modelStatus.crossEncoder.rerankingEnabled ? 'Enabled' : 'Disabled' }}</span>
             </div>
             <div class="detail-row" *ngIf="modelStatus?.crossEncoder?.rerankingEnabled">
               <span class="detail-label">Reranker Type:</span>
-              <span class="detail-value">{{ formatRerankerType(modelStatus?.crossEncoder?.rerankerType) }}</span>
+              <span class="detail-value">{{ formatRerankerType(modelStatus.crossEncoder.rerankerType) }}</span>
             </div>
             <div class="detail-row" *ngIf="modelStatus?.crossEncoder?.rerankingEnabled && modelStatus?.crossEncoder?.configuredModel">
               <span class="detail-label">Cross-Encoder:</span>
-              <span class="detail-value">{{ modelStatus?.crossEncoder?.configuredModel }}</span>
+              <span class="detail-value">{{ modelStatus.crossEncoder.configuredModel }}</span>
             </div>
           </div>
         </div>
