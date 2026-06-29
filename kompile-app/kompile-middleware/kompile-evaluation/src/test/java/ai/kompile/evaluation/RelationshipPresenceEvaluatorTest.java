@@ -38,7 +38,7 @@ class RelationshipPresenceEvaluatorTest {
 
     @BeforeEach
     void setUp() {
-        EvaluationProperties props = new EvaluationProperties();
+        EvaluationProperties props = new EvaluationProperties(null);
         props.getRelationshipPresence().setThreshold(0.5);
         evaluator = new RelationshipPresenceEvaluator(props);
     }

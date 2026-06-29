@@ -36,7 +36,7 @@ class EntityTypeAccuracyEvaluatorTest {
 
     @BeforeEach
     void setUp() {
-        EvaluationProperties props = new EvaluationProperties();
+        EvaluationProperties props = new EvaluationProperties(null);
         props.getEntityTypeAccuracy().setThreshold(0.7);
         evaluator = new EntityTypeAccuracyEvaluator(props);
     }

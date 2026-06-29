@@ -37,7 +37,7 @@ class EntityPresenceEvaluatorTest {
 
     @BeforeEach
     void setUp() {
-        EvaluationProperties props = new EvaluationProperties();
+        EvaluationProperties props = new EvaluationProperties(null);
         props.getEntityPresence().setThreshold(0.5);
         evaluator = new EntityPresenceEvaluator(props);
     }
