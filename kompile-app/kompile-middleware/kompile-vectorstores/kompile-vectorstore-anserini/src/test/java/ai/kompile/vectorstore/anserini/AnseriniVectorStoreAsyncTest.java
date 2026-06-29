@@ -394,7 +394,7 @@ class AnseriniVectorStoreAsyncTest {
 
     /** Builds a store wired to the given temp dir and EmbeddingModel. */
     private AnseriniVectorStoreImpl buildStore(Path dir, EmbeddingModel model) {
-        AnseriniVectorStoreProperties props = new AnseriniVectorStoreProperties();
+        AnseriniVectorStoreProperties props = new AnseriniVectorStoreProperties(dir.toString());
         props.setIndexPath(dir.toString());
         props.setPersistenceEnabled(true);
         props.setEnabled(true);
