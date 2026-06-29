@@ -9,8 +9,10 @@
  */
 package ai.kompile.app.ontology;
 
+import ai.kompile.graph.reasoning.mebn.type.owl.OwlClass;
 import ai.kompile.graph.reasoning.mebn.type.owl.OwlObjectProperty;
 import ai.kompile.graph.reasoning.mebn.type.owl.OwlOntology;
+import ai.kompile.process.ontology.EntityTypeDefinition;
 import ai.kompile.process.ontology.OntologySchema;
 import ai.kompile.process.ontology.RelationshipTypeDefinition;
 import org.junit.jupiter.api.Test;
@@ -18,6 +20,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Verifies that a transitive {@link RelationshipTypeDefinition} (has-a / part-of) is mapped to an
@@ -48,5 +51,29 @@ class OwlOntologyBridgeTransitiveTest {
                 .count();
         assertEquals(1, transitive,
                 "only the partOf relationship should be marked owl:TransitiveProperty");
+    }
+
+    /**
+     * An entity type's {@code parentType} (is-a) must map to {@code rdfs:subClassOf} so the OWL-RL
+     * compiler can emit the {@code cax-sco} type-propagation rule (Dog ⊑ Animal) that classifies
+     * subtype instances up the is-a chain during PSL grounding.
+     */
+    @Test
+    void parentType_becomesSubClassOf_forIsAReasoning() {
+        OntologySchema schema = OntologySchema.builder()
+                .name("zoo")
+                .entityTypes(List.of(
+                        EntityTypeDefinition.builder().name("Animal").build(),
+                        EntityTypeDefinition.builder().name("Dog").parentType("Animal").build()))
+                .build();
+
+        OwlOntology tbox = new OwlOntologyBridge().toOwlOntology(schema);
+
+        OwlClass dog = tbox.classes().values().stream()
+                .filter(c -> "Dog".equals(c.localName()))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Dog class missing from TBox"));
+        assertTrue(dog.subClassOfIris().stream().anyMatch(iri -> iri.contains("Animal")),
+                "Dog.parentType=Animal should map to rdfs:subClassOf so cax-sco classifies Dogs as Animals");
     }
 }

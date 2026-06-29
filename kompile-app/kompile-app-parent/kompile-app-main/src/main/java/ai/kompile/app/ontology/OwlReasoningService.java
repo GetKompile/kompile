@@ -22,6 +22,11 @@ import ai.kompile.graph.reasoning.mebn.type.owl.OwlRlReasoner;
 import ai.kompile.graph.reasoning.mebn.type.owl.OwlRlResult;
 import ai.kompile.graph.reasoning.model.GraphRelation;
 import ai.kompile.graph.reasoning.model.MutableReasoningGraph;
+import ai.kompile.graph.reasoning.model.ReasoningGraph;
+import ai.kompile.knowledgegraph.domain.GraphEdge;
+import ai.kompile.knowledgegraph.domain.GraphNode;
+import ai.kompile.knowledgegraph.domain.NodeLevel;
+import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import ai.kompile.process.ontology.OntologySchema;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -66,11 +71,14 @@ public class OwlReasoningService implements OwlDerivedRuleProvider {
     private final GraphOntologyBindingService bindingService;
     private final OwlOntologyBridge bridge;
     private final OwlRlReasoner reasoner;
+    private final KnowledgeGraphService knowledgeGraphService;
 
     public OwlReasoningService(GraphOntologyBindingService bindingService,
-                                OwlOntologyBridge bridge) {
+                                OwlOntologyBridge bridge,
+                                KnowledgeGraphService knowledgeGraphService) {
         this.bindingService = bindingService;
         this.bridge = bridge;
+        this.knowledgeGraphService = knowledgeGraphService;
         this.reasoner = new OwlRlReasoner();
     }
 
@@ -129,8 +137,11 @@ public class OwlReasoningService implements OwlDerivedRuleProvider {
         if (schemaOpt.isEmpty()) return List.of();
 
         OwlOntology tbox = bridge.toOwlOntology(schemaOpt.get());
-        MutableReasoningGraph emptyABox = new MutableReasoningGraph();
-        OwlRlResult result = reasoner.reason(emptyABox, tbox);
+        // Reason over the REAL crawled entities (typed by their ontology entity_type) + their edges,
+        // so OWL-RL computes has-a transitive closure over the actual graph and feeds instance types
+        // into PSL grounding. Without a real ABox these rules ground over nothing.
+        ReasoningGraph abox = buildAbox(factSheetId);
+        OwlRlResult result = reasoner.reason(abox, tbox);
 
         List<String> rules = new ArrayList<>();
 
@@ -288,5 +299,46 @@ public class OwlReasoningService implements OwlDerivedRuleProvider {
         int slash = iri.lastIndexOf('/');
         if (slash >= 0 && slash < iri.length() - 1) return iri.substring(slash + 1);
         return iri;
+    }
+
+    /**
+     * Build an OWL ABox from the fact sheet's real crawled entities — each typed by its ontology
+     * {@code entity_type} (so OWL domain/range + subClassOf rules classify the real instances) and
+     * connected by their inter-entity edges (so transitive object properties produce real closure).
+     * Returns an empty graph when no {@link KnowledgeGraphService} is wired.
+     */
+    private ReasoningGraph buildAbox(long factSheetId) {
+        MutableReasoningGraph abox = new MutableReasoningGraph();
+        if (knowledgeGraphService == null) {
+            return abox;
+        }
+        for (GraphNode node : knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY)) {
+            String type = entityType(node);
+            if (type == null || node.getNodeId() == null) continue;
+            String label = node.getTitle() != null ? node.getTitle() : node.getNodeId();
+            abox.addEntity(node.getNodeId(), type, label);
+        }
+        for (GraphEdge edge : knowledgeGraphService.getEdgesInFactSheet(factSheetId)) {
+            if (Boolean.TRUE.equals(edge.getStale())) continue;
+            String src = edge.getSourceNode() != null ? edge.getSourceNode().getNodeId() : null;
+            String tgt = edge.getTargetNode() != null ? edge.getTargetNode().getNodeId() : null;
+            if (src == null || tgt == null) continue;
+            if (abox.entity(src).isEmpty() || abox.entity(tgt).isEmpty()) continue; // entity pairs only
+            // Prefer the semantic relationType (matches ontology relationship types, e.g. "CONTAINS")
+            // over the structural EdgeType enum, so transitive/closure properties resolve.
+            String type = edge.getRelationType() != null && !edge.getRelationType().isBlank()
+                    ? edge.getRelationType()
+                    : (edge.getEdgeType() != null ? edge.getEdgeType().name() : "");
+            double weight = edge.getConfidence() != null ? edge.getConfidence() : 1.0;
+            abox.addRelation(edge.getEdgeId(), src, tgt, type, weight);
+        }
+        return abox;
+    }
+
+    /** Ontology entity type from a node's {@code entity_type} metadata (written at extraction). */
+    private static String entityType(GraphNode node) {
+        if (node == null || node.getMetadata() == null) return null;
+        Object val = node.getMetadata().get("entity_type");
+        return (val instanceof String s && !s.isBlank()) ? s.trim() : null;
     }
 }

@@ -72,6 +72,12 @@ public class OwlOntologyBridge {
                 if (et.getName() == null || et.getName().isBlank()) continue;
                 String classIri = OwlIri.classIri(et.getName());
                 OwlClass.Builder classBuilder = OwlClass.of(classIri);
+                // parentType → rdfs:subClassOf, so OWL-RL classifies subtype instances (and their
+                // property-derived types) up the is-a chain.
+                if (et.getParentType() != null && !et.getParentType().isBlank()
+                        && !et.getParentType().equalsIgnoreCase(et.getName())) {
+                    classBuilder.subClassOf(OwlIri.classIri(et.getParentType()));
+                }
                 builder.addClass(classBuilder.build());
 
                 // Fields → data properties scoped to this entity-type class
