@@ -72,13 +72,16 @@ public class GraphOntologyBindingService implements GraphConformanceChecker, Ont
     private final ProcessEngineService processEngineService;
     private final KnowledgeGraphService knowledgeGraphService;
     private final NamedGraphService namedGraphService;
+    private final OntologyDerivationService ontologyDerivationService;
 
     public GraphOntologyBindingService(ProcessEngineService processEngineService,
                                        KnowledgeGraphService knowledgeGraphService,
-                                       NamedGraphService namedGraphService) {
+                                       NamedGraphService namedGraphService,
+                                       OntologyDerivationService ontologyDerivationService) {
         this.processEngineService = processEngineService;
         this.knowledgeGraphService = knowledgeGraphService;
         this.namedGraphService = namedGraphService;
+        this.ontologyDerivationService = ontologyDerivationService;
     }
 
     /**
@@ -308,6 +311,36 @@ public class GraphOntologyBindingService implements GraphConformanceChecker, Ont
         log.info("Bound ontology {} v{} to factSheet={} (graph {})",
                 ontologySchemaId, ontologyVersion, factSheetId, bound.getGraphId());
         return bound;
+    }
+
+    /**
+     * Ensure the fact sheet's graph has a governing ontology so OWL/PSL enrichment is not inert.
+     * Idempotent: returns the already-bound ontology when present; otherwise derives a deterministic
+     * <b>structural</b> ontology (no LLM) from the crawled graph, persists it as a draft, and binds it.
+     * Best-effort — any failure (empty graph, persistence/binding error) logs and returns empty rather
+     * than breaking the enrichment pass.
+     */
+    public Optional<OntologySchema> autoProvisionStructuralOntology(Long factSheetId) {
+        if (factSheetId == null) {
+            return Optional.empty();
+        }
+        Optional<OntologySchema> existing = resolveActiveOntology(factSheetId);
+        if (existing.isPresent()) {
+            return existing;
+        }
+        try {
+            OntologySchema draft = ontologyDerivationService.deriveStructuralDraft(factSheetId);
+            OntologySchema saved = processEngineService.createOntology(draft);
+            bindOntology(factSheetId, saved.getId(), saved.getVersion());
+            log.info("Auto-provisioned + bound structural ontology {} v{} for factSheet={} ({} entity types, {} relationships)",
+                    saved.getId(), saved.getVersion(), factSheetId,
+                    saved.getEntityTypes() == null ? 0 : saved.getEntityTypes().size(),
+                    saved.getRelationshipTypes() == null ? 0 : saved.getRelationshipTypes().size());
+            return Optional.of(saved);
+        } catch (RuntimeException e) {
+            log.warn("Auto-provision of structural ontology failed for factSheet={}: {}", factSheetId, e.toString());
+            return Optional.empty();
+        }
     }
 
     /** Clear any explicit ontology binding on the fact sheet's named graph(s). */

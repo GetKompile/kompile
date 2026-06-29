@@ -23,6 +23,8 @@ import ai.kompile.graph.reasoning.mebn.type.owl.OwlRlResult;
 import ai.kompile.graph.reasoning.model.GraphRelation;
 import ai.kompile.graph.reasoning.model.MutableReasoningGraph;
 import ai.kompile.graph.reasoning.model.ReasoningGraph;
+import ai.kompile.knowledgegraph.domain.EdgeProvenance;
+import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
@@ -33,6 +35,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -133,7 +138,9 @@ public class OwlReasoningService implements OwlDerivedRuleProvider {
      */
     @Override
     public List<String> owlDerivedPslRules(long factSheetId, double ruleWeight) {
-        Optional<OntologySchema> schemaOpt = bindingService.resolveActiveOntology(factSheetId);
+        // Auto-provision + bind a structural ontology if none is bound, so enrichment OWL reasoning
+        // operates on a real TBox instead of silently no-opping.
+        Optional<OntologySchema> schemaOpt = bindingService.autoProvisionStructuralOntology(factSheetId);
         if (schemaOpt.isEmpty()) return List.of();
 
         OwlOntology tbox = bridge.toOwlOntology(schemaOpt.get());
@@ -169,6 +176,9 @@ public class OwlReasoningService implements OwlDerivedRuleProvider {
                     rules.add(ruleWeight + ": " + normalized + "(?X, ?Y) & " + normalized
                             + "(?Y, ?Z) -> " + normalized + "(?X, ?Z) ^2");
                 });
+
+        // Persist the entailments back into the graph (best-effort) so they're queryable + visible.
+        materializeInferences(factSheetId, result);
 
         log.debug("OwlReasoningService.owlDerivedPslRules: {} PSL rules from OWL RL for factSheetId={}",
                 rules.size(), factSheetId);
@@ -340,5 +350,73 @@ public class OwlReasoningService implements OwlDerivedRuleProvider {
         if (node == null || node.getMetadata() == null) return null;
         Object val = node.getMetadata().get("entity_type");
         return (val instanceof String s && !s.isBlank()) ? s.trim() : null;
+    }
+
+    /**
+     * Persist the OWL-RL entailments back into the graph (best-effort) so downstream queries, RAG, and
+     * the visualizer can see them: transitive-closure (has-a) edges become real {@code INFERRED}
+     * {@link GraphEdge}s (idempotent on the endpoint pair), and inferred is-a types are recorded in the
+     * entity nodes' {@code owlInferredTypes} metadata. Never throws into the enrichment pass.
+     */
+    private void materializeInferences(long factSheetId, OwlRlResult result) {
+        if (knowledgeGraphService == null || result == null) return;
+        try {
+            int edges = 0;
+            int edgeCap = 5000;
+            for (GraphRelation rel : result.inferredRelations()) {
+                if (edges >= edgeCap) {
+                    log.warn("OWL inferred-edge materialization capped at {} for factSheet={}", edgeCap, factSheetId);
+                    break;
+                }
+                String src = rel.sourceId();
+                String tgt = rel.targetId();
+                if (src == null || tgt == null || src.equals(tgt)) continue;
+                if (knowledgeGraphService.edgeExists(src, tgt)) continue; // idempotent; don't shadow asserted edges
+                knowledgeGraphService.createEdgeWithMetadata(
+                        src, tgt, EdgeType.HIERARCHICAL, 0.7,
+                        rel.type(), "OWL-RL inferred transitive closure (" + rel.type() + ")",
+                        null, EdgeProvenance.INFERRED, factSheetId);
+                edges++;
+            }
+            int typed = materializeInferredTypes(factSheetId, result.inferredTypes());
+            if (edges > 0 || typed > 0) {
+                log.info("Materialized OWL inferences for factSheet={}: {} transitive has-a edges, {} typed entities",
+                        factSheetId, edges, typed);
+            }
+        } catch (RuntimeException e) {
+            log.warn("Materializing OWL inferences failed for factSheet={}: {}", factSheetId, e.toString());
+        }
+    }
+
+    /** Record inferred is-a class memberships in entity nodes' {@code owlInferredTypes} metadata. */
+    private int materializeInferredTypes(long factSheetId, Map<String, String> inferredTypes) {
+        if (inferredTypes == null || inferredTypes.isEmpty()) return 0;
+        Map<String, LinkedHashSet<String>> byEntity = new LinkedHashMap<>();
+        for (Map.Entry<String, String> e : inferredTypes.entrySet()) {
+            String localName = localNameFromIri(e.getValue());
+            if (e.getKey() == null || localName == null || localName.isBlank()) continue;
+            byEntity.computeIfAbsent(e.getKey(), k -> new LinkedHashSet<>()).add(localName);
+        }
+        if (byEntity.isEmpty()) return 0;
+        Map<String, GraphNode> nodesById = knowledgeGraphService
+                .getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY).stream()
+                .filter(n -> n.getNodeId() != null)
+                .collect(Collectors.toMap(GraphNode::getNodeId, n -> n, (a, b) -> a));
+        int updated = 0;
+        int cap = 1000;
+        for (Map.Entry<String, LinkedHashSet<String>> e : byEntity.entrySet()) {
+            if (updated >= cap) {
+                log.warn("OWL inferred-type materialization capped at {} entities for factSheet={}", cap, factSheetId);
+                break;
+            }
+            GraphNode node = nodesById.get(e.getKey());
+            if (node == null) continue;
+            Map<String, Object> meta = node.getMetadata() != null
+                    ? new HashMap<>(node.getMetadata()) : new HashMap<>();
+            meta.put("owlInferredTypes", new ArrayList<>(e.getValue()));
+            knowledgeGraphService.updateNode(e.getKey(), null, null, meta);
+            updated++;
+        }
+        return updated;
     }
 }

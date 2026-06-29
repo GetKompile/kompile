@@ -95,6 +95,7 @@ public class OntologyDerivationService {
                   "name": "PascalCaseTypeName",
                   "description": "string",
                   "classification": "one of REFERENCE | TRANSACTIONAL | PATTERN | CONTROL | METRIC | ACTOR",
+                  "parentType": "PascalCase name of the broader type this one is-a (subClassOf), or null",
                   "confidence": 0.0,
                   "fields": [
                     {
@@ -123,6 +124,7 @@ public class OntologyDerivationService {
                   "sourceEntityType": "PascalCaseTypeName",
                   "targetEntityType": "PascalCaseTypeName",
                   "cardinality": "one of ONE_TO_ONE | ONE_TO_MANY | MANY_TO_ONE | MANY_TO_MANY",
+                  "transitive": false,
                   "description": "string"
                 }
               ],
@@ -143,6 +145,10 @@ public class OntologyDerivationService {
             - Give every entity type exactly one field with "primaryKey": true.
             - Use only the enum values listed above, spelled exactly (UPPERCASE).
             - Emit "relationshipTypes" and rules only when the user asks for them.
+            - Set "parentType" when an entity type is a more specific kind of another listed type
+              (is-a / subClassOf), e.g. RegionalForecast parentType Forecast; otherwise null.
+            - Set "transitive": true for containment / part-of / hierarchy relationships where
+              A→B and B→C imply A→C (has-a), e.g. CONTAINS, PART_OF, REPORTS_TO; otherwise false.
             - The output MUST be valid JSON parseable by Jackson.
             """;
 
@@ -301,6 +307,30 @@ public class OntologyDerivationService {
         return schema;
     }
 
+    /**
+     * Build a deterministic <b>structural</b> ontology draft (no LLM) for a fact sheet — used to
+     * auto-provision a governing ontology during crawl enrichment so OWL/PSL reasoning is not inert.
+     * Finalized (named, versioned, metadata-stamped) like any other draft.
+     *
+     * @throws IllegalArgumentException if the fact sheet does not exist
+     * @throws IllegalStateException    if the graph is empty (nothing to derive from)
+     */
+    public OntologySchema deriveStructuralDraft(Long factSheetId) {
+        FactSheet sheet = requireSheet(factSheetId);
+        GraphContext ctx = buildGraphContext(factSheetId, DEFAULT_MAX_CONCEPTS);
+        if (ctx.totalNodes == 0) {
+            throw new IllegalStateException("Fact sheet '" + sheet.getName()
+                    + "' has no knowledge graph yet — nothing to derive.");
+        }
+        OntologySchema schema = deriveStructural(ctx, List.of(), DEFAULT_MAX_ENTITY_TYPES, true);
+        applyStructuralOptions(schema, DEFAULT_MAX_ENTITY_TYPES, true, false);
+        DeriveOntologyRequest req = new DeriveOntologyRequest(
+                factSheetId, null, null, DEFAULT_MAX_ENTITY_TYPES, true, false,
+                null, null, DEFAULT_MAX_CONCEPTS, null, null);
+        finalizeDraft(schema, req, sheet, ctx, "structural-auto");
+        return schema;
+    }
+
     /** True when the request names a concrete (non-default) provider the registry should route. */
     private boolean useRegistry(DeriveOntologyRequest req) {
         String provider = req.modelProvider();
@@ -387,11 +417,40 @@ public class OntologyDerivationService {
                         .build());
             }
         }
+        if (includeRelationships) {
+            // Promote real graph edge types that denote part-of / containment / hierarchy to
+            // transitive object properties, so OWL-RL computes their has-a closure during enrichment.
+            for (String edgeType : ctx.edgesByType.keySet()) {
+                if (isTransitiveRelationName(edgeType)
+                        && relationships.stream().noneMatch(r -> edgeType.equalsIgnoreCase(r.getType()))) {
+                    relationships.add(RelationshipTypeDefinition.builder()
+                            .type(edgeType)
+                            .transitive(true)
+                            .cardinality(Cardinality.MANY_TO_MANY)
+                            .description("Transitive has-a/part-of relationship inferred from graph edge type '"
+                                    + edgeType + "'.")
+                            .build());
+                }
+            }
+        }
 
         return OntologySchema.builder()
                 .entityTypes(entityTypes)
                 .relationshipTypes(relationships.isEmpty() ? null : relationships)
                 .build();
+    }
+
+    /** Names that denote part-of / containment / hierarchy (has-a) — modeled as transitive in OWL. */
+    private static final List<String> TRANSITIVE_NAME_HINTS = List.of(
+            "CONTAIN", "PART_OF", "PARTOF", "HAS_PART", "SUBSECTION", "SUBPART", "BELONGS_TO",
+            "MEMBER_OF", "INCLUDE", "COMPRISE", "PARENT", "ANCESTOR", "DESCEND", "WITHIN",
+            "LOCATED_IN", "SUBCLASS", "IS_A", "NARROWER", "BROADER", "HIERARCH", "REPORTS_TO");
+
+    /** Heuristic for {@link #deriveStructural}: does this edge-type name denote a transitive has-a? */
+    private static boolean isTransitiveRelationName(String type) {
+        if (type == null || type.isBlank()) return false;
+        String u = type.toUpperCase().replace('-', '_');
+        return TRANSITIVE_NAME_HINTS.stream().anyMatch(u::contains);
     }
 
     // ─────────────────────────────────────────────────────────────────────────────

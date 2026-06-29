@@ -9,6 +9,7 @@
  */
 package ai.kompile.app.ontology;
 
+import ai.kompile.knowledgegraph.domain.EdgeProvenance;
 import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
@@ -23,7 +24,12 @@ import java.util.Map;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.anyDouble;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -53,7 +59,7 @@ class OwlReasoningServiceRealAboxTest {
                 .build();
 
         GraphOntologyBindingService binding = mock(GraphOntologyBindingService.class);
-        when(binding.resolveActiveOntology(7L)).thenReturn(Optional.of(schema));
+        when(binding.autoProvisionStructuralOntology(7L)).thenReturn(Optional.of(schema));
 
         // Real crawled entities a, b, c connected by a CONTAINS chain a→b→c.
         GraphNode a = entityNode("a");
@@ -72,6 +78,10 @@ class OwlReasoningServiceRealAboxTest {
         assertTrue(rules.stream().anyMatch(r -> r.contains("contains(?X, ?Y) & contains(?Y, ?Z)")),
                 "OWL-RL transitive closure over the real CONTAINS chain (a→b→c) should emit a "
                         + "transitive PSL rule for has-a navigation; got: " + rules);
+
+        // A3: the inferred closure edge a→c is materialized back as an INFERRED has-a edge.
+        verify(kg).createEdgeWithMetadata(eq("a"), eq("c"), eq(EdgeType.HIERARCHICAL), anyDouble(),
+                eq("CONTAINS"), anyString(), isNull(), eq(EdgeProvenance.INFERRED), eq(7L));
     }
 
     private static GraphNode entityNode(String id) {

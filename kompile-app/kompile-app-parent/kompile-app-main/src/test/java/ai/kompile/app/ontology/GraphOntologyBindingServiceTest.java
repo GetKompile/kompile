@@ -59,6 +59,7 @@ class GraphOntologyBindingServiceTest {
     @Mock private ProcessEngineService processEngineService;
     @Mock private KnowledgeGraphService knowledgeGraphService;
     @Mock private NamedGraphService namedGraphService;
+    @Mock private OntologyDerivationService ontologyDerivationService;
 
     private GraphOntologyBindingService service;
 
@@ -66,7 +67,44 @@ class GraphOntologyBindingServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new GraphOntologyBindingService(processEngineService, knowledgeGraphService, namedGraphService);
+        service = new GraphOntologyBindingService(processEngineService, knowledgeGraphService, namedGraphService,
+                ontologyDerivationService);
+    }
+
+    @Test
+    void autoProvision_whenAlreadyBound_returnsExistingWithoutDeriving() {
+        OntologySchema bound = OntologySchema.builder().id("o1").version(2).name("bound").build();
+        when(namedGraphService.getGraphsByFactSheet(FS)).thenReturn(List.of(boundGraph("g1", "o1", 2)));
+        when(processEngineService.getOntology("o1", 2)).thenReturn(bound);
+
+        Optional<OntologySchema> result = service.autoProvisionStructuralOntology(FS);
+
+        assertTrue(result.isPresent());
+        assertEquals("o1", result.get().getId());
+        verify(ontologyDerivationService, never()).deriveStructuralDraft(any());
+        verify(processEngineService, never()).createOntology(any());
+    }
+
+    @Test
+    void autoProvision_whenUnbound_derivesSavesAndBinds() {
+        when(namedGraphService.getGraphsByFactSheet(FS)).thenReturn(List.of());
+        when(processEngineService.listProcessDefinitions()).thenReturn(List.of());
+
+        OntologySchema draft = OntologySchema.builder().name("auto").build();
+        when(ontologyDerivationService.deriveStructuralDraft(FS)).thenReturn(draft);
+        OntologySchema saved = OntologySchema.builder().id("auto-1").version(1).name("auto").build();
+        when(processEngineService.createOntology(draft)).thenReturn(saved);
+        when(processEngineService.getOntology("auto-1", 1)).thenReturn(saved);
+        when(namedGraphService.createGraph(any(), any(), any(), eq(FS), any()))
+                .thenReturn(NamedGraph.builder().graphId("g1").name("g1").build());
+        when(namedGraphService.bindOntology("g1", "auto-1", 1)).thenReturn(boundGraph("g1", "auto-1", 1));
+
+        Optional<OntologySchema> result = service.autoProvisionStructuralOntology(FS);
+
+        assertTrue(result.isPresent());
+        assertEquals("auto-1", result.get().getId());
+        verify(processEngineService).createOntology(draft);
+        verify(namedGraphService).bindOntology("g1", "auto-1", 1);
     }
 
     private NamedGraph boundGraph(String graphId, String ontologyId, Integer version) {
