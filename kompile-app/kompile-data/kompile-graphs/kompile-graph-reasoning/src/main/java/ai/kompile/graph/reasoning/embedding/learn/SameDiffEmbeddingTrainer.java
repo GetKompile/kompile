@@ -20,6 +20,8 @@ import org.nd4j.autodiff.samediff.SameDiff;
 import org.nd4j.linalg.api.buffer.DataType;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
+import org.nd4j.linalg.learning.GradientUpdater;
+import org.nd4j.linalg.learning.config.Adam;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -97,6 +99,11 @@ public final class SameDiffEmbeddingTrainer {
     private static final String NEG_IDX    = "negIdx";
     private static final String LOSS       = "loss";
 
+    // ── Adam hyper-parameters ─────────────────────────────────────────────────
+    private static final double ADAM_BETA1 = 0.9;
+    private static final double ADAM_BETA2 = 0.999;
+    private static final double ADAM_EPS   = 1e-8;
+
     /** Default mini-batch size (number of (center, pos, neg[K]) triples per SameDiff call). */
     static final int DEFAULT_BATCH_SIZE = 64;
 
@@ -115,10 +122,18 @@ public final class SameDiffEmbeddingTrainer {
     private final int      batchSize;     // B — pairs per SameDiff call
     private final double   learningRate;
 
-    /** Entity (target) embedding matrix [n, d]. Updated in-place by SGD. */
+    /** Entity (target) embedding matrix [n, d]. Updated in-place by Adam. */
     private final INDArray entityArr;
-    /** Context (output) embedding matrix [n, d]. Updated in-place by SGD. */
+    /** Context (output) embedding matrix [n, d]. Updated in-place by Adam. */
     private final INDArray contextArr;
+
+    // ── Adam updaters (one per parameter matrix) ──────────────────────────────
+    /** Adam updater carrying first/second-moment state for {@code entityArr}. */
+    private final GradientUpdater<Adam> adamEntity;
+    /** Adam updater carrying first/second-moment state for {@code contextArr}. */
+    private final GradientUpdater<Adam> adamContext;
+    /** 0-based Adam step counter; passed to the updater for bias-correction. */
+    private int adamIteration = 0;
 
     // Pending pair buffers (flushed every batchSize entries)
     private final int[]    pendingCenter;
@@ -133,7 +148,7 @@ public final class SameDiffEmbeddingTrainer {
      * @param entityIds    ordered list of entity identifiers (defines row→id mapping)
      * @param dim          embedding dimension {@code d}
      * @param negSamples   number of negative samples {@code K} per positive pair
-     * @param learningRate SGD step size
+     * @param learningRate Adam learning rate
      * @param seed         RNG seed; applied to both ND4J global random and local Java RNG
      */
     public SameDiffEmbeddingTrainer(
@@ -156,7 +171,7 @@ public final class SameDiffEmbeddingTrainer {
      * @param entityIds    ordered list of entity identifiers
      * @param dim          embedding dimension
      * @param negSamples   negatives per positive pair
-     * @param learningRate SGD step size
+     * @param learningRate Adam learning rate
      * @param seed         RNG seed
      * @param batchSize    number of pairs per SameDiff forward/backward pass
      */
@@ -193,6 +208,12 @@ public final class SameDiffEmbeddingTrainer {
         }
         entityArr  = Nd4j.create(eInit).castTo(DataType.DOUBLE);
         contextArr = Nd4j.create(cInit).castTo(DataType.DOUBLE);
+
+        // Initialise one Adam updater per parameter matrix.
+        // State length = 2 × (n × d): the updater splits it into the first- and second-moment halves.
+        Adam adamConfig = new Adam(learningRate, ADAM_BETA1, ADAM_BETA2, ADAM_EPS);
+        adamEntity  = newAdamUpdater(adamConfig, 2L * n * d);
+        adamContext = newAdamUpdater(adamConfig, 2L * n * d);
 
         // Pre-allocate pending buffers.
         pendingCenter = new int[batchSize];
@@ -365,7 +386,7 @@ public final class SameDiffEmbeddingTrainer {
 
     /**
      * Execute the SameDiff graph for the first {@code count} entries in the pending buffers,
-     * apply the SGD update, and return the scalar loss.
+     * apply the Adam update, and return the scalar loss.
      *
      * <p>If {@code count < batchSize} (a partial final batch), the remaining slots are padded
      * by repeating the last real entry. Padding ensures we always use the single pre-built
@@ -390,7 +411,7 @@ public final class SameDiffEmbeddingTrainer {
 
     /**
      * Execute the pre-built SameDiff batch graph with the given full-size index arrays,
-     * apply the SGD update, and return the scalar loss.
+     * apply the Adam update, and return the scalar loss.
      *
      * @param centerLong center entity indices, length == batchSize
      * @param posLong    positive context indices, length == batchSize
@@ -402,7 +423,7 @@ public final class SameDiffEmbeddingTrainer {
 
     /**
      * Execute the pre-built single-pair SameDiff graph (B=1) with the given index arrays,
-     * apply the SGD update, and return the scalar loss.
+     * apply the Adam update, and return the scalar loss.
      *
      * @param centerLong center entity indices, length == 1
      * @param posLong    positive context indices, length == 1
@@ -414,7 +435,7 @@ public final class SameDiffEmbeddingTrainer {
 
     /**
      * Execute the given SameDiff graph with the provided index arrays,
-     * apply SGD, and return loss.
+     * apply Adam, and return loss.
      */
     private double executeOn(SameDiff graph, long[] centerLong, long[] posLong, long[] negLong) {
         // Bind placeholder values.
@@ -435,17 +456,52 @@ public final class SameDiffEmbeddingTrainer {
         Map<String, INDArray> grads = graph.calculateGradients(
                 placeholders, ENTITY_W, CONTEXT_W);
 
-        // SGD update: matrix -= lr * gradient
+        // Adam update: one step per parameter matrix.
         INDArray gEntity  = grads.get(ENTITY_W);
         INDArray gContext = grads.get(CONTEXT_W);
-        if (gEntity  != null) {
-            entityArr.subi(gEntity.castTo(DataType.DOUBLE).mul(learningRate));
-        }
-        if (gContext != null) {
-            contextArr.subi(gContext.castTo(DataType.DOUBLE).mul(learningRate));
-        }
+        applyAdam(adamEntity,  entityArr,  gEntity,  adamIteration);
+        applyAdam(adamContext, contextArr, gContext, adamIteration);
+        adamIteration++;
 
         return lossVal;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Adam helpers (mirrors RotatELearner.newAdamUpdater / applyAdam)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Instantiate an ND4J Adam {@link GradientUpdater} over a fresh, zero-initialised state view.
+     *
+     * @param config   the shared Adam hyper-parameter config
+     * @param stateLen state-view length; must be {@code 2 × parameter-count} (the updater splits
+     *                 it into the first- and second-moment halves)
+     * @return a ready Adam updater
+     */
+    @SuppressWarnings("unchecked")  // IUpdater#instantiate is declared with a raw GradientUpdater return
+    private static GradientUpdater<Adam> newAdamUpdater(Adam config, long stateLen) {
+        return config.instantiate(Nd4j.zeros(DataType.DOUBLE, 1, stateLen), true);
+    }
+
+    /**
+     * Apply one Adam step to a single parameter matrix: the {@link GradientUpdater} rewrites
+     * {@code grad} in place with the bias-corrected update (advancing its own moment state),
+     * then {@code param −= update}.
+     *
+     * @param updater   the parameter matrix's Adam updater (holds the moment state)
+     * @param param     the parameter array to update in place
+     * @param grad      gradient for this step; consumed in place ({@code null} ⇒ no-op)
+     * @param iteration 0-based Adam step (the op uses {@code iteration+1} for bias correction)
+     */
+    private static void applyAdam(GradientUpdater<Adam> updater, INDArray param,
+                                  INDArray grad, int iteration) {
+        if (grad == null) {
+            return;
+        }
+        // Match the DOUBLE state view (no-op when grad is already DOUBLE).
+        INDArray update = grad.castTo(DataType.DOUBLE);
+        updater.applyUpdater(update, iteration, 0);
+        param.subi(update);
     }
 
     // ─────────────────────────────────────────────────────────────────────────

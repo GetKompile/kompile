@@ -495,6 +495,16 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
     }
 
     @Override
+    public boolean mergeEdgeMetadata(String graphId,
+                                     String sourceNodeId,
+                                     String targetNodeId,
+                                     String edgeType,
+                                     Map<String, Object> additionalMetadata) {
+        AdjacencyMatrixGraph graph = getOrCreateGraph(graphId);
+        return graph.mergeEdgeMetadata(edgeType, sourceNodeId, targetNodeId, additionalMetadata);
+    }
+
+    @Override
     public boolean removeEdge(String graphId, String sourceNodeId, String targetNodeId, String edgeType) {
         AdjacencyMatrixGraph graph = graphCache.get(graphId);
         if (graph != null) {
@@ -822,6 +832,8 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
                     if (Boolean.TRUE.equals(meta.bidirectional())) edge.put("bidirectional", true);
                     if (meta.description() != null && !meta.description().isBlank())
                         edge.put("description", meta.description());
+                    if (meta.metadata() != null && !meta.metadata().isEmpty())
+                        edge.put("metadata", meta.metadata());
                 }
             }
             edges.add(edge);
@@ -1147,6 +1159,10 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
                     boolean bidirectional = Boolean.TRUE.equals(edge.get("bidirectional"));
                     Object descObj = edge.get("description");
                     String description = descObj instanceof String ds ? ds : null;
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> metadata = edge.get("metadata") instanceof Map<?, ?> map
+                            ? (Map<String, Object>) map
+                            : null;
 
                     // Resolve nodeIds from the PERSISTED index map, not the runtime one.
                     // (The runtime map uses new indices assigned by addNode; the stored
@@ -1157,6 +1173,9 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
                     if (sourceId != null && targetId != null) {
                         graph.addEdge(sourceId, targetId, weight, edgeType, bidirectional, relationType,
                                 confidence, description);  // [M-7]
+                        if (metadata != null && !metadata.isEmpty()) {
+                            graph.mergeEdgeMetadata(edgeType, sourceId, targetId, metadata);
+                        }
                     } else {
                         // Demoted to DEBUG: the caller aggregates the count and emits a single WARN.
                         log.debug("Could not resolve edge source={} target={} for edgeType={}; "

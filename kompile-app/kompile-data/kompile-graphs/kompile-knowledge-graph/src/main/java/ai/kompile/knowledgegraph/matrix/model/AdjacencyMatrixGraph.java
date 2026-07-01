@@ -19,6 +19,8 @@ import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 import org.nd4j.linalg.api.buffer.DataType;
 import org.nd4j.linalg.api.ndarray.INDArray;
+import org.nd4j.linalg.api.ndarray.SparseFormat;
+import org.nd4j.linalg.api.ndarray.SparseNDArray;
 import org.nd4j.linalg.factory.Nd4j;
 
 import java.util.*;
@@ -132,11 +134,23 @@ public class AdjacencyMatrixGraph implements AutoCloseable {
     /**
      * [M-7] Immutable per-edge quality/provenance carrier stored in {@link #edgeMetaData}.
      */
-    public record EdgeMeta(Double confidence, Boolean bidirectional, String description) {
+    public record EdgeMeta(Double confidence, Boolean bidirectional, String description,
+                           Map<String, Object> metadata) {
+        public EdgeMeta(Double confidence, Boolean bidirectional, String description) {
+            this(confidence, bidirectional, description, Collections.emptyMap());
+        }
+
+        public EdgeMeta {
+            metadata = metadata == null || metadata.isEmpty()
+                    ? Collections.emptyMap()
+                    : Collections.unmodifiableMap(new LinkedHashMap<>(metadata));
+        }
+
         /** Returns {@code true} if all fields are null/default — avoids storing empty records. */
         public boolean isEmpty() {
             return confidence == null && (bidirectional == null || Boolean.FALSE.equals(bidirectional))
-                    && (description == null || description.isBlank());
+                    && (description == null || description.isBlank())
+                    && metadata.isEmpty();
         }
     }
 
@@ -149,6 +163,29 @@ public class AdjacencyMatrixGraph implements AutoCloseable {
      * Per-edge-type edge counter (avoids scanning the sparse maps to count).
      */
     private final Map<String, AtomicInteger> edgeCountByType;
+
+    // ── PER-EDGE-TYPE CSR CACHE ──────────────────────────────────────────────────
+    //
+    // Lazily populated on first post-crawl read; evicted on any adjacency mutation for
+    // the affected edgeType.  Eliminates the O(nnz·log nnz) stable sort on every
+    // GraphToSameDiffDataset.buildRelationCsr call after the crawl is complete.
+    //
+    // Thread-safety: ConcurrentHashMap for the map itself + volatile csrCacheNodeCount
+    // to detect node-count growth (rowPtr length depends on N at build time).
+
+    /**
+     * Per-edge-type CSR cache: edgeType → CSR {@link SparseNDArray} built from the
+     * current {@link #adjacencyData}.  Entries are evicted on any mutation of the
+     * corresponding edge type and when the node count grows.
+     */
+    private final Map<String, SparseNDArray> csrCache = new ConcurrentHashMap<>();
+
+    /**
+     * Node count at the time each CSR cache entry was last built.  When
+     * {@link #getNodeCount()} exceeds this value the entire cache is stale — rowPtr
+     * has length {@code cachedN + 1}, not {@code currentN + 1}.
+     */
+    private volatile int csrCacheNodeCount = 0;
 
     // ── NODE EMBEDDINGS (kept as dense INDArray — tiny relative to adj matrices) ──
 
@@ -345,6 +382,42 @@ public class AdjacencyMatrixGraph implements AutoCloseable {
     }
 
     /**
+     * Merge arbitrary per-edge metadata into an existing directed edge. Used by neural overlays
+     * (link prediction, GNN scores) so they can publish scores without rewriting the symbolic edge.
+     */
+    public boolean mergeEdgeMetadata(String edgeType, String sourceNodeId, String targetNodeId,
+                                     Map<String, Object> additionalMetadata) {
+        if (additionalMetadata == null || additionalMetadata.isEmpty()) {
+            return false;
+        }
+        MatrixGraphNode source = nodeById.get(sourceNodeId);
+        MatrixGraphNode target = nodeById.get(targetNodeId);
+        if (source == null || target == null) return false;
+        String type = edgeType != null ? edgeType : DEFAULT_EDGE_TYPE;
+        int srcIdx = source.getMatrixIndex();
+        int tgtIdx = target.getMatrixIndex();
+        Map<Integer, Map<Integer, Float>> typeMap = adjacencyData.get(type);
+        Map<Integer, Float> row = typeMap != null ? typeMap.get(srcIdx) : null;
+        if (row == null || !row.containsKey(tgtIdx)) {
+            return false;
+        }
+
+        EdgeMeta existing = getEdgeMeta(type, sourceNodeId, targetNodeId);
+        Map<String, Object> merged = new LinkedHashMap<>();
+        if (existing != null && existing.metadata() != null) {
+            merged.putAll(existing.metadata());
+        }
+        merged.putAll(additionalMetadata);
+        EdgeMeta updated = new EdgeMeta(
+                existing != null ? existing.confidence() : null,
+                existing != null ? existing.bidirectional() : null,
+                existing != null ? existing.description() : null,
+                merged);
+        setEdgeMeta(type, srcIdx, tgtIdx, updated);
+        return true;
+    }
+
+    /**
      * [M-7] Restores edge metadata (confidence, bidirectional, description) from deserialized data.
      * Called by the vector-store restore path to re-populate {@link #edgeMetaData} without going
      * through the full {@link #addEdge} flow.
@@ -363,6 +436,8 @@ public class AdjacencyMatrixGraph implements AutoCloseable {
      * Inserts or updates a single directed sparse edge entry.
      */
     private void addSparseEdge(String type, int srcIdx, int tgtIdx, float weight, String relationType) {
+        // Evict the cached CSR for this type — the structure is about to change.
+        evictCsrCache(type);
         Map<Integer, Map<Integer, Float>> typeMap =
                 adjacencyData.computeIfAbsent(type, k -> new ConcurrentHashMap<>());
         Map<Integer, Float> targets =
@@ -397,6 +472,8 @@ public class AdjacencyMatrixGraph implements AutoCloseable {
      * Removes a single directed sparse edge entry.
      */
     private void removeSparseEdge(String type, int srcIdx, int tgtIdx) {
+        // Evict the cached CSR for this type — an edge is about to be removed.
+        evictCsrCache(type);
         Map<Integer, Map<Integer, Float>> typeMap = adjacencyData.get(type);
         if (typeMap == null) return;
         Map<Integer, Float> targets = typeMap.get(srcIdx);
@@ -674,6 +751,101 @@ public class AdjacencyMatrixGraph implements AutoCloseable {
         public int size() { return indices.size(); }
     }
 
+    // ── CSR CACHE ─────────────────────────────────────────────────────────────────
+
+    /**
+     * Returns the per-edge-type CSR adjacency as a {@link SparseNDArray}, building and
+     * caching it on first call and returning the cached copy on subsequent calls.
+     *
+     * <p>The cache is invalidated automatically on every adjacency mutation (via
+     * {@link #addSparseEdge}, {@link #removeSparseEdge}, and {@link #removeNode}) so
+     * callers never observe a stale CSR.  If {@link #getNodeCount()} has grown since
+     * the last build (the {@code rowPtr} would be too short) the entire cache is flushed
+     * before the requested type is rebuilt.
+     *
+     * <p>The returned {@link SparseNDArray} is in {@link SparseFormat#CSR} format.  Its
+     * component arrays ({@code getRowPtr()}, {@code getColIdx()}, {@code getValues()})
+     * use the same INT32 / FLOAT32 types as {@code GraphToSameDiffDataset.cooToCsr}.
+     *
+     * <p>For an edge type with zero edges an empty-but-valid CSR is returned
+     * ({@code rowPtr = [0, 0, …, 0]}, zero-length {@code colIdx} and {@code values}).
+     *
+     * @param edgeType the edge type key (use {@link #DEFAULT_EDGE_TYPE} for untyped edges)
+     * @return a CSR {@link SparseNDArray} of logical shape [nodeCount, nodeCount]
+     */
+    public SparseNDArray getCsrForEdgeType(String edgeType) {
+        int currentN = getNodeCount();
+        if (currentN != csrCacheNodeCount) {
+            // Node count grew — all cached rowPtr arrays are too short; flush and reset.
+            csrCache.clear();
+            csrCacheNodeCount = currentN;
+        }
+        return csrCache.computeIfAbsent(edgeType, type -> buildCsrForType(type, currentN));
+    }
+
+    /**
+     * Builds a CSR {@link SparseNDArray} of shape {@code [n, n]} from the current COO
+     * data for {@code edgeType} via {@link Nd4j#sparseFromEdges} → {@code .toCsr()}.
+     *
+     * <p>Entries with src/tgt indices ≥ n are filtered out (same guard as
+     * {@code GraphToSameDiffDataset.collectCoo}) so the shape contract is always met.
+     */
+    private SparseNDArray buildCsrForType(String edgeType, int n) {
+        SparseEdgeData sed = getSparseEdges(edgeType);
+        int nnz = sed.size();
+        if (n == 0 || nnz == 0) {
+            // Empty CSR: values=[], colIdx=[], rowPtr=[0,…,0] (length n+1)
+            INDArray emptyVals = Nd4j.create(DataType.FLOAT, 0);
+            INDArray emptyCol  = Nd4j.create(DataType.INT32, 0);
+            INDArray zeroPtr   = Nd4j.zeros(DataType.INT32, n + 1);
+            return new SparseNDArray(emptyVals, emptyCol, zeroPtr,
+                    new long[]{n, n}, SparseFormat.CSR);
+        }
+
+        // Collect valid COO entries (same guard as GraphToSameDiffDataset.collectCoo)
+        int[] srcArr = new int[nnz];
+        int[] dstArr = new int[nnz];
+        float[] wArr  = new float[nnz];
+        int valid = 0;
+        for (int i = 0; i < nnz; i++) {
+            int src = sed.indices.get(i)[0];
+            int tgt = sed.indices.get(i)[1];
+            if (src >= n || tgt >= n) continue;
+            srcArr[valid] = src;
+            dstArr[valid] = tgt;
+            wArr[valid]   = (sed.weights != null && i < sed.weights.size()
+                    && sed.weights.get(i) != null) ? sed.weights.get(i) : 1.0f;
+            valid++;
+        }
+        if (valid == 0) {
+            INDArray emptyVals = Nd4j.create(DataType.FLOAT, 0);
+            INDArray emptyCol  = Nd4j.create(DataType.INT32, 0);
+            INDArray zeroPtr   = Nd4j.zeros(DataType.INT32, n + 1);
+            return new SparseNDArray(emptyVals, emptyCol, zeroPtr,
+                    new long[]{n, n}, SparseFormat.CSR);
+        }
+        // Trim to valid count if any entries were filtered
+        if (valid < nnz) {
+            srcArr = Arrays.copyOf(srcArr, valid);
+            dstArr = Arrays.copyOf(dstArr, valid);
+            wArr   = Arrays.copyOf(wArr, valid);
+        }
+
+        INDArray srcNd  = Nd4j.createFromArray(srcArr).castTo(DataType.INT64);
+        INDArray dstNd  = Nd4j.createFromArray(dstArr).castTo(DataType.INT64);
+        INDArray wNd    = Nd4j.create(wArr, new long[]{valid}, DataType.FLOAT);
+        SparseNDArray coo = Nd4j.sparseFromEdges(srcNd, dstNd, wNd, n, n);
+        return coo.toCsr();
+    }
+
+    /**
+     * Removes the cached CSR for a single edge type.  Called on every adjacency mutation
+     * so consumers of {@link #getCsrForEdgeType} never observe stale data.
+     */
+    private void evictCsrCache(String edgeType) {
+        csrCache.remove(edgeType);
+    }
+
     /**
      * Returns a <strong>keyset-only</strong> view for backward compatibility with callers that
      * only access {@code graph.getAdjacencyMatrices().keySet()} (e.g. {@code searchEdges} in
@@ -810,6 +982,11 @@ public class AdjacencyMatrixGraph implements AutoCloseable {
             return false;
         }
 
+        // Node removal touches adjacency across all edge types (outgoing row + incoming
+        // entries in all type maps). Flush the entire CSR cache rather than tracking
+        // which types were actually affected.
+        csrCache.clear();
+
         int idx = node.getMatrixIndex();
         indexToNodeId.remove(idx);
 
@@ -936,6 +1113,10 @@ public class AdjacencyMatrixGraph implements AutoCloseable {
         relationTypeData.clear();
         reverseIndex.clear();
         edgeCountByType.clear();
+
+        // CSR cache entries wrap INDArray component arrays — clear to release references.
+        csrCache.clear();
+        csrCacheNodeCount = 0;
 
         // Close embeddings (the only remaining INDArray)
         if (nodeEmbeddings != null && !nodeEmbeddings.wasClosed()) {

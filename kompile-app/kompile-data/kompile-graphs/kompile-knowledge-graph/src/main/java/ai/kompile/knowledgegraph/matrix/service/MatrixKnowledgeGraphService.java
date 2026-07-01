@@ -323,7 +323,7 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
         graphStore.addNode(gid, node);
 
         // Create hierarchical edge from document to snippet
-        String docMatrixId = "doc_" + documentNode.getExternalId();
+        String docMatrixId = NodeLevel.DOCUMENT.name().toLowerCase() + "_" + documentNode.getExternalId();
         graphStore.addEdge(gid, docMatrixId, nodeId, 1.0, "HIERARCHICAL", false);
 
         return convertToGraphNode(node, snippetId);
@@ -335,7 +335,7 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
      * in-process (cheap — in-memory adjacency in the subprocess). Mirrors the shape of
      * {@link #createSnippetNode} exactly: nodeId {@code "snippet_"+snippetId}, nodeType SNIPPET,
      * title {@code "Chunk "+(chunkIndex+1)}, description = content truncated to 500 chars,
-     * metadata = {@code {chunkIndex, parentNodeId:"doc_"+parentExternalId}}.
+     * metadata = {@code {chunkIndex, parentNodeId:"document_"+parentExternalId}}.
      */
     @Override
     public List<GraphNode> createSnippetNodesBatch(List<KnowledgeGraphService.SnippetSpec> specs) {
@@ -369,7 +369,8 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
                         ? s.content().substring(0, 500) + "..." : s.content();
                 Map<String, Object> metadata = new HashMap<>();
                 metadata.put("chunkIndex", s.chunkIndex());
-                metadata.put("parentNodeId", "doc_" + s.parentExternalId());
+                String docMatrixId = NodeLevel.DOCUMENT.name().toLowerCase() + "_" + s.parentExternalId();
+                metadata.put("parentNodeId", docMatrixId);
                 MatrixGraphNode node = MatrixGraphNode.builder()
                         .nodeId(nodeId)
                         .nodeType("SNIPPET")
@@ -387,7 +388,7 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
             // Add HIERARCHICAL edges from document → snippet (in-process, cheap)
             for (KnowledgeGraphService.SnippetSpec s : group) {
                 try {
-                    String docMatrixId = "doc_" + s.parentExternalId();
+                    String docMatrixId = NodeLevel.DOCUMENT.name().toLowerCase() + "_" + s.parentExternalId();
                     graphStore.addEdge(gid, docMatrixId, "snippet_" + s.snippetId(), 1.0, "HIERARCHICAL", false);
                 } catch (Exception ignored) {
                     // best-effort
@@ -1375,6 +1376,35 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
     }
 
     @Override
+    public int updateEdgeMetadataBatch(List<KnowledgeGraphService.EdgeMetadataUpdate> updates) {
+        if (updates == null || updates.isEmpty()) return 0;
+        int count = 0;
+        for (KnowledgeGraphService.EdgeMetadataUpdate update : updates) {
+            if (update == null || update.edgeId() == null
+                    || update.additionalMetadata() == null || update.additionalMetadata().isEmpty()) {
+                continue;
+            }
+            String[] parts = update.edgeId().split("::", 3);
+            if (parts.length < 3) {
+                log.debug("updateEdgeMetadataBatch: skipped invalid edge id {}", update.edgeId());
+                continue;
+            }
+            String sourceId = parts[0];
+            String targetId = parts[1];
+            String edgeTypeKey = parts[2];
+            try {
+                if (graphStore.mergeEdgeMetadata(graphIdHolding(sourceId), sourceId, targetId,
+                        edgeTypeKey, update.additionalMetadata())) {
+                    count++;
+                }
+            } catch (Exception e) {
+                log.debug("updateEdgeMetadataBatch: skipped edge {} — {}", update.edgeId(), e.getMessage());
+            }
+        }
+        return count;
+    }
+
+    @Override
     public void deleteEdge(String edgeId) {
         String[] parts = edgeId.split("::");
         if (parts.length >= 2) {
@@ -1789,6 +1819,17 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
         if (explicit != null && !explicit.isBlank()) {
             edge.setRelationType(explicit);
             edge.setEdgeId(sourceId + "::" + targetId + "::" + explicit);
+        }
+        AdjacencyMatrixGraph.EdgeMeta meta = graph.getEdgeMeta(edgeTypeKey, sourceId, targetId);
+        if (meta != null) {
+            if (meta.confidence() != null) edge.setConfidence(meta.confidence());
+            if (meta.bidirectional() != null) edge.setBidirectional(meta.bidirectional());
+            if (meta.description() != null && !meta.description().isBlank()) {
+                edge.setDescription(meta.description());
+            }
+            if (meta.metadata() != null && !meta.metadata().isEmpty()) {
+                edge.setMetadataJson(serializeMetadata(meta.metadata()));
+            }
         }
         return edge;
     }

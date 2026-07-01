@@ -22,7 +22,9 @@ import ai.kompile.core.kgembedding.KgeTrainingExecutor.KgeTrainingResult;
 import ai.kompile.knowledgegraph.embedding.adapter.KgEmbeddingGraphAdapter;
 import ai.kompile.knowledgegraph.embedding.domain.KGEmbeddingJob;
 import ai.kompile.knowledgegraph.embedding.domain.KGEmbeddingJob.JobStatus;
+import ai.kompile.knowledgegraph.embedding.config.KGEmbeddingConfigService;
 import ai.kompile.knowledgegraph.embedding.impl.RotatEModel;
+import ai.kompile.knowledgegraph.embedding.impl.SameDiffKgeModel;
 import ai.kompile.knowledgegraph.embedding.impl.TransEModel;
 import ai.kompile.knowledgegraph.embedding.repository.KGEmbeddingJobRepository;
 import ai.kompile.knowledgegraph.staging.ModelTrainedEvent;
@@ -109,6 +111,15 @@ public class KGEmbeddingJobService {
      */
     @Autowired(required = false)
     private KgeTrainingExecutor kgeTrainingExecutor;
+
+    /**
+     * Optional managed-config service; when absent, {@code useSameDiffKge} defaults to {@code false}
+     * (hand-rolled TransE/RotatE path stays active).  Wired automatically when the
+     * {@code kompile-knowledge-graph} Spring context is present (unit tests and bare kompile-core
+     * contexts lack it, which is the safe fallback).
+     */
+    @Autowired(required = false)
+    private KGEmbeddingConfigService kgeConfigService;
 
     // Track running models for cancellation
     private final Map<String, KGEmbeddingModel> runningModels = new ConcurrentHashMap<>();
@@ -631,7 +642,25 @@ public class KGEmbeddingJobService {
     // HELPERS
     // ═══════════════════════════════════════════════════════════════════════════
 
+    /**
+     * Creates the appropriate KGE model for {@code algorithm}.
+     *
+     * <p>When the managed-config flag {@code useSameDiffKge} is {@code true}
+     * (set via {@link KGEmbeddingConfigService#updateUseSameDiffKge(boolean)}),
+     * returns a {@link SameDiffKgeModel} backed by DL4J's {@code sd.graph().rotatE()} /
+     * {@code sd.graph().transE()} scorers.  Otherwise falls through to the hand-rolled
+     * {@link TransEModel} / {@link RotatEModel} (default, backward-compatible path).</p>
+     *
+     * <p><b>Parity gate:</b> the flag defaults to {@code false}.  Only flip it after
+     * {@code SameDiffKgeParityTest} passes (Hits@K/MRR parity contract).</p>
+     */
     private KGEmbeddingModel createModel(KGEmbeddingAlgorithm algorithm) {
+        boolean useSameDiff = kgeConfigService != null
+                && kgeConfigService.getConfig().useSameDiffKge();
+        if (useSameDiff) {
+            log.info("createModel: useSameDiffKge=true → SameDiffKgeModel({})", algorithm.name());
+            return new SameDiffKgeModel(algorithm);
+        }
         return switch (algorithm) {
             case TRANSE -> new TransEModel();
             case ROTATE -> new RotatEModel();

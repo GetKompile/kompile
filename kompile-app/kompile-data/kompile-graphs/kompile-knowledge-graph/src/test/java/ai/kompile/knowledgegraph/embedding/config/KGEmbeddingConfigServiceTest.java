@@ -103,7 +103,7 @@ class KGEmbeddingConfigServiceTest {
         GraphRAGConfig newGraphRAG = new GraphRAGConfig(true, 0.5, 0.5, 2, 10, 2L);
         Neo4jConfig newNeo4j = new Neo4jConfig(true, "bolt://db:7687", "admin", "secret");
 
-        KGEmbeddingConfig newCfg = new KGEmbeddingConfig(newTransE, newRotatE, newGraphRAG, newNeo4j);
+        KGEmbeddingConfig newCfg = new KGEmbeddingConfig(newTransE, newRotatE, newGraphRAG, newNeo4j, false);
         KGEmbeddingConfig result = service.updateConfig(newCfg);
 
         assertNotNull(result);

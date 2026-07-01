@@ -204,7 +204,8 @@ public class KGEmbeddingConfigService {
                     trainConfig,
                     config.rotate(),
                     config.graphrag(),
-                    config.neo4j()
+                    config.neo4j(),
+                    config.useSameDiffKge()
             );
             persistConfig();
             return this.config;
@@ -223,7 +224,8 @@ public class KGEmbeddingConfigService {
                     config.transe(),
                     trainConfig,
                     config.graphrag(),
-                    config.neo4j()
+                    config.neo4j(),
+                    config.useSameDiffKge()
             );
             persistConfig();
             return this.config;
@@ -242,7 +244,8 @@ public class KGEmbeddingConfigService {
                     config.transe(),
                     config.rotate(),
                     graphRAGConfig,
-                    config.neo4j()
+                    config.neo4j(),
+                    config.useSameDiffKge()
             );
             persistConfig();
             return this.config;
@@ -268,13 +271,44 @@ public class KGEmbeddingConfigService {
                     config.transe(),
                     config.rotate(),
                     config.graphrag(),
-                    neo4jConfig
+                    neo4jConfig,
+                    config.useSameDiffKge()
             );
             persistConfig();
             return this.config;
         } finally {
             lock.writeLock().unlock();
         }
+    }
+
+    /**
+     * Updates the {@code useSameDiffKge} flag.
+     *
+     * <p>When set to {@code true}, KGE training will use {@link ai.kompile.knowledgegraph.embedding.impl.SameDiffKgeModel}
+     * (DL4J sd.graph() scorers) instead of the hand-rolled TransE/RotatE.
+     * Only flip to {@code true} after {@code SameDiffKgeParityTest} passes.</p>
+     */
+    public KGEmbeddingConfig updateUseSameDiffKge(boolean useSameDiffKge) {
+        lock.writeLock().lock();
+        try {
+            this.config = new KGEmbeddingConfig(
+                    config.transe(),
+                    config.rotate(),
+                    config.graphrag(),
+                    config.neo4j(),
+                    useSameDiffKge
+            );
+            persistConfig();
+            log.info("useSameDiffKge set to {}", useSameDiffKge);
+            return this.config;
+        } finally {
+            lock.writeLock().unlock();
+        }
+    }
+
+    /** Returns true if SameDiff KGE is enabled in the current managed config. */
+    public boolean isUseSameDiffKge() {
+        return getConfig().useSameDiffKge();
     }
 
     /**
@@ -320,19 +354,41 @@ public class KGEmbeddingConfigService {
 
     /**
      * Complete KG embedding configuration.
+     *
+     * <p>{@code useSameDiffKge} gates whether {@link ai.kompile.knowledgegraph.embedding.impl.SameDiffKgeModel}
+     * is used instead of the hand-rolled {@link ai.kompile.knowledgegraph.embedding.impl.TransEModel} /
+     * {@link ai.kompile.knowledgegraph.embedding.impl.RotatEModel}.  Defaults to {@code false}.
+     * Flip to {@code true} only after {@code SameDiffKgeParityTest} passes (Hits@K/MRR parity contract).
      */
     public record KGEmbeddingConfig(
             TrainConfig transe,
             TrainConfig rotate,
             GraphRAGConfig graphrag,
-            Neo4jConfig neo4j
+            Neo4jConfig neo4j,
+            boolean useSameDiffKge
     ) {
+        /**
+         * Backward-compatible JSON deserializer: configs written before the {@code useSameDiffKge}
+         * field was added receive the safe default of {@code false}.
+         */
+        @JsonCreator
+        public static KGEmbeddingConfig fromJson(
+                @JsonProperty("transe")         TrainConfig    transe,
+                @JsonProperty("rotate")         TrainConfig    rotate,
+                @JsonProperty("graphrag")       GraphRAGConfig graphrag,
+                @JsonProperty("neo4j")          Neo4jConfig    neo4j,
+                @JsonProperty("useSameDiffKge") Boolean        useSameDiffKge) {
+            return new KGEmbeddingConfig(transe, rotate, graphrag, neo4j,
+                    useSameDiffKge != null && useSameDiffKge);
+        }
+
         public static KGEmbeddingConfig defaults() {
             return new KGEmbeddingConfig(
                     TrainConfig.defaultTransE(),
                     TrainConfig.defaultRotatE(),
                     GraphRAGConfig.defaults(),
-                    Neo4jConfig.defaults()
+                    Neo4jConfig.defaults(),
+                    true /* useSameDiffKge — ON: SameDiffKgeParityTest passes; Adam matches/exceeds hand-rolled (TransE MRR 0.58>0.55; RotatE MRR 0.84=0.84) */
             );
         }
     }
