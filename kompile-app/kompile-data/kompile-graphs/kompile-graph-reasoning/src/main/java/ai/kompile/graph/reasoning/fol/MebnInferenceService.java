@@ -23,11 +23,14 @@ import ai.kompile.graph.reasoning.mebn.MFrag;
 import ai.kompile.graph.reasoning.mebn.MTheory;
 import ai.kompile.graph.reasoning.mebn.RandomVariable;
 import ai.kompile.graph.reasoning.mebn.SSBNGenerator;
+import ai.kompile.graph.reasoning.mebn.SsbnConstructionLog;
+import ai.kompile.graph.reasoning.mebn.SsbnConstructionResult;
 import ai.kompile.graph.reasoning.model.ReasoningGraph;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -82,6 +85,39 @@ public final class MebnInferenceService {
         // Run variable elimination for all target variables
         Map<String, Double> posteriors = VariableElimination.queryAll(ssbn, evidence);
         log.info("MEBN inference complete: {} posteriors", posteriors.size());
+        return posteriors;
+    }
+
+    /**
+     * Run MEBN inference for only the requested grounded variables.
+     *
+     * <p>The SSBN is still generated once from the full theory and graph, preserving the same
+     * model semantics as {@link #infer}. The posterior pass is narrowed to variables the caller
+     * will actually consume, which avoids running exact inference for thousands of unrelated
+     * SSBN nodes during online weight learning.</p>
+     *
+     * @param graph          the reasoning graph (becomes the KnowledgeBase)
+     * @param theory         the MTheory to instantiate
+     * @param evidence       map from grounded BN variable names to observed state indices
+     * @param queryVariables grounded variable names whose posterior is needed
+     * @return map from requested grounded variable name -> posterior probability of TRUE
+     */
+    public Map<String, Double> inferVariables(ReasoningGraph graph, MTheory theory,
+                                               Map<String, Integer> evidence,
+                                               Collection<String> queryVariables) {
+        if (queryVariables == null || queryVariables.isEmpty()) {
+            return Map.of();
+        }
+        log.info("MEBN targeted inference: graph={} entities, theory={}, queries={}",
+                graph.entityCount(), theory.getName(), queryVariables.size());
+
+        ReasoningGraphKnowledgeBase kb = new ReasoningGraphKnowledgeBase(graph);
+        SSBNGenerator generator = new SSBNGenerator(theory, kb);
+        BayesianNetwork ssbn = generator.generate();
+
+        Map<String, Double> posteriors = VariableElimination.querySubset(ssbn, queryVariables, evidence);
+        log.info("MEBN targeted inference complete: {} of {} requested posteriors",
+                posteriors.size(), queryVariables.size());
         return posteriors;
     }
 
@@ -156,6 +192,83 @@ public final class MebnInferenceService {
             store.store(fact);
         }
         return facts;
+    }
+
+    // ─── Log-aware inference methods (additive — do not alter existing signatures) ──
+
+    /**
+     * Paired result returned by {@link #inferWithLog} and {@link #inferQueryWithLog}.
+     *
+     * @param posteriors the posterior map (identical to what the corresponding non-log method returns)
+     * @param log        the SSBN construction log for this inference pass
+     */
+    public record InferenceWithLog(Map<String, Double> posteriors, SsbnConstructionLog log) {}
+
+    /**
+     * Run MEBN inference over the full theory, returning posteriors AND a detailed
+     * SSBN construction log.
+     *
+     * <p>Semantics of {@code posteriors} are identical to {@link #infer}; the log
+     * captures per-node grounding decisions (MFrag, OV substitution, context-constraint
+     * outcomes, {@link SSBNGenerator.DistributionMode}).</p>
+     *
+     * @param graph    the reasoning graph
+     * @param theory   the MTheory to instantiate
+     * @param evidence map from grounded BN variable names to observed state indices
+     * @return posterior map + construction log
+     */
+    public InferenceWithLog inferWithLog(ReasoningGraph graph, MTheory theory,
+                                          Map<String, Integer> evidence) {
+        log.info("MEBN inference (with log): graph={} entities, theory={}", graph.entityCount(), theory.getName());
+        ReasoningGraphKnowledgeBase kb = new ReasoningGraphKnowledgeBase(graph);
+        SSBNGenerator generator = new SSBNGenerator(theory, kb);
+        SsbnConstructionResult result = generator.generateWithLog();
+        Map<String, Double> posteriors = VariableElimination.queryAll(result.network(), evidence);
+        log.info("MEBN inference (with log) complete: {} posteriors", posteriors.size());
+        return new InferenceWithLog(posteriors, result.log());
+    }
+
+    /**
+     * Query SSBN inference for a specific variable, returning posteriors AND a detailed
+     * SSBN construction log.
+     *
+     * <p>Semantics of {@code posteriors} are identical to {@link #inferQuery}; the log
+     * captures construction decisions and records nodes removed by Bayes-Ball pruning
+     * in {@link SsbnConstructionLog#prunedNodes()}.</p>
+     *
+     * @param graph       the reasoning graph
+     * @param theory      the MTheory to instantiate
+     * @param queryRvName the random variable name to query
+     * @param evidence    map from grounded variable name → observed state index
+     * @return posterior map + construction log
+     */
+    public InferenceWithLog inferQueryWithLog(ReasoningGraph graph, MTheory theory,
+                                               String queryRvName,
+                                               Map<String, Integer> evidence) {
+        log.info("MEBN query inference (with log): variable='{}', graph={} entities",
+                queryRvName, graph.entityCount());
+        ReasoningGraphKnowledgeBase kb = new ReasoningGraphKnowledgeBase(graph);
+        SSBNGenerator generator = new SSBNGenerator(theory, kb);
+        SsbnConstructionResult result = generator.generateForQueryWithLog(queryRvName);
+
+        Map<String, Double> posteriors = new LinkedHashMap<>();
+        for (var node : result.network().getNodes()) {
+            String var = node.getVariableName();
+            if (var.startsWith(queryRvName)) {
+                try {
+                    Factor f = VariableElimination.query(result.network(), var, evidence);
+                    f = f.normalize();
+                    int trueIdx = node.getStateIndex("TRUE");
+                    if (trueIdx >= 0 && trueIdx < f.getValues().length) {
+                        posteriors.put(var, f.getValues()[trueIdx]);
+                    }
+                } catch (Exception e) {
+                    log.debug("Skipping variable '{}': {}", var, e.getMessage());
+                }
+            }
+        }
+        log.info("MEBN query '{}' (with log) complete: {} results", queryRvName, posteriors.size());
+        return new InferenceWithLog(posteriors, result.log());
     }
 
     // ─── Theory builder helpers ──────────────────────────────────────────────────

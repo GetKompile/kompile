@@ -11,6 +11,8 @@ package ai.kompile.graph.reasoning.tms;
 
 import ai.kompile.graph.reasoning.fol.FactStore;
 
+import java.time.Instant;
+import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 
@@ -21,18 +23,27 @@ import java.util.Set;
  * @param unsupportedAtoms  atoms whose ONLY support was the retracted fact
  * @param weakenedAtoms     atoms that had the retracted fact as one of many supports
  * @param revisedFactStore  the revised FactStore with the fact removed
+ * @param purgedAtoms       atom keys that were actively removed from the {@link ai.kompile.graph.reasoning.fol.InferredFactStore}
+ *                          during this revision; empty ({@link List#of()}) for the legacy
+ *                          {@link BeliefReviser#retract} path, which does not touch the
+ *                          inferred-fact store
+ * @param revisedAt         timestamp when this revision was computed
  */
 public record BeliefRevisionResult(
         String retractedFactKey,
         Set<String> unsupportedAtoms,
         Set<String> weakenedAtoms,
-        FactStore revisedFactStore
+        FactStore revisedFactStore,
+        List<String> purgedAtoms,
+        Instant revisedAt
 ) {
 
     public BeliefRevisionResult {
         Objects.requireNonNull(retractedFactKey, "retractedFactKey must not be null");
         Objects.requireNonNull(revisedFactStore, "revisedFactStore must not be null");
+        Objects.requireNonNull(revisedAt, "revisedAt must not be null");
         unsupportedAtoms = (unsupportedAtoms == null) ? Set.of() : Set.copyOf(unsupportedAtoms);
         weakenedAtoms = (weakenedAtoms == null) ? Set.of() : Set.copyOf(weakenedAtoms);
+        purgedAtoms = (purgedAtoms == null) ? List.of() : List.copyOf(purgedAtoms);
     }
 }

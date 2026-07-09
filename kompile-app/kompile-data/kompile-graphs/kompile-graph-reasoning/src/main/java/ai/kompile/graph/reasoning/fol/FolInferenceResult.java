@@ -45,13 +45,17 @@ public final class FolInferenceResult {
     private final int graphRelationCount;
     private final Instant computedAt;
     private final long computationTimeMs;
+    private final boolean groundingTruncated;
+    private final int pairsConsidered;
 
     FolInferenceResult(Map<String, Double> entityLikelihoods,
                        HlMrfMapInference.Result pslResult,
                        String ruleSetName,
                        int graphEntityCount,
                        int graphRelationCount,
-                       long computationTimeMs) {
+                       long computationTimeMs,
+                       boolean groundingTruncated,
+                       int pairsConsidered) {
         this.entityLikelihoods = Collections.unmodifiableMap(new LinkedHashMap<>(entityLikelihoods));
         this.pslResult = pslResult;
         this.ruleSetName = ruleSetName;
@@ -59,6 +63,8 @@ public final class FolInferenceResult {
         this.graphRelationCount = graphRelationCount;
         this.computedAt = Instant.now();
         this.computationTimeMs = computationTimeMs;
+        this.groundingTruncated = groundingTruncated;
+        this.pairsConsidered = pairsConsidered;
     }
 
     /**
@@ -94,11 +100,34 @@ public final class FolInferenceResult {
     /** Whether the PSL solver converged before the iteration cap. */
     public boolean converged() { return pslResult != null && pslResult.converged(); }
 
+    /**
+     * Whether the entity-pair grounding was truncated by the {@code maxPairsPerRule} cap.
+     *
+     * <p>When {@code true}, at least one FOL rule was grounded against fewer entity pairs than
+     * exist in the graph.  The inference result is still valid but may miss groundings for
+     * entity pairs beyond the cap.  See {@link #pairsConsidered()} for the actual count.</p>
+     *
+     * @return {@code true} if grounding was cut short by the pair cap
+     */
+    public boolean groundingTruncated() { return groundingTruncated; }
+
+    /**
+     * Total number of entity pairs that were considered for grounding across all rules in this
+     * inference pass.  When {@link #groundingTruncated()} is {@code true} this equals the cap
+     * that was applied; otherwise it equals the full {@code entityCount²} (or the number of
+     * typed-scoped pairs when a rule's {@link FolRule#entityTypeScope()} is set).
+     *
+     * @return total pairs grounded
+     */
+    public int pairsConsidered() { return pairsConsidered; }
+
     @Override
     public String toString() {
         return "FolInferenceResult{ruleSet=" + ruleSetName
                 + ", entities=" + graphEntityCount
                 + ", converged=" + converged()
+                + ", truncated=" + groundingTruncated
+                + ", pairs=" + pairsConsidered
                 + ", ms=" + computationTimeMs + "}";
     }
 }

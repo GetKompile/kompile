@@ -16,6 +16,10 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * A PSL program: a set of weighted {@link PslRule}s (logical and arithmetic) plus the
@@ -41,10 +45,16 @@ import java.util.Set;
  * During grounding, body literals whose predicate is registered as a function have their
  * value computed on the fly and stored as temporary observed atoms.</p>
  */
-public class PslProgram {
+public class PslProgram implements java.io.Serializable {
+
+    private static final long serialVersionUID = 1L;
 
     /** Safety cap on the number of ground rules to avoid pathological grounding blow-ups. */
     public static final int MAX_GROUND_RULES = 500_000;
+
+    private static final Logger log = LoggerFactory.getLogger(PslProgram.class);
+    /** One-time guard so a mis-ranged {@link #observe} (WP1a) warns once, not once per atom. */
+    private static final AtomicBoolean OUT_OF_RANGE_WARNED = new AtomicBoolean(false);
 
     private final List<PslRule> rules = new ArrayList<>();
     private final List<ArithmeticRule> arithmeticRules = new ArrayList<>();
@@ -52,20 +62,39 @@ public class PslProgram {
     private final Map<String, Double> values = new LinkedHashMap<>();
     private final Set<String> observed = new LinkedHashSet<>();
 
+    /** WP17f — set by {@link #ground()} when the {@link #MAX_GROUND_RULES} cap truncated grounding. */
+    private boolean groundingTruncated;
+
+    /** Rebuilt by {@link #ground()}; lets {@code instantiate} stamp {@link GroundRule#templateIndex()}. */
+    private transient Map<PslRule, Integer> templateIndexLookup;
+
     // Step 3 — predicate-level open/closed declarations
     /** Predicate name → arity for declared closed (CWA) predicates. */
     private final Map<String, Integer> closedPredicates = new LinkedHashMap<>();
     /** Predicate name → arity for declared open predicates. */
     private final Map<String, Integer> openPredicates = new LinkedHashMap<>();
 
-    // Step 4 — external function predicates
-    private final Map<String, ExternalFunction> functions = new LinkedHashMap<>();
+    // Step 4 — external function predicates (lambdas — not serializable; re-register after load)
+    private transient Map<String, ExternalFunction> functions = new LinkedHashMap<>();
 
     // E-8 — cached predicate index (invalidated whenever atoms change)
     /** Lazily-built predicate → atoms index, shared across ground() / groundArithmetic() calls. */
-    private Map<String, List<PslAtom>> cachedPredicateIndex = null;
+    private transient Map<String, List<PslAtom>> cachedPredicateIndex = null;
     /** Whether the cache needs rebuilding. */
     private boolean predicateIndexDirty = true;
+
+    /**
+     * Reinitialize transient fields after Java deserialization: the external-function registry holds
+     * lambdas (not serializable) and the predicate index is a lazy cache. The rule / atom / weight /
+     * observed-value structure is fully restored; re-register any {@link ExternalFunction}s after
+     * loading.
+     */
+    private void readObject(java.io.ObjectInputStream in) throws java.io.IOException, ClassNotFoundException {
+        in.defaultReadObject();
+        this.functions = new LinkedHashMap<>();
+        this.cachedPredicateIndex = null;
+        this.predicateIndexDirty = true;
+    }
 
     // ─── Rules ───────────────────────────────────────────────────────────────
 
@@ -218,6 +247,13 @@ public class PslProgram {
     /** Declare (or update) an observed atom fixed at {@code value} during inference. */
     public PslProgram observe(PslAtom groundAtom, double value) {
         String key = register(groundAtom);
+        if ((value < 0.0 || value > 1.0) && OUT_OF_RANGE_WARNED.compareAndSet(false, true)) {
+            // Solver-level guard (WP1a): the value is still clamped below, but a caller passing a
+            // soft-truth outside [0,1] (e.g. raw cosine ∈ [-1,1]) is a bug worth surfacing once.
+            log.warn("PslProgram.observe: soft-truth value {} (atom '{}') is outside [0,1]; clamping. "
+                    + "Callers must pass values in [0,1] (e.g. clamp raw cosine with max(0,cos)). "
+                    + "This warns once per JVM.", value, key);
+        }
         values.put(key, clamp01(value));
         if (observed.add(key)) {
             predicateIndexDirty = true; // E-8: marking observed may change atom-set composition
@@ -237,6 +273,27 @@ public class PslProgram {
 
     public PslProgram target(String predicate, String... args) {
         return target(PslAtom.ground(predicate, args));
+    }
+
+    /**
+     * Remove a single atom from the observed set, converting it back to a target atom.
+     *
+     * <p>This is used by belief revision ({@link ai.kompile.graph.reasoning.tms.BeliefReviser#retractReviseAndPurge})
+     * to clear a retracted fact's observed registration so the MAP solver treats it as an
+     * unknown (target) rather than a fixed evidence value.  The atom's truth value in the
+     * {@link #values} map is reset to 0.0 (the soft-truth default) so the solver can
+     * re-optimise it freely.</p>
+     *
+     * <p>If the atom key is not currently observed, this method is a no-op.</p>
+     *
+     * @param atomKey the canonical atom key (e.g. {@code "State(alice)"}) to un-observe
+     */
+    public void clearObserved(String atomKey) {
+        if (observed.remove(atomKey)) {
+            // Reset the soft-truth value so the solver starts fresh.
+            values.put(atomKey, 0.0);
+            predicateIndexDirty = true;
+        }
     }
 
     /**
@@ -307,6 +364,12 @@ public class PslProgram {
     public List<GroundRule> ground() {
         Map<String, List<PslAtom>> byPredicate = buildPredicateIndex();
         List<GroundRule> out = new ArrayList<>();
+        // Identity lookup so instantiate() can stamp each grounding with its template-rule
+        // index — signature matching downstream cannot disambiguate equal-weight rules.
+        templateIndexLookup = new java.util.IdentityHashMap<>();
+        for (int i = 0; i < rules.size(); i++) {
+            templateIndexLookup.put(rules.get(i), i);
+        }
         for (PslRule rule : rules) {
             // E-8: optimise join order for body atoms (most-selective first), then head atoms
             List<PslAtom> optimizedBody = optimizeJoinOrder(rule.body(), byPredicate);
@@ -316,7 +379,18 @@ public class PslProgram {
             groundInto(rule, allAtoms, byPredicate, 0, new LinkedHashMap<>(), out);
             if (out.size() >= MAX_GROUND_RULES) break;
         }
+        // WP17f — a hit on the grounding cap silently truncates inference; make it loud + observable.
+        groundingTruncated = out.size() >= MAX_GROUND_RULES;
+        if (groundingTruncated) {
+            log.warn("PSL grounding hit the MAX_GROUND_RULES cap ({}) — inference is INCOMPLETE "
+                    + "(grounding truncated). Reduce graph/rule fan-out or raise the cap.", MAX_GROUND_RULES);
+        }
         return out;
+    }
+
+    /** WP17f — true iff the most recent {@link #ground()} was truncated at {@link #MAX_GROUND_RULES}. */
+    public boolean isGroundingTruncated() {
+        return groundingTruncated;
     }
 
     /** Ground all {@link ArithmeticRule}s into {@link ArithmeticGroundRule}s. */
@@ -804,8 +878,10 @@ public class PslProgram {
         for (PslAtom atom : rule.head()) {
             head.add(new GroundRule.Lit(atom.ground(binding).key(), atom.negated()));
         }
+        int templateIndex = templateIndexLookup == null ? -1
+                : templateIndexLookup.getOrDefault(rule, -1);
         return new GroundRule(rule.weight(), rule.hard(), rule.squared(), body, head,
-                renderGround(rule, binding));
+                renderGround(rule, binding), templateIndex);
     }
 
     private String renderGround(PslRule rule, Map<String, String> binding) {

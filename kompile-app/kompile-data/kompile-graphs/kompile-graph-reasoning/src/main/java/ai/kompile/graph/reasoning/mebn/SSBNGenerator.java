@@ -223,6 +223,112 @@ public class SSBNGenerator {
     }
 
     /**
+     * Generate the complete SSBN from the MTheory, capturing a detailed construction log.
+     *
+     * <p>Semantics are identical to {@link #generate()}; the only difference is that the
+     * returned {@link SsbnConstructionResult} carries an {@link SsbnConstructionLog} with
+     * per-node grounding decisions (MFrag, OV substitution, context-constraint outcomes,
+     * {@link DistributionMode}).</p>
+     *
+     * <p>Overhead vs. {@link #generate()}: one {@link GroundedNodeLog} allocation per
+     * grounded node; no extra VE queries.</p>
+     *
+     * @return result containing the grounded network and its construction log
+     */
+    public SsbnConstructionResult generateWithLog() {
+        log.info("Generating SSBN (with log) from MTheory '{}' with {} MFrags",
+                mTheory.getName(), mTheory.getMFrags().size());
+
+        SsbnConstructionLog constructionLog = new SsbnConstructionLog();
+        BayesianNetwork network = new BayesianNetwork();
+        Set<String> createdVariables = new HashSet<>();
+        Map<String, List<ParentBinding>> parentBindings = new LinkedHashMap<>();
+        Map<String, DistributionMode> distributionModes = new LinkedHashMap<>();
+        Map<String, MFrag> sourceMFragMap = new LinkedHashMap<>();
+
+        for (MFrag mfrag : mTheory.getMFrags()) {
+            processMFrag(mfrag, network, createdVariables, parentBindings, distributionModes,
+                    sourceMFragMap, constructionLog);
+        }
+
+        buildAllCpts(network, parentBindings, distributionModes, sourceMFragMap);
+
+        log.info("SSBN (with log) generated: {}", network.getStatistics());
+        return new SsbnConstructionResult(network, constructionLog);
+    }
+
+    /**
+     * Generate a query-focused SSBN capturing a detailed construction log.
+     *
+     * <p>Algorithm:
+     * <ol>
+     *   <li>Build the <b>complete</b> SSBN from all MFrags (not just the MFrag BFS
+     *       reachable set), so every node that exists in the full theory is available
+     *       to be tracked and potentially logged as pruned.</li>
+     *   <li>Apply <b>Bayes-Ball ancestral-set pruning</b>.  Every node removed is
+     *       recorded in {@link SsbnConstructionLog#prunedNodes()} with reason
+     *       {@code "barren"}.  The MFrag BFS that {@link #generateForQuery} uses is
+     *       <em>not</em> applied here — pre-filtering MFrags before construction would
+     *       silently omit nodes that should be logged as pruned.</li>
+     * </ol>
+     *
+     * @param queryRvName the random variable being queried
+     * @return result containing the minimal SSBN and its construction log
+     */
+    public SsbnConstructionResult generateForQueryWithLog(String queryRvName) {
+        log.info("Generating query-focused SSBN (with log) for '{}'", queryRvName);
+
+        SsbnConstructionLog constructionLog = new SsbnConstructionLog();
+
+        // Build the FULL network (all MFrags) so every node is available for pruning-log.
+        // Pre-filtering by reachable MFrags would prevent nodes from ever being created and
+        // thus they could never appear in prunedNodes — defeating the purpose of the log.
+        BayesianNetwork network = new BayesianNetwork();
+        Set<String> createdVariables = new HashSet<>();
+        Map<String, List<ParentBinding>> parentBindings = new LinkedHashMap<>();
+        Map<String, DistributionMode> distributionModes = new LinkedHashMap<>();
+        Map<String, MFrag> sourceMFragMap = new LinkedHashMap<>();
+
+        for (MFrag mfrag : mTheory.getMFrags()) {
+            processMFrag(mfrag, network, createdVariables, parentBindings, distributionModes,
+                    sourceMFragMap, constructionLog);
+        }
+
+        buildAllCpts(network, parentBindings, distributionModes, sourceMFragMap);
+
+        // ── Bayes-Ball ancestral-set pruning ────────────────────────────────────
+        Set<String> queryVars = new LinkedHashSet<>();
+        for (BayesianNode n : network.getNodes()) {
+            String v = n.getVariableName();
+            if (v.equals(queryRvName) || v.startsWith(queryRvName + "(")) {
+                queryVars.add(v);
+            }
+        }
+
+        if (!queryVars.isEmpty()) {
+            Set<String> evidenceVars = new LinkedHashSet<>(findings.keySet());
+            Set<String> relevant = BayesBallRelevanceFilter.ancestralRelevant(
+                    network, queryVars, evidenceVars);
+            int before = network.size();
+            if (relevant.size() < before) {
+                // Record pruned nodes in the log before the network is rebuilt
+                for (BayesianNode n : network.getNodes()) {
+                    if (!relevant.contains(n.getVariableName())) {
+                        constructionLog.addPrunedNode(
+                                new PrunedNodeLog(n.getVariableName(), "barren"));
+                    }
+                }
+                log.info("Bayes-Ball pruning for query '{}': {} → {} nodes (removed {} barren/irrelevant)",
+                        queryRvName, before, relevant.size(), before - relevant.size());
+                network = BayesBallRelevanceFilter.prune(network, relevant);
+            }
+        }
+
+        log.info("Query-focused SSBN (with log) generated for '{}': {}", queryRvName, network.getStatistics());
+        return new SsbnConstructionResult(network, constructionLog);
+    }
+
+    /**
      * Register observed values (findings) that terminate upward expansion.
      *
      * <p>Each entry maps a <em>grounded</em> variable name (e.g. {@code "isActive(alice)"})
@@ -247,11 +353,31 @@ public class SSBNGenerator {
     // MFRAG PROCESSING
     // ═══════════════════════════════════════════════════════════════════════════
 
+    /**
+     * Legacy (no-log) variant — delegates to the log-aware overload with a null log.
+     */
     private void processMFrag(MFrag mfrag, BayesianNetwork network,
                                Set<String> createdVariables,
                                Map<String, List<ParentBinding>> parentBindings,
                                Map<String, DistributionMode> distributionModes,
                                Map<String, MFrag> sourceMFragMap) {
+        processMFrag(mfrag, network, createdVariables, parentBindings,
+                distributionModes, sourceMFragMap, null);
+    }
+
+    /**
+     * Log-aware MFrag processing variant.
+     *
+     * @param constructionLog optional; if non-null a {@link GroundedNodeLog} is appended
+     *                        for each grounded node instantiated from this MFrag.
+     *                        Pass {@code null} for zero-overhead legacy behaviour.
+     */
+    private void processMFrag(MFrag mfrag, BayesianNetwork network,
+                               Set<String> createdVariables,
+                               Map<String, List<ParentBinding>> parentBindings,
+                               Map<String, DistributionMode> distributionModes,
+                               Map<String, MFrag> sourceMFragMap,
+                               SsbnConstructionLog constructionLog) {
         log.debug("Processing MFrag '{}'", mfrag.getName());
 
         List<RandomVariable> allRvs = mfrag.getAllNodes();
@@ -277,9 +403,11 @@ public class SSBNGenerator {
         if (argTypes.isEmpty()) {
             // Propositional MFrag — single grounding with empty bindings
             Map<String, String> emptyBinding = new HashMap<>();
-            boolean contextMet = evaluateContexts(mfrag, emptyBinding);
+            List<ConstraintOutcome> outcomes = evaluateContextsWithOutcomes(mfrag, emptyBinding);
+            boolean contextMet = outcomes.stream().allMatch(ConstraintOutcome::passed);
             instantiateMFrag(mfrag, emptyBinding, contextMet, network,
-                    createdVariables, parentBindings, distributionModes, sourceMFragMap);
+                    createdVariables, parentBindings, distributionModes, sourceMFragMap,
+                    constructionLog, outcomes);
             return;
         }
 
@@ -307,7 +435,8 @@ public class SSBNGenerator {
         // --- GAP 1: DEFAULT DISTRIBUTIONS ---
         // Process ALL groundings; context-failed ones get the default distribution.
         for (Map<String, String> grounding : allGroundings) {
-            boolean contextMet = evaluateContexts(mfrag, grounding);
+            List<ConstraintOutcome> outcomes = evaluateContextsWithOutcomes(mfrag, grounding);
+            boolean contextMet = outcomes.stream().allMatch(ConstraintOutcome::passed);
             // If context not met AND there is no default distribution defined, skip the
             // instantiation (original behaviour: context failures just skip).
             // If a default distribution IS set, we still instantiate the node but mark it
@@ -316,7 +445,8 @@ public class SSBNGenerator {
                 continue; // original skip behaviour preserved
             }
             instantiateMFrag(mfrag, grounding, contextMet, network,
-                    createdVariables, parentBindings, distributionModes, sourceMFragMap);
+                    createdVariables, parentBindings, distributionModes, sourceMFragMap,
+                    constructionLog, outcomes);
         }
 
         log.debug("MFrag '{}': processed {} groundings", mfrag.getName(), allGroundings.size());
@@ -354,10 +484,25 @@ public class SSBNGenerator {
     }
 
     /**
-     * Instantiate the BN nodes and edges for one grounding of an MFrag.
-     *
-     * @param contextMet true if context constraints were satisfied for this grounding;
-     *                   false means the default distribution should be used
+     * Evaluate all context constraints and return a per-constraint outcome list.
+     * Used by the log-aware path; the legacy path still uses {@link #evaluateContexts}.
+     */
+    private List<ConstraintOutcome> evaluateContextsWithOutcomes(MFrag mfrag,
+                                                                   Map<String, String> bindings) {
+        List<LogicalConstraint> constraints = mfrag.getContextConstraints();
+        if (constraints.isEmpty()) {
+            return List.of();
+        }
+        List<ConstraintOutcome> outcomes = new ArrayList<>(constraints.size());
+        for (LogicalConstraint ctx : constraints) {
+            boolean passed = ctx.evaluate(kb, bindings);
+            outcomes.add(new ConstraintOutcome(ctx.describe(), passed));
+        }
+        return outcomes;
+    }
+
+    /**
+     * Legacy (no-log) instantiateMFrag — called by the original {@link #processMFrag} path.
      */
     private void instantiateMFrag(MFrag mfrag, Map<String, String> grounding,
                                     boolean contextMet,
@@ -366,6 +511,28 @@ public class SSBNGenerator {
                                     Map<String, List<ParentBinding>> parentBindings,
                                     Map<String, DistributionMode> distributionModes,
                                     Map<String, MFrag> sourceMFragMap) {
+        instantiateMFrag(mfrag, grounding, contextMet, network, createdVariables,
+                parentBindings, distributionModes, sourceMFragMap, null, List.of());
+    }
+
+    /**
+     * Instantiate the BN nodes and edges for one grounding of an MFrag, optionally
+     * recording the construction decision in {@code constructionLog}.
+     *
+     * @param contextMet      true if context constraints were satisfied for this grounding
+     * @param constructionLog optional log collector; pass {@code null} for zero overhead
+     * @param contextOutcomes per-constraint outcomes (populated by
+     *                        {@link #evaluateContextsWithOutcomes} when logging)
+     */
+    private void instantiateMFrag(MFrag mfrag, Map<String, String> grounding,
+                                    boolean contextMet,
+                                    BayesianNetwork network,
+                                    Set<String> createdVariables,
+                                    Map<String, List<ParentBinding>> parentBindings,
+                                    Map<String, DistributionMode> distributionModes,
+                                    Map<String, MFrag> sourceMFragMap,
+                                    SsbnConstructionLog constructionLog,
+                                    List<ConstraintOutcome> contextOutcomes) {
         for (RandomVariable rv : mfrag.getResidentNodes()) {
             List<String> entityArgs = resolveEntityArgs(rv, grounding);
 
@@ -388,6 +555,12 @@ public class SSBNGenerator {
                 // earlier with CONTEXTUAL mode (via the "ensure parent exists" block).
                 // The home MFrag's processing must win and override it.
                 distributionModes.put(groundedName, DistributionMode.FINDING);
+                if (constructionLog != null) {
+                    constructionLog.addGroundedNode(new GroundedNodeLog(
+                            groundedName, mfrag.getName(),
+                            Map.copyOf(grounding), contextOutcomes,
+                            DistributionMode.FINDING));
+                }
                 // Do NOT wire parents — finding terminates upward expansion
                 continue;
             }
@@ -400,10 +573,15 @@ public class SSBNGenerator {
                 network.addNode(bnNode);
                 createdVariables.add(groundedName);
                 // Record the distribution mode and source MFrag for this node
-                distributionModes.put(groundedName,
-                        contextMet ? DistributionMode.CONTEXTUAL : DistributionMode.DEFAULT);
+                DistributionMode mode = contextMet ? DistributionMode.CONTEXTUAL : DistributionMode.DEFAULT;
+                distributionModes.put(groundedName, mode);
                 // GAP 1: always record the source MFrag so buildAllCpts can find defaultDistribution
                 sourceMFragMap.putIfAbsent(groundedName, mfrag);
+                if (constructionLog != null) {
+                    constructionLog.addGroundedNode(new GroundedNodeLog(
+                            groundedName, mfrag.getName(),
+                            Map.copyOf(grounding), contextOutcomes, mode));
+                }
             } else {
                 // Node already exists; don't downgrade a CONTEXTUAL node to DEFAULT
                 DistributionMode existing = distributionModes.get(groundedName);

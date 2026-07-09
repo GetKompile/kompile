@@ -19,10 +19,13 @@ import ai.kompile.graph.reasoning.fol.Fact;
 import ai.kompile.graph.reasoning.fol.FactStore;
 import ai.kompile.graph.reasoning.fol.InferredFact;
 import ai.kompile.graph.reasoning.fol.InferredFactStore;
+import ai.kompile.graph.reasoning.fol.grounding.AnnotatedResult;
 import ai.kompile.graph.reasoning.fol.grounding.RecursiveQueryEngine;
 import ai.kompile.graph.reasoning.fol.grounding.RecursiveQueryEngine.DatalogRule;
+import ai.kompile.graph.reasoning.fol.grounding.RecursiveQueryEngine.Derivation;
 import ai.kompile.graph.reasoning.fol.grounding.RecursiveQueryEngine.EdbProvider;
 import ai.kompile.graph.reasoning.fol.grounding.RecursiveQueryEngine.FixpointResult;
+import ai.kompile.graph.reasoning.fol.semiring.ViterbiSemiring;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -34,6 +37,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /**
  * Forward-chaining materializer: given a {@link FactStore} and a Datalog rule set,
@@ -133,6 +138,19 @@ public final class ForwardChainingMaterializer {
      * derive IDB (intensional) facts; only the IDB is materialized into {@code sink}
      * (not the EDB, which the caller already has in the fact store).</p>
      *
+     * <h2>Soft confidence via Viterbi semiring</h2>
+     * <p>After the crisp fixpoint, this method runs a Viterbi annotation pass over the
+     * recorded derivation graph.  Each derived fact's {@code value} and {@code confidence}
+     * are set to the Viterbi annotation (product of EDB values along the best derivation
+     * path, maximized over all derivation paths).  When all EDB facts have value 1.0
+     * (fully certain), the Viterbi annotation is also 1.0 for every derived fact —
+     * identical to the previous hard-coded behaviour.</p>
+     *
+     * <p>This is always enabled (ship-enabled policy); override via
+     * {@link #materialize(FactStore, List, InferredFactStore, java.util.function.Function)}
+     * to supply a custom EDB annotator or disable soft confidence by passing
+     * {@link FolDatalogAdapter#uniformViterbiAnnotator()} explicitly.</p>
+     *
      * @param factStore the base fact store (EDB)
      * @param rules     Datalog rules (may include recursive rules)
      * @param sink      where to store derived {@link InferredFact}s
@@ -141,9 +159,34 @@ public final class ForwardChainingMaterializer {
     public MaterializationResult materialize(FactStore factStore,
                                              List<DatalogRule> rules,
                                              InferredFactStore sink) {
+        // Default: use the actual fact values as Viterbi EDB weights
+        return materialize(factStore, rules, sink, FolDatalogAdapter.factValueAnnotator(factStore));
+    }
+
+    /**
+     * Run forward-chaining with an explicit EDB annotator for the Viterbi soft-confidence pass.
+     *
+     * <p>Use this overload when you need custom control over the EDB annotation, e.g.
+     * to supply uniform weights ({@link FolDatalogAdapter#uniformViterbiAnnotator()}) to
+     * reproduce the previous hard-coded {@code confidence=1.0} behavior explicitly.</p>
+     *
+     * @param factStore      the base fact store (EDB)
+     * @param rules          Datalog rules (may include recursive rules)
+     * @param sink           where to store derived {@link InferredFact}s
+     * @param viterbiAnnotator maps each EDB atom key to its Viterbi weight (Double in [0,1]);
+     *                        use {@link FolDatalogAdapter#factValueAnnotator(FactStore)} for
+     *                        the default soft-truth behavior, or
+     *                        {@link FolDatalogAdapter#uniformViterbiAnnotator()} for uniform weights
+     * @return materialization result with counts and metadata
+     */
+    public MaterializationResult materialize(FactStore factStore,
+                                             List<DatalogRule> rules,
+                                             InferredFactStore sink,
+                                             Function<String, Double> viterbiAnnotator) {
         Objects.requireNonNull(factStore, "factStore must not be null");
         Objects.requireNonNull(rules, "rules must not be null");
         Objects.requireNonNull(sink, "sink must not be null");
+        Objects.requireNonNull(viterbiAnnotator, "viterbiAnnotator must not be null");
 
         if (rules.isEmpty()) {
             log.debug("ForwardChainingMaterializer: no rules supplied — nothing to derive");
@@ -155,7 +198,13 @@ public final class ForwardChainingMaterializer {
                 runId, rules.size(), factStore.size());
 
         EdbProvider edb = FolDatalogAdapter.factStoreEdb(factStore);
-        FixpointResult fixpoint = RecursiveQueryEngine.evaluate(rules, edb, maxIterations, maxDerivedFacts);
+
+        // Run crisp fixpoint + Viterbi annotation in one pass
+        AnnotatedResult<Double> annotatedResult = RecursiveQueryEngine.evaluateAnnotated(
+                rules, edb, ViterbiSemiring.INSTANCE, viterbiAnnotator,
+                maxIterations, maxDerivedFacts,
+                RecursiveQueryEngine.DEFAULT_MAX_DERIVATIONS_PER_ATOM);
+        FixpointResult fixpoint = annotatedResult.fixpointResult();
 
         // Materialize derived facts into the sink
         int stored = 0;
@@ -167,12 +216,39 @@ public final class ForwardChainingMaterializer {
                 String atomKey = buildAtomKey(pred, tuple);
                 // Skip if already in the EDB (it's not a new derived fact from our perspective)
                 if (factStore.factFor(atomKey).isPresent()) continue;
+
+                // Use provenance from the engine's derivation index when available.
+                List<Derivation> derivations = fixpoint.derivations(atomKey);
+
+                // supportingFactKeys: parents from the first (primary) derivation
+                List<String> supportingFactKeys = derivations.isEmpty()
+                        ? List.of()
+                        : derivations.get(0).parentAtomKeys();
+
+                // supportingRuleIds: all distinct rule displays across kept derivations,
+                // followed by the basis marker so InferredFact.ruleWeights() parsing still works
+                // (it only parses entries with a numeric "<weight>:" prefix; the marker is skipped).
+                List<String> supportingRuleIds = new ArrayList<>();
+                derivations.stream()
+                        .map(Derivation::ruleDisplay)
+                        .distinct()
+                        .forEach(supportingRuleIds::add);
+                if (!supportingRuleIds.contains(DEDUCTIVE_BASIS_MARKER)) {
+                    supportingRuleIds.add(DEDUCTIVE_BASIS_MARKER);
+                }
+
+                // Soft confidence: Viterbi annotation = product of best-path EDB values
+                double viterbi = annotatedResult.annotation(atomKey);
+                // Clamp to [0,1] (product of [0,1] values stays in [0,1] but guard against
+                // floating-point drift)
+                double confidence = Math.max(0.0, Math.min(1.0, viterbi));
+
                 InferredFact fact = new InferredFact(
                         atomKey,
-                        1.0,   // deductively certain
-                        1.0,   // confidence = 1.0 (no uncertainty)
-                        List.of(),  // no specific supporting-fact keys (derives from full EDB)
-                        List.of(DEDUCTIVE_BASIS_MARKER),
+                        confidence,     // value = best-path product confidence
+                        confidence,     // confidence = same (Viterbi is our confidence estimate)
+                        supportingFactKeys,
+                        supportingRuleIds,
                         runId,
                         version++,
                         now

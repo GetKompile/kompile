@@ -128,6 +128,13 @@ final class PslRuleGradient {
      */
     static int findRuleIndex(List<PslRule> rules, Map<String, Integer> ruleIndexBySignature,
                              GroundRule gr) {
+        // Exact attribution when the grounding recorded its template rule. Signature matching
+        // below cannot distinguish equal-weight rules (the common all-weights-1.0 init), which
+        // silently collapsed every per-rule gradient onto the first matching rule.
+        int ti = gr.templateIndex();
+        if (ti >= 0 && ti < rules.size()) {
+            return ti;
+        }
         // O(1) primary lookup by signature key
         String key = gr.hard() + ":" + gr.squared() + ":" + Double.toHexString(gr.weight());
         Integer idx = ruleIndexBySignature.get(key);

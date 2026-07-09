@@ -10,6 +10,9 @@
 package ai.kompile.graph.reasoning.psl;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -61,6 +64,40 @@ public final class HlMrfMapInference {
     public static final double HARD_VIOLATION_TOLERANCE = 1e-4;
 
     /**
+     * Per-atom attribution of a ground rule's influence on one target atom.
+     *
+     * <p>Produced by {@link Result#atomAttribution(String, double)} and used by
+     * {@code PslTraceAdapter} to build a walkable {@code ReasoningTrace}. The
+     * {@code direction} field encodes the KKT "force" direction:
+     * <ul>
+     *   <li>{@code +1} — the rule pushes the atom's value <em>up</em> (atom appears
+     *       in a positive head literal: satisfying the rule requires the atom to be
+     *       truthy).</li>
+     *   <li>{@code -1} — the rule pushes the atom's value <em>down</em> (atom appears
+     *       in a positive body literal: the rule "consumes" this atom's truth to
+     *       justify something else, pulling it toward its current value via the body
+     *       conjunction).</li>
+     *   <li>{@code 0} — the atom only appears in negated literals (direction is
+     *       ambiguous / rule is marginal).</li>
+     * </ul>
+     *
+     * @param rule                  the ground rule containing the target atom
+     * @param distanceToSatisfaction Łukasiewicz distance d ∈ [0, 1]
+     * @param weightedPotential     w · d^p; the atom's contribution to the total energy
+     * @param satisfied             {@code true} when d ≤ {@link #HARD_VIOLATION_TOLERANCE}
+     * @param direction             +1 pushes atom up, -1 pushes atom down, 0 neutral
+     * @param dualForce             ADMM scaled dual magnitude at convergence for this rule/atom
+     *                              pair; 0.0 when the solver did not surface duals
+     */
+    public record AtomAttribution(
+            GroundRule rule,
+            double distanceToSatisfaction,
+            double weightedPotential,
+            boolean satisfied,
+            int direction,
+            double dualForce) {}
+
+    /**
      * Inference outcome.
      *
      * @param values      final truth assignment (observed atoms unchanged, targets optimized)
@@ -68,9 +105,26 @@ public final class HlMrfMapInference {
      * @param iterations  number of descent iterations performed
      * @param objective   final total energy
      * @param converged   whether the descent reached the tolerance before the iteration cap
+     * @param admmDuals   optional per-(ruleIndex, atomKey) scaled dual magnitudes at ADMM
+     *                    convergence; empty map when not populated by the solver
      */
     public record Result(Map<String, Double> values, List<GroundRule> groundRules,
-                         int iterations, double objective, boolean converged) {
+                         int iterations, double objective, boolean converged,
+                         Map<Integer, Map<String, Double>> admmDuals) {
+
+        /**
+         * Back-compat constructor: creates a Result with an empty duals map.
+         * All existing call sites use this form.
+         */
+        public Result(Map<String, Double> values, List<GroundRule> groundRules,
+                      int iterations, double objective, boolean converged) {
+            this(values, groundRules, iterations, objective, converged, Map.of());
+        }
+
+        public Result {
+            admmDuals = (admmDuals == null) ? Map.of() : Map.copyOf(admmDuals);
+        }
+
         /**
          * Ground rules that are marked hard and have a distance-to-satisfaction above
          * {@link #HARD_VIOLATION_TOLERANCE} at the final atom assignment.
@@ -127,6 +181,116 @@ public final class HlMrfMapInference {
          */
         public List<GroundRuleResult> groundRuleResults() {
             return groundRuleResults(DEFAULT_HARD_WEIGHT);
+        }
+
+        /**
+         * Reverse-index lookup: all ground rules in {@link #groundRules} that reference
+         * {@code atomKey} in either their head or body (positive or negated literal).
+         *
+         * <p>The index is built lazily on the first call and is not cached across calls — the
+         * Result is a record (immutable by contract) so callers that need repeated lookups
+         * should cache the returned lists themselves.</p>
+         *
+         * @param atomKey the ground atom key to look up (e.g. {@code "State(alice)"})
+         * @return unmodifiable list of ground rules that reference the atom; never null
+         */
+        public List<GroundRule> groundRulesFor(String atomKey) {
+            if (atomKey == null) return List.of();
+            List<GroundRule> found = new ArrayList<>();
+            for (GroundRule gr : groundRules) {
+                if (ruleContainsAtom(gr, atomKey)) {
+                    found.add(gr);
+                }
+            }
+            return Collections.unmodifiableList(found);
+        }
+
+        /**
+         * Per-atom attribution for {@code atomKey}: one {@link AtomAttribution} per ground rule
+         * that references the atom, sorted by {@link AtomAttribution#weightedPotential} descending
+         * (strongest influencer first).
+         *
+         * <p>The {@link AtomAttribution#direction} encodes whether the rule pushes the atom up
+         * (+1, head-positive literal) or down (-1, body-positive literal). Negated-only appearances
+         * yield 0. When the atom appears in both head and body the head role wins (net +1).</p>
+         *
+         * <p>The {@link AtomAttribution#dualForce} is the ADMM scaled-dual magnitude
+         * {@code |u_{r,j}|} at convergence, supplied by the ADMM solver via {@link #admmDuals};
+         * it is 0.0 for all other solvers.</p>
+         *
+         * @param atomKey    the ground atom key to explain
+         * @param hardWeight penalty used to compute weighted potential (use
+         *                   {@link HlMrfMapInference#DEFAULT_HARD_WEIGHT} if unsure)
+         * @return list of attributions sorted by weightedPotential desc; never null
+         */
+        public List<AtomAttribution> atomAttribution(String atomKey, double hardWeight) {
+            if (atomKey == null) return List.of();
+            List<GroundRule> rules = groundRulesFor(atomKey);
+            if (rules.isEmpty()) return List.of();
+
+            List<AtomAttribution> attribs = new ArrayList<>(rules.size());
+            for (int ri = 0; ri < groundRules.size(); ri++) {
+                GroundRule gr = groundRules.get(ri);
+                if (!ruleContainsAtom(gr, atomKey)) continue;
+
+                double d = gr.distanceToSatisfaction(values);
+                double pot = gr.potential(values, hardWeight);
+                boolean satisfied = d <= HARD_VIOLATION_TOLERANCE;
+
+                // direction: head-positive wins over body-positive
+                int direction = computeDirection(gr, atomKey);
+
+                // dualForce: |u_{r,j}| from ADMM duals map
+                double dualForce = 0.0;
+                Map<String, Double> ruleDuals = admmDuals.get(ri);
+                if (ruleDuals != null) {
+                    Double raw = ruleDuals.get(atomKey);
+                    if (raw != null) dualForce = Math.abs(raw);
+                }
+
+                attribs.add(new AtomAttribution(gr, d, pot, satisfied, direction, dualForce));
+            }
+
+            attribs.sort(Comparator.comparingDouble(AtomAttribution::weightedPotential).reversed());
+            return Collections.unmodifiableList(attribs);
+        }
+
+        // ── Helpers ──────────────────────────────────────────────────────────────
+
+        private static boolean ruleContainsAtom(GroundRule gr, String atomKey) {
+            for (GroundRule.Lit l : gr.head()) {
+                if (atomKey.equals(l.atomKey())) return true;
+            }
+            for (GroundRule.Lit l : gr.body()) {
+                if (atomKey.equals(l.atomKey())) return true;
+            }
+            return false;
+        }
+
+        /**
+         * Compute direction of the atom's role in the rule's gradient:
+         * <ul>
+         *   <li>Positive head literal  → rule pushes atom up  (+1)</li>
+         *   <li>Negated head literal   → rule pushes atom down(-1, via 1-v)</li>
+         *   <li>Positive body literal  → rule pushes atom down(-1) when active</li>
+         *   <li>Negated body literal   → rule pushes atom up  (+1, via 1-v)</li>
+         * </ul>
+         * If the atom appears in both head (positive) and body, the head-positive contribution
+         * dominates, returning +1. Net zero (equal push-up vs push-down) returns 0.
+         */
+        private static int computeDirection(GroundRule gr, String atomKey) {
+            int score = 0;
+            for (GroundRule.Lit l : gr.head()) {
+                if (atomKey.equals(l.atomKey())) {
+                    score += l.negated() ? -1 : +1;
+                }
+            }
+            for (GroundRule.Lit l : gr.body()) {
+                if (atomKey.equals(l.atomKey())) {
+                    score += l.negated() ? +1 : -1;
+                }
+            }
+            return Integer.compare(score, 0);
         }
     }
 

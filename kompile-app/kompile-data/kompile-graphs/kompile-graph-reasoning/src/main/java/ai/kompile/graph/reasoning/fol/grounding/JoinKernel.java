@@ -16,6 +16,7 @@ import ai.kompile.graph.reasoning.psl.Term;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -28,7 +29,16 @@ import java.util.Map;
  * ({@code Map<String, List<InferredFact>>}) and attempts to unify each candidate
  * against the current binding.  When all conjuncts are satisfied the completed
  * binding is emitted as a {@link QueryBinding} with confidence equal to the
- * running Łukasiewicz minimum (minimum soft-truth across matched atoms).</p>
+ * running <b>Gödel (minimum) T-norm</b> — the minimum soft-truth across matched atoms.</p>
+ *
+ * <h3>Tier-semantics note (Fix #10)</h3>
+ * <p>This kernel uses <b>Gödel min</b> ({@code min(a,b)}) to combine conjunct
+ * confidences, while {@link ai.kompile.graph.reasoning.psl.GroundRule} uses the
+ * <b>Łukasiewicz T-norm</b> ({@code max(0, a+b−1)}) for PSL rule-body evaluation.
+ * The two are intentionally different (see {@link ConjunctiveQueryEngine} for the
+ * full rationale): Gödel min is the correct "weakest-link" semantics for retrieval
+ * (avoids vanishing-conjunction pathology); Łukasiewicz is the correct relaxation
+ * for HL-MRF optimization (smooth convex hinge loss).  Never collapse the two.</p>
  *
  * <p>This is a package-private utility.  Callers are
  * {@link ConjunctiveQueryEngine} (query against a materialized
@@ -64,7 +74,10 @@ final class JoinKernel {
         }
         ConjunctiveQueryEngine.AtomPattern pattern = conjuncts.get(idx);
         PslAtom template = pattern.toTemplate();
-        List<InferredFact> candidates = byPredicate.get(pattern.predicate());
+        // Case-insensitive lookup: the ConjunctiveQueryEngine index is keyed lower-case (atom keys
+        // are stored lower-cased by the graph projector); query predicates may be camelCase / UPPER.
+        List<InferredFact> candidates = pattern.predicate() == null
+                ? null : byPredicate.get(pattern.predicate().toLowerCase(Locale.ROOT));
         if (candidates == null) return;
 
         for (InferredFact candidate : candidates) {
@@ -92,7 +105,10 @@ final class JoinKernel {
      */
     static Map<String, String> unify(PslAtom template, PslAtom candidate,
                                      Map<String, String> binding) {
-        if (!template.predicate().equals(candidate.predicate())) return null;
+        // Predicate match is case-insensitive so a camelCase / UPPER_SNAKE query predicate unifies
+        // with the lower-cased predicate the projector stored (RecursiveQueryEngine passes template
+        // and candidate built from the same predicate string, so this never changes its behaviour).
+        if (!template.predicate().equalsIgnoreCase(candidate.predicate())) return null;
         if (template.args().size() != candidate.args().size()) return null;
         Map<String, String> extended = null;
         for (int i = 0; i < template.args().size(); i++) {

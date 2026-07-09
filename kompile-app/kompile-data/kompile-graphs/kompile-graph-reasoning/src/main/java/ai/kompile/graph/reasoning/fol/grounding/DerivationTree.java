@@ -161,13 +161,23 @@ public record DerivationTree(
                 }
             }
 
-            // Build a combined rule annotation from all activated rules
+            // Build a combined rule annotation from all activated rules.
+            // When more than one rule contributed, append " | alt: N more" so the primary rule
+            // is always first and callers can see that alternatives exist without bloating the field.
             List<String> allRules = new ArrayList<>(fact.supportingRuleIds());
             List<String> indexRules = index.supportingRules(atomKey);
             for (String r : indexRules) {
                 if (!allRules.contains(r)) allRules.add(r);
             }
-            String combinedRule = allRules.isEmpty() ? null : allRules.get(0);
+            String combinedRule;
+            if (allRules.isEmpty()) {
+                combinedRule = null;
+            } else if (allRules.size() == 1) {
+                combinedRule = allRules.get(0);
+            } else {
+                // Primary rule is first; remaining count surfaced as " | alt: N more"
+                combinedRule = allRules.get(0) + " | alt: " + (allRules.size() - 1) + " more";
+            }
 
             return new DerivationTree(atomKey, confidence, combinedRule, runId, children);
 

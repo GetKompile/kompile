@@ -238,16 +238,16 @@ class AnalyticGradientAndRuleIndexTest {
             assertTrue(matched > 0,
                     "At least one ground rule must be resolved using the current (updated) weight index");
 
-            // Verify the OLD signature index (from original rules) would FAIL to match
+            // Since GroundRule.templateIndex(), resolution is POSITIONAL: even a rule list with
+            // stale (epoch-0) weights resolves every grounding to the right rule slot. This is the
+            // fix for the weight-drift problem this test used to document via signature mismatch —
+            // attribution now survives weight updates instead of failing them.
             Map<String, Integer> oldSignatureIndex = PslRuleGradient.buildSignatureIndex(originalRules);
-            int matchedWithOldIndex = 0;
             for (GroundRule gr : groundRules) {
                 int idx = PslRuleGradient.findRuleIndex(originalRules, oldSignatureIndex, gr);
-                if (idx >= 0) matchedWithOldIndex++;
+                assertEquals(gr.templateIndex(), idx,
+                        "templateIndex-based resolution must be positional and weight-drift-proof");
             }
-            assertTrue(matchedWithOldIndex < matched,
-                    "The original (epoch-0) rule index should match fewer or no ground rules after weight update "
-                            + "(old=" + matchedWithOldIndex + " vs new=" + matched + ")");
         }
 
         @Test

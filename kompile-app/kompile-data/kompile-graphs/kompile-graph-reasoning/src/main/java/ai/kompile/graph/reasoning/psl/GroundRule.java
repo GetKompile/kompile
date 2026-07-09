@@ -29,9 +29,36 @@ import java.util.Map;
  * @param body    body literals (conjunction); empty body ⇒ antecedent is always true (1.0)
  * @param head    head literals (disjunction); empty head ⇒ consequent is always false (0.0)
  * @param display human-readable rendering of this ground rule (for explainability)
+ * @param templateIndex index of the template {@link PslRule} in the program's rule list that
+ *                      produced this grounding, or {@code -1} when unknown (hand-built ground
+ *                      rules). Weight learning uses this for exact per-rule gradient attribution —
+ *                      signature-based matching cannot distinguish rules that share the same
+ *                      (hard, squared, weight) triple, e.g. the common all-weights-1.0 init.
  */
 public record GroundRule(double weight, boolean hard, boolean squared,
-                         List<Lit> body, List<Lit> head, String display) {
+                         List<Lit> body, List<Lit> head, String display, int templateIndex) {
+
+    public GroundRule {
+        if (Double.isNaN(weight) || weight < 0.0) {
+            throw new IllegalArgumentException("Rule weight must be non-negative, got: " + weight);
+        }
+        if (weight == Double.POSITIVE_INFINITY) {
+            hard = true;
+            squared = true;
+        } else if (hard) {
+            weight = Double.POSITIVE_INFINITY;
+            squared = true;
+        }
+        body = List.copyOf(body);
+        head = List.copyOf(head);
+        if (templateIndex < -1) templateIndex = -1;
+    }
+
+    /** Back-compat constructor: unknown template rule ({@code templateIndex = -1}). */
+    public GroundRule(double weight, boolean hard, boolean squared,
+                      List<Lit> body, List<Lit> head, String display) {
+        this(weight, hard, squared, body, head, display, -1);
+    }
 
     /** A signed reference to a ground atom by its canonical {@link PslAtom#key() key}. */
     public record Lit(String atomKey, boolean negated) {

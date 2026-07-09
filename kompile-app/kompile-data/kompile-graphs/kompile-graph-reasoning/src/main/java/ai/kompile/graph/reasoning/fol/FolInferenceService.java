@@ -79,6 +79,34 @@ public final class FolInferenceService {
     /** Virtual PSL predicate representing rule consequent satisfaction for a grounding. */
     static final String CONSEQUENT = "Cons";
 
+    /**
+     * Default maximum number of entity pairs to ground per rule application.
+     *
+     * <p>Pair-wise grounding is O(N²) in the number of entities. This cap prevents
+     * combinatorial explosion on large graphs. When the cap is reached, a WARN is logged
+     * and {@link FolInferenceResult#groundingTruncated()} returns {@code true}.</p>
+     */
+    public static final int DEFAULT_MAX_PAIRS_PER_RULE = 10_000;
+
+    private final int maxPairsPerRule;
+
+    /** Construct with the default pair cap ({@value #DEFAULT_MAX_PAIRS_PER_RULE}). */
+    public FolInferenceService() {
+        this(DEFAULT_MAX_PAIRS_PER_RULE);
+    }
+
+    /**
+     * Construct with an explicit per-rule entity-pair cap.
+     *
+     * @param maxPairsPerRule maximum entity pairs to ground per rule; must be ≥ 1
+     */
+    public FolInferenceService(int maxPairsPerRule) {
+        if (maxPairsPerRule < 1) {
+            throw new IllegalArgumentException("maxPairsPerRule must be ≥ 1, got: " + maxPairsPerRule);
+        }
+        this.maxPairsPerRule = maxPairsPerRule;
+    }
+
     // ─── Entry points ───────────────────────────────────────────────────────────
 
     /**
@@ -117,7 +145,8 @@ public final class FolInferenceService {
 
         return new FolInferenceResult(
                 entityLikelihoods, run.result(),
-                ruleSet.name(), graph.entityCount(), graph.relationCount(), elapsed);
+                ruleSet.name(), graph.entityCount(), graph.relationCount(), elapsed,
+                run.groundingTruncated(), run.pairsConsidered());
     }
 
     /**
@@ -196,24 +225,35 @@ public final class FolInferenceService {
         addTypeAtoms(program, graph, baseBuilder.entityIdToConstant());
 
         // Step 2: translate each FolRule into grounded PSL rules.
+        boolean[] truncated = {false};
+        int[] totalPairs = {0};
         for (FolRule rule : ruleSet.rules()) {
-            translateRule(rule, graph, kb, program, baseBuilder.entityIdToConstant());
+            int[] ruleResult = translateRule(rule, graph, kb, program, baseBuilder.entityIdToConstant());
+            totalPairs[0] += ruleResult[0];
+            if (ruleResult[1] > 0) truncated[0] = true;
         }
         // Fallback: empty rule set → default propagation.
         if (ruleSet.isEmpty()) {
             addDefaultPropagationRules(program);
         }
-        return new PslRun(program, baseBuilder, null);
+        return new PslRun(program, baseBuilder, null, truncated[0], totalPairs[0]);
     }
 
     /** Build the grounded PSL program from the graph + rules and run MAP inference once. */
     private PslRun runPsl(ReasoningGraph graph, FolRuleSet ruleSet) {
         PslRun built = buildPslRun(graph, ruleSet);
-        return new PslRun(built.program(), built.builder(), HlMrfMapInference.solve(built.program()));
+        return new PslRun(built.program(), built.builder(),
+                HlMrfMapInference.solve(built.program()),
+                built.groundingTruncated(), built.pairsConsidered());
     }
 
-    /** One PSL run: the grounded program, the builder (for id↔constant maps), and the MAP result. */
-    private record PslRun(PslProgram program, GraphPslProgramBuilder builder, HlMrfMapInference.Result result) {
+    /**
+     * One PSL run: the grounded program, the builder (for id↔constant maps), the MAP result,
+     * and truncation metadata from pair-wise grounding.
+     */
+    private record PslRun(PslProgram program, GraphPslProgramBuilder builder,
+                          HlMrfMapInference.Result result,
+                          boolean groundingTruncated, int pairsConsidered) {
     }
 
     // ─── Rule translation ────────────────────────────────────────────────────────
@@ -234,18 +274,30 @@ public final class FolInferenceService {
      * <p>This explicit grounding mirrors what PSL's own grounding engine does — but since we
      * already have the graph in memory and the constraints are evaluated against a live KB,
      * we can do it directly without a separate ASP-style grounding step.</p>
+     *
+     * @return int[2]: [0] = groundings emitted, [1] = 1 if cap was hit (truncated), else 0
      */
-    private void translateRule(FolRule rule, ReasoningGraph graph, KnowledgeBase kb,
-                                PslProgram program, Map<String, String> entityIdToConstant) {
+    private int[] translateRule(FolRule rule, ReasoningGraph graph, ReasoningGraphKnowledgeBase kb,
+                                 PslProgram program, Map<String, String> entityIdToConstant) {
 
         String antePrefix = ANTECEDENT + "_" + sanitize(rule.name());
         String consPrefix = CONSEQUENT + "_" + sanitize(rule.name());
 
-        List<GraphEntity> scopedEntities = scopedEntities(rule, graph);
+        List<GraphEntity> scopedEntities = scopedEntities(rule, graph, kb);
 
         // Pair-wise grounding over the scoped entity set (X and Y bindings)
         // For unary rules (e.g. priors), we also iterate singletons (X = Y)
-        List<EntityPair> pairs = buildPairs(scopedEntities);
+        PairBuildResult pairResult = buildPairs(scopedEntities);
+        List<EntityPair> pairs = pairResult.pairs();
+        boolean truncated = pairResult.truncated();
+
+        if (truncated) {
+            log.warn("FOL inference: rule '{}' grounding truncated at {} pairs — "
+                    + "graph has {} entities ({}² = {} potential pairs). "
+                    + "Some entity pairs were not grounded; increase maxPairsPerRule to cover them.",
+                    rule.name(), maxPairsPerRule, scopedEntities.size(),
+                    scopedEntities.size(), (long) scopedEntities.size() * scopedEntities.size());
+        }
 
         int groundedCount = 0;
         for (EntityPair pair : pairs) {
@@ -270,14 +322,6 @@ public final class FolInferenceService {
             // Evaluate consequent
             double consValue = rule.consequent().evaluate(kb, bindings) ? 1.0 : 0.0;
 
-            // Key for this pair of atoms
-            String anteKey = cx.equals(cy)
-                    ? antePrefix + "(" + cx + ")"
-                    : antePrefix + "(" + cx + "," + cy + ")";
-            String consKey = cx.equals(cy)
-                    ? consPrefix + "(" + cx + ")"
-                    : consPrefix + "(" + cx + "," + cy + ")";
-
             // Observe both atoms
             observeAtom(program, antePrefix, anteValue, cx, cy);
             observeAtom(program, consPrefix, consValue, cx, cy);
@@ -287,65 +331,91 @@ public final class FolInferenceService {
             List<PslAtom> head = List.of(groundAtom(consPrefix, cx, cy, false));
             program.addRule(PslRule.weighted(rule.weight(), rule.squared(), body, head));
 
+            double supportWeight = finiteSupportWeight(rule.weight());
+
             // Connect consequent soft-truth to the entity's State target:
             // "if the consequent holds for entity cx, push State(cx) up"
             List<PslAtom> consBody = List.of(groundAtom(consPrefix, cx, cy, false));
             List<PslAtom> stateHead = List.of(PslAtom.ground(GraphPslProgramBuilder.STATE, cx));
-            program.addRule(PslRule.weighted(rule.weight() * 0.5, rule.squared(), consBody, stateHead));
+            program.addRule(PslRule.weighted(supportWeight * 0.5, rule.squared(), consBody, stateHead));
 
             // And the abductive direction: if State(cx) is high, soften the cons obligation
             List<PslAtom> stateBody = List.of(PslAtom.ground(GraphPslProgramBuilder.STATE, cx));
             List<PslAtom> consHead2 = List.of(groundAtom(consPrefix, cx, cy, false));
-            program.addRule(PslRule.weighted(rule.weight() * 0.25, rule.squared(), stateBody, consHead2));
+            program.addRule(PslRule.weighted(supportWeight * 0.25, rule.squared(), stateBody, consHead2));
 
             groundedCount++;
         }
 
         log.debug("Rule '{}': {} groundings", rule.name(), groundedCount);
+        return new int[]{groundedCount, truncated ? 1 : 0};
+    }
+
+    private static double finiteSupportWeight(double ruleWeight) {
+        return ruleWeight == Double.POSITIVE_INFINITY
+                ? HlMrfMapInference.DEFAULT_HARD_WEIGHT
+                : ruleWeight;
     }
 
     // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-    /** Entities in scope for a rule (all if no type scope, filtered if scoped). */
-    private List<GraphEntity> scopedEntities(FolRule rule, ReasoningGraph graph) {
+    /**
+     * Entities in scope for a rule (all if no type scope, filtered if scoped).
+     *
+     * <p>When a type scope is set, delegates to
+     * {@link ReasoningGraphKnowledgeBase#getEntitiesOfTypeObjects(String)} which uses the
+     * memoized type-index built once per KB instance — O(1) index lookup instead of an
+     * O(n) linear scan that rebuilds {@code typeMemberships()} for every entity per rule.</p>
+     */
+    private List<GraphEntity> scopedEntities(FolRule rule, ReasoningGraph graph,
+                                              ReasoningGraphKnowledgeBase kb) {
         String scope = rule.entityTypeScope();
         if (scope == null) {
             return new ArrayList<>(graph.entities());
         }
-        List<GraphEntity> scoped = new ArrayList<>();
-        for (GraphEntity e : graph.entities()) {
-            if (scope.equalsIgnoreCase(e.type())) scoped.add(e);
-        }
-        return scoped;
+        // Fast path: use the memoized type→entity index on the KB (built once per run).
+        return kb.getEntitiesOfTypeObjects(scope);
     }
 
     /**
      * Build entity pairs: for each entity as X, pair with each other entity as Y
      * (including X=Y for unary/self-referential rules).
-     * Cap at 10,000 pairs to avoid explosion on large graphs.
+     * Caps at {@link #maxPairsPerRule} pairs to avoid explosion on large graphs.
+     *
+     * @param entities the scoped entity set to pair
+     * @return pair list plus a truncation flag
      */
-    private List<EntityPair> buildPairs(List<GraphEntity> entities) {
+    private PairBuildResult buildPairs(List<GraphEntity> entities) {
         List<EntityPair> pairs = new ArrayList<>();
+        boolean truncated = false;
         outer:
         for (GraphEntity x : entities) {
             for (GraphEntity y : entities) {
                 pairs.add(new EntityPair(x, y));
-                if (pairs.size() >= 10_000) break outer;
+                if (pairs.size() >= maxPairsPerRule) {
+                    truncated = true;
+                    break outer;
+                }
             }
         }
-        return pairs;
+        return new PairBuildResult(pairs, truncated);
     }
 
     private record EntityPair(GraphEntity x, GraphEntity y) {}
+
+    private record PairBuildResult(List<EntityPair> pairs, boolean truncated) {}
 
     /** Add {@code Type_TYPENAME(nX)} observed atoms for every entity. */
     private void addTypeAtoms(PslProgram program, ReasoningGraph graph,
                                Map<String, String> entityIdToConstant) {
         for (GraphEntity e : graph.entities()) {
             String c = entityIdToConstant.get(e.id());
-            if (c == null || e.type().isEmpty()) continue;
-            String pred = "Type_" + sanitize(e.type());
-            program.observe(pred, 1.0, c);
+            if (c == null) continue;
+            for (String type : e.typeMemberships()) {
+                if (type == null || type.isEmpty()) continue;
+                String pred = "Type_" + sanitize(type);
+                program.observe(pred, 1.0, c);
+            }
         }
     }
 

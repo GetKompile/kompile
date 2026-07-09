@@ -13,6 +13,7 @@ import ai.kompile.graph.reasoning.fol.EntailmentRecord;
 import ai.kompile.graph.reasoning.fol.grounding.DerivationTree;
 
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -124,4 +125,77 @@ public record ReasoningTrail(
 
     /** Convenience: does this trail have entailment records? */
     public boolean hasEntailments() { return !entailments.isEmpty(); }
+
+    /**
+     * Convert this trail into the unified {@link ReasoningTrace}. If a FOL {@link DerivationTree} is
+     * present it becomes the proof tree; otherwise a single {@link ReasoningTrace.StepKind#INFERENCE}
+     * conclusion is built over the {@code entailments} (as inference premises) and the {@code evidence}
+     * (as fact premises). This is the bridge that lets every trail speak the one canonical trace type.
+     *
+     * <p><b>E3 root metadata</b>: the root step always carries {@code runId}, {@code computedAt}
+     * (ISO-8601), {@code question}, {@code inferenceMode} in its meta map, plus any non-NaN
+     * {@link ConfidenceBreakdown} fields as {@code breakdown.<name>} entries. In the entailments branch
+     * {@code activatedRules.count} is also added. In the derivation-tree branch the same root meta is
+     * attached to the derivation root via a {@link ReasoningTrace.Step#withMeta} copy.</p>
+     */
+    public ReasoningTrace toReasoningTrace() {
+        // Build root meta from trail provenance
+        Map<String, String> rootMeta = buildRootMeta();
+
+        if (derivationTree != null) {
+            ReasoningTrace raw = ReasoningTrace.fromDerivation(derivationTree);
+            // Attach meta to the derivation root
+            ReasoningTrace.Step metaRoot = ReasoningTrace.Step.withMeta(raw.conclusion(), rootMeta);
+            return ReasoningTrace.of(metaRoot);
+        }
+
+        // Entailments branch
+        List<ReasoningTrace.Step> premises = new java.util.ArrayList<>();
+        for (EntailmentRecord e : entailments) {
+            String op = e.activatedRules().isEmpty() ? "entailment" : String.join("; ", e.activatedRules());
+            premises.add(new ReasoningTrace.Step(ReasoningTrace.StepKind.INFERENCE,
+                    e.groundedRvOrAtomKey(), op, ReasoningTrace.clamp01(e.posterior()),
+                    e.inferenceRunId(), List.of(), null, null));
+        }
+        for (String ev : evidence) {
+            premises.add(ReasoningTrace.Step.fact(ev, 1.0, "evidence"));
+        }
+
+        // Add activatedRules.count to root meta in the entailments branch
+        if (!activatedRules.isEmpty()) {
+            rootMeta = new HashMap<>(rootMeta);
+            rootMeta.put("activatedRules.count", String.valueOf(activatedRules.size()));
+        }
+
+        ReasoningTrace.Step root = new ReasoningTrace.Step(ReasoningTrace.StepKind.INFERENCE,
+                targetId, inferenceMode, ReasoningTrace.clamp01(confidence), runId, premises,
+                null, rootMeta);
+        return ReasoningTrace.of(root);
+    }
+
+    /** Build the standard root-step meta map from this trail's provenance and confidence breakdown. */
+    private Map<String, String> buildRootMeta() {
+        Map<String, String> meta = new HashMap<>();
+        if (runId != null && !runId.isBlank()) meta.put("runId", runId);
+        if (computedAt != null) meta.put("computedAt", computedAt.toString());
+        if (question != null && !question.isBlank()) meta.put("question", question);
+        if (inferenceMode != null && !inferenceMode.isBlank()) meta.put("inferenceMode", inferenceMode);
+        if (breakdown != null) {
+            addBreakdownField(meta, "breakdown.groundingConfidence", breakdown.groundingConfidence());
+            addBreakdownField(meta, "breakdown.pslSoftTruth", breakdown.pslSoftTruth());
+            addBreakdownField(meta, "breakdown.mebnPosterior", breakdown.mebnPosterior());
+            addBreakdownField(meta, "breakdown.structuralScore", breakdown.structuralScore());
+            addBreakdownField(meta, "breakdown.semanticScore", breakdown.semanticScore());
+            addBreakdownField(meta, "breakdown.structuralWeight", breakdown.structuralWeight());
+            addBreakdownField(meta, "breakdown.semanticWeight", breakdown.semanticWeight());
+            addBreakdownField(meta, "breakdown.distanceToSatisfaction", breakdown.distanceToSatisfaction());
+        }
+        return meta;
+    }
+
+    private static void addBreakdownField(Map<String, String> meta, String key, double value) {
+        if (!Double.isNaN(value)) {
+            meta.put(key, String.valueOf(value));
+        }
+    }
 }

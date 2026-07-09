@@ -14,6 +14,7 @@ import ai.kompile.graph.reasoning.prior.PriorContext;
 import ai.kompile.graph.reasoning.prior.PriorProvider;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -279,15 +280,33 @@ public class AdmmHlMrfInference implements HlMrfSolver {
         }
 
         // Assemble result
-        Map<String, Double> result = new LinkedHashMap<>(n * 2);
-        for (int i = 0; i < n; i++) result.put(atoms.get(i), z[i]);
+        Map<String, Double> resultValues = new LinkedHashMap<>(n * 2);
+        for (int i = 0; i < n; i++) resultValues.put(atoms.get(i), z[i]);
 
         // Compute final objective using logical ground rules
         double obj = 0.0;
-        for (GroundRule gr : logicalRules) obj += gr.potential(result, hardWeight);
-        for (ArithmeticGroundRule agr : arithmeticRules) obj += agr.potential(result, hardWeight);
+        for (GroundRule gr : logicalRules) obj += gr.potential(resultValues, hardWeight);
+        for (ArithmeticGroundRule agr : arithmeticRules) obj += agr.potential(resultValues, hardWeight);
 
-        return new HlMrfMapInference.Result(result, logicalRules, iter, obj, converged);
+        // Capture final scaled duals: admmDuals[ruleIndex] = { atomKey -> u[r][j] }
+        // Only logical rules; arithmetic duals are not attributed per-atom in the same way.
+        Map<Integer, Map<String, Double>> admmDuals = new HashMap<>(rl);
+        for (int r = 0; r < rl; r++) {
+            GroundRule gr = logicalRules.get(r);
+            List<String> ruleAtomList = ruleAtomKeys(gr);
+            Map<String, Double> dualMap = new HashMap<>(ruleAtomList.size() * 2);
+            for (int j = 0; j < ruleAtomIdx[r].length; j++) {
+                if (ruleAtomIdx[r][j] >= 0) {
+                    dualMap.put(ruleAtomList.get(j), u[r][j]);
+                }
+            }
+            if (!dualMap.isEmpty()) {
+                admmDuals.put(r, Collections.unmodifiableMap(dualMap));
+            }
+        }
+
+        return new HlMrfMapInference.Result(resultValues, logicalRules, iter, obj, converged,
+                Collections.unmodifiableMap(admmDuals));
     }
 
     // ─── x-update for a logical ground rule ─────────────────────────────────

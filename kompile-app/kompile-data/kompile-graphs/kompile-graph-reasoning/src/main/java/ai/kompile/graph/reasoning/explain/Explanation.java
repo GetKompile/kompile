@@ -40,4 +40,19 @@ public record Explanation(String summary, double confidence, List<String> suppor
     public static Explanation of(String summary, double confidence) {
         return new Explanation(summary, confidence, List.of());
     }
+
+    /**
+     * Convert this natural-language explanation into a single-conclusion {@link ReasoningTrace} whose
+     * premises are the supporting entities (as {@link ReasoningTrace.StepKind#FACT} leaves).
+     */
+    public ReasoningTrace toReasoningTrace() {
+        List<ReasoningTrace.Step> premises = new java.util.ArrayList<>();
+        for (String id : supportingEntityIds) {
+            premises.add(ReasoningTrace.Step.fact(id, 1.0, "entity"));
+        }
+        ReasoningTrace.Step root = new ReasoningTrace.Step(ReasoningTrace.StepKind.INFERENCE,
+                summary, "explanation", ReasoningTrace.clamp01(confidence), null, premises,
+                null, null);
+        return ReasoningTrace.of(root);
+    }
 }

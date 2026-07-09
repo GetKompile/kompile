@@ -10,6 +10,7 @@
 package ai.kompile.graph.reasoning.fol.grounding;
 
 import ai.kompile.graph.reasoning.fol.InferredFact;
+import ai.kompile.graph.reasoning.fol.semiring.Semiring;
 import ai.kompile.graph.reasoning.psl.PslAtom;
 import ai.kompile.graph.reasoning.psl.Term;
 import org.slf4j.Logger;
@@ -26,6 +27,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /**
  * Semi-naive fixpoint evaluator for recursive Datalog rules over a knowledge base.
@@ -92,6 +95,15 @@ public final class RecursiveQueryEngine {
 
     /** Default maximum number of derived facts before early termination. */
     public static final int DEFAULT_MAX_DERIVED_FACTS = 500_000;
+
+    /**
+     * Default maximum number of distinct derivations kept per derived atom.
+     *
+     * <p>When the same ground atom is derivable by more than this many distinct rule+parents
+     * combinations, additional derivations are counted but dropped to bound memory at the
+     * 500k-fact scale.</p>
+     */
+    public static final int DEFAULT_MAX_DERIVATIONS_PER_ATOM = 4;
 
     private RecursiveQueryEngine() {}
 
@@ -211,6 +223,22 @@ public final class RecursiveQueryEngine {
     }
 
     /**
+     * One provenance record for a derived ground atom: which rule fired and which
+     * ground body-atom keys (the EDB/IDB parents in this particular binding) supported it.
+     *
+     * @param ruleDisplay    the Datalog rule's head predicate used as a display name
+     *                       (format: {@code "headPredicate :- body1, body2, ..."})
+     * @param parentAtomKeys ground atom keys of the body atoms that matched in this firing
+     */
+    public record Derivation(String ruleDisplay, List<String> parentAtomKeys) {
+
+        public Derivation {
+            java.util.Objects.requireNonNull(ruleDisplay, "ruleDisplay must not be null");
+            parentAtomKeys = (parentAtomKeys == null) ? List.of() : List.copyOf(parentAtomKeys);
+        }
+    }
+
+    /**
      * The result of a fixpoint evaluation.
      *
      * @param derivedFacts      derived ground tuples partitioned by predicate (IDB)
@@ -218,21 +246,45 @@ public final class RecursiveQueryEngine {
      * @param isComplete        {@code false} if a termination guard was hit before
      *                          the natural fixpoint; {@code true} otherwise
      * @param terminationReason human-readable reason for termination (empty if complete)
+     * @param derivationIndex   per-atom-key list of {@link Derivation}s (capped at
+     *                          {@link RecursiveQueryEngine#DEFAULT_MAX_DERIVATIONS_PER_ATOM})
+     * @param derivationDropped number of derivations that were counted but dropped because
+     *                          the per-atom cap was reached
      */
     public record FixpointResult(
             Map<String, Set<List<String>>> derivedFacts,
             int roundsCompleted,
             boolean isComplete,
-            String terminationReason) {
+            String terminationReason,
+            Map<String, List<Derivation>> derivationIndex,
+            int derivationDropped) {
 
         public FixpointResult {
             derivedFacts = Collections.unmodifiableMap(new LinkedHashMap<>(derivedFacts));
+            derivationIndex = Collections.unmodifiableMap(new LinkedHashMap<>(derivationIndex));
+        }
+
+        /**
+         * Return all known {@link Derivation}s for the given atom key (EDB atoms return an
+         * empty list — they have no derivation because they are base facts).
+         *
+         * @param atomKey the canonical atom key (e.g. {@code "reachable(a, c)"})
+         * @return unmodifiable list of derivations, empty if the atom is EDB or unknown
+         */
+        public List<Derivation> derivations(String atomKey) {
+            List<Derivation> result = derivationIndex.get(atomKey);
+            return (result == null) ? List.of() : result;
         }
 
         /**
          * Materialise the derived facts as {@link InferredFact} objects with
          * {@code confidence = 1.0} and the given {@code runId}, ready for merging into
          * an {@link ai.kompile.graph.reasoning.fol.InferredFactStore}.
+         *
+         * <p>Each fact's {@link InferredFact#supportingFactKeys()} is populated from the
+         * first {@link Derivation}'s parent atom keys (if any).
+         * {@link InferredFact#supportingRuleIds()} contains all distinct rule display strings
+         * across all kept derivations for that atom (first = primary firing).</p>
          *
          * @param runId the inference run identifier
          * @return list of inferred facts (order unspecified within a predicate)
@@ -245,8 +297,21 @@ public final class RecursiveQueryEngine {
                 String pred = entry.getKey();
                 for (List<String> tuple : entry.getValue()) {
                     String atomKey = buildAtomKey(pred, tuple);
+                    List<Derivation> derivs = derivationIndex.getOrDefault(atomKey, List.of());
+
+                    // supportingFactKeys: parents from the first (primary) derivation
+                    List<String> supportingFactKeys = derivs.isEmpty()
+                            ? List.of()
+                            : derivs.get(0).parentAtomKeys();
+
+                    // supportingRuleIds: all distinct rule displays across kept derivations
+                    List<String> supportingRuleIds = derivs.stream()
+                            .map(Derivation::ruleDisplay)
+                            .distinct()
+                            .collect(Collectors.toList());
+
                     out.add(new InferredFact(atomKey, 1.0, 1.0,
-                            List.of(), List.of(), runId, version++, now));
+                            supportingFactKeys, supportingRuleIds, runId, version++, now));
                 }
             }
             return out;
@@ -275,20 +340,24 @@ public final class RecursiveQueryEngine {
      * <p>Negated body atoms are evaluated with negation-as-failure (closed-world
      * assumption): the atom fails if the ground instance is in the current IDB or EDB.</p>
      *
-     * @param rules     the Datalog rule set
-     * @param edb       provider of base (EDB) tuples
-     * @param maxRounds maximum fixpoint rounds (termination guard)
-     * @param maxFacts  maximum total derived facts (termination guard)
+     * @param rules                  the Datalog rule set
+     * @param edb                    provider of base (EDB) tuples
+     * @param maxRounds              maximum fixpoint rounds (termination guard)
+     * @param maxFacts               maximum total derived facts (termination guard)
+     * @param maxDerivationsPerAtom  maximum number of distinct derivations to keep per derived
+     *                               atom (additional ones are counted but dropped);
+     *                               use {@link #DEFAULT_MAX_DERIVATIONS_PER_ATOM} as the default
      * @return the derived facts at fixpoint, plus metadata
      */
     public static FixpointResult evaluate(List<DatalogRule> rules,
                                           EdbProvider edb,
                                           int maxRounds,
-                                          int maxFacts) {
+                                          int maxFacts,
+                                          int maxDerivationsPerAtom) {
         java.util.Objects.requireNonNull(rules, "rules must not be null");
         java.util.Objects.requireNonNull(edb, "edb must not be null");
         if (rules.isEmpty()) {
-            return new FixpointResult(Map.of(), 0, true, "");
+            return new FixpointResult(Map.of(), 0, true, "", Map.of(), 0);
         }
 
         // Validate negation safety for all rules
@@ -311,6 +380,10 @@ public final class RecursiveQueryEngine {
             globalIdb.put(p, new LinkedHashSet<>());
         }
 
+        // Global derivation index: atomKey → list of Derivations (capped per atom)
+        Map<String, List<Derivation>> globalDerivations = new LinkedHashMap<>();
+        int[] droppedDerivations = {0};
+
         int totalRounds = 0;
         int totalFacts = 0;
         String terminationReason = "";
@@ -331,7 +404,8 @@ public final class RecursiveQueryEngine {
             };
 
             StratumResult result = evaluateStratum(stratum, idbPredicates, combinedEdb,
-                    globalIdb, maxRounds - totalRounds, maxFacts - totalFacts);
+                    globalIdb, globalDerivations, droppedDerivations,
+                    maxDerivationsPerAtom, maxRounds - totalRounds, maxFacts - totalFacts);
 
             totalRounds += result.rounds;
             totalFacts += result.newFacts;
@@ -343,7 +417,24 @@ public final class RecursiveQueryEngine {
         }
 
         return new FixpointResult(new LinkedHashMap<>(globalIdb),
-                totalRounds, isComplete, terminationReason);
+                totalRounds, isComplete, terminationReason,
+                globalDerivations, droppedDerivations[0]);
+    }
+
+    /**
+     * Convenience overload using the default bounds and default derivation cap.
+     *
+     * @param rules     the Datalog rule set
+     * @param edb       provider of base (EDB) tuples
+     * @param maxRounds maximum fixpoint rounds (termination guard)
+     * @param maxFacts  maximum total derived facts (termination guard)
+     * @return the derived facts at fixpoint
+     */
+    public static FixpointResult evaluate(List<DatalogRule> rules,
+                                          EdbProvider edb,
+                                          int maxRounds,
+                                          int maxFacts) {
+        return evaluate(rules, edb, maxRounds, maxFacts, DEFAULT_MAX_DERIVATIONS_PER_ATOM);
     }
 
     /**
@@ -354,23 +445,279 @@ public final class RecursiveQueryEngine {
      * @return the derived facts at fixpoint
      */
     public static FixpointResult evaluate(List<DatalogRule> rules, EdbProvider edb) {
-        return evaluate(rules, edb, DEFAULT_MAX_ROUNDS, DEFAULT_MAX_DERIVED_FACTS);
+        return evaluate(rules, edb, DEFAULT_MAX_ROUNDS, DEFAULT_MAX_DERIVED_FACTS,
+                DEFAULT_MAX_DERIVATIONS_PER_ATOM);
+    }
+
+    // ─── Annotated evaluation (semiring provenance) ──────────────────────────────
+
+    /**
+     * Maximum fixpoint rounds for the annotation propagation pass (separate from the
+     * crisp-fixpoint round cap).  Used by the Viterbi semiring where annotations may
+     * require multiple passes over cyclic derivation paths to converge.
+     */
+    public static final int DEFAULT_ANNOTATION_MAX_ROUNDS = 200;
+
+    /**
+     * Convergence threshold for the Viterbi (and any continuous) semiring: stop iterating
+     * annotations when the largest change in any Double annotation falls below this value.
+     */
+    public static final double ANNOTATION_CONVERGENCE_EPS = 1e-12;
+
+    /**
+     * Evaluate a Datalog rule set to fixpoint using the standard semi-naive algorithm,
+     * then compute semiring annotations for every derived (IDB) atom by iterating the
+     * recorded derivation graph to a fixpoint over the given {@code semiring}.
+     *
+     * <h2>Algorithm for the annotation pass</h2>
+     * <p>After the crisp fixpoint:</p>
+     * <ol>
+     *   <li>Each EDB atom key that appears as a parent in any recorded derivation is given
+     *       an initial annotation from {@code edbAnnotator(atomKey)}.</li>
+     *   <li>Each IDB atom starts at {@code semiring.zero()}.</li>
+     *   <li>For each IDB atom {@code h} with recorded derivations
+     *       {@code {(rule_i, [p_{i,1}, …, p_{i,n}])}}, compute:
+     *       <pre>
+     *         ann(h) = ⊕_i  (ann(p_{i,1}) ⊗ ann(p_{i,2}) ⊗ … ⊗ ann(p_{i,n}))
+     *       </pre>
+     *       where ⊕ is {@link Semiring#plus} and ⊗ is {@link Semiring#times}.
+     *   </li>
+     *   <li>Repeat until annotations stop changing (absorptive semirings) or until the
+     *       change is below {@link #ANNOTATION_CONVERGENCE_EPS} (for Double annotations)
+     *       or until {@link #DEFAULT_ANNOTATION_MAX_ROUNDS} is reached.</li>
+     * </ol>
+     *
+     * <h2>Important caveats</h2>
+     * <ul>
+     *   <li><strong>Derivation cap</strong>: only the derivations recorded in
+     *       {@link FixpointResult#derivationIndex()} are used (capped at
+     *       {@code maxDerivationsPerAtom}).  For {@link ai.kompile.graph.reasoning.fol.semiring.CountingSemiring}
+     *       the annotation is a lower bound; for {@link ai.kompile.graph.reasoning.fol.semiring.TopKProofsSemiring}
+     *       raise {@code maxDerivationsPerAtom} to match {@code k}.</li>
+     *   <li><strong>Cycles</strong>: the engine terminates for absorptive semirings by
+     *       monotone convergence.  For the Viterbi semiring it terminates when no
+     *       annotation improves by more than {@link #ANNOTATION_CONVERGENCE_EPS}.  For
+     *       truly cyclic derivation graphs under non-absorptive semirings (e.g. counting),
+     *       the round cap limits computation.</li>
+     * </ul>
+     *
+     * @param <K>          the annotation type
+     * @param rules        the Datalog rule set
+     * @param edb          provider of base (EDB) tuples
+     * @param semiring     the semiring to use for annotation propagation
+     * @param edbAnnotator maps a ground EDB atom key (e.g. {@code "edge(a, b)"}) to its
+     *                     initial annotation; called for every EDB key that appears as a
+     *                     parent in a recorded derivation; return {@code semiring.one()} for
+     *                     uniform weight (counting), or the atom's truth value converted to
+     *                     {@code Double} for Viterbi; must not return null
+     * @return an {@link AnnotatedResult} wrapping the crisp fixpoint plus the annotation map
+     */
+    public static <K> AnnotatedResult<K> evaluateAnnotated(List<DatalogRule> rules,
+                                                             EdbProvider edb,
+                                                             Semiring<K> semiring,
+                                                             Function<String, K> edbAnnotator) {
+        return evaluateAnnotated(rules, edb, semiring, edbAnnotator,
+                DEFAULT_MAX_ROUNDS, DEFAULT_MAX_DERIVED_FACTS, DEFAULT_MAX_DERIVATIONS_PER_ATOM);
+    }
+
+    /**
+     * Full-parameter version of {@link #evaluateAnnotated} with explicit bounds.
+     *
+     * @param <K>                    the annotation type
+     * @param rules                  the Datalog rule set
+     * @param edb                    provider of base (EDB) tuples
+     * @param semiring               the semiring for annotation propagation
+     * @param edbAnnotator           initial annotation for EDB atom keys
+     * @param maxRounds              crisp fixpoint round cap
+     * @param maxFacts               crisp fixpoint fact cap
+     * @param maxDerivationsPerAtom  derivation cap per atom (recommend ≥ k for TopK semiring)
+     * @return the annotated result
+     */
+    public static <K> AnnotatedResult<K> evaluateAnnotated(List<DatalogRule> rules,
+                                                             EdbProvider edb,
+                                                             Semiring<K> semiring,
+                                                             Function<String, K> edbAnnotator,
+                                                             int maxRounds,
+                                                             int maxFacts,
+                                                             int maxDerivationsPerAtom) {
+        java.util.Objects.requireNonNull(semiring, "semiring must not be null");
+        java.util.Objects.requireNonNull(edbAnnotator, "edbAnnotator must not be null");
+
+        // Step 1: Run crisp fixpoint to get derived facts + derivation index
+        FixpointResult fixpoint = evaluate(rules, edb, maxRounds, maxFacts, maxDerivationsPerAtom);
+
+        // Step 2: Propagate semiring annotations over the derivation graph
+        Map<String, K> annotations = propagateAnnotations(fixpoint, semiring, edbAnnotator);
+
+        return new AnnotatedResult<>(fixpoint, annotations, semiring.zero());
+    }
+
+    /**
+     * Propagate semiring annotations over the derivation graph recorded in the fixpoint result.
+     *
+     * <p>Algorithm: for each IDB atom, its annotation is the {@code plus} of the {@code times}
+     * of its body-parent annotations across all recorded derivations.  Iterate until convergence.</p>
+     */
+    private static <K> Map<String, K> propagateAnnotations(FixpointResult fixpoint,
+                                                             Semiring<K> semiring,
+                                                             Function<String, K> edbAnnotator) {
+        Map<String, K> ann = new LinkedHashMap<>();
+
+        // Collect all atom keys that appear anywhere in derivation index (IDB heads + EDB parents)
+        Set<String> idbKeys = new LinkedHashSet<>(fixpoint.derivationIndex().keySet());
+
+        // Collect all EDB parent keys referenced in derivations
+        Set<String> edbParentKeys = new LinkedHashSet<>();
+        for (Map.Entry<String, List<Derivation>> entry : fixpoint.derivationIndex().entrySet()) {
+            for (Derivation d : entry.getValue()) {
+                edbParentKeys.addAll(d.parentAtomKeys());
+            }
+        }
+
+        // Seed: EDB parents get their annotation from edbAnnotator
+        for (String edbKey : edbParentKeys) {
+            if (!idbKeys.contains(edbKey)) {
+                // Pure EDB atom — annotate from caller-supplied function
+                ann.put(edbKey, edbAnnotator.apply(edbKey));
+            }
+        }
+
+        // IDB atoms start at zero; also seed any that are EDB parents too
+        for (String idbKey : idbKeys) {
+            // An atom that is BOTH an IDB head AND appears as a parent in its own derivation
+            // (self-supporting cycle) starts at zero; an IDB atom that is ALSO in edbParentKeys
+            // (e.g. same predicate in base facts + recursive rule) needs its EDB contribution too.
+            ann.put(idbKey, semiring.zero());
+        }
+
+        // Fixpoint iteration over annotations.
+        // Each round: re-derive every IDB annotation from scratch (zero + fold derivations).
+        // This avoids double-counting for non-absorptive semirings (e.g. counting) and
+        // correctly handles ordering dependencies between IDB atoms that feed each other.
+        boolean changed = true;
+        int round = 0;
+        while (changed && round < DEFAULT_ANNOTATION_MAX_ROUNDS) {
+            changed = false;
+            // Snapshot of annotations at the START of this round (used as parent values
+            // so that each round is a consistent pass over last round's stable state).
+            Map<String, K> prevAnn = new LinkedHashMap<>(ann);
+
+            for (Map.Entry<String, List<Derivation>> entry : fixpoint.derivationIndex().entrySet()) {
+                String headKey = entry.getKey();
+                List<Derivation> derivations = entry.getValue();
+                if (derivations.isEmpty()) continue;
+
+                // Re-accumulate from zero each round so we don't double-count
+                K newAnn = semiring.zero();
+                for (Derivation d : derivations) {
+                    // Product of parent annotations along this derivation (from prevAnn snapshot)
+                    K derivAnn = semiring.one();
+                    for (String parentKey : d.parentAtomKeys()) {
+                        K parentAnn = prevAnn.get(parentKey);
+                        if (parentAnn == null) {
+                            // Parent not in snapshot — use edbAnnotator as fallback (EDB atom)
+                            parentAnn = edbAnnotator.apply(parentKey);
+                            // Store into ann for future rounds
+                            ann.put(parentKey, parentAnn);
+                            prevAnn.put(parentKey, parentAnn);
+                        }
+                        derivAnn = semiring.times(derivAnn, parentAnn);
+                    }
+                    newAnn = semiring.plus(newAnn, derivAnn);
+                }
+
+                // Compare with previous annotation to detect convergence
+                K prevHeadAnn = prevAnn.getOrDefault(headKey, semiring.zero());
+                if (!newAnn.equals(prevHeadAnn)) {
+                    ann.put(headKey, newAnn);
+                    // For Double (Viterbi) annotations, only mark changed if delta > eps
+                    if (newAnn instanceof Double dn && prevHeadAnn instanceof Double dc) {
+                        if (Math.abs(dn - dc) > ANNOTATION_CONVERGENCE_EPS) {
+                            changed = true;
+                        }
+                    } else {
+                        changed = true;
+                    }
+                }
+            }
+            round++;
+        }
+
+        if (round >= DEFAULT_ANNOTATION_MAX_ROUNDS && changed) {
+            log.warn("RecursiveQueryEngine.propagateAnnotations: annotation fixpoint did not "
+                    + "converge after {} rounds — returning best approximation", DEFAULT_ANNOTATION_MAX_ROUNDS);
+        }
+
+        return ann;
     }
 
     // ─── Stratum evaluation ──────────────────────────────────────────────────────
 
     private record StratumResult(int rounds, int newFacts, boolean complete, String reason) {}
 
+    /** Build the rule display string used as a derivation identifier for a rule. */
+    private static String ruleDisplay(DatalogRule rule) {
+        StringBuilder sb = new StringBuilder(rule.headPredicate());
+        sb.append('(');
+        sb.append(String.join(", ", rule.headArgs()));
+        sb.append(") :- ");
+        List<String> bodyParts = new ArrayList<>();
+        for (RuleAtom a : rule.body()) {
+            StringBuilder part = new StringBuilder();
+            if (a.negated()) part.append('!');
+            part.append(a.predicate()).append('(').append(String.join(", ", a.args())).append(')');
+            bodyParts.add(part.toString());
+        }
+        sb.append(String.join(", ", bodyParts));
+        return sb.toString();
+    }
+
+    /**
+     * Record a derivation for the given derived atom key if the cap allows and the exact
+     * (ruleDisplay, parentAtomKeys) pair has not already been recorded; otherwise increment
+     * the dropped counter.
+     *
+     * <p>Deduplicating by (ruleDisplay, parents) prevents the semi-naive fixpoint from
+     * recording the same derivation twice when an atom is re-encountered in a later round
+     * (e.g. path(a,c) derived in the seed phase and again in the first delta round via the
+     * same rule firing on the same parent atoms). The diamond test still records two
+     * <em>distinct</em> (ruleDisplay, parents) derivations because the parent atom keys
+     * differ (via-b vs. via-c).</p>
+     */
+    private static void recordDerivation(String atomKey,
+                                          Derivation derivation,
+                                          Map<String, List<Derivation>> derivationIndex,
+                                          int[] droppedDerivations,
+                                          int maxDerivationsPerAtom) {
+        List<Derivation> existing = derivationIndex.computeIfAbsent(atomKey, k -> new ArrayList<>());
+        // Deduplicate: skip if an identical (ruleDisplay, parentAtomKeys) pair is already recorded
+        if (existing.contains(derivation)) {
+            return;
+        }
+        if (existing.size() < maxDerivationsPerAtom) {
+            existing.add(derivation);
+        } else {
+            droppedDerivations[0]++;
+        }
+    }
+
     /**
      * Run the semi-naive fixpoint loop for a single stratum.
      *
      * <p>Algorithm: seed IDB from the combinedEdb for IDB predicates appearing in this
      * stratum, then iterate delta-rewritten variants until all deltas are empty.</p>
+     *
+     * <p>During evaluation, for each newly derived ground atom, a {@link Derivation} is
+     * recorded in {@code globalDerivations} (up to {@code maxDerivationsPerAtom} per atom).
+     * Additional derivations are counted but dropped to bound memory.</p>
      */
     private static StratumResult evaluateStratum(List<DatalogRule> stratumRules,
                                                   Set<String> idbPredicates,
                                                   EdbProvider combinedEdb,
                                                   Map<String, Set<List<String>>> globalIdb,
+                                                  Map<String, List<Derivation>> globalDerivations,
+                                                  int[] droppedDerivations,
+                                                  int maxDerivationsPerAtom,
                                                   int maxRounds,
                                                   int maxFacts) {
         // Collect IDB predicates in this stratum's heads.
@@ -410,13 +757,32 @@ public final class RecursiveQueryEngine {
         // Use stratumIdb (not global idbPredicates) so that lower-stratum predicates are treated
         // as EDB and matched via combinedEdb rather than skipped as "not yet derived" IDB.
         for (DatalogRule rule : stratumRules) {
-            Set<List<String>> derived = matchBody(rule, stratumIdb,
-                    idb, null, -1, combinedEdb, seedNegFacts);
+            // Use matchBodyAllDerivations to capture ALL derivation routes per head tuple
+            // (matchBodyWithParents only kept the first via putIfAbsent, losing alternative routes).
+            Map<List<String>, List<List<String>>> derivedWithParents =
+                    matchBodyAllDerivations(rule, stratumIdb, idb, null, -1, combinedEdb, seedNegFacts);
             Set<List<String>> existing = idb.getOrDefault(rule.headPredicate(), new LinkedHashSet<>());
-            for (List<String> tuple : derived) {
+            String display = ruleDisplay(rule);
+            for (Map.Entry<List<String>, List<List<String>>> entry : derivedWithParents.entrySet()) {
+                List<String> tuple = entry.getKey();
+                String atomKey = buildAtomKey(rule.headPredicate(), tuple);
                 if (!existing.contains(tuple)) {
                     delta.get(rule.headPredicate()).add(tuple);
                     existing.add(tuple);
+                    // Record all derivation routes discovered in this seed-phase firing
+                    for (List<String> parents : entry.getValue()) {
+                        recordDerivation(atomKey, new Derivation(display, parents),
+                                globalDerivations, droppedDerivations, maxDerivationsPerAtom);
+                    }
+                } else {
+                    // Atom already known (from EDB seed or earlier rule in this stratum) —
+                    // still record all additional derivation routes so multi-rule provenance is captured.
+                    // recordDerivation deduplicates by (ruleDisplay, parents) so identical routes
+                    // from fixpoint re-iterations are not counted twice.
+                    for (List<String> parents : entry.getValue()) {
+                        recordDerivation(atomKey, new Derivation(display, parents),
+                                globalDerivations, droppedDerivations, maxDerivationsPerAtom);
+                    }
                 }
             }
             idb.put(rule.headPredicate(), existing);
@@ -454,21 +820,37 @@ public final class RecursiveQueryEngine {
                     Set<List<String>> deltaForAtom = delta.get(atom.predicate());
                     if (deltaForAtom == null || deltaForAtom.isEmpty()) continue;
 
-                    Set<List<String>> variantFacts = matchBody(rule, stratumIdb,
-                            idb, delta, variantIdx, combinedEdb, negFacts);
+                    Map<List<String>, List<List<String>>> variantFacts =
+                            matchBodyAllDerivations(rule, stratumIdb,
+                                    idb, delta, variantIdx, combinedEdb, negFacts);
 
+                    String display = ruleDisplay(rule);
                     Set<List<String>> headIdb = idb.getOrDefault(rule.headPredicate(),
                             new LinkedHashSet<>());
-                    for (List<String> tuple : variantFacts) {
+                    for (Map.Entry<List<String>, List<List<String>>> entry : variantFacts.entrySet()) {
+                        List<String> tuple = entry.getKey();
                         if (!headIdb.contains(tuple)) {
                             newDelta.get(rule.headPredicate()).add(tuple);
                             headIdb.add(tuple);
                             totalNewFacts++;
+                            String atomKey = buildAtomKey(rule.headPredicate(), tuple);
+                            for (List<String> parents : entry.getValue()) {
+                                recordDerivation(atomKey, new Derivation(display, parents),
+                                        globalDerivations, droppedDerivations, maxDerivationsPerAtom);
+                            }
                             if (totalNewFacts >= maxFacts) {
                                 String reason = "MAX_DERIVED_FACTS (" + maxFacts + ") reached";
                                 log.warn("RecursiveQueryEngine: {} — returning partial result", reason);
                                 mergeIntoGlobal(globalIdb, idb);
                                 return new StratumResult(round + 1, totalNewFacts, false, reason);
+                            }
+                        } else {
+                            // Already known atom — still record additional derivation routes
+                            // (e.g. second rule fires; recordDerivation deduplicates same routes)
+                            String atomKey = buildAtomKey(rule.headPredicate(), tuple);
+                            for (List<String> parents : entry.getValue()) {
+                                recordDerivation(atomKey, new Derivation(display, parents),
+                                        globalDerivations, droppedDerivations, maxDerivationsPerAtom);
                             }
                         }
                     }
@@ -494,11 +876,16 @@ public final class RecursiveQueryEngine {
     // ─── Body matching ───────────────────────────────────────────────────────────
 
     /**
-     * Match a rule body and return the set of head tuples derivable in this call.
+     * Match a rule body and return a map from head tuple to the list of ground body-atom
+     * keys (the provenance parents) for each successful binding.
      *
      * <p>When {@code deltaVariantIdx >= 0}, atom {@code deltaVariantIdx} uses the
      * {@code delta} set instead of the full {@code idb} set.  All other positive IDB
      * atoms use {@code idb}.</p>
+     *
+     * <p>The returned map uses the <em>last</em> parent-list seen for a given head tuple
+     * when multiple bindings produce the same tuple — callers that need all derivations
+     * per atom should call this once per delta-variant and record each firing separately.</p>
      *
      * @param rule           the rule to evaluate
      * @param idbPredicates  set of all IDB predicate names
@@ -507,17 +894,46 @@ public final class RecursiveQueryEngine {
      * @param deltaVariantIdx body-atom index that uses delta (-1 = no delta variant)
      * @param edb            EDB provider for non-IDB predicates
      * @param negFacts       set of fact-key strings for negation-as-failure checks
-     * @return derived head tuples (as lists of ground constants)
+     * @return map: head tuple → list of ground body-atom keys that produced it
      */
-    private static Set<List<String>> matchBody(DatalogRule rule,
-                                                Set<String> idbPredicates,
-                                                Map<String, Set<List<String>>> idb,
-                                                Map<String, Set<List<String>>> delta,
-                                                int deltaVariantIdx,
-                                                EdbProvider edb,
-                                                Set<String> negFacts) {
-        Set<List<String>> results = new LinkedHashSet<>();
-        matchBodyRec(rule.body(), 0, new LinkedHashMap<>(),
+    private static Map<List<String>, List<String>> matchBodyWithParents(
+            DatalogRule rule,
+            Set<String> idbPredicates,
+            Map<String, Set<List<String>>> idb,
+            Map<String, Set<List<String>>> delta,
+            int deltaVariantIdx,
+            EdbProvider edb,
+            Set<String> negFacts) {
+        // allDerivations: head-tuple → ALL distinct parent-key-lists that derive it
+        // (was previously putIfAbsent = first-wins, which silently dropped alternative routes)
+        Map<List<String>, List<List<String>>> allDerivations = new LinkedHashMap<>();
+        matchBodyRec(rule.body(), 0, new LinkedHashMap<>(), new ArrayList<>(),
+                rule, idbPredicates, idb, delta, deltaVariantIdx, edb, negFacts, allDerivations);
+        // Collapse to head → first parents for backward-compatible callers;
+        // callers that need all derivations can call matchBodyAllDerivations directly.
+        Map<List<String>, List<String>> results = new LinkedHashMap<>();
+        for (Map.Entry<List<String>, List<List<String>>> e : allDerivations.entrySet()) {
+            if (!e.getValue().isEmpty()) {
+                results.put(e.getKey(), e.getValue().get(0));
+            }
+        }
+        return results;
+    }
+
+    /**
+     * Like {@link #matchBodyWithParents} but returns ALL distinct derivations (parent-key-lists)
+     * per head tuple, not just the first. Used when recording multi-route provenance.
+     */
+    private static Map<List<String>, List<List<String>>> matchBodyAllDerivations(
+            DatalogRule rule,
+            Set<String> idbPredicates,
+            Map<String, Set<List<String>>> idb,
+            Map<String, Set<List<String>>> delta,
+            int deltaVariantIdx,
+            EdbProvider edb,
+            Set<String> negFacts) {
+        Map<List<String>, List<List<String>>> results = new LinkedHashMap<>();
+        matchBodyRec(rule.body(), 0, new LinkedHashMap<>(), new ArrayList<>(),
                 rule, idbPredicates, idb, delta, deltaVariantIdx, edb, negFacts, results);
         return results;
     }
@@ -532,10 +948,14 @@ public final class RecursiveQueryEngine {
      *   <li>Positive EDB atom: iterate {@code edb.tuplesFor(pred)}</li>
      *   <li>Negated atom: check negation-as-failure against all known facts</li>
      * </ul>
+     *
+     * <p>{@code parentKeysAccum} accumulates the ground atom keys of the positive body atoms
+     * matched so far in the current binding path — negated atoms are not tracked as parents.</p>
      */
     private static void matchBodyRec(List<RuleAtom> body,
                                       int idx,
                                       Map<String, String> binding,
+                                      List<String> parentKeysAccum,
                                       DatalogRule rule,
                                       Set<String> idbPredicates,
                                       Map<String, Set<List<String>>> idb,
@@ -543,11 +963,18 @@ public final class RecursiveQueryEngine {
                                       int deltaVariantIdx,
                                       EdbProvider edb,
                                       Set<String> negFacts,
-                                      Set<List<String>> out) {
+                                      Map<List<String>, List<List<String>>> out) {
         if (idx == body.size()) {
             // All atoms matched — extract head tuple from binding
             List<String> headTuple = applyBinding(rule.headArgs(), binding);
-            if (headTuple != null) out.add(headTuple);
+            if (headTuple != null) {
+                // Accumulate ALL distinct derivations per head tuple (not first-wins).
+                // Deduplication by exact parent-key-list is done here to avoid recording the same
+                // route twice when the same binding fires in the seed phase and the delta loop.
+                List<String> parents = List.copyOf(parentKeysAccum);
+                out.computeIfAbsent(headTuple, k -> new ArrayList<>())
+                   .add(parents);
+            }
             return;
         }
 
@@ -571,8 +998,8 @@ public final class RecursiveQueryEngine {
                 List<List<String>> edbTuples = edb.tuplesFor(atom.predicate());
                 if (edbTuples != null && edbTuples.contains(groundArgs)) return;
             }
-            // Fact not known → negation succeeds, continue
-            matchBodyRec(body, idx + 1, binding, rule, idbPredicates,
+            // Fact not known → negation succeeds, continue (negated atoms are not parents)
+            matchBodyRec(body, idx + 1, binding, parentKeysAccum, rule, idbPredicates,
                     idb, delta, deltaVariantIdx, edb, negFacts, out);
             return;
         }
@@ -600,7 +1027,11 @@ public final class RecursiveQueryEngine {
             PslAtom ground = buildGround(atom.predicate(), tuple);
             Map<String, String> extended = JoinKernel.unify(template, ground, binding);
             if (extended == null) continue;
-            matchBodyRec(body, idx + 1, extended, rule, idbPredicates,
+            // Extend parent key list with this atom's ground key
+            String groundKey = buildAtomKey(atom.predicate(), tuple);
+            List<String> newParents = new ArrayList<>(parentKeysAccum);
+            newParents.add(groundKey);
+            matchBodyRec(body, idx + 1, extended, newParents, rule, idbPredicates,
                     idb, delta, deltaVariantIdx, edb, negFacts, out);
         }
     }

@@ -34,9 +34,17 @@ import java.util.Objects;
  * serialized to JSON (see {@link InferredFact#toJson()} / {@link InferredFact#fromJson}).</p>
  *
  * @param atomKey            canonical atom or grounded-RV key (e.g. {@code "State(alice)"})
- * @param value              soft-truth value in [0, 1] (PSL) or posterior probability (MEBN)
- * @param confidence         optional confidence score in [0, 1] (separate from raw value);
- *                           typically the complement of the uncertainty; may equal {@code value}
+ * @param value              the engine's raw soft-truth score in [0, 1]: the probability or
+ *                           continuous-relaxation weight produced directly by the reasoning
+ *                           engine (PSL marginal, MEBN posterior, etc.) before any post-hoc
+ *                           calibration is applied
+ * @param confidence         calibrated belief in [0, 1]: the score after post-hoc calibration
+ *                           via {@link ai.kompile.graph.reasoning.fol.grounding.PlattCalibrator}
+ *                           or {@link ai.kompile.graph.reasoning.fol.grounding.calibration.IsotonicCalibrator}.
+ *                           Currently set equal to {@code value} by {@link #fromEntailment} and
+ *                           {@link #of} (calibration is applied externally by the inference
+ *                           pipeline and written back via a new {@code InferredFact} record) —
+ *                           the two fields will diverge once per-type calibrators are fitted.
  * @param supportingFactKeys atom keys of the {@link Fact}s / {@link Finding}s that justified this
  * @param supportingRuleIds  display strings or rule identifiers that fired to produce this
  * @param runId              identifier of the inference run that produced this fact

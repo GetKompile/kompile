@@ -45,12 +45,41 @@ public class PlattCalibrator implements StrengthCalibrator {
         return calibrated;
     }
 
+    /**
+     * Aggregate calibrated confidence across a list of {@link GroundedElement}s.
+     *
+     * <p>For each element the raw score is obtained from
+     * {@link GroundedElement#calibratedConfidence()} (already calibrated) and the
+     * corresponding verify-result is used to route the value:
+     * <ul>
+     *   <li>Any REFUTED element → immediately returns {@code 0.0} (hard veto).</li>
+     *   <li>Non-{@link GroundedElement} objects are skipped (type-safe guard).</li>
+     *   <li>The aggregate is the <em>minimum</em> of all calibrated confidences —
+     *       a conservative lower bound that prevents a high-confidence element
+     *       from masking a weak one in a conjunction.</li>
+     * </ul>
+     *
+     * <p>Returns {@code 1.0} for a null or empty list (vacuous truth).
+     *
+     * @param elements list of elements; non-{@link GroundedElement} entries are ignored
+     * @return conservative aggregate confidence in [0, 1]
+     */
     @Override
     public double calibrateAggregate(List<? extends Object> elements) {
-        // Returns 1.0 for empty list; real aggregation depends on caller knowing GroundedElement
-        // This is a placeholder: geometric mean of non-zero values
         if (elements == null || elements.isEmpty()) return 1.0;
-        return 1.0; // actual impl is in GroundedElement context where types are known
+        double minConf = 1.0;
+        boolean sawAny = false;
+        for (Object obj : elements) {
+            if (!(obj instanceof GroundedElement<?>)) continue;
+            GroundedElement<?> ge = (GroundedElement<?>) obj;
+            // Hard veto: any REFUTED element collapses the aggregate to 0
+            if (ge.verifyResult().status() == VerifyResult.Status.REFUTED) return 0.0;
+            double conf = ge.calibratedConfidence();
+            if (conf < minConf) minConf = conf;
+            sawAny = true;
+        }
+        // If no GroundedElement was present in the list, return 1.0 (vacuous)
+        return sawAny ? minConf : 1.0;
     }
 
     @Override
@@ -84,6 +113,22 @@ public class PlattCalibrator implements StrengthCalibrator {
     /** Set parameters directly (for loading from calibration JSON). */
     public void setParams(SignalType signalType, double w, double b) {
         params.put(signalType, new double[]{w, b});
+    }
+
+    /**
+     * Get the slope parameter {@code w} for the given signal type.
+     * Defaults to {@code 1.0} (identity) if never fitted.
+     */
+    public double getW(SignalType signalType) {
+        return params.getOrDefault(signalType, new double[]{1.0, 0.0})[0];
+    }
+
+    /**
+     * Get the intercept parameter {@code b} for the given signal type.
+     * Defaults to {@code 0.0} (identity) if never fitted.
+     */
+    public double getB(SignalType signalType) {
+        return params.getOrDefault(signalType, new double[]{1.0, 0.0})[1];
     }
 
     private double preprocess(double raw, SignalType signalType) {

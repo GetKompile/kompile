@@ -18,6 +18,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 
@@ -37,7 +38,25 @@ import java.util.Objects;
  * matching predicate in the {@link InferredFactStore} and attempt to unify their arguments
  * against the current partial variable binding. When all conjuncts are satisfied, emit a
  * {@link QueryBinding} whose confidence is the minimum soft-truth across matched atoms
- * (Łukasiewicz T-norm — consistent with PSL semantics).</p>
+ * (<b>Gödel / minimum T-norm</b>). WP1c: previously mislabelled "Łukasiewicz" — min is Gödel.</p>
+ *
+ * <h3>Tier-semantics note (Fix #10)</h3>
+ * <p>Query-time conjunction uses the <b>Gödel minimum T-norm</b> ({@code T(a,b) = min(a,b)}),
+ * while PSL rule bodies in {@link ai.kompile.graph.reasoning.psl.GroundRule} use the
+ * <b>Łukasiewicz T-norm</b> ({@code T(a,b) = max(0, a+b-1)}).  The choice here is
+ * <em>intentional</em>, not a bug:</p>
+ * <ul>
+ *   <li>Łukasiewicz is the correct semantics for HL-MRF optimization: it is piecewise-linear,
+ *       sub-additive, and yields smooth convex loss surfaces for MAP inference.</li>
+ *   <li>For <em>conjunctive queries at retrieval time</em>, Łukasiewicz is inappropriate: it
+ *       collapses long conjunctions to zero even when all conjuncts have high confidence
+ *       (e.g., 5 conjuncts at 0.8 → max(0, 4·0.8 − 4) = 0.2; 10 conjuncts at 0.95 → 0.5).
+ *       Gödel min instead reports the weakest-link confidence of the entire row, which is the
+ *       natural "how good is this match" signal an agent or user expects.</li>
+ * </ul>
+ * <p>The two tiers are deliberately different: do not unify them without evaluating the
+ * effect on both query-result ranking (retrieval tier) and PSL convergence (learning tier).
+ * See {@link JoinKernel} for the shared implementation note.</p>
  *
  * <p>Note: the unification helper ({@code unify}) implements the same algorithm as
  * {@code PslProgram}'s private {@code unify} method. Rather than adding a public hook to
@@ -122,14 +141,22 @@ public final class ConjunctiveQueryEngine {
     public static List<QueryBinding> query(List<AtomPattern> conjuncts,
                                            InferredFactStore store,
                                            int maxResults) {
-        Objects.requireNonNull(conjuncts, "conjuncts must not be null");
         Objects.requireNonNull(store, "store must not be null");
+        return query(conjuncts, buildPredicateIndex(store), maxResults);
+    }
+
+    /**
+     * WP17c — query against a PRE-BUILT predicate index. Callers that issue many queries per epoch build
+     * the index once with {@link #buildPredicateIndex} and cache it (invalidating on the next epoch),
+     * instead of full-scanning the store and rebuilding the index on every query.
+     */
+    public static List<QueryBinding> query(List<AtomPattern> conjuncts,
+                                           Map<String, List<InferredFact>> byPredicate,
+                                           int maxResults) {
+        Objects.requireNonNull(conjuncts, "conjuncts must not be null");
+        Objects.requireNonNull(byPredicate, "byPredicate index must not be null");
         if (conjuncts.isEmpty()) return List.of();
         int limit = maxResults > 0 ? maxResults : DEFAULT_MAX_RESULTS;
-
-        // Build a predicate index over the InferredFactStore for fast candidate lookup
-        Map<String, List<InferredFact>> byPredicate = buildPredicateIndex(store);
-
         List<QueryBinding> results = new ArrayList<>();
         backtrack(conjuncts, byPredicate, 0, new LinkedHashMap<>(), 1.0, results, limit);
         return Collections.unmodifiableList(results);
@@ -159,7 +186,7 @@ public final class ConjunctiveQueryEngine {
      * @param byPredicate  predicate-index over the InferredFactStore
      * @param idx          current conjunct index
      * @param binding      current partial variable binding
-     * @param minConf      running minimum confidence (Łukasiewicz T-norm)
+     * @param minConf      running minimum confidence (Gödel / minimum T-norm)
      * @param out          output accumulator
      * @param limit        maximum results before early termination
      */
@@ -181,12 +208,17 @@ public final class ConjunctiveQueryEngine {
      * <p>The predicate name is extracted from the atom key's format:
      * {@code predicate(arg1, arg2, ...)}.</p>
      */
-    private static Map<String, List<InferredFact>> buildPredicateIndex(InferredFactStore store) {
+    public static Map<String, List<InferredFact>> buildPredicateIndex(InferredFactStore store) {
         Map<String, List<InferredFact>> index = new LinkedHashMap<>();
         for (InferredFact fact : store.allLatest()) {
             String predicate = extractPredicate(fact.atomKey());
             if (predicate != null) {
-                index.computeIfAbsent(predicate, k -> new ArrayList<>()).add(fact);
+                // Case-insensitive predicate matching: the graph projector stores atom keys
+                // lower-cased (relationType.toLowerCase()), but query patterns arrive in whatever
+                // case the caller wrote (camelCase "worksFor", UPPER_SNAKE "SENT_BY"). Canonicalize
+                // the index key to lower-case so JoinKernel's lookup matches — previously any
+                // non-lower-case query predicate silently matched nothing.
+                index.computeIfAbsent(predicate.toLowerCase(Locale.ROOT), k -> new ArrayList<>()).add(fact);
             }
         }
         return index;
