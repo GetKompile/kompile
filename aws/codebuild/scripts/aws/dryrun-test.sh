@@ -94,7 +94,12 @@ expect android-arm64 'BuildKompile=false'
 expect gpu-tests-linux 'EnvironmentType=LINUX_GPU_CONTAINER'
 expect gpu-tests-linux 'ComputeType=BUILD_GENERAL1_SMALL'
 expect cpu-sanity-linux 'BuildKompile=false'
-expect linux-x86_64 'WebhookBranch=$'
+expect linux-x86_64 'WebhookBranch='
+expect linux-x86_64 'PrivilegedMode=false'
+expect kompile-spins 'PrivilegedMode=true'
+expect kompile-spins 'BuildspecPath=aws/codebuild/buildspec-spins.yml'
+expect kompile-spins 'ImagePullCredentialsType=CODEBUILD'
+expect kompile-spins 'SpinRepository=kompile-spins'
 grep -q -- 'ProjectName=kompile-macos-arm64 ' "$DRYRUN_LOG" && fail "macos-arm64 deployed without a fleet"
 grep -q -- 'no-fail-on-empty-changeset' "$DRYRUN_LOG" || fail "deploys are not idempotent"
 

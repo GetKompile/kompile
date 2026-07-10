@@ -168,6 +168,32 @@ Optional inputs unlock more: arm64 GraalVM/JDK archive URLs → `linux-arm64`
   Build + Cloud TPU VM lane that reuses this kit's builder image and
   in-build scripts.
 
+## kompile spin images (cli, app-main, model-staging)
+
+Every full dist already contains all three products, so "spins" are Docker
+images cut from a released dist: `bin/kompile` (cli), `bin/kompile-server`
+or the exec jar + bundled jlink runtime (app-main), and model-staging. One
+generic product-parameterized Dockerfile (`images/spins/`) with a resolving
+entrypoint covers native-image and exec-jar dists alike; products absent
+from a dist (e.g. a cli-only dist) are skipped with a warning.
+
+- **Cloud lane**: the `kompile-spins` target (privileged, curated image)
+  pulls a released dist from the S3 layout and pushes
+  `$SPIN_REPOSITORY:<product>-<version>` to ECR — plus
+  `ghcr.io/<owner>/kompile-<product>:<version>` when `GITHUB_RELEASE_REPO`
+  and the release token are configured (the token then needs
+  `write:packages`). Run it after a release build exists:
+
+  ```bash
+  scripts/aws/start-build.sh CONFIG kompile-spins '' '' v1.2.3
+  ```
+
+- **Locally** (e.g. straight from a simulate-build dist):
+
+  ```bash
+  scripts/build-spins.sh --config CONFIG --dist ~/.cache/kompile-simulate/linux-x86_64/workspace/dist [--push]
+  ```
+
 ## Simulate before you spend
 
 Three dry-run layers, cheapest to highest fidelity:

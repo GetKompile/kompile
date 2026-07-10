@@ -68,6 +68,16 @@ Parameters:
     Type: String
     Default: ""
     Description: Secrets Manager secret id holding a token with contents:write.
+  PrivilegedMode:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: Docker-in-Docker (the kompile-spins publishing lane needs it).
+  EcrRegistry: {Type: String, Default: ""}
+  SpinRepository:
+    Type: String
+    Default: ""
+    Description: ECR repository the spins lane pushes product images to.
   WebhookBranch:
     Type: String
     Default: ""
@@ -81,6 +91,7 @@ Conditions:
   HasDl4jToken: !Not [!Equals [!Ref Dl4jTokenSecret, ""]]
   HasGithubReleaseToken: !Not [!Equals [!Ref GithubReleaseTokenSecret, ""]]
   HasWebhook: !Not [!Equals [!Ref WebhookBranch, ""]]
+  HasSpinRepo: !Not [!Equals [!Ref SpinRepository, ""]]
 
 Resources:
   LogGroup:
@@ -113,6 +124,12 @@ Resources:
               - Effect: Allow
                 Action: [ecr:BatchCheckLayerAvailability, ecr:GetDownloadUrlForLayer, ecr:BatchGetImage]
                 Resource: "*"
+              - !If
+                - HasSpinRepo
+                - Effect: Allow
+                  Action: [ecr:CompleteLayerUpload, ecr:InitiateLayerUpload, ecr:PutImage, ecr:UploadLayerPart]
+                  Resource: !Sub "arn:${AWS::Partition}:ecr:${AWS::Region}:${AWS::AccountId}:repository/${SpinRepository}"
+                - !Ref "AWS::NoValue"
               - Effect: Allow
                 Action: [s3:GetObject, s3:GetObjectVersion, s3:PutObject, s3:GetBucketLocation, s3:ListBucket]
                 Resource:
@@ -151,7 +168,7 @@ Resources:
         ComputeType: !Ref ComputeType
         Image: !Ref BuildImage
         ImagePullCredentialsType: !Ref ImagePullCredentialsType
-        PrivilegedMode: false
+        PrivilegedMode: !Ref PrivilegedMode
         Fleet: !If [HasFleet, {FleetArn: !Ref FleetArn}, !Ref "AWS::NoValue"]
         EnvironmentVariables:
           - {Name: BUILD_TARGET, Value: !Ref BuildTarget}
@@ -183,6 +200,8 @@ Resources:
           - {Name: KOMPILE_MAVEN_OPTS, Value: !Ref KompileMavenOpts}
           - {Name: ARTIFACT_BUCKET, Value: !Ref ArtifactBucket}
           - {Name: RELEASE_PREFIX, Value: !Ref ReleasePrefix}
+          - {Name: ECR_REGISTRY, Value: !Ref EcrRegistry}
+          - {Name: SPIN_REPOSITORY, Value: !Ref SpinRepository}
           - {Name: GITHUB_RELEASE_REPO, Value: !Ref GithubReleaseRepo}
           - !If
             - HasGithubReleaseToken

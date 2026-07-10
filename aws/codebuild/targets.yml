@@ -41,3 +41,4 @@ targets:
   hexagon-smoke-linux: {host: linux-hexagon-hw-x86_64, kind: validation, variant: cli-only, kompile: false, workflow: run-hexagon-smoke-tests.yml}
   test-multiple-cuda-arches: {host: linux-gpu-x86_64, kind: validation, variant: cli-only, kompile: false, workflow: test_multiple_arch.yaml}
   run-tests-matrix: {host: configurable, kind: validation, variant: cli-only, kompile: false, workflow: run-tests.yml}
+  kompile-spins: {host: linux-x86_64, kind: build, variant: cli-only, kompile: false, image: SPINS_IMAGE, buildspec: aws/codebuild/buildspec-spins.yml, privileged: true, workflow: kompile-internal}

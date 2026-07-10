@@ -31,9 +31,12 @@ aws s3api put-bucket-lifecycle-configuration --bucket "$CACHE_BUCKET" --lifecycl
              "Expiration": {"Days": 60},
              "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 7}}]}'
 
-aws ecr describe-repositories --region "$AWS_REGION" --repository-names "$ECR_REPOSITORY" >/dev/null 2>&1 \
-  || { log "creating ECR repository $ECR_REPOSITORY"; \
-       aws ecr create-repository --region "$AWS_REGION" --repository-name "$ECR_REPOSITORY" >/dev/null; }
+for repo in "$ECR_REPOSITORY" "${SPIN_REPOSITORY:-}"; do
+  [ -n "$repo" ] || continue
+  aws ecr describe-repositories --region "$AWS_REGION" --repository-names "$repo" >/dev/null 2>&1 \
+    || { log "creating ECR repository $repo"; \
+         aws ecr create-repository --region "$AWS_REGION" --repository-name "$repo" >/dev/null; }
+done
 
 # Fleet service role: required when a reserved fleet uses a custom AMI
 # (ec2:DescribeImages) and when fleets attach to a VPC (network-interface set).

@@ -1,0 +1,16 @@
+version: 0.2
+# kompile-spins lane (privileged): fetches a released dist from the S3
+# release layout and publishes the cli / app-main / model-staging spin images
+# to ECR (and GHCR when the release repo + token are configured). Start with
+# a RELEASE_TAG (or short-sha version) matching an existing release:
+#   start-build.sh CONFIG kompile-spins '' '' v1.2.3
+env:
+  shell: bash
+phases:
+  install:
+    commands:
+      - nohup /usr/local/bin/dockerd --host=unix:///var/run/docker.sock --host=tcp://127.0.0.1:2375 --storage-driver=overlay2 > /tmp/dockerd.log 2>&1 &
+      - timeout 60 bash -c "until docker info >/dev/null 2>&1; do sleep 1; done"
+  build:
+    commands:
+      - aws/codebuild/scripts/build-spins.sh --from-s3 "${RELEASE_TAG:?set RELEASE_TAG to the released version to spin}" "${SPIN_SOURCE_TARGET:-linux-x86_64}" --push

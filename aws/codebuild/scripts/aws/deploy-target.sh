@@ -18,9 +18,12 @@ host="$(target_field "$targets_file" "$target" host)"
 [ -n "$host" ] || { echo "Unknown target: $target" >&2; exit 2; }
 variant="$(target_field "$targets_file" "$target" variant)"
 kompile="$(target_field "$targets_file" "$target" kompile)"
+privileged="$(target_field "$targets_file" "$target" privileged)"
+buildspec_override="$(target_field "$targets_file" "$target" buildspec)"
 TARGET_IMAGE_KEY="$(target_field "$targets_file" "$target" image)"
 
 configure_host "$host"
+[ -n "$buildspec_override" ] && BUILD_SPEC="$buildspec_override"
 if [ -n "$SKIP_REASON" ]; then
   echo "SKIP $target: $SKIP_REASON"
   exit 3
@@ -73,6 +76,9 @@ args=(
   "GithubReleaseRepo=${GITHUB_RELEASE_REPO:-}"
   "GithubReleaseTokenSecret=${GITHUB_RELEASE_TOKEN_SECRET:-}"
   "WebhookBranch=${WEBHOOK_BRANCH:-}"
+  "PrivilegedMode=${privileged:-false}"
+  "EcrRegistry=${ECR_REGISTRY:-}"
+  "SpinRepository=${SPIN_REPOSITORY:-}"
 )
 # DEPLOY_PLAN=1 turns this into a server-validated dry run: the change set is
 # created (CloudFormation validates parameters/properties) but never executed,
