@@ -63,6 +63,9 @@ fi
 if [ "$needs_hexagon" = 1 ] && [ -z "${HEXAGON_SDK_ARCHIVE_URL:-}" ]; then
   warn "hexagon build target selected but HEXAGON_SDK_ARCHIVE_URL is empty: the image builds without the SDK and compilation will fail"
 fi
+if [ -n "${WEBHOOK_BRANCH:-}" ] && [ -z "${GITHUB_TOKEN_SECRET:-}" ]; then
+  warn "WEBHOOK_BRANCH is set but GITHUB_TOKEN_SECRET is empty: CodeBuild cannot create repository webhooks without imported GitHub credentials (admin:repo_hook), and those stacks will fail to deploy"
+fi
 if [ -n "${MACOS_FLEET_COMPUTE:-}" ]; then
   case "${AWS_REGION:-}" in
     us-east-1|us-east-2|us-west-2|ap-southeast-2) : ;;

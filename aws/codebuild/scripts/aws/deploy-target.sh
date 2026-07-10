@@ -72,6 +72,7 @@ args=(
   "ReleasePrefix=${RELEASE_PREFIX:-releases}"
   "GithubReleaseRepo=${GITHUB_RELEASE_REPO:-}"
   "GithubReleaseTokenSecret=${GITHUB_RELEASE_TOKEN_SECRET:-}"
+  "WebhookBranch=${WEBHOOK_BRANCH:-}"
 )
 aws cloudformation deploy --region "$AWS_REGION" \
   --stack-name "${STACK_PREFIX:-kompile}-$target" \

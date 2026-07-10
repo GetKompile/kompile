@@ -88,6 +88,7 @@ expect android-arm64 'BuildKompile=false'
 expect gpu-tests-linux 'EnvironmentType=LINUX_GPU_CONTAINER'
 expect gpu-tests-linux 'ComputeType=BUILD_GENERAL1_SMALL'
 expect cpu-sanity-linux 'BuildKompile=false'
+expect linux-x86_64 'WebhookBranch=$'
 grep -q -- 'ProjectName=kompile-macos-arm64 ' "$DRYRUN_LOG" && fail "macos-arm64 deployed without a fleet"
 grep -q -- 'no-fail-on-empty-changeset' "$DRYRUN_LOG" || fail "deploys are not idempotent"
 
@@ -101,8 +102,9 @@ expect macos-arm64 'ImagePullCredentialsType=CODEBUILD'
 # --- setup wizard, scripted (public repos, no publishing, decline provision) --
 wizard_config="$work/wizard.env"
 # answers: region, kompile url, kompile ref, dl4j url, dl4j ref, graal url,
-# jdk url, arm?, private?, gh releases?, targets, compute, [macos?], provision?
-printf '%s\n' "" "" "" "" "" "" "" "" "" "" "" "" "" "n" \
+# jdk url, arm?, private?, gh releases?, targets, compute, [macos?], seed?,
+# provision?
+printf '%s\n' "" "" "" "" "" "" "" "" "" "" "" "" "" "" "n" \
   | "$here/setup-wizard.sh" "$wizard_config" > "$work/wizard.out" 2>&1 \
   || fail "setup-wizard failed: $(tail -20 "$work/wizard.out")"
 [ -f "$wizard_config" ] || fail "wizard did not write $wizard_config"

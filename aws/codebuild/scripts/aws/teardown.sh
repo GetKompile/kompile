@@ -16,7 +16,7 @@ source "$root/aws/codebuild/scripts/aws/targets-lib.sh"
 : "${AWS_REGION:?}"
 prefix="${PROJECT_PREFIX:-kompile}"
 
-do_stacks=0; do_fleets=0; do_images=0; do_buckets=0; do_iam=0; yes=0
+do_stacks=0; do_fleets=0; do_images=0; do_buckets=0; do_iam=0; do_seed=0; yes=0
 [ $# -eq 0 ] && do_stacks=1
 for arg in "$@"; do
   case "$arg" in
@@ -25,7 +25,8 @@ for arg in "$@"; do
     --images) do_images=1 ;;
     --buckets) do_buckets=1 ;;
     --iam) do_iam=1 ;;
-    --all) do_stacks=1; do_fleets=1; do_images=1; do_buckets=1; do_iam=1 ;;
+    --seed) do_seed=1 ;;
+    --all) do_stacks=1; do_fleets=1; do_images=1; do_buckets=1; do_iam=1; do_seed=1 ;;
     --yes) yes=1 ;;
     *) echo "Unknown flag: $arg" >&2; exit 2 ;;
   esac
@@ -68,6 +69,20 @@ if [ "$do_buckets" = 1 ]; then
       aws s3 rb "s3://$bucket" --force
     fi
   done
+fi
+
+if [ "$do_seed" = 1 ]; then
+  seed_stack="$prefix-seed"
+  if aws cloudformation describe-stacks --region "$AWS_REGION" --stack-name "$seed_stack" >/dev/null 2>&1; then
+    seed_bucket="$(aws cloudformation describe-stacks --region "$AWS_REGION" --stack-name "$seed_stack" \
+      --query 'Stacks[0].Outputs[?OutputKey==`ConfigBucket`].OutputValue' --output text 2>/dev/null | grep -v '^None$' || true)"
+    if [ -n "$seed_bucket" ]; then
+      echo "emptying seed config bucket $seed_bucket"
+      aws s3 rm --recursive "s3://$seed_bucket" >/dev/null 2>&1 || true
+    fi
+    echo "deleting seed stack $seed_stack"
+    aws cloudformation delete-stack --region "$AWS_REGION" --stack-name "$seed_stack"
+  fi
 fi
 
 if [ "$do_iam" = 1 ]; then

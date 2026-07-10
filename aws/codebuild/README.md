@@ -5,6 +5,11 @@ for every non-release platform workflow under
 `../deeplearning4j/.github/workflows` — 33 targets mapped in `targets.yml`.
 Artifacts publish to S3 always, and to GitHub Releases when configured.
 
+Both repositories are public: **anyone can fork/clone this and stand up the
+full matrix in their own AWS account** with one wizard run — and optionally
+hand provisioning itself to AWS (see "Fully in-cloud" below) so no local
+machine is involved after setup.
+
 ## One-go quickstart
 
 ```bash
@@ -49,6 +54,39 @@ lists deployed/skipped/failed.
 **Important:** CodeBuild clones `SOURCE_LOCATION` at `KOMPILE_REF` — this
 `aws/codebuild` tree must be committed and pushed to that ref before builds
 can run (preflight warns if it is not).
+
+## Fully in-cloud: the seed stack
+
+The wizard's last step can deploy `seed.yml`: a private config bucket plus a
+`kompile-provisioner` CodeBuild project (curated image, Docker enabled) that
+runs `provision.sh` **inside AWS** against the uploaded config
+(`buildspec-provision.yml`). The wizard uploads your config there; after
+that, provisioning no longer needs your machine:
+
+- Update config → rerun the wizard (it re-uploads), or
+  `aws s3 cp <config> s3://<seed-bucket>/parameters.env` and start the
+  `kompile-provisioner` project.
+- With the seed webhook enabled, any push touching `aws/codebuild/` on your
+  branch re-provisions automatically — GitOps for the build farm. Webhook
+  creation requires GitHub credentials with `admin:repo_hook` on the source
+  repo (your fork), imported via `set-github-token.sh`; without them, start
+  the provisioner manually.
+- The provisioner role is powerful by design — it creates IAM roles, stacks,
+  fleets, images, and buckets, scoped to `kompile-*` resource names. Review
+  `seed.yml` before deploying into a shared account. Custom bucket/secret
+  names outside the prefix need policy edits.
+- AMI baking (Windows/AMD lanes) stays operator-run: the seed role
+  deliberately has no EC2 permissions.
+- Remove with `scripts/aws/teardown.sh CONFIG --seed`.
+
+## Auto-starting builds
+
+Set `WEBHOOK_BRANCH=<branch>` in the config to put a push webhook on every
+deployed target project (same `admin:repo_hook` requirement — works on your
+fork). Preflight warns if it is set without GitHub credentials. Note: DL4J is
+a secondary in-build clone, so DL4J pushes cannot trigger these projects
+directly — use a schedule or a small GitHub Action in your DL4J fork that
+calls `start-build` with the pushed ref.
 
 ## Starting builds
 

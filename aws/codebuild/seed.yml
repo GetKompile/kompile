@@ -1,0 +1,160 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Self-provisioning seed for the kompile CodeBuild matrix: a config bucket and
+  one privileged "provisioner" CodeBuild project that runs
+  aws/codebuild/scripts/aws/provision.sh inside AWS (curated image, Docker
+  enabled). With a webhook branch set, pushes touching aws/codebuild
+  re-provision automatically. Deploy once (the setup wizard offers this);
+  after that no local machine is needed.
+
+Parameters:
+  ProjectPrefix: {Type: String, Default: kompile}
+  StackPrefix: {Type: String, Default: kompile}
+  SourceLocation:
+    Type: String
+    Description: Public clone URL of the kompile repository (your fork).
+  KompileRef:
+    Type: String
+    Description: Branch containing aws/codebuild.
+  ProvisionKind:
+    Type: String
+    Default: build
+    AllowedValues: [build, validation, all]
+  ComputeType: {Type: String, Default: BUILD_GENERAL1_LARGE}
+  WebhookBranch:
+    Type: String
+    Default: ""
+    Description: >
+      Branch whose pushes (touching aws/codebuild/) re-run provisioning.
+      Requires GitHub credentials with admin:repo_hook imported into
+      CodeBuild; leave empty to start the provisioner manually.
+
+Conditions:
+  HasWebhook: !Not [!Equals [!Ref WebhookBranch, ""]]
+
+Resources:
+  ConfigBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${ProjectPrefix}-seed-config-${AWS::AccountId}-${AWS::Region}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: {SSEAlgorithm: AES256}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/codebuild/${ProjectPrefix}-provisioner
+      RetentionInDays: 30
+
+  # Provisioning creates IAM roles, stacks, fleets, images and buckets, so
+  # this role is powerful by design — scoped to kompile-prefixed resource
+  # names. Custom bucket/secret names outside the prefix need policy edits.
+  ProvisionerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: codebuild.amazonaws.com}
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: provision-kompile-matrix
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - {Effect: Allow, Action: [logs:CreateLogGroup, logs:CreateLogStream, logs:PutLogEvents,
+                                         logs:DescribeLogGroups, logs:PutRetentionPolicy, logs:DeleteLogGroup,
+                                         logs:ListTagsForResource, logs:TagResource],
+                 Resource: "*"}
+              - Effect: Allow
+                Action: s3:*
+                Resource:
+                  - !Sub arn:${AWS::Partition}:s3:::${ProjectPrefix}-*
+                  - !Sub arn:${AWS::Partition}:s3:::${ProjectPrefix}-*/*
+              - {Effect: Allow, Action: ecr:GetAuthorizationToken, Resource: "*"}
+              - Effect: Allow
+                Action: ecr:*
+                Resource: !Sub arn:${AWS::Partition}:ecr:${AWS::Region}:${AWS::AccountId}:repository/${ProjectPrefix}-*
+              - Effect: Allow
+                Action: cloudformation:*
+                Resource: !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${StackPrefix}-*/*
+              - {Effect: Allow, Action: [cloudformation:ValidateTemplate], Resource: "*"}
+              - Effect: Allow
+                Action: codebuild:*
+                Resource:
+                  - !Sub arn:${AWS::Partition}:codebuild:${AWS::Region}:${AWS::AccountId}:project/${ProjectPrefix}-*
+                  - !Sub arn:${AWS::Partition}:codebuild:${AWS::Region}:${AWS::AccountId}:fleet/${ProjectPrefix}-*
+              - {Effect: Allow, Action: [codebuild:ListFleets, codebuild:BatchGetFleets,
+                                         codebuild:ImportSourceCredentials, codebuild:ListSourceCredentials],
+                 Resource: "*"}
+              - Effect: Allow
+                Action: [iam:CreateRole, iam:DeleteRole, iam:GetRole, iam:TagRole, iam:UntagRole,
+                         iam:PutRolePolicy, iam:DeleteRolePolicy, iam:ListRolePolicies,
+                         iam:AttachRolePolicy, iam:DetachRolePolicy, iam:ListAttachedRolePolicies,
+                         iam:UpdateAssumeRolePolicy,
+                         iam:CreateInstanceProfile, iam:GetInstanceProfile, iam:DeleteInstanceProfile,
+                         iam:AddRoleToInstanceProfile, iam:RemoveRoleFromInstanceProfile]
+                Resource:
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${ProjectPrefix}-*
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${StackPrefix}-*
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:instance-profile/${ProjectPrefix}-*
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource:
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${ProjectPrefix}-*
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${StackPrefix}-*
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: [codebuild.amazonaws.com, ec2.amazonaws.com]
+              - Effect: Allow
+                Action: [secretsmanager:DescribeSecret, secretsmanager:GetSecretValue]
+                Resource: !Sub arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${ProjectPrefix}-*
+
+  ProvisionerProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub ${ProjectPrefix}-provisioner
+      Description: Runs aws/codebuild/scripts/aws/provision.sh against the config in the seed bucket.
+      ServiceRole: !GetAtt ProvisionerRole.Arn
+      TimeoutInMinutes: 480
+      QueuedTimeoutInMinutes: 480
+      Source:
+        Type: GITHUB
+        Location: !Ref SourceLocation
+        GitCloneDepth: 1
+        BuildSpec: aws/codebuild/buildspec-provision.yml
+      SourceVersion: !Ref KompileRef
+      Artifacts: {Type: NO_ARTIFACTS}
+      LogsConfig:
+        CloudWatchLogs: {Status: ENABLED, GroupName: !Ref LogGroup}
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: !Ref ComputeType
+        Image: aws/codebuild/amazonlinux-x86_64-standard:5.0
+        ImagePullCredentialsType: CODEBUILD
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - {Name: CONFIG_S3_URI, Value: !Sub "s3://${ConfigBucket}/parameters.env"}
+          - {Name: PROVISION_KIND, Value: !Ref ProvisionKind}
+      Triggers:
+        !If
+          - HasWebhook
+          - Webhook: true
+            FilterGroups:
+              - - {Type: EVENT, Pattern: PUSH}
+                - {Type: HEAD_REF, Pattern: !Sub "^refs/heads/${WebhookBranch}$"}
+                - {Type: FILE_PATH, Pattern: "^aws/codebuild/.*"}
+          - !Ref "AWS::NoValue"
+
+Outputs:
+  ProvisionerProject: {Value: !Ref ProvisionerProject}
+  ConfigBucket: {Value: !Ref ConfigBucket}
+  ConfigObjectUri: {Value: !Sub "s3://${ConfigBucket}/parameters.env"}
+  StartCommand: {Value: !Sub "aws codebuild start-build --project-name ${ProvisionerProject} --region ${AWS::Region}"}

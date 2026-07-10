@@ -297,6 +297,39 @@ if [ -n "$dl4j_token" ]; then store_secret "$DL4J_TOKEN_SECRET" "$dl4j_token"; f
 if [ -n "$release_token" ]; then store_secret "$GITHUB_RELEASE_TOKEN_SECRET" "$release_token"; fi
 unset source_token dl4j_token release_token
 
+# ------------------------------------------- optional in-cloud provisioning
+say "in-cloud auto-provisioning (optional)"
+note "a seed stack adds a '$prefix-provisioner' CodeBuild project that runs"
+note "provision.sh inside AWS — after this wizard, no local machine is needed"
+SEED_DEPLOYED=0
+seed_bucket=""
+if ask_yn "Create/update the seed (self-provisioning) stack?" n; then
+  seed_webhook=""
+  if [ -n "$GITHUB_TOKEN_SECRET" ]; then
+    if ask_yn "   re-provision automatically on pushes touching aws/codebuild? (token needs admin:repo_hook)" n; then
+      seed_webhook="$KOMPILE_REF"
+    fi
+  else
+    note "webhook skipped (needs GitHub credentials with repo admin); start the provisioner manually"
+  fi
+  aws cloudformation deploy --region "$AWS_REGION" \
+    --stack-name "$prefix-seed" \
+    --template-file "$root/aws/codebuild/seed.yml" \
+    --capabilities CAPABILITY_IAM \
+    --no-fail-on-empty-changeset \
+    --parameter-overrides \
+      "ProjectPrefix=$prefix" \
+      "StackPrefix=${STACK_PREFIX:-kompile}" \
+      "SourceLocation=$SOURCE_LOCATION" \
+      "KompileRef=$KOMPILE_REF" \
+      "WebhookBranch=$seed_webhook"
+  seed_bucket="$(aws cloudformation describe-stacks --region "$AWS_REGION" --stack-name "$prefix-seed" \
+    --query 'Stacks[0].Outputs[?OutputKey==`ConfigBucket`].OutputValue' --output text)"
+  aws s3 cp "$config" "s3://$seed_bucket/parameters.env"
+  note "config uploaded to s3://$seed_bucket/parameters.env"
+  SEED_DEPLOYED=1
+fi
+
 say "summary"
 cat <<EOF
    config:      $config
@@ -308,9 +341,19 @@ cat <<EOF
    arm64 lane:  $([ -n "$GRAALVM_ARM_ARCHIVE_URL" ] && echo enabled || echo disabled)
    macOS lane:  $([ -n "$MACOS_FLEET_COMPUTE" ] && echo "$MACOS_FLEET_COMPUTE" || echo disabled)
    gh releases: ${GITHUB_RELEASE_REPO:-disabled}
+   seed:        $([ "$SEED_DEPLOYED" = 1 ] && echo "$prefix-provisioner (in-cloud)" || echo disabled)
 EOF
 
-if ask_yn "Run one-go provisioning now (provision.sh $config build)?" y; then
+if [ "$SEED_DEPLOYED" = 1 ]; then
+  if ask_yn "Start in-cloud provisioning now?" y; then
+    build_id="$(aws codebuild start-build --region "$AWS_REGION" \
+      --project-name "$prefix-provisioner" --query 'build.id' --output text)"
+    echo "Started $build_id"
+    echo "https://${AWS_REGION}.console.aws.amazon.com/codesuite/codebuild/projects/$prefix-provisioner/build/$build_id"
+  fi
+  echo "Config changes later: rerun this wizard (it re-uploads), or edit $config and run:"
+  echo "  aws s3 cp $config s3://$seed_bucket/parameters.env && aws codebuild start-build --project-name $prefix-provisioner --region $AWS_REGION"
+elif ask_yn "Run one-go provisioning now (provision.sh $config build)?" y; then
   "$here/provision.sh" "$config" build
   if ask_yn "Start all builds now?" n; then
     "$here/start-all.sh" "$config" build

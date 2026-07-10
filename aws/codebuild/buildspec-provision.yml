@@ -1,0 +1,21 @@
+version: 0.2
+# Buildspec for the seed "provisioner" project (seed.yml): runs one-go
+# provisioning inside AWS. Needs PrivilegedMode (Docker for image builds and
+# binfmt/QEMU for the arm64 cross-build) on a curated standard image.
+env:
+  shell: bash
+phases:
+  install:
+    commands:
+      - nohup /usr/local/bin/dockerd --host=unix:///var/run/docker.sock --host=tcp://127.0.0.1:2375 --storage-driver=overlay2 > /tmp/dockerd.log 2>&1 &
+      - timeout 60 bash -c "until docker info >/dev/null 2>&1; do sleep 1; done"
+  build:
+    commands:
+      - aws s3 cp "${CONFIG_S3_URI:?CONFIG_S3_URI is required}" /tmp/parameters.env
+      - aws/codebuild/scripts/aws/provision.sh /tmp/parameters.env "${PROVISION_KIND:-build}"
+  post_build:
+    commands:
+      # Publish the merged/derived config beside the input so operators (and
+      # start-all.sh run from anywhere) can see resolved image URIs and fleet
+      # ARNs without re-deriving them.
+      - test "${CODEBUILD_BUILD_SUCCEEDING}" = "1" && aws s3 cp /tmp/generated-codebuild.env "${CONFIG_S3_URI%/*}/generated-codebuild.env" || true

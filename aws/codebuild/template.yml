@@ -68,11 +68,19 @@ Parameters:
     Type: String
     Default: ""
     Description: Secrets Manager secret id holding a token with contents:write.
+  WebhookBranch:
+    Type: String
+    Default: ""
+    Description: >
+      Branch whose pushes trigger this project automatically. Requires GitHub
+      credentials with admin:repo_hook on the source repo imported into
+      CodeBuild; leave empty for manually started builds.
 
 Conditions:
   HasFleet: !Not [!Equals [!Ref FleetArn, ""]]
   HasDl4jToken: !Not [!Equals [!Ref Dl4jTokenSecret, ""]]
   HasGithubReleaseToken: !Not [!Equals [!Ref GithubReleaseTokenSecret, ""]]
+  HasWebhook: !Not [!Equals [!Ref WebhookBranch, ""]]
 
 Resources:
   LogGroup:
@@ -128,6 +136,14 @@ Resources:
       SourceVersion: !Ref KompileSourceVersion
       Artifacts: {Type: S3, Location: !Ref ArtifactBucket, NamespaceType: BUILD_ID, Packaging: ZIP}
       Cache: {Type: S3, Location: !Sub "${CacheBucket}/kompile-codebuild"}
+      Triggers:
+        !If
+          - HasWebhook
+          - Webhook: true
+            FilterGroups:
+              - - {Type: EVENT, Pattern: PUSH}
+                - {Type: HEAD_REF, Pattern: !Sub "^refs/heads/${WebhookBranch}$"}
+          - !Ref "AWS::NoValue"
       LogsConfig:
         CloudWatchLogs: {Status: ENABLED, GroupName: !Ref LogGroup}
       Environment:
