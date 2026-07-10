@@ -168,6 +168,33 @@ Optional inputs unlock more: arm64 GraalVM/JDK archive URLs → `linux-arm64`
   Build + Cloud TPU VM lane that reuses this kit's builder image and
   in-build scripts.
 
+## Simulate before you spend
+
+Three dry-run layers, cheapest to highest fidelity:
+
+1. **Offline logic check** — `scripts/aws/dryrun-test.sh`: fake aws CLI, no
+   credentials, validates the whole deploy/teardown/wizard wiring. Also runs
+   `cfn-lint` on both templates when installed (`pip install cfn-lint`) —
+   real CloudFormation spec validation of every property and enum.
+2. **Plan mode against your real account (read-only)** —
+   `scripts/aws/provision.sh CONFIG build --plan`: validates both templates
+   server-side, reports exists / WOULD-CREATE for every account resource
+   (buckets, ECR, roles, secrets, images, fleets), then creates —
+   **but never executes** — a CloudFormation change set per target, so AWS
+   itself validates all 34+ parameters. Transient change sets and new-stack
+   review shells are cleaned up; nothing is created.
+3. **Simulate the actual build locally** —
+   `scripts/simulate-build.sh CONFIG TARGET [DL4J_REF]`: runs the SAME
+   builder image and the SAME `run-build.sh` Docker-side against the
+   committed tree — the real DL4J + kompile build, artifacts in a local
+   `dist/`, zero cloud minutes. Both clouds funnel through `run-build.sh`,
+   so a passing simulation is meaningful for GCP too. Linux-container lanes
+   only; GPU validation targets get `--gpus all` automatically when the host
+   has NVIDIA container support. Maven/ccache state persists in the
+   `kompile-sim-m2`/`kompile-sim-ccache` Docker volumes; `--shell` drops you
+   into the container for debugging; `--rebuild-image` refreshes the local
+   `kompile-sim:<family>` image.
+
 ## Costs
 
 On-demand lanes bill per build minute only. Reserved fleets bill for

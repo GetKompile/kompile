@@ -76,10 +76,21 @@ gcp/cloudbuild/scripts/setup-wizard.sh --teardown    # interactive checklist
   native-image with more RAM needs a private worker pool: create one and set
   `WORKER_POOL=projects/<p>/locations/<region>/workerPools/<name>`.
 
+## Simulate before you spend
+
+- `scripts/provision.sh CONFIG --plan` — read-only report against your real
+  project: which APIs / repo / bucket / SA / builder image / secret exist
+  vs. would be created. Nothing is mutated.
+- The **build lane** can be rehearsed locally with the AWS kit's simulator
+  (both clouds run the same `run-build.sh` in the same image):
+  `aws/codebuild/scripts/simulate-build.sh CONFIG linux-tpu-pjrt`.
+- The smoke lane's TPU hardware cannot be simulated; its lifecycle logic is
+  covered by the fake-gcloud dry run below.
+
 ## Development
 
 - `scripts/dryrun-test.sh` — offline regression check with a fake gcloud:
-  provision/start/teardown/wizard flows, TPU janitor included.
+  provision/plan/start/teardown/wizard flows, TPU janitor included.
 - `start-build.sh` injects `serviceAccount`, machine type / worker pool, and
   the optional release secret into the checked-in Cloud Build configs at
   submit time (python3 + PyYAML required on the operator machine).

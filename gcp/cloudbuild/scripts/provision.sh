@@ -9,7 +9,9 @@
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../../.." && pwd)"
 here="$root/gcp/cloudbuild/scripts"
-config="${1:?Usage: provision.sh CONFIG}"
+config="${1:?Usage: provision.sh CONFIG [--plan]}"
+plan=0
+[ "${2:-}" = --plan ] && plan=1
 
 merged="$(cd "$(dirname "$config")" && pwd)/generated-cloudbuild-gcp.env"
 cp "$config" "$merged"
@@ -25,6 +27,49 @@ echo "== preflight =="
 source "$merged"
 proj=(--project "$GCP_PROJECT_ID")
 prefix="${NAME_PREFIX:-kompile}"
+
+if [ "$plan" = 1 ]; then
+  echo "== plan (read-only; nothing is created) =="
+  line() { printf '  %-58s %s\n' "$1" "$2"; }
+  for api in cloudbuild artifactregistry tpu secretmanager storage logging; do
+    if [ -n "$(gcloud services list --enabled "${proj[@]}" \
+          --filter="config.name:${api}.googleapis.com" --format='value(config.name)' 2>/dev/null)" ]; then
+      line "API ${api}.googleapis.com" "enabled"
+    else
+      line "API ${api}.googleapis.com" "WOULD ENABLE"
+    fi
+  done
+  if gcloud artifacts repositories describe "$AR_REPOSITORY" "${proj[@]}" --location "$GCP_REGION" >/dev/null 2>&1; then
+    line "Artifact Registry $AR_REPOSITORY" "exists"
+  else
+    line "Artifact Registry $AR_REPOSITORY" "WOULD CREATE"
+  fi
+  if gcloud storage buckets describe "gs://$ARTIFACT_BUCKET" "${proj[@]}" >/dev/null 2>&1; then
+    line "bucket gs://$ARTIFACT_BUCKET" "exists"
+  else
+    line "bucket gs://$ARTIFACT_BUCKET" "WOULD CREATE"
+  fi
+  if gcloud iam service-accounts describe "$SERVICE_ACCOUNT_EMAIL" "${proj[@]}" >/dev/null 2>&1; then
+    line "service account $SERVICE_ACCOUNT_EMAIL" "exists"
+  else
+    line "service account $SERVICE_ACCOUNT_EMAIL" "WOULD CREATE"
+  fi
+  if gcloud artifacts docker images describe "$BUILDER_IMAGE" "${proj[@]}" >/dev/null 2>&1; then
+    line "builder image $BUILDER_IMAGE" "pushed"
+  else
+    line "builder image $BUILDER_IMAGE" "WOULD BUILD + PUSH"
+  fi
+  if [ -n "${GITHUB_RELEASE_TOKEN_SECRET:-}" ]; then
+    if gcloud secrets describe "$GITHUB_RELEASE_TOKEN_SECRET" "${proj[@]}" >/dev/null 2>&1; then
+      line "secret $GITHUB_RELEASE_TOKEN_SECRET" "exists"
+    else
+      line "secret $GITHUB_RELEASE_TOKEN_SECRET" "MISSING (wizard stores it)"
+    fi
+  fi
+  echo
+  echo "PLAN COMPLETE — no resources were created or modified."
+  exit 0
+fi
 
 echo "== enable APIs =="
 gcloud services enable "${proj[@]}" \

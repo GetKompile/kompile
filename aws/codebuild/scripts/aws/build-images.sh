@@ -7,13 +7,22 @@
 # Windows is intentionally NOT a container family on a Linux workstation:
 # use scripts/aws/bake-ami.sh windows (WINDOWS_EC2 fleet AMI) or build
 # images/windows/Dockerfile on a Windows Docker host and set WINDOWS_IMAGE.
+# Local simulation hooks: BUILD_IMAGES_PUSH=false builds without pushing (no
+# ECR login/credentials needed) and BUILD_IMAGES_TAG_BASE overrides the tag
+# base (simulate-build.sh uses kompile-sim).
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../../../.." && pwd)"
 config="${1:?Usage: build-images.sh CONFIG [auto|family ...]}"
 shift || true
 # shellcheck disable=SC1090
 source "$config"
-: "${AWS_REGION:?}" "${ECR_REGISTRY:?}" "${ECR_REPOSITORY:?}"
+push="${BUILD_IMAGES_PUSH:-true}"
+if [ "$push" = true ]; then
+  : "${AWS_REGION:?}" "${ECR_REGISTRY:?}" "${ECR_REPOSITORY:?}"
+  tag_base="${BUILD_IMAGES_TAG_BASE:-$ECR_REGISTRY/$ECR_REPOSITORY}"
+else
+  tag_base="${BUILD_IMAGES_TAG_BASE:-kompile-sim}"
+fi
 : "${GRAALVM_ARCHIVE_URL:?}" "${JDK11_ARCHIVE_URL:?}"
 
 families=("${@:-auto}")
@@ -36,17 +45,20 @@ families=("${@:-auto}")
   fi
 }
 
-aws ecr get-login-password --region "$AWS_REGION" \
-  | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+if [ "$push" = true ]; then
+  aws ecr get-login-password --region "$AWS_REGION" \
+    | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+fi
 
-uri() { printf '%s/%s:%s' "$ECR_REGISTRY" "$ECR_REPOSITORY" "$1"; }
+uri() { printf '%s:%s' "$tag_base" "$1"; }
 jdk_args=(--build-arg "GRAALVM_ARCHIVE_URL=$GRAALVM_ARCHIVE_URL" --build-arg "JDK11_ARCHIVE_URL=$JDK11_ARCHIVE_URL")
 
 build() { # build TAG DIR [extra docker args...]
   local tag="$1" dir="$2"; shift 2
   echo "build-images: building $(uri "$tag")" >&2
   docker build -t "$(uri "$tag")" "$@" "$root/aws/codebuild/images/$dir"
-  docker push "$(uri "$tag")"
+  [ "$push" = true ] && docker push "$(uri "$tag")"
+  return 0
 }
 
 for family in "${families[@]}"; do
@@ -61,7 +73,8 @@ for family in "${families[@]}"; do
         --build-arg "GRAALVM_ARCHIVE_URL=$GRAALVM_ARM_ARCHIVE_URL" \
         --build-arg "JDK11_ARCHIVE_URL=$JDK11_ARM_ARCHIVE_URL" \
         "$root/aws/codebuild/images/linux"
-      docker push "$(uri linux-arm64)" ;;
+      [ "$push" = true ] && docker push "$(uri linux-arm64)"
+      true ;;
     android)
       build android android "${jdk_args[@]}" \
         --build-arg "ANDROID_COMMAND_LINE_TOOLS_URL=${ANDROID_COMMAND_LINE_TOOLS_URL:?}" \

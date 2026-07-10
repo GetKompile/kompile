@@ -23,6 +23,10 @@ case "$1 $2" in
   "codebuild batch-get-fleets"|"codebuild batch-get-projects") echo None ;;
   "cloudformation deploy") printf '%s\n' "$*" >> "${DRYRUN_LOG:?}" ;;
   "cloudformation delete-stack") printf 'DELETE %s\n' "$*" >> "${DRYRUN_LOG:?}" ;;
+  "cloudformation list-change-sets") echo cs-fake ;;
+  "cloudformation describe-change-set") echo 4 ;;
+  "cloudformation delete-change-set"|"cloudformation validate-template") : ;;
+  "ecr describe-images") exit 255 ;;
   "secretsmanager describe-secret") exit 255 ;;
   "ec2 describe-images"|"codebuild list-source-credentials"|"iam list-role-policies"|"iam list-attached-role-policies") : ;;
   *) : ;;
@@ -100,6 +104,28 @@ rc=0; "$here/deploy-target.sh" "$merged" macos-arm64 >/dev/null 2>&1 || rc=$?
 [ "$rc" = 0 ] || fail "macos-arm64 with fleet exited $rc"
 expect macos-arm64 'EnvironmentType=MAC_ARM'
 expect macos-arm64 'ImagePullCredentialsType=CODEBUILD'
+
+# --- provision --plan: server-validated dry run, nothing deployed -------------
+plan_out="$work/plan.out"
+"$here/provision.sh" "$config" build --plan > "$plan_out" 2>&1 \
+  || fail "provision --plan failed: $(tail -20 "$plan_out")"
+grep -q 'PLANNED linux-x86_64:' "$plan_out" || fail "plan did not report linux-x86_64"
+grep -q 'PLAN COMPLETE' "$plan_out" || fail "plan did not complete"
+grep -q -- '--no-execute-changeset' "$DRYRUN_LOG" || fail "plan deployed without --no-execute-changeset"
+grep -q 'WOULD CREATE' "$plan_out" || fail "plan report did not mark missing resources"
+if grep -q '^DEPLOYED ' "$plan_out"; then fail "plan actually deployed something"; fi
+
+# --- cfn-lint (optional, if installed): real template spec validation ---------
+if command -v cfn-lint >/dev/null 2>&1; then
+  rc=0
+  cfn-lint "$root/aws/codebuild/template.yml" "$root/aws/codebuild/seed.yml" > "$work/cfn-lint.out" 2>&1 || rc=$?
+  if [ $((rc & 2)) -ne 0 ]; then
+    fail "cfn-lint found template errors: $(cat "$work/cfn-lint.out")"
+  fi
+  echo "cfn-lint: templates pass (exit $rc; warnings tolerated)"
+else
+  echo "cfn-lint not installed; skipping template spec lint (pip install cfn-lint)"
+fi
 
 # --- setup wizard, scripted (public repos, no publishing, decline provision) --
 wizard_config="$work/wizard.env"

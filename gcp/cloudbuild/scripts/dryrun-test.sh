@@ -18,6 +18,7 @@ case "$1 ${2:-}" in
   "auth list") echo tester@example.com ;;
   "config get-value") echo test-project ;;
   "projects describe") : ;;
+  "services list") echo cloudbuild.googleapis.com ;;
   "secrets describe") exit 1 ;;
   "builds submit") printf 'SUBMIT %s\n' "$*" >> "${DRYRUN_LOG:?}"; echo fake-build-id ;;
   "compute tpus")
@@ -62,6 +63,14 @@ grep -q 'BUILDER_IMAGE=us-central1-docker.pkg.dev/test-project/kompile-build/tpu
   || fail "provision failed: $(tail -20 "$work/provision.out")"
 grep -q 'GCLOUD services enable' "$DRYRUN_LOG" || fail "provision did not enable services"
 grep -q 'SUBMIT builds submit' "$DRYRUN_LOG" || fail "provision did not submit the builder image build"
+
+# --- provision --plan: read-only, nothing submitted ---------------------------
+: > "$DRYRUN_LOG"
+"$here/provision.sh" "$config" --plan > "$work/plan.out" 2>&1 \
+  || fail "provision --plan failed: $(tail -20 "$work/plan.out")"
+grep -q 'PLAN COMPLETE' "$work/plan.out" || fail "gcp plan did not complete"
+if grep -q 'SUBMIT' "$DRYRUN_LOG"; then fail "gcp plan submitted a build"; fi
+if grep -q 'GCLOUD services enable' "$DRYRUN_LOG"; then fail "gcp plan enabled services"; fi
 
 for lane in build smoke; do
   "$here/start-build.sh" "$config" "$lane" > "$work/start-$lane.out" 2>&1 \

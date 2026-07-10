@@ -74,10 +74,42 @@ args=(
   "GithubReleaseTokenSecret=${GITHUB_RELEASE_TOKEN_SECRET:-}"
   "WebhookBranch=${WEBHOOK_BRANCH:-}"
 )
+# DEPLOY_PLAN=1 turns this into a server-validated dry run: the change set is
+# created (CloudFormation validates parameters/properties) but never executed,
+# then cleaned up — including the REVIEW_IN_PROGRESS shell of a new stack.
+stack="${STACK_PREFIX:-kompile}-$target"
+plan="${DEPLOY_PLAN:-0}"
+deploy_flags=(--no-fail-on-empty-changeset)
+pre_exists=1
+if [ "$plan" = 1 ]; then
+  deploy_flags+=(--no-execute-changeset)
+  aws cloudformation describe-stacks --region "$AWS_REGION" --stack-name "$stack" >/dev/null 2>&1 || pre_exists=0
+fi
+deploy_out=/dev/stdout
+[ "$plan" = 1 ] && deploy_out=/dev/null
 aws cloudformation deploy --region "$AWS_REGION" \
-  --stack-name "${STACK_PREFIX:-kompile}-$target" \
+  --stack-name "$stack" \
   --template-file "$root/aws/codebuild/template.yml" \
   --capabilities CAPABILITY_IAM \
-  --no-fail-on-empty-changeset \
-  --parameter-overrides "${args[@]}"
-echo "DEPLOYED $target (${ENVIRONMENT_TYPE}, ${COMPUTE_TYPE}${FLEET_ARN:+, fleet})"
+  "${deploy_flags[@]}" \
+  --parameter-overrides "${args[@]}" > "$deploy_out"
+if [ "$plan" = 1 ]; then
+  cs="$(aws cloudformation list-change-sets --region "$AWS_REGION" --stack-name "$stack" \
+    --query 'reverse(sort_by(Summaries,&CreationTime))[0].ChangeSetId' --output text 2>/dev/null \
+    | grep -v '^None$' || true)"
+  changes="?"
+  if [ -n "$cs" ]; then
+    changes="$(aws cloudformation describe-change-set --region "$AWS_REGION" --stack-name "$stack" \
+      --change-set-name "$cs" --query 'length(Changes)' --output text 2>/dev/null || echo '?')"
+    aws cloudformation delete-change-set --region "$AWS_REGION" --stack-name "$stack" \
+      --change-set-name "$cs" 2>/dev/null || true
+  fi
+  if [ "$pre_exists" = 0 ]; then
+    aws cloudformation delete-stack --region "$AWS_REGION" --stack-name "$stack" 2>/dev/null || true
+    echo "PLANNED $target: would CREATE (${changes} resource changes, server-validated; nothing kept)"
+  else
+    echo "PLANNED $target: ${changes} resource change(s) to the existing stack"
+  fi
+else
+  echo "DEPLOYED $target (${ENVIRONMENT_TYPE}, ${COMPUTE_TYPE}${FLEET_ARN:+, fleet})"
+fi

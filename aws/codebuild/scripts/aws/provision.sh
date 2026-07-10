@@ -10,9 +10,16 @@
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../../../.." && pwd)"
 here="$root/aws/codebuild/scripts/aws"
-config="${1:?Usage: provision.sh CONFIG [build|validation|all]}"
-kind="${2:-build}"
-case "$kind" in build|validation|all) : ;; *) echo "Unknown kind: $kind" >&2; exit 2 ;; esac
+config="${1:?Usage: provision.sh CONFIG [build|validation|all] [--plan]}"
+shift
+kind=build plan=0
+for arg in "$@"; do
+  case "$arg" in
+    build|validation|all) kind="$arg" ;;
+    --plan) plan=1 ;;
+    *) echo "Unknown argument: $arg" >&2; exit 2 ;;
+  esac
+done
 
 merged="$(cd "$(dirname "$config")" && pwd)/generated-codebuild.env"
 cp "$config" "$merged"
@@ -26,6 +33,22 @@ echo "== resolve =="
 
 echo "== preflight ($kind) =="
 "$here/preflight-check.sh" "$merged" "$kind"
+
+if [ "$plan" = 1 ]; then
+  echo "== plan: template validation (server-side) =="
+  for template in template.yml seed.yml; do
+    aws cloudformation validate-template --region "$(cfg AWS_REGION)" \
+      --template-body "file://$root/aws/codebuild/$template" >/dev/null
+    echo "  $template: valid"
+  done
+  echo "== plan: account resources =="
+  "$here/plan-report.sh" "$merged"
+  echo "== plan: stacks ($kind — server-validated change sets, nothing executes) =="
+  DEPLOY_PLAN=1 "$here/deploy-all.sh" "$merged" "$kind"
+  echo
+  echo "PLAN COMPLETE — no resources were created or modified (transient change sets cleaned up)."
+  exit 0
+fi
 
 echo "== account bootstrap =="
 "$here/bootstrap-account.sh" "$merged" >> "$merged"
