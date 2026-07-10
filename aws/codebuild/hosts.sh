@@ -63,7 +63,7 @@ configure_host() {
     linux-tpu-hw-x86_64)
       ENVIRONMENT_TYPE=LINUX_EC2; image_key=LINUX_IMAGE; fleet_key=TPU_HW_FLEET_ARN
       COMPUTE_TYPE="${LINUX_EC2_COMPUTE_TYPE:-BUILD_GENERAL1_LARGE}"
-      [ -n "${TPU_HW_FLEET_ARN:-}" ] || SKIP_REASON="needs TPU hardware AWS does not provide (set TPU_HW_FLEET_ARN to a self-managed fleet to enable)" ;;
+      [ -n "${TPU_HW_FLEET_ARN:-}" ] || SKIP_REASON="needs TPU hardware AWS does not provide — use gcp/cloudbuild (real Cloud TPU smokes) or set TPU_HW_FLEET_ARN" ;;
     linux-hexagon-hw-x86_64)
       ENVIRONMENT_TYPE=LINUX_EC2; image_key=LINUX_IMAGE; fleet_key=HEXAGON_HW_FLEET_ARN
       COMPUTE_TYPE="${LINUX_EC2_COMPUTE_TYPE:-BUILD_GENERAL1_LARGE}"

@@ -1,0 +1,38 @@
+# TPU hardware smoke lane: creates a real Cloud TPU VM, builds and runs the
+# nd4j-tpu platform tests ON it against libtpu/PJRT, uploads the log to GCS,
+# and always deletes the TPU VM (trap in run-tpu-smoke.sh) — TPU time is the
+# expensive part. This is the lane AWS cannot host.
+steps:
+  - id: tpu-smoke
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: bash
+    args: [gcp/cloudbuild/scripts/run-tpu-smoke.sh]
+    env:
+      - GCP_PROJECT_ID=${PROJECT_ID}
+      - TPU_ZONE=${_TPU_ZONE}
+      - TPU_ACCELERATOR_TYPE=${_TPU_ACCELERATOR_TYPE}
+      - TPU_RUNTIME_VERSION=${_TPU_RUNTIME_VERSION}
+      - TPU_SMOKE_TIMEOUT=${_TPU_SMOKE_TIMEOUT}
+      - DL4J_REPOSITORY=${_DL4J_REPOSITORY}
+      - DL4J_REF=${_DL4J_REF}
+      - DL4J_BUILD_THREADS=${_DL4J_BUILD_THREADS}
+      - MAVEN_TEST_ARGS=${_MAVEN_TEST_ARGS}
+      - ARTIFACT_BUCKET=${_ARTIFACT_BUCKET}
+      - RELEASE_PREFIX=${_RELEASE_PREFIX}
+      - RELEASE_TAG=${_RELEASE_TAG}
+substitutions:
+  _TPU_ZONE: ""
+  _TPU_ACCELERATOR_TYPE: v5litepod-1
+  _TPU_RUNTIME_VERSION: tpu-ubuntu2204-base
+  _TPU_SMOKE_TIMEOUT: "7200"
+  _DL4J_REPOSITORY: ""
+  _DL4J_REF: master
+  _DL4J_BUILD_THREADS: "12"
+  _MAVEN_TEST_ARGS: ""
+  _ARTIFACT_BUCKET: ""
+  _RELEASE_PREFIX: releases
+  _RELEASE_TAG: ""
+options:
+  substitutionOption: ALLOW_LOOSE
+  logging: CLOUD_LOGGING_ONLY
+timeout: 14400s

@@ -164,6 +164,9 @@ Optional inputs unlock more: arm64 GraalVM/JDK archive URLs → `linux-arm64`
 - **TPU / Hexagon smokes**: need hardware AWS does not sell; they stay
   skipped unless you point `TPU_HW_FLEET_ARN`/`HEXAGON_HW_FLEET_ARN` at
   self-managed fleets. The *build* targets for both run fine on Linux.
+  **TPU hardware smokes have a real home in `gcp/cloudbuild/`** — a Cloud
+  Build + Cloud TPU VM lane that reuses this kit's builder image and
+  in-build scripts.
 
 ## Costs
 

@@ -1,0 +1,28 @@
+# Builds the TPU builder image into Artifact Registry, reusing the SAME
+# Dockerfile as the AWS lane (aws/codebuild/images/tpu) so the toolchains
+# cannot drift. Submitted by provision.sh with that directory as the source:
+#   gcloud builds submit aws/codebuild/images/tpu --config gcp/cloudbuild/cloudbuild-image.yaml ...
+steps:
+  - id: docker-build
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - ${_IMAGE}
+      - --build-arg
+      - GRAALVM_ARCHIVE_URL=${_GRAALVM_ARCHIVE_URL}
+      - --build-arg
+      - JDK11_ARCHIVE_URL=${_JDK11_ARCHIVE_URL}
+      - --build-arg
+      - PJRT_PLUGIN_URL=${_PJRT_PLUGIN_URL}
+      - .
+images:
+  - ${_IMAGE}
+substitutions:
+  _IMAGE: ""
+  _GRAALVM_ARCHIVE_URL: ""
+  _JDK11_ARCHIVE_URL: ""
+  _PJRT_PLUGIN_URL: ""
+options:
+  substitutionOption: ALLOW_LOOSE
+timeout: 3600s

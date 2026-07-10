@@ -1,0 +1,60 @@
+# TPU backend build lane (the GCP twin of the AWS linux-tpu-pjrt target):
+# builds DL4J's nd4j-tpu backend from source, optionally the kompile
+# distribution, then uploads dist/ to GCS. Reuses the AWS in-build scripts
+# verbatim via CodeBuild-compatible env shims so the two clouds cannot drift.
+# start-build.sh injects serviceAccount, machineType/worker pool, and the
+# optional GitHub release secret before submitting.
+steps:
+  - id: dl4j-and-kompile
+    name: ${_BUILDER_IMAGE}
+    entrypoint: bash
+    args: [aws/codebuild/scripts/run-build.sh]
+    env:
+      - CODEBUILD_SRC_DIR=/workspace
+      - CODEBUILD_RESOLVED_SOURCE_VERSION=${_KOMPILE_SHA}
+      - BUILD_TARGET=linux-tpu-pjrt
+      - DL4J_REPOSITORY=${_DL4J_REPOSITORY}
+      - DL4J_REF=${_DL4J_REF}
+      - DL4J_BUILD_THREADS=${_DL4J_BUILD_THREADS}
+      - DL4J_MAVEN_OPTS=${_DL4J_MAVEN_OPTS}
+      - JAVA11_HOME=/opt/jdk11
+      - GRAALVM_HOME=/opt/graalvm
+      - PJRT_LIBRARY_PATH=/opt/pjrt/libtpu.so
+      - BUILD_KOMPILE=${_BUILD_KOMPILE}
+      - KOMPILE_VARIANT=${_KOMPILE_VARIANT}
+      - NATIVE_PARALLELISM=${_NATIVE_PARALLELISM}
+      - KOMPILE_MAVEN_OPTS=${_KOMPILE_MAVEN_OPTS}
+      - RELEASE_TAG=${_RELEASE_TAG}
+      - GITHUB_RELEASE_REPO=${_GITHUB_RELEASE_REPO}
+  - id: upload-dist
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        version="${_RELEASE_TAG}"
+        [ -n "$$version" ] || version="$(printf '%.12s' "${_KOMPILE_SHA}")"
+        [ -n "$$version" ] || version=adhoc
+        dest="gs://${_ARTIFACT_BUCKET}/${_RELEASE_PREFIX}/$$version/linux-tpu-pjrt/"
+        echo "uploading dist to $$dest"
+        gcloud storage cp --recursive /workspace/dist/* "$$dest"
+substitutions:
+  _BUILDER_IMAGE: ""
+  _KOMPILE_SHA: ""
+  _DL4J_REPOSITORY: ""
+  _DL4J_REF: master
+  _DL4J_BUILD_THREADS: "12"
+  _DL4J_MAVEN_OPTS: -Xmx8g
+  _BUILD_KOMPILE: "true"
+  _KOMPILE_VARIANT: cli-only
+  _NATIVE_PARALLELISM: "4"
+  _KOMPILE_MAVEN_OPTS: -Xmx16g
+  _RELEASE_TAG: ""
+  _GITHUB_RELEASE_REPO: ""
+  _ARTIFACT_BUCKET: ""
+  _RELEASE_PREFIX: releases
+options:
+  substitutionOption: ALLOW_LOOSE
+  logging: CLOUD_LOGGING_ONLY
+timeout: 14400s
