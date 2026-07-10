@@ -13,19 +13,21 @@ trap 'rm -rf "$work"' EXIT
 export DRYRUN_LOG="$work/cfn-calls.log"
 : > "$DRYRUN_LOG"
 
-# --- fake aws ----------------------------------------------------------------
+# --- fake aws + curl ----------------------------------------------------------
 mkdir -p "$work/bin"
 cat > "$work/bin/aws" <<'FAKE'
 #!/usr/bin/env bash
 case "$1 $2" in
   "sts get-caller-identity") echo 123456789012 ;;
+  "configure get") echo us-east-1 ;;
   "codebuild batch-get-fleets"|"codebuild batch-get-projects") echo None ;;
   "cloudformation deploy") printf '%s\n' "$*" >> "${DRYRUN_LOG:?}" ;;
   "secretsmanager describe-secret") exit 255 ;;
   *) : ;;
 esac
 FAKE
-chmod +x "$work/bin/aws"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$work/bin/curl"
+chmod +x "$work/bin/aws" "$work/bin/curl"
 export PATH="$work/bin:$PATH"
 
 # --- synthetic config ----------------------------------------------------------
@@ -96,5 +98,22 @@ rc=0; "$here/deploy-target.sh" "$merged" macos-arm64 >/dev/null 2>&1 || rc=$?
 expect macos-arm64 'EnvironmentType=MAC_ARM'
 expect macos-arm64 'ImagePullCredentialsType=CODEBUILD'
 
+# --- setup wizard, scripted (public repos, no publishing, decline provision) --
+wizard_config="$work/wizard.env"
+# answers: region, kompile url, kompile ref, dl4j url, dl4j ref, graal url,
+# jdk url, arm?, private?, gh releases?, targets, compute, [macos?], provision?
+printf '%s\n' "" "" "" "" "" "" "" "" "" "" "" "" "" "n" \
+  | "$here/setup-wizard.sh" "$wizard_config" > "$work/wizard.out" 2>&1 \
+  || fail "setup-wizard failed: $(tail -20 "$work/wizard.out")"
+[ -f "$wizard_config" ] || fail "wizard did not write $wizard_config"
+grep -q '^AWS_REGION=us-east-1$' "$wizard_config" || fail "wizard did not set AWS_REGION"
+grep -q '^GRAALVM_ARCHIVE_URL=https://github.com/graalvm/' "$wizard_config" \
+  || fail "wizard did not set the default GraalVM archive"
+grep -q '^LINUX_COMPUTE_TYPE=BUILD_GENERAL1_2XLARGE$' "$wizard_config" \
+  || fail "wizard did not set the default compute type"
+grep -q '^SOURCE_LOCATION=..*$' "$wizard_config" || fail "wizard did not set SOURCE_LOCATION"
+"$here/preflight-check.sh" <(cat "$wizard_config"; "$here/resolve-config.sh" "$wizard_config") build \
+  > /dev/null || fail "wizard-produced config does not pass preflight"
+
 total=$((deployed + skipped))
-echo "DRYRUN OK: $total targets ($deployed deployed, $skipped skipped cleanly)"
+echo "DRYRUN OK: $total targets ($deployed deployed, $skipped skipped cleanly); wizard config OK"

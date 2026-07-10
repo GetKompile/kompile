@@ -8,6 +8,21 @@ Artifacts publish to S3 always, and to GitHub Releases when configured.
 ## One-go quickstart
 
 ```bash
+aws/codebuild/scripts/aws/setup-wizard.sh
+```
+
+The wizard walks through everything: AWS credentials (offers `aws configure`
+if none work), region, kompile/DL4J clone URLs and refs (defaulted from your
+git remotes), GraalVM 21 + JDK 11 archive URLs (working defaults offered and
+HEAD-validated), GitHub tokens for private repos and release publishing
+(pasted hidden, stored in **Secrets Manager only** — never in the config
+file), target selection, compute size, and the optional macOS lane. It then
+offers to run provisioning and start builds immediately. Rerun it any time:
+existing config values become the prompt defaults and secrets can be rotated.
+
+The manual equivalent:
+
+```bash
 cp aws/codebuild/parameters.env.example ~/.config/kompile-codebuild.env
 # fill the REQUIRED block: region, clone URLs, refs, GraalVM/JDK archive URLs
 
