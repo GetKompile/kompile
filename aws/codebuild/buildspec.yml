@@ -1,0 +1,14 @@
+version: 0.2
+env:
+  shell: bash
+phases:
+  build:
+    commands:
+      - aws/codebuild/scripts/run-build.sh
+artifacts:
+  base-directory: dist
+  files: ["**/*"]
+cache:
+  paths:
+    - "/root/.m2/repository/**/*"
+    - "/root/.ccache/**/*"

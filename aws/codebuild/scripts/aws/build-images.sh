@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# Build and push the CodeBuild container images.
+#   build-images.sh CONFIG [auto|family ...]
+# Families: linux linux-arm64 android cuda-12.6 cuda-12.9 amd tpu hexagon
+# "auto" (default) builds every family whose inputs are satisfied and skips
+# the rest with a warning, so one-go provisioning never dies here.
+# Windows is intentionally NOT a container family on a Linux workstation:
+# use scripts/aws/bake-ami.sh windows (WINDOWS_EC2 fleet AMI) or build
+# images/windows/Dockerfile on a Windows Docker host and set WINDOWS_IMAGE.
+set -euo pipefail
+root="$(cd "$(dirname "$0")/../../../.." && pwd)"
+config="${1:?Usage: build-images.sh CONFIG [auto|family ...]}"
+shift || true
+# shellcheck disable=SC1090
+source "$config"
+: "${AWS_REGION:?}" "${ECR_REGISTRY:?}" "${ECR_REPOSITORY:?}"
+: "${GRAALVM_ARCHIVE_URL:?}" "${JDK11_ARCHIVE_URL:?}"
+
+families=("${@:-auto}")
+[ "${families[0]}" = auto ] && {
+  families=(linux cuda-12.6 cuda-12.9 amd tpu)
+  if [ -n "${GRAALVM_ARM_ARCHIVE_URL:-}" ] && [ -n "${JDK11_ARM_ARCHIVE_URL:-}" ]; then
+    families+=(linux-arm64)
+  else
+    echo "build-images: skipping linux-arm64 (set GRAALVM_ARM_ARCHIVE_URL + JDK11_ARM_ARCHIVE_URL)" >&2
+  fi
+  if [ -n "${ANDROID_COMMAND_LINE_TOOLS_URL:-}" ] && [ -n "${ANDROID_NDK_VERSION:-}" ]; then
+    families+=(android)
+  else
+    echo "build-images: skipping android (set ANDROID_COMMAND_LINE_TOOLS_URL + ANDROID_NDK_VERSION)" >&2
+  fi
+  if [ -n "${HEXAGON_SDK_ARCHIVE_URL:-}" ]; then
+    families+=(hexagon)
+  else
+    echo "build-images: skipping hexagon (set HEXAGON_SDK_ARCHIVE_URL)" >&2
+  fi
+}
+
+aws ecr get-login-password --region "$AWS_REGION" \
+  | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+
+uri() { printf '%s/%s:%s' "$ECR_REGISTRY" "$ECR_REPOSITORY" "$1"; }
+jdk_args=(--build-arg "GRAALVM_ARCHIVE_URL=$GRAALVM_ARCHIVE_URL" --build-arg "JDK11_ARCHIVE_URL=$JDK11_ARCHIVE_URL")
+
+build() { # build TAG DIR [extra docker args...]
+  local tag="$1" dir="$2"; shift 2
+  echo "build-images: building $(uri "$tag")" >&2
+  docker build -t "$(uri "$tag")" "$@" "$root/aws/codebuild/images/$dir"
+  docker push "$(uri "$tag")"
+}
+
+for family in "${families[@]}"; do
+  case "$family" in
+    linux)
+      build linux linux "${jdk_args[@]}" ;;
+    linux-arm64)
+      : "${GRAALVM_ARM_ARCHIVE_URL:?}" "${JDK11_ARM_ARCHIVE_URL:?}"
+      # Cross-build via QEMU user emulation; idempotent binfmt registration.
+      docker run --privileged --rm tonistiigi/binfmt --install arm64 >/dev/null
+      docker buildx build --platform linux/arm64 --load -t "$(uri linux-arm64)" \
+        --build-arg "GRAALVM_ARCHIVE_URL=$GRAALVM_ARM_ARCHIVE_URL" \
+        --build-arg "JDK11_ARCHIVE_URL=$JDK11_ARM_ARCHIVE_URL" \
+        "$root/aws/codebuild/images/linux"
+      docker push "$(uri linux-arm64)" ;;
+    android)
+      build android android "${jdk_args[@]}" \
+        --build-arg "ANDROID_COMMAND_LINE_TOOLS_URL=${ANDROID_COMMAND_LINE_TOOLS_URL:?}" \
+        --build-arg "ANDROID_NDK_VERSION=${ANDROID_NDK_VERSION:?}" ;;
+    cuda-12.6)
+      build cuda-12.6 cuda "${jdk_args[@]}" \
+        --build-arg "BASE_IMAGE=${CUDA_12_6_BASE_IMAGE:-nvidia/cuda:12.6.3-cudnn-devel-ubuntu22.04}" ;;
+    cuda-12.9)
+      build cuda-12.9 cuda "${jdk_args[@]}" \
+        --build-arg "BASE_IMAGE=${CUDA_12_9_BASE_IMAGE:-nvidia/cuda:12.9.1-cudnn-devel-ubuntu22.04}" ;;
+    amd)
+      build amd rocm "${jdk_args[@]}" \
+        --build-arg "BASE_IMAGE=${ROCM_BASE_IMAGE:-rocm/dev-ubuntu-22.04:6.4-complete}" \
+        --build-arg "CUDA_TOOLKIT_VERSION=${CUDA_VERSION:-12.9}" \
+        --build-arg "ZLUDA_ARCHIVE_URL=${ZLUDA_ARCHIVE_URL:-}" ;;
+    tpu)
+      build tpu tpu "${jdk_args[@]}" \
+        --build-arg "PJRT_PLUGIN_URL=${PJRT_PLUGIN_URL:-}" ;;
+    hexagon)
+      build hexagon hexagon "${jdk_args[@]}" \
+        --build-arg "HEXAGON_SDK_ARCHIVE_URL=${HEXAGON_SDK_ARCHIVE_URL:?}" ;;
+    windows)
+      echo "build-images: windows images cannot be built from a Linux Docker daemon." >&2
+      echo "  Preferred: scripts/aws/bake-ami.sh $config windows   (WINDOWS_EC2 fleet AMI)" >&2
+      echo "  Alternative: docker build aws/codebuild/images/windows on a Windows host, push, set WINDOWS_IMAGE" >&2
+      exit 2 ;;
+    *) echo "Unknown image family: $family" >&2; exit 2 ;;
+  esac
+done
+echo "build-images: done (${families[*]})"

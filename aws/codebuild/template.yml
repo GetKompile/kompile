@@ -1,0 +1,178 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: One parameterized CodeBuild project for any target in aws/codebuild/targets.yml.
+
+Parameters:
+  ProjectName: {Type: String}
+  SourceLocation: {Type: String}
+  KompileSourceVersion: {Type: String}
+  BuildspecPath: {Type: String}
+  BuildTarget: {Type: String}
+  BuildImage: {Type: String}
+  ImagePullCredentialsType:
+    Type: String
+    Default: SERVICE_ROLE
+    AllowedValues: [CODEBUILD, SERVICE_ROLE]
+  EnvironmentType:
+    Type: String
+    AllowedValues: [LINUX_CONTAINER, ARM_CONTAINER, LINUX_GPU_CONTAINER,
+                    WINDOWS_SERVER_2019_CONTAINER, WINDOWS_SERVER_2022_CONTAINER,
+                    LINUX_EC2, ARM_EC2, WINDOWS_EC2, MAC_ARM]
+  ComputeType: {Type: String}
+  FleetArn:
+    Type: String
+    Default: ""
+    Description: Required for MAC_ARM and *_EC2 hosts; empty means on-demand.
+  ArtifactBucket: {Type: String}
+  CacheBucket: {Type: String}
+  Dl4jRepository: {Type: String}
+  Dl4jRef: {Type: String}
+  Dl4jTokenSecret:
+    Type: String
+    Default: ""
+    Description: Optional Secrets Manager secret id with a GitHub token for the DL4J checkout.
+  Dl4jBuildThreads: {Type: Number, Default: 12, MinValue: 1}
+  Dl4jExtraMavenArgs: {Type: String, Default: ""}
+  Dl4jMavenOpts: {Type: String, Default: ""}
+  MavenTestArgs: {Type: String, Default: ""}
+  RunTestsProfiles: {Type: String, Default: ""}
+  RunTestsModules: {Type: String, Default: ""}
+  RocmHome: {Type: String, Default: /opt/rocm}
+  ZludaHome: {Type: String, Default: /opt/zluda}
+  PjrtLibraryPath: {Type: String, Default: ""}
+  HexagonSdkRoot: {Type: String, Default: /opt/hexagon}
+  Java11Home: {Type: String, Default: /opt/jdk11}
+  GraalVmHome: {Type: String, Default: /opt/graalvm}
+  AndroidNdkHome: {Type: String, Default: /opt/android-ndk}
+  CudaComputeCapabilities: {Type: String, Default: "8.6 9.0"}
+  CudaVersion: {Type: String, Default: "12.9"}
+  ZludaTarget: {Type: String, Default: rdna3}
+  BuildKompile:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+  KompileVariant:
+    Type: String
+    Default: cli-only
+    AllowedValues: [cli-only, hosted, cpu-intel, cpu-arm, cuda, amd-zluda]
+  NativeParallelism: {Type: Number, Default: 4, MinValue: 1}
+  KompileMavenOpts: {Type: String, Default: ""}
+  ReleasePrefix:
+    Type: String
+    Default: releases
+    Description: S3 key prefix for the stable dist layout in the artifact bucket.
+  GithubReleaseRepo:
+    Type: String
+    Default: ""
+    Description: owner/repo to upload dist files to a GitHub Release (empty = S3 only).
+  GithubReleaseTokenSecret:
+    Type: String
+    Default: ""
+    Description: Secrets Manager secret id holding a token with contents:write.
+
+Conditions:
+  HasFleet: !Not [!Equals [!Ref FleetArn, ""]]
+  HasDl4jToken: !Not [!Equals [!Ref Dl4jTokenSecret, ""]]
+  HasGithubReleaseToken: !Not [!Equals [!Ref GithubReleaseTokenSecret, ""]]
+
+Resources:
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/codebuild/${ProjectName}
+      RetentionInDays: 30
+
+  BuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: codebuild.amazonaws.com}
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: logs-artifacts-cache
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - {Effect: Allow, Action: [logs:CreateLogGroup, logs:CreateLogStream, logs:PutLogEvents], Resource: "*"}
+              - Effect: Allow
+                Action: [secretsmanager:GetSecretValue]
+                Resource: "*"
+              - Effect: Allow
+                Action: [ecr:GetAuthorizationToken]
+                Resource: "*"
+              - Effect: Allow
+                Action: [ecr:BatchCheckLayerAvailability, ecr:GetDownloadUrlForLayer, ecr:BatchGetImage]
+                Resource: "*"
+              - Effect: Allow
+                Action: [s3:GetObject, s3:GetObjectVersion, s3:PutObject, s3:GetBucketLocation, s3:ListBucket]
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:s3:::${ArtifactBucket}"
+                  - !Sub "arn:${AWS::Partition}:s3:::${ArtifactBucket}/*"
+                  - !Sub "arn:${AWS::Partition}:s3:::${CacheBucket}"
+                  - !Sub "arn:${AWS::Partition}:s3:::${CacheBucket}/*"
+
+  Project:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Ref ProjectName
+      ServiceRole: !GetAtt BuildRole.Arn
+      TimeoutInMinutes: 480
+      QueuedTimeoutInMinutes: 480
+      Source:
+        Type: GITHUB
+        Location: !Ref SourceLocation
+        GitCloneDepth: 1
+        BuildSpec: !Ref BuildspecPath
+      SourceVersion: !Ref KompileSourceVersion
+      Artifacts: {Type: S3, Location: !Ref ArtifactBucket, NamespaceType: BUILD_ID, Packaging: ZIP}
+      Cache: {Type: S3, Location: !Sub "${CacheBucket}/kompile-codebuild"}
+      LogsConfig:
+        CloudWatchLogs: {Status: ENABLED, GroupName: !Ref LogGroup}
+      Environment:
+        Type: !Ref EnvironmentType
+        ComputeType: !Ref ComputeType
+        Image: !Ref BuildImage
+        ImagePullCredentialsType: !Ref ImagePullCredentialsType
+        PrivilegedMode: false
+        Fleet: !If [HasFleet, {FleetArn: !Ref FleetArn}, !Ref "AWS::NoValue"]
+        EnvironmentVariables:
+          - {Name: BUILD_TARGET, Value: !Ref BuildTarget}
+          - {Name: DL4J_REPOSITORY, Value: !Ref Dl4jRepository}
+          - {Name: DL4J_REF, Value: !Ref Dl4jRef}
+          - !If
+            - HasDl4jToken
+            - {Name: DL4J_GITHUB_TOKEN, Value: !Ref Dl4jTokenSecret, Type: SECRETS_MANAGER}
+            - !Ref "AWS::NoValue"
+          - {Name: DL4J_BUILD_THREADS, Value: !Ref Dl4jBuildThreads}
+          - {Name: DL4J_EXTRA_MAVEN_ARGS, Value: !Ref Dl4jExtraMavenArgs}
+          - {Name: DL4J_MAVEN_OPTS, Value: !Ref Dl4jMavenOpts}
+          - {Name: MAVEN_TEST_ARGS, Value: !Ref MavenTestArgs}
+          - {Name: RUN_TESTS_PROFILES, Value: !Ref RunTestsProfiles}
+          - {Name: RUN_TESTS_MODULES, Value: !Ref RunTestsModules}
+          - {Name: ROCM_HOME, Value: !Ref RocmHome}
+          - {Name: ZLUDA_HOME, Value: !Ref ZludaHome}
+          - {Name: PJRT_LIBRARY_PATH, Value: !Ref PjrtLibraryPath}
+          - {Name: HEXAGON_SDK_ROOT, Value: !Ref HexagonSdkRoot}
+          - {Name: JAVA11_HOME, Value: !Ref Java11Home}
+          - {Name: GRAALVM_HOME, Value: !Ref GraalVmHome}
+          - {Name: ANDROID_NDK_HOME, Value: !Ref AndroidNdkHome}
+          - {Name: CUDA_COMPUTE_CAPABILITIES, Value: !Ref CudaComputeCapabilities}
+          - {Name: CUDA_VERSION, Value: !Ref CudaVersion}
+          - {Name: ZLUDA_TARGET, Value: !Ref ZludaTarget}
+          - {Name: BUILD_KOMPILE, Value: !Ref BuildKompile}
+          - {Name: KOMPILE_VARIANT, Value: !Ref KompileVariant}
+          - {Name: NATIVE_PARALLELISM, Value: !Ref NativeParallelism}
+          - {Name: KOMPILE_MAVEN_OPTS, Value: !Ref KompileMavenOpts}
+          - {Name: ARTIFACT_BUCKET, Value: !Ref ArtifactBucket}
+          - {Name: RELEASE_PREFIX, Value: !Ref ReleasePrefix}
+          - {Name: GITHUB_RELEASE_REPO, Value: !Ref GithubReleaseRepo}
+          - !If
+            - HasGithubReleaseToken
+            - {Name: GITHUB_RELEASE_TOKEN, Value: !Ref GithubReleaseTokenSecret, Type: SECRETS_MANAGER}
+            - !Ref "AWS::NoValue"
+
+Outputs:
+  ProjectName: {Value: !Ref Project}
+  ProjectArn: {Value: !GetAtt Project.Arn}

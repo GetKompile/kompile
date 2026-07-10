@@ -1,0 +1,16 @@
+version: 0.2
+env:
+  shell: powershell.exe
+phases:
+  build:
+    commands:
+      - ./aws/codebuild/scripts/run-build.ps1
+artifacts:
+  base-directory: dist
+  files: ["**/*"]
+cache:
+  paths:
+    # Container lane runs as ContainerAdministrator; the WINDOWS_EC2 fleet
+    # lane runs as Administrator. Nonexistent paths are ignored.
+    - "C:/Users/ContainerAdministrator/.m2/repository/**/*"
+    - "C:/Users/Administrator/.m2/repository/**/*"

@@ -1,0 +1,43 @@
+version: 2
+# Every non-release DL4J workflow mapped to a CodeBuild target.
+# Fields (inline map, one line per target — parsed by scripts/aws/targets-lib.sh):
+#   host      — host contract in hosts.sh (environment type, image, fleet, compute)
+#   kind      — build | validation
+#   variant   — kompile distribution variant passed to build-dist.sh
+#   kompile   — whether the target builds the kompile distribution after DL4J
+#   image     — optional env-key override for the build image (per-CUDA-version images)
+#   workflow  — the source GitHub workflow in ../deeplearning4j/.github/workflows
+targets:
+  linux-x86_64: {host: linux-x86_64, kind: build, variant: cpu-intel, kompile: true, workflow: build-deploy-linux-x86_64.yml}
+  linux-x86_64-compat: {host: linux-x86_64, kind: build, variant: cpu-intel, kompile: true, workflow: build-deploy-linux-x86_64-compat.yml}
+  linux-arm64: {host: linux-arm64, kind: build, variant: cpu-arm, kompile: true, workflow: build-deploy-linux-arm64.yml}
+  macos-arm64: {host: macos-arm64, kind: build, variant: cli-only, kompile: true, workflow: build-deploy-mac-arm64.yml}
+  android-arm64: {host: linux-android-x86_64, kind: build, variant: cli-only, kompile: false, workflow: build-deploy-android-arm64.yml}
+  android-x86_64: {host: linux-android-x86_64, kind: build, variant: cli-only, kompile: false, workflow: build-deploy-android-x86_64.yml}
+  cross-linux-x86_64: {host: linux-x86_64, kind: build, variant: cli-only, kompile: false, workflow: build-deploy-cross-platform.yml}
+  cross-linux-arm64: {host: linux-arm64, kind: build, variant: cli-only, kompile: false, workflow: build-deploy-cross-platform.yml}
+  cross-macosx-arm64: {host: macos-arm64, kind: build, variant: cli-only, kompile: false, workflow: build-deploy-cross-platform.yml}
+  cross-windows-x86_64: {host: windows-x86_64, kind: build, variant: cli-only, kompile: false, workflow: build-deploy-cross-platform.yml}
+  windows-x86_64: {host: windows-x86_64, kind: build, variant: cli-only, kompile: false, workflow: build-deploy-windows.yml}
+  linux-cuda-12.6: {host: linux-cuda-x86_64, kind: build, variant: cuda, kompile: true, image: CUDA_12_6_IMAGE, workflow: build-deploy-linux-cuda-12.6.yml}
+  linux-cuda-12.9: {host: linux-cuda-x86_64, kind: build, variant: cuda, kompile: true, image: CUDA_12_9_IMAGE, workflow: build-deploy-linux-cuda-12.9.yml}
+  windows-cuda-12.6: {host: windows-gpu-x86_64, kind: build, variant: cli-only, kompile: false, workflow: build-deploy-windows-cuda-12.6.yml}
+  windows-cuda-12.9: {host: windows-gpu-x86_64, kind: build, variant: cli-only, kompile: false, workflow: build-deploy-windows-cuda-12.9.yml}
+  linux-zluda: {host: linux-amd-x86_64, kind: build, variant: amd-zluda, kompile: true, workflow: build-deploy-linux-zluda.yml}
+  linux-tpu-pjrt: {host: linux-tpu-x86_64, kind: build, variant: cli-only, kompile: false, workflow: build-deploy-linux-tpu.yml}
+  linux-hexagon: {host: linux-hexagon-x86_64, kind: build, variant: cli-only, kompile: false, workflow: build-deploy-linux-hexagon.yml}
+  cpu-sanity-linux: {host: linux-x86_64, kind: validation, variant: cli-only, kompile: false, workflow: cpu-sanity-check-tests.yaml}
+  cpu-sanity-windows: {host: windows-x86_64, kind: validation, variant: cli-only, kompile: false, workflow: cpu-sanity-check-tests.yaml}
+  cpu-sanity-macos: {host: macos-arm64, kind: validation, variant: cli-only, kompile: false, workflow: cpu-sanity-check-tests.yaml}
+  cpu-integration-linux: {host: linux-x86_64, kind: validation, variant: cli-only, kompile: false, workflow: run-cpu-integration-tests.yml}
+  cpu-tests-linux: {host: linux-x86_64, kind: validation, variant: cli-only, kompile: false, workflow: run-cpu-tests-sanity-checks.yml}
+  gpu-tests-linux: {host: linux-gpu-x86_64, kind: validation, variant: cli-only, kompile: false, workflow: run-gpu-tests-sanity-checks.yml}
+  avx512-sde-linux: {host: linux-x86_64, kind: validation, variant: cli-only, kompile: false, workflow: run-avx512-sde-tests.yml}
+  mlx-smoke-macos: {host: macos-arm64, kind: validation, variant: cli-only, kompile: false, workflow: run-mlx-smoke-tests.yml}
+  rocm-pjrt-smoke-linux: {host: linux-amd-gpu-x86_64, kind: validation, variant: cli-only, kompile: false, workflow: run-rocm-pjrt-smoke-tests.yml}
+  zluda-java-validation: {host: linux-amd-x86_64, kind: validation, variant: cli-only, kompile: false, workflow: build-zluda-validation.yml}
+  zluda-smoke-linux: {host: linux-amd-gpu-x86_64, kind: validation, variant: cli-only, kompile: false, workflow: run-zluda-smoke-tests.yml}
+  tpu-smoke-linux: {host: linux-tpu-hw-x86_64, kind: validation, variant: cli-only, kompile: false, workflow: run-tpu-smoke-tests.yml}
+  hexagon-smoke-linux: {host: linux-hexagon-hw-x86_64, kind: validation, variant: cli-only, kompile: false, workflow: run-hexagon-smoke-tests.yml}
+  test-multiple-cuda-arches: {host: linux-gpu-x86_64, kind: validation, variant: cli-only, kompile: false, workflow: test_multiple_arch.yaml}
+  run-tests-matrix: {host: configurable, kind: validation, variant: cli-only, kompile: false, workflow: run-tests.yml}
