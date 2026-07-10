@@ -22,7 +22,9 @@ case "$1 $2" in
   "configure get") echo us-east-1 ;;
   "codebuild batch-get-fleets"|"codebuild batch-get-projects") echo None ;;
   "cloudformation deploy") printf '%s\n' "$*" >> "${DRYRUN_LOG:?}" ;;
+  "cloudformation delete-stack") printf 'DELETE %s\n' "$*" >> "${DRYRUN_LOG:?}" ;;
   "secretsmanager describe-secret") exit 255 ;;
+  "ec2 describe-images"|"codebuild list-source-credentials"|"iam list-role-policies"|"iam list-attached-role-policies") : ;;
   *) : ;;
 esac
 FAKE
@@ -117,5 +119,22 @@ grep -q '^SOURCE_LOCATION=..*$' "$wizard_config" || fail "wizard did not set SOU
 "$here/preflight-check.sh" <(cat "$wizard_config"; "$here/resolve-config.sh" "$wizard_config") build \
   > /dev/null || fail "wizard-produced config does not pass preflight"
 
+# --- teardown wizard, scripted (stacks+fleets only, then proceed) -------------
+: > "$DRYRUN_LOG"
+# answers: stacks(y), fleets(y), seed(n), amis(n), images(n), secrets(n),
+# buckets(n), iam(n), source-credentials(n), proceed(y)
+printf '%s\n' "" "" "" "" "" "" "" "" "" "y" \
+  | "$here/setup-wizard.sh" --teardown "$wizard_config" > "$work/teardown-wizard.out" 2>&1 \
+  || fail "teardown wizard failed: $(tail -20 "$work/teardown-wizard.out")"
+stacks_deleted="$(grep -c '^DELETE .*--stack-name kompile-' "$DRYRUN_LOG" || true)"
+[ "$stacks_deleted" -ge 33 ] || fail "teardown wizard deleted $stacks_deleted stacks (expected >= 33)"
+
+# --- teardown --all --yes covers the seed stack too ---------------------------
+: > "$DRYRUN_LOG"
+"$here/teardown.sh" "$merged" --all --yes > "$work/teardown.out" 2>&1 \
+  || fail "teardown --all --yes failed: $(tail -20 "$work/teardown.out")"
+all_deleted="$(grep -c '^DELETE .*--stack-name kompile-' "$DRYRUN_LOG" || true)"
+[ "$all_deleted" -ge 34 ] || fail "teardown --all deleted $all_deleted stacks (expected >= 34 incl. seed)"
+
 total=$((deployed + skipped))
-echo "DRYRUN OK: $total targets ($deployed deployed, $skipped skipped cleanly); wizard config OK"
+echo "DRYRUN OK: $total targets ($deployed deployed, $skipped skipped cleanly); wizard + teardown OK"

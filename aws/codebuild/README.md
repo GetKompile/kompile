@@ -169,16 +169,32 @@ Optional inputs unlock more: arm64 GraalVM/JDK archive URLs → `linux-arm64`
 
 On-demand lanes bill per build minute only. Reserved fleets bill for
 provisioned capacity **continuously**, and macOS capacity has a 24-hour
-minimum — enable fleet lanes only while you use them and remove them with:
+minimum — enable fleet lanes only while you use them and remove them with
+`scripts/aws/teardown.sh CONFIG --fleets`. GraalVM native-image is why Linux
+defaults to `BUILD_GENERAL1_2XLARGE` (144 GiB / 72 vCPU) — trim
+`LINUX_COMPUTE_TYPE` for cheaper DL4J-only lanes.
+
+## Teardown
+
+Interactive (mirrors setup — a checklist with confirmations):
 
 ```bash
-scripts/aws/teardown.sh CONFIG --fleets
+aws/codebuild/scripts/aws/setup-wizard.sh --teardown [CONFIG]
 ```
 
-`teardown.sh CONFIG` deletes stacks; `--images`, `--buckets --yes`, `--iam`,
-`--all` remove the rest. GraalVM native-image is why Linux defaults to
-`BUILD_GENERAL1_2XLARGE` (144 GiB / 72 vCPU) — trim `LINUX_COMPUTE_TYPE` for
-cheaper DL4J-only lanes.
+Scripted: `teardown.sh CONFIG [flags]`, default `--stacks`. Deletions wait
+for completion.
+
+- `--stacks` all target project stacks · `--fleets` reserved fleets ·
+  `--seed` the in-cloud provisioner stack + its config bucket ·
+  `--amis` baked `kompile-windows-*`/`kompile-linux-accelerator-*` AMIs and
+  snapshots · `--images` the ECR repository · `--secrets` token secrets
+  (30-day recovery window; immediate with `--yes`) · `--buckets` artifact +
+  cache buckets (requires `--yes`; deletes all releases) · `--iam` fleet
+  service role + AMI baker role.
+- `--all` = everything above. It deliberately does **not** include
+  `--source-credentials` (the account-wide CodeBuild GitHub credential —
+  other projects in the account may depend on it); pass that flag explicitly.
 
 ## Development
 

@@ -3,11 +3,14 @@
 # stores GitHub tokens in Secrets Manager (never on disk), writes the config
 # file, and offers to run provision.sh immediately.
 #   setup-wizard.sh [CONFIG_PATH]      (default ~/.config/kompile-codebuild.env)
+#   setup-wizard.sh --teardown [CONFIG_PATH]   interactive removal checklist
 # Rerunnable: existing config values become the prompt defaults, and existing
 # secrets can be kept or rotated.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../../../.." && pwd)"
 here="$root/aws/codebuild/scripts/aws"
+mode=setup
+if [ "${1:-}" = --teardown ]; then mode=teardown; shift; fi
 config="${1:-$HOME/.config/kompile-codebuild.env}"
 example="$root/aws/codebuild/parameters.env.example"
 
@@ -91,6 +94,50 @@ store_secret() { # store_secret SECRET_ID VALUE — create or rotate
 secret_exists() {
   aws secretsmanager describe-secret --region "$AWS_REGION" --secret-id "$1" >/dev/null 2>&1
 }
+
+# ---------------------------------------------------------------- teardown
+if [ "$mode" = teardown ]; then
+  [ -f "$config" ] || { echo "config not found: $config" >&2; exit 2; }
+  set +u
+  # shellcheck disable=SC1090
+  source "$config"
+  set -u
+  : "${AWS_REGION:?config has no AWS_REGION}"
+  prefix="${PROJECT_PREFIX:-kompile}"
+  cat <<EOF
+kompile CodeBuild teardown
+--------------------------
+Removes resources with prefix '$prefix' in $AWS_REGION. Each category is
+optional; nothing is deleted until you confirm the selection.
+EOF
+  flags=(); need_confirm=0
+  if ask_yn "Delete the target project stacks (all CodeBuild projects)?" y; then flags+=(--stacks); fi
+  if ask_yn "Delete reserved fleets (they bill continuously while idle)?" y; then flags+=(--fleets); fi
+  if ask_yn "Delete the seed (in-cloud provisioner) stack + config bucket?" n; then flags+=(--seed); fi
+  if ask_yn "Deregister baked AMIs and their snapshots?" n; then flags+=(--amis); fi
+  if ask_yn "Delete the ECR repository (all build images)?" n; then flags+=(--images); fi
+  if ask_yn "Schedule token secrets for deletion (30-day recovery window)?" n; then flags+=(--secrets); fi
+  if ask_yn "Delete artifact/cache buckets (ALL build outputs and releases)?" n; then flags+=(--buckets); need_confirm=1; fi
+  if ask_yn "Delete IAM roles (fleet service role, AMI baker)?" n; then flags+=(--iam); fi
+  if ask_yn "Delete the account-wide CodeBuild GitHub credential (affects OTHER projects too)?" n; then
+    flags+=(--source-credentials)
+  fi
+  if [ "${#flags[@]}" -eq 0 ]; then
+    echo "nothing selected; nothing deleted"
+    exit 0
+  fi
+  echo
+  echo "Selected: ${flags[*]}"
+  if [ "$need_confirm" = 1 ]; then
+    ask_required "Type the project prefix ('$prefix') to confirm bucket deletion"
+    [ "$REPLY" = "$prefix" ] || { echo "confirmation mismatch; aborting" >&2; exit 2; }
+    flags+=(--yes)
+  elif ! ask_yn "Proceed?" n; then
+    echo "aborted; nothing deleted"
+    exit 0
+  fi
+  exec "$here/teardown.sh" "$config" "${flags[@]}"
+fi
 
 # ---------------------------------------------------------------- greeting
 cat <<'EOF'
