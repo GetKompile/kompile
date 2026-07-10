@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.build;
 
 import ai.kompile.cli.common.config.HardwareAutoConfigurator;
+import ai.kompile.core.agent.CliAgentRegistry;
 import ai.kompile.cli.common.http.KompileHttpClient;
 import ai.kompile.cli.main.build.config.*;
 import ai.kompile.cli.main.config.AppConfigWizard;
@@ -44,10 +45,15 @@ import java.io.*;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.net.HttpURLConnection;
+import java.net.URI;
+import java.net.URL;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
@@ -100,12 +106,18 @@ public class InitProjectCommand implements Callable<Integer> {
             defaultValue = ".")
     private File outputDir;
 
-    @Option(names = {"--infer"}, defaultValue = "true", negatable = true,
-            description = "Auto-detect code, data, and model assets from the source tree. Use --no-infer to disable.")
+    // picocli's negatable transform did not reliably register --no-infer for this command, so --infer
+    // and an explicit --no-infer flag are declared separately and reconciled in call() (noInfer wins).
+    @Option(names = {"--infer"}, arity = "0..1", fallbackValue = "true",
+            description = "Auto-detect code, data, and model assets from the source tree (default: true).")
     private boolean inferProject = true;
 
+    @Option(names = {"--no-infer"},
+            description = "Disable auto-detection of code/data/model assets (e.g. when scaffolding inside another repo).")
+    private boolean noInfer;
+
     @Option(names = {"--infer-from"},
-            description = "Directory to inspect for auto-detected code, data, and model assets. Defaults to --outputDir.")
+            description = "Directory to inspect for auto-detected code, data, and model assets. Defaults to the generated project directory.")
     private File inferFrom;
 
     // --- Preset and module selection ---
@@ -378,6 +390,10 @@ public class InitProjectCommand implements Callable<Integer> {
 
         System.out.println("Initializing new kompile project: " + projectName);
         System.out.println("  Location: " + projectDir.getAbsolutePath());
+        // --no-infer (explicit flag) overrides --infer: disable all source-tree auto-detection.
+        if (noInfer) {
+            inferProject = false;
+        }
         applyAutoDetection(projectDir);
 
         // 2. Resolve modules — wizard provides an explicit set, otherwise resolve from preset
@@ -649,12 +665,30 @@ public class InitProjectCommand implements Callable<Integer> {
         graphExtractionConfig.put("entityResolutionUseEmbeddings", true);
         graphExtractionConfig.put("entityResolutionEmbeddingThreshold", 0.88);
         graphExtractionConfig.put("minConfidence", 0.5);
+        graphExtractionConfig.put("extractionModelProviderAllow", List.of("opencode"));
+        graphExtractionConfig.put("extractionModelExcludeMarkers", List.of("claude", "codex", "opus", "sonnet", "gpt", "gemini"));
+        graphExtractionConfig.put("extractionModelAllow", defaultExtractionModelPriority());
+        graphExtractionConfig.put("extractionModelPriority", defaultExtractionModelPriority());
+        graphExtractionConfig.put("crawlGraphExtractionParallelism", 4);
+        graphExtractionConfig.put("crawlGraphExtractionRemoteParallelism", 4);
+        graphExtractionConfig.put("crawlGraphExtractionChunksPerPrompt", 4);
+        graphExtractionConfig.put("crawlGraphExtractionMaxItemsPerBatch", 16);
         saveGlobalAndProject("graph-extraction-config.json", graphExtractionConfig, dataDir, projectConfigDir);
 
         // --- anserini-config.json: keyword index + corpus staging paths ---
         Map<String, Object> anseriniConfig = new LinkedHashMap<>();
         anseriniConfig.put("corpusPath", "./data/anserini_corpus_json_staging");
         saveGlobalAndProject("anserini-config.json", anseriniConfig, dataDir, projectConfigDir);
+    }
+
+    private static List<String> defaultExtractionModelPriority() {
+        return List.of(
+                "opencode/deepseek-v4-flash-free",
+                "opencode/deepseek-v4-flash",
+                "opencode/kimi-k2.6",
+                "opencode/kimi-k2.5",
+                "opencode/minimax-m2.7",
+                "opencode/glm-5.2");
     }
 
     /**
@@ -740,7 +774,7 @@ public class InitProjectCommand implements Callable<Integer> {
         if (!inferProject) {
             return;
         }
-        Path rootPath = (inferFrom != null ? inferFrom : outputDir).toPath().toAbsolutePath().normalize();
+        Path rootPath = (inferFrom != null ? inferFrom : projectDir).toPath().toAbsolutePath().normalize();
         if (!Files.isDirectory(rootPath)) {
             System.out.println("  Auto-detect skipped: source root does not exist: " + rootPath);
             return;
@@ -764,7 +798,21 @@ public class InitProjectCommand implements Callable<Integer> {
         printDetectionSummary(rootPath);
 
         if (!hasInitialCrawl() && inferredSignals.hasData()) {
-            dataSources = new ArrayList<>(inferredSignals.docDirs());
+            // Infer the crawl source type from the ORIGINAL detected data dirs, which
+            // exist on disk. The re-rooted paths below point into the not-yet-scaffolded
+            // project dir, so Files.isDirectory() on them returns false and yields a null type.
+            if (crawlSourceType == null || crawlSourceType.isBlank()) {
+                crawlSourceType = inferCommonCrawlSourceType(inferredSignals.docDirs());
+            }
+            // Re-root detected data directories to the generated project dir,
+            // not the outputDir (parent) that was scanned for signals.
+            final String rootStr = rootPath.toString();
+            final String projStr = projectDir.getAbsolutePath();
+            dataSources = inferredSignals.docDirs().stream()
+                    .map(src -> src.startsWith(rootStr)
+                            ? projStr + src.substring(rootStr.length())
+                            : src)
+                    .collect(Collectors.toCollection(ArrayList::new));
         }
         if ((crawlSourceType == null || crawlSourceType.isBlank()) && hasInitialCrawl()) {
             crawlSourceType = inferCommonCrawlSourceType(dataSources);
@@ -776,6 +824,8 @@ public class InitProjectCommand implements Callable<Integer> {
             inferredModels = new ArrayList<>(inferredSignals.models());
         }
         if (inferredSignals.hasCode()) {
+            // Root the inferred coding project at the DETECTED code location; the code is
+            // indexed in place, not copied into the generated project.
             inferredCodingProject = buildInferredCodingProject(inferredSignals.codeProject());
         }
     }
@@ -866,10 +916,13 @@ public class InitProjectCommand implements Callable<Integer> {
     }
 
     private KompileCodingProject buildInferredCodingProject(ProjectAutoDetection.CodeProjectSignal signal) {
+        // Root the coding project at the DETECTED code location (signal.root()) — the code is
+        // indexed in place, not copied into the generated project. For --infer-from this is the
+        // source root the user pointed at.
         Path root = signal.root().toAbsolutePath().normalize();
         String dirName = root.getFileName() != null ? root.getFileName().toString() : projectName;
         String id = safeId(dirName, "code");
-        java.time.Instant now = java.time.Instant.now();
+        Instant now = Instant.now();
 
         KompileCodingProject cp = new KompileCodingProject();
         cp.setId(id);
@@ -1058,6 +1111,7 @@ public class InitProjectCommand implements Callable<Integer> {
 
         KompileProjectCrawlProfile initialCrawl = initialCrawlProfile();
         if (initialCrawl != null) {
+            initialCrawl.setSources(relativizeSources(initialCrawl.getSources(), projectDir));
             crawlProfiles.add(initialCrawl);
             seedModelsAndPipelinesForCrawl(initialCrawl, models, pipelines);
             scripts.add(generatedScript("init-crawl", "Initialize crawl", "scripts/init-crawl.sh",
@@ -1070,6 +1124,7 @@ public class InitProjectCommand implements Callable<Integer> {
 
         KompileProjectCrawlProfile pdfVlmCrawl = pdfVlmCrawlProfile();
         if (pdfVlmCrawl != null) {
+            pdfVlmCrawl.setSources(relativizeSources(pdfVlmCrawl.getSources(), projectDir));
             crawlProfiles.add(pdfVlmCrawl);
             seedModelsAndPipelinesForCrawl(pdfVlmCrawl, models, pipelines);
             scripts.add(generatedScript("init-pdf-vlm", "Initialize PDF VLM ingest",
@@ -1138,6 +1193,42 @@ public class InitProjectCommand implements Callable<Integer> {
         crawlProfile.setWatch(crawlWatch);
         crawlProfile.setTags(List.of("init", "crawl", "ingestion"));
         return crawlProfile;
+    }
+
+    /**
+     * Relativize data-source paths that live under {@code projectDir} to project-relative
+     * paths (prefixed with {@code ./}). Sources outside the project root are left as-is so
+     * that external absolute paths (e.g. a shared network mount) are preserved verbatim.
+     *
+     * <p>This ensures the generated {@code kompile.project.json} crawl profiles are portable
+     * across machines instead of embedding the generating machine's absolute path.</p>
+     */
+    private static List<String> relativizeSources(List<String> sources, File projectDir) {
+        if (sources == null || sources.isEmpty()) {
+            return sources;
+        }
+        String projAbs = projectDir.getAbsolutePath();
+        // Normalise: strip any trailing slash so substring arithmetic is consistent.
+        if (projAbs.endsWith("/") || projAbs.endsWith(File.separator)) {
+            projAbs = projAbs.substring(0, projAbs.length() - 1);
+        }
+        final String projAbsFinal = projAbs;
+        List<String> result = new ArrayList<>(sources.size());
+        for (String src : sources) {
+            if (src != null && src.startsWith(projAbsFinal)) {
+                String suffix = src.substring(projAbsFinal.length());
+                // suffix is either "" (project root itself) or starts with "/" / File.separator
+                if (suffix.isEmpty()) {
+                    result.add(".");
+                } else {
+                    // Replace leading separator with "./"
+                    result.add("." + suffix);
+                }
+            } else {
+                result.add(src);
+            }
+        }
+        return result;
     }
 
     private KompileProjectCrawlProfile pdfVlmCrawlProfile() {
@@ -1230,8 +1321,9 @@ public class InitProjectCommand implements Callable<Integer> {
         healthCheck.setId("wait-for-app");
         healthCheck.setName("Wait for app health");
         healthCheck.setType("HEALTH_CHECK");
-        healthCheck.setUrl("${appUrl}/actuator/health");
-        healthCheck.setExpectedStatus(200);
+        // No explicit URL: the runner uses KompileHttpClient.isHealthy() which probes
+        // /actuator/health OR /api/setup/status — generated kompile apps expose the latter
+        // but do not ship Spring Boot Actuator, so /actuator/health would 404.
         healthCheck.setTimeoutSeconds(180);
 
         workflow.setSteps(List.of(startServices, healthCheck,
@@ -1532,12 +1624,12 @@ public class InitProjectCommand implements Callable<Integer> {
         // Launch
         if (isApp) {
             sb.append("echo \"Starting application on port ").append(port).append("...\"\n");
-            // Point the app at the project as its data dir so indices, per-project
-            // config, and databases land in the versioned project tree (data/, config/)
-            // rather than the global ~/.kompile home. Passed as a -D system property
-            // (before -jar) so both Spring @Value services AND static KompileHome
-            // callers resolve it.
-            sb.append("java -Dkompile.data.dir=\"$PROJECT_DIR\" -jar \"$JAR\" ").append(args);
+            // No JVM flags here: module-access (Add-Opens/Add-Exports) is baked into the app jar manifest
+            // by the build and honoured automatically by `java -jar`; the app resolves its own data dir
+            // from the working directory (KompileHome walks up for kompile.project.json), so cd into the
+            // project first. Heap uses JVM ergonomics. JAR/LOG_DIR are absolute, so the cd is safe.
+            sb.append("cd \"$PROJECT_DIR\"\n");
+            sb.append("java -jar \"$JAR\" ").append(args);
             sb.append(" > \"$LOG_DIR/").append(logFile).append("\" 2>&1 &\n");
         } else {
             sb.append("echo \"Starting ").append(type).append(" subprocess on port ").append(port).append("...\"\n");
@@ -1707,8 +1799,10 @@ public class InitProjectCommand implements Callable<Integer> {
 
         sb.append("echo Starting ").append(type).append(" on port ").append(port).append("...\n");
         if (isApp) {
-            // Point the app at the project as its data dir (see start-app.sh).
-            sb.append("start \"kompile-").append(type).append("\" /B java -Dkompile.data.dir=\"%PROJECT_DIR%\" -jar \"%JAR%\" ").append(args);
+            // JVM module-access flags are baked into the jar manifest; the app self-resolves its data dir
+            // from the working directory (see start-app.sh). cd into the project so resolution is project-local.
+            sb.append("cd /d \"%PROJECT_DIR%\"\n");
+            sb.append("start \"kompile-").append(type).append("\" /B java -jar \"%JAR%\" ").append(args);
         } else {
             sb.append("start \"kompile-").append(type).append("\" /B java -jar \"%JAR%\" ").append(args);
         }
@@ -2278,7 +2372,7 @@ public class InitProjectCommand implements Callable<Integer> {
             File[] versionDirs = globalComponentsDir.listFiles(File::isDirectory);
             if (versionDirs != null && versionDirs.length > 0) {
                 // Sort descending to get latest version
-                java.util.Arrays.sort(versionDirs, (a, b) -> b.getName().compareTo(a.getName()));
+                Arrays.sort(versionDirs, (a, b) -> b.getName().compareTo(a.getName()));
 
                 for (File versionDir : versionDirs) {
                     File[] jars = versionDir.listFiles(
@@ -2396,8 +2490,8 @@ public class InitProjectCommand implements Callable<Integer> {
 
     private boolean checkStagingHealth(int port) {
         try {
-            java.net.URL url = new java.net.URL("http://localhost:" + port + "/actuator/health");
-            java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
+            URL url = new URL("http://localhost:" + port + "/actuator/health");
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("GET");
             conn.setConnectTimeout(2000);
             conn.setReadTimeout(2000);
@@ -2610,7 +2704,7 @@ public class InitProjectCommand implements Callable<Integer> {
 
         // Wait for the app to start (up to 5 minutes)
         try {
-            boolean started = appStarted.await(5, java.util.concurrent.TimeUnit.MINUTES);
+            boolean started = appStarted.await(5, TimeUnit.MINUTES);
             if (!started) {
                 System.err.println("Timeout waiting for application to start.");
                 printCrawlInstructions();
@@ -2821,7 +2915,7 @@ public class InitProjectCommand implements Callable<Integer> {
 
     private String extractHost(String url) {
         try {
-            return java.net.URI.create(url).getHost();
+            return URI.create(url).getHost();
         } catch (Exception e) {
             return url.length() > 30 ? url.substring(0, 30) : url;
         }
@@ -2891,7 +2985,7 @@ public class InitProjectCommand implements Callable<Integer> {
      * Detect the first available CLI agent on PATH.
      */
     private String detectAvailableCliAgent() {
-        return ai.kompile.core.agent.CliAgentRegistry.detectFirstAvailable();
+        return CliAgentRegistry.detectFirstAvailable();
     }
 
     private String firstNonBlank(String... values) {

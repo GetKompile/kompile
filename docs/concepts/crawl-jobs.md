@@ -119,7 +119,6 @@ configuration:
     {"sourceType": "CONFLUENCE", "pathOrUrl": "https://company.atlassian.net/wiki/spaces/ENG"}
   ],
   "graphExtraction": {
-    "enabled": true,
     "schemaMode": "LENIENT",
     "entityResolution": true,
     "entityResolutionSimilarityThreshold": 0.85,
@@ -598,7 +597,6 @@ curl -X POST http://localhost:8080/api/unified-crawl/start \
       {"sourceType": "DIRECTORY", "pathOrUrl": "/data/docs/"}
     ],
     "graphExtraction": {
-      "enabled": true,
       "schemaMode": "LENIENT"
     }
   }'

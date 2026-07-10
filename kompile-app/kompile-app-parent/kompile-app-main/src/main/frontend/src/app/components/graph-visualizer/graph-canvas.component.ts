@@ -46,7 +46,8 @@ import {
   NODE_COLORS,
   NODE_SIZES,
   EDGE_COLORS,
-  EDGE_DASH_PATTERNS
+  EDGE_DASH_PATTERNS,
+  ReasoningLayerVisualOverlay
 } from '../../models/graph-models';
 
 // Community palette (same as original)
@@ -108,6 +109,32 @@ const MFRAG_ACCENT_COLORS: string[] = [
           <span class="legend-line" style="border-color:#B388FF;border-style:solid;"></span>
           <span class="legend-label">Inferred (OWL)</span>
         </div>
+        <ng-container *ngIf="simTruthNodeMap">
+          <div class="legend-title">Simulator truth</div>
+          <div class="legend-item" matTooltip="Participates in a planted pattern the reasoner recovered">
+            <span class="legend-color" style="background:#2e7d32"></span>
+            <span class="legend-label">Recovered</span>
+          </div>
+          <div class="legend-item" matTooltip="Participates in a planted pattern the reasoner missed">
+            <span class="legend-color" style="background:#f9a825"></span>
+            <span class="legend-label">Missed</span>
+          </div>
+          <div class="legend-item" matTooltip="Participates in a hallucinated or forbidden inference">
+            <span class="legend-color" style="background:#c62828"></span>
+            <span class="legend-label">Hallucinated / violation</span>
+          </div>
+        </ng-container>
+        <ng-container *ngIf="processEvidenceNodeIds.size || processEvidenceEdgeIds.size">
+          <div class="legend-title">Process evidence</div>
+          <div class="legend-item" *ngIf="processEvidenceNodeIds.size">
+            <span class="legend-color" style="background:#00838f"></span>
+            <span class="legend-label">Evidence node</span>
+          </div>
+          <div class="legend-item" *ngIf="processEvidenceEdgeIds.size">
+            <span class="legend-line" style="border-color:#00acc1;border-style:solid;"></span>
+            <span class="legend-label">Process relation</span>
+          </div>
+        </ng-container>
         <ng-container *ngIf="posteriorOverlay || priorOverlay || mebnMfragMap || findingNodeMap">
           <div class="legend-title">Bayesian</div>
           <div class="legend-item" *ngIf="priorOverlay">
@@ -197,6 +224,29 @@ const MFRAG_ACCENT_COLORS: string[] = [
           <div class="legend-item">
             <span class="legend-color" style="background:#9E9E9E"></span>
             <span class="legend-label">Untagged</span>
+          </div>
+        </ng-container>
+        <ng-container *ngIf="reasoningLayerOverlayEnabled">
+          <div class="legend-title">Reasoning</div>
+          <div class="legend-item">
+            <span class="legend-color" style="background:#F44336"></span>
+            <span class="legend-label">Ontology violation</span>
+          </div>
+          <div class="legend-item">
+            <span class="legend-color" style="background:#7c3aed"></span>
+            <span class="legend-label">Inferred relation</span>
+          </div>
+          <div class="legend-item">
+            <span class="legend-color" style="background:#0ea5e9"></span>
+            <span class="legend-label">PSL grounding</span>
+          </div>
+          <div class="legend-item">
+            <span class="legend-heat-swatch"></span>
+            <span class="legend-label">MEBN posterior</span>
+          </div>
+          <div class="legend-item">
+            <span class="legend-color" style="background:#14b8a6"></span>
+            <span class="legend-label">Neural score</span>
           </div>
         </ng-container>
       </div>
@@ -442,6 +492,12 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
   @Input() mebnMfragMap: Record<string, string> | null = null;
   @Input() findingNodeMap: Record<string, boolean> | null = null;
   @Input() influenceOverlayActive: boolean = false;
+  /**
+   * Graph-simulator ground-truth compare: nodeId → 'recovered' | 'missed' | 'hallucinated' |
+   * 'violation'. When set, participating nodes are tinted by recovery status (same additive
+   * pattern as posteriorOverlay). Null = overlay off.
+   */
+  @Input() simTruthNodeMap: Record<string, string> | null = null;
 
   // Phase-2 KB overlays
   @Input() strengthOverlayEnabled: boolean = false;
@@ -453,6 +509,11 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
   // Conformance overlay
   @Input() conformanceOverlayEnabled: boolean = false;
   @Input() conformanceMap: Map<string, boolean | null> = new Map();
+  @Input() reasoningLayerOverlayEnabled: boolean = false;
+  @Input() reasoningNodeLayerMap: Map<string, ReasoningLayerVisualOverlay> = new Map();
+  @Input() reasoningEdgeLayerMap: Map<string, ReasoningLayerVisualOverlay> = new Map();
+  @Input() processEvidenceNodeIds: ReadonlySet<string> = new Set<string>();
+  @Input() processEvidenceEdgeIds: ReadonlySet<string> = new Set<string>();
 
   @Output() nodeSelected = new EventEmitter<D3Node | null>();
   @Output() nodeDoubleClicked = new EventEmitter<D3Node>();
@@ -511,11 +572,13 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
     // Overlay changes: just recompute node colors + refresh
     const overlayKeys = [
       'posteriorOverlay', 'priorOverlay', 'mebnMfragMap',
-      'findingNodeMap',
+      'findingNodeMap', 'simTruthNodeMap',
       'strengthOverlayEnabled', 'strengthBandMap',
       'provenanceOverlayEnabled',
       'communityOverlayEnabled', 'communityMap',
       'conformanceOverlayEnabled', 'conformanceMap',
+      'reasoningLayerOverlayEnabled', 'reasoningNodeLayerMap', 'reasoningEdgeLayerMap',
+      'processEvidenceNodeIds', 'processEvidenceEdgeIds',
       'influenceOverlayActive',
     ];
     if (overlayKeys.some(k => !!changes[k]) && this.sigmaInstance) {
@@ -699,16 +762,21 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
       if (!this.graph.hasNode(srcKey) || !this.graph.hasNode(tgtKey)) continue;
       const edgeKey = link.id || `${srcKey}→${tgtKey}:${link.type}`;
       incomingEdgeKeys.add(edgeKey);
+      const edgeColor = this.resolveEdgeColor(link);
+      const edgeSize = this.resolveEdgeSize(link);
       if (!this.graph.hasEdge(edgeKey)) {
         try {
           this.graph.addEdgeWithKey(edgeKey, srcKey, tgtKey, {
-            color: link.inferred ? '#B388FF' : (EDGE_COLORS[link.type] || '#999999'),
-            size: Math.max(0.5, (link.weight || 1) * 1.5),
+            color: edgeColor,
+            size: edgeSize,
             type: 'line',
           });
         } catch {
           // Duplicate edge key (edge exists under a different key) — skip
         }
+      } else {
+        this.graph.setEdgeAttribute(edgeKey, 'color', edgeColor);
+        this.graph.setEdgeAttribute(edgeKey, 'size', edgeSize);
       }
     }
 
@@ -801,11 +869,15 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
       const tgtKey = typeof link.target === 'string' ? link.target : (link.target as any).id;
       if (!this.graph.hasNode(srcKey) || !this.graph.hasNode(tgtKey)) continue;
       const edgeKey = link.id || `${srcKey}→${tgtKey}:${link.type}`;
-      if (this.graph.hasEdge(edgeKey)) continue;
+      if (this.graph.hasEdge(edgeKey)) {
+        this.graph.setEdgeAttribute(edgeKey, 'color', this.resolveEdgeColor(link));
+        this.graph.setEdgeAttribute(edgeKey, 'size', this.resolveEdgeSize(link));
+        continue;
+      }
       try {
         this.graph.addEdgeWithKey(edgeKey, srcKey, tgtKey, {
-          color: link.inferred ? '#B388FF' : (EDGE_COLORS[link.type] || '#999999'),
-          size: Math.max(0.5, (link.weight || 1) * 1.5),
+          color: this.resolveEdgeColor(link),
+          size: this.resolveEdgeSize(link),
           type: 'line',
         });
       } catch {
@@ -861,7 +933,26 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
 
   // ── Node color resolution (overlays in priority order) ─────────────────────
 
+  /** Simulator ground-truth status → tint (matches the legend + sim inspector). */
+  private static simTruthColor(status: string): string {
+    switch (status) {
+      case 'recovered': return '#2e7d32';
+      case 'missed': return '#f9a825';
+      case 'hallucinated':
+      case 'violation': return '#c62828';
+      default: return '#9e9e9e';
+    }
+  }
+
   private resolveNodeColor(node: D3Node): string {
+    // 0. Simulator ground-truth compare — an explicit user-toggled mode, so it wins.
+    if (this.simTruthNodeMap && this.simTruthNodeMap[node.id]) {
+      return GraphCanvasComponent.simTruthColor(this.simTruthNodeMap[node.id]);
+    }
+    // Selected process evidence is an explicit overlay and wins over ambient inference layers.
+    if (this.processEvidenceNodeIds.has(node.id)) {
+      return '#00838f';
+    }
     // 1. Posterior / influence heat
     if (this.posteriorOverlay && this.posteriorOverlay[node.id] !== undefined) {
       return this.posteriorHeatColor(this.posteriorOverlay[node.id]);
@@ -875,6 +966,11 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
     if (this.priorOverlay && this.priorOverlay[node.id] !== undefined) {
       const h = this.posteriorHeatColor(this.priorOverlay[node.id]);
       return this.blendColor(NODE_COLORS[node.type] || '#999999', h, 0.45);
+    }
+    // 2b. Typed reasoning-layer overlays from the graph reasoning endpoint.
+    if (this.reasoningLayerOverlayEnabled && this.reasoningNodeLayerMap.has(node.id)) {
+      const color = this.resolveReasoningOverlayColor(this.reasoningNodeLayerMap.get(node.id)!);
+      if (color) return color;
     }
     // 3. Strength band
     if (this.strengthOverlayEnabled && this.strengthBandMap.has(node.id)) {
@@ -911,6 +1007,83 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
     return NODE_COLORS[node.type] || '#999999';
   }
 
+  private resolveEdgeColor(link: D3Link): string {
+    if (this.isProcessEvidenceEdge(link)) {
+      return '#00acc1';
+    }
+    if (this.reasoningLayerOverlayEnabled) {
+      const overlay = this.reasoningEdgeOverlay(link);
+      if (overlay) {
+        const color = this.resolveReasoningOverlayColor(overlay);
+        if (color) return color;
+      }
+    }
+    return link.inferred ? '#B388FF' : (EDGE_COLORS[link.type] || '#999999');
+  }
+
+  private resolveEdgeSize(link: D3Link): number {
+    const baseSize = Math.max(0.5, (link.weight || 1) * 1.5);
+    if (this.isProcessEvidenceEdge(link)) {
+      return Math.max(baseSize, 3.2);
+    }
+    const overlay = this.reasoningLayerOverlayEnabled ? this.reasoningEdgeOverlay(link) : undefined;
+    if (overlay?.inferredRelationship) {
+      return Math.max(baseSize, 2.8);
+    }
+    if (overlay) {
+      return Math.max(baseSize, 2.2);
+    }
+    return baseSize;
+  }
+
+  private isProcessEvidenceEdge(link: D3Link): boolean {
+    return !!link.id && this.processEvidenceEdgeIds.has(link.id);
+  }
+
+  private reasoningEdgeOverlay(link: D3Link): ReasoningLayerVisualOverlay | undefined {
+    for (const key of this.reasoningEdgeLookupKeys(link)) {
+      const overlay = this.reasoningEdgeLayerMap.get(key);
+      if (overlay) return overlay;
+    }
+    return undefined;
+  }
+
+  private reasoningEdgeLookupKeys(link: D3Link): string[] {
+    const keys: string[] = [];
+    if (link.id) keys.push(link.id);
+    const srcKey = typeof link.source === 'string' ? link.source : (link.source as any)?.id;
+    const tgtKey = typeof link.target === 'string' ? link.target : (link.target as any)?.id;
+    if (srcKey && tgtKey && link.type) {
+      keys.push(`${srcKey}->${tgtKey}:${link.type}`);
+      keys.push(`${srcKey}→${tgtKey}:${link.type}`);
+    }
+    return keys;
+  }
+
+  private resolveReasoningOverlayColor(overlay: ReasoningLayerVisualOverlay): string | null {
+    if (overlay.ontologyViolation) return '#F44336';
+    if (overlay.inferredRelationship) {
+      return overlay.inferredRelationshipScore !== undefined
+        ? this.blendColor('#7c3aed', '#14b8a6', this.clamp01(overlay.inferredRelationshipScore))
+        : '#7c3aed';
+    }
+    if (overlay.activeLayers.includes('ontology') && overlay.ontologyConformant === true) return '#4CAF50';
+    if (overlay.activeLayers.includes('ontology') && overlay.ontologyConformant === null) return '#9E9E9E';
+    if (overlay.mebnPosterior !== undefined) return this.posteriorHeatColor(this.clamp01(overlay.mebnPosterior));
+    if (overlay.mebnFinding) return '#ff6b00';
+    if (overlay.pslTruthValue !== undefined) {
+      return this.blendColor('#0ea5e9', '#22c55e', this.clamp01(overlay.pslTruthValue));
+    }
+    if (overlay.neuralScore !== undefined) {
+      return this.blendColor('#64748b', '#14b8a6', this.clamp01(overlay.neuralScore));
+    }
+    if (overlay.opinionConfidence !== undefined) {
+      return this.blendColor('#f59e0b', '#22c55e', this.clamp01(overlay.opinionConfidence));
+    }
+    if (overlay.provenance) return '#ce93d8';
+    return null;
+  }
+
   private refreshNodeColors(): void {
     if (!this.graph || !this.sigmaInstance) return;
 
@@ -931,6 +1104,17 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
         this.graph!.setNodeAttribute(nodeKey, 'color', color);
       }
     });
+
+    if (this.data?.links) {
+      for (const link of this.data.links) {
+        const srcKey = typeof link.source === 'string' ? link.source : (link.source as any).id;
+        const tgtKey = typeof link.target === 'string' ? link.target : (link.target as any).id;
+        const edgeKey = link.id || `${srcKey}→${tgtKey}:${link.type}`;
+        if (!this.graph.hasEdge(edgeKey)) continue;
+        this.graph.setEdgeAttribute(edgeKey, 'color', this.resolveEdgeColor(link));
+        this.graph.setEdgeAttribute(edgeKey, 'size', this.resolveEdgeSize(link));
+      }
+    }
 
     this.sigmaInstance.refresh();
   }
@@ -1054,6 +1238,11 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
     const rgb = color.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
     if (rgb) return [+rgb[1], +rgb[2], +rgb[3]];
     return null;
+  }
+
+  private clamp01(value: number): number {
+    if (!Number.isFinite(value)) return 0;
+    return Math.max(0, Math.min(1, value));
   }
 
   // ── Legend helper methods (called from template) ──────────────────────────────

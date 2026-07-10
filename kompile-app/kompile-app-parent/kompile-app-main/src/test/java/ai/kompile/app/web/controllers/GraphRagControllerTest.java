@@ -9,6 +9,7 @@
  */
 package ai.kompile.app.web.controllers;
 
+import ai.kompile.app.rag.GraphReasoningRetriever;
 import ai.kompile.core.graphrag.GraphRagService;
 import ai.kompile.core.graphrag.model.Community;
 import ai.kompile.core.graphrag.model.Entity;
@@ -28,6 +29,7 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.HashMap;
 import java.util.List;
@@ -47,6 +49,9 @@ class GraphRagControllerTest {
 
     @Mock
     private GraphRagService graphRagService;
+
+    @Mock
+    private GraphReasoningRetriever graphReasoningRetriever;
 
     private GraphRagController controller;
 
@@ -158,6 +163,27 @@ class GraphRagControllerTest {
             ArgumentCaptor<GraphRagQuery> captor = ArgumentCaptor.forClass(GraphRagQuery.class);
             verify(graphRagService).answerQuery(captor.capture());
             assertEquals(SearchType.LOCAL, captor.getValue().getSearchType());
+        }
+
+        @Test
+        void reasoningSearchPassesFactSheetIdToRetriever() throws Exception {
+            ReflectionTestUtils.setField(controller, "graphReasoningRetriever", graphReasoningRetriever);
+            when(graphReasoningRetriever.supports("CAUSAL")).thenReturn(true);
+            when(graphReasoningRetriever.retrieve("Why did revenue drop?", "CAUSAL", 5, 7L))
+                    .thenReturn("Revenue dropped because costs rose.");
+
+            Map<String, Object> request = new HashMap<>();
+            request.put("query", "Why did revenue drop?");
+            request.put("searchType", "CAUSAL");
+            request.put("maxResults", 5);
+            request.put("factSheetId", "7");
+
+            ResponseEntity<Map<String, Object>> response = controller.search(request);
+
+            assertEquals(HttpStatus.OK, response.getStatusCode());
+            assertEquals("Revenue dropped because costs rose.", response.getBody().get("answer"));
+            verify(graphReasoningRetriever).retrieve("Why did revenue drop?", "CAUSAL", 5, 7L);
+            verify(graphRagService, never()).answerQuery(any());
         }
 
         @Test

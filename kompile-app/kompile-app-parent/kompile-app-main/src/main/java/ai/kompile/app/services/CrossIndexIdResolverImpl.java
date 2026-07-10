@@ -25,7 +25,7 @@ import java.util.List;
  * Resolves graph node external IDs to index document IDs using the
  * cross-index tracking table (indexed_passages).
  * <p>
- * During crawl, SNIPPET graph nodes are registered with a synthetic external ID
+ * During crawl, SNIPPET graph nodes are registered with a derived external ID
  * (e.g. "chunk:jobId:path:index") stored as {@code IndexedPassage.graphNodeId}.
  * The corresponding index document ID is stored as {@code IndexedPassage.chunkId}.
  */

@@ -165,25 +165,25 @@ class ProcessingCapacityTrackerImplTest {
                 .enabled(true)
                 .build();
 
-        assertTrue(tracker.canAcceptWithConfig(backend, "llm"));
+        assertTrue(tracker.canAccept(backend, "llm"));
 
         // Dispatch twice to fill capacity
         tracker.recordDispatch("limited", "llm");
         tracker.recordDispatch("limited", "llm");
 
         // canAcceptWithConfig should now return false
-        assertFalse(tracker.canAcceptWithConfig(backend, "llm"));
+        assertFalse(tracker.canAccept(backend, "llm"));
 
         // Complete one — should have capacity again
         tracker.recordCompletion("limited", "llm", true);
-        assertTrue(tracker.canAcceptWithConfig(backend, "llm"));
+        assertTrue(tracker.canAccept(backend, "llm"));
     }
 
     @Test
-    void testSelectBackendAlwaysPicksLowestPriority() {
-        // selectBackend delegates to canAccept() which is a simple interface check;
-        // canAcceptWithConfig provides the detailed capacity check.
-        // selectBackend should always pick the lowest-priority enabled backend.
+    void testSelectBackendSpillsOverWhenPrimaryAtCapacity() {
+        // selectBackend gates each backend on its configured capacity: once the
+        // highest-priority backend is saturated (active >= maxConcurrent), work
+        // must spill over to the next-priority backend that still has capacity.
         ProcessingBackend primary = ProcessingBackend.builder()
                 .id("primary")
                 .type(ProcessingBackendType.LOCAL_MODEL)
@@ -196,6 +196,7 @@ class ProcessingCapacityTrackerImplTest {
                 .id("fallback")
                 .type(ProcessingBackendType.API_AGENT)
                 .priority(2)
+                .maxConcurrent(4)
                 .enabled(true)
                 .build();
 
@@ -203,12 +204,35 @@ class ProcessingCapacityTrackerImplTest {
                 .backends(List.of(primary, fallback))
                 .build();
 
-        // Even with dispatches, selectBackend picks by priority
-        tracker.recordDispatch("primary", "llm");
+        // With capacity free, the lowest-priority (preferred) backend is chosen.
+        assertEquals("primary", tracker.selectBackend("llm", config).orElseThrow().getId());
 
-        Optional<ProcessingBackend> selected = tracker.selectBackend("llm", config);
-        assertTrue(selected.isPresent());
-        assertEquals("primary", selected.get().getId());
+        // Saturate the primary (maxConcurrent=1); the next request spills to fallback.
+        tracker.recordDispatch("primary", "llm");
+        assertEquals("fallback", tracker.selectBackend("llm", config).orElseThrow().getId());
+
+        // Releasing the primary slot returns selection to the preferred backend.
+        tracker.recordCompletion("primary", "llm", true);
+        assertEquals("primary", tracker.selectBackend("llm", config).orElseThrow().getId());
+    }
+
+    @Test
+    void testSelectBackendReturnsEmptyWhenAllAtCapacity() {
+        // When every capable backend is saturated, selection yields empty so the
+        // caller can fall through to its last-resort path rather than overloading.
+        ProcessingBackend only = ProcessingBackend.builder()
+                .id("only")
+                .type(ProcessingBackendType.CLI_AGENT)
+                .priority(1)
+                .maxConcurrent(1)
+                .enabled(true)
+                .build();
+        ProcessingRouteConfig config = ProcessingRouteConfig.builder()
+                .backends(List.of(only))
+                .build();
+
+        tracker.recordDispatch("only", "llm");
+        assertTrue(tracker.selectBackend("llm", config).isEmpty());
     }
 
     @Test
@@ -222,19 +246,19 @@ class ProcessingCapacityTrackerImplTest {
                 .build();
 
         // Initially can accept
-        assertTrue(tracker.canAcceptWithConfig(backend, "llm"));
+        assertTrue(tracker.canAccept(backend, "llm"));
 
         // Dispatch one
         tracker.recordDispatch("test", "llm");
-        assertTrue(tracker.canAcceptWithConfig(backend, "llm"));
+        assertTrue(tracker.canAccept(backend, "llm"));
 
         // Dispatch another to hit limit
         tracker.recordDispatch("test", "llm");
-        assertFalse(tracker.canAcceptWithConfig(backend, "llm"));
+        assertFalse(tracker.canAccept(backend, "llm"));
 
         // Complete one — should have capacity again
         tracker.recordCompletion("test", "llm", true);
-        assertTrue(tracker.canAcceptWithConfig(backend, "llm"));
+        assertTrue(tracker.canAccept(backend, "llm"));
     }
 
     @Test
@@ -249,7 +273,7 @@ class ProcessingCapacityTrackerImplTest {
                 .maxConcurrent(1)
                 .enabled(true)
                 .build();
-        assertTrue(tracker.canAcceptWithConfig(backend, "llm"));
+        assertTrue(tracker.canAccept(backend, "llm"));
     }
 
     @Test
@@ -272,7 +296,7 @@ class ProcessingCapacityTrackerImplTest {
                 .build();
 
         // 10GB available < 18GB required
-        assertFalse(tracker.canAcceptWithConfig(backend, "vlm"));
+        assertFalse(tracker.canAccept(backend, "vlm"));
     }
 
     @Test
@@ -289,7 +313,7 @@ class ProcessingCapacityTrackerImplTest {
                 .build();
 
         // 20GB available > 18GB required
-        assertTrue(tracker.canAcceptWithConfig(backend, "vlm"));
+        assertTrue(tracker.canAccept(backend, "vlm"));
     }
 
     @Test
@@ -308,7 +332,7 @@ class ProcessingCapacityTrackerImplTest {
                 .build();
 
         // Sum: 5GB + 15GB = 20GB > 18GB required
-        assertTrue(tracker.canAcceptWithConfig(backend, "vlm"));
+        assertTrue(tracker.canAccept(backend, "vlm"));
     }
 
     @Test
@@ -321,7 +345,7 @@ class ProcessingCapacityTrackerImplTest {
                 .build();
 
         // Should not check GPU for API_AGENT type
-        assertTrue(tracker.canAcceptWithConfig(backend, "llm"));
+        assertTrue(tracker.canAccept(backend, "llm"));
         verifyNoInteractions(gpuResourceManager);
     }
 
@@ -336,7 +360,7 @@ class ProcessingCapacityTrackerImplTest {
                 .enabled(true)
                 .build();
 
-        assertTrue(tracker.canAcceptWithConfig(backend, "llm"));
+        assertTrue(tracker.canAccept(backend, "llm"));
     }
 
     @Test
@@ -451,7 +475,7 @@ class ProcessingCapacityTrackerImplTest {
         tracker.recordDispatch("rate-limited", "llm");
 
         // Should be at rate limit
-        assertFalse(tracker.canAcceptWithConfig(backend, "llm"));
+        assertFalse(tracker.canAccept(backend, "llm"));
     }
 
     @Test
@@ -470,7 +494,7 @@ class ProcessingCapacityTrackerImplTest {
         }
 
         // Should still accept — limits are 0 (unlimited)
-        assertTrue(tracker.canAcceptWithConfig(backend, "llm"));
+        assertTrue(tracker.canAccept(backend, "llm"));
     }
 
     @Test
@@ -485,6 +509,6 @@ class ProcessingCapacityTrackerImplTest {
                 .build();
 
         // Should not throw with null GPU manager
-        assertTrue(trackerNoGpu.canAcceptWithConfig(backend, "vlm"));
+        assertTrue(trackerNoGpu.canAccept(backend, "vlm"));
     }
 }

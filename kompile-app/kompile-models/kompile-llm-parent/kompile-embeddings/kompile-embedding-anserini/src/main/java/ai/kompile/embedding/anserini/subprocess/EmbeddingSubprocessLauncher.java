@@ -16,8 +16,12 @@
 
 package ai.kompile.embedding.anserini.subprocess;
 
+import ai.kompile.app.subprocess.BackendConfigurable;
+import ai.kompile.app.subprocess.ManagedSubprocessLauncher.BackendPreference;
 import ai.kompile.app.subprocess.RestartableSubprocess;
 import ai.kompile.app.subprocess.SubprocessEnvironmentPropagator;
+import ai.kompile.app.subprocess.SubprocessPlacement;
+import ai.kompile.app.subprocess.SubprocessPlacementSupport;
 import ai.kompile.app.subprocess.SubprocessRegistry;
 import ai.kompile.cli.common.logs.AgentLogRecord;
 import ai.kompile.cli.common.logs.SubprocessLogWriter;
@@ -69,7 +73,7 @@ import java.util.Deque;
  * The subprocess runs SameDiff/ND4J in isolation, so the main application
  * JVM never loads these heavy native libraries.
  */
-public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSubprocess {
+public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSubprocess, BackendConfigurable {
 
     private static final Logger logger = LoggerFactory.getLogger(EmbeddingSubprocessLauncher.class);
     private static final ObjectMapper OBJECT_MAPPER = JsonUtils.standardMapper();
@@ -91,6 +95,9 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
     // State tracking
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicBoolean shuttingDown = new AtomicBoolean(false);
+    private static final int DEVICE_ERROR_EXIT_CODE = 78; // must match EmbeddingSubprocessMain.DEVICE_ERROR_EXIT_CODE
+    /** Set when the embedding lane has encountered an unrecoverable device-level CUDA error. */
+    private final AtomicBoolean laneUnavailable = new AtomicBoolean(false);
     private final AtomicLong lastHeartbeat = new AtomicLong(0);
     private volatile String currentModelId;
     private volatile int currentDimensions = -1;
@@ -140,6 +147,15 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
     private volatile Integer deviceRoutingMaxMasterThreads;
     private volatile Integer deviceRoutingCudaDevice;
     private volatile Long deviceRoutingMaxDeviceMemory;
+
+    /**
+     * Shared device-agnostic placement (the SAME base infra every subprocess uses). Backend priority,
+     * device pin, and per-device memory bound flow through this — never CUDA_VISIBLE_DEVICES. The cap is
+     * delivered both as {@code nd4j.environment.maxDeviceMemory} for the physical ND4J environment and
+     * {@code SD_MAX_DEVICE_BYTES} for early native process setup. Set by the scheduler via
+     * {@link #applyPlacement}, or synthesized from a legacy {@link #setDeviceRoutingOverrides} call.
+     */
+    private final SubprocessPlacementSupport placement = new SubprocessPlacementSupport();
 
     // Subprocess registry for centralized lifecycle tracking (optional)
     private volatile SubprocessRegistry subprocessRegistry;
@@ -1230,8 +1246,30 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
         this.deviceRoutingMaxMasterThreads = maxMasterThreads;
         this.deviceRoutingCudaDevice = cudaDevice;
         this.deviceRoutingMaxDeviceMemory = maxDeviceMemory;
+        // Translate legacy overrides into the shared placement delivery. A null cudaDevice keeps
+        // backend/device selection inherited while still allowing a memory-only budget. The scheduler
+        // wins if it already assigned a placement.
+        if (!placement.hasPlacement()) {
+            long bound = maxDeviceMemory != null ? maxDeviceMemory : 0L;
+            if (cudaDevice != null) {
+                placement.applyPlacement(cudaDevice < 0
+                        ? SubprocessPlacement.cpu()
+                        : SubprocessPlacement.gpu(cudaDevice, bound));
+            } else if (bound > 0L) {
+                placement.applyPlacement(new SubprocessPlacement(
+                        BackendPreference.INHERIT,
+                        SubprocessPlacement.CPU_DEVICE_ID,
+                        bound));
+            }
+        }
         logger.info("Device routing overrides set for embedding subprocess: maxThreads={}, cudaDevice={}, maxMemory={}",
                 maxThreads, cudaDevice, maxDeviceMemory);
+    }
+
+    /** {@link BackendConfigurable} — scheduler-assigned device-agnostic placement (wins over legacy). */
+    @Override
+    public void applyPlacement(SubprocessPlacement placement) {
+        this.placement.applyPlacement(placement);
     }
 
     /**
@@ -1242,6 +1280,7 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
         this.deviceRoutingMaxMasterThreads = null;
         this.deviceRoutingCudaDevice = null;
         this.deviceRoutingMaxDeviceMemory = null;
+        this.placement.applyPlacement(null);
         logger.info("Device routing overrides cleared for embedding subprocess");
     }
 
@@ -1379,12 +1418,23 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
                     if (entry.getName().startsWith("BOOT-INF/lib/") && entry.getName().endsWith(".jar")) {
                         String jarName = entry.getName().substring("BOOT-INF/lib/".length());
                         Path targetJar = libDir.resolve(jarName);
-                        if (!Files.exists(targetJar) || Files.size(targetJar) != entry.getSize()) {
-                            try (InputStream is = jarFile.getInputStream(entry)) {
-                                Files.copy(is, targetJar, StandardCopyOption.REPLACE_EXISTING);
+                        try {
+                            if (!Files.exists(targetJar) || Files.size(targetJar) != entry.getSize()) {
+                                try (InputStream is = jarFile.getInputStream(entry)) {
+                                    Files.copy(is, targetJar, StandardCopyOption.REPLACE_EXISTING);
+                                }
+                            }
+                            outputEntries.add(targetJar.toString());
+                        } catch (IOException copyError) {
+                            if (Files.exists(targetJar)) {
+                                outputEntries.add(targetJar.toString());
+                                logger.warn("Using existing BOOT-INF lib {} after refresh failed: {}",
+                                        jarName, copyError.getMessage());
+                            } else {
+                                logger.warn("Skipping BOOT-INF lib {} after extraction failed: {}",
+                                        jarName, copyError.getMessage());
                             }
                         }
-                        outputEntries.add(targetJar.toString());
                     }
                 }
             }
@@ -1470,6 +1520,27 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
         // Propagate all ND4J/CUDA/threading/Triton env vars via central propagator
         SubprocessEnvironmentPropagator.propagateToEnvironment(pb.environment());
 
+        // Early native per-device memory bound (SD_MAX_DEVICE_BYTES). The matching physical ND4J cap
+        // is also emitted by placement.jvmFlags() as nd4j.environment.maxDeviceMemory.
+        placement.applyEnv(pb.environment());
+
+        // Bridge DSP capture-OOM knobs from the managed nd4j config (Nd4jEnvironmentConfigService
+        // exposes them as nd4j.dsp.* system properties) to the ND4J_DSP_* env vars libnd4j reads.
+        // Only VlmTestSubprocessLauncher did this before — the embedding lane's capture OOM
+        // (2026-07-05) prescribed -Dnd4j.dsp.captureWorkspaceMb with no way to deliver it here.
+        String dspCaptureWs = System.getProperty("nd4j.dsp.captureWorkspaceMb");
+        if (dspCaptureWs != null && !dspCaptureWs.isBlank()) {
+            pb.environment().put("ND4J_DSP_CAPTURE_WORKSPACE_MB", dspCaptureWs);
+        }
+        String dspProactiveEvict = System.getProperty("nd4j.dsp.proactiveEvict");
+        if (dspProactiveEvict != null && !dspProactiveEvict.isBlank()) {
+            pb.environment().put("ND4J_DSP_PROACTIVE_EVICT", Boolean.parseBoolean(dspProactiveEvict) ? "1" : "0");
+        }
+        String dspLruEviction = System.getProperty("nd4j.dsp.lruEviction");
+        if (dspLruEviction != null && !dspLruEviction.isBlank()) {
+            pb.environment().put("ND4J_DSP_LRU_EVICTION", Boolean.parseBoolean(dspLruEviction) ? "1" : "0");
+        }
+
         // ALWAYS clear DSP diagnostics for the embedding subprocess.
         // SubprocessEnvironmentPropagator propagates ND4J_DSP_DIAGNOSTICS and all ND4J_* vars
         // from the parent environment, which can enable ~970k [DSP_DIAG] native trace lines.
@@ -1524,8 +1595,8 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
         // Initialise per-run log writer (non-fatal if it fails)
         String logRunId = currentTaskId != null ? currentTaskId : UUID.randomUUID().toString();
         try {
-            SubprocessLogWriter slw = new SubprocessLogWriter("embedding", logRunId);
-            String workDir = pb.directory() != null ? pb.directory().getAbsolutePath() : null;
+            String workDir = pb.directory() != null ? pb.directory().getAbsolutePath() : System.getProperty("user.dir");
+            SubprocessLogWriter slw = new SubprocessLogWriter("embedding", logRunId, workDir);
             slw.writeStart(new SubprocessLogWriter.SubprocessRunContext(
                     currentTaskId,
                     command,
@@ -1694,6 +1765,7 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
             Integer drCudaDevice = this.deviceRoutingCudaDevice;
             Long drMaxDeviceMemory = this.deviceRoutingMaxDeviceMemory;
             boolean hasDeviceRouting = drMaxThreads != null || drCudaDevice != null || drMaxDeviceMemory != null;
+            boolean subprocDebug = Boolean.getBoolean("kompile.embedding.subprocess.nd4j.debug");
 
             try {
                 org.nd4j.linalg.factory.Environment env = org.nd4j.linalg.factory.Nd4j.getEnvironment();
@@ -1704,7 +1776,6 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
                     // adds ~10 seconds per single-text embed (string-format + IO per op).
                     // Embedding never needs per-op native tracing — use an explicit opt-in
                     // flag (kompile.embedding.subprocess.nd4j.debug=true) if you ever need it.
-                    boolean subprocDebug = Boolean.getBoolean("kompile.embedding.subprocess.nd4j.debug");
                     command.add("-Dnd4j.environment.verbose=false");
                     command.add("-Dnd4j.environment.debug=" + subprocDebug);
                     command.add("-Dnd4j.environment.profiling=" + env.isProfiling());
@@ -1725,17 +1796,10 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
                     command.add("-Dnd4j.environment.maxThreads=" + maxThreads);
                     command.add("-Dnd4j.environment.maxMasterThreads=" + maxMasterThreads);
 
-                    // Pass CUDA device override if specified by device routing
-                    if (drCudaDevice != null) {
-                        command.add("-Dnd4j.environment.cudaCurrentDevice=" + drCudaDevice);
-                        logger.info("Device routing: overriding CUDA device to {} for embedding subprocess",
-                                drCudaDevice);
-                    }
-
-                    // Pass max device memory override if specified
-                    if (drMaxDeviceMemory != null) {
-                        command.add("-Dnd4j.environment.maxDeviceMemory=" + drMaxDeviceMemory);
-                    }
+                    // Device selection + per-device memory bound are delivered DEVICE-AGNOSTICALLY via
+                    // the shared base infra: placement.jvmFlags() adds backend/device flags and the
+                    // nd4j.environment.maxDeviceMemory carrier, while placement.applyEnv() adds the early
+                    // native SD_MAX_DEVICE_BYTES bridge. NEVER CUDA_VISIBLE_DEVICES.
 
                     logger.info("Passed all ND4J environment config to subprocess (with device routing: {})",
                             hasDeviceRouting ? "enabled" : "disabled");
@@ -1757,7 +1821,11 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
                 "mkl.",                // MKL properties if used
             };
 
+            command.add("-Dorg.bytedeco.javacpp.logger.debug=" + subprocDebug);
             for (String key : System.getProperties().stringPropertyNames()) {
+                if ("org.bytedeco.javacpp.logger.debug".equals(key)) {
+                    continue;
+                }
                 for (String prefix : propertyPrefixes) {
                     if (key.startsWith(prefix)) {
                         String value = System.getProperty(key);
@@ -1768,6 +1836,18 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
                         break;
                     }
                 }
+            }
+
+            // Device-agnostic backend/device/cap delivery from the shared base infra — added AFTER the
+            // inherited-property loop so scheduler placement always wins over any parent org.nd4j.*
+            // priority or environment cap. No CUDA_VISIBLE_DEVICES or vendor env.
+            command.addAll(placement.jvmFlags());
+
+            // Add nd4j.backend.memory.fallback=true unless parent already set it.
+            // When CUDA context is poisoned, this allows BackendManager to attempt CPU fallback.
+            if (System.getProperty("nd4j.backend.memory.fallback") == null) {
+                command.add("-Dnd4j.backend.memory.fallback=true");
+                logger.debug("Added -Dnd4j.backend.memory.fallback=true to embedding subprocess command");
             }
 
             // Pass staging configuration to subprocess so it can find models
@@ -1980,6 +2060,29 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
         logger.info("Embedding subprocess stopped");
     }
 
+    /** Returns true if the embedding lane was permanently disabled due to a device-level CUDA error. */
+    public boolean isLaneUnavailable() { return laneUnavailable.get(); }
+
+    private void stopAndKillCurrentProcess() {
+        Process p = this.process;
+        if (p != null && p.isAlive()) {
+            p.destroy();
+            try {
+                if (!p.waitFor(5, TimeUnit.SECONDS)) {
+                    p.destroyForcibly();
+                }
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                p.destroyForcibly();
+            }
+        }
+        if (subprocessRegistry != null) {
+            subprocessRegistry.deregister("embedding");
+        }
+        running.set(false);
+        modelLoaded = false;
+    }
+
     /**
      * Load a model in the subprocess.
      */
@@ -2080,11 +2183,24 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
      * Embed a batch of texts.
      */
     public CompletableFuture<List<float[]>> embedBatch(List<String> texts) {
+        return embedBatch(texts, requestTimeoutMs);
+    }
+
+    /**
+     * Embed a batch of texts using a caller-selected launcher timeout.
+     *
+     * <p>Batch embedding can legitimately exceed the short general request timeout on
+     * CPU fixed-shape SameDiff runs. The model layer owns the user-visible batch
+     * timeout while holding the heavy-memory gate; this method lets it prevent the
+     * lower-level request correlator from expiring first and discarding a valid late
+     * response.</p>
+     */
+    public CompletableFuture<List<float[]>> embedBatch(List<String> texts, long effectiveTimeoutMs) {
         String requestId = UUID.randomUUID().toString();
         EmbeddingSubprocessMessage.EmbedBatchRequest request =
             new EmbeddingSubprocessMessage.EmbedBatchRequest(requestId, texts);
 
-        return sendRequest(request, requestId)
+        return sendRequest(request, requestId, effectiveTimeoutMs)
             .thenApply(msg -> {
                 if (msg instanceof EmbeddingSubprocessMessage.EmbedBatchResponse resp) {
                     if (resp.success()) {
@@ -2193,6 +2309,11 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
      */
     private CompletableFuture<EmbeddingSubprocessMessage> sendRequest(
             EmbeddingSubprocessMessage request, String requestId, long effectiveTimeoutMs) {
+
+        if (laneUnavailable.get()) {
+            return CompletableFuture.failedFuture(
+                new IllegalStateException("Embedding lane unavailable: device-level CUDA error was encountered; subprocess will not be restarted"));
+        }
 
         if (!running.get()) {
             return CompletableFuture.failedFuture(
@@ -2317,10 +2438,12 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
      */
     private void readOutput() {
         String line;
+        boolean streamEnded = false;
         try {
             while (!Thread.currentThread().isInterrupted() && processStdout != null) {
                 line = processStdout.readLine();
                 if (line == null) {
+                    streamEnded = true;
                     break; // Stream closed
                 }
 
@@ -2367,6 +2490,11 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
                 logger.error("Error reading subprocess output: {}", e.getMessage());
                 handleSubprocessCrash();
             }
+        }
+
+        if (streamEnded && !shuttingDown.get() && running.get()) {
+            logger.error("Subprocess stdout closed unexpectedly while launcher was running");
+            handleSubprocessCrash();
         }
 
         logger.info("Output reader thread exiting");
@@ -2693,6 +2821,27 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
             }
         }
 
+        // Device-level CUDA error — mark lane permanently unavailable, no restart.
+        if (exitCode == DEVICE_ERROR_EXIT_CODE) {
+            logger.error("[EmbeddingLauncher] Subprocess exited with DEVICE_ERROR (code {}): CUDA context was " +
+                    "poisoned (error 700 or allocation failure cascade). Marking embedding lane as permanently " +
+                    "unavailable — will NOT restart.", DEVICE_ERROR_EXIT_CODE);
+            laneUnavailable.set(true);
+            RuntimeException laneDeadEx = new RuntimeException(
+                    "Embedding lane unavailable: subprocess exited with DEVICE_ERROR (CUDA context poisoned)");
+            for (CompletableFuture<EmbeddingSubprocessMessage> future : pendingRequests.values()) {
+                future.completeExceptionally(laneDeadEx);
+            }
+            pendingRequests.clear();
+            running.set(false);
+            modelLoaded = false;
+            if (crashCallback != null) {
+                crashCallback.accept(laneDeadEx);
+            }
+            finaliseSubprocessLog("DEVICE_ERROR", exitCode, laneDeadEx.getMessage());
+            return; // no restart
+        }
+
         logger.error("Subprocess crashed (exit code {}): {}", exitCode, crashReason);
 
         // Finalise central log writer on crash
@@ -2767,8 +2916,19 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
         // Attempt restart with backoff
         try {
             Thread.sleep(backoffMs);
+            // Re-check shuttingDown AFTER the backoff sleep — stop() may have been called while we slept.
+            if (shuttingDown.get()) {
+                logger.info("[EmbeddingLauncher] Restart suppressed: shutdown was initiated during backoff sleep");
+                return;
+            }
             recentErrors.clear(); // Clear errors before restart
             start();
+            // Final re-check: if shutdown started while start() was running, stop the new process.
+            if (shuttingDown.get()) {
+                logger.warn("[EmbeddingLauncher] Shutdown detected immediately after subprocess restart — stopping new process");
+                stopAndKillCurrentProcess();
+                return;
+            }
 
             // Notify policy callback of successful restart (subprocess is running)
             if (restartPolicyCallback != null) {

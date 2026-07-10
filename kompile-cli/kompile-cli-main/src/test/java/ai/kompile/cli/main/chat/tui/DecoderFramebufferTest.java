@@ -30,7 +30,12 @@ class DecoderFramebufferTest {
 
     /** Push the agent screen through the decoder and render its transcript into a composed screen. */
     private static VirtualTerminal renderDecoded(VirtualTerminal agent, int rows, int cols) {
-        AgentTuiDecoder decoder = AgentTuiDecoder.forAgent("claude");
+        return renderDecoded("claude", agent, rows, cols);
+    }
+
+    /** Push the agent screen through the selected decoder and render its transcript. */
+    private static VirtualTerminal renderDecoded(String agentName, VirtualTerminal agent, int rows, int cols) {
+        AgentTuiDecoder decoder = AgentTuiDecoder.forAgent(agentName);
         decoder.observe(agent);
         String transcript = decoder.renderHistory();
 
@@ -39,14 +44,14 @@ class DecoderFramebufferTest {
         int regionRows = rows - 3;
         int inputRow = rows - 1;
         int statusRow = rows;
-        screen.feed("\033[1;1H\033[2Kkompile [claude]  session: demo  passthrough");
+        screen.feed("\033[1;1H\033[2Kkompile [" + agentName + "]  session: demo  passthrough");
         String[] lines = transcript.isEmpty() ? new String[0] : transcript.split("\n", -1);
         int startLine = Math.max(0, lines.length - regionRows);   // follow output → show the bottom
         for (int i = 0; i < regionRows && startLine + i < lines.length; i++) {
             screen.feed(String.format("\033[%d;1H\033[2K%s", top + i, lines[startLine + i]));
         }
-        screen.feed(String.format("\033[%d;1H\033[2Kkompile [claude] > ", inputRow));
-        screen.feed(String.format("\033[%d;1H\033[2Kkompile [claude] · idle · /quit exit", statusRow));
+        screen.feed(String.format("\033[%d;1H\033[2Kkompile [%s] > ", inputRow, agentName));
+        screen.feed(String.format("\033[%d;1H\033[2Kkompile [%s] · idle · /quit exit", statusRow, agentName));
         return screen;
     }
 
@@ -231,5 +236,65 @@ class DecoderFramebufferTest {
         assertTrue(fb.contains("grep(pattern=TODO)"), "the kompile invocation is preserved in the panel");
         assertTrue(fb.contains("I'll search the codebase"), "prose before the marker kept");
         assertTrue(fb.contains("Found 3 matches"), "prose after the marker kept, not swallowed");
+    }
+
+    @Test
+    @DisplayName("Framebuffer (decoder/codex): Codex chrome drops while bullet answer remains")
+    void decoderCodexSpecificChromeAndAnswer() throws Exception {
+        VirtualTerminal agent = new VirtualTerminal(20, 100);
+        agent.feed("\033[1;1H│ >_ OpenAI Codex (v0.142.4)                  │");
+        agent.feed("\033[2;1H│ model:     gpt-5.5 xhigh   /model to change │");
+        agent.feed("\033[4;1H› Reply with exactly READY-CODEX-RENDER");
+        agent.feed("\033[6;1H• READY-CODEX-RENDER");
+        agent.feed("\033[8;1H  gpt-5.5 xhigh · ~/Documents/GitHub/kompile");
+
+        VirtualTerminal screen = renderDecoded("codex", agent, 24, 100);
+        dump("decoder-codex-specific", screen);
+
+        String fb = screen.screenDump();
+        assertTrue(fb.contains("READY-CODEX-RENDER"), "Codex assistant answer kept");
+        assertFalse(fb.contains("OpenAI Codex"), "Codex welcome chrome filtered");
+        assertFalse(fb.contains("/model to change"), "Codex model chrome filtered");
+        assertFalse(fb.contains("Reply with exactly"), "Codex user echo filtered");
+    }
+
+    @Test
+    @DisplayName("Framebuffer (decoder/opencode): millisecond kompile result is a result panel")
+    void decoderOpenCodeKompileMillisecondResultBlock() throws Exception {
+        VirtualTerminal agent = new VirtualTerminal(20, 100);
+        agent.feed("\033[4;1H[kompile] read done (6ms)");
+
+        VirtualTerminal screen = renderDecoded("opencode", agent, 24, 100);
+        dump("decoder-opencode-kompile-ms-result", screen);
+
+        String fb = screen.screenDump();
+        assertTrue(fb.contains("[tool-result]"), "OpenCode kompile marker becomes a result panel");
+        assertTrue(fb.contains("read done"), "millisecond tool result text is preserved");
+    }
+
+    @Test
+    @DisplayName("Framebuffer (decoder/opencode): heavy-frame thinking rows are hidden")
+    void decoderOpenCodeDropsHeavyFrameThinkingRows() throws Exception {
+        VirtualTerminal agent = new VirtualTerminal(20, 100);
+        agent.feed("\033[4;1H┃  Thinking: The user asks for an exact token.");
+        agent.feed("\033[5;1H┃  underscores. So the result would be: KOMP_LIVE_RENDER_DONE");
+        agent.feed("\033[6;1HKOMP_LIVE_RENDER_DONE");
+
+        VirtualTerminal screen = renderDecoded("opencode", agent, 24, 100);
+        dump("decoder-opencode-heavy-frame-thinking", screen);
+
+        String fb = screen.screenDump();
+        assertTrue(fb.contains("KOMP_LIVE_RENDER_DONE"), "final OpenCode answer kept");
+        assertFalse(fb.contains("Thinking:"), "OpenCode thinking frame leaked");
+        assertFalse(fb.contains("So the result would be"), "OpenCode thinking continuation leaked");
+        assertTrue(countOccurrences(fb, "KOMP_LIVE_RENDER_DONE") == 1, "token should render once:\n" + fb);
+    }
+
+    private static int countOccurrences(String text, String needle) {
+        int count = 0;
+        for (int idx = text.indexOf(needle); idx >= 0; idx = text.indexOf(needle, idx + needle.length())) {
+            count++;
+        }
+        return count;
     }
 }

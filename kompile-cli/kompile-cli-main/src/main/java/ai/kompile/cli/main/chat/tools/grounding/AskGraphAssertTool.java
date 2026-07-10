@@ -10,7 +10,6 @@
 package ai.kompile.cli.main.chat.tools.grounding;
 
 import ai.kompile.cli.main.chat.tools.CliTool;
-import ai.kompile.cli.main.chat.tools.KompileBackendClient;
 import ai.kompile.cli.main.chat.tools.McpToolAnnotations;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolExecutionException;
@@ -19,8 +18,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
-import java.net.ConnectException;
-import java.time.Duration;
 import java.util.Map;
 
 /**
@@ -34,15 +31,18 @@ import java.util.Map;
  */
 public class AskGraphAssertTool implements CliTool {
 
-    private final KompileBackendClient backend;
+    private final GroundingBackendClient groundingClient;
     private final ObjectMapper objectMapper;
 
     public AskGraphAssertTool(String baseUrl, ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
-        this.backend = KompileBackendClient.getInstance();
-        if (baseUrl != null && !baseUrl.isEmpty()) {
-            backend.setBaseUrl(baseUrl);
-        }
+        this.groundingClient = new GroundingBackendClient(baseUrl);
+    }
+
+    /** Visible for testing — lets a {@code MockRestServiceServer} intercept HTTP calls. */
+    AskGraphAssertTool(GroundingBackendClient groundingClient, ObjectMapper objectMapper) {
+        this.objectMapper = objectMapper;
+        this.groundingClient = groundingClient;
     }
 
     @Override
@@ -113,7 +113,7 @@ public class AskGraphAssertTool implements CliTool {
             return ToolResult.error("value must be a number in [0,1]");
         }
 
-        if (!backend.isAvailable()) {
+        if (!groundingClient.isAvailable()) {
             return ToolResult.error("ask_graph_assert requires a running kompile-app.");
         }
 
@@ -126,8 +126,8 @@ public class AskGraphAssertTool implements CliTool {
             if (!params.path("source").isMissingNode())          body.set("source", params.get("source"));
             if (!params.path("expectedVersion").isMissingNode()) body.set("expectedVersion", params.get("expectedVersion"));
 
-            var resp = backend.post("/api/kb-grounding/assert",
-                    objectMapper.writeValueAsString(body), Duration.ofSeconds(30));
+            var resp = groundingClient.post("/api/kb-grounding/assert",
+                    objectMapper.writeValueAsString(body));
 
             if (resp.statusCode() != 200) {
                 return ToolResult.error("ask_graph_assert failed (HTTP " + resp.statusCode() + "): "
@@ -157,8 +157,6 @@ public class AskGraphAssertTool implements CliTool {
             return ToolResult.success("ask_graph_assert: " + atom, sb.toString(),
                     Map.of("status", status, "version", version, "stale", stale));
 
-        } catch (ConnectException e) {
-            return ToolResult.error("Cannot connect to kompile-app. " + e.getMessage());
         } catch (Exception e) {
             return ToolResult.error("ask_graph_assert error: " + e.getMessage());
         }

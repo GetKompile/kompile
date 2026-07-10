@@ -17,12 +17,14 @@
 package ai.kompile.process.workflow;
 
 import ai.kompile.process.ontology.ProvenanceCitation;
+import ai.kompile.process.release.ExecutableRef;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.io.Serializable;
 import java.util.List;
 import java.util.Map;
 
@@ -35,13 +37,21 @@ import java.util.Map;
 @AllArgsConstructor
 @NoArgsConstructor
 @JsonInclude(JsonInclude.Include.NON_NULL)
-public class ProcessStep {
+public class ProcessStep implements Serializable {
+
+    private static final long serialVersionUID = 1L;
 
     /** Hierarchical step ID, e.g., "1.1", "2.3". */
     private String id;
     private String name;
     private String description;
     private StepType stepType;
+    /**
+     * Immutable executable bound during publishing. When present, release execution resolves this
+     * reference instead of mutable inline script/workflow fields. Inline fields remain supported
+     * for draft and legacy definitions during migration.
+     */
+    private ExecutableRef executableRef;
     private StepTrigger trigger;
     /** Keys of data items consumed by this step. */
     private List<String> inputKeys;
@@ -89,6 +99,14 @@ public class ProcessStep {
     private String scriptBody;
     /** Key in runData where the script result is stored (default: "scriptResult"). */
     private String scriptOutputKey;
+
+    // ---- AGENT_SESSION configuration ----
+    /** Inline prompt template; a pinned AGENT_SESSION artifact takes precedence when present. */
+    private String agentPromptTemplate;
+    /** runData key containing an existing conversation ID to resume. */
+    private String conversationIdKey;
+    /** runData key where the structured agent response is stored. */
+    private String conversationOutputKey;
 
     // ---- EXCEL_COMPUTE configuration ----
     /** SpreadsheetGraph JSON from kompile-loader-excel. Contains all cells, formulas, and dependencies. */

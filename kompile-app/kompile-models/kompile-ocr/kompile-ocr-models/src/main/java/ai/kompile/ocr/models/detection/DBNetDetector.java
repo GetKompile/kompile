@@ -213,13 +213,16 @@ public class DBNetDetector extends AbstractSameDiffOcrModel implements TextDetec
         int height = (int) binary.size(2);
         int width = (int) binary.size(3);
 
-        // Simple horizontal scanning for text regions
+        // Simple horizontal scanning for text regions. Copy the binary map to host once;
+        // scalar getFloat(...) in this loop can force one device sync per pixel on CUDA.
+        float[] binaryMask = binary.ravel('c').data().asFloat();
         boolean inRegion = false;
         int regionStart = 0;
 
         for (int y = 0; y < height; y += 10) {
+            int rowOffset = y * width;
             for (int x = 0; x < width; x++) {
-                float val = binary.getFloat(0, 0, y, x);
+                float val = binaryMask[rowOffset + x];
                 if (val > 0.5 && !inRegion) {
                     inRegion = true;
                     regionStart = x;

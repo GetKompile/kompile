@@ -17,6 +17,7 @@
 package ai.kompile.staging.archive;
 
 import ai.kompile.modelmanager.registry.ModelEntry;
+import ai.kompile.utils.FormatUtils;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.AllArgsConstructor;
@@ -324,13 +325,7 @@ public class ArchiveManifest {
                 archiveId != null ? archiveId : "unnamed",
                 contentVersion != null ? contentVersion : "unknown",
                 modelCount,
-                formatBytes(totalSizeBytes));
+                FormatUtils.formatBytes(totalSizeBytes));
     }
 
-    private String formatBytes(long bytes) {
-        if (bytes < 1024) return bytes + " B";
-        if (bytes < 1024 * 1024) return String.format("%.1f KB", bytes / 1024.0);
-        if (bytes < 1024 * 1024 * 1024) return String.format("%.1f MB", bytes / (1024.0 * 1024));
-        return String.format("%.2f GB", bytes / (1024.0 * 1024 * 1024));
-    }
 }

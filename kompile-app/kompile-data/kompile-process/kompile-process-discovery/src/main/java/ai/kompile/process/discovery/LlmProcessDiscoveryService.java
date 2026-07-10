@@ -21,7 +21,6 @@ import ai.kompile.core.graphrag.agent.ExtractionLlmServiceRegistry;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -60,18 +59,12 @@ public class LlmProcessDiscoveryService {
 
     private final KnowledgeGraphService knowledgeGraphService;
     private final ExtractionLlmServiceRegistry llmServiceRegistry;
-    private GraphNodeRepository graphNodeRepository;
 
     @Autowired
     public LlmProcessDiscoveryService(KnowledgeGraphService knowledgeGraphService,
                                        ExtractionLlmServiceRegistry llmServiceRegistry) {
         this.knowledgeGraphService = knowledgeGraphService;
         this.llmServiceRegistry = llmServiceRegistry;
-    }
-
-    @Autowired(required = false)
-    public void setGraphNodeRepository(GraphNodeRepository graphNodeRepository) {
-        this.graphNodeRepository = graphNodeRepository;
     }
 
     /**
@@ -257,20 +250,14 @@ public class LlmProcessDiscoveryService {
         List<GraphNode> snippets = new ArrayList<>();
         Set<String> seenNodeIds = new HashSet<>();
 
-        if (graphNodeRepository != null) {
-            // Use repository for efficient fact-sheet-scoped queries
-            for (NodeLevel level : List.of(NodeLevel.DOCUMENT, NodeLevel.ENTITY, NodeLevel.TABLE)) {
-                List<GraphNode> levelNodes = graphNodeRepository.findByFactSheetIdAndNodeType(factSheetId, level);
-                for (GraphNode n : levelNodes) {
-                    if (seenNodeIds.add(n.getNodeId())) nodes.add(n);
-                    if (nodes.size() >= MAX_NODES_FOR_CONTEXT) break;
-                }
+        // Use KnowledgeGraphService for fact-sheet-scoped queries
+        for (NodeLevel level : List.of(NodeLevel.DOCUMENT, NodeLevel.ENTITY, NodeLevel.TABLE)) {
+            List<GraphNode> levelNodes = knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, level);
+            for (GraphNode n : levelNodes) {
+                if (seenNodeIds.add(n.getNodeId())) nodes.add(n);
                 if (nodes.size() >= MAX_NODES_FOR_CONTEXT) break;
             }
-        } else {
-            // Fallback: collect all node IDs for the fact sheet via KG service
-            log.warn("GraphNodeRepository not available for fact-sheet context — falling back to global search");
-            return buildGraphContext(null);
+            if (nodes.size() >= MAX_NODES_FOR_CONTEXT) break;
         }
 
         // Fetch SNIPPET children for DOCUMENT nodes
@@ -352,7 +339,7 @@ public class LlmProcessDiscoveryService {
             // Group snippets by parent document
             Map<String, List<GraphNode>> snippetsByParent = new LinkedHashMap<>();
             for (GraphNode snippet : ctx.snippets) {
-                String parentId = snippet.getParent() != null ? snippet.getParent().getNodeId() : "unknown";
+                String parentId = snippet.getParentId() != null ? snippet.getParentId() : "unknown";
                 snippetsByParent.computeIfAbsent(parentId, k -> new ArrayList<>()).add(snippet);
             }
 
@@ -379,13 +366,22 @@ public class LlmProcessDiscoveryService {
             }
         }
 
-        // Serialize edges
+        // Serialize edges. Endpoints resolve against ctx.nodes: store-loaded edges embed hollow
+        // id-only nodes, and nodeRef on those would feed the LLM raw ids instead of titles.
         sb.append("\n=== KNOWLEDGE GRAPH EDGES ===\n");
+        Map<String, GraphNode> promptNodesById = new HashMap<>();
+        for (GraphNode n : ctx.nodes) {
+            if (n.getNodeId() != null) {
+                promptNodesById.put(n.getNodeId(), n);
+            }
+        }
         for (GraphEdge edge : ctx.edges) {
+            GraphNode src = promptNodesById.getOrDefault(edge.getSourceNodeId(), edge.getSourceNode());
+            GraphNode tgt = promptNodesById.getOrDefault(edge.getTargetNodeId(), edge.getTargetNode());
             sb.append("Edge: ");
-            sb.append(nodeRef(edge.getSourceNode()));
+            sb.append(nodeRef(src));
             sb.append(" --[").append(edge.getLabel() != null ? edge.getLabel() : "RELATED_TO").append("]--> ");
-            sb.append(nodeRef(edge.getTargetNode()));
+            sb.append(nodeRef(tgt));
             if (edge.getDescription() != null) {
                 sb.append(" (").append(StringUtils.truncate(edge.getDescription(), 100)).append(")");
             }

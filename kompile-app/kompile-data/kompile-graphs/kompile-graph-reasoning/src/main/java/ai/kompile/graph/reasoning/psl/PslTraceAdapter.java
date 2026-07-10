@@ -18,6 +18,7 @@ import ai.kompile.graph.reasoning.fol.FactStore;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 /**
  * Adapts a {@link HlMrfMapInference.Result} for one target atom into a
@@ -140,7 +141,7 @@ public final class PslTraceAdapter {
      */
     private static Step buildRuleStep(HlMrfMapInference.AtomAttribution attr,
                                       FactStore factStore,
-                                      java.util.Map<String, Double> values) {
+                                      Map<String, Double> values) {
         GroundRule gr = attr.rule();
         double d = attr.distanceToSatisfaction();
         double pot = attr.weightedPotential();

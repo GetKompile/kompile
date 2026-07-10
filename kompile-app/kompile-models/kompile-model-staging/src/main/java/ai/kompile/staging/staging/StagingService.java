@@ -22,7 +22,9 @@ import ai.kompile.staging.download.*;
 import ai.kompile.staging.download.DownloadProgress;
 import ai.kompile.staging.optimization.OptimizationService;
 import ai.kompile.staging.web.dto.StageWithOptimizationRequest;
+import ai.kompile.staging.web.dto.TrainingArtifactStageRequest;
 import ai.kompile.modelmanager.registry.*;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import ai.kompile.core.staging.StagingModelInfo;
 import ai.kompile.core.staging.StagingStatus;
 import org.slf4j.Logger;
@@ -49,11 +51,13 @@ import java.util.function.Consumer;
 public class StagingService implements ai.kompile.core.staging.StagingServiceApi {
 
     private static final Logger log = LoggerFactory.getLogger(StagingService.class);
+    private static final String TRAINING_ARTIFACT_MANIFEST_FILE = "training-artifact.json";
 
     private final RegistryService registryService;
     private final ConversionService conversionService;
     private final List<DownloadService> downloadServices;
     private final OptimizationService optimizationService;
+    private final ObjectMapper objectMapper = new ObjectMapper();
     private final Path stagingDir;
     private final Path modelsDir;
 
@@ -131,6 +135,20 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
             progressCallback.accept(info);
 
             Path pendingDir = stagingDir.resolve("pending").resolve(modelId);
+
+            // Clean up any stale workspace left by a prior failed or cancelled attempt.
+            // Without this, a previous partial download/conversion can leave artifacts
+            // (e.g. a half-written .onnx file) that cause the ONNX importer to encounter
+            // duplicate variable registrations on the next run.
+            if (Files.exists(pendingDir)) {
+                log.info("Cleaning stale pending workspace for model {} before re-attempt", modelId);
+                try {
+                    deleteDirectory(pendingDir);
+                } catch (IOException delEx) {
+                    log.warn("Could not clean stale pending workspace for {}: {}", modelId, delEx.getMessage());
+                }
+            }
+
             DownloadResult downloadResult = download(request, pendingDir, dlProgress -> {
                 if (dlProgress.getPhase() == DownloadProgress.Phase.DOWNLOADING) {
                     // Map download 0-100% to staging 5-35%
@@ -159,7 +177,7 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
             Path modelPath = downloadResult.getModelPath();
             Path outputPath;
 
-            if (needsConversion(modelPath)) {
+            if (shouldConvert(modelPath, request.getModelType(), request.getFormat())) {
                 info.withStatus(StagingStatus.CONVERTING, 40, "Converting to SameDiff format");
                 progressCallback.accept(info);
 
@@ -175,19 +193,24 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
                 outputPath = modelPath;
             }
 
-            // 2b. Download tokenizer if needed (GGUF models don't include HF tokenizer.json)
-            if (needsConversion(modelPath)) {
+            // 2b. Download tokenizer if needed for converted artifacts.
+            if (shouldConvert(modelPath, request.getModelType(), request.getFormat())) {
                 ensureTokenizer(request, pendingDir, modelPath);
             }
 
-            // 3. Validate
+            // 3. Validate SameDiff artifacts. VLM pipeline manifests are validated by their
+            // pipeline loader at runtime and must not be loaded as SameDiff graphs.
             info.withStatus(StagingStatus.VALIDATING, 70, "Validating model");
             progressCallback.accept(info);
 
-            ConversionService.ValidationResult validationResult = conversionService.validate(outputPath);
-            if (!validationResult.isValid()) {
-                moveToFailed(pendingDir, modelId);
-                return info.failed("Validation failed: " + validationResult.getErrorMessage());
+            if (requiresSameDiffValidation(outputPath, request.getModelType(), request.getFormat())) {
+                ConversionService.ValidationResult validationResult = conversionService.validate(outputPath);
+                if (!validationResult.isValid()) {
+                    moveToFailed(pendingDir, modelId);
+                    return info.failed("Validation failed: " + validationResult.getErrorMessage());
+                }
+            } else {
+                log.info("Skipping SameDiff validation for non-SameDiff model artifact: {}", outputPath);
             }
 
             // 4. Move to verified staging
@@ -205,6 +228,9 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
 
         } catch (Exception e) {
             log.error("Staging failed for model {}", modelId, e);
+            // Move any partial pending workspace to failed so it does not accumulate
+            // and confuse a subsequent re-staging attempt for the same model.
+            moveToFailed(stagingDir.resolve("pending").resolve(modelId), modelId);
             return info.failed("Staging failed: " + e.getMessage());
         }
     }
@@ -235,7 +261,7 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
             }
 
             // Create production directory
-            ModelType type = info.getType() instanceof ModelType ? (ModelType) info.getType() : ModelType.ENCODER;
+            ModelType type = info.getType() instanceof ModelType ? (ModelType) info.getType() : ModelType.DENSE_ENCODER;
             Path productionDir = modelsDir.resolve(type.getDirectoryName()).resolve(modelId);
             Files.createDirectories(productionDir);
 
@@ -376,6 +402,10 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
             log.debug("No vision encoder model file found for probing in {}", productionDir);
             return;
         }
+        if (!isSameDiffArtifact(visionEncoderFile)) {
+            log.debug("Skipping vision encoder IO probe for non-SameDiff artifact: {}", visionEncoderFile);
+            return;
+        }
 
         try {
             log.info("Auto-probing vision encoder IO config from: {}", visionEncoderFile);
@@ -471,6 +501,246 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
     }
 
     /**
+     * Stage a completed training artifact manifest into verified staging, optionally promoting it.
+     */
+    public StagingModelInfo stageTrainingArtifact(TrainingArtifactStageRequest request) {
+        if (request == null) {
+            throw new IllegalArgumentException("Training artifact staging request is required");
+        }
+
+        Path manifestPath = resolveTrainingArtifactManifestPath(request);
+        Map<String, Object> manifest = readTrainingArtifactManifest(manifestPath);
+        Path outputDir = resolveTrainingArtifactOutputDir(request, manifestPath, manifest);
+        Path modelFile = resolveTrainingArtifactModelFile(outputDir, manifest);
+        String modelId = sanitizeModelId(firstNonBlank(
+                request.getModelId(),
+                stringValue(manifest.get("trainedModelId")),
+                stringValue(manifest.get("modelId"))));
+        ModelType modelType = resolveTrainingArtifactModelType(request, manifest, modelFile);
+
+        StagingModelInfo info = StagingModelInfo.create(modelId, "training-artifact:" + manifestPath, modelType);
+        stagingModels.put(modelId, info);
+        emitStagingStatus(modelId, info);
+
+        Path verifiedDir = stagingDir.resolve("verified").resolve(modelId);
+        try {
+            if (Files.exists(verifiedDir)) {
+                deleteDirectory(verifiedDir);
+            }
+            copyTrainingArtifactFiles(outputDir, manifestPath, modelFile, verifiedDir);
+
+            info.setCurrentFile(modelFile.getFileName().toString());
+            info.withStatus(StagingStatus.READY, 100, "Training artifact ready for promotion");
+            emitStagingStatus(modelId, info);
+
+            if (request.isAutoPromote()) {
+                info.withStatus(StagingStatus.PROMOTING, 95, "Promoting training artifact to registry");
+                emitStagingStatus(modelId, info);
+                boolean promoted = promoteModel(modelId, buildTrainingArtifactMetadata(manifest, request, modelId));
+                if (promoted) {
+                    info.completed();
+                } else {
+                    info.withStatus(StagingStatus.READY, 100, "Training artifact ready for manual promotion");
+                    emitStagingStatus(modelId, info);
+                }
+            }
+        } catch (Exception e) {
+            log.error("Failed to stage training artifact {} from {}", modelId, manifestPath, e);
+            moveToFailed(verifiedDir, modelId);
+            info.failed("Training artifact staging failed: " + e.getMessage());
+            emitStagingStatus(modelId, info);
+        }
+
+        return info;
+    }
+
+    private Path resolveTrainingArtifactManifestPath(TrainingArtifactStageRequest request) {
+        String manifestPath = request.getManifestPath();
+        if (isBlank(manifestPath) && !isBlank(request.getOutputDir())) {
+            manifestPath = Paths.get(request.getOutputDir()).resolve(TRAINING_ARTIFACT_MANIFEST_FILE).toString();
+        }
+        if (isBlank(manifestPath)) {
+            throw new IllegalArgumentException("manifestPath or outputDir is required");
+        }
+
+        Path resolved = Paths.get(manifestPath).toAbsolutePath().normalize();
+        if (!Files.isRegularFile(resolved)) {
+            throw new IllegalArgumentException("Training artifact manifest not found: " + resolved);
+        }
+        return resolved;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> readTrainingArtifactManifest(Path manifestPath) {
+        try {
+            Object parsed = objectMapper.readValue(manifestPath.toFile(), Map.class);
+            if (!(parsed instanceof Map)) {
+                throw new IllegalArgumentException("Training artifact manifest must be a JSON object: " + manifestPath);
+            }
+            return (Map<String, Object>) parsed;
+        } catch (IOException e) {
+            throw new IllegalArgumentException("Unable to read training artifact manifest: " + manifestPath, e);
+        }
+    }
+
+    private Path resolveTrainingArtifactOutputDir(TrainingArtifactStageRequest request,
+                                                  Path manifestPath,
+                                                  Map<String, Object> manifest) {
+        String outputDir = firstNonBlank(request.getOutputDir(), stringValue(manifest.get("outputDir")));
+        Path resolved = isBlank(outputDir)
+                ? manifestPath.getParent()
+                : Paths.get(outputDir).toAbsolutePath().normalize();
+        if (!Files.isDirectory(resolved)) {
+            throw new IllegalArgumentException("Training artifact output directory not found: " + resolved);
+        }
+        return resolved;
+    }
+
+    private Path resolveTrainingArtifactModelFile(Path outputDir, Map<String, Object> manifest) {
+        List<Path> candidates = new ArrayList<>();
+        String modelPath = stringValue(manifest.get("modelPath"));
+        if (!isBlank(modelPath)) {
+            Path candidate = Paths.get(modelPath);
+            if (!candidate.isAbsolute()) {
+                candidate = outputDir.resolve(candidate);
+            }
+            candidates.add(candidate.toAbsolutePath().normalize());
+        }
+
+        String modelFile = stringValue(manifest.get("modelFile"));
+        if (!isBlank(modelFile)) {
+            candidates.add(outputDir.resolve(modelFile).toAbsolutePath().normalize());
+        }
+
+        try {
+            Path discovered = findModelFile(outputDir);
+            if (discovered != null) {
+                candidates.add(discovered.toAbsolutePath().normalize());
+            }
+        } catch (IOException e) {
+            throw new IllegalArgumentException("Unable to inspect training artifact output directory: " + outputDir, e);
+        }
+
+        for (Path candidate : candidates) {
+            if (Files.isRegularFile(candidate)) {
+                return candidate;
+            }
+        }
+        throw new IllegalArgumentException("Training artifact model file not found in " + outputDir);
+    }
+
+    private ModelType resolveTrainingArtifactModelType(TrainingArtifactStageRequest request,
+                                                       Map<String, Object> manifest,
+                                                       Path modelFile) {
+        Map<String, Object> registrySuggestion = mapValue(manifest.get("registrySuggestion"));
+        String configuredType = firstNonBlank(
+                request.getModelType(),
+                stringValue(manifest.get("modelType")),
+                stringValue(registrySuggestion.get("modelType")),
+                stringValue(registrySuggestion.get("type")));
+        if (!isBlank(configuredType)) {
+            return ModelType.fromValue(configuredType);
+        }
+
+        String fileName = modelFile.getFileName().toString().toLowerCase(Locale.ROOT);
+        if (fileName.endsWith(".gguf") || fileName.endsWith(".ggml")) {
+            return ModelType.LLM_GGML;
+        }
+        return ModelType.DENSE_ENCODER;
+    }
+
+    private void copyTrainingArtifactFiles(Path outputDir,
+                                           Path manifestPath,
+                                           Path modelFile,
+                                           Path verifiedDir) throws IOException {
+        Files.createDirectories(verifiedDir);
+        Files.copy(modelFile, verifiedDir.resolve(modelFile.getFileName()), StandardCopyOption.REPLACE_EXISTING);
+        Files.copy(manifestPath, verifiedDir.resolve(TRAINING_ARTIFACT_MANIFEST_FILE), StandardCopyOption.REPLACE_EXISTING);
+
+        for (String artifactName : List.of(
+                "tokenizer.json",
+                "vocab.txt",
+                "sentencepiece.model",
+                "tokenizer_config.json",
+                "merges.txt",
+                "special_tokens_map.json",
+                "added_tokens.json")) {
+            Path optionalArtifact = outputDir.resolve(artifactName);
+            if (Files.isRegularFile(optionalArtifact)) {
+                Files.copy(optionalArtifact, verifiedDir.resolve(artifactName), StandardCopyOption.REPLACE_EXISTING);
+            }
+        }
+    }
+
+    private ModelMetadata buildTrainingArtifactMetadata(Map<String, Object> manifest,
+                                                        TrainingArtifactStageRequest request,
+                                                        String modelId) {
+        Map<String, Object> dataset = mapValue(manifest.get("dataset"));
+        String baseModelId = stringValue(manifest.get("baseModelId"));
+        String trainingType = stringValue(manifest.get("trainingType"));
+        String taskId = stringValue(manifest.get("taskId"));
+        String description = firstNonBlank(
+                request.getDescription(),
+                "Training artifact " + modelId + " from " + firstNonBlank(baseModelId, "unknown base model"));
+
+        return ModelMetadata.builder()
+                .framework("samediff")
+                .modelType(isBlank(trainingType) ? "trained" : trainingType.toLowerCase(Locale.ROOT))
+                .trainingData(firstNonBlank(
+                        stringValue(dataset.get("datasetId")),
+                        stringValue(dataset.get("sourcePath"))))
+                .sourceOrigin("training-artifact")
+                .sourceRepository(baseModelId)
+                .originalFormat(stringValue(manifest.get("modelFormat")))
+                .conversionDate(Instant.now().toString())
+                .description(description)
+                .version(taskId)
+                .build();
+    }
+
+    private Map<String, Object> mapValue(Object value) {
+        if (value instanceof Map<?, ?> rawMap) {
+            Map<String, Object> map = new LinkedHashMap<>();
+            rawMap.forEach((key, mapValue) -> map.put(String.valueOf(key), mapValue));
+            return map;
+        }
+        return Collections.emptyMap();
+    }
+
+    private String sanitizeModelId(String modelId) {
+        if (isBlank(modelId)) {
+            throw new IllegalArgumentException("Training artifact manifest is missing trainedModelId");
+        }
+        String sanitized = modelId.trim().replace('\\', '/');
+        int slash = sanitized.lastIndexOf('/');
+        if (slash >= 0) {
+            sanitized = sanitized.substring(slash + 1);
+        }
+        sanitized = sanitized.replaceAll("[^A-Za-z0-9_.-]", "-");
+        if (isBlank(sanitized)) {
+            throw new IllegalArgumentException("Training artifact model id is empty after sanitization");
+        }
+        return sanitized;
+    }
+
+    private String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (!isBlank(value)) {
+                return value.trim();
+            }
+        }
+        return null;
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.trim().isEmpty();
+    }
+
+    private String stringValue(Object value) {
+        return value == null ? null : String.valueOf(value);
+    }
+
+    /**
      * Stage a model from a local file path (skip download, go directly to conversion).
      *
      * @param modelId The model ID to use
@@ -483,10 +753,9 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
         Path modelPath = Paths.get(filePath);
         String source = "local:" + filePath;
 
-        // Infer model type from file extension
+        // Infer model type from file extension/format.
         String lowerName = modelPath.getFileName().toString().toLowerCase();
-        ModelType inferredType = (lowerName.endsWith(".gguf") || lowerName.endsWith(".ggml"))
-                ? ModelType.LLM_GGML : ModelType.DENSE_ENCODER;
+        ModelType inferredType = inferLocalModelType(lowerName, format);
 
         StagingModelInfo info = StagingModelInfo.create(modelId, source, inferredType);
         stagingModels.put(modelId, info);
@@ -497,6 +766,13 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
             try {
                 // 1. Set up pending directory
                 Path pendingDir = stagingDir.resolve("pending").resolve(modelId);
+                // Clean up stale workspace from a prior failed/cancelled attempt so that
+                // a re-staging run always gets a fresh directory.  Without this the ONNX
+                // importer can encounter duplicate-variable errors from leftover artifacts.
+                if (Files.exists(pendingDir)) {
+                    log.info("Cleaning stale pending workspace for model {} before re-attempt", modelId);
+                    deleteDirectory(pendingDir);
+                }
                 Files.createDirectories(pendingDir);
 
                 // Copy local file to pending directory
@@ -510,7 +786,7 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
 
                 // 2. Convert if needed
                 Path outputPath;
-                if (needsConversion(localModelPath)) {
+                if (shouldConvert(localModelPath, inferredType, format)) {
                     info.withStatus(StagingStatus.CONVERTING, 40, "Converting to SameDiff format");
 
                     // GGUF/GGML models convert to sharded .sdnb; others use single .sdz
@@ -542,14 +818,18 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
                     outputPath = localModelPath;
                 }
 
-                // 3. Validate
+                // 3. Validate SameDiff artifacts. VLM pipeline manifests are not SameDiff graphs.
                 info.withStatus(StagingStatus.VALIDATING, 70, "Validating model");
 
-                ConversionService.ValidationResult validationResult = conversionService.validate(outputPath);
-                if (!validationResult.isValid()) {
-                    moveToFailed(pendingDir, modelId);
-                    info.failed("Validation failed: " + validationResult.getErrorMessage());
-                    return;
+                if (requiresSameDiffValidation(outputPath, inferredType, format)) {
+                    ConversionService.ValidationResult validationResult = conversionService.validate(outputPath);
+                    if (!validationResult.isValid()) {
+                        moveToFailed(pendingDir, modelId);
+                        info.failed("Validation failed: " + validationResult.getErrorMessage());
+                        return;
+                    }
+                } else {
+                    log.info("Skipping SameDiff validation for non-SameDiff local model artifact: {}", outputPath);
                 }
 
                 // 4. Move to verified staging
@@ -574,6 +854,9 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
 
             } catch (Exception e) {
                 log.error("Staging failed for local model {}", modelId, e);
+                // Move partial pending workspace to failed so it doesn't accumulate
+                // and interfere with a future retry for the same model.
+                moveToFailed(stagingDir.resolve("pending").resolve(modelId), modelId);
                 info.failed("Staging failed: " + e.getMessage());
             }
         });
@@ -794,6 +1077,52 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
                 || name.endsWith(".ggml");
     }
 
+    private boolean shouldConvert(Path modelPath, ModelType type, String format) {
+        if (type != null && type.isVlm()) {
+            return false;
+        }
+        String normalizedFormat = format != null ? format.trim().toLowerCase(Locale.ROOT) : "";
+        if ("vlm".equals(normalizedFormat) || "vlm_pipeline".equals(normalizedFormat)) {
+            return false;
+        }
+        return needsConversion(modelPath);
+    }
+
+    private ModelType inferLocalModelType(String lowerName, String format) {
+        String normalizedFormat = format != null ? format.trim().toLowerCase(Locale.ROOT) : "";
+        if ("vlm".equals(normalizedFormat)
+                || "vlm_pipeline".equals(normalizedFormat)
+                || "pipeline.json".equals(lowerName)) {
+            return ModelType.VLM_PIPELINE;
+        }
+        if (lowerName != null && (lowerName.endsWith(".gguf") || lowerName.endsWith(".ggml"))) {
+            return ModelType.LLM_GGML;
+        }
+        return ModelType.DENSE_ENCODER;
+    }
+
+    private boolean requiresSameDiffValidation(Path modelPath, ModelType type, String format) {
+        if (type != null && type.isVlm()) {
+            return false;
+        }
+        String normalizedFormat = format != null ? format.trim().toLowerCase(Locale.ROOT) : "";
+        if ("vlm".equals(normalizedFormat) || "vlm_pipeline".equals(normalizedFormat)) {
+            return false;
+        }
+        return isSameDiffArtifact(modelPath);
+    }
+
+    private boolean isSameDiffArtifact(Path modelPath) {
+        if (modelPath == null || modelPath.getFileName() == null) {
+            return false;
+        }
+        String name = modelPath.getFileName().toString().toLowerCase(Locale.ROOT);
+        return name.endsWith(".sdz")
+                || name.endsWith(".fb")
+                || name.endsWith(".sdnb")
+                || (name.contains(".shard") && name.endsWith(".sdnb"));
+    }
+
     /**
      * Ensure a tokenizer.json exists in the staging directory for the model.
      * GGUF models embed tokenizer metadata but not in HuggingFace format.
@@ -956,8 +1285,8 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
      * Returns the shard-0 file if sharded, or a single .sdz/.fb file if present.
      */
     private Path findModelFile(Path dir) throws IOException {
-        // First check for a real single-file model (.sdz or .fb container)
-        Path single = findFile(dir, "model.sdz", ".fb");
+        // First check for VLM runtime artifacts or real single-file SameDiff model.
+        Path single = findFile(dir, "pipeline.json", "decoder_model_merged.onnx", "model.sdz", ".fb");
         if (single != null) return single;
 
         // Check for a single (non-sharded) .sdnb file with content

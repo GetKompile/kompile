@@ -12,10 +12,10 @@
   align-items: center;
   gap: 8px;
   padding: 10px 12px;
-  border: 1px solid #d55;
+  border: 1px solid var(--status-error-border);
   border-radius: 6px;
-  background: #fff3f3;
-  color: #8a1f1f;
+  background: var(--status-error-bg);
+  color: var(--status-error-text);
 }
 
 /* ── Init panel ─────────────────────────────────────────────────────────── */
@@ -73,7 +73,7 @@
   gap: 4px;
   padding: 4px 10px;
   border-radius: 16px;
-  background: #f0f4f8;
+  background: var(--bg-surface-elevated);
   font-size: 0.82rem;
   color: var(--text-secondary);
 }
@@ -85,7 +85,7 @@
 }
 
 .summary-chip mat-icon.dirty {
-  color: #e67e22;
+  color: var(--status-warning-icon);
 }
 
 .compact-select {
@@ -119,8 +119,8 @@
   min-height: 24px;
   padding: 2px 8px;
   border-radius: 6px;
-  background: #e8f2ff;
-  color: #174a7c;
+  background: var(--status-info-bg);
+  color: var(--status-info-text);
   font-size: 0.78rem;
   font-weight: 600;
 }
@@ -153,7 +153,7 @@
   width: 300px;
   min-width: 240px;
   max-width: 400px;
-  background: #fafbfc;
+  background: var(--bg-surface);
   border-right: 1px solid var(--border-color);
   overflow-y: auto;
   display: flex;
@@ -192,11 +192,11 @@
 }
 
 .tree-node:hover {
-  background: #e8f0fe;
+  background: var(--status-info-bg);
 }
 
 .tree-node.selected {
-  background: #d2e3fc;
+  background: var(--color-primary-light);
 }
 
 .tree-toggle-placeholder {
@@ -246,8 +246,8 @@
   height: 20px;
   padding: 0 6px;
   border-radius: 10px;
-  background: #e0e0e0;
-  color: #616161;
+  background: var(--status-neutral-bg);
+  color: var(--status-neutral-text);
   font-size: 0.7rem;
   font-weight: 600;
 }
@@ -360,7 +360,7 @@
 .detail-type {
   padding: 2px 8px;
   border-radius: 4px;
-  background: #f0f4f8;
+  background: var(--bg-surface-elevated);
   font-size: 0.72rem;
   text-transform: uppercase;
   color: var(--text-secondary);
@@ -377,7 +377,7 @@
   grid-template-columns: 140px 1fr;
   gap: 12px;
   padding: 8px 0;
-  border-bottom: 1px solid #f0f2f5;
+  border-bottom: 1px solid var(--border-color);
   align-items: start;
 }
 
@@ -418,7 +418,7 @@
 }
 
 .fact-card:hover {
-  background: #f4f6f8;
+  background: var(--bg-surface-elevated);
 }
 
 .fact-info {
@@ -460,7 +460,7 @@
 }
 
 .table-head {
-  background: #f0f4f8;
+  background: var(--bg-surface-elevated);
   color: var(--text-secondary);
   font-size: 0.78rem;
   font-weight: 700;
@@ -472,7 +472,7 @@
 }
 
 .table-row.clickable:hover {
-  background: #f4f6f8;
+  background: var(--bg-surface-elevated);
 }
 
 /* ── Add panel ──────────────────────────────────────────────────────────── */

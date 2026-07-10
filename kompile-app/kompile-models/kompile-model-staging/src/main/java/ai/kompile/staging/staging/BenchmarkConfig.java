@@ -19,6 +19,9 @@ package ai.kompile.staging.staging;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.AllArgsConstructor;
+
+import java.util.LinkedHashMap;
+import java.util.Map;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -61,6 +64,14 @@ public class BenchmarkConfig {
     @JsonProperty("validate_structure")
     @Builder.Default
     private boolean validateStructure = false;
+
+    /**
+     * Real benchmark input arrays keyed by SameDiff placeholder name.
+     * Relative paths resolve against the model file's parent directory.
+     */
+    @JsonProperty("sample_inputs")
+    @Builder.Default
+    private Map<String, String> sampleInputs = new LinkedHashMap<>();
 
     /**
      * Model ID of the baseline model to compare against.

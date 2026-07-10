@@ -30,7 +30,10 @@ import ai.kompile.app.services.VectorPopulationProgressTracker;
 import ai.kompile.app.services.subprocess.SubprocessCommandBuilder.MemoryOverrides;
 import ai.kompile.app.services.subprocess.SubprocessCommandBuilder.ThreadOverrides;
 import ai.kompile.app.services.subprocess.SubprocessRestartManager.FailureReason;
+import ai.kompile.app.subprocess.BackendConfigurable;
 import ai.kompile.app.subprocess.SubprocessMessage;
+import ai.kompile.app.subprocess.SubprocessPlacement;
+import ai.kompile.app.subprocess.SubprocessPlacementSupport;
 import ai.kompile.app.subprocess.VectorPopulationSubprocessArgs;
 import ai.kompile.app.web.dto.IngestProgressUpdate;
 import ai.kompile.app.web.dto.IngestProgressUpdate.IngestPhase;
@@ -73,9 +76,18 @@ import java.util.concurrent.ConcurrentHashMap;
  * - Monitors subprocess health via heartbeats
  */
 @Service
-public class VectorPopulationSubprocessLauncher {
+public class VectorPopulationSubprocessLauncher implements BackendConfigurable {
 
     private static final Logger logger = LoggerFactory.getLogger(VectorPopulationSubprocessLauncher.class);
+
+    /** Shared device-agnostic placement (same base infra every subprocess uses). */
+    private final SubprocessPlacementSupport placement = new SubprocessPlacementSupport();
+
+    /** {@link BackendConfigurable} — the scheduler assigns backend/device/memory before spawn. */
+    @Override
+    public void applyPlacement(SubprocessPlacement p) {
+        this.placement.applyPlacement(p);
+    }
 
     private static final String VECTOR_POPULATION_TOPIC = "/topic/vector-population/progress";
 
@@ -430,8 +442,14 @@ public class VectorPopulationSubprocessLauncher {
                 }
             }
 
-            // Build command via SubprocessCommandBuilder
-            List<String> command = commandBuilder.buildCommand(argsFile, memoryOverrides);
+            // Build command via SubprocessCommandBuilder (a shared bean — keep per-spawn placement in
+            // this launcher, not the bean). Inject device-agnostic backend/device flags right after the
+            // java executable (index 1), before -cp/main class. No CUDA_VISIBLE_DEVICES.
+            List<String> command = new ArrayList<>(commandBuilder.buildCommand(argsFile, memoryOverrides));
+            List<String> deviceFlags = placement.jvmFlags();
+            if (!deviceFlags.isEmpty()) {
+                command.addAll(1, deviceFlags);
+            }
             logger.info("Subprocess command: {}", String.join(" ", command));
 
             // Start process
@@ -440,6 +458,8 @@ public class VectorPopulationSubprocessLauncher {
 
             // Propagate ND4J environment variables with thread overrides
             commandBuilder.propagateNd4jEnvironment(processBuilder.environment(), threadOverrides);
+            // Device-agnostic per-device memory bound (SD_MAX_DEVICE_BYTES) — shared base infra.
+            placement.applyEnv(processBuilder.environment());
 
             // === GPU LIFECYCLE: Acquire GPU resources for this vector population job ===
             if (modelLifecycleManager != null && !modelLifecycleManager.hasJobGpuHold(taskId)) {
@@ -475,11 +495,14 @@ public class VectorPopulationSubprocessLauncher {
 
             // Open subprocess log writer (Phase 2 log aggregation)
             try {
-                SubprocessLogWriter logWriter = new SubprocessLogWriter("vector-population", taskId);
+                String workingDir = processBuilder.directory() != null
+                        ? processBuilder.directory().getAbsolutePath()
+                        : System.getProperty("user.dir");
+                SubprocessLogWriter logWriter = new SubprocessLogWriter("vector-population", taskId, workingDir);
                 String effectiveHeap = memoryOverrides.hasOverrides() && memoryOverrides.heapSize() != null
                         ? memoryOverrides.heapSize() : commandBuilder.getEffectiveHeapSize();
                 logWriter.writeStart(new SubprocessLogWriter.SubprocessRunContext(
-                        taskId, command, System.getProperty("user.dir"), process.pid(), effectiveHeap));
+                        taskId, command, workingDir, process.pid(), effectiveHeap));
                 handle.logWriter = logWriter;
             } catch (Exception e) {
                 logger.debug("[vector-pop-{}] Failed to open subprocess log writer: {}", taskId, e.getMessage());

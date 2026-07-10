@@ -17,6 +17,7 @@ import ai.kompile.graph.reasoning.model.ReasoningGraph;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 
@@ -130,12 +131,12 @@ public final class MinedRuleSignal {
      */
     private static boolean consequentMatchesPredicate(FolRule rule, String predicate) {
         String consequentDesc = rule.consequent().describe();
-        String lower = predicate.toLowerCase(java.util.Locale.ROOT);
-        if (consequentDesc.toLowerCase(java.util.Locale.ROOT).contains(lower)) {
+        String lower = predicate.toLowerCase(Locale.ROOT);
+        if (consequentDesc.toLowerCase(Locale.ROOT).contains(lower)) {
             return true;
         }
         // Also match against the rule name (e.g. "worksAt-locatedIn-basedIn" for predicate "basedIn")
-        String ruleName = rule.name().toLowerCase(java.util.Locale.ROOT);
+        String ruleName = rule.name().toLowerCase(Locale.ROOT);
         return ruleName.contains(lower);
     }
 

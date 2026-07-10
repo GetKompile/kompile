@@ -446,7 +446,7 @@ public class ChatImportCommand implements Callable<Integer> {
         SyncStats stats = new SyncStats();
         List<ChatSessionSummary> sessions;
         try {
-            sessions = ChatSourceRegistry.getInstance().require(sourceId).list();
+            sessions = ChatSourceRegistry.getInstance().require(sourceId).list(batch);
         } catch (Exception e) {
             System.err.println("[" + sourceId + "] list failed: " + e.getMessage());
             stats.errored++;

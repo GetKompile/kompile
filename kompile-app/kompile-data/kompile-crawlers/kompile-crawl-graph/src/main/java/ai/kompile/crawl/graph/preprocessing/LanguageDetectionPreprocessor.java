@@ -18,6 +18,8 @@ package ai.kompile.crawl.graph.preprocessing;
 
 import ai.kompile.core.crawl.graph.DocumentPreprocessor;
 import ai.kompile.core.crawl.graph.PreprocessingConfig;
+import ai.kompile.core.language.LanguageMetadata;
+import ai.kompile.core.language.LanguageSupport;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
@@ -43,8 +45,8 @@ public class LanguageDetectionPreprocessor implements DocumentPreprocessor {
 
     private static final Logger log = LoggerFactory.getLogger(LanguageDetectionPreprocessor.class);
 
-    public static final String META_DETECTED_LANGUAGE = "detected_language";
-    public static final String META_DETECTED_LANGUAGE_CONFIDENCE = "detected_language_confidence";
+    public static final String META_DETECTED_LANGUAGE = LanguageMetadata.DETECTED_LANGUAGE;
+    public static final String META_DETECTED_LANGUAGE_CONFIDENCE = LanguageMetadata.DETECTED_LANGUAGE_CONFIDENCE;
 
     // Character-class patterns for script-based fast classification
     private static final Pattern CJK_PATTERN = Pattern.compile("[\\u4e00-\\u9fff\\u3400-\\u4dbf]");
@@ -112,30 +114,33 @@ public class LanguageDetectionPreprocessor implements DocumentPreprocessor {
             if (text == null || text.isBlank()) continue;
 
             if (forceLanguage != null && !forceLanguage.isBlank()) {
-                doc.getMetadata().put(META_DETECTED_LANGUAGE, forceLanguage);
-                doc.getMetadata().put(META_DETECTED_LANGUAGE_CONFIDENCE, 1.0);
+                LanguageMetadata.putConfiguredLanguage(doc.getMetadata(), forceLanguage);
                 continue;
             }
 
-            // Use existing metadata language if present
-            Object existingLang = doc.getMetadata().get("language");
-            if (existingLang instanceof String lang && !lang.isBlank()) {
-                doc.getMetadata().put(META_DETECTED_LANGUAGE, lang.toLowerCase().substring(0, Math.min(2, lang.length())));
-                doc.getMetadata().put(META_DETECTED_LANGUAGE_CONFIDENCE, 0.9);
+            String existingLang = LanguageMetadata.canonicalLanguage(doc.getMetadata());
+            if (existingLang != null && !LanguageSupport.UNDETERMINED_LANGUAGE.equals(existingLang)) {
+                LanguageMetadata.putLanguage(doc.getMetadata(), existingLang,
+                        LanguageMetadata.languageConfidence(doc.getMetadata()).orElse(0.9),
+                        LanguageMetadata.SOURCE_HEADER, null);
                 continue;
             }
 
             String sample = text.length() > 2000 ? text.substring(0, 2000) : text;
 
             if (sample.length() < minLength) {
-                doc.getMetadata().put(META_DETECTED_LANGUAGE, "und"); // undetermined
-                doc.getMetadata().put(META_DETECTED_LANGUAGE_CONFIDENCE, 0.0);
+                LanguageMetadata.putLanguage(doc.getMetadata(), LanguageSupport.UNDETERMINED_LANGUAGE,
+                        0.0, LanguageMetadata.SOURCE_UNDETERMINED, "short_text");
                 continue;
             }
 
             DetectionResult result = detectLanguage(sample);
-            doc.getMetadata().put(META_DETECTED_LANGUAGE, result.language);
-            doc.getMetadata().put(META_DETECTED_LANGUAGE_CONFIDENCE, result.confidence);
+            if (LanguageSupport.UNDETERMINED_LANGUAGE.equals(result.language)) {
+                LanguageMetadata.putLanguage(doc.getMetadata(), result.language, result.confidence,
+                        LanguageMetadata.SOURCE_UNDETERMINED, "ambiguous_text");
+            } else {
+                LanguageMetadata.putDetectedLanguage(doc.getMetadata(), result.language, result.confidence);
+            }
         }
 
         log.debug("Language detection complete for {} documents", documents.size());
@@ -152,7 +157,7 @@ public class LanguageDetectionPreprocessor implements DocumentPreprocessor {
     }
 
     private DetectionResult detectByScript(String text) {
-        int totalChars = text.length();
+        int signalChars = Math.max(1, countLetterCodePoints(text));
         int cjk = countMatches(CJK_PATTERN, text);
         int hangul = countMatches(HANGUL_PATTERN, text);
         int hiragana = countMatches(HIRAGANA_PATTERN, text);
@@ -163,14 +168,15 @@ public class LanguageDetectionPreprocessor implements DocumentPreprocessor {
         int thai = countMatches(THAI_PATTERN, text);
 
         double threshold = 0.1;
+        int kana = hiragana + katakana;
 
-        if ((double) hangul / totalChars > threshold) return new DetectionResult("ko", 0.95);
-        if ((double) (hiragana + katakana) / totalChars > threshold) return new DetectionResult("ja", 0.95);
-        if ((double) cjk / totalChars > threshold) return new DetectionResult("zh", 0.85);
-        if ((double) cyrillic / totalChars > threshold) return new DetectionResult("ru", 0.80);
-        if ((double) arabic / totalChars > threshold) return new DetectionResult("ar", 0.85);
-        if ((double) devanagari / totalChars > threshold) return new DetectionResult("hi", 0.85);
-        if ((double) thai / totalChars > threshold) return new DetectionResult("th", 0.90);
+        if ((double) hangul / signalChars > threshold) return new DetectionResult("ko", 0.95);
+        if (kana > 0 && (double) (kana + cjk) / signalChars > threshold) return new DetectionResult("ja", 0.95);
+        if ((double) cjk / signalChars > threshold) return new DetectionResult("zh", 0.85);
+        if ((double) cyrillic / signalChars > threshold) return new DetectionResult("ru", 0.80);
+        if ((double) arabic / signalChars > threshold) return new DetectionResult("ar", 0.85);
+        if ((double) devanagari / signalChars > threshold) return new DetectionResult("hi", 0.85);
+        if ((double) thai / signalChars > threshold) return new DetectionResult("th", 0.90);
 
         return null;
     }
@@ -190,7 +196,7 @@ public class LanguageDetectionPreprocessor implements DocumentPreprocessor {
             scores.put(entry.getKey(), count);
         }
 
-        String bestLang = "en";
+        String bestLang = LanguageSupport.UNDETERMINED_LANGUAGE;
         int bestScore = 0;
         int secondBest = 0;
 
@@ -204,20 +210,23 @@ public class LanguageDetectionPreprocessor implements DocumentPreprocessor {
             }
         }
 
-        double confidence;
         if (totalWords == 0 || bestScore == 0) {
-            confidence = 0.3;
-        } else {
-            double ratio = (double) bestScore / totalWords;
-            double separation = bestScore > 0 ? (double) (bestScore - secondBest) / bestScore : 0;
-            confidence = Math.min(0.95, 0.4 + ratio * 2.0 + separation * 0.3);
+            return new DetectionResult(LanguageSupport.UNDETERMINED_LANGUAGE, 0.0);
         }
+
+        double ratio = (double) bestScore / totalWords;
+        double separation = (double) (bestScore - secondBest) / bestScore;
+        double confidence = Math.min(0.95, 0.4 + ratio * 2.0 + separation * 0.3);
 
         return new DetectionResult(bestLang, confidence);
     }
 
     private int countMatches(Pattern pattern, String text) {
         return (int) pattern.matcher(text).results().count();
+    }
+
+    private int countLetterCodePoints(String text) {
+        return (int) text.codePoints().filter(Character::isLetter).count();
     }
 
     private record DetectionResult(String language, double confidence) {}

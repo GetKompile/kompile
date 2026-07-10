@@ -26,6 +26,7 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.Collections;
 import java.util.Map;
 import java.util.Set;
@@ -88,7 +89,7 @@ public class ExcelCrawlJob extends AbstractCrawlJob {
     @Override
     public CrawlState checkpoint() {
         return CrawlState.builder()
-                .timestamp(java.time.Instant.now())
+                .timestamp(Instant.now())
                 .visitedUrls(Collections.unmodifiableSet(visitedPaths))
                 .lastModifiedTimes(Collections.unmodifiableMap(lastModifiedTimes))
                 .build();

@@ -12,16 +12,16 @@ package ai.kompile.tool.graphlocalization;
 import ai.kompile.graph.algorithms.DegreeCentrality;
 import ai.kompile.graph.algorithms.adjacency.AdjacencyView;
 import ai.kompile.graph.algorithms.service.GraphAlgorithmService;
+import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import ai.kompile.knowledgegraph.domain.*;
-import ai.kompile.knowledgegraph.repository.*;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
+import ai.kompile.knowledgegraph.unified.UnifiedGraphBridge;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
-import java.lang.reflect.Field;
 import java.util.*;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -34,27 +34,13 @@ class GraphLocalizationServiceTest {
 
     @Mock private KnowledgeGraphService graphService;
     @Mock private GraphAlgorithmService algorithmService;
-    @Mock private GraphNodeRepository nodeRepository;
-    @Mock private GraphEdgeRepository edgeRepository;
-    @Mock private EntityMentionRepository entityMentionRepository;
+    @Mock private UnifiedGraphBridge unifiedGraphBridge;
 
     private GraphLocalizationService service;
 
     @BeforeEach
     void setUp() {
         service = new GraphLocalizationService(graphService, algorithmService);
-        // Inject optional repo dependency via reflection (field-injected in production)
-        setField(service, "entityMentionRepository", entityMentionRepository);
-    }
-
-    private static void setField(Object target, String fieldName, Object value) {
-        try {
-            Field f = target.getClass().getDeclaredField(fieldName);
-            f.setAccessible(true);
-            f.set(target, value);
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -236,6 +222,27 @@ class GraphLocalizationServiceTest {
     }
 
     @Test
+    void exploreNeighborhood_scopedFactSheetUsesUnifiedGraph() {
+        service = new GraphLocalizationService(graphService, algorithmService, unifiedGraphBridge);
+        UnifiedGraph unified = new UnifiedGraph()
+                .addEntity("seed", "DOCUMENT", "Unified Seed")
+                .addEntity("n1", "ENTITY", "Unified Neighbor")
+                .addRelation("r1", "seed", "n1", "SHARED_ENTITY", 0.9);
+        when(unifiedGraphBridge.export(7L)).thenReturn(unified);
+        when(graphService.getNode(anyString())).thenReturn(Optional.empty());
+        when(graphService.getNodeByExternalId(anyString(), any())).thenReturn(Optional.empty());
+
+        Map<String, Object> result = service.exploreNeighborhood(
+                "seed", 1, 10, null, List.of("SHARED_ENTITY"), 0.5, 7L);
+
+        assertEquals("unified_graph", result.get("source"));
+        assertEquals("Unified Seed", result.get("seedTitle"));
+        assertEquals(2, result.get("nodeCount"));
+        assertEquals(1, result.get("edgeCount"));
+        verify(graphService, never()).getEdgesForNodeInFactSheet(anyString(), eq(7L));
+    }
+
+    @Test
     void exploreNeighborhood_entityTypeFilter() {
         GraphNode seed = mockNode("seed", "Seed", NodeLevel.DOCUMENT);
         GraphNode person = mockNode("p1", "Alice", NodeLevel.ENTITY);
@@ -250,11 +257,11 @@ class GraphLocalizationServiceTest {
 
         EntityMention personMention = mock(EntityMention.class);
         when(personMention.getEntityType()).thenReturn("PERSON");
-        when(entityMentionRepository.findByNode(person)).thenReturn(List.of(personMention));
+        when(graphService.getEntityMentionsForNode(person)).thenReturn(List.of(personMention));
 
         EntityMention orgMention = mock(EntityMention.class);
         when(orgMention.getEntityType()).thenReturn("ORGANIZATION");
-        when(entityMentionRepository.findByNode(org)).thenReturn(List.of(orgMention));
+        when(graphService.getEntityMentionsForNode(org)).thenReturn(List.of(orgMention));
 
         // Only include entities of type PERSON
         Map<String, Object> result = service.exploreNeighborhood(
@@ -438,7 +445,7 @@ class GraphLocalizationServiceTest {
 
         EntityMention mention = mock(EntityMention.class);
         when(mention.getEntityType()).thenReturn("PERSON");
-        when(entityMentionRepository.findByNode(person)).thenReturn(List.of(mention));
+        when(graphService.getEntityMentionsForNode(person)).thenReturn(List.of(mention));
 
         // Require PERSON — matches
         Map<String, Object> result = service.structuralSearch(
@@ -503,7 +510,7 @@ class GraphLocalizationServiceTest {
 
         EntityMention mention = mock(EntityMention.class);
         when(mention.getEntityType()).thenReturn("PERSON");
-        when(entityMentionRepository.findByNode(entity)).thenReturn(List.of(mention));
+        when(graphService.getEntityMentionsForNode(entity)).thenReturn(List.of(mention));
 
         when(algorithmService.pageRank(any(), anyDouble(), anyInt(), anyDouble()))
                 .thenReturn(Map.of("seed", 0.6, "e1", 0.4));
@@ -554,7 +561,7 @@ class GraphLocalizationServiceTest {
         when(algorithmService.bfsTraversal(any(), eq("seed"), eq(2)))
                 .thenReturn(Map.of(0, List.of("seed"), 1, List.of("hub")));
         when(graphService.getEdgesForNode(anyString())).thenReturn(List.of());
-        when(entityMentionRepository.findByNode(any())).thenReturn(List.of());
+        when(graphService.getEntityMentionsForNode(any(GraphNode.class))).thenReturn(List.of());
 
         when(algorithmService.pageRank(any(), anyDouble(), anyInt(), anyDouble()))
                 .thenReturn(Map.of("seed", 0.3, "hub", 0.7));
@@ -703,6 +710,29 @@ class GraphLocalizationServiceTest {
         verify(algorithmService).degreeCentrality(any(), any());
     }
 
+    @Test
+    void findHubs_scopedFactSheetUsesUnifiedGraph() {
+        service = new GraphLocalizationService(graphService, algorithmService, unifiedGraphBridge);
+        UnifiedGraph unified = new UnifiedGraph()
+                .addEntity("u1", "ENTITY", "Unified Hub")
+                .addEntity("u2", "DOCUMENT", "Unified Doc");
+        when(unifiedGraphBridge.export(7L)).thenReturn(unified);
+        when(graphService.getNode(anyString())).thenReturn(Optional.empty());
+        when(graphService.getNodeByExternalId(anyString(), any())).thenReturn(Optional.empty());
+        when(algorithmService.degreeCentralityGraph(eq(unified), eq(DegreeCentrality.Type.TOTAL)))
+                .thenReturn(Map.of("u1", 3.0, "u2", 1.0));
+
+        Map<String, Object> result = service.findHubs("degree", null, null, null, 10, 7L);
+
+        assertEquals("unified_graph", result.get("source"));
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> hubs = (List<Map<String, Object>>) result.get("hubs");
+        assertEquals("u1", hubs.get(0).get("nodeId"));
+        assertEquals("Unified Hub", hubs.get(0).get("title"));
+        verify(algorithmService).degreeCentralityGraph(unified, DegreeCentrality.Type.TOTAL);
+        verify(algorithmService, never()).degreeCentrality(eq(7L), any(DegreeCentrality.Type.class));
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // CONSTRAINED PATH SEARCH
     // ═══════════════════════════════════════════════════════════════════════════
@@ -756,6 +786,31 @@ class GraphLocalizationServiceTest {
         assertEquals(2, path.size());
         assertEquals("s", path.get(0).get("nodeId"));
         assertEquals("t", path.get(1).get("nodeId"));
+    }
+
+    @Test
+    void constrainedPath_scopedFactSheetUsesUnifiedGraph() {
+        service = new GraphLocalizationService(graphService, algorithmService, unifiedGraphBridge);
+        UnifiedGraph unified = new UnifiedGraph()
+                .addEntity("a", "DOCUMENT", "Unified A")
+                .addEntity("mid", "ENTITY", "Unified Mid")
+                .addEntity("c", "DOCUMENT", "Unified C")
+                .addRelation("r1", "a", "mid", "SHARED_ENTITY", 0.8)
+                .addRelation("r2", "mid", "c", "SHARED_ENTITY", 0.7);
+        when(unifiedGraphBridge.export(7L)).thenReturn(unified);
+        when(graphService.getNode(anyString())).thenReturn(Optional.empty());
+        when(graphService.getNodeByExternalId(anyString(), any())).thenReturn(Optional.empty());
+
+        Map<String, Object> result = service.constrainedPathSearch(
+                "a", "c", List.of("SHARED_ENTITY"), List.of("ENTITY"), 4, false, 7L);
+
+        assertEquals("unified_graph", result.get("source"));
+        assertTrue((boolean) result.get("found"));
+        assertEquals(2, result.get("pathLength"));
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> path = (List<Map<String, Object>>) result.get("path");
+        assertEquals("Unified Mid", path.get(1).get("title"));
+        verify(graphService, never()).getEdgesForNodeInFactSheet(anyString(), eq(7L));
     }
 
     @Test
@@ -925,7 +980,7 @@ class GraphLocalizationServiceTest {
         when(algorithmService.jaccardSimilarity(isNull(), eq("a"), eq("b")))
                 .thenReturn(0.333);
 
-        when(entityMentionRepository.findByNode(any())).thenReturn(List.of());
+        when(graphService.getEntityMentionsForNode(any(GraphNode.class))).thenReturn(List.of());
 
         Map<String, Object> result = service.compareNeighborhoods("a", "b", 2, null);
 
@@ -949,11 +1004,45 @@ class GraphLocalizationServiceTest {
         when(algorithmService.jaccardSimilarity(any(), eq("a"), eq("b")))
                 .thenReturn(0.0);
 
-        when(entityMentionRepository.findByNode(any())).thenReturn(List.of());
+        when(graphService.getEntityMentionsForNode(any(GraphNode.class))).thenReturn(List.of());
 
         Map<String, Object> result = service.compareNeighborhoods("a", "b", 2, null);
 
         assertEquals(0.0, result.get("jaccardSimilarity"));
+    }
+
+    @Test
+    void compareNeighborhoods_scopedFactSheetUsesUnifiedGraph() {
+        service = new GraphLocalizationService(graphService, algorithmService, unifiedGraphBridge);
+        GraphNode a = mockNode("a", "A", NodeLevel.DOCUMENT);
+        GraphNode b = mockNode("b", "B", NodeLevel.DOCUMENT);
+        stubNodeLookup(a);
+        stubNodeLookup(b);
+        when(graphService.getNode("shared")).thenReturn(Optional.empty());
+        when(graphService.getNodeByExternalId(eq("shared"), any())).thenReturn(Optional.empty());
+        when(graphService.getEntityMentionsForNode(any(GraphNode.class))).thenReturn(List.of());
+
+        UnifiedGraph unified = new UnifiedGraph()
+                .addEntity("a", "DOCUMENT", "A")
+                .addEntity("b", "DOCUMENT", "B")
+                .addEntity("shared", "ENTITY", "Unified Shared");
+        when(unifiedGraphBridge.export(7L)).thenReturn(unified);
+        when(algorithmService.bfsTraversalGraph(eq(unified), eq("a"), eq(2)))
+                .thenReturn(Map.of(0, List.of("a"), 1, List.of("shared")));
+        when(algorithmService.bfsTraversalGraph(eq(unified), eq("b"), eq(2)))
+                .thenReturn(Map.of(0, List.of("b"), 1, List.of("shared")));
+        when(algorithmService.jaccardSimilarityGraph(eq(unified), eq("a"), eq("b")))
+                .thenReturn(0.5);
+
+        Map<String, Object> result = service.compareNeighborhoods("a", "b", 2, 7L);
+
+        assertEquals("unified_graph", result.get("source"));
+        assertEquals(0.5, result.get("jaccardSimilarity"));
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> sharedNodes = (List<Map<String, Object>>) result.get("sharedNodes");
+        assertEquals("Unified Shared", sharedNodes.get(0).get("title"));
+        verify(algorithmService, never()).bfsTraversal(eq(7L), anyString(), anyInt());
+        verify(algorithmService, never()).jaccardSimilarity(eq(7L), anyString(), anyString());
     }
 
     @Test
@@ -976,7 +1065,7 @@ class GraphLocalizationServiceTest {
         EntityMention mention = mock(EntityMention.class);
         when(mention.getEntityType()).thenReturn("PERSON");
         when(mention.getEntityName()).thenReturn("alice");
-        when(entityMentionRepository.findByNode(entity)).thenReturn(List.of(mention));
+        when(graphService.getEntityMentionsForNode(entity)).thenReturn(List.of(mention));
 
         Map<String, Object> result = service.compareNeighborhoods("a", "b", 2, null);
 
@@ -1017,7 +1106,7 @@ class GraphLocalizationServiceTest {
         when(algorithmService.pageRank(any(), anyDouble(), anyInt(), anyDouble()))
                 .thenReturn(Map.of("seed", 0.4, "m1", 0.6));
 
-        when(entityMentionRepository.findByNode(any())).thenReturn(List.of());
+        when(graphService.getEntityMentionsForNode(any(GraphNode.class))).thenReturn(List.of());
 
         Map<String, Object> result = service.findCommunity("seed", "louvain", 30, null);
 
@@ -1025,6 +1114,37 @@ class GraphLocalizationServiceTest {
         assertEquals(0, result.get("communityId"));
         assertEquals(2, result.get("communitySize")); // seed + m1
         assertEquals(2L, result.get("totalCommunities")); // 0 and 1
+    }
+
+    @Test
+    void findCommunity_scopedFactSheetUsesUnifiedGraph() {
+        service = new GraphLocalizationService(graphService, algorithmService, unifiedGraphBridge);
+        GraphNode seed = mockNode("seed", "Seed", NodeLevel.DOCUMENT);
+        stubNodeLookup(seed);
+        when(graphService.getNode("uMember")).thenReturn(Optional.empty());
+        when(graphService.getNodeByExternalId(eq("uMember"), any())).thenReturn(Optional.empty());
+        when(graphService.getEntityMentionsForNode(any(GraphNode.class))).thenReturn(List.of());
+
+        UnifiedGraph unified = new UnifiedGraph()
+                .addEntity("seed", "DOCUMENT", "Seed")
+                .addEntity("uMember", "ENTITY", "Unified Member");
+        when(unifiedGraphBridge.export(7L)).thenReturn(unified);
+        when(algorithmService.louvainCommunitiesGraph(eq(unified), eq(20)))
+                .thenReturn(Map.of("seed", 0, "uMember", 0));
+        when(algorithmService.pageRankGraph(eq(unified), eq(0.85), eq(50), eq(1e-6)))
+                .thenReturn(Map.of("seed", 0.2, "uMember", 0.8));
+
+        Map<String, Object> result = service.findCommunity("seed", "louvain", 30, 7L);
+
+        assertEquals("unified_graph", result.get("source"));
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> members = (List<Map<String, Object>>) result.get("members");
+        assertEquals("uMember", members.get(0).get("nodeId"));
+        assertEquals("Unified Member", members.get(0).get("title"));
+        verify(algorithmService).louvainCommunitiesGraph(unified, 20);
+        verify(algorithmService).pageRankGraph(unified, 0.85, 50, 1e-6);
+        verify(algorithmService, never()).louvainCommunities(eq(7L), anyInt());
+        verify(algorithmService, never()).pageRank(eq(7L), anyDouble(), anyInt(), anyDouble());
     }
 
     @Test
@@ -1038,7 +1158,7 @@ class GraphLocalizationServiceTest {
         when(algorithmService.pageRank(any(), anyDouble(), anyInt(), anyDouble()))
                 .thenReturn(Map.of("seed", 1.0));
 
-        when(entityMentionRepository.findByNode(any())).thenReturn(List.of());
+        when(graphService.getEntityMentionsForNode(any(GraphNode.class))).thenReturn(List.of());
 
         Map<String, Object> result = service.findCommunity("seed", "wcc", 30, null);
 
@@ -1077,7 +1197,7 @@ class GraphLocalizationServiceTest {
         when(algorithmService.pageRank(any(), anyDouble(), anyInt(), anyDouble()))
                 .thenReturn(Map.of("seed", 0.1, "m1", 0.3, "m2", 0.6));
 
-        when(entityMentionRepository.findByNode(any())).thenReturn(List.of());
+        when(graphService.getEntityMentionsForNode(any(GraphNode.class))).thenReturn(List.of());
 
         Map<String, Object> result = service.findCommunity("seed", null, 30, null);
 
@@ -1104,7 +1224,7 @@ class GraphLocalizationServiceTest {
         when(algorithmService.louvainCommunities(any(), anyInt())).thenReturn(assignments);
         when(algorithmService.pageRank(any(), anyDouble(), anyInt(), anyDouble()))
                 .thenReturn(Map.of());
-        when(entityMentionRepository.findByNode(any())).thenReturn(List.of());
+        when(graphService.getEntityMentionsForNode(any(GraphNode.class))).thenReturn(List.of());
 
         Map<String, Object> result = service.findCommunity("seed", null, 5, null);
 
@@ -1126,7 +1246,7 @@ class GraphLocalizationServiceTest {
 
         EntityMention mention = mock(EntityMention.class);
         when(mention.getEntityType()).thenReturn("PERSON");
-        when(entityMentionRepository.findByNode(seed)).thenReturn(List.of(mention));
+        when(graphService.getEntityMentionsForNode(seed)).thenReturn(List.of(mention));
 
         Map<String, Object> result = service.findCommunity("seed", null, 30, null);
 
@@ -1145,7 +1265,7 @@ class GraphLocalizationServiceTest {
                 .thenReturn(Map.of("seed", 0));
         when(algorithmService.pageRank(any(), anyDouble(), anyInt(), anyDouble()))
                 .thenReturn(Map.of());
-        when(entityMentionRepository.findByNode(any())).thenReturn(List.of());
+        when(graphService.getEntityMentionsForNode(any(GraphNode.class))).thenReturn(List.of());
 
         Map<String, Object> result = service.findCommunity("seed", null, 30, null);
 

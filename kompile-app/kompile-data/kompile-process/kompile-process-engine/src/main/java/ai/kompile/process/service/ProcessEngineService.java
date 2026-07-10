@@ -102,6 +102,28 @@ public interface ProcessEngineService {
     ProcessDefinition getProcess(String id, int version);
 
     /**
+     * Persists a REVISION of an existing process definition under the SAME id with an
+     * incremented version, in DRAFT status pending approval. Previous versions remain immutable
+     * and retrievable — the versioned analogue of {@code updateOntology}, and the seam the
+     * mining pipeline uses when a re-mined suggestion revises an accepted process
+     * ({@code ProcessSuggestion.revisesProcessDefinitionId}).
+     *
+     * @param id         the existing process definition ID to revise
+     * @param definition the revised content (id/version/status fields are overwritten)
+     * @return the new version with status DRAFT
+     * @throws IllegalArgumentException when no definition with {@code id} exists
+     */
+    ProcessDefinition reviseProcess(String id, ProcessDefinition definition);
+
+    /**
+     * Restores a persisted process-definition snapshot, preserving id, version, status,
+     * approval metadata, discovery provenance, and narrative fields.
+     *
+     * <p>This is for portable artifact import, not the normal user-facing create/revise flow.</p>
+     */
+    ProcessDefinition restoreProcessDefinition(ProcessDefinition definition);
+
+    /**
      * Transitions a process definition from IN_REVIEW to APPROVED.
      * Approved definitions may be used to start workflow runs.
      *

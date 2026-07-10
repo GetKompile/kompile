@@ -1715,10 +1715,180 @@
     Rebuild index after adding this source
   </mat-checkbox>
 
+  <div class="crawl-preview-panel" *ngIf="previewLoading || previewResult || previewError" @expandCollapse>
+    <div class="crawl-preview-header">
+      <div class="crawl-preview-title">
+        <mat-icon>{{ previewError ? 'error_outline' : 'travel_explore' }}</mat-icon>
+        <span>Crawl Preview</span>
+      </div>
+      <mat-chip *ngIf="previewResult?.dryRun" class="preview-dry-run-chip">Dry Run</mat-chip>
+    </div>
+
+    <mat-progress-bar *ngIf="previewLoading" mode="indeterminate" class="preview-progress"></mat-progress-bar>
+
+    <div class="preview-error" *ngIf="previewError && !previewLoading">
+      <mat-icon>warning</mat-icon>
+      <span>{{ previewError }}</span>
+    </div>
+
+    <ng-container *ngIf="previewResult && !previewLoading">
+      <div class="preview-stats">
+        <div class="preview-stat">
+          <span>Discovered</span>
+          <strong>{{ previewResult.discoveredCount }}</strong>
+        </div>
+        <div class="preview-stat">
+          <span>Documents</span>
+          <strong>{{ previewResult.documentCount }}</strong>
+        </div>
+        <div class="preview-stat">
+          <span>Chunks</span>
+          <strong>{{ previewResult.estimatedChunkCount }}</strong>
+        </div>
+        <div class="preview-stat" *ngIf="previewResult.skippedCount || previewResult.failedCount">
+          <span>Skipped / Failed</span>
+          <strong>{{ previewResult.skippedCount }} / {{ previewResult.failedCount }}</strong>
+        </div>
+      </div>
+
+      <div class="preview-meta-line" *ngIf="previewResult.crawlerName || previewResult.loaderName || previewResult.chunkerName">
+        <span *ngIf="previewResult.crawlerName"><mat-icon>travel_explore</mat-icon>{{ previewResult.crawlerName }}</span>
+        <span *ngIf="previewResult.loaderName"><mat-icon>input</mat-icon>{{ previewResult.loaderName }}</span>
+        <span *ngIf="previewResult.chunkerName"><mat-icon>content_cut</mat-icon>{{ previewResult.chunkerName }}</span>
+      </div>
+
+      <div class="preview-warning-list" *ngIf="previewResult.warnings?.length">
+        <div class="preview-warning" *ngFor="let warning of previewResult.warnings | slice:0:3">
+          <mat-icon>info</mat-icon>
+          <span>{{ warning }}</span>
+        </div>
+      </div>
+
+      <div class="preview-graph" *ngIf="previewResult.graphExtraction as graph">
+        <div class="preview-graph-header">
+          <div class="preview-graph-title">
+            <mat-icon>hub</mat-icon>
+            <span>Graph extraction</span>
+          </div>
+          <mat-chip class="preview-graph-chip" [class.preview-graph-chip-muted]="!graph.extractionRun">
+            {{ graph.status }}
+          </mat-chip>
+        </div>
+
+        <div class="preview-graph-stats">
+          <div class="preview-stat">
+            <span>Analyzed</span>
+            <strong>{{ graph.documentsAnalyzed }}</strong>
+          </div>
+          <div class="preview-stat">
+            <span>Entities</span>
+            <strong>{{ graph.entityCount }}</strong>
+          </div>
+          <div class="preview-stat">
+            <span>Relations</span>
+            <strong>{{ graph.relationCount }}</strong>
+          </div>
+          <div class="preview-stat" *ngIf="graph.modelName">
+            <span>Model</span>
+            <strong>{{ graph.modelName }}</strong>
+          </div>
+        </div>
+
+        <div class="preview-warning-list" *ngIf="graph.warnings?.length">
+          <div class="preview-warning" *ngFor="let warning of graph.warnings | slice:0:3">
+            <mat-icon>info</mat-icon>
+            <span>{{ warning }}</span>
+          </div>
+        </div>
+
+        <div class="preview-graph-columns" *ngIf="graph.entityCount || graph.relationCount; else noGraphCandidates">
+          <div class="preview-graph-list" *ngIf="graph.entities?.length">
+            <h4>Entities</h4>
+            <div class="preview-graph-row" *ngFor="let entity of graph.entities | slice:0:8">
+              <div class="preview-graph-row-main">
+                <span class="preview-graph-name" [matTooltip]="entity.name || entity.id || ''">
+                  {{ entity.name || entity.id || 'Unnamed entity' }}
+                </span>
+                <span class="preview-graph-description" *ngIf="entity.description">{{ entity.description }}</span>
+              </div>
+              <div class="preview-graph-tags">
+                <span *ngIf="entity.type">{{ entity.type }}</span>
+                <span *ngIf="entity.confidence !== undefined && entity.confidence !== null">{{ entity.confidence | percent:'1.0-0' }}</span>
+                <span *ngIf="entity.sourceTitle" [matTooltip]="entity.sourceTitle">{{ entity.sourceTitle }}</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="preview-graph-list" *ngIf="graph.relations?.length">
+            <h4>Relations</h4>
+            <div class="preview-graph-row" *ngFor="let relation of graph.relations | slice:0:8">
+              <div class="preview-graph-row-main">
+                <span class="preview-graph-name" [matTooltip]="(relation.sourceName || relation.source || '') + ' -> ' + (relation.targetName || relation.target || '')">
+                  {{ relation.sourceName || relation.source }} -> {{ relation.targetName || relation.target }}
+                </span>
+                <span class="preview-graph-description" *ngIf="relation.description">{{ relation.description }}</span>
+              </div>
+              <div class="preview-graph-tags">
+                <span *ngIf="relation.type">{{ relation.type }}</span>
+                <span *ngIf="relation.confidence !== undefined && relation.confidence !== null">{{ relation.confidence | percent:'1.0-0' }}</span>
+                <span *ngIf="relation.sourceTitle" [matTooltip]="relation.sourceTitle">{{ relation.sourceTitle }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <ng-template #noGraphCandidates>
+          <div class="preview-empty">
+            <mat-icon>schema</mat-icon>
+            <span>No graph candidates returned.</span>
+          </div>
+        </ng-template>
+      </div>
+
+      <div class="preview-items" *ngIf="previewResult.items?.length; else noPreviewItems">
+        <div class="preview-item" *ngFor="let item of previewResult.items | slice:0:8">
+          <div class="preview-item-main">
+            <div class="preview-item-title" [matTooltip]="item.title || item.pathOrUrl || ''">
+              {{ item.title || item.pathOrUrl || 'Untitled source' }}
+            </div>
+            <div class="preview-item-path" *ngIf="item.pathOrUrl" [matTooltip]="item.pathOrUrl">
+              {{ item.pathOrUrl }}
+            </div>
+          </div>
+          <div class="preview-item-metrics">
+            <span *ngIf="item.contentLength !== undefined && item.contentLength !== null">{{ formatFileSize(item.contentLength) }}</span>
+            <span>{{ item.documentCount }} docs</span>
+            <span>{{ item.estimatedChunkCount }} chunks</span>
+          </div>
+          <p class="preview-item-text" *ngIf="item.previewText">{{ item.previewText }}</p>
+          <div class="preview-item-metadata" *ngIf="item.metadata">
+            <span *ngFor="let meta of item.metadata | keyvalue | slice:0:4">{{ meta.key }}: {{ meta.value }}</span>
+          </div>
+        </div>
+      </div>
+
+      <ng-template #noPreviewItems>
+        <div class="preview-empty">
+          <mat-icon>playlist_add_check</mat-icon>
+          <span>No preview items returned.</span>
+        </div>
+      </ng-template>
+
+      <div class="preview-truncated" *ngIf="previewResult.truncated">
+        <mat-icon>more_horiz</mat-icon>
+        <span>Preview limited to the first {{ previewResult.items.length }} items.</span>
+      </div>
+    </ng-container>
+  </div>
+
 </mat-dialog-content>
 
 <mat-dialog-actions align="end">
   <button mat-stroked-button (click)="onCancelDialog()" [disabled]="isSubmitting">Cancel</button>
+  <button mat-stroked-button color="primary" (click)="runCrawlPreview()"
+    [disabled]="isSubmitting || previewLoading || isSubmitButtonDisabled">
+    <mat-icon>{{ previewLoading ? 'sync' : 'travel_explore' }}</mat-icon> Preview Crawl
+  </button>
   <button mat-flat-button color="primary" (click)="onSubmitDialog()"
     [disabled]="isSubmitting || isSubmitButtonDisabled">
     <mat-icon>add_circle_outline</mat-icon> Add Source

@@ -14,6 +14,7 @@ import ai.kompile.graph.reasoning.fol.grounding.PlattCalibrator;
 import ai.kompile.graph.reasoning.fol.grounding.StrengthCalibrator;
 import ai.kompile.graph.reasoning.fol.grounding.VerifyResult;
 
+import java.util.List;
 import java.util.Objects;
 
 /**
@@ -92,7 +93,7 @@ public final class KgePlausibilitySignal {
         // Clamp raw to [0,1] before wrapping in VerifyResult (its compact constructor validates).
         double clampedRaw = Math.max(0.0, Math.min(1.0, raw));
         double calibrated = calibrator.calibrate(raw, KGE_SIGNAL_TYPE,
-                VerifyResult.supported(clampedRaw, java.util.List.of()));
+                VerifyResult.supported(clampedRaw, List.of()));
         // Clamp to [0,1] in case calibrator produces slight overshoot
         return Math.max(0.0, Math.min(1.0, calibrated));
     }

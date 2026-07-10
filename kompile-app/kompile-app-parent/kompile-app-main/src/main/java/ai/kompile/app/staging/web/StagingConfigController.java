@@ -1317,88 +1317,10 @@ public class StagingConfigController {
     public ResponseEntity<Map<String, Object>> optimizeModel(@PathVariable String modelId) {
         Map<String, Object> response = new LinkedHashMap<>();
         response.put(FieldNames.MODEL_ID, modelId);
-
-        try {
-            log.info("Optimizing model: {}", sanitizeForLog(modelId));
-
-            ai.kompile.embedding.anserini.AnseriniEncoderFactory.refreshRegistry();
-            var modelInfo = ai.kompile.embedding.anserini.AnseriniEncoderFactory.getModelInfoMap(modelId);
-
-            if (modelInfo == null) {
-                response.put("success", false);
-                response.put("error", "Model not found: " + modelId);
-                return ResponseEntity.status(HttpStatus.NOT_FOUND).body(response);
-            }
-
-            // Check if already optimized
-            boolean optimized = modelInfo.containsKey("optimized") && Boolean.TRUE.equals(modelInfo.get("optimized"));
-            if (optimized) {
-                response.put("success", false);
-                response.put("error", "Model is already optimized");
-                return ResponseEntity.badRequest().body(response);
-            }
-
-            // Get model path
-            String path = (String) modelInfo.get("path");
-            String modelFile = (String) modelInfo.getOrDefault("modelFile", "model.fb");
-
-            if (path == null) {
-                response.put("success", false);
-                response.put("error", "Model path not found");
-                return ResponseEntity.badRequest().body(response);
-            }
-
-            Path modelPath = Paths.get(path, modelFile);
-            if (!Files.exists(modelPath)) {
-                response.put("success", false);
-                response.put("error", "Model file not found: " + modelPath);
-                return ResponseEntity.status(HttpStatus.NOT_FOUND).body(response);
-            }
-
-            // Create backup
-            Path backupPath = Paths.get(path, modelFile + ".unoptimized");
-            Files.copy(modelPath, backupPath, StandardCopyOption.REPLACE_EXISTING);
-            log.info("Created backup at: {}", backupPath);
-
-            // Load, optimize, and save using SDZSerializer
-            long startTime = System.currentTimeMillis();
-            org.nd4j.autodiff.samediff.SameDiff sd = org.nd4j.autodiff.samediff.serde.SDZSerializer.load(modelPath.toFile(), true);
-            if (sd == null) {
-                response.put("success", false);
-                response.put("error", "Failed to load model from: " + modelPath);
-                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
-            }
-
-            // Get model outputs for optimization
-            List<String> targetOutputs = sd.outputs();
-            if (targetOutputs == null || targetOutputs.isEmpty()) {
-                response.put("success", false);
-                response.put("error", "Model has no outputs defined");
-                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
-            }
-
-            // Save optimized model (applies graph optimizations: matmul+add fusion, constant folding, etc.)
-            org.nd4j.autodiff.samediff.serde.SDZSerializer.saveOptimized(sd, modelPath.toFile(), false, null, targetOutputs);
-            long optimizationTimeMs = System.currentTimeMillis() - startTime;
-
-            log.info("Model {} optimized in {}ms", modelId, optimizationTimeMs);
-
-            // Update registry metadata
-            ai.kompile.embedding.anserini.AnseriniEncoderFactory.updateModelOptimizationStatus(
-                    modelId, true, backupPath.toString(), optimizationTimeMs);
-
-            response.put("success", true);
-            response.put("message", "Model optimized successfully");
-            response.put("optimizationTimeMs", optimizationTimeMs);
-            response.put("backupFile", backupPath.toString());
-
-            return ResponseEntity.ok(response);
-        } catch (Exception e) {
-            log.error("Failed to optimize model {}: {}", modelId, e.getMessage(), e);
-            response.put("success", false);
-            response.put("error", e.getMessage());
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
-        }
+        response.put("success", false);
+        response.put("error",
+                "Model optimization is disabled in the main app process; run optimization through a managed subprocess path.");
+        return ResponseEntity.status(HttpStatus.NOT_IMPLEMENTED).body(response);
     }
 
     /**

@@ -30,7 +30,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  * Batch-writes taxonomyCategory/taxonomyDomain to entity metadataJson.
@@ -76,7 +80,7 @@ public class EntityCategorizationService {
                 @SuppressWarnings("unchecked")
                 Map<String, Object> metaMap = entity.getMetadataJson() != null && !entity.getMetadataJson().isBlank()
                         ? objectMapper.readValue(entity.getMetadataJson(), new TypeReference<Map<String, Object>>() {})
-                        : new java.util.LinkedHashMap<>();
+                        : new LinkedHashMap<>();
 
                 String existingDomain = metaMap.get("taxonomyDomain") instanceof String s ? s : null;
                 String existingCategory = metaMap.get("taxonomyCategory") instanceof String s ? s : null;
@@ -184,7 +188,7 @@ public class EntityCategorizationService {
                 @SuppressWarnings("unchecked")
                 Map<String, Object> metaMap = entity.getMetadataJson() != null && !entity.getMetadataJson().isBlank()
                         ? objectMapper.readValue(entity.getMetadataJson(), new TypeReference<Map<String, Object>>() {})
-                        : new java.util.LinkedHashMap<>();
+                        : new LinkedHashMap<>();
                 knowledgeGraphService.updateNode(entity.getNodeId(), entity.getTitle(), entity.getDescription(), metaMap);
             } catch (Exception e) {
                 log.warn("Failed to flush entity {} to vector store: {}", entity.getNodeId(), e.getMessage());

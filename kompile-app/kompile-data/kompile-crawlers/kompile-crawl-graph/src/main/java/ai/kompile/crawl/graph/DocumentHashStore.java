@@ -28,12 +28,12 @@ import lombok.NoArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
+import ai.kompile.utils.HashUtils;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -94,29 +94,18 @@ class DocumentHashStore {
         if (bytes == null) {
             return null;
         }
-        try {
-            MessageDigest md = MessageDigest.getInstance("SHA-256");
-            byte[] digest = md.digest(bytes);
-            StringBuilder sb = new StringBuilder(digest.length * 2);
-            for (byte b : digest) {
-                sb.append(String.format("%02x", b));
-            }
-            return sb.toString();
-        } catch (NoSuchAlgorithmException e) {
-            log.warn("SHA-256 not available — incremental hash check will be skipped: {}", e.getMessage());
-            return null;
-        }
+        return HashUtils.sha256Hex(bytes);
     }
 
     /**
      * Compute the SHA-256 hex digest of the given string (UTF-8 encoded).
-     * Returns {@code null} if {@code content} is null or the algorithm is unavailable.
+     * Returns {@code null} if {@code content} is null.
      */
     static String sha256Hex(String content) {
         if (content == null) {
             return null;
         }
-        return sha256Hex(content.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        return HashUtils.sha256Hex(content);
     }
 
     /**

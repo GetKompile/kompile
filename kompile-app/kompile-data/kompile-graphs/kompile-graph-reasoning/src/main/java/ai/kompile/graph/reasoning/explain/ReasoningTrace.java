@@ -17,6 +17,7 @@ package ai.kompile.graph.reasoning.explain;
 
 import ai.kompile.graph.reasoning.confidence.Opinion;
 import ai.kompile.graph.reasoning.fol.grounding.DerivationTree;
+import com.fasterxml.jackson.annotation.JsonProperty;
 
 import java.io.Serializable;
 import java.util.ArrayList;
@@ -58,6 +59,12 @@ public final class ReasoningTrace implements Serializable {
         INFERENCE,
         /** A retrieval / lookup step. */
         QUERY,
+        /** A deterministic numeric calculation or aggregation. */
+        CALCULATION,
+        /** A unit, dimensional, replay, or reconciliation validation. */
+        VALIDATION,
+        /** A goal-seek or constrained optimization step. */
+        OPTIMIZATION,
         /**
          * Counter-evidence or argument that attacks (rebuts) the parent conclusion.
          * Used to surface contradictions, defeated rules, and disconfirming observations in the trace.
@@ -213,6 +220,7 @@ public final class ReasoningTrace implements Serializable {
     // ── Enumeration ──────────────────────────────────────────────────────────────
 
     /** The concluding (root) step. */
+    @JsonProperty("conclusion")
     public Step conclusion() {
         return root;
     }
@@ -239,11 +247,13 @@ public final class ReasoningTrace implements Serializable {
     }
 
     /** Total number of steps. */
+    @JsonProperty("size")
     public int size() {
         return steps().size();
     }
 
     /** Depth of the trace (a single leaf has depth 1). */
+    @JsonProperty("depth")
     public int depth() {
         return depth(root);
     }

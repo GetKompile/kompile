@@ -26,11 +26,9 @@ import ai.kompile.core.retrievers.RetrievedDoc;
 import ai.kompile.knowledgegraph.confidence.ExtractionConfidenceStamper;
 import ai.kompile.knowledgegraph.domain.EdgeProvenance;
 import ai.kompile.knowledgegraph.domain.EdgeType;
-import ai.kompile.knowledgegraph.domain.EntityMention;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.GraphProvenanceKeys;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
-import ai.kompile.knowledgegraph.repository.EntityMentionRepository;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -42,7 +40,6 @@ import org.springframework.stereotype.Component;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.regex.Pattern;
 
 /**
  * Graph persistence utility methods extracted from {@link UnifiedCrawlGraphServiceImpl}.
@@ -57,17 +54,10 @@ class GraphPersistenceHelper {
 
     static final ObjectMapper EDGE_METADATA_MAPPER = JsonUtils.standardMapper();
 
-    private static final Pattern ENTITY_SUFFIX_PATTERN = Pattern.compile(
-            "\\b(Inc\\.?|Corp\\.?|Corporation|Ltd\\.?|Limited|LLC|Co\\.?|Company|Group|Plc\\.?)$",
-            Pattern.CASE_INSENSITIVE);
-
     final Map<String, String> labelCache = new ConcurrentHashMap<>();
 
     @Autowired(required = false)
     KnowledgeGraphService knowledgeGraphService;
-
-    @Autowired(required = false)
-    EntityMentionRepository entityMentionRepository;
 
     /** Optional — stamps Opinion + provenance metadata onto every edge. When absent (subprocess/test
      *  slices without Spring), the legacy scalar-only path is retained so nothing breaks. */
@@ -119,6 +109,8 @@ class GraphPersistenceHelper {
         int relationshipsPersisted = 0;
 
         if (graph.getEntities() != null) {
+            List<KnowledgeGraphService.NodeSpec> entitySpecs = new ArrayList<>();
+            List<PendingSemanticEntity> pendingEntities = new ArrayList<>();
             for (Entity entity : graph.getEntities()) {
                 if (isCancelled(job)) {
                     return new GraphPersistResult(entitiesPersisted, relationshipsPersisted);
@@ -149,6 +141,8 @@ class GraphPersistenceHelper {
                     entityMeta.put("entity_type", entityType);
                     entityMeta.put(GraphConstants.META_SOURCE, jobId);
                     entityMeta.put("extraction_method", "graph_constructor");
+                    CrawlGraphProcessMetadata.normalizeEntityMetadata(entityMeta, entityType, jobId, sourcePath,
+                            entity.getId());
                     String sourceDocumentId = sourceDocumentId(entity.getMetadata());
                     if (sourceDocumentId != null) {
                         entityMeta.put("sourceDocumentId", sourceDocumentId);
@@ -163,60 +157,81 @@ class GraphPersistenceHelper {
                     if (confidence != null) {
                         entityMeta.put("confidence", confidence);
                     }
-
-                    GraphNode node = knowledgeGraphService.createNode(
-                            nodeLevelForEntityType(entityType),
-                            externalId,
-                            entityTitle,
-                            entity.getDescription(),
-                            entityMeta,
-                            factSheetId);
-                    entitiesPersisted++;
-                    job.incrementEntityType(entityType);
-                    externalToNodeId.put(externalId, node.getNodeId());
-                    if (entity.getId() != null && !entity.getId().isBlank()) {
-                        externalToNodeId.put(entity.getId(), node.getNodeId());
-                    }
-
-                    if (parentDoc.isPresent()) {
-                        recordEntityMention(parentDoc.get(),
-                                entityTitle,
-                                entityType,
-                                confidence,
-                                factSheetId,
-                                "graph_constructor",
-                                sourcePath,
-                                sourceDocumentId);
-                        String description = semanticRelationDescription(
-                                "Document contains " + entityType + " " + entityTitle,
-                                containsLabel);
-                        Map<String, Object> containsMeta = metadataProperties(
-                                "entityType", entity.getType(),
-                                "entityName", entityTitle,
-                                "sourceDocumentId", sourceDocumentId);
-                        // A document-contains-entity edge is a structural deduction (Pillar 2):
-                        // "the document structurally contains the entity" is certain from one
-                        // observation. Route through the stamper (STRUCTURAL basis, W≈0.1) so the
-                        // Opinion rides in metadata rather than pinning at the hard 1.0 default.
-                        // Stamper-absent fallback: use entity confidence or 0.5 (never 1.0 —
-                        // a structural CONTAINS is not a maximally certain hard observation).
-                        double containsWeight = (confidenceStamper != null)
-                                ? confidenceStamper.stampEdgeConfidence(containsMeta, "STRUCTURAL", confidence)
-                                : (confidence != null ? confidence : 0.5);
-                        String metaJson = semanticRelationMetadataJson(jobId, sourcePath,
-                                "graph_constructor", sourcePath, externalId, containsLabel, description,
-                                containsWeight, containsMeta);
-                        knowledgeGraphService.createEdgeWithMetadata(parentDoc.get().getNodeId(), node.getNodeId(),
-                                EdgeType.CONTAINS, containsWeight, containsLabel, description, metaJson,
-                                EdgeProvenance.EXTRACTED, factSheetId);
-                    }
+                    NodeLevel nodeLevel = nodeLevelForEntityType(entityType);
+                    entitySpecs.add(new KnowledgeGraphService.NodeSpec(
+                            nodeLevel, externalId, entityTitle, entity.getDescription(), entityMeta));
+                    pendingEntities.add(new PendingSemanticEntity(entity, parentDoc, externalId, entityType,
+                            entityTitle, confidence, sourcePath, sourceDocumentId));
                 } catch (Exception e) {
-                    log.debug("[Job {}] Failed to persist GraphConstructor entity '{}': {}",
+                    log.debug("[Job {}] Failed to prepare GraphConstructor entity '{}': {}",
                             jobId, entity.getTitle(), e.getMessage());
+                }
+            }
+
+            if (!entitySpecs.isEmpty()) {
+                List<GraphNode> createdNodes = knowledgeGraphService.createNodesBatch(entitySpecs, factSheetId);
+                int limit = Math.min(createdNodes.size(), pendingEntities.size());
+                for (int i = 0; i < limit; i++) {
+                    if (isCancelled(job)) {
+                        return new GraphPersistResult(entitiesPersisted, relationshipsPersisted);
+                    }
+                    GraphNode node = createdNodes.get(i);
+                    PendingSemanticEntity pending = pendingEntities.get(i);
+                    if (node == null) {
+                        continue;
+                    }
+                    Entity entity = pending.entity();
+                    try {
+                        entitiesPersisted++;
+                        job.incrementEntityType(pending.entityType());
+                        externalToNodeId.put(pending.externalId(), node.getNodeId());
+                        if (entity.getId() != null && !entity.getId().isBlank()) {
+                            externalToNodeId.put(entity.getId(), node.getNodeId());
+                        }
+
+                        Optional<GraphNode> parentDoc = pending.parentDoc();
+                        if (parentDoc.isPresent()) {
+                            recordEntityMention(parentDoc.get(),
+                                    pending.entityTitle(),
+                                    pending.entityType(),
+                                    pending.confidence(),
+                                    factSheetId,
+                                    "graph_constructor",
+                                    pending.sourcePath(),
+                                    pending.sourceDocumentId());
+                            String description = semanticRelationDescription(
+                                    "Document contains " + pending.entityType() + " " + pending.entityTitle(),
+                                    containsLabel);
+                            Map<String, Object> containsMeta = metadataProperties(
+                                    "entityType", entity.getType(),
+                                    "entityName", pending.entityTitle(),
+                                    "sourceDocumentId", pending.sourceDocumentId());
+                            // A document-contains-entity edge is a structural deduction (Pillar 2):
+                            // "the document structurally contains the entity" is certain from one
+                            // observation. Route through the stamper (STRUCTURAL basis, W≈0.1) so the
+                            // Opinion rides in metadata rather than pinning at the hard 1.0 default.
+                            // Stamper-absent fallback: use entity confidence or 0.5 (never 1.0 —
+                            // a structural CONTAINS is not a maximally certain hard observation).
+                            double containsWeight = (confidenceStamper != null)
+                                    ? confidenceStamper.stampEdgeConfidence(containsMeta, "STRUCTURAL", pending.confidence())
+                                    : (pending.confidence() != null ? pending.confidence() : 0.5);
+                            String metaJson = semanticRelationMetadataJson(jobId, pending.sourcePath(),
+                                    "graph_constructor", pending.sourcePath(), pending.externalId(), containsLabel, description,
+                                    containsWeight, containsMeta);
+                            knowledgeGraphService.createEdgeWithMetadata(parentDoc.get().getNodeId(), node.getNodeId(),
+                                    EdgeType.CONTAINS, containsWeight, containsLabel, description, metaJson,
+                                    EdgeProvenance.EXTRACTED, factSheetId);
+                        }
+                    } catch (Exception e) {
+                        log.debug("[Job {}] Failed to finish GraphConstructor entity '{}': {}",
+                                jobId, entity.getTitle(), e.getMessage());
+                    }
                 }
             }
         }
 
+        List<KnowledgeGraphService.EdgeSpec> relationshipEdgeSpecs = new ArrayList<>();
+        List<String> relationshipEdgeLabels = new ArrayList<>();
         if (graph.getRelationships() != null) {
             for (Relationship rel : graph.getRelationships()) {
                 if (isCancelled(job)) {
@@ -262,6 +277,8 @@ class GraphPersistenceHelper {
                     if (weight != null) {
                         relMeta.put("weight", weight);
                     }
+                    CrawlGraphProcessMetadata.normalizeRelationMetadata(relMeta, jobId, sourcePath,
+                            "graph_constructor", rel.getSource(), rel.getTarget(), label);
 
                     // Stamp a full Opinion onto every GraphConstructor (structural) relation (A3):
                     // Route through the ExtractionConfidenceStamper (STRUCTURAL basis, W≈0.1) so
@@ -281,14 +298,43 @@ class GraphPersistenceHelper {
                     String metaJson = semanticRelationMetadataJson(jobId, sourcePath,
                             "graph_constructor", rel.getSource(), rel.getTarget(), label, description,
                             edgeWeight, relMeta);
-                    knowledgeGraphService.createEdgeWithMetadata(srcNodeId, tgtNodeId,
-                            EdgeType.USER_DEFINED, edgeWeight, label, description, metaJson,
-                            EdgeProvenance.EXTRACTED, factSheetId);
-                    relationshipsPersisted++;
-                    job.incrementRelationshipType(label);
+                    relationshipEdgeSpecs.add(new KnowledgeGraphService.EdgeSpec(srcNodeId, tgtNodeId,
+                            EdgeType.USER_DEFINED, edgeWeight, description, label, metaJson,
+                            EdgeProvenance.EXTRACTED, factSheetId));
+                    relationshipEdgeLabels.add(label);
                 } catch (Exception e) {
                     log.debug("[Job {}] Failed to persist GraphConstructor relation '{}': {}",
                             jobId, rel.getType(), e.getMessage());
+                }
+            }
+        }
+
+        if (!relationshipEdgeSpecs.isEmpty() && !isCancelled(job)) {
+            try {
+                int created = knowledgeGraphService.createEdgesBatch(relationshipEdgeSpecs);
+                relationshipsPersisted += created;
+                for (int i = 0; i < Math.min(created, relationshipEdgeLabels.size()); i++) {
+                    job.incrementRelationshipType(relationshipEdgeLabels.get(i));
+                }
+                log.debug("[Job {}] Persisted {} GraphConstructor relationship edge(s) in one batch RPC ({} candidate(s))",
+                        jobId, created, relationshipEdgeSpecs.size());
+            } catch (Exception e) {
+                log.warn("[Job {}] Batched GraphConstructor relationship persistence failed for {} edge(s): {}. Falling back to per-edge persistence.",
+                        jobId, relationshipEdgeSpecs.size(), e.getMessage());
+                for (int i = 0; i < relationshipEdgeSpecs.size(); i++) {
+                    KnowledgeGraphService.EdgeSpec spec = relationshipEdgeSpecs.get(i);
+                    try {
+                        knowledgeGraphService.createEdgeWithMetadata(spec.sourceNodeId(), spec.targetNodeId(),
+                                spec.edgeType(), spec.weight(), spec.label(), spec.description(), spec.metaJson(),
+                                spec.provenance(), spec.factSheetId());
+                        relationshipsPersisted++;
+                        if (i < relationshipEdgeLabels.size()) {
+                            job.incrementRelationshipType(relationshipEdgeLabels.get(i));
+                        }
+                    } catch (Exception perEdgeFailure) {
+                        log.debug("[Job {}] Failed fallback relationship persist {} -> {}: {}",
+                                jobId, spec.sourceNodeId(), spec.targetNodeId(), perEdgeFailure.getMessage());
+                    }
                 }
             }
         }
@@ -480,6 +526,8 @@ class GraphPersistenceHelper {
         if (confidence != null) {
             metadata.putIfAbsent("confidence", confidence);
         }
+        CrawlGraphProcessMetadata.normalizeRelationMetadata(metadata, jobId, sourcePath, extractionMethod,
+                sourceEntityId, targetEntityId, label);
         try {
             return EDGE_METADATA_MAPPER.writeValueAsString(metadata);
         } catch (Exception e) {
@@ -499,71 +547,11 @@ class GraphPersistenceHelper {
                              String extractionMethod,
                              String sourcePath,
                              String sourceDocumentId) {
-        if (entityMentionRepository == null || documentNode == null || entityName == null || entityName.isBlank()) {
-            return;
-        }
-        String normalizedName = normalizeEntityMentionName(entityName);
-        if (normalizedName.isBlank()) {
-            return;
-        }
-        try {
-            // When confidence is absent (Tika/structural extraction), avoid the hard 1.0 default
-            // that pins PSL gradient. Use the stamper's fallback (sourceTrust-seeded expectation)
-            // when available; otherwise fall back to 0.5 (uncertain, not maximally certain).
-            final double effectiveConfidence;
-            if (confidence != null) {
-                effectiveConfidence = confidence;
-            } else if (confidenceStamper != null) {
-                // Use a dummy map — we only want the effective confidence scalar, not the keys.
-                // Basis is STRUCTURAL because an entity-mention is derived from extraction structure.
-                effectiveConfidence = confidenceStamper.stampEdgeConfidence(
-                        new LinkedHashMap<>(), "STRUCTURAL", null);
-            } else {
-                effectiveConfidence = 0.5; // safe default: uncertain, not maximally certain
-            }
-            EntityMention mention = entityMentionRepository
-                    .findByNodeAndEntityNameAndFactSheet(documentNode, normalizedName, factSheetId)
-                    .orElseGet(() -> EntityMention.builder()
-                            .node(documentNode)
-                            .entityName(normalizedName)
-                            .entityType(entityType.toUpperCase(Locale.ROOT))
-                            .mentionCount(0)
-                            .confidence(effectiveConfidence)
-                            .factSheetId(factSheetId)
-                            .build());
-            mention.setMentionCount((mention.getMentionCount() != null ? mention.getMentionCount() : 0) + 1);
-            if (confidence != null) {
-                mention.setConfidence(mention.getConfidence() != null
-                        ? Math.max(mention.getConfidence(), confidence)
-                        : confidence);
-            }
-            mention.setContextJson(entityMentionContextJson(entityName, extractionMethod, sourcePath, sourceDocumentId));
-            entityMentionRepository.save(mention);
-        } catch (Exception e) {
-            log.debug("Failed to persist entity mention '{}' for document node {}: {}",
-                    entityName, documentNode.getNodeId(), e.getMessage());
-        }
-    }
-
-    String normalizeEntityMentionName(String name) {
-        String normalized = ENTITY_SUFFIX_PATTERN.matcher(name.trim().toLowerCase(Locale.ROOT)).replaceAll("").trim();
-        return normalized.replaceAll("\\s+", " ");
-    }
-
-    String entityMentionContextJson(String entityName,
-                                    String extractionMethod,
-                                    String sourcePath,
-                                    String sourceDocumentId) {
-        Map<String, Object> context = new LinkedHashMap<>();
-        context.put("entityName", entityName);
-        if (extractionMethod != null) context.put("extractionMethod", extractionMethod);
-        if (sourcePath != null) context.put(GraphConstants.META_SOURCE_PATH, sourcePath);
-        if (sourceDocumentId != null) context.put("sourceDocumentId", sourceDocumentId);
-        try {
-            return EDGE_METADATA_MAPPER.writeValueAsString(List.of(context));
-        } catch (Exception e) {
-            return "[]";
-        }
+        // Entity mention data is already stored as ENTITY graph nodes via
+        // knowledgeGraphService.createNode() in persistConstructedGraphBatch().
+        // The matrix store derives entity-mention queries from those nodes on demand
+        // (MatrixKnowledgeGraphService.getEntityMentionsForNode), so a separate
+        // JPA EntityMention table is redundant and has been removed.
     }
 
     // -------------------------------------------------------------------------
@@ -672,6 +660,17 @@ class GraphPersistenceHelper {
      */
     private Long jobFactSheetId(UnifiedCrawlJob job) {
         return job != null && job.getRequest() != null ? job.getRequest().getFactSheetId() : null;
+    }
+
+    private record PendingSemanticEntity(
+            Entity entity,
+            Optional<GraphNode> parentDoc,
+            String externalId,
+            String entityType,
+            String entityTitle,
+            Double confidence,
+            String sourcePath,
+            String sourceDocumentId) {
     }
 
     // -------------------------------------------------------------------------

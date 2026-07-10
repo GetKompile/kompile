@@ -43,6 +43,10 @@
             <artifactId>kompile-app-core</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-utils</artifactId>
+        </dependency>
 
         <dependency>
             <groupId>ai.kompile</groupId>

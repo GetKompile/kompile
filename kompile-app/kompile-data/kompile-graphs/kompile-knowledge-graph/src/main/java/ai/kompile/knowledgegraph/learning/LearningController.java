@@ -33,16 +33,18 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.UUID;
+
 /**
  * REST controller for on-demand KGE + PSL weight-learning runs.
  *
  * <p>Exposes {@code POST /api/knowledge-graph/learn} which triggers:
  * <ol>
- *   <li>KGE embedding training via {@link KGEmbeddingJobService} using algorithm-specific
- *       defaults (dim=100, lr=0.01, batchSize=128, epochs=200, margin=1.0,
- *       negativeSamples=5).</li>
- *   <li>If {@link IncrementalReasoningOrchestrator} is available, a synchronous
- *       full-reground (PSL weight-learning) for the same fact sheet.</li>
+ *   <li>Complete KGE embedding training via {@link KGEmbeddingJobService} using the selected
+ *       algorithm's library defaults.</li>
+ *   <li>Rebuild the registered reasoning graph so it contains the newly persisted vectors.</li>
+ *   <li>If {@link IncrementalReasoningOrchestrator} is available, run a synchronous full-reground
+ *       (hybrid consensus, PSL, and registered MEBN learning) for the same fact sheet.</li>
  * </ol>
  *
  * <p>Returns a {@link LearningJobResponse} JSON with the KGE job ID, PSL versions
@@ -91,32 +93,34 @@ public class LearningController {
 
         KGEmbeddingAlgorithm algo = KGEmbeddingAlgorithm.fromString(algorithm);
 
-        // Build config: use the task-specified defaults regardless of which algorithm
-        // was chosen (consistent, predictable defaults for on-demand runs).
-        KGEmbeddingConfig config = KGEmbeddingConfig.builder()
-                .embeddingDim(100)
-                .epochs(200)
-                .learningRate(0.01)
-                .batchSize(128)
-                .margin(1.0)
-                .negativeSamples(5)
-                .build();
+        KGEmbeddingConfig config = KGEmbeddingConfig.defaultsFor(algo);
 
-        // Start KGE training job (async internally)
+        // Complete KGE first. Starting an async job and immediately re-grounding would train the
+        // reasoning models against stale vectors, defeating semantic consensus in this full run.
         KGEmbeddingJob job;
         try {
-            job = kgeJobService.startTraining(factSheetId, algo, config);
-            log.info("KGE training job started: jobId={}, factSheetId={}, algorithm={}",
-                    job.getJobId(), factSheetId, algo);
+            job = kgeJobService.trainSynchronously(
+                    "api-learning-" + UUID.randomUUID(), factSheetId, algo, config, null);
+            log.info("KGE training job finished: jobId={}, factSheetId={}, algorithm={}, status={}",
+                    job.getJobId(), factSheetId, algo, job.getStatus());
         } catch (IllegalStateException e) {
-            // A job is already running — surface it as a 409-ish informational response
             log.warn("KGE training already running for factSheetId={}: {}", factSheetId, e.getMessage());
             return ResponseEntity.status(409).body(new LearningJobResponse(
                     null, factSheetId, algo.name(), "ALREADY_RUNNING", 0, 0,
                     "A training job is already running for this fact sheet: " + e.getMessage()));
         }
 
-        // Optionally register MEBN theory before PSL reground (so MEBN runs inside the cascade)
+        if (job.getStatus() != KGEmbeddingJob.JobStatus.COMPLETED) {
+            log.warn("KGE training did not complete for factSheetId={}: status={}, error={}",
+                    factSheetId, job.getStatus(), job.getErrorMessage());
+            return ResponseEntity.ok(new LearningJobResponse(
+                    job.getJobId(), factSheetId, algo.name(),
+                    job.getStatus() != null ? job.getStatus().name() : "FAILED", 0, 0,
+                    "KGE training did not complete; reasoning learning was skipped: "
+                            + job.getErrorMessage()));
+        }
+
+        // Register after KGE so the ReasoningGraph carries the vectors from this training run.
         int mebnMFragsRegistered = 0;
         if (mebnRegistrationService != null) {
             try {
@@ -140,16 +144,16 @@ public class LearningController {
                         factSheetId, pslVersionsWritten, pslRunId);
             } catch (Exception e) {
                 log.warn("PSL weight-learning failed for factSheetId={}: {}", factSheetId, e.getMessage(), e);
-                // Non-fatal: KGE job was already started, return partial success
+                // Non-fatal: KGE completed successfully, return partial success.
                 return ResponseEntity.ok(new LearningJobResponse(
                         job.getJobId(), factSheetId, algo.name(),
                         job.getStatus() != null ? job.getStatus().name() : "STARTED",
                         0, mebnMFragsRegistered,
-                        "KGE job started but PSL reground failed: " + e.getMessage()));
+                        "KGE completed but PSL reground failed: " + e.getMessage()));
             }
         }
 
-        String message = "KGE training started"
+        String message = "KGE training complete"
                 + (mebnMFragsRegistered > 0 ? "; MEBN: " + mebnMFragsRegistered + " MFrag(s) registered" : "")
                 + (reasoningOrchestrator != null
                    ? "; PSL reground complete (versionsWritten=" + pslVersionsWritten

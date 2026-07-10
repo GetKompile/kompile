@@ -151,11 +151,12 @@ class PipelineStepTracker {
             }
             case "VECTOR_INDEXING" -> {
                 int total = job.getChunksQueuedForEmbedding().get();
-                int completed = Math.max(job.getChunksEmbedded().get(), job.getDocumentsIndexed().get());
+                int completed = total > 0
+                        ? Math.min(total, Math.max(job.getChunksEmbedded().get(), job.getDocumentsIndexed().get()))
+                        : Math.max(job.getChunksEmbedded().get(), job.getDocumentsIndexed().get());
                 step.getTotalItems().set(total);
                 step.getCompletedItems().set(completed);
-                step.getTotalBatches().set(job.getVectorBatchesTotal().get());
-                step.getCompletedBatches().set(job.getVectorBatchesCompleted().get());
+                setBatchCounters(step, job.getVectorBatchesCompleted().get(), job.getVectorBatchesTotal().get());
                 step.getProgressPercent().set(percent(completed, total));
             }
             case "CHUNKING" -> {
@@ -225,14 +226,35 @@ class PipelineStepTracker {
         if (totalItems >= 0) step.getTotalItems().set(totalItems);
         if (completedItems >= 0) step.getCompletedItems().set(completedItems);
         if (failedItems >= 0) step.getFailedItems().set(failedItems);
-        if (totalBatches >= 0) step.getTotalBatches().set(totalBatches);
-        if (completedBatches >= 0) step.getCompletedBatches().set(completedBatches);
+        if (totalBatches >= 0 || completedBatches >= 0) {
+            setBatchCounters(step,
+                    completedBatches >= 0 ? completedBatches : step.getCompletedBatches().get(),
+                    totalBatches >= 0 ? totalBatches : step.getTotalBatches().get());
+        }
         if (currentBatchSize >= 0) step.getCurrentBatchSize().set(currentBatchSize);
         step.getCurrentItem().set(currentItem);
         step.getMessage().set(message);
+        if (status == UnifiedCrawlJob.PipelineStepStatus.RUNNING
+                || status == UnifiedCrawlJob.PipelineStepStatus.BACKPRESSURE) {
+            step.getActiveTasks().updateAndGet(active -> Math.max(active, 1));
+        } else if (status == UnifiedCrawlJob.PipelineStepStatus.COMPLETED
+                || status == UnifiedCrawlJob.PipelineStepStatus.FAILED
+                || status == UnifiedCrawlJob.PipelineStepStatus.CANCELLED
+                || status == UnifiedCrawlJob.PipelineStepStatus.SKIPPED
+                || status == UnifiedCrawlJob.PipelineStepStatus.DEFERRED
+                || status == UnifiedCrawlJob.PipelineStepStatus.ARCHIVED) {
+            step.getActiveTasks().set(0);
+        }
         step.setLastUpdatedAt(now);
         int total = step.getTotalItems().get();
         int done = step.getCompletedItems().get();
+        if (status == UnifiedCrawlJob.PipelineStepStatus.COMPLETED && total > 0) {
+            done = total;
+            step.getCompletedItems().set(done);
+        } else if (total > 0 && done > total) {
+            done = total;
+            step.getCompletedItems().set(done);
+        }
         step.getProgressPercent().set(status == UnifiedCrawlJob.PipelineStepStatus.COMPLETED
                 ? 100
                 : percent(done, total));
@@ -242,9 +264,19 @@ class PipelineStepTracker {
         UnifiedCrawlJob.PipelineStepProgress step = ensurePipelineStep(job, phase);
         int total = Math.max(step.getTotalItems().get(), completedItems);
         applyPipelineStepUpdate(step, UnifiedCrawlJob.PipelineStepStatus.COMPLETED,
-                completedItems, total, step.getFailedItems().get(),
+                total, total, step.getFailedItems().get(),
                 step.getCompletedBatches().get(), step.getTotalBatches().get(),
                 0, null, message);
+    }
+
+    private void setBatchCounters(UnifiedCrawlJob.PipelineStepProgress step, int completedBatches, int totalBatches) {
+        int total = Math.max(0, totalBatches);
+        int completed = Math.max(0, completedBatches);
+        if (total > 0) {
+            completed = Math.min(completed, total);
+        }
+        step.getTotalBatches().set(total);
+        step.getCompletedBatches().set(completed);
     }
 
     void failPipelineStep(UnifiedCrawlJob job, String phase, String message) {

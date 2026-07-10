@@ -16,7 +16,9 @@
 
 import { Component, OnInit, OnDestroy, Inject } from '@angular/core';
 import { DOCUMENT } from '@angular/common';
+import { Router } from '@angular/router';
 import { Subscription } from 'rxjs';
+import { filter } from 'rxjs/operators';
 import { environment } from '../environments/environment';
 import { ConfigService } from './services/config.service';
 import { FactSheetService } from './services/fact-sheet.service';
@@ -24,10 +26,33 @@ import { DocumentService } from './services/document.service';
 import { WebSocketService } from './services/websocket.service';
 import { MainPanelNavigationService } from './services/main-panel-navigation.service';
 import { ThemeService } from './services/theme.service';
+import { MatDialog } from '@angular/material/dialog';
 import { FactSheet, CreateFactSheetRequest, IngestProgressUpdate, IngestStatus } from './models/api-models';
+import { CreateFactSheetDialogComponent, CreateFactSheetDialogResult } from './components/create-fact-sheet-dialog/create-fact-sheet-dialog.component';
 
-// Define a type for the possible tab values
-export type ActiveTabType = 'unifiedChat' | 'project' | 'sources' | 'tools' | 'developer' | 'kclaw' | 'enforcer' | 'grounding';
+/**
+ * Maps legacy tab-key strings (emitted by index-status-banner and project-explorer)
+ * to canonical router paths.
+ *
+ * Keys emitted today:
+ *   index-status-banner: 'sources', 'archiveAssembly'
+ *   project-explorer:    'project', 'sources'
+ *   (hypothetical):      'unifiedChat', 'tools', 'developer', 'kclaw', 'enforcer'
+ *
+ * 'archiveAssembly' → '/developer' because ArchiveAssemblyComponent is mounted inside
+ * model-staging.component.html which lives under DeveloperHub. Sub-tab selection within
+ * DeveloperHub is a later wave (no deep-link mechanism exists there yet).
+ */
+const LEGACY_KEY_MAP: Record<string, string> = {
+  unifiedChat:     '/chat',
+  project:         '/project',
+  sources:         '/fact-sheets',
+  tools:           '/data',
+  developer:       '/developer',
+  kclaw:           '/agents',
+  enforcer:        '/enforcer',
+  archiveAssembly: '/developer',  // ArchiveAssembly is a sub-panel of DeveloperHub/ModelStaging
+};
 
 @Component({
   standalone: false,
@@ -36,15 +61,11 @@ export type ActiveTabType = 'unifiedChat' | 'project' | 'sources' | 'tools' | 'd
   styleUrls: ['./app.component.css']
 })
 export class AppComponent implements OnInit, OnDestroy {
-  title = environment.appTitle; // Default from environment, will be updated from backend
-  activeTab: ActiveTabType = 'unifiedChat'; // Use unified chat by default
+  title = environment.appTitle;
 
   // Fact sheet state
   factSheets: FactSheet[] = [];
   activeFactSheet: FactSheet | null = null;
-  showCreateFactSheetDialog = false;
-  newFactSheetName = '';
-  newFactSheetDescription = '';
 
   // Active jobs tracking for notification indicator
   activeJobsCount = 0;
@@ -53,12 +74,14 @@ export class AppComponent implements OnInit, OnDestroy {
   private subscriptions: Subscription[] = [];
 
   constructor(
+    private router: Router,
     private configService: ConfigService,
     private factSheetService: FactSheetService,
     private documentService: DocumentService,
     private webSocketService: WebSocketService,
     private mainPanelNavigationService: MainPanelNavigationService,
     private themeService: ThemeService,
+    private dialog: MatDialog,
     @Inject(DOCUMENT) private document: Document
   ) { }
 
@@ -82,8 +105,9 @@ export class AppComponent implements OnInit, OnDestroy {
     });
     this.subscriptions.push(activeSub);
 
+    // MainPanelNavigationService: navigate to /fact-sheets (replaces old activeTab='sources')
     const focusSub = this.mainPanelNavigationService.focusMainPanel$.subscribe(() => {
-      this.activeTab = 'sources';
+      this.router.navigate(['/fact-sheets']);
     });
     this.subscriptions.push(focusSub);
 
@@ -96,11 +120,7 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   /**
-   * Apply the (white-labelable) branding favicon at runtime. Updates the SVG
-   * favicon <link> in <head> so a faviconUrl set in the kompile app config
-   * (app-index-config.json, served via /api/config) takes effect without
-   * rebuilding the frontend. The static <link>s in index.html provide the
-   * default before Angular bootstraps; the .ico fallback is left intact.
+   * Apply the (white-labelable) branding favicon at runtime.
    */
   private updateFavicon(url?: string): void {
     if (!url) { return; }
@@ -137,7 +157,6 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   private subscribeToJobUpdates(): void {
-    // Connect to WebSocket and subscribe to all task updates
     this.webSocketService.connect();
 
     const progressSub = this.webSocketService.subscribeToAllTasks().subscribe({
@@ -145,7 +164,6 @@ export class AppComponent implements OnInit, OnDestroy {
         if (this.isActiveJob(update)) {
           this.activeJobs.set(update.taskId, update);
         } else {
-          // Job completed or failed - remove from active
           this.activeJobs.delete(update.taskId);
         }
         this.activeJobsCount = this.activeJobs.size;
@@ -199,65 +217,55 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   openCreateFactSheetDialog(): void {
-    this.newFactSheetName = '';
-    this.newFactSheetDescription = '';
-    this.showCreateFactSheetDialog = true;
-  }
-
-  closeCreateFactSheetDialog(): void {
-    this.showCreateFactSheetDialog = false;
-  }
-
-  createFactSheet(): void {
-    if (!this.newFactSheetName.trim()) return;
-
-    const request: CreateFactSheetRequest = {
-      name: this.newFactSheetName.trim(),
-      description: this.newFactSheetDescription.trim() || undefined,
-      color: '#1976d2',
-      icon: 'folder'
-    };
-
-    this.factSheetService.createSheet(request).subscribe({
-      next: (sheet) => {
-        this.showCreateFactSheetDialog = false;
-        // Automatically activate the new sheet
-        this.factSheetService.activateSheet(sheet.id).subscribe();
-      },
-      error: (err) => console.error('Failed to create fact sheet:', err)
+    const dialogRef = this.dialog.open(CreateFactSheetDialogComponent, {
+      width: '460px'
+    });
+    dialogRef.afterClosed().pipe(filter(Boolean)).subscribe((result: CreateFactSheetDialogResult) => {
+      const request: CreateFactSheetRequest = {
+        name: result.name.trim(),
+        description: result.description.trim() || undefined,
+        color: '#1976d2',
+        icon: 'folder'
+      };
+      this.factSheetService.createSheet(request).subscribe({
+        next: (sheet) => {
+          this.factSheetService.activateSheet(sheet.id).subscribe();
+        },
+        error: (err) => console.error('Failed to create fact sheet:', err)
+      });
     });
   }
 
   /**
-   * Handle navigation from the index status banner.
-   * Safely casts the tab name to the ActiveTabType.
+   * Handle navigation from the index-status-banner and project-explorer.
+   * Maps legacy tab keys to router paths via LEGACY_KEY_MAP.
+   * Unknown keys are console.warned but never silently dropped.
    */
   handleBannerNavigation(tabName: string): void {
-    const validTabs: ActiveTabType[] = ['unifiedChat', 'project', 'sources', 'tools', 'developer', 'kclaw', 'grounding'];
-    if (validTabs.includes(tabName as ActiveTabType)) {
-      this.activeTab = tabName as ActiveTabType;
+    const path = LEGACY_KEY_MAP[tabName];
+    if (path) {
+      this.router.navigate([path]);
+    } else {
+      console.warn(`handleBannerNavigation: unknown key "${tabName}" — no route mapped`);
     }
   }
 
   /**
-   * Open the model staging configuration interface.
-   * Called from the model status indicator.
-   * Staging Manager is now under the Developer tab.
+   * Open model staging — now navigates to /developer.
+   * Called from model-status-indicator (openStaging) output.
    */
   openModelStaging(): void {
-    this.activeTab = 'developer';
+    this.router.navigate(['/developer']);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
   // THEME
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  /** Whether the dark theme is currently active (drives the toggle icon). */
   get isDark(): boolean {
     return this.themeService.isDark;
   }
 
-  /** Toggle between the light and dark themes; persisted to localStorage. */
   toggleTheme(): void {
     this.themeService.toggle();
   }

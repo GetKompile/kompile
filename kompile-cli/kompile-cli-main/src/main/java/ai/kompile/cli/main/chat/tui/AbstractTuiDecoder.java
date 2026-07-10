@@ -17,8 +17,10 @@
 package ai.kompile.cli.main.chat.tui;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.regex.Pattern;
 
 /**
@@ -67,7 +69,9 @@ public abstract class AbstractTuiDecoder implements AgentTuiDecoder {
         int[] range = contentRowRange(vt.getRows());
         StringBuilder sb = new StringBuilder();
         for (int r = range[0]; r <= range[1]; r++) {
-            String row = normalizeRow(stripBoxBorders(vt.getRow(r)));
+            String rawRow = vt.getRow(r);
+            String row = normalizeRow(stripBoxBorders(rawRow));
+            if (isRawChromeRow(rawRow, row)) continue;
             if (!isResponseRow(row)) continue;
             if (sb.length() > 0) sb.append('\n');
             sb.append(row);
@@ -81,6 +85,13 @@ public abstract class AbstractTuiDecoder implements AgentTuiDecoder {
      */
     protected boolean isResponseRow(String row) {
         if (row == null || row.length() < MIN_CONTENT_LENGTH) return false;
+        // GFM table rows — both data rows ("| Name | Role |") and separator rows
+        // ("| --- | --- |") — must survive so the markdown renderer sees the full
+        // table structure.  The separator row has no letters/digits so
+        // containsContentCharacter would drop it, and isSeparatorOrBorder /
+        // containsMostlyDecorative both fire on the ASCII dashes.  Bypass all
+        // three checks for any row with ≥2 pipe characters.
+        if (isGfmTableRow(row)) return !isProgressLine(row) && !isChrome(row);
         if (!containsContentCharacter(row)) return false;
         if (isSeparatorOrBorder(row)) return false;
         if (containsMostlyDecorative(row)) return false;
@@ -94,6 +105,14 @@ public abstract class AbstractTuiDecoder implements AgentTuiDecoder {
      * stripped and whitespace normalized. Return true to drop the row.
      */
     protected abstract boolean isChrome(String normalizedRow);
+
+    /**
+     * Optional hook for agent layouts where the raw row carries structural frame
+     * glyphs that are intentionally stripped before normal content classification.
+     */
+    protected boolean isRawChromeRow(String rawRow, String normalizedRow) {
+        return false;
+    }
 
     // ------------------------------------------------------------------
     // Message history (transcript reconstruction across fixed-viewport snapshots)
@@ -114,7 +133,7 @@ public abstract class AbstractTuiDecoder implements AgentTuiDecoder {
     }
 
     @Override
-    public java.util.List<HistoryEntry> history() {
+    public List<HistoryEntry> history() {
         synchronized (history) {
             return new ArrayList<>(history);
         }
@@ -132,8 +151,10 @@ public abstract class AbstractTuiDecoder implements AgentTuiDecoder {
         String progress = "";
         int[] range = contentRowRange(vt.getRows());
         for (int r = range[0]; r <= range[1]; r++) {
-            String row = normalizeRow(stripBoxBorders(vt.getRow(r)));
+            String rawRow = vt.getRow(r);
+            String row = normalizeRow(stripBoxBorders(rawRow));
             if (row.isEmpty()) continue;
+            if (isRawChromeRow(rawRow, row)) continue;
             TuiLineKind kind = classify(row);
             if (kind == TuiLineKind.PROGRESS) {
                 progress = row;
@@ -196,11 +217,81 @@ public abstract class AbstractTuiDecoder implements AgentTuiDecoder {
             history.addAll(visible);
             return;
         }
+        ReflowAnchor reflow = findReflowAnchor(visible, low);
+        if (reflow != null) {
+            while (history.size() > reflow.historyIndex()) history.remove(history.size() - 1);
+            history.addAll(visible);
+            return;
+        }
         // No full-tail anchor — a collapsed or re-laid-out screen (e.g. a global
         // detailed-transcript toggle). NEVER clear committed history (that loses the
         // user's text). Append only lines the screen adds that aren't already in the
         // recent tail: a collapse adds nothing, a detail toggle adds only its new lines.
         appendNovelTail(visible);
+    }
+
+    private record ReflowAnchor(int historyIndex) {}
+
+    /**
+     * Detect the same content reflowed across different rows. Codex and OpenCode
+     * repaint fixed-width viewports where row breaks can move even when the prose
+     * is identical. Exact alignment misses that and appends both wraps.
+     * <p>
+     * TOOL-kind entries are skipped rather than aborting the search: content that
+     * appears after a tool call in the same turn must still be reflow-anchored so
+     * it is not duplicated via {@link #appendNovelTail}.
+     */
+    private ReflowAnchor findReflowAnchor(List<HistoryEntry> visible, int low) {
+        if (visible.isEmpty()) return null;
+        int hSize = history.size();
+        for (int p = hSize - 1; p >= low; p--) {
+            List<HistoryEntry> tail = history.subList(p, hSize);
+            List<HistoryEntry> tailContent = contentOnly(tail);
+            if (tailContent.isEmpty()) continue;
+            String tailFlow = normalizeReflowText(tailContent);
+            if (tailFlow.length() < 20) continue;
+            for (int v = 1; v <= visible.size(); v++) {
+                List<HistoryEntry> prefix = visible.subList(0, v);
+                List<HistoryEntry> prefixContent = contentOnly(prefix);
+                if (prefixContent.isEmpty()) continue;
+                if (tailFlow.equals(normalizeReflowText(prefixContent))) {
+                    return new ReflowAnchor(p);
+                }
+            }
+        }
+        return null;
+    }
+
+    /** Returns a new list containing only the CONTENT-kind entries from {@code entries}. */
+    private List<HistoryEntry> contentOnly(List<HistoryEntry> entries) {
+        List<HistoryEntry> result = new ArrayList<>();
+        for (HistoryEntry e : entries) {
+            if (e.kind() == TuiLineKind.CONTENT) result.add(e);
+        }
+        return result;
+    }
+
+    private String normalizeReflowText(List<HistoryEntry> entries) {
+        StringBuilder sb = new StringBuilder();
+        for (HistoryEntry e : entries) {
+            String text = stripReflowPrefix(e.text());
+            if (text.isBlank()) continue;
+            if (sb.length() > 0) sb.append(' ');
+            sb.append(text);
+        }
+        return sb.toString().replaceAll("\\s+", " ").trim();
+    }
+
+    private String stripReflowPrefix(String text) {
+        if (text == null) return "";
+        String t = text.strip();
+        if (t.length() >= 2) {
+            char c = t.charAt(0);
+            if ((c == '•' || c == '●' || c == '⏺' || c == '◦') && Character.isWhitespace(t.charAt(1))) {
+                return t.substring(1).stripLeading();
+            }
+        }
+        return t;
     }
 
     /**
@@ -210,11 +301,26 @@ public abstract class AbstractTuiDecoder implements AgentTuiDecoder {
      */
     private void appendNovelTail(List<HistoryEntry> visible) {
         int from = Math.max(0, history.size() - ALIGN_LOOKBACK);
-        java.util.Set<String> recent = new java.util.HashSet<>();
-        for (int i = from; i < history.size(); i++) recent.add(history.get(i).text());
+        Set<String> recent = new HashSet<>();
+        for (int i = from; i < history.size(); i++) recent.add(dedupKey(history.get(i).text()));
         for (HistoryEntry e : visible) {
-            if (recent.add(e.text())) history.add(e);   // add() is false when already present
+            if (recent.add(dedupKey(e.text()))) history.add(e);   // add() is false when already present
         }
+    }
+
+    /**
+     * Canonical key for tail-dedup. Unifies a streamed GFM pipe row ({@code "| Name | Role |"})
+     * with the agent's later box-drawn re-render of the same row (which {@code stripBoxBorders}
+     * leaves as {@code "Name │ Role"}) so the same conceptual table row isn't committed twice.
+     * For non-pipe prose the key is just the trimmed text, so ordinary dedup is unchanged.
+     */
+    private static String dedupKey(String text) {
+        if (text == null) return "";
+        if (text.indexOf('|') < 0 && text.indexOf('│') < 0) return text.strip();
+        return text.replace('│', '|')
+                .replaceAll("\\s*\\|\\s*", "|")   // collapse padding around separators
+                .replaceAll("^\\|+|\\|+$", "")     // drop outer pipes (box-strip removed them on one side)
+                .strip();
     }
 
     /**
@@ -318,11 +424,14 @@ public abstract class AbstractTuiDecoder implements AgentTuiDecoder {
     public TuiLineKind classify(String row) {
         if (row == null) return TuiLineKind.CHROME;
         String r = row.strip();
-        if (r.length() < MIN_CONTENT_LENGTH || !containsContentCharacter(r)) return TuiLineKind.CHROME;
-        if (isSeparatorOrBorder(r) || containsMostlyDecorative(r) || hasInternalBoxRule(r)) return TuiLineKind.CHROME;
+        if (r.length() < MIN_CONTENT_LENGTH) return TuiLineKind.CHROME;
+        // GFM table rows bypass the decorative/content-char guards (same rationale as isResponseRow).
+        boolean gfm = isGfmTableRow(r);
+        if (!gfm && !containsContentCharacter(r)) return TuiLineKind.CHROME;
+        if (!gfm && (isSeparatorOrBorder(r) || containsMostlyDecorative(r) || hasInternalBoxRule(r))) return TuiLineKind.CHROME;
+        if (isToolLine(r)) return TuiLineKind.TOOL;
         if (isProgressLine(r)) return TuiLineKind.PROGRESS;
         if (isChrome(r)) return TuiLineKind.CHROME;
-        if (isToolLine(r)) return TuiLineKind.TOOL;
         return TuiLineKind.CONTENT;
     }
 
@@ -527,12 +636,21 @@ public abstract class AbstractTuiDecoder implements AgentTuiDecoder {
         while (p >= 0 && p + 1 < text.length()) {
             int q = p + 1;
             while (q < text.length() && Character.isDigit(text.charAt(q))) q++;
-            if (q > p + 1 && q < text.length() && (text.charAt(q) == 's' || text.charAt(q) == 'm')) {
+            if (q > p + 1 && q < text.length()
+                    && (text.charAt(q) == 's' || text.charAt(q) == 'm')
+                    && timerUnitEndsToken(text, q)) {
                 return true;
             }
             p = text.indexOf('(', p + 1);
         }
         return false;
+    }
+
+    private boolean timerUnitEndsToken(String text, int unitIndex) {
+        if (unitIndex + 1 >= text.length()) return true;
+        char next = text.charAt(unitIndex + 1);
+        return Character.isWhitespace(next) || next == ')' || next == '·'
+                || next == ',' || next == ';' || isBoxHorizontalRule(next);
     }
 
     private boolean hasBrailleSpinner(String row) {
@@ -692,6 +810,23 @@ public abstract class AbstractTuiDecoder implements AgentTuiDecoder {
         return false;
     }
 
+    /**
+     * True when the row looks like a GFM Markdown table row — it contains at least two
+     * {@code |} pipe characters.  Matches both data rows ({@code | Name | Role |}) and
+     * separator rows ({@code | --- | --- |}).  Requiring two pipes avoids false-positives
+     * from a lone pipe in prose (e.g. a shell one-liner).
+     */
+    private boolean isGfmTableRow(String row) {
+        if (row == null) return false;
+        int pipes = 0;
+        for (int i = 0; i < row.length(); i++) {
+            if (row.charAt(i) == '|') {
+                if (++pipes >= 2) return true;
+            }
+        }
+        return false;
+    }
+
     protected boolean isSeparatorOrBorder(String row) {
         int decorative = 0;
         int total = 0;
@@ -761,6 +896,201 @@ public abstract class AbstractTuiDecoder implements AgentTuiDecoder {
         return vt == null ? "" : vt.getFullScreen().toLowerCase(Locale.ROOT);
     }
 
+    /**
+     * Pull the on-screen decision prompt (question line + numbered options) out of the VT so the
+     * REPL can display the choices explicitly. Finds the run of numbered-option rows and the
+     * nearest non-blank line above them (the question).
+     */
+    @Override
+    public String extractPromptText(VirtualTerminal vt) {
+        if (vt == null) return "";
+        int rows = vt.getRows();
+        int firstOption = -1, lastOption = -1;
+        for (int r = 0; r < rows; r++) {
+            if (isNumberedOptionRow(vt.getRow(r))) {
+                if (firstOption < 0) firstOption = r;
+                lastOption = r;
+            }
+        }
+        if (firstOption < 0) return "";
+        StringBuilder sb = new StringBuilder();
+        // Nearest non-blank, non-separator line above the options is the question.
+        for (int r = firstOption - 1; r >= 0 && r >= firstOption - 4; r--) {
+            String q = vt.getRow(r).strip();
+            if (!q.isEmpty() && !isSeparatorOrBorder(q)) { sb.append(q).append('\n'); break; }
+        }
+        for (int r = firstOption; r <= lastOption; r++) {
+            String opt = vt.getRow(r).strip();
+            if (!opt.isEmpty()) sb.append("  ").append(opt).append('\n');
+        }
+        return sb.toString().stripTrailing();
+    }
+
+    @Override
+    public String selectedOptionDigit(VirtualTerminal vt) {
+        if (vt == null) return null;
+        for (int r = 0; r < vt.getRows(); r++) {
+            String row = vt.getRow(r).strip();
+            if (row.isEmpty()) continue;
+            char c0 = row.charAt(0);
+            // The selection cursor sits on the highlighted numbered option.
+            if (c0 == '❯' || c0 == '›' || c0 == '>' || c0 == '▶') {
+                String rest = row.substring(1).stripLeading();
+                int i = 0;
+                while (i < rest.length() && Character.isDigit(rest.charAt(i))) i++;
+                if (i > 0 && i < rest.length() && rest.charAt(i) == '.') {
+                    return rest.substring(0, i);
+                }
+            }
+        }
+        return null;
+    }
+
+    /** A row that is (optionally cursor/bullet-prefixed) "&lt;n&gt;. text" — a menu option. */
+    private boolean isNumberedOptionRow(String row) {
+        if (row == null) return false;
+        String t = row.strip();
+        int i = 0;
+        // Skip a leading selection cursor / bullet glyph.
+        while (i < t.length() && (t.charAt(i) == '❯' || t.charAt(i) == '>' || t.charAt(i) == '●'
+                || t.charAt(i) == '◦' || t.charAt(i) == '•' || Character.isWhitespace(t.charAt(i)))) i++;
+        int digitStart = i;
+        while (i < t.length() && Character.isDigit(t.charAt(i))) i++;
+        return i > digitStart && i < t.length() && t.charAt(i) == '.'
+                && i + 1 < t.length() && t.charAt(i + 1) == ' ';
+    }
+
+    /**
+     * Conservative detection of a mid-turn decision prompt (confirmation, selection menu, yes/no,
+     * or a direct question) that the agent is blocked on. Requires the agent to NOT be actively
+     * generating and requires a strong, unambiguous affordance so a normal response can't trip it.
+     */
+    @Override
+    public boolean isAwaitingUserInput(VirtualTerminal vt) {
+        if (vt == null) return false;
+        String s = screen(vt);
+        if (s.isBlank()) return false;
+        // Startup consent prompts (folder-trust, "N new MCP servers") are auto-accepted by
+        // buildInputResponses — never surface them as a user decision.
+        if (s.contains("trust this folder") || s.contains("is this a project you created")
+                || (s.contains("new") && s.contains("mcp") && s.contains("servers")
+                        && s.contains("enter") && s.contains("confirm"))) {
+            return false;
+        }
+        // Never while the agent is actively generating. NOTE: we deliberately do NOT gate on
+        // isResponding() — some decoders treat "esc to cancel" as responding, but that phrase also
+        // appears on confirmation prompts. Instead exclude only unambiguous generation markers.
+        if (s.contains("esc to interrupt") || s.contains("thinking")
+                || (s.contains("working") && s.contains("("))) {
+            return false;
+        }
+        // A prompt shows at least one strong, unambiguous affordance.
+        boolean confirmAffordance = s.contains("enter to confirm")
+                || s.contains("press enter to continue")
+                || s.contains("(y/n)") || s.contains("[y/n]") || s.contains("(yes/no)");
+        // A selection menu: the ❯/›/▶ cursor sits on SOME numbered option and there is more than
+        // one. Match the cursor on ANY option number, not just "1" — pickers pre-highlight the
+        // current choice (claude's /model highlights the active model, e.g. "❯ 5. Haiku"), and the
+        // user arrows the cursor around, so gating on "❯ 1." both misses the initial state and drops
+        // detection mid-navigation (which would wedge the turn). Goes false the moment the menu is
+        // gone, so it cannot get stuck the way the alternate-screen flag does.
+        boolean selectionMenu = hasHighlightedNumberedOption(s) && (s.contains("2.") || s.contains("2)"));
+        boolean decisionQuestion = s.contains("do you want to")
+                || (s.contains("allow") && s.contains("deny"))
+                || (s.contains("approve") && s.contains("reject"));
+        return confirmAffordance || selectionMenu || decisionQuestion;
+    }
+
+    /**
+     * True if any line is a selection-cursor (❯/›/▶) sitting on a numbered option, e.g. "❯ 5. Haiku"
+     * or "› 2) Foo". Only the strong selection arrows count (not "●"/">", which are also content
+     * bullets/quote markers) so a normal numbered-list answer doesn't read as a live menu.
+     */
+    private static boolean hasHighlightedNumberedOption(String s) {
+        int i = 0, n = s.length();
+        while (i < n) {
+            int eol = s.indexOf('\n', i);
+            if (eol < 0) eol = n;
+            int a = i;
+            while (a < eol && s.charAt(a) == ' ') a++;              // skip leading spaces
+            if (a < eol) {
+                char c = s.charAt(a);
+                if (c == '❯' || c == '›' || c == '▶' || c == '❭') {
+                    int b = a + 1;
+                    while (b < eol && s.charAt(b) == ' ') b++;      // skip spaces after the cursor
+                    int d = b;
+                    while (d < eol && Character.isDigit(s.charAt(d))) d++;
+                    if (d > b && d < eol && (s.charAt(d) == '.' || s.charAt(d) == ')')) return true;
+                }
+            }
+            i = eol + 1;
+        }
+        return false;
+    }
+
+    /**
+     * Phrases that, if present on screen, mean the agent is blocked (quota/credits/rate-limit/
+     * auth) rather than working. Deliberately specific so a benign hint ("usage limit reset
+     * available") does not match. Subclasses append provider-specific wording via
+     * {@link #extraBlockingPhrases()}.
+     */
+    private static final String[] BLOCKING_PHRASES = {
+            "usage limit reached", "reached your usage limit", "hit your usage limit",
+            "run out of usage", "quota exceeded", "exceeded your quota",
+            "out of credits", "no credits remaining", "insufficient credits",
+            "insufficient balance", "insufficient_quota", "rate limit exceeded",
+            "too many requests", "429 too many requests",
+            "authentication failed", "not authenticated", "please sign in", "please log in",
+            "login required", "invalid api key", "api key expired", "session expired",
+    };
+
+    /** Provider-specific blocking phrases; overridden by concrete decoders. */
+    protected String[] extraBlockingPhrases() {
+        return new String[0];
+    }
+
+    /**
+     * Scan for a blocking notice (quota/auth/rate-limit) and return the offending line (so the
+     * user sees the agent's own wording), or {@code null}. Scans BOTH the live screen AND the
+     * accumulated turn transcript: a full-screen TUI (codex, opencode) scrolls its error out of
+     * the fixed viewport as it redraws the idle prompt, so the notice often survives only in the
+     * decoder history — reading just {@code getFullScreen()} misses it once the agent settles.
+     */
+    @Override
+    public String detectBlockingNotice(VirtualTerminal vt) {
+        String hit = scanLineForBlockingNotice(vt == null ? "" : vt.getFullScreen());
+        if (hit != null) return hit;
+        // Scan the accumulated transcript using each entry's PLAIN text — renderHistory() carries
+        // the agent's ANSI styling, whose codes could fall mid-phrase and defeat a substring match.
+        for (HistoryEntry e : history()) {
+            String line = scanLineForBlockingNotice(e.text());
+            if (line != null) return line;
+        }
+        return null;
+    }
+
+    @Override
+    public String detectBlockingNoticeInText(String renderedText) {
+        return scanLineForBlockingNotice(renderedText);
+    }
+
+    private String scanLineForBlockingNotice(String text) {
+        if (text == null || text.isEmpty()) return null;
+        String[] extra = extraBlockingPhrases();
+        for (String raw : text.split("\n")) {
+            String line = raw.strip();
+            if (line.isEmpty()) continue;
+            String lower = line.toLowerCase(Locale.ROOT);
+            for (String phrase : BLOCKING_PHRASES) {
+                if (lower.contains(phrase)) return line;
+            }
+            for (String phrase : extra) {
+                if (phrase != null && !phrase.isEmpty() && lower.contains(phrase)) return line;
+            }
+        }
+        return null;
+    }
+
     // ------------------------------------------------------------------
     // Terminal query responses
     // ------------------------------------------------------------------
@@ -774,66 +1104,24 @@ public abstract class AbstractTuiDecoder implements AgentTuiDecoder {
         return true;
     }
 
+    /**
+     * Decoders derived from this base answer the full query set (XTVERSION on), gating only the
+     * Kitty keyboard reply through {@link #answersKittyKeyboard()}.
+     */
+    @Override
+    public QueryPolicy queryPolicy() {
+        return QueryPolicy.DEFAULT.withKittyKeyboard(answersKittyKeyboard());
+    }
+
     @Override
     public String buildResponses(String rawChunk, VirtualTerminal vt) {
-        if (rawChunk == null || rawChunk.isEmpty()) return "";
-        StringBuilder response = new StringBuilder();
-
-        if (rawChunk.contains("\033[6n")) {
-            response.append("\033[")
-                    .append(clamp(vt.getCursorRow() + 1, 1, vt.getRows()))
-                    .append(';')
-                    .append(clamp(vt.getCursorCol() + 1, 1, vt.getCols()))
-                    .append('R');
-        }
-        if (rawChunk.contains("\033[5n")) {
-            response.append("\033[0n");
-        }
-        if (rawChunk.contains("\033[c") || rawChunk.contains("\033[0c")) {
-            response.append("\033[?62;22c");
-        }
-        if (rawChunk.contains("\033[>c") || rawChunk.contains("\033[>0c")) {
-            response.append("\033[>0;0;0c");
-        }
-        if (answersKittyKeyboard() && rawChunk.contains("\033[?u")) {
-            response.append("\033[?0u");
-        }
-        // XTVERSION (ESC[>q) — report a neutral terminal identity.
-        if (rawChunk.contains("\033[>q")) {
-            response.append("\033P>|kompile\033\\");
-        }
-        if (rawChunk.contains("\033[18t")) {
-            response.append("\033[8;").append(vt.getRows()).append(';').append(vt.getCols()).append('t');
-        }
-        if (rawChunk.contains("\033[14t")) {
-            response.append("\033[4;").append(vt.getRows() * 16).append(';').append(vt.getCols() * 8).append('t');
-        }
-        if (rawChunk.contains("\033[16t")) {
-            response.append("\033[6;16;8t");
-        }
-        if (containsOsc(rawChunk, "10")) {
-            response.append("\033]10;rgb:eeee/eeee/eeee\033\\");
-        }
-        if (containsOsc(rawChunk, "11")) {
-            response.append("\033]11;rgb:0000/0000/0000\033\\");
-        }
-        if (containsOsc(rawChunk, "12")) {
-            response.append("\033]12;rgb:eeee/eeee/eeee\033\\");
-        }
+        StringBuilder response = new StringBuilder(
+                TerminalQueryResponder.respond(rawChunk, vt, queryPolicy()));
         appendExtraResponses(response, rawChunk, vt);
         return response.toString();
     }
 
     /** Hook for decoder-specific query responses. Default: none. */
     protected void appendExtraResponses(StringBuilder response, String rawChunk, VirtualTerminal vt) {
-    }
-
-    protected boolean containsOsc(String data, String code) {
-        String prefix = "\033]" + code + ";?";
-        return data.contains(prefix + "\007") || data.contains(prefix + "\033\\");
-    }
-
-    protected int clamp(int val, int min, int max) {
-        return Math.max(min, Math.min(max, val));
     }
 }

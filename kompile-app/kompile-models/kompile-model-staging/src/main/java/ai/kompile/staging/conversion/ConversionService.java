@@ -115,7 +115,11 @@ public class ConversionService {
 
         } catch (Exception e) {
             log.error("Conversion failed for: {}", inputPath, e);
-            return ConversionResult.failure("Conversion failed: " + e.getMessage());
+            // Do NOT wrap in "Conversion failed: " here — StagingService already adds
+            // that context when it wraps this message into info.failed(...). Wrapping
+            // twice produces the confusing "Conversion failed: Conversion failed: …" message
+            // that was observed in production.
+            return ConversionResult.failure(e.getMessage());
         }
     }
 
@@ -198,8 +202,8 @@ public class ConversionService {
         return importer.runImport(
                 inputPath.toFile().getAbsolutePath(),
                 Collections.emptyMap(),
-                true,
-                true
+                false,
+                false
         );
     }
 
@@ -212,8 +216,8 @@ public class ConversionService {
         return importer.runImport(
                 inputPath.toFile().getAbsolutePath(),
                 Collections.emptyMap(),
-                true,
-                true
+                false,
+                false
         );
     }
 

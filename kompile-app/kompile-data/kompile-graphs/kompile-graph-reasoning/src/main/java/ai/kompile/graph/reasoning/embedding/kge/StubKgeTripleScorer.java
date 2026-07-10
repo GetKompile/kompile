@@ -17,6 +17,7 @@ package ai.kompile.graph.reasoning.embedding.kge;
 
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 
@@ -73,8 +74,8 @@ public final class StubKgeTripleScorer implements KgeTripleScorer {
     public static final class Builder {
 
         private final Map<String, Double> scores        = new LinkedHashMap<>();
-        private final Set<String>         knownEntities = new java.util.LinkedHashSet<>();
-        private final Set<String>         knownRelations = new java.util.LinkedHashSet<>();
+        private final Set<String>         knownEntities = new LinkedHashSet<>();
+        private final Set<String>         knownRelations = new LinkedHashSet<>();
 
         private Builder() {}
 
@@ -121,8 +122,8 @@ public final class StubKgeTripleScorer implements KgeTripleScorer {
         /** Build the scorer. */
         public StubKgeTripleScorer build() {
             return new StubKgeTripleScorer(scores,
-                    Collections.unmodifiableSet(new java.util.LinkedHashSet<>(knownEntities)),
-                    Collections.unmodifiableSet(new java.util.LinkedHashSet<>(knownRelations)));
+                    Collections.unmodifiableSet(new LinkedHashSet<>(knownEntities)),
+                    Collections.unmodifiableSet(new LinkedHashSet<>(knownRelations)));
         }
     }
 

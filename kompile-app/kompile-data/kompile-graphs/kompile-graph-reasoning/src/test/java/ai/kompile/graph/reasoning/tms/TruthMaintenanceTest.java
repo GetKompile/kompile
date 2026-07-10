@@ -19,6 +19,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -138,6 +139,85 @@ class TruthMaintenanceTest {
             List<ContradictionDetector.Pair<Fact, Fact>> contradictions =
                     ContradictionDetector.findFactContradictions(store);
             // Different keys, no contradiction
+            assertTrue(contradictions.isEmpty());
+        }
+
+        @Test
+        @DisplayName("findFactContradictions detects explicit negated atoms")
+        void findFactContradictionsDetectsNegation() {
+            FactStore store = new FactStore();
+            store.assertFact(Fact.observed("State(alice)", "src1"));
+            store.assertFact(Fact.observed("Not_State(alice)", "src2"));
+
+            List<ContradictionDetector.Pair<Fact, Fact>> contradictions =
+                    ContradictionDetector.findFactContradictions(store);
+
+            assertEquals(1, contradictions.size());
+        }
+
+        @Test
+        @DisplayName("findFactContradictions detects schema functional predicate clashes")
+        void findFactContradictionsDetectsFunctionalPredicateClash() {
+            FactStore store = new FactStore();
+            store.assertFact(Fact.observed("LifecyclePhase(order-1, draft)", "src1"));
+            store.assertFact(Fact.observed("LifecyclePhase(order-1, approved)", "src2"));
+
+            List<ContradictionDetector.Pair<Fact, Fact>> contradictions =
+                    ContradictionDetector.findFactContradictions(store, Set.of("LifecyclePhase"));
+
+            assertEquals(1, contradictions.size());
+        }
+
+        @Test
+        @DisplayName("probabilistic detector flags high posterior mass on mutually exclusive MEBN states")
+        void probabilisticDetectorFlagsMutuallyExclusiveMebnStates() {
+            List<ProbabilisticContradictionDetector.ProbabilisticContradiction> contradictions =
+                    ProbabilisticContradictionDetector.detect(
+                            Map.of(
+                                    "RedWine(wine-1)", 0.72,
+                                    "WhiteWine(wine-1)", 0.64),
+                            Map.of(
+                                    "RedWine(wine-1)", 0.35,
+                                    "WhiteWine(wine-1)", 0.20),
+                            Map.of(
+                                    "RedWine(wine-1)", Map.of(
+                                            "entityId", "wine-1",
+                                            "exclusiveGroup", "wine-color",
+                                            "state", "RedWine",
+                                            "rvName", "WineColor"),
+                                    "WhiteWine(wine-1)", Map.of(
+                                            "entityId", "wine-1",
+                                            "exclusiveGroup", "wine-color",
+                                            "state", "WhiteWine",
+                                            "rvName", "WineColor")));
+
+            assertEquals(1, contradictions.size());
+            ProbabilisticContradictionDetector.ProbabilisticContradiction contradiction = contradictions.get(0);
+            assertEquals("wine-1", contradiction.entityId());
+            assertEquals("wine-color", contradiction.groupKey());
+            assertTrue(contradiction.jointConflict() > 0.45);
+            assertTrue(contradiction.entropy() > 0.9);
+        }
+
+        @Test
+        @DisplayName("probabilistic detector ignores high posteriors in unrelated groups")
+        void probabilisticDetectorIgnoresUnrelatedGroups() {
+            List<ProbabilisticContradictionDetector.ProbabilisticContradiction> contradictions =
+                    ProbabilisticContradictionDetector.detect(
+                            Map.of(
+                                    "RedWine(wine-1)", 0.92,
+                                    "SweetWine(wine-1)", 0.88),
+                            Map.of(),
+                            Map.of(
+                                    "RedWine(wine-1)", Map.of(
+                                            "entityId", "wine-1",
+                                            "exclusiveGroup", "wine-color",
+                                            "state", "RedWine"),
+                                    "SweetWine(wine-1)", Map.of(
+                                            "entityId", "wine-1",
+                                            "exclusiveGroup", "wine-style",
+                                            "state", "SweetWine")));
+
             assertTrue(contradictions.isEmpty());
         }
     }

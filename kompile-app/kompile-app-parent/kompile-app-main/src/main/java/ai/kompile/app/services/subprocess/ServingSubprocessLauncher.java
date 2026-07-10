@@ -22,10 +22,13 @@ import ai.kompile.app.config.Nd4jEnvironmentConfig;
 import ai.kompile.app.config.SubprocessExecutableConfig;
 import ai.kompile.app.services.DeviceRoutingConfigService;
 import ai.kompile.app.services.Nd4jEnvironmentConfigService;
+import ai.kompile.app.subprocess.BackendConfigurable;
 import ai.kompile.app.subprocess.RestartableSubprocess;
 import ai.kompile.app.subprocess.ServingSubprocessArgs;
 import ai.kompile.app.subprocess.SubprocessBackendResolver;
 import ai.kompile.app.subprocess.SubprocessEnvironmentPropagator;
+import ai.kompile.app.subprocess.SubprocessPlacement;
+import ai.kompile.app.subprocess.SubprocessPlacementSupport;
 import ai.kompile.app.subprocess.SubprocessRegistry;
 import ai.kompile.cli.common.logs.AgentLogRecord;
 import ai.kompile.cli.common.logs.SubprocessLogWriter;
@@ -92,12 +95,24 @@ import java.util.jar.JarFile;
  * </ul>
  */
 @Service
-public class ServingSubprocessLauncher implements RestartableSubprocess {
+public class ServingSubprocessLauncher implements RestartableSubprocess, BackendConfigurable {
 
     private static final Logger logger = LoggerFactory.getLogger(ServingSubprocessLauncher.class);
 
-    /** Heap size for the LLM serving subprocess — larger than embedding (4g) due to model weights. */
-    private static final String DEFAULT_HEAP_SIZE = "16g";
+    /** Shared device-agnostic placement (same base infra every subprocess uses). */
+    private final SubprocessPlacementSupport placement = new SubprocessPlacementSupport();
+
+    /** {@link BackendConfigurable} — the scheduler assigns backend/device/memory before spawn. */
+    @Override
+    public void applyPlacement(SubprocessPlacement p) {
+        this.placement.applyPlacement(p);
+    }
+
+    /** Heap gigabytes for the LLM serving subprocess — larger than embedding (4g) due to model weights. */
+    private static final long DEFAULT_HEAP_GB = 16L;
+
+    /** Heap size for the LLM serving subprocess, derived from {@link #DEFAULT_HEAP_GB}. */
+    private static final String DEFAULT_HEAP_SIZE = DEFAULT_HEAP_GB + "g";
 
     /** How long to poll for HTTP readiness before declaring startup failed. */
     private static final long READY_POLL_TIMEOUT_MS = 120_000L;
@@ -122,7 +137,21 @@ public class ServingSubprocessLauncher implements RestartableSubprocess {
             "kompile-app-llm-pipeline-",
             "kompile-pipelines-framework-api-",
             "kompile-pipelines-framework-core-",
-            "kompile-pipelines-steps-samediff-"
+            "kompile-pipelines-steps-samediff-",
+            // ServingSubprocessMain moved out of app-main classes in the subprocess module split —
+            // without these two the spawned JVM dies with ClassNotFoundException (found live 2026-07-05,
+            // first-ever serving launch after the bridge shard-cache fix unblocked the load path).
+            "kompile-app-subprocess-serving-",
+            "kompile-app-subprocess-common-",
+            // Transitive deps of app-core needed on the subprocess classpath (JsonUtils CNFE, same day):
+            "kompile-cli-common-",
+            "kompile-utils-",
+            "kompile-ocr-core-",
+            // Spring factories on the included jars reference these (KompileBootstrapEnvironmentPostProcessor
+            // CNFE, same day). Offline classpath test with these two added: Spring boots in 1.2s, Tomcat
+            // binds :8091, model pre-load starts — closure complete.
+            "kompile-app-config-",
+            "kompile-app-dto-"
     );
 
     private static final List<String> SERVING_THIRD_PARTY_JAR_PREFIXES = List.of(
@@ -286,6 +315,17 @@ public class ServingSubprocessLauncher implements RestartableSubprocess {
             .connectTimeout(Duration.ofSeconds(5))
             .build();
 
+    // ── Model-loaded TTL cache (for isModelLoaded()) ──────────────────────────
+
+    /** Cached result of the last /api/llm/status poll for model-loaded state. */
+    private volatile boolean cachedModelLoaded = false;
+
+    /** Timestamp (nanoTime) of the last successful /api/llm/status poll. */
+    private volatile long modelLoadedCacheTimeNs = 0L;
+
+    /** TTL for the model-loaded cache: 3 seconds in nanoseconds. */
+    private static final long MODEL_LOADED_CACHE_TTL_NS = 3_000_000_000L;
+
     /** Lazily resolved ObjectMapper (may be null if Jackson is not on classpath). */
     private ObjectMapper resolvedMapper() {
         return objectMapper != null ? objectMapper : JsonUtils.standardMapper();
@@ -388,6 +428,8 @@ public class ServingSubprocessLauncher implements RestartableSubprocess {
         ProcessBuilder pb = new ProcessBuilder(command);
         pb.redirectErrorStream(false);
         propagateNd4jEnvironment(pb.environment(), nd4jConfig);
+        // Device-agnostic per-device memory bound (SD_MAX_DEVICE_BYTES) — shared base infra.
+        placement.applyEnv(pb.environment());
 
         process = pb.start();
         running.set(true);
@@ -401,9 +443,12 @@ public class ServingSubprocessLauncher implements RestartableSubprocess {
         // 6. Init log writer (non-fatal)
         String runId = UUID.randomUUID().toString();
         try {
-            SubprocessLogWriter slw = new SubprocessLogWriter("serving", runId);
+            String workingDir = pb.directory() != null
+                    ? pb.directory().getAbsolutePath()
+                    : System.getProperty("user.dir");
+            SubprocessLogWriter slw = new SubprocessLogWriter("serving", runId, workingDir);
             slw.writeStart(new SubprocessLogWriter.SubprocessRunContext(
-                    modelId, command, null, process.pid(), DEFAULT_HEAP_SIZE));
+                    modelId, command, workingDir, process.pid(), DEFAULT_HEAP_SIZE));
             subprocessLogWriter = slw;
         } catch (Exception e) {
             logger.debug("SubprocessLogWriter init failed (non-fatal): {}", e.getMessage());
@@ -423,6 +468,7 @@ public class ServingSubprocessLauncher implements RestartableSubprocess {
 
         logger.info("LLM serving subprocess is ready on port {} (PID {}) with model '{}'",
                 servingPort, process.pid(), modelId);
+        invalidateModelLoadedCache(); // force next isModelLoaded() to re-poll
 
         // Track in scheduler for GPU resource awareness and history
         if (resourceScheduler != null) {
@@ -595,6 +641,7 @@ public class ServingSubprocessLauncher implements RestartableSubprocess {
         }
 
         shuttingDown.set(false);
+        invalidateModelLoadedCache(); // subprocess stopped — next poll will reflect not-loaded
         logger.info("LLM serving subprocess stopped");
     }
 
@@ -603,6 +650,49 @@ public class ServingSubprocessLauncher implements RestartableSubprocess {
      */
     public boolean isRunning() {
         return running.get() && process != null && process.isAlive();
+    }
+
+    /**
+     * Check whether the serving subprocess is running AND has a model fully loaded
+     * (ready to serve generation requests).
+     *
+     * <p>Calls {@code GET /api/llm/status} and inspects the {@code loaded} field.
+     * The result is cached for {@link #MODEL_LOADED_CACHE_TTL_NS} nanoseconds
+     * (~3 seconds) so hot dispatch paths do not spam the subprocess over HTTP.
+     * Any HTTP or parse error is treated as "not loaded".</p>
+     */
+    public boolean isModelLoaded() {
+        if (!isRunning()) {
+            return false;
+        }
+        long nowNs = System.nanoTime();
+        if (nowNs - modelLoadedCacheTimeNs < MODEL_LOADED_CACHE_TTL_NS) {
+            return cachedModelLoaded;
+        }
+        // Cache miss — poll the subprocess
+        try {
+            String statusJson = getJson("/api/llm/status");
+            com.fasterxml.jackson.databind.JsonNode node =
+                    resolvedMapper().readTree(statusJson);
+            boolean loaded = node.path("loaded").asBoolean(false);
+            cachedModelLoaded = loaded;
+            modelLoadedCacheTimeNs = System.nanoTime();
+            return loaded;
+        } catch (Exception e) {
+            // Network error, parse error, or subprocess starting up — treat as not loaded
+            logger.debug("isModelLoaded status poll failed (treating as not loaded): {}", e.getMessage());
+            cachedModelLoaded = false;
+            modelLoadedCacheTimeNs = System.nanoTime();
+            return false;
+        }
+    }
+
+    /**
+     * Invalidate the model-loaded TTL cache. Should be called after start/stop/loadModel
+     * to force the next {@link #isModelLoaded()} poll to hit the subprocess.
+     */
+    public void invalidateModelLoadedCache() {
+        modelLoadedCacheTimeNs = 0L;
     }
 
     /**
@@ -729,7 +819,7 @@ public class ServingSubprocessLauncher implements RestartableSubprocess {
         command.add("-Dorg.bytedeco.javacpp.nopointergc=true");
 
         // Off-heap: 2× heap for LLM (pinned host memory shared with VRAM)
-        long heapBytes = 8L * 1024L * 1024L * 1024L;   // 8 GB in bytes
+        long heapBytes = DEFAULT_HEAP_GB * 1024L * 1024L * 1024L;
         long offHeapBytes = heapBytes * 2L;
         command.add("-Dorg.bytedeco.javacpp.maxbytes=" + offHeapBytes);
         command.add("-Dorg.bytedeco.javacpp.maxphysicalbytes=" + offHeapBytes);
@@ -760,6 +850,10 @@ public class ServingSubprocessLauncher implements RestartableSubprocess {
                 }
             }
         }
+
+        // Device-agnostic backend/device selection from the shared base infra — added last so scheduler
+        // placement wins over any forwarded parent org.nd4j.* property. No CUDA_VISIBLE_DEVICES.
+        command.addAll(placement.jvmFlags());
 
         command.add("-cp");
         command.add(classpath);

@@ -828,20 +828,28 @@ public class ChatCommandRouter {
     private void showLocalConfig() {
         ChatConfig chatConfig = repl.getChatConfig();
         if (chatConfig == null) {
-            System.out.println("No LLM configuration. Run /setup to configure.");
+            System.out.println("No chat configuration. Run /setup to configure.");
             return;
         }
 
         LinkedHashMap<String, String> configMap = new LinkedHashMap<>();
-        configMap.put("Provider", renderer.cyan(chatConfig.getProvider()));
-        configMap.put("Model", renderer.cyan(chatConfig.getModel()));
-        configMap.put("Base URL", chatConfig.resolveBaseUrl());
-        configMap.put("API Key", chatConfig.getApiKey() != null ?
-                renderer.dim(chatConfig.getApiKey().substring(0, Math.min(4, chatConfig.getApiKey().length())) + "...") :
-                renderer.red("not set"));
-        configMap.put("Config file", "~/.kompile/chat-config.json");
+        configMap.put("Mode", renderer.cyan(chatConfig.getChatMode()));
+        if ("passthrough".equals(chatConfig.getChatMode())) {
+            configMap.put("Agent", renderer.cyan(chatConfig.getPassthroughAgent()));
+            configMap.put("Style", chatConfig.isPassthroughManaged() ? "Kompile managed" : "Direct");
+        } else {
+            configMap.put("Provider", renderer.cyan(chatConfig.getProvider()));
+            configMap.put("Model", renderer.cyan(chatConfig.getModel()));
+            configMap.put("Base URL", chatConfig.resolveBaseUrl());
+            configMap.put("API Key", chatConfig.getApiKey() != null ?
+                    renderer.dim(chatConfig.getApiKey().substring(0, Math.min(4, chatConfig.getApiKey().length())) + "...") :
+                    renderer.red("not set"));
+        }
+        configMap.put("Config file", chatConfig.getLoadedFrom() != null
+                ? chatConfig.getLoadedFrom().toString()
+                : "(in-memory)");
 
-        System.out.println(ascii.panel("LLM Configuration", ascii.keyValueList(configMap), AsciiRenderer.ROUNDED, "blue"));
+        System.out.println(ascii.panel("Chat Configuration", ascii.keyValueList(configMap), AsciiRenderer.ROUNDED, "blue"));
         System.out.println();
         System.out.println(renderer.dim("  /setup to reconfigure"));
     }
@@ -1487,9 +1495,21 @@ public class ChatCommandRouter {
                 statusMap.put("Model", chatConfig.getModel());
                 String model = chatConfig.getModel();
                 boolean vision = ModelContextWindows.supportsVision(model);
-                int ctx = ModelContextWindows.getContextWindow(model);
+                // Before the first turn only the catalog number is known; once the loop
+                // has run, its budget also covers staged local models via the staging probe.
+                int ctx = agenticLoop.conversationEntryCount() > 0
+                        ? agenticLoop.contextWindowTokens()
+                        : ModelContextWindows.getContextWindow(model);
                 statusMap.put("Vision", vision ? renderer.green("supported") : renderer.dim("not supported"));
                 statusMap.put("Context window", String.format("%,d tokens", ctx));
+                long used = Math.max(agenticLoop.estimateConversationTokens(),
+                        agenticLoop.lastReportedInputTokens());
+                if (used > 0 && ctx > 0) {
+                    long pct = Math.min(100, used * 100 / ctx);
+                    String usage = String.format("~%,d tokens (%d%%)", used, pct);
+                    statusMap.put("Context used", pct >= 80 ? renderer.yellow(usage
+                            + " — /compact recommended") : usage);
+                }
             }
             statusMap.put("Session", sessionId);
             statusMap.put("Local agent", renderer.cyan(repl.getLocalAgentName()));
@@ -2198,6 +2218,8 @@ public class ChatCommandRouter {
         if (entry.getExitCode() != null) {
             body.append("Exit Code:   ").append(entry.getExitCode()).append("\n");
         }
+        body.append("Output File: ").append(entry.getOutputFile()).append("\n");
+        body.append("\nRecent Output:\n").append(indentProcessOutput(processManager.readOutput(id, 10)));
         if (!entry.getMetadata().isEmpty()) {
             body.append("\nMetadata:\n");
             entry.getMetadata().forEach((key, value) ->
@@ -2220,6 +2242,15 @@ public class ChatCommandRouter {
     // ========================================================================
     // Utility
     // ========================================================================
+
+    private static String indentProcessOutput(String output) {
+        StringBuilder sb = new StringBuilder();
+        String text = output == null || output.isBlank() ? "(no output captured yet)" : output;
+        for (String line : text.split("\\R", -1)) {
+            sb.append("  ").append(line).append("\n");
+        }
+        return sb.toString();
+    }
 
     static String truncate(String s, int maxLen) {
         if (s == null) return "";

@@ -16,10 +16,14 @@
 
 package ai.kompile.cli.common.logs;
 
+import java.io.IOException;
+
 import ai.kompile.cli.common.KompileHome;
 
 import java.io.File;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 
 /**
  * Canonical paths for Kompile log aggregation under {@code ~/.kompile/logs}.
@@ -45,6 +49,16 @@ public final class LogPaths {
     private LogPaths() {
     }
 
+    /** Resolve the logs root for a specific working directory:
+     * <ul>
+     *   <li>Prefer the nearest ancestor {@code .kompile} directory.</li>
+     *   <li>Fall back to {@code ~/.kompile}.</li>
+     * </ul>
+     */
+    public static File logsDirectory(Path workingDirectory) {
+        return resolveKompileRoot(workingDirectory).resolve("logs").toFile();
+    }
+
     /** {@code ~/.kompile/logs} */
     public static File logsDirectory() {
         return new File(KompileHome.homeDirectory(), "logs");
@@ -58,6 +72,11 @@ public final class LogPaths {
     /** {@code ~/.kompile/logs/cli} */
     public static File cliRoot() {
         return new File(logsDirectory(), "cli");
+    }
+
+    /** {@code <kompile-home>/logs/subprocesses} where <kompile-home> is project-aware if available. */
+    public static File subprocessesRoot(Path workingDirectory) {
+        return new File(logsDirectory(workingDirectory), "subprocesses");
     }
 
     /** {@code ~/.kompile/logs/subprocesses} */
@@ -85,10 +104,10 @@ public final class LogPaths {
     /**
      * Creates the agent log directory if missing. Returns the directory.
      *
-     * @throws java.io.IOException if creation fails
+     * @throws IOException if creation fails
      */
     public static File ensureAgentLogDir(String orchestratorInstanceId, String agentName)
-            throws java.io.IOException {
+            throws IOException {
         File dir = agentLogDir(orchestratorInstanceId, agentName);
         ensureDir(dir);
         return dir;
@@ -99,9 +118,19 @@ public final class LogPaths {
         return new File(subprocessesRoot(), safe(subprocessType, "_unknown"));
     }
 
+    /** {@code <kompile-home>/logs/subprocesses/<type>} with project-aware root lookup. */
+    public static File subprocessTypeDir(Path workingDirectory, String subprocessType) {
+        return new File(subprocessesRoot(workingDirectory), safe(subprocessType, "_unknown"));
+    }
+
     /** {@code <subprocessTypeDir>/<runId>.log} */
     public static File subprocessLogFile(String subprocessType, String runId) {
         return new File(subprocessTypeDir(subprocessType), safe(runId, "_unknown") + ".log");
+    }
+
+    /** {@code <subprocessTypeDir>/<runId>.log} with project-aware root lookup. */
+    public static File subprocessLogFile(Path workingDirectory, String subprocessType, String runId) {
+        return new File(subprocessTypeDir(workingDirectory, subprocessType), safe(runId, "_unknown") + ".log");
     }
 
     /** {@code <subprocessTypeDir>/<runId>.meta.json} */
@@ -109,9 +138,21 @@ public final class LogPaths {
         return new File(subprocessTypeDir(subprocessType), safe(runId, "_unknown") + ".meta.json");
     }
 
+    /** {@code <subprocessTypeDir>/<runId>.meta.json} with project-aware root lookup. */
+    public static File subprocessMetaFile(Path workingDirectory, String subprocessType, String runId) {
+        return new File(subprocessTypeDir(workingDirectory, subprocessType), safe(runId, "_unknown") + ".meta.json");
+    }
+
     /** Creates the subprocess-type directory if missing. Returns the directory. */
-    public static File ensureSubprocessDir(String subprocessType) throws java.io.IOException {
+    public static File ensureSubprocessDir(String subprocessType) throws IOException {
         File dir = subprocessTypeDir(subprocessType);
+        ensureDir(dir);
+        return dir;
+    }
+
+    /** Creates the project-aware subprocess-type directory if missing. Returns the directory. */
+    public static File ensureSubprocessDir(Path workingDirectory, String subprocessType) throws IOException {
+        File dir = subprocessTypeDir(workingDirectory, subprocessType);
         ensureDir(dir);
         return dir;
     }
@@ -127,25 +168,39 @@ public final class LogPaths {
     }
 
     /** Creates the crawls log directory if missing. Returns the directory. */
-    public static File ensureCrawlsDir() throws java.io.IOException {
+    public static File ensureCrawlsDir() throws IOException {
         File dir = crawlsRoot();
         ensureDir(dir);
         return dir;
     }
 
     /** Creates the root log directory tree ({@code logs/agents}, {@code logs/cli}). */
-    public static void ensureRootDirs() throws java.io.IOException {
+    public static void ensureRootDirs() throws IOException {
         ensureDir(agentsRoot());
         ensureDir(cliRoot());
         ensureDir(subprocessesRoot());
         ensureDir(crawlsRoot());
     }
 
-    private static void ensureDir(File dir) throws java.io.IOException {
+    private static void ensureDir(File dir) throws IOException {
         Path p = dir.toPath();
         if (!dir.exists() && !dir.mkdirs() && !dir.isDirectory()) {
-            throw new java.io.IOException("Failed to create directory: " + p);
+            throw new IOException("Failed to create directory: " + p);
         }
+    }
+
+    private static Path resolveKompileRoot(Path workingDirectory) {
+        Path current = workingDirectory != null
+                ? workingDirectory.toAbsolutePath().normalize()
+                : Paths.get(System.getProperty("user.home"), ".kompile").toAbsolutePath().normalize();
+        while (current != null) {
+            Path candidate = current.resolve(".kompile");
+            if (Files.isDirectory(candidate)) {
+                return candidate;
+            }
+            current = current.getParent();
+        }
+        return KompileHome.homeDirectory().toPath();
     }
 
     private static String safe(String value, String fallback) {

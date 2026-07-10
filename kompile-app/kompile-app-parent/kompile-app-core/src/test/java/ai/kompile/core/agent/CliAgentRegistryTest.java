@@ -1,0 +1,69 @@
+/*
+ *   Copyright 2025 Kompile Inc.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package ai.kompile.core.agent;
+
+import org.junit.jupiter.api.Test;
+
+import java.util.List;
+import java.util.Map;
+import java.util.function.Function;
+import java.util.stream.Collectors;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+class CliAgentRegistryTest {
+
+    @Test
+    void loadsPackagedCliAgentDefinitions() {
+        List<AgentProvider> providers = CliAgentRegistry.loadAll();
+        assertFalse(providers.isEmpty(), "cli-agents.json must be packaged on the classpath");
+
+        Map<String, AgentProvider> byCommand = providers.stream()
+                .collect(Collectors.toMap(AgentProvider::getCommand, Function.identity()));
+
+        assertTrue(byCommand.keySet().containsAll(List.of(
+                "claude", "codex", "gemini", "opencode", "qwen", "pi")));
+
+        AgentProvider codex = byCommand.get("codex");
+        assertNotNull(codex);
+        assertEquals("Codex", codex.getDisplayName());
+        assertEquals("--model", codex.getModelFlag());
+        assertEquals("--dangerously-bypass-approvals-and-sandbox", codex.getSkipPermissionsFlag());
+    }
+
+    @Test
+    void commandNamesExposePassthroughMenuCandidates() {
+        assertTrue(CliAgentRegistry.commandNames().contains("codex"),
+                "passthrough setup must be able to test codex on PATH");
+    }
+
+    @Test
+    void loadsMcpMetadataForAgentsThatDeclareIt() {
+        AgentProvider claude = CliAgentRegistry.loadAll().stream()
+                .filter(agent -> "claude".equals(agent.getCommand()))
+                .findFirst()
+                .orElseThrow();
+
+        assertTrue(claude.isMcpSupported());
+        assertEquals("--mcp-server", claude.getMcpServerFlag());
+        assertEquals("--mcp-config", claude.getMcpConfigFlag());
+        assertEquals("--allowedTools", claude.getMcpAllowToolsFlag());
+    }
+}

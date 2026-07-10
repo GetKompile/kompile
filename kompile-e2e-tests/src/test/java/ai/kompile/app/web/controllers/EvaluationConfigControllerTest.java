@@ -54,7 +54,7 @@ class EvaluationConfigControllerTest {
     @BeforeEach
     void setUp() {
         // EvaluationProperties is a @Data class (not an interface) — use a real instance
-        properties = new EvaluationProperties();
+        properties = new EvaluationProperties(null);
         properties.setEnabled(true);
         properties.setAsync(false);
         properties.setDefaultThreshold(0.7);

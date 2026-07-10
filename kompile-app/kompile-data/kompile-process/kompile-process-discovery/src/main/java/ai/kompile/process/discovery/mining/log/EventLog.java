@@ -16,6 +16,7 @@
 
 package ai.kompile.process.discovery.mining.log;
 
+import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -30,7 +31,9 @@ import java.util.Set;
  * <p>Pure data with no knowledge-graph dependency: the {@code EventLogExtractor} produces it from the
  * KG, but the miners only ever see this, which keeps them deterministic and unit-testable.
  */
-public final class EventLog {
+public final class EventLog implements Serializable {
+
+    private static final long serialVersionUID = 1L;
 
     private final List<Trace> traces;
 

@@ -6,10 +6,15 @@
  * You may obtain a copy of the License at
  *
  * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 package ai.kompile.graphchangetracking.domain;
 
-import jakarta.persistence.*;
 import lombok.*;
 
 import java.time.LocalDateTime;
@@ -20,12 +25,6 @@ import java.util.UUID;
  * condition, fire an outbound action (log / webhook). This is the "act on graph events" half
  * of reactive graphs — complementing the GraphUpdatePipelineConfig (which ingests INTO the graph).
  */
-@Entity
-@Table(name = "graph_rule_configs", indexes = {
-        @Index(name = "idx_grc_rule_id", columnList = "ruleId", unique = true),
-        @Index(name = "idx_grc_enabled", columnList = "enabled"),
-        @Index(name = "idx_grc_fact_sheet", columnList = "factSheetId")
-})
 @Getter
 @Setter
 @NoArgsConstructor
@@ -33,30 +32,22 @@ import java.util.UUID;
 @Builder
 public class GraphRuleConfig {
 
-    @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(length = 36, unique = true, nullable = false)
     private String ruleId;
 
-    @Column(length = 255, nullable = false)
     private String name;
 
-    @Column(nullable = false)
     @Builder.Default
     private Boolean enabled = true;
 
     /** Optional fact-sheet scope; null means the rule applies to changesets in any fact sheet. */
-    @Column
     private Long factSheetId;
 
     /** Fire when a changeset created at least this many nodes (null = no node threshold). */
-    @Column
     private Integer minNodesCreated;
 
     /** Fire when a changeset created at least this many edges (null = no edge threshold). */
-    @Column
     private Integer minEdgesCreated;
 
     /**
@@ -64,42 +55,31 @@ public class GraphRuleConfig {
      * min*Created thresholds) or {@code MUTATION} (per individual node/edge mutation, using the
      * on* match fields below).
      */
-    @Column(length = 16, nullable = false)
     @Builder.Default
     private String triggerType = "CHANGESET";
 
     /** MUTATION rules only: match this mutation type ({@code NODE_CREATED}, {@code EDGE_DELETED}, …); null = any. */
-    @Column(length = 32)
     private String onMutationType;
 
     /** MUTATION rules only: match this entity kind ({@code NODE}/{@code EDGE}); null = any. */
-    @Column(length = 8)
     private String onEntityKind;
 
     /** MUTATION rules only: match this semantic entity type (nodeType / edgeType from the snapshot); null = any. */
-    @Column(length = 64)
     private String onEntityType;
 
     /** Action to fire on match: {@code LOG} or {@code WEBHOOK}. */
-    @Column(length = 20, nullable = false)
     @Builder.Default
     private String actionType = "LOG";
 
     /** Action target — e.g. the webhook URL for {@code WEBHOOK}. */
-    @Column(length = 2048)
     private String actionTarget;
 
-    @Column(nullable = false)
     private LocalDateTime createdAt;
 
-    @Column(nullable = false)
     private LocalDateTime updatedAt;
 
-    @PrePersist
-    protected void onCreate() {
-        if (ruleId == null) {
-            ruleId = UUID.randomUUID().toString();
-        }
+    public void initDefaults() {
+        if (ruleId == null) ruleId = UUID.randomUUID().toString();
         LocalDateTime now = LocalDateTime.now();
         if (createdAt == null) createdAt = now;
         if (updatedAt == null) updatedAt = now;
@@ -108,8 +88,7 @@ public class GraphRuleConfig {
         if (triggerType == null) triggerType = "CHANGESET";
     }
 
-    @PreUpdate
-    protected void onUpdate() {
+    public void markUpdated() {
         updatedAt = LocalDateTime.now();
     }
 }

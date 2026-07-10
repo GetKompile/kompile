@@ -115,7 +115,7 @@ public record LearningMetrics(
     public static LearningMetrics skipped() {
         return new LearningMetrics(
                 0, 0, 0, 0,
-                java.util.Map.of(),
+                Map.of(),
                 WEIGHT_DELTA_UNAVAILABLE,
                 Double.NaN, Double.NaN,
                 true);

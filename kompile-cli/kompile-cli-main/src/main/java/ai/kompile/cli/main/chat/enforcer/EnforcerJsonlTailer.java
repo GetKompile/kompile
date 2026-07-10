@@ -167,7 +167,8 @@ public class EnforcerJsonlTailer implements AutoCloseable {
         }
     }
 
-    private void processLine(String line) {
+    /** Process one native-session JSONL line (claude/codex). Package-private for hermetic testing. */
+    void processLine(String line) {
         try {
             JsonNode node = objectMapper.readTree(line);
             String lower = agent.toLowerCase(Locale.ROOT);

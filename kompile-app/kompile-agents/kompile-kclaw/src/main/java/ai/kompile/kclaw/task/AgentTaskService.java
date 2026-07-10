@@ -21,6 +21,7 @@ import ai.kompile.gateway.core.gateway.channel.ChannelManager;
 import ai.kompile.kclaw.agent.KClawAgentService;
 import ai.kompile.kclaw.model.KClawRequest;
 import ai.kompile.kclaw.model.KClawResponse;
+import ai.kompile.utils.StringUtils;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.IOException;
@@ -173,7 +174,7 @@ public class AgentTaskService {
             return;
         }
         try {
-            String title = "Task: " + truncate(task.getTask(), 80);
+            String title = "Task: " + StringUtils.truncate(task.getTask(), 80);
             var session = chatHistory.createSession(title, "kclaw-task", null, "kclaw-task-" + task.getEngine());
             chatHistory.addMessage(session.getSessionId(), ChatMessage.MessageRole.USER, task.getTask(), null);
             chatHistory.addMessage(session.getSessionId(), ChatMessage.MessageRole.ASSISTANT,
@@ -203,11 +204,6 @@ public class AgentTaskService {
                     }
                 },
                 () -> log.warn("No channel adapter '{}' for task {}", task.getChannel(), task.getId()));
-    }
-
-    private static String truncate(String s, int max) {
-        if (s == null) return "";
-        return s.length() <= max ? s : s.substring(0, max) + "...";
     }
 
     public Optional<AgentTask> get(String id) {

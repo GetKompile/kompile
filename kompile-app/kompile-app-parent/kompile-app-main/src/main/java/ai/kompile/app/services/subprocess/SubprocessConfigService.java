@@ -84,6 +84,14 @@ public class SubprocessConfigService {
     private volatile int indexingBatchAccumulationSize;
     private volatile int embeddingThreads;
 
+    /**
+     * Per-subprocess-type overrides, keyed by subprocess id (e.g. {@code "graph-matrix"}, {@code "learning"}).
+     * Each value is a map like {@code {"enabled": true, "heapSize": "32g"}}. Read at spawn time via
+     * {@link #isTypeEnabled} / {@link #heapSizeForType} so those subprocesses are UI-controllable through the
+     * same {@code subprocess-ingest-config.json} managed-config as the ingest/vlm tiers — never a Spring @Value.
+     */
+    private volatile Map<String, Object> subprocessTypeOverrides = Map.of();
+
     // Defaults - DEFAULT TO FALSE for in-process mode
     // Subprocess mode can be enabled via UI (Developer Hub > Processing Settings)
     // or via API: POST /api/subprocess-config/enable
@@ -311,6 +319,14 @@ public class SubprocessConfigService {
             Map<String, Object> config = objectMapper.readValue(json,
                     objectMapper.getTypeFactory().constructMapType(Map.class, String.class, Object.class));
 
+            // Per-subprocess-type overrides (graph-matrix / learning / training enable+heap), UI-editable.
+            Object typesRaw = config.get("subprocessTypes");
+            if (typesRaw instanceof Map) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> types = (Map<String, Object>) typesRaw;
+                this.subprocessTypeOverrides = types;
+            }
+
             if (config.containsKey("enabled")) {
                 this.enabled = (Boolean) config.get("enabled");
             }
@@ -470,6 +486,70 @@ public class SubprocessConfigService {
     }
 
     /**
+     * Whether the given subprocess type should be spawned. Reads {@code subprocessTypes.<type>.enabled}
+     * from the managed config; returns {@code defaultEnabled} when unset — callers pass {@code true} so a
+     * subprocess (matrix/learning) spawns by default unless an operator disables it via the UI/JSON.
+     */
+    public boolean isTypeEnabled(String subprocessType, boolean defaultEnabled) {
+        Object o = subprocessTypeOverrides.get(subprocessType);
+        if (o instanceof Map<?, ?> m && m.get("enabled") instanceof Boolean b) {
+            return b;
+        }
+        return defaultEnabled;
+    }
+
+    /**
+     * Heap size string (e.g. {@code "32g"}) for the given subprocess type from
+     * {@code subprocessTypes.<type>.heapSize}; falls back to {@code defaultHeapSize} when unset.
+     */
+    public String heapSizeForType(String subprocessType, String defaultHeapSize) {
+        Object o = subprocessTypeOverrides.get(subprocessType);
+        if (o instanceof Map<?, ?> m && m.get("heapSize") instanceof String s && !s.isBlank()) {
+            return s;
+        }
+        return defaultHeapSize;
+    }
+
+    /**
+     * Returns a defensive copy of the current per-subprocess-type override map.
+     * Keys are subprocess type ids (e.g. {@code "graph-matrix"}, {@code "learning"});
+     * values are maps with {@code enabled} (Boolean) and/or {@code heapSize} (String).
+     */
+    public Map<String, Object> getSubprocessTypes() {
+        return new ConcurrentHashMap<>(subprocessTypeOverrides);
+    }
+
+    /**
+     * Merge-updates the per-type override entry for {@code subprocessType}, writing only the
+     * non-null fields (preserving any existing keys not mentioned), then persists to
+     * {@code subprocess-ingest-config.json}.
+     *
+     * @param subprocessType subprocess type id (e.g. {@code "graph-matrix"})
+     * @param enabled        whether the type should be spawned; {@code null} = leave unchanged
+     * @param heapSize       JVM heap string (e.g. {@code "32g"}); {@code null}/blank = leave unchanged
+     */
+    public void setTypeConfig(String subprocessType, Boolean enabled, String heapSize) {
+        Map<String, Object> overrides = new ConcurrentHashMap<>(subprocessTypeOverrides);
+        Object existing = overrides.get(subprocessType);
+        Map<String, Object> entry = new ConcurrentHashMap<>();
+        if (existing instanceof Map<?, ?> existingMap) {
+            for (Map.Entry<?, ?> e : existingMap.entrySet()) {
+                entry.put(String.valueOf(e.getKey()), e.getValue());
+            }
+        }
+        if (enabled != null) {
+            entry.put("enabled", enabled);
+        }
+        if (heapSize != null && !heapSize.isBlank()) {
+            entry.put("heapSize", heapSize);
+        }
+        overrides.put(subprocessType, entry);
+        this.subprocessTypeOverrides = overrides;
+        persistConfig();
+        log.info("Updated subprocess type config: type={}, enabled={}, heapSize={}", subprocessType, enabled, heapSize);
+    }
+
+    /**
      * Persist current configuration to file.
      */
     private void persistConfig() {
@@ -535,6 +615,7 @@ public class SubprocessConfigService {
             config.put("embeddingExecutablePath", embeddingExecutablePath);
             config.put("modelInitExecutablePath", modelInitExecutablePath);
             config.put("subprocessTypeFlag", subprocessTypeFlag);
+            config.put("subprocessTypes", subprocessTypeOverrides);
 
             String json = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(config);
             Files.writeString(configFilePath, json);
@@ -546,6 +627,11 @@ public class SubprocessConfigService {
     }
 
     // ============= Getters =============
+
+    /** Returns true if the config JSON file already exists on disk (written by a previous run or CLI init). */
+    public boolean isConfigFilePersisted() {
+        return Files.exists(configFilePath);
+    }
 
     public boolean isEnabled() {
         log.debug("SubprocessConfigService.isEnabled() called, returning: {}", enabled);

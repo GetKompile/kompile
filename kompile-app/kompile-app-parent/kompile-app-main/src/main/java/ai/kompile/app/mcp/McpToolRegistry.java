@@ -31,7 +31,23 @@ import ai.kompile.core.mcp.optimization.McpOptimizationConfig;
 import ai.kompile.core.mcp.optimization.McpOptimizationConfig.MetaToolMode;
 import ai.kompile.core.mcp.optimization.McpOptimizationConfigProvider;
 import ai.kompile.codeindexer.tool.CodeIndexerToolImpl;
+import ai.kompile.knowledgegraph.tool.KnowledgeGraphToolImpl;
 import ai.kompile.tool.filesystem.FilesystemToolImpl;
+import ai.kompile.process.discovery.ProcessDiscoveryTool;
+import ai.kompile.process.discovery.ProcessMiningTool;
+import ai.kompile.process.tool.ProcessEngineTool;
+import ai.kompile.tool.graph.GraphAlgorithmsTool;
+import ai.kompile.tool.graph.GraphCommunityTool;
+import ai.kompile.tool.graph.GraphHybridReasoningTool;
+import ai.kompile.tool.graph.GraphLabelTool;
+import ai.kompile.tool.graph.GraphMutationTool;
+import ai.kompile.tool.graph.GraphReasoningQueryTool;
+import ai.kompile.tool.graph.GraphSearchTool;
+import ai.kompile.tool.graph.GraphTraversalTool;
+import ai.kompile.tool.tablesearch.TableSearchToolImpl;
+import ai.kompile.tool.graph.NamedGraphTool;
+import ai.kompile.tool.graphlocalization.GraphLocalizationToolImpl;
+import ai.kompile.tool.knowledge.UnifiedKnowledgeTool;
 import ai.kompile.tool.rag.RagToolImpl;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -53,6 +69,7 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
 import java.lang.reflect.RecordComponent;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 /**
@@ -90,7 +107,7 @@ public class McpToolRegistry {
     private volatile int toolCount = 0;
 
     // Cache of enhanced tool definitions for agent discovery
-    private final Map<String, EnhancedToolDefinition> toolDefinitions = new java.util.concurrent.ConcurrentHashMap<>();
+    private final Map<String, EnhancedToolDefinition> toolDefinitions = new ConcurrentHashMap<>();
 
     // Core tools from kompile-tool modules
     @Autowired(required = false)
@@ -235,6 +252,64 @@ public class McpToolRegistry {
 
     @Autowired(required = false)
     private DiffTrackerTool diffTrackerTool;
+
+    @Autowired(required = false)
+    private DiffIndexTool diffIndexTool;
+
+    @Autowired(required = false)
+    private TableSearchToolImpl tableSearchTool;
+
+    // Graph & KB grounding tools — the graph surface chat-spawned agents rely on
+    @Autowired(required = false)
+    private KbVerifyExplainTool kbVerifyExplainTool;
+
+    @Autowired(required = false)
+    private KbGroundingTool kbGroundingTool;
+
+    @Autowired(required = false)
+    private KnowledgeGraphToolImpl knowledgeGraphTool;
+
+    @Autowired(required = false)
+    private UnifiedKnowledgeTool unifiedKnowledgeTool;
+
+    @Autowired(required = false)
+    private GraphSearchTool graphSearchTool;
+
+    @Autowired(required = false)
+    private GraphMutationTool graphMutationTool;
+
+    @Autowired(required = false)
+    private GraphTraversalTool graphTraversalTool;
+
+    @Autowired(required = false)
+    private GraphCommunityTool graphCommunityTool;
+
+    @Autowired(required = false)
+    private GraphAlgorithmsTool graphAlgorithmsTool;
+
+    @Autowired(required = false)
+    private GraphLabelTool graphLabelTool;
+
+    @Autowired(required = false)
+    private NamedGraphTool namedGraphTool;
+
+    @Autowired(required = false)
+    private GraphHybridReasoningTool graphHybridReasoningTool;
+
+    @Autowired(required = false)
+    private GraphReasoningQueryTool graphReasoningQueryTool;
+
+    @Autowired(required = false)
+    private GraphLocalizationToolImpl graphLocalizationTool;
+
+    @Autowired(required = false)
+    private ProcessDiscoveryTool processDiscoveryTool;
+
+    @Autowired(required = false)
+    private ProcessMiningTool processMiningTool;
+
+    @Autowired(required = false)
+    private ProcessEngineTool processEngineTool;
 
     @Autowired(required = false)
     private ToolPermissionService toolPermissionService;
@@ -511,6 +586,31 @@ public class McpToolRegistry {
         addBeanIfAvailable(noteTool, "Note");
         addBeanIfAvailable(agentTaskTool, "Agent Task");
         addBeanIfAvailable(diffTrackerTool, "Diff Tracker");
+        addBeanIfAvailable(diffIndexTool, "Diff Index");
+        addBeanIfAvailable(tableSearchTool, "Table Search");
+
+        // Graph & KB grounding tools — kb_verify_explain, kb_query/kb_assert, knowledge-graph
+        // search and graph mutation/community/algorithm tools, so chat-spawned agents get the
+        // graph surface alongside RAG.
+        addBeanIfAvailable(kbVerifyExplainTool, "KB Verify/Explain");
+        addBeanIfAvailable(kbGroundingTool, "KB Grounding");
+        addBeanIfAvailable(knowledgeGraphTool, "Knowledge Graph");
+        addBeanIfAvailable(unifiedKnowledgeTool, "Unified Knowledge");
+        addBeanIfAvailable(graphSearchTool, "Graph Search");
+        addBeanIfAvailable(graphMutationTool, "Graph Mutation");
+        addBeanIfAvailable(graphTraversalTool, "Graph Traversal");
+        addBeanIfAvailable(graphCommunityTool, "Graph Community");
+        addBeanIfAvailable(graphAlgorithmsTool, "Graph Algorithms");
+        addBeanIfAvailable(graphLabelTool, "Graph Label");
+        addBeanIfAvailable(namedGraphTool, "Named Graph");
+        addBeanIfAvailable(graphHybridReasoningTool, "Graph Hybrid Reasoning");
+        addBeanIfAvailable(graphReasoningQueryTool, "Graph Reasoning Query");
+        addBeanIfAvailable(graphLocalizationTool, "Graph Localization");
+
+        // Process tools — process mining, workflow discovery, and engine operations
+        addBeanIfAvailable(processDiscoveryTool, "Process Discovery");
+        addBeanIfAvailable(processMiningTool, "Process Mining");
+        addBeanIfAvailable(processEngineTool, "Process Engine");
 
         // MCP-optimization meta-tools (visible in all modes; the mode filter
         // later decides which other tools survive).

@@ -28,7 +28,9 @@ import org.springframework.stereotype.Component;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeParseException;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -465,8 +467,8 @@ public class DiscordLoaderImpl implements DocumentLoader {
             } catch (DateTimeParseException e2) {
                 try {
                     // Try plain date (yyyy-MM-dd)
-                    return java.time.LocalDate.parse(dateStr)
-                            .atStartOfDay(java.time.ZoneOffset.UTC).toInstant();
+                    return LocalDate.parse(dateStr)
+                            .atStartOfDay(ZoneOffset.UTC).toInstant();
                 } catch (DateTimeParseException e3) {
                     log.warn("Unable to parse date '{}', ignoring", dateStr);
                     return null;

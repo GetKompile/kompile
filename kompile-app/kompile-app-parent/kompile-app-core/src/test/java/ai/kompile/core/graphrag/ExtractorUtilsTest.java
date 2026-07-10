@@ -15,6 +15,7 @@
  */
 package ai.kompile.core.graphrag;
 
+import ai.kompile.core.graphrag.format.GraphExtractionSchema;
 import ai.kompile.core.graphrag.format.GraphExtractionSchema.ExtractedEntity;
 import ai.kompile.core.graphrag.format.GraphExtractionSchema.ExtractedRelation;
 import ai.kompile.core.graphrag.format.GraphExtractionSchema.ExtractionResult;
@@ -232,8 +233,9 @@ class ExtractorUtilsTest {
         }
 
         @Test
-        void handlesNullConfidenceDefaultsToOne() {
-            // ExtractedEntity compact constructor defaults null confidence to 1.0
+        void handlesNullConfidenceDefaultsToCalibratedFallback() {
+            // ExtractedEntity compact constructor defaults null confidence to DEFAULT_ENTITY_CONFIDENCE (0.7),
+            // not 1.0, so absent LLM confidence stays soft in PSL.
             Map<String, ExtractedEntity> index = new LinkedHashMap<>();
             ExtractedEntity first = new ExtractedEntity("e1", "A", "T", null, null, null, null);
             ExtractedEntity second = new ExtractedEntity("e1", "B", "T", null, null, 0.5, null);
@@ -241,8 +243,9 @@ class ExtractorUtilsTest {
             ExtractorUtils.addEntity(index, first);
             ExtractorUtils.addEntity(index, second);
 
-            // First entity's null confidence became 1.0, max(1.0, 0.5) = 1.0
-            assertEquals(1.0, index.get("e1").confidence());
+            // First entity's null confidence became DEFAULT_ENTITY_CONFIDENCE (0.7),
+            // max(0.7, 0.5) = 0.7
+            assertEquals(GraphExtractionSchema.DEFAULT_ENTITY_CONFIDENCE, index.get("e1").confidence());
         }
     }
 

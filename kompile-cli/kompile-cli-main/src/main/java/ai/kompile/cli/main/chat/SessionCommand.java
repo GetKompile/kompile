@@ -19,6 +19,7 @@ package ai.kompile.cli.main.chat;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.format.ConversationFormatter;
 import ai.kompile.cli.main.chat.format.ConversationReader;
+import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.tools.ConversationImportTool;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolResult;
@@ -158,6 +159,7 @@ public class SessionCommand implements Callable<Integer> {
                 ObjectNode params = mapper.createObjectNode();
                 params.put("action", "list");
                 params.put("source", src);
+                params.put("limit", limit);
 
                 ToolResult result = tool.execute(params, createToolContext());
                 if (result.isError()) {
@@ -171,13 +173,15 @@ public class SessionCommand implements Callable<Integer> {
         }
 
         private ToolContext createToolContext() {
-            // Create minimal context for tool execution
+            PermissionService permissions =
+                    new PermissionService();
+            permissions.setAutoApproveAll(true);
             return new ToolContext(
                     "session-cli",
-                    null, // No agent config needed
-                    new ai.kompile.cli.main.chat.permission.PermissionService(),
+                    null,
+                    permissions,
                     Path.of(System.getProperty("user.dir")),
-                    null  // No tool registry needed
+                    null
             );
         }
     }
@@ -300,7 +304,7 @@ public class SessionCommand implements Callable<Integer> {
             return new ToolContext(
                     "session-cli",
                     null,
-                    new ai.kompile.cli.main.chat.permission.PermissionService(),
+                    new PermissionService(),
                     Path.of(System.getProperty("user.dir")),
                     null
             );
@@ -354,7 +358,7 @@ public class SessionCommand implements Callable<Integer> {
             return new ToolContext(
                     "session-cli",
                     null,
-                    new ai.kompile.cli.main.chat.permission.PermissionService(),
+                    new PermissionService(),
                     Path.of(System.getProperty("user.dir")),
                     null
             );

@@ -24,28 +24,37 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.BufferedInputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.URI;
 import java.net.URL;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.function.Consumer;
+import java.util.stream.Stream;
+import ai.kompile.utils.HashUtils;
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
 import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream;
-import java.io.BufferedInputStream;
-import java.util.Map;
 
 /**
  * Manages the download, caching, and retrieval of ML/NLP models.
@@ -228,6 +237,7 @@ public class KompileModelManager {
             entry.numLayers = metadata.has("num_layers") ? metadata.get("num_layers").asInt() : null;
             entry.maxSequenceLength = metadata.has("max_sequence_length") ? metadata.get("max_sequence_length").asInt() : 512;
             entry.encoderType = metadata.has("encoder_type") ? metadata.get("encoder_type").asText() : null;
+            entry.supportedLanguages = readStringList(metadata.get("supported_languages"));
             entry.optimized = metadata.has("optimized") && metadata.get("optimized").asBoolean(false);
         }
 
@@ -241,6 +251,34 @@ public class KompileModelManager {
         }
 
         return entry;
+    }
+
+    private static List<String> readStringList(JsonNode node) {
+        if (node == null || node.isNull()) {
+            return List.of();
+        }
+        if (node.isArray()) {
+            ArrayList<String> values = new ArrayList<>();
+            for (JsonNode element : node) {
+                String value = element.asText(null);
+                if (value != null && !value.isBlank()) {
+                    values.add(value.trim());
+                }
+            }
+            return List.copyOf(values);
+        }
+        String value = node.asText(null);
+        if (value == null || value.isBlank()) {
+            return List.of();
+        }
+        ArrayList<String> values = new ArrayList<>();
+        for (String part : value.split(",")) {
+            String trimmed = part.trim();
+            if (!trimmed.isEmpty()) {
+                values.add(trimmed);
+            }
+        }
+        return List.copyOf(values);
     }
 
     /**
@@ -264,6 +302,9 @@ public class KompileModelManager {
         Map<String, Object> metadata = new HashMap<>();
         if (entry.embeddingDim != null) metadata.put("embedding_dim", entry.embeddingDim);
         if (entry.encoderType != null) metadata.put("encoder_type", entry.encoderType);
+        if (entry.supportedLanguages != null && !entry.supportedLanguages.isEmpty()) {
+            metadata.put("supported_languages", List.copyOf(entry.supportedLanguages));
+        }
         metadata.put("optimized", entry.optimized);
         metadata.put("tokenizer_do_lower_case", entry.doLowerCase);
         metadata.put("tokenizer_add_special_tokens", entry.addSpecialTokens);
@@ -304,6 +345,9 @@ public class KompileModelManager {
         Map<String, Object> metadata = new HashMap<>();
         if (entry.hiddenSize != null) metadata.put("hidden_size", entry.hiddenSize);
         if (entry.numLayers != null) metadata.put("num_layers", entry.numLayers);
+        if (entry.supportedLanguages != null && !entry.supportedLanguages.isEmpty()) {
+            metadata.put("supported_languages", List.copyOf(entry.supportedLanguages));
+        }
         metadata.put("max_sequence_length", entry.maxSequenceLength);
         metadata.put("optimized", entry.optimized);
         metadata.put("tokenizer_do_lower_case", entry.doLowerCase);
@@ -392,6 +436,7 @@ public class KompileModelManager {
         Integer numLayers;
         int maxSequenceLength = 512;
         String encoderType;
+        List<String> supportedLanguages;
         boolean optimized;
         boolean doLowerCase = true;
         boolean addSpecialTokens = true;
@@ -501,7 +546,7 @@ public class KompileModelManager {
                     if(Files.exists(modelPathInCache) && Files.isDirectory(modelPathInCache)) {
                         // Simple cleanup, for robust solution use more careful deletion
                         try (var walkStream = Files.walk(modelPathInCache)) {
-                            walkStream.sorted(java.util.Comparator.reverseOrder()).map(Path::toFile).forEach(File::delete);
+                            walkStream.sorted(Comparator.reverseOrder()).map(Path::toFile).forEach(File::delete);
                         }
                     }
                     Files.createDirectories(modelPathInCache);
@@ -767,6 +812,9 @@ public class KompileModelManager {
         Map<String, Object> metadata = new HashMap<>();
         metadata.put("model_type", entry.type);
         if (entry.embeddingDim != null) metadata.put("embedding_dim", entry.embeddingDim);
+        if (entry.supportedLanguages != null && !entry.supportedLanguages.isEmpty()) {
+            metadata.put("supported_languages", List.copyOf(entry.supportedLanguages));
+        }
         metadata.put("optimized", entry.optimized);
 
         LOGGER.info("Loading OCR model {} from registry: {}", entry.modelId, modelPath);
@@ -927,20 +975,7 @@ public class KompileModelManager {
     }
 
     private String calculateSha256(Path path) throws IOException {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            try (InputStream fis = Files.newInputStream(path)) {
-                byte[] byteArray = new byte[1024];
-                int bytesCount;
-                while ((bytesCount = fis.read(byteArray)) != -1) {
-                    digest.update(byteArray, 0, bytesCount);
-                }
-            }
-            byte[] bytes = digest.digest();
-            return HexFormat.of().formatHex(bytes);
-        } catch (NoSuchAlgorithmException e) {
-            throw new RuntimeException("SHA-256 algorithm not found", e);
-        }
+        return HashUtils.sha256Hex(path);
     }
 
     private void extractTarGz(Path tarGzPath, Path destinationDir) throws IOException {
@@ -1349,14 +1384,14 @@ public class KompileModelManager {
      * @param hfToken            HuggingFace API token for private models (may be null)
      * @param progressConsumer   Receives progress messages during download (may be null)
      * @return Path to the downloaded model directory
-     * @throws java.io.IOException if the download fails
+     * @throws IOException if the download fails
      */
     public Path downloadPipelineModel(String huggingFaceRepoId, String revision, String hfToken,
-                                      java.util.function.Consumer<String> progressConsumer)
-            throws java.io.IOException {
+                                      Consumer<String> progressConsumer)
+            throws IOException {
         String effectiveRevision = (revision != null && !revision.isBlank()) ? revision : "main";
         Path modelDir = getPipelineModelDirectory(huggingFaceRepoId);
-        java.nio.file.Files.createDirectories(modelDir);
+        Files.createDirectories(modelDir);
 
         // Build the HuggingFace Hub URL base
         String baseUrl = "https://huggingface.co/" + huggingFaceRepoId + "/resolve/" + effectiveRevision;
@@ -1374,38 +1409,38 @@ public class KompileModelManager {
         };
 
         boolean anyDownloaded = false;
-        java.net.http.HttpClient httpClient = java.net.http.HttpClient.newBuilder()
-                .connectTimeout(java.time.Duration.ofSeconds(30))
-                .followRedirects(java.net.http.HttpClient.Redirect.ALWAYS)
+        HttpClient httpClient = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(30))
+                .followRedirects(HttpClient.Redirect.ALWAYS)
                 .build();
 
         for (String fileName : candidateFiles) {
             String fileUrl = baseUrl + "/" + fileName;
             Path destPath = modelDir.resolve(fileName);
 
-            if (java.nio.file.Files.exists(destPath)) {
+            if (Files.exists(destPath)) {
                 if (progressConsumer != null) progressConsumer.accept("Cached: " + fileName);
                 anyDownloaded = true;
                 continue;
             }
 
             try {
-                var requestBuilder = java.net.http.HttpRequest.newBuilder()
-                        .uri(java.net.URI.create(fileUrl))
-                        .timeout(java.time.Duration.ofMinutes(30))
+                var requestBuilder = HttpRequest.newBuilder()
+                        .uri(URI.create(fileUrl))
+                        .timeout(Duration.ofMinutes(30))
                         .GET();
                 if (hfToken != null && !hfToken.isBlank()) {
                     requestBuilder.header("Authorization", "Bearer " + hfToken);
                 }
 
                 var response = httpClient.send(requestBuilder.build(),
-                        java.net.http.HttpResponse.BodyHandlers.ofInputStream());
+                        HttpResponse.BodyHandlers.ofInputStream());
 
                 if (response.statusCode() == 200) {
                     if (progressConsumer != null) progressConsumer.accept("Downloading: " + fileName);
                     try (var in = response.body()) {
-                        java.nio.file.Files.copy(in, destPath,
-                                java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                        Files.copy(in, destPath,
+                                StandardCopyOption.REPLACE_EXISTING);
                     }
                     anyDownloaded = true;
                     if (progressConsumer != null) progressConsumer.accept("Downloaded: " + fileName);
@@ -1413,14 +1448,14 @@ public class KompileModelManager {
                 // 404/401 = file doesn't exist in this repo, skip silently
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                throw new java.io.IOException("Download interrupted", e);
+                throw new IOException("Download interrupted", e);
             } catch (Exception e) {
                 LOGGER.debug("Could not download {}: {}", fileUrl, e.getMessage());
             }
         }
 
         if (!anyDownloaded) {
-            throw new java.io.IOException("Could not download any files for model: " + huggingFaceRepoId
+            throw new IOException("Could not download any files for model: " + huggingFaceRepoId
                     + ". Check the model ID and ensure the model exists on HuggingFace Hub.");
         }
 
@@ -1563,14 +1598,14 @@ public class KompileModelManager {
      *
      * @return List of model IDs that are cached
      */
-    public java.util.List<String> listCachedPipelineModels() {
-        java.util.List<String> models = new java.util.ArrayList<>();
+    public List<String> listCachedPipelineModels() {
+        List<String> models = new ArrayList<>();
         Path pipelinesDir = baseCachePath.resolve("pipelines");
         if (!Files.exists(pipelinesDir)) {
             return models;
         }
 
-        try (java.util.stream.Stream<Path> stream = Files.list(pipelinesDir)) {
+        try (Stream<Path> stream = Files.list(pipelinesDir)) {
             stream.filter(Files::isDirectory)
                   .filter(p -> isPipelineModelCached(p.getFileName().toString().replace("_", "/")))
                   .forEach(p -> models.add(p.getFileName().toString().replace("_", "/")));
@@ -1595,7 +1630,7 @@ public class KompileModelManager {
 
         try (var walkStream = Files.walk(modelDir)) {
             walkStream
-                 .sorted(java.util.Comparator.reverseOrder())
+                 .sorted(Comparator.reverseOrder())
                  .forEach(path -> {
                      try {
                          Files.delete(path);
@@ -1689,8 +1724,8 @@ public class KompileModelManager {
     /**
      * Lists available SDKs by merging hardcoded SdkConstants with registry.json "sdks" section.
      */
-    public java.util.List<SdkDescriptor> listAvailableSdks() {
-        java.util.List<SdkDescriptor> sdks = new java.util.ArrayList<>();
+    public List<SdkDescriptor> listAvailableSdks() {
+        List<SdkDescriptor> sdks = new ArrayList<>();
 
         // Add hardcoded SDK
         sdks.add(SdkConstants.createSdxRuntimeDescriptor(null, null));
@@ -1732,8 +1767,8 @@ public class KompileModelManager {
     /**
      * Lists available SDZ model bundles by merging hardcoded constants with registry.json "sdz_bundles" section.
      */
-    public java.util.List<ModelDescriptor> listAvailableSdzBundles() {
-        java.util.List<ModelDescriptor> bundles = new java.util.ArrayList<>();
+    public List<ModelDescriptor> listAvailableSdzBundles() {
+        List<ModelDescriptor> bundles = new ArrayList<>();
 
         // Add hardcoded bundles
         ModelDescriptor smollm = SdkConstants.getSdzBundleDescriptor("smollm-135m");

@@ -9,17 +9,16 @@
  */
 package ai.kompile.tool.graph;
 
+import ai.kompile.graph.reasoning.model.GraphEntity;
+import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import ai.kompile.knowledgegraph.domain.*;
-import ai.kompile.knowledgegraph.repository.GraphEdgeRepository;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
+import ai.kompile.knowledgegraph.unified.UnifiedGraphBridge;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.data.domain.PageImpl;
-import org.springframework.data.domain.Pageable;
 
 import java.util.*;
 
@@ -31,8 +30,7 @@ import static org.mockito.Mockito.*;
 class GraphSearchToolTest {
 
     @Mock private KnowledgeGraphService graphService;
-    @Mock private GraphNodeRepository nodeRepository;
-    @Mock private GraphEdgeRepository edgeRepository;
+    @Mock private UnifiedGraphBridge unifiedGraphBridge;
 
     private GraphSearchTool tool;
 
@@ -56,8 +54,8 @@ class GraphSearchToolTest {
     @Test
     void searchNodes_validQuery_returnsResults() {
         GraphNode node = createNode("n1", "Test Node", NodeLevel.ENTITY);
-        when(nodeRepository.searchByTitleOrDescription(eq("test"), any(Pageable.class)))
-                .thenReturn(new PageImpl<>(List.of(node)));
+        when(graphService.searchNodesGlobal(eq("test"), isNull(), anyInt()))
+                .thenReturn(List.of(node));
 
         var result = tool.searchNodes(new GraphSearchTool.SearchNodesInput("test", null, null, 10));
 
@@ -71,13 +69,33 @@ class GraphSearchToolTest {
     @Test
     void searchNodes_withTypeFilter_usesTypedQuery() {
         GraphNode node = createNode("n1", "Entity Node", NodeLevel.ENTITY);
-        when(nodeRepository.searchByTitleOrDescriptionAndType(eq("test"), eq(NodeLevel.ENTITY), any(Pageable.class)))
-                .thenReturn(new PageImpl<>(List.of(node)));
+        when(graphService.searchNodesGlobal(eq("test"), eq(NodeLevel.ENTITY), anyInt()))
+                .thenReturn(List.of(node));
 
         var result = tool.searchNodes(new GraphSearchTool.SearchNodesInput("test", "ENTITY", null, 10));
 
         assertEquals("ENTITY", result.get("nodeType"));
         assertEquals(1, result.get("resultCount"));
+    }
+
+    @Test
+    void searchEdges_resolvesEndpointTitlesFromStore_whenEdgeEmbedsHollowNodes() {
+        // Store-loaded edges carry ids only; getSourceNode() synthesizes a hollow title-less node.
+        GraphEdge edge = new GraphEdge();
+        edge.setEdgeId("a::b::RELATES");
+        edge.setEdgeType(EdgeType.USER_DEFINED);
+        edge.setSourceNodeId("a");
+        edge.setTargetNodeId("b");
+        when(graphService.searchEdges(eq("laptops"), isNull(), anyInt())).thenReturn(List.of(edge));
+        when(graphService.getNode("a")).thenReturn(Optional.of(createNode("a", "Alice", NodeLevel.ENTITY)));
+        when(graphService.getNode("b")).thenReturn(Optional.of(createNode("b", "Request", NodeLevel.ENTITY)));
+
+        var result = tool.searchEdges(new GraphSearchTool.SearchEdgesInput("laptops", null, null, null, 10));
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> results = (List<Map<String, Object>>) result.get("results");
+        assertEquals("Alice", results.get(0).get("sourceTitle"));
+        assertEquals("Request", results.get(0).get("targetTitle"));
     }
 
     @Test
@@ -133,6 +151,106 @@ class GraphSearchToolTest {
         var result = tool.searchByMetadata(
                 new GraphSearchTool.SearchByMetadataInput(null, null, null, null, null));
         assertEquals("metadataKey is required", result.get("error"));
+    }
+
+    @Test
+    void searchNodes_scopedFactSheetUsesUnifiedGraph() {
+        tool = new GraphSearchTool(graphService, unifiedGraphBridge);
+        UnifiedGraph unified = new UnifiedGraph()
+                .addEntity("u1", "ENTITY", "Unified Alpha")
+                .addEntity("u2", "DOCUMENT", "Other Document");
+        when(unifiedGraphBridge.export(7L)).thenReturn(unified);
+
+        var result = tool.searchNodes(new GraphSearchTool.SearchNodesInput("alpha", null, 7L, 10));
+
+        assertEquals("unified_graph", result.get("source"));
+        assertEquals(1, result.get("resultCount"));
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> results = (List<Map<String, Object>>) result.get("results");
+        assertEquals("u1", results.get(0).get("nodeId"));
+        assertEquals("Unified Alpha", results.get(0).get("title"));
+        verify(graphService, never()).searchNodesInFactSheetByType(anyLong(), anyString(), any(), anyInt());
+    }
+
+    @Test
+    void searchEdges_scopedFactSheetUsesUnifiedGraph() {
+        tool = new GraphSearchTool(graphService, unifiedGraphBridge);
+        UnifiedGraph unified = new UnifiedGraph()
+                .addEntity("a", "ENTITY", "Alpha")
+                .addEntity("b", "ENTITY", "Beta")
+                .addRelation("r1", "a", "b", "SHARED_ENTITY", 0.8);
+        when(unifiedGraphBridge.export(7L)).thenReturn(unified);
+
+        var result = tool.searchEdges(new GraphSearchTool.SearchEdgesInput(null, "SHARED_ENTITY", 0.5, 7L, 10));
+
+        assertEquals("unified_graph", result.get("source"));
+        assertEquals(1, result.get("resultCount"));
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> results = (List<Map<String, Object>>) result.get("results");
+        assertEquals("r1", results.get(0).get("edgeId"));
+        assertEquals("Alpha", results.get(0).get("sourceTitle"));
+        verify(graphService, never()).getStrongEdgesByTypeInFactSheet(anyLong(), any(), anyDouble(), anyInt());
+    }
+
+    @Test
+    void getNodeDetail_scopedFactSheetUsesUnifiedGraph() {
+        tool = new GraphSearchTool(graphService, unifiedGraphBridge);
+        UnifiedGraph unified = new UnifiedGraph()
+                .addEntity(GraphEntity.builder("u1")
+                        .type("ENTITY")
+                        .label("Unified Detail")
+                        .attribute("description", "Imported analysis node")
+                        .attribute("department", "finance")
+                        .build());
+        when(graphService.getNode("u1")).thenReturn(Optional.empty());
+        when(unifiedGraphBridge.export(7L)).thenReturn(unified);
+
+        var result = tool.getNodeDetail(new GraphSearchTool.GetNodeDetailInput("u1", 7L));
+
+        assertEquals("unified_graph", result.get("source"));
+        assertEquals("u1", result.get("nodeId"));
+        assertEquals("Unified Detail", result.get("title"));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> metadata = (Map<String, Object>) result.get("metadata");
+        assertEquals("finance", metadata.get("department"));
+    }
+
+    @Test
+    void findEdgesBetween_scopedFactSheetUsesUnifiedGraph() {
+        tool = new GraphSearchTool(graphService, unifiedGraphBridge);
+        UnifiedGraph unified = new UnifiedGraph()
+                .addEntity("a", "ENTITY", "Alpha")
+                .addEntity("b", "ENTITY", "Beta")
+                .addRelation("r1", "a", "b", "SHARED_ENTITY", 0.8);
+        when(unifiedGraphBridge.export(7L)).thenReturn(unified);
+
+        var result = tool.findEdgesBetween(new GraphSearchTool.FindEdgesBetweenInput("a", "b", false, 7L));
+
+        assertEquals("unified_graph", result.get("source"));
+        assertTrue((boolean) result.get("found"));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> edge = (Map<String, Object>) result.get("edge");
+        assertEquals("r1", edge.get("edgeId"));
+        verify(graphService, never()).findEdgeBetweenNodes(anyString(), anyString());
+    }
+
+    @Test
+    void searchByMetadata_scopedFactSheetUsesUnifiedGraph() {
+        tool = new GraphSearchTool(graphService, unifiedGraphBridge);
+        UnifiedGraph unified = new UnifiedGraph()
+                .addEntity(GraphEntity.builder("u1")
+                        .type("ENTITY")
+                        .label("Unified Detail")
+                        .attribute("department", "finance")
+                        .build());
+        when(unifiedGraphBridge.export(7L)).thenReturn(unified);
+
+        var result = tool.searchByMetadata(
+                new GraphSearchTool.SearchByMetadataInput("department", "finance", null, 7L, 10));
+
+        assertEquals("unified_graph", result.get("source"));
+        assertEquals(1, result.get("resultCount"));
+        verify(graphService, never()).getNodesInFactSheet(anyLong());
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

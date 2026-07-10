@@ -44,7 +44,7 @@ class ResumeCommandTest {
                 "resume-session",
                 "codex",
                 tempDir.resolve("session.jsonl"),
-                "codex resume --all resume-session",
+                "codex resume resume-session",
                 tempDir);
 
         List<String> args = buildAgentCommand("codex", exportResult);
@@ -52,6 +52,7 @@ class ResumeCommandTest {
         assertTrue(args.contains("--dangerously-bypass-approvals-and-sandbox"));
         assertTrue(args.indexOf("--dangerously-bypass-approvals-and-sandbox") < args.indexOf("resume"));
         assertFalse(args.contains("--full-auto"));
+        assertFalse(args.contains("--all"));
     }
 
     @Test
@@ -63,7 +64,7 @@ class ResumeCommandTest {
                     "resume-session",
                     "codex",
                     tempDir.resolve("session.jsonl"),
-                    "codex resume --all resume-session",
+                    "codex resume resume-session",
                     tempDir);
 
             List<String> args = buildAgentCommand("codex", exportResult);
@@ -71,6 +72,7 @@ class ResumeCommandTest {
             assertTrue(args.contains("--compat-mode"));
             assertTrue(args.contains("no-prompts"));
             assertFalse(args.contains("--dangerously-bypass-approvals-and-sandbox"));
+            assertFalse(args.contains("--all"));
         } finally {
             System.clearProperty(property);
         }

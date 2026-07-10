@@ -22,6 +22,7 @@ import ai.kompile.core.graphrag.typing.GraphNodeTypes;
 import ai.kompile.graph.reasoning.mebn.type.owl.OwlOntology;
 import ai.kompile.graph.reasoning.mebn.type.owl.OwlRlReasoner;
 import ai.kompile.graph.reasoning.mebn.type.owl.OwlRlResult;
+import ai.kompile.graph.reasoning.mebn.type.owl.TableMemberOntologyBridge;
 import ai.kompile.graph.reasoning.model.GraphEntity;
 import ai.kompile.graph.reasoning.model.GraphRelation;
 import ai.kompile.graph.reasoning.model.MutableReasoningGraph;
@@ -120,6 +121,9 @@ public class OwlReasoningService implements OwlDerivedRuleProvider {
         // Reason over the REAL crawled ABox so the response reflects actual instance-level entailments
         // (transitive closure + inferred types), not just TBox structure.
         ReasoningGraph abox = buildAbox(factSheetId);
+        // Typed table members crawled from workbook master tables (SKU, CHANNEL, ...) join the
+        // TBox as classes so schema axioms about them participate in this same pass.
+        tbox = TableMemberOntologyBridge.ontologyFromTableMembers(abox, tbox);
 
         OwlRlResult result = reasoner.reason(abox, tbox);
 
@@ -142,6 +146,7 @@ public class OwlReasoningService implements OwlDerivedRuleProvider {
         OntologySchema schema = schemaOpt.get();
         OwlOntology tbox = bridge.toOwlOntology(schema);
         ReasoningGraph abox = buildAbox(factSheetId);
+        tbox = TableMemberOntologyBridge.ontologyFromTableMembers(abox, tbox);
         OwlRlResult result = reasoner.reason(abox, tbox);
         MaterializationStats stats = materializeInferences(factSheetId, schema, result);
         log.info("OwlReasoningService.classify factSheet={}: {} entities typed, {} has-a edges materialized",
@@ -188,6 +193,7 @@ public class OwlReasoningService implements OwlDerivedRuleProvider {
         // so OWL-RL computes has-a transitive closure over the actual graph and feeds instance types
         // into PSL grounding. Without a real ABox these rules ground over nothing.
         ReasoningGraph abox = buildAbox(factSheetId);
+        tbox = TableMemberOntologyBridge.ontologyFromTableMembers(abox, tbox);
         OwlRlResult result = reasoner.reason(abox, tbox);
 
         List<String> rules = new ArrayList<>();
@@ -439,21 +445,21 @@ public class OwlReasoningService implements OwlDerivedRuleProvider {
         int edges = 0;
         try {
             int edgeCap = 5000;
+            List<KnowledgeGraphService.EdgeSpec> edgeSpecs = new ArrayList<>();
             for (GraphRelation rel : result.inferredRelations()) {
-                if (edges >= edgeCap) {
+                if (edgeSpecs.size() >= edgeCap) {
                     log.warn("OWL inferred-edge materialization capped at {} for factSheet={}", edgeCap, factSheetId);
                     break;
                 }
                 String src = rel.sourceId();
                 String tgt = rel.targetId();
                 if (src == null || tgt == null || src.equals(tgt)) continue;
-                if (knowledgeGraphService.edgeExists(src, tgt)) continue; // idempotent; don't shadow asserted edges
-                knowledgeGraphService.createEdgeWithMetadata(
+                edgeSpecs.add(new KnowledgeGraphService.EdgeSpec(
                         src, tgt, EdgeType.HIERARCHICAL, 0.7,
-                        rel.type(), "OWL-RL inferred transitive closure (" + rel.type() + ")",
-                        null, EdgeProvenance.INFERRED, factSheetId);
-                edges++;
+                        "OWL-RL inferred transitive closure (" + rel.type() + ")",
+                        rel.type(), null, EdgeProvenance.INFERRED, factSheetId));
             }
+            edges = knowledgeGraphService.createEdgesBatch(edgeSpecs);
             int typed = materializeInferredTypes(factSheetId, result.inferredTypeCandidates(),
                     schemaParentByType(schema));
             if (edges > 0 || typed > 0) {
@@ -491,10 +497,10 @@ public class OwlReasoningService implements OwlDerivedRuleProvider {
                 .getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY).stream()
                 .filter(n -> n.getNodeId() != null)
                 .collect(Collectors.toMap(GraphNode::getNodeId, n -> n, (a, b) -> a));
-        int updated = 0;
+        List<KnowledgeGraphService.NodeUpdate> updates = new ArrayList<>();
         int cap = 1000;
         for (Map.Entry<String, LinkedHashSet<InferredTypeCandidate>> e : byEntity.entrySet()) {
-            if (updated >= cap) {
+            if (updates.size() >= cap) {
                 log.warn("OWL inferred-type materialization capped at {} entities for factSheet={}", cap, factSheetId);
                 break;
             }
@@ -516,10 +522,9 @@ public class OwlReasoningService implements OwlDerivedRuleProvider {
             if (!hierarchy.isEmpty()) {
                 meta.put("ontology.typeHierarchy", hierarchy);
             }
-            knowledgeGraphService.updateNode(e.getKey(), null, null, meta);
-            updated++;
+            updates.add(new KnowledgeGraphService.NodeUpdate(e.getKey(), null, null, meta));
         }
-        return updated;
+        return knowledgeGraphService.updateNodesBatch(updates);
     }
 
     private static Map<String, String> schemaParentByType(OntologySchema schema) {

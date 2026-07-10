@@ -20,6 +20,10 @@ import ai.kompile.core.graphrag.DocumentGraphExtractor;
 import ai.kompile.core.graphrag.ExtractorUtils;
 import ai.kompile.core.graphrag.GraphConstants;
 import ai.kompile.core.graphrag.format.GraphExtractionSchema.*;
+import ai.kompile.core.graphrag.model.Entity;
+import ai.kompile.core.graphrag.model.Graph;
+import ai.kompile.core.graphrag.model.Relationship;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
@@ -1102,11 +1106,11 @@ public class HtmlWebGraphExtractor implements DocumentGraphExtractor {
         Object tableGraphObj = meta.get(META_TABLE_GRAPH);
         if (tableGraphObj instanceof String tableGraphJson && !tableGraphJson.isBlank()) {
             try {
-                com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
-                ai.kompile.core.graphrag.model.Graph cellGraph = mapper.readValue(tableGraphJson,
-                        ai.kompile.core.graphrag.model.Graph.class);
+                ObjectMapper mapper = new ObjectMapper();
+                Graph cellGraph = mapper.readValue(tableGraphJson,
+                        Graph.class);
                 if (cellGraph.getEntities() != null) {
-                    for (ai.kompile.core.graphrag.model.Entity e : cellGraph.getEntities()) {
+                    for (Entity e : cellGraph.getEntities()) {
                         if (e == null || e.getId() == null || e.getTitle() == null || e.getType() == null) {
                             log.debug("Skipping table graph entity with null id/title/type: {}", e);
                             continue;
@@ -1124,7 +1128,7 @@ public class HtmlWebGraphExtractor implements DocumentGraphExtractor {
                     }
                 }
                 if (cellGraph.getRelationships() != null) {
-                    for (ai.kompile.core.graphrag.model.Relationship r : cellGraph.getRelationships()) {
+                    for (Relationship r : cellGraph.getRelationships()) {
                         if (r == null || r.getSource() == null || r.getTarget() == null || r.getType() == null) {
                             log.debug("Skipping table graph relationship with null source/target/type: {}", r);
                             continue;

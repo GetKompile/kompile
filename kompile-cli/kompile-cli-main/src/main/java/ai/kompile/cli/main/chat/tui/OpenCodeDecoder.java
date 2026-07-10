@@ -62,6 +62,18 @@ public class OpenCodeDecoder extends AbstractTuiDecoder {
     }
 
     @Override
+    protected String[] extraBlockingPhrases() {
+        // opencode/ZEN surfaces credit-balance and provider-auth failures.
+        // deepseek surfaces rate limits as "too many requests" or "rate limit".
+        return new String[]{
+                "balance too low", "add credits", "top up", "402 payment required",
+                "no active subscription", "provider returned an error",
+                "failed to generate", "model not found", "connection refused",
+                "api key invalid", "invalid api key", "unauthorized",
+        };
+    }
+
+    @Override
     protected boolean isChrome(String row) {
         String lower = row.toLowerCase(Locale.ROOT);
         String compact = lower.replace(" ", "");
@@ -81,11 +93,29 @@ public class OpenCodeDecoder extends AbstractTuiDecoder {
         if (lower.contains("mcp") && lower.contains("connected") && lower.length() < 80) return true;
         if (chromeText.startsWith("build ") && containsModelName(chromeText)) return true;
         if (chromeText.startsWith("tip:") || chromeText.contains(" for shortcuts")) return true;
+        // "● Tip ..." / "• Tip ..." — opencode's tip/advice chrome shown in idle state
+        // (e.g. "● Tip Create JSON theme files in .opencode/themes/ directory").
+        // The ●/• bullet prefix is the discriminator: plain prose starting with "tip"
+        // (e.g. "tip the balance") must NOT be filtered.  The .opencode/ path in the tip
+        // also must not reach isIdle() where it would pair with "mcp" on the status bar
+        // and spuriously fire the idle detector while the agent is still responding.
+        if (lower.startsWith("● tip ") || lower.startsWith("• tip ")) return true;
         if (chromeText.startsWith("try \"") || chromeText.startsWith("try '") || chromeText.contains("try \"")) return true;
         if (lower.contains("what's new in my repo")) return true;
         if (lower.contains("how does opencode")) return true;
 
         return false;
+    }
+
+    @Override
+    protected boolean isRawChromeRow(String rawRow, String normalizedRow) {
+        // opencode renders its reasoning/thinking block inside a heavy-vertical (┃, U+2503)
+        // gutter; the final answer is emitted WITHOUT that gutter. Drop ┃-prefixed rows so the
+        // thinking frame never leaks into the transcript. (Backed by
+        // DecoderFramebufferTest.decoderOpenCodeDropsHeavyFrameThinkingRows.)
+        if (rawRow == null) return false;
+        String trimmed = rawRow.stripLeading();
+        return !trimmed.isEmpty() && trimmed.charAt(0) == '┃';
     }
 
     @Override

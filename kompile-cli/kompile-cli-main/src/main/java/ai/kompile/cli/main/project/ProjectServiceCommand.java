@@ -42,10 +42,17 @@ import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 
+import ai.kompile.cli.common.logs.LogPaths;
+
+import java.io.BufferedReader;
+import java.io.Console;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.io.OutputStream;
+import java.net.HttpURLConnection;
 import java.net.URI;
+import java.net.URL;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -55,14 +62,21 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.Callable;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
+import java.util.stream.Stream;
 
 import static ai.kompile.cli.main.project.ProjectCommandUtils.firstNonBlank;
 import static ai.kompile.cli.main.project.ProjectCommandUtils.normalizeEnum;
+import static ai.kompile.cli.main.project.ProjectCommandUtils.requireExistingProjectRoot;
 import static ai.kompile.cli.main.project.ProjectCommandUtils.resolveProjectRoot;
 import static ai.kompile.cli.main.project.ProjectPrintUtils.printManifest;
 import static ai.kompile.cli.main.project.ProjectPrintUtils.printServePlan;
@@ -79,6 +93,7 @@ import static ai.kompile.cli.main.project.ProjectPrintUtils.printServePlan;
                 ProjectServiceCommand.Open.class,
                 ProjectServiceCommand.Start.class,
                 ProjectServiceCommand.Stop.class,
+                ProjectServiceCommand.Logs.class,
                 ProjectServiceCommand.Serve.class
         })
 public class ProjectServiceCommand implements Callable<Integer> {
@@ -109,7 +124,97 @@ public class ProjectServiceCommand implements Callable<Integer> {
                 return 1;
             }
             printManifest(store.load(resolved), status);
+            printServiceStatus(resolved);
             return 0;
+        }
+
+        /**
+         * Print live service status: running instances (app + staging) from the
+         * instance registry, their ports/URLs/alive state, and subprocess log paths.
+         */
+        static void printServiceStatus(Path projectRoot) {
+            System.out.println("  Services:");
+            String projectDir = projectRoot.toFile().getAbsolutePath();
+            Path projectLogRoot = LogPaths.logsDirectory(projectRoot).toPath();
+            try {
+                List<InstanceInfo> instances = InstanceRegistry.findByProjectDir(projectDir);
+                if (instances.isEmpty()) {
+                    System.out.println("    No running instances registered for this project.");
+                    System.out.println("    Start with: kompile project start");
+                } else {
+                    for (InstanceInfo info : instances) {
+                        boolean alive = ProcessHandle.of(info.getPid())
+                                .map(ProcessHandle::isAlive).orElse(false);
+                        String health = alive ? "running" : "DEAD (stale registry)";
+                        System.out.println("    " + info.getName()
+                                + " [" + info.getType() + "]"
+                                + " port=" + info.getPort()
+                                + " pid=" + info.getPid()
+                                + " url=http://localhost:" + info.getPort()
+                                + " (" + health + ")");
+                    }
+                }
+            } catch (Exception e) {
+                System.out.println("    Could not read instance registry: " + e.getMessage());
+            }
+            // Subprocess log locations
+            System.out.println("  Subprocess logs:");
+            File subprocessLogsDir = LogPaths.subprocessesRoot(projectRoot);
+            boolean anySubprocessLog = false;
+            if (subprocessLogsDir.isDirectory()) {
+                try (Stream<Path> logs = Files.find(subprocessLogsDir.toPath(), 8,
+                        (p, attrs) -> attrs.isRegularFile()
+                                && p.getFileName().toString().endsWith(".log"))) {
+                    List<Path> sorted = logs
+                            .sorted(Comparator.comparingLong((Path p) -> {
+                                try {
+                                    return Files.getLastModifiedTime(p).toMillis();
+                                } catch (IOException e) {
+                                    return 0L;
+                                }
+                            }).reversed())
+                            .toList();
+
+                    for (Path log : sorted) {
+                        long sizeKb;
+                        try {
+                            sizeKb = Files.size(log) / 1024;
+                        } catch (IOException e) {
+                            sizeKb = 0L;
+                        }
+                        System.out.println("    " + log.toAbsolutePath()
+                                + " (" + sizeKb + " KB)");
+                        anySubprocessLog = true;
+                    }
+                } catch (IOException e) {
+                    System.out.println("    Could not read subprocess logs: " + e.getMessage());
+                }
+            }
+            if (!anySubprocessLog) {
+                System.out.println("    " + subprocessLogsDir.getAbsolutePath()
+                        + " (empty — subprocesses not yet started)");
+            }
+            // Project-local staging logs
+            File projectLogDir = new File(projectDir, "data/logs");
+            if (projectLogDir.isDirectory()) {
+                File[] stagingLogs = projectLogDir.listFiles(
+                        f -> f.isFile() && (f.getName().endsWith(".out.log") || f.getName().endsWith(".err.log")));
+                if (stagingLogs != null && stagingLogs.length > 0) {
+                    System.out.println("  Project service logs (staging/app):");
+                    Arrays.sort(stagingLogs, Comparator.comparingLong(File::lastModified).reversed());
+                    for (File log : stagingLogs) {
+                        System.out.println("    " + log.getAbsolutePath()
+                                + " (" + (log.length() / 1024) + " KB)");
+                    }
+                }
+            }
+            // MCP activity log
+            File mcpLog = projectLogRoot.resolve("mcp-activity.log").toFile();
+            if (mcpLog.isFile()) {
+                System.out.println("  MCP activity log: " + mcpLog.getAbsolutePath()
+                        + " (" + (mcpLog.length() / 1024) + " KB)");
+            }
+            System.out.println("  To tail logs: kompile project logs");
         }
     }
 
@@ -171,7 +276,7 @@ public class ProjectServiceCommand implements Callable<Integer> {
         public Integer call() throws Exception {
             // 1. Open the project (write metadata)
             KompileProjectStore store = new KompileProjectStore();
-            Path resolved = resolveProjectRoot(store, root);
+            Path resolved = requireExistingProjectRoot(store, root);
             KompileProjectOpenState state = store.openProject(resolved);
             KompileProjectStatus status = store.status(resolved);
             KompileProjectManifest manifest = store.load(resolved);
@@ -188,6 +293,20 @@ public class ProjectServiceCommand implements Callable<Integer> {
             // 2. Ensure global bootstrap
             GlobalBootstrap.ensureHomeDirectory();
             GlobalBootstrap.ensureConfigs();
+
+            // GC stale instance-registry entries before touching ports
+            try {
+                List<InstanceInfo> stale = InstanceRegistry.gcDeadInstances();
+                if (!stale.isEmpty()) {
+                    StringBuilder names = new StringBuilder();
+                    for (InstanceInfo s : stale) {
+                        if (names.length() > 0) names.append(", ");
+                        names.append(s.getName());
+                    }
+                    System.out.println("  Cleaned " + stale.size()
+                            + " stale instance registration(s): " + names);
+                }
+            } catch (Exception ignored) {}
 
             // 3. Find the kompile-app-main JAR from ~/.kompile/components/
             File appJar = findInstalledAppJar();
@@ -231,7 +350,9 @@ public class ProjectServiceCommand implements Callable<Integer> {
                         List<String> stagingArgs = buildStagingArgs(projectDir, appPort);
                         stagingProcess = serviceManager.startProjectComponent(
                                 stagingInstanceName, "kompile-model-staging", stagingJar,
-                                stagingPort, projectDir, null, stagingArgs, logDir, false);
+                                stagingPort, projectDir,
+                                projectRuntimeJvmArgs(projectDir, "stagingHeap", null),
+                                stagingArgs, logDir, false);
                         // Brief wait for staging to initialize
                         boolean stagingHealthy = serviceManager.waitForHealth(stagingPort, 60);
                         if (stagingHealthy) {
@@ -346,7 +467,7 @@ public class ProjectServiceCommand implements Callable<Integer> {
                         return;
                     }
                     // Interactive prompt
-                    java.io.Console console = System.console();
+                    Console console = System.console();
                     if (console != null) {
                         System.out.println();
                         System.out.println("  Documents detected in this project.");
@@ -373,7 +494,8 @@ public class ProjectServiceCommand implements Callable<Integer> {
 
             Process appProcess = serviceManager.startProjectComponent(
                     webInstanceName, "kompile-app-main", appJar, appPort,
-                    projectDir, jvmArgs, appArgs, null, true);
+                    projectDir, projectRuntimeJvmArgs(projectDir, "appHeap", jvmArgs),
+                    appArgs, null, true);
 
             System.out.println("  PID: " + appProcess.pid());
 
@@ -653,14 +775,33 @@ public class ProjectServiceCommand implements Callable<Integer> {
             String stagingBase = "http://localhost:" + stagingPort + "/api/staging";
             System.out.println("  Auto-registering " + models.size() + " model(s) with staging...");
 
+            long freeBytes;
+            try {
+                freeBytes = Files.getFileStore(projectDir.toPath()).getUsableSpace();
+            } catch (Exception e) {
+                freeBytes = -1;
+            }
+            final long headroomMb = 1024;
+            long plannedMb = 0;
+
             for (KompileProjectModel model : models) {
                 String modelId = model.getModelId();
                 if (modelId == null || modelId.isBlank()) continue;
 
+                long diskMb = requirementMb(model, "requirement.diskMb");
+                if (freeBytes > 0 && diskMb > 0
+                        && (plannedMb + diskMb + headroomMb) * 1024L * 1024L > freeBytes) {
+                    System.out.println("    " + modelId + ": skipped — needs ~" + diskMb
+                            + " MB disk but only " + (freeBytes / (1024L * 1024L))
+                            + " MB free (1 GB headroom reserved)");
+                    continue;
+                }
+                plannedMb += Math.max(diskMb, 0);
+
                 try {
                     // Check if already staged
-                    java.net.HttpURLConnection statusConn = (java.net.HttpURLConnection)
-                            new java.net.URL(stagingBase + "/status/" + modelId).openConnection();
+                    HttpURLConnection statusConn = (HttpURLConnection)
+                            new URL(stagingBase + "/status/" + modelId).openConnection();
                     statusConn.setConnectTimeout(3000);
                     statusConn.setReadTimeout(3000);
                     int statusCode = statusConn.getResponseCode();
@@ -680,8 +821,8 @@ public class ProjectServiceCommand implements Callable<Integer> {
                 // Try catalog staging first
                 boolean catalogStaged = false;
                 try {
-                    java.net.HttpURLConnection conn = (java.net.HttpURLConnection)
-                            new java.net.URL(stagingBase + "/stage/catalog/" + modelId + "?autoPromote=true").openConnection();
+                    HttpURLConnection conn = (HttpURLConnection)
+                            new URL(stagingBase + "/stage/catalog/" + modelId + "?autoPromote=true").openConnection();
                     conn.setRequestMethod("POST");
                     conn.setConnectTimeout(5000);
                     conn.setReadTimeout(10000);
@@ -709,8 +850,8 @@ public class ProjectServiceCommand implements Callable<Integer> {
                                     modelId,
                                     localModelFile.toAbsolutePath().toString().replace("\\", "\\\\"),
                                     framework);
-                            java.net.HttpURLConnection conn = (java.net.HttpURLConnection)
-                                    new java.net.URL(stagingBase + "/convert").openConnection();
+                            HttpURLConnection conn = (HttpURLConnection)
+                                    new URL(stagingBase + "/convert").openConnection();
                             conn.setRequestMethod("POST");
                             conn.setRequestProperty("Content-Type", "application/json");
                             conn.setDoOutput(true);
@@ -734,6 +875,16 @@ public class ProjectServiceCommand implements Callable<Integer> {
             }
         }
 
+        /** Numeric requirement from model metadata (e.g. requirement.diskMb); 0 when absent. */
+        private static long requirementMb(KompileProjectModel model, String key) {
+            try {
+                String v = model.getMetadata().get(key);
+                return v == null ? 0 : Long.parseLong(v.trim());
+            } catch (Exception e) {
+                return 0;
+            }
+        }
+
         /**
          * Wait for the app-main server to be ready. Tries /actuator/health first,
          * then falls back to a simple HTTP GET on the root path (some installs
@@ -743,8 +894,8 @@ public class ProjectServiceCommand implements Callable<Integer> {
             long deadline = System.currentTimeMillis() + timeoutSeconds * 1000L;
             while (System.currentTimeMillis() < deadline) {
                 try {
-                    java.net.HttpURLConnection conn = (java.net.HttpURLConnection)
-                            new java.net.URL("http://localhost:" + port + "/actuator/health").openConnection();
+                    HttpURLConnection conn = (HttpURLConnection)
+                            new URL("http://localhost:" + port + "/actuator/health").openConnection();
                     conn.setConnectTimeout(2000);
                     conn.setReadTimeout(2000);
                     int rc = conn.getResponseCode();
@@ -753,8 +904,8 @@ public class ProjectServiceCommand implements Callable<Integer> {
                 } catch (Exception ignored) {}
                 // Fallback: simple root GET — if server responds at all, it's up
                 try {
-                    java.net.HttpURLConnection conn = (java.net.HttpURLConnection)
-                            new java.net.URL("http://localhost:" + port + "/").openConnection();
+                    HttpURLConnection conn = (HttpURLConnection)
+                            new URL("http://localhost:" + port + "/").openConnection();
                     conn.setConnectTimeout(2000);
                     conn.setReadTimeout(2000);
                     int rc = conn.getResponseCode();
@@ -861,7 +1012,7 @@ public class ProjectServiceCommand implements Callable<Integer> {
         public Integer call() throws Exception {
             // 1. Resolve project and load manifest
             KompileProjectStore store = new KompileProjectStore();
-            Path resolved = resolveProjectRoot(store, root);
+            Path resolved = requireExistingProjectRoot(store, root);
             KompileProjectManifest manifest = store.load(resolved);
             File projectDir = resolved.toFile();
             String projectName = manifest.getName() != null ? manifest.getName() : projectDir.getName();
@@ -872,6 +1023,20 @@ public class ProjectServiceCommand implements Callable<Integer> {
             // 2. Ensure global bootstrap
             GlobalBootstrap.ensureHomeDirectory();
             GlobalBootstrap.ensureConfigs();
+
+            // GC stale instance-registry entries before touching ports
+            try {
+                List<InstanceInfo> stale = InstanceRegistry.gcDeadInstances();
+                if (!stale.isEmpty()) {
+                    StringBuilder names = new StringBuilder();
+                    for (InstanceInfo s : stale) {
+                        if (names.length() > 0) names.append(", ");
+                        names.append(s.getName());
+                    }
+                    System.out.println("  Cleaned " + stale.size()
+                            + " stale instance registration(s): " + names);
+                }
+            } catch (Exception ignored) {}
 
             // 3. Find installed app (JAR or native executable)
             File appJar = Open.findInstalledAppJar();
@@ -912,7 +1077,9 @@ public class ProjectServiceCommand implements Callable<Integer> {
                         List<String> stagingArgs = Open.buildStagingArgs(projectDir, appPort);
                         stagingProcess = serviceManager.startProjectComponent(
                                 projectName + "-staging", "kompile-model-staging", stagingJar,
-                                stagingPort, projectDir, null, stagingArgs, logDir, false);
+                                stagingPort, projectDir,
+                                projectRuntimeJvmArgs(projectDir, "stagingHeap", null),
+                                stagingArgs, logDir, false);
                         boolean stagingHealthy = serviceManager.waitForHealth(stagingPort, 60);
                         if (stagingHealthy) {
                             Open.configureStagingCallback(stagingPort, appPort);
@@ -977,7 +1144,8 @@ public class ProjectServiceCommand implements Callable<Integer> {
 
             Process appProcess = serviceManager.startProjectComponent(
                     webInstanceName, "kompile-app-main", appJar, appPort,
-                    projectDir, jvmArgs, appArgs, null, true);
+                    projectDir, projectRuntimeJvmArgs(projectDir, "appHeap", jvmArgs),
+                    appArgs, null, true);
 
             int exitCode = appProcess.waitFor();
 
@@ -1165,6 +1333,27 @@ public class ProjectServiceCommand implements Callable<Integer> {
      *
      * @return process exit code (0 = success)
      */
+    /**
+     * Per-project JVM args derived at init time by the hardware provisioner
+     * (config/project-runtime.json). Explicit --jvm-args always win; when the
+     * file is absent or unreadable returns null so the ServiceManager
+     * machine-tier default applies.
+     */
+    static List<String> projectRuntimeJvmArgs(File projectDir, String heapKey, List<String> explicit) {
+        if (explicit != null && !explicit.isEmpty()) return explicit;
+        try {
+            File f = new File(projectDir, "config/project-runtime.json");
+            if (!f.isFile()) return null;
+            JsonNode node = new ObjectMapper().readTree(f);
+            JsonNode heap = node.get(heapKey);
+            if (heap != null && heap.isTextual() && !heap.asText().isBlank()) {
+                return List.of("-Xmx" + heap.asText().trim());
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
+    }
+
     public static int runQuickstart(Path resolved, int appPort, int stagingPort, boolean noStaging,
                                     boolean doCrawl, boolean doPush, boolean keepRunning,
                                     String commitMessage, List<String> jvmArgs) {
@@ -1212,7 +1401,9 @@ public class ProjectServiceCommand implements Callable<Integer> {
                     List<String> stagingArgs = Open.buildStagingArgs(projectDir, appPort);
                     stagingProcess = serviceManager.startProjectComponent(
                             stagingInstanceName, "kompile-model-staging", stagingJar,
-                            stagingPort, projectDir, null, stagingArgs, logDir, false);
+                            stagingPort, projectDir,
+                            projectRuntimeJvmArgs(projectDir, "stagingHeap", null),
+                            stagingArgs, logDir, false);
                     if (serviceManager.waitForHealth(stagingPort, 60)) {
                         Open.configureStagingCallback(stagingPort, appPort);
                         System.out.println("  Staging: ready (PID: " + stagingProcess.pid() + ")");
@@ -1236,7 +1427,8 @@ public class ProjectServiceCommand implements Callable<Integer> {
             System.out.println("  Starting kompile-app-main on port " + appPort + " (background)...");
             appProcess = serviceManager.startProjectComponent(
                     webInstanceName, "kompile-app-main", appJar, appPort,
-                    projectDir, jvmArgs, appArgs, logDir, false);
+                    projectDir, projectRuntimeJvmArgs(projectDir, "appHeap", jvmArgs),
+                    appArgs, logDir, false);
 
             if (!serviceManager.waitForHealth(appPort, 180)) {
                 System.err.println("  App did not become healthy within 180s. See "
@@ -1393,6 +1585,394 @@ public class ProjectServiceCommand implements Callable<Integer> {
         }
     }
 
+    @Command(name = "logs", mixinStandardHelpOptions = true,
+            description = "Show, follow, or scan logs for the current project's services and subprocesses.%n%n" +
+                    "By default prints the last --tail lines from project subprocess logs and%n" +
+                    "project service logs under data/logs, each prefixed with a '==> <path> <=='%n" +
+                    "header matching the POSIX tail convention. Use --scan/--monitor for a%n" +
+                    "targeted failure scan of current logs; add --all to include historical%n" +
+                    "subprocess logs and MCP activity.%n%n" +
+                    "Examples:%n" +
+                    "  kompile project logs%n" +
+                    "  kompile project logs -n 50%n" +
+                    "  kompile project logs --follow%n" +
+                    "  kompile project logs --scan%n" +
+                    "  kompile project logs --subprocess embedding%n" +
+                    "  kompile project logs --all%n")
+    public static class Logs implements Callable<Integer> {
+
+        @Option(names = {"--root", "-r"}, description = "Project root. Defaults to current directory.", defaultValue = ".")
+        private File root;
+
+        @Option(names = {"--tail", "-n"}, description = "Number of lines to show per log file. Default: 200.", defaultValue = "200")
+        private int tail;
+
+        @Option(names = {"--follow", "-f"}, description = "Stream new lines as they are appended (like tail -f).", defaultValue = "false")
+        private boolean follow;
+
+        @Option(names = {"--scan", "--monitor"},
+                description = "Scan recent log lines for known failure signals and return non-zero when any are found.",
+                defaultValue = "false")
+        private boolean scan;
+
+        @Option(names = "--subprocess",
+                description = "Filter to a single subprocess log by name (e.g. 'embedding', 'graph-matrix', 'serving').")
+        // package-visible for testing
+        String subprocess;
+
+        @Option(names = "--all",
+                description = "Include historical subprocess logs and project MCP activity logs. Service logs are included by default.",
+                defaultValue = "false")
+        private boolean all;
+
+        // package-visible for testing — can be overridden to inject a temp dir
+        Path subprocessLogsBaseDir = null;
+
+        @Override
+        public Integer call() {
+            KompileProjectStore store = new KompileProjectStore();
+            Path projectRoot = resolveProjectRoot(store, root);
+
+            // Collect log files in display order
+            Map<String, Path> logFiles = discoverLogFiles(projectRoot);
+
+            if (logFiles.isEmpty()) {
+                System.out.println("No log files found for project at " + projectRoot);
+                printSearchPaths(projectRoot);
+                return 0;
+            }
+
+            if (scan) {
+                Map<String, Path> monitorLogs = all ? logFiles : selectMonitorLogFiles(logFiles);
+                return scanLogs(monitorLogs, tail);
+            }
+            if (follow) {
+                return followLogs(logFiles);
+            }
+            return tailLogs(logFiles, tail);
+        }
+
+        /**
+         * Discover all relevant log files for the project, returning an ordered map of
+         * display-name → path. Applies subprocess filter and --all flag.
+         */
+        Map<String, Path> discoverLogFiles(Path projectRoot) {
+            Map<String, Path> result = new LinkedHashMap<>();
+            // Resolve subprocess logs base (allows injection of temp dir in tests)
+            Path spBase = subprocessLogsBaseDir != null
+                    ? subprocessLogsBaseDir
+                    : LogPaths.subprocessesRoot(projectRoot).toPath();
+
+            // 1. Subprocess logs (flat or nested under type dirs)
+            if (subprocess != null && !subprocess.isBlank()) {
+                // Filtered: only the named subprocess
+                String name = subprocess.trim();
+                String target = name + ".log";
+                Path candidate = spBase.resolve(target);
+                List<Path> matches = new ArrayList<>();
+                if (Files.isRegularFile(candidate)) {
+                    matches.add(candidate);
+                } else if (Files.isDirectory(spBase)) {
+                    try (Stream<Path> stream = Files.find(spBase, 8,
+                            (path, attrs) -> attrs.isRegularFile() && path.getFileName().toString().equals(target))) {
+                        stream.forEach(matches::add);
+                    } catch (IOException ignored) {
+                    }
+                }
+
+                if (matches.isEmpty()) {
+                    System.out.println("No subprocess log found for '" + name + "' at " + spBase);
+                } else {
+                    matches.sort(Comparator.comparingLong((Path p) -> {
+                        try {
+                            return Files.getLastModifiedTime(p).toMillis();
+                        } catch (IOException e) {
+                            return 0L;
+                        }
+                    }).reversed());
+                    Path latest = matches.get(0);
+                    result.put(relativeDisplayPath(spBase, latest), latest);
+                }
+                return result;
+            }
+
+            if (spBase.toFile().isDirectory()) {
+                try (Stream<Path> stream = Files.walk(spBase, 8)) {
+                    Comparator<Path> byMtime = Comparator.comparingLong((Path p) -> {
+                        try { return Files.getLastModifiedTime(p).toMillis(); }
+                        catch (IOException e) { return 0L; }
+                    });
+                    stream.filter(Files::isRegularFile)
+                            .filter(p -> p.getFileName().toString().endsWith(".log"))
+                            .filter(Files::isRegularFile)
+                            .sorted(byMtime.reversed())
+                            .forEach(p -> result.put(relativeDisplayPath(spBase, p), p));
+                } catch (IOException ignored) {}
+            }
+
+            // 2. Project-local service logs: <projectDir>/data/logs/*.out.log and *.err.log
+            File projectLogDir = new File(projectRoot.toFile(), "data/logs");
+            if (projectLogDir.isDirectory()) {
+                File[] files = projectLogDir.listFiles(
+                        f -> f.isFile() && (f.getName().endsWith(".out.log") || f.getName().endsWith(".err.log")));
+                if (files != null) {
+                    Arrays.sort(files, Comparator.comparingLong(File::lastModified).reversed());
+                    for (File f : files) {
+                        result.put("data/logs/" + f.getName(), f.toPath());
+                    }
+                }
+            }
+
+            // 3. MCP activity log is useful but noisy, so keep it behind --all.
+            if (all) {
+                Path mcpLog = LogPaths.logsDirectory(projectRoot).toPath().resolve("mcp-activity.log");
+                if (Files.isRegularFile(mcpLog)) {
+                    result.put("mcp-activity.log", mcpLog);
+                }
+            }
+
+            return result;
+        }
+
+        /** Print the last {@code n} lines of each log file with a header. */
+        private static int tailLogs(Map<String, Path> logFiles, int n) {
+            for (Map.Entry<String, Path> entry : logFiles.entrySet()) {
+                Path path = entry.getValue();
+                System.out.println("\n==> " + path + " <==");
+                try {
+                    List<String> lines = tailFile(path, n);
+                    if (lines.isEmpty()) {
+                        System.out.println("(empty)");
+                    } else {
+                        lines.forEach(System.out::println);
+                    }
+                } catch (IOException e) {
+                    System.out.println("(could not read: " + e.getMessage() + ")");
+                }
+            }
+            return 0;
+        }
+
+        private static final List<LogSignalRule> DEFAULT_SCAN_RULES = List.of(
+                new LogSignalRule("conversion-failed", LogSignalSeverity.ERROR,
+                        Pattern.compile("(?i)\\bConversion failed\\b|Another variable with the name .* already exists")),
+                new LogSignalRule("missing-downloader", LogSignalSeverity.ERROR,
+                        Pattern.compile("(?i)No downloader available|Download failed: No downloader available")),
+                new LogSignalRule("model-load-failed", LogSignalSeverity.ERROR,
+                        Pattern.compile("(?i)Failed to load model|Model load failed|Model initialization failed")),
+                new LogSignalRule("subprocess-exit", LogSignalSeverity.ERROR,
+                        Pattern.compile("(?i)subprocess.*(failed|exited|terminated).*non[- ]?zero|exit code [1-9][0-9]*")),
+                new LogSignalRule("http-error", LogSignalSeverity.ERROR,
+                        Pattern.compile("(?i)^(?!.*Optional .* was not available).*(\\bHTTP [45][0-9][0-9]\\b|status[=: ]+[45][0-9][0-9]\\b)")),
+                new LogSignalRule("connection-failure", LogSignalSeverity.ERROR,
+                        Pattern.compile("(?i)Connection refused|Address already in use|Broken pipe")),
+                new LogSignalRule("oom", LogSignalSeverity.ERROR,
+                        Pattern.compile("(?i)OutOfMemoryError|CUDA out of memory|\\bOOM\\b")),
+                new LogSignalRule("non-finite", LogSignalSeverity.ERROR,
+                        Pattern.compile("(?i)non[- ]?finite|\\b(?:detected|contains|produced|found|invalid|output|embedding|vector|tensor|value)[^\\n]{0,80}\\bNaN\\b|\\bNaN\\b[^\\n]{0,80}\\b(?:detected|contains|produced|found|invalid|output|embedding|vector|tensor|value)\\b|\\bInfinity\\b")),
+                new LogSignalRule("staging-failed", LogSignalSeverity.ERROR,
+                        Pattern.compile("(?i)\\b(staging|stage|download|convert|model)\\b.*\\bfailed\\b|\\bfailed\\b.*\\b(staging|stage|download|convert|model)\\b|\\\"status\\\"\\s*:\\s*\\\"failed\\\"")),
+                new LogSignalRule("zero-yield", LogSignalSeverity.WARN,
+                        Pattern.compile("(?i)zero_yield|yield 0 ent|output-ceiling guard|invalid output|malformed json")),
+                new LogSignalRule("health-timeout", LogSignalSeverity.WARN,
+                        Pattern.compile("(?i)health check timed out|started but health check timed out")),
+                new LogSignalRule("diagnostic-failed", LogSignalSeverity.WARN,
+                        Pattern.compile("(?i)Diagnostic failed")),
+                new LogSignalRule("error-level", LogSignalSeverity.ERROR,
+                        Pattern.compile("\\b(ERROR|FATAL)\\b"))
+        );
+
+        enum LogSignalSeverity {
+            ERROR,
+            WARN
+        }
+
+        record LogSignalRule(String id, LogSignalSeverity severity, Pattern pattern) {}
+
+        record LogSignal(String id, LogSignalSeverity severity, String logName, int lineNumber, String line) {}
+
+        /**
+         * Default monitor mode keeps only the latest log per subprocess type while
+         * preserving project service logs. Use --all when historical subprocess logs are needed.
+         */
+        static Map<String, Path> selectMonitorLogFiles(Map<String, Path> logFiles) {
+            Map<String, Map.Entry<String, Path>> selectedBySource = new LinkedHashMap<>();
+            for (Map.Entry<String, Path> entry : logFiles.entrySet()) {
+                String source = monitorSourceKey(entry.getKey());
+                Map.Entry<String, Path> current = selectedBySource.get(source);
+                if (current == null || lastModified(entry.getValue()) > lastModified(current.getValue())) {
+                    selectedBySource.put(source, entry);
+                }
+            }
+            Map<String, Path> selected = new LinkedHashMap<>();
+            for (Map.Entry<String, Path> entry : selectedBySource.values()) {
+                selected.put(entry.getKey(), entry.getValue());
+            }
+            return selected;
+        }
+
+        private static String monitorSourceKey(String displayName) {
+            if (displayName == null || displayName.equals("mcp-activity.log")) {
+                return displayName;
+            }
+            if (displayName.startsWith("data/logs/")) {
+                String fileName = displayName.substring("data/logs/".length());
+                String lower = fileName.toLowerCase(Locale.ROOT);
+                String stream = lower.endsWith(".err.log") ? "err" : lower.endsWith(".out.log") ? "out" : "log";
+                if (lower.contains("staging")) {
+                    return "data/logs/staging." + stream;
+                }
+                if (lower.contains("serving")) {
+                    return "data/logs/serving." + stream;
+                }
+                if (lower.contains("app") || lower.contains("web") || lower.contains("main")) {
+                    return "data/logs/app." + stream;
+                }
+                return displayName;
+            }
+            int slash = displayName.indexOf('/');
+            return slash > 0 ? displayName.substring(0, slash) : displayName;
+        }
+
+        private static long lastModified(Path path) {
+            try {
+                return Files.getLastModifiedTime(path).toMillis();
+            } catch (IOException e) {
+                return 0L;
+            }
+        }
+
+        /** Scan recent log lines for targeted failure signals. */
+        static int scanLogs(Map<String, Path> logFiles, int n) {
+            List<LogSignal> findings = new ArrayList<>();
+            for (Map.Entry<String, Path> entry : logFiles.entrySet()) {
+                try {
+                    findings.addAll(scanLogFile(entry.getKey(), entry.getValue(), n));
+                } catch (IOException e) {
+                    findings.add(new LogSignal("log-read-failed", LogSignalSeverity.WARN,
+                            entry.getKey(), 0, "could not read log: " + e.getMessage()));
+                }
+            }
+
+            if (findings.isEmpty()) {
+                System.out.println("Log scan: no failure signals found across " + logFiles.size()
+                        + " log file(s) (last " + Math.max(0, n) + " lines each).");
+                return 0;
+            }
+
+            long errors = findings.stream().filter(f -> f.severity() == LogSignalSeverity.ERROR).count();
+            long warnings = findings.size() - errors;
+            System.out.println("Log scan found " + findings.size() + " signal(s) across "
+                    + logFiles.size() + " log file(s): " + errors + " error, " + warnings + " warning.");
+            for (LogSignal finding : findings) {
+                String location = finding.lineNumber() > 0
+                        ? finding.logName() + ":" + finding.lineNumber()
+                        : finding.logName();
+                System.out.println("  [" + finding.severity() + "] " + finding.id()
+                        + " " + location + " - " + finding.line());
+            }
+            return errors > 0 ? 2 : 1;
+        }
+
+        static List<LogSignal> scanLogFile(String displayName, Path path, int n) throws IOException {
+            List<LogSignal> findings = new ArrayList<>();
+            if (n <= 0) {
+                return findings;
+            }
+            List<String> lines = Files.readAllLines(path, StandardCharsets.UTF_8);
+            int start = Math.max(0, lines.size() - n);
+            for (int i = start; i < lines.size(); i++) {
+                String line = lines.get(i);
+                for (LogSignalRule rule : DEFAULT_SCAN_RULES) {
+                    if (rule.pattern().matcher(line).find()) {
+                        findings.add(new LogSignal(rule.id(), rule.severity(), displayName, i + 1, trimLogLine(line)));
+                        break;
+                    }
+                }
+            }
+            return findings;
+        }
+
+        private static String trimLogLine(String line) {
+            String normalized = line == null ? "" : line.strip();
+            if (normalized.length() <= 500) {
+                return normalized;
+            }
+            return normalized.substring(0, 497) + "...";
+        }
+
+        /**
+         * Follow all discovered log files simultaneously by shelling out to {@code tail -f}.
+         * Falls back to a simple polling loop if {@code tail} is not available.
+         */
+        private static int followLogs(Map<String, Path> logFiles) {
+            List<String> cmd = new ArrayList<>();
+            cmd.add("tail");
+            cmd.add("-f");
+            for (Path p : logFiles.values()) {
+                cmd.add(p.toAbsolutePath().toString());
+            }
+            try {
+                Process proc = new ProcessBuilder(cmd)
+                        .redirectErrorStream(true)
+                        .start();
+                // Forward output to stdout until interrupted
+                Thread reader = new Thread(() -> {
+                    try (BufferedReader br =
+                                 new BufferedReader(new InputStreamReader(proc.getInputStream(), StandardCharsets.UTF_8))) {
+                        String line;
+                        while ((line = br.readLine()) != null) {
+                            System.out.println(line);
+                        }
+                    } catch (IOException ignored) {}
+                });
+                reader.setDaemon(true);
+                reader.start();
+                // Block until Ctrl+C
+                Runtime.getRuntime().addShutdownHook(new Thread(proc::destroyForcibly));
+                proc.waitFor();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } catch (IOException e) {
+                // tail not available — fall back to printing last N lines and explaining
+                System.out.println("Could not start 'tail -f': " + e.getMessage());
+                System.out.println("Showing last 50 lines of each log instead.");
+                tailLogs(logFiles, 50);
+            }
+            return 0;
+        }
+
+        /** Read the last {@code n} lines of a file efficiently. */
+        static List<String> tailFile(Path file, int n) throws IOException {
+            if (n <= 0) {
+                return List.of();
+            }
+            List<String> all = Files.readAllLines(file, StandardCharsets.UTF_8);
+            if (all.size() <= n) return all;
+            return all.subList(all.size() - n, all.size());
+        }
+
+        /** Print paths that were searched, for the empty-result case. */
+        private static void printSearchPaths(Path projectRoot) {
+            System.out.println("Looked at:");
+            System.out.println("  " + LogPaths.logsDirectory(projectRoot).toPath().resolve("subprocesses").toAbsolutePath()
+                    + "/**/*.log");
+            System.out.println("  " + projectRoot.toFile().getAbsolutePath() + "/data/logs/*.out.log");
+            System.out.println("  " + projectRoot.toFile().getAbsolutePath() + "/data/logs/*.err.log");
+            System.out.println("  " + LogPaths.logsDirectory(projectRoot).toPath().resolve("mcp-activity.log").toAbsolutePath()
+                    + "  (use --all to include)");
+            System.out.println("Start services first: kompile project start");
+        }
+
+        private static String relativeDisplayPath(Path baseDir, Path target) {
+            try {
+                return baseDir.relativize(target).toString();
+            } catch (IllegalArgumentException e) {
+                return target.getFileName().toString();
+            }
+        }
+    }
+
     @Command(name = "serve", mixinStandardHelpOptions = true,
             description = "Start model staging, serving, and app services for this project based on the manifest.")
     public static class Serve implements Callable<Integer> {
@@ -1423,7 +2003,7 @@ public class ProjectServiceCommand implements Callable<Integer> {
         @Override
         public Integer call() throws Exception {
             KompileProjectStore store = new KompileProjectStore();
-            Path projectRoot = resolveProjectRoot(store, root);
+            Path projectRoot = requireExistingProjectRoot(store, root);
             KompileProjectManifest manifest = ProjectCrawlCommand.autoconfigureModels(store, projectRoot, store.load(projectRoot));
             store.syncProjectRegistries(projectRoot);
             printServePlan(manifest, projectRoot);

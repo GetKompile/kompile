@@ -55,7 +55,7 @@ class PromptInjectionGuardrailTest {
 
     @BeforeEach
     void setUp() {
-        properties = new GuardrailsProperties();
+        properties = new GuardrailsProperties(null);
         properties.getInput().getPromptInjection().setEnabled(true);
         guardrail = new PromptInjectionGuardrail(chatClient, properties);
     }

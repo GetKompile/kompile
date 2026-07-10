@@ -19,6 +19,7 @@ import { HttpClient } from '@angular/common/http';
 import { Observable, throwError } from 'rxjs';
 import { catchError } from 'rxjs/operators';
 import { BaseService } from './base.service';
+import { SingleSourceGraphEntityPreview, SingleSourceGraphRelationPreview } from '../models/api-models';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -449,6 +450,8 @@ export interface JobSummary {
   documentsIndexed: number;
   entitiesExtracted: number;
   relationshipsExtracted: number;
+  filesSkippedUnchanged?: number;
+  filesReprocessed?: number;
   errorCount: number;
   errors?: string[];
   errorMessage?: string;
@@ -580,6 +583,8 @@ export interface JobDetail {
   documentsIndexed: number;
   entitiesExtracted: number;
   relationshipsExtracted: number;
+  filesSkippedUnchanged?: number;
+  filesReprocessed?: number;
   errorCount: number;
   elapsedMs: number;
   currentPhase?: string;
@@ -804,6 +809,55 @@ export interface StartJobWithFilesResponse {
   message: string;
 }
 
+/** Snapshot of a single pipeline step returned in a SingleSourceRunResponse. */
+export interface PipelineStepSnapshot {
+  stepId: string;
+  displayName: string;
+  status: string;
+  elapsedMs: number;
+}
+
+/** Request body for POST /api/unified-crawl/single-source. */
+export interface SingleSourceRunRequest {
+  sourceType?: string;
+  label?: string;
+  /** Mutually exclusive with content — path or URL to load. */
+  pathOrUrl?: string;
+  /** Mutually exclusive with pathOrUrl — inline text content. */
+  content?: string;
+  dryRun: boolean;
+  /** Step IDs to run; omit to run all. */
+  steps?: string[];
+  factSheetId?: number;
+  modelName?: string;
+  /** Seconds to block waiting for the job to finish (omit for dry-run). */
+  waitTimeoutSeconds?: number;
+}
+
+/** Response body from POST /api/unified-crawl/single-source. */
+export interface SingleSourceRunResponse {
+  dryRun: boolean;
+  completed: boolean;
+  jobId: string | null;
+  factSheetId: number | null;
+  persisted: boolean;
+  status: string;
+  stepsPlanned: { [stepId: string]: 'RUN' | 'SKIP' | 'ARCHIVE' } | null;
+  steps: PipelineStepSnapshot[] | null;
+  entityCount: number;
+  relationCount: number;
+  entityTypeCounts: { [k: string]: number };
+  relationshipTypeCounts: { [k: string]: number };
+  chunksCreated: number;
+  documentsLoaded: number;
+  errorCount: number;
+  errors: string[];
+  warnings: string[];
+  sampleEntities: SingleSourceGraphEntityPreview[];
+  sampleRelations: SingleSourceGraphRelationPreview[];
+  elapsedMs: number;
+}
+
 // ── Service ──────────────────────────────────────────────────────────────────
 
 @Injectable({
@@ -985,6 +1039,11 @@ export class UnifiedCrawlService extends BaseService {
           subscriber.complete();
         });
       }));
+  }
+
+  runSingleSource(request: SingleSourceRunRequest): Observable<SingleSourceRunResponse> {
+    return this.http.post<SingleSourceRunResponse>(`${this.backendUrl}/unified-crawl/single-source`, request)
+      .pipe(catchError(this.handleError));
   }
 
   private handleError(error: any): Observable<never> {

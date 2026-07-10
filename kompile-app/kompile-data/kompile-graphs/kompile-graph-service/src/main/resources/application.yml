@@ -1,0 +1,65 @@
+server:
+  port: ${KOMPILE_GRAPH_SERVICE_PORT:8095}
+  shutdown: graceful
+
+spring:
+  application:
+    name: kompile-graph-service
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+  datasource:
+    url: "${KOMPILE_GRAPH_DATASOURCE_URL:jdbc:h2:file:${KOMPILE_GRAPH_DATA_DIR:${user.home}/.kompile/graph-service}/knowledge-graph;AUTO_SERVER=TRUE}"
+    username: ${KOMPILE_GRAPH_DATASOURCE_USERNAME:sa}
+    password: ${KOMPILE_GRAPH_DATASOURCE_PASSWORD:}
+    driver-class-name: org.h2.Driver
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        bytecode:
+          provider: none
+        jdbc:
+          time_zone: UTC
+  servlet:
+    multipart:
+      max-file-size: 1GB
+      max-request-size: 1GB
+
+kompile:
+  data:
+    dir: ${KOMPILE_GRAPH_DATA_DIR:${user.home}/.kompile/graph-service}
+  jpa:
+    graph:
+      enabled: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: when_authorized
+  health:
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
+  info:
+    env:
+      enabled: true
+
+info:
+  app:
+    name: ${spring.application.name}
+    description: Standalone Kompile graph storage and reasoning service
+    version: "@project.version@"
+
+logging:
+  level:
+    ai.kompile.graph.service: INFO
+    ai.kompile.knowledgegraph: INFO

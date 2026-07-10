@@ -15,7 +15,10 @@
  */
 package ai.kompile.cli.main.project;
 
+import ai.kompile.cli.common.http.KompileHttpClient;
 import ai.kompile.cli.main.app.CrawlCommand;
+import ai.kompile.cli.main.install.registry.ComponentRegistry;
+import ai.kompile.cli.main.manage.ServiceManager;
 import ai.kompile.project.KompileProjectCrawlProfile;
 import ai.kompile.project.KompileProjectManifest;
 import ai.kompile.project.KompileProjectModel;
@@ -24,10 +27,12 @@ import ai.kompile.project.KompileProjectScript;
 import ai.kompile.project.KompileProjectStore;
 import ai.kompile.project.KompileProjectWorkflow;
 import ai.kompile.project.KompileProjectWorkflowStep;
+import ai.kompile.utils.NativeImageInfo;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.text.PDFTextStripper;
 import org.jsoup.Jsoup;
+import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
@@ -35,6 +40,8 @@ import picocli.CommandLine.Option;
 
 import java.io.File;
 import java.io.IOException;
+import java.net.InetAddress;
+import java.net.ServerSocket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -65,6 +72,7 @@ import static ai.kompile.cli.main.project.ProjectCommandUtils.hasTag;
 import static ai.kompile.cli.main.project.ProjectCommandUtils.jsonArray;
 import static ai.kompile.cli.main.project.ProjectCommandUtils.jsonString;
 import static ai.kompile.cli.main.project.ProjectCommandUtils.normalizeEnum;
+import static ai.kompile.cli.main.project.ProjectCommandUtils.requireExistingProjectRoot;
 import static ai.kompile.cli.main.project.ProjectCommandUtils.resolveProjectRoot;
 import static ai.kompile.cli.main.project.ProjectCommandUtils.shellQuote;
 import static ai.kompile.cli.main.project.ProjectPrintUtils.printCrawlPlan;
@@ -132,14 +140,31 @@ public class ProjectCrawlCommand implements Callable<Integer> {
         @Option(names = "--dry-run", description = "Print selected steps without running them.")
         private boolean dryRun;
 
+        @Option(names = {"--graph-extraction", "--graph"},
+                description = "Compatibility flag; graph extraction is always enabled for project crawls.")
+        private boolean graphExtraction;
+
+        @Option(names = "--schema-preset",
+                description = "Override schema preset ID for graph extraction.")
+        private String schemaPreset;
+
+        @Option(names = "--schema-mode",
+                description = "Override graph schema mode: NONE, LENIENT, or STRICT.")
+        private String schemaMode;
+
         @Override
         public Integer call() throws Exception {
             KompileProjectStore store = new KompileProjectStore();
-            Path projectRoot = resolveProjectRoot(store, root);
+            Path projectRoot = requireExistingProjectRoot(store, root);
             KompileProjectManifest manifest = autoconfigureModels(store, projectRoot, store.load(projectRoot));
             store.syncProjectRegistries(projectRoot);
 
-            KompileProjectWorkflow workflow = selectCrawlWorkflow(store, manifest, workflowId);
+            // An explicit --profile/--id targets a profile run; don't auto-select
+            // the standard auto-ingest workflow over it (its health-check step
+            // waits on the app and times out when services aren't running).
+            KompileProjectWorkflow workflow = (profileId == null || workflowId != null)
+                    ? selectCrawlWorkflow(store, manifest, workflowId)
+                    : null;
             if (workflow != null) {
                 printCrawlPlan(store, manifest, workflow, projectRoot);
                 return runWorkflow(store, manifest, workflow, projectRoot, appUrl, port, dryRun);
@@ -152,16 +177,33 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                 return 1;
             }
 
+            // Check local-crawl eligibility BEFORE forcing graph extraction so that file-only
+            // profiles with no graph extraction can still run headlessly (no app required).
             if (shouldRunLocalCrawl(profile, local, appUrl, port)) {
                 return runLocalCrawl(profile, projectRoot, dryRun);
             }
 
+            // For app-backed runs, graph extraction is mandatory; schema/model remain configurable.
+            profile.setGraphExtraction(true);
+            if (schemaPreset != null) {
+                profile.setSchemaPresetId(schemaPreset);
+            }
+            if (schemaMode != null) {
+                profile.setGraphSchemaMode(schemaMode);
+            }
+
             boolean shouldServe = serve == null || serve;
             if (shouldServe) {
-                int serveExit = runServeSelection(store, manifest, projectRoot, null,
-                        false, false, false, appUrl, port, dryRun);
-                if (serveExit != 0) {
-                    return serveExit;
+                int targetPort = port != null ? port : 8080;
+                // Skip start-services if the app is already healthy on the target port
+                if (new ServiceManager().checkHealth(targetPort)) {
+                    System.out.println("App already running at http://localhost:" + targetPort + " — skipping start-services.");
+                } else {
+                    int serveExit = runServeSelection(store, manifest, projectRoot, null,
+                            false, false, false, appUrl, port, dryRun);
+                    if (serveExit != 0) {
+                        return serveExit;
+                    }
                 }
             }
 
@@ -202,7 +244,7 @@ public class ProjectCrawlCommand implements Callable<Integer> {
         @Override
         public Integer call() {
             KompileProjectStore store = new KompileProjectStore();
-            Path projectRoot = resolveProjectRoot(store, root);
+            Path projectRoot = requireExistingProjectRoot(store, root);
             KompileProjectManifest manifest = store.load(projectRoot);
             KompileProjectCrawlProfile profile = store.findCrawlProfile(manifest, profileId)
                     .orElseThrow(() -> new IllegalArgumentException("Unknown crawl profile: " + profileId));
@@ -227,7 +269,7 @@ public class ProjectCrawlCommand implements Callable<Integer> {
         @Override
         public Integer call() {
             KompileProjectStore store = new KompileProjectStore();
-            KompileProjectManifest manifest = store.load(resolveProjectRoot(store, root));
+            KompileProjectManifest manifest = store.load(requireExistingProjectRoot(store, root));
             printWorkflows(manifest);
             return 0;
         }
@@ -288,7 +330,7 @@ public class ProjectCrawlCommand implements Callable<Integer> {
         @Override
         public Integer call() {
             KompileProjectStore store = new KompileProjectStore();
-            Path projectRoot = resolveProjectRoot(store, root);
+            Path projectRoot = requireExistingProjectRoot(store, root);
             KompileProjectWorkflowStep step = new KompileProjectWorkflowStep();
             step.setName(name + " step");
             step.setType(stepType);
@@ -336,7 +378,7 @@ public class ProjectCrawlCommand implements Callable<Integer> {
         @Override
         public Integer call() throws Exception {
             KompileProjectStore store = new KompileProjectStore();
-            Path projectRoot = resolveProjectRoot(store, root);
+            Path projectRoot = requireExistingProjectRoot(store, root);
             KompileProjectManifest manifest = store.load(projectRoot);
             KompileProjectWorkflow workflow = store.findWorkflow(manifest, workflowId)
                     .orElseThrow(() -> new IllegalArgumentException("Unknown workflow: " + workflowId));
@@ -365,7 +407,7 @@ public class ProjectCrawlCommand implements Callable<Integer> {
             scriptId = "start-app";
         }
         if (scriptId != null) {
-            return runSyntheticWorkflow(store, manifest, projectRoot, "serve-" + scriptId,
+            return runAdHocWorkflow(store, manifest, projectRoot, "serve-" + scriptId,
                     "Serve " + scriptId, List.of(scriptStep(scriptId, scriptId)), appUrl, port, dryRun);
         }
 
@@ -379,17 +421,17 @@ public class ProjectCrawlCommand implements Callable<Integer> {
         }
 
         if (store.findScript(manifest, "start-all").isPresent()) {
-            return runSyntheticWorkflow(store, manifest, projectRoot, "serve-start-all", "Serve project",
+            return runAdHocWorkflow(store, manifest, projectRoot, "serve-start-all", "Serve project",
                     List.of(scriptStep("start-all", "start-all")), appUrl, port, dryRun);
         }
         System.err.println("No start workflow or start-all script found in this project.");
         return 1;
     }
 
-    private static int runSyntheticWorkflow(KompileProjectStore store, KompileProjectManifest manifest,
-                                            Path projectRoot, String id, String name,
-                                            List<KompileProjectWorkflowStep> steps,
-                                            String appUrl, Integer port, boolean dryRun) throws Exception {
+    private static int runAdHocWorkflow(KompileProjectStore store, KompileProjectManifest manifest,
+                                        Path projectRoot, String id, String name,
+                                        List<KompileProjectWorkflowStep> steps,
+                                        String appUrl, Integer port, boolean dryRun) throws Exception {
         KompileProjectWorkflow workflow = new KompileProjectWorkflow();
         workflow.setId(id);
         workflow.setName(name);
@@ -471,7 +513,18 @@ public class ProjectCrawlCommand implements Callable<Integer> {
     private static int runCrawlStep(KompileProjectStore store, KompileProjectManifest manifest,
                                     KompileProjectWorkflowStep step, Path projectRoot, String baseUrl,
                                     boolean dryRun) {
-        KompileProjectCrawlProfile profile = store.findCrawlProfile(manifest, step.getRef())
+        // If the workflow step has no ref (e.g. generated before the null-ref fix), fall back
+        // to the first available crawl profile so existing manifests continue to work.
+        String profileRef = firstNonBlank(step.getRef());
+        if (profileRef == null && !manifest.getCrawlProfiles().isEmpty()) {
+            profileRef = manifest.getCrawlProfiles().stream()
+                    .map(KompileProjectCrawlProfile::getId)
+                    .filter(id -> id != null && !id.isBlank())
+                    .findFirst()
+                    .orElse(null);
+        }
+        final String resolvedRef = profileRef;
+        KompileProjectCrawlProfile profile = store.findCrawlProfile(manifest, resolvedRef)
                 .orElseThrow(() -> new IllegalArgumentException("Unknown workflow crawl ref: " + step.getRef()));
         if (canRunLocalCrawl(profile) && isDefaultLocalAppUrl(baseUrl)) {
             return runLocalCrawl(profile, projectRoot, dryRun);
@@ -515,22 +568,38 @@ public class ProjectCrawlCommand implements Callable<Integer> {
 
     private static int runHealthCheckStep(KompileProjectWorkflowStep step, Path projectRoot,
                                           String baseUrl, boolean dryRun) throws Exception {
-        String url = resolveTemplate(firstNonBlank(step.getUrl(), step.getRef(), "${appUrl}/actuator/health"),
-                projectRoot, baseUrl);
-        int expected = step.getExpectedStatus() == null ? 200 : step.getExpectedStatus();
+        // Use the robust dual-probe (KompileHttpClient.isHealthy) when no explicit URL is
+        // given, or when the URL is the legacy default "${appUrl}/actuator/health".
+        // Generated kompile apps do NOT ship Spring Boot Actuator, so /actuator/health 404s.
+        // KompileHttpClient.isHealthy() probes /actuator/health first and falls back to
+        // /api/setup/status, which every generated app does expose.
+        // Only bypass to a direct HTTP check when an explicit, non-default URL is set
+        // (e.g. a kompile-model-staging instance that genuinely exposes /actuator/health).
+        String stepUrl = firstNonBlank(step.getUrl(), step.getRef());
+        boolean useKompileProbe = stepUrl == null
+                || "${appUrl}/actuator/health".equals(stepUrl)
+                || "${appUrl}/actuator/health".equals(step.getUrl());
+        String resolvedUrl = useKompileProbe ? null : resolveTemplate(stepUrl, projectRoot, baseUrl);
         int timeoutSeconds = step.getTimeoutSeconds() == null ? 120 : step.getTimeoutSeconds();
         if (dryRun) {
-            System.out.println("  wait for " + url + " status=" + expected + " timeout=" + timeoutSeconds + "s");
+            String target = resolvedUrl != null ? resolvedUrl : baseUrl + " (kompile readiness probe)";
+            System.out.println("  wait for " + target + " timeout=" + timeoutSeconds + "s");
             return 0;
         }
         long deadline = System.nanoTime() + Duration.ofSeconds(timeoutSeconds).toNanos();
         while (System.nanoTime() < deadline) {
             try {
-                KompileProjectWorkflowStep httpStep = new KompileProjectWorkflowStep();
-                httpStep.setUrl(url);
-                httpStep.setExpectedStatus(expected);
-                httpStep.setTimeoutSeconds(5);
-                if (runHttpStep(httpStep, projectRoot, baseUrl, false) == 0) {
+                boolean healthy;
+                if (useKompileProbe) {
+                    healthy = new KompileHttpClient(baseUrl).isHealthy();
+                } else {
+                    KompileProjectWorkflowStep httpStep = new KompileProjectWorkflowStep();
+                    httpStep.setUrl(resolvedUrl);
+                    httpStep.setExpectedStatus(step.getExpectedStatus() == null ? 200 : step.getExpectedStatus());
+                    httpStep.setTimeoutSeconds(5);
+                    healthy = runHttpStep(httpStep, projectRoot, baseUrl, false) == 0;
+                }
+                if (healthy) {
                     return 0;
                 }
             } catch (Exception ignored) {
@@ -565,14 +634,20 @@ public class ProjectCrawlCommand implements Callable<Integer> {
         Map<String, String> environment = new LinkedHashMap<>();
         String scriptId = normalizeScriptId(script);
         if ("start-staging".equals(scriptId) && firstNonBlank(System.getenv("KOMPILE_STAGING_COMMAND")) == null) {
-            defaultStagingCommand(projectRoot).ifPresent(command -> environment.put("KOMPILE_STAGING_COMMAND", command));
+            Optional<String> stagingCmd = defaultStagingCommand(projectRoot);
+            if (stagingCmd.isPresent()) {
+                environment.put("KOMPILE_STAGING_COMMAND", stagingCmd.get());
+            } else {
+                environment.put("KOMPILE_STAGING_COMMAND",
+                        "echo 'Model staging not found — install with: kompile install kompile-model-staging' >&2; exit 1");
+            }
         } else if ("start-serving".equals(scriptId) && firstNonBlank(System.getenv("KOMPILE_SERVING_COMMAND")) == null) {
             defaultServingCommand(manifest, projectRoot).ifPresent(command -> environment.put("KOMPILE_SERVING_COMMAND", command));
         } else if ("start-app".equals(scriptId) && firstNonBlank(System.getenv("KOMPILE_APP_COMMAND")) == null) {
             defaultAppCommand(projectRoot).ifPresentOrElse(
                     command -> environment.put("KOMPILE_APP_COMMAND", command),
                     () -> environment.put("KOMPILE_APP_COMMAND",
-                            "echo 'Kompile app command not configured for this project; set KOMPILE_APP_COMMAND to launch kompile-app.'; sleep 300"));
+                            "echo 'Kompile app not found — install with: kompile install kompile-app' >&2; exit 1"));
         }
         return environment;
     }
@@ -582,23 +657,40 @@ public class ProjectCrawlCommand implements Callable<Integer> {
     }
 
     private static Optional<String> defaultStagingCommand(Path projectRoot) throws IOException {
+        String stagingPort = firstNonBlank(System.getenv("KOMPILE_STAGING_PORT"),
+                System.getProperty("kompile.staging.port"), "8090");
+        // If the staging service is already listening, return a no-op rather than spawning a duplicate
+        if (isPortInUse(Integer.parseInt(stagingPort))) {
+            System.out.println("Model staging already running on port " + stagingPort + " — skipping.");
+            return Optional.of("echo 'Model staging already running on port " + stagingPort + " — skipping.'");
+        }
         Path modelDir = projectRoot.resolve("data/models").normalize();
+        // Resolution order: explicit env/property → installed component → source-tree build output
         Optional<Path> stagingJar = configuredPath("KOMPILE_MODEL_STAGING_JAR", "kompile.modelStaging.jar")
+                .or(() -> {
+                    File installed = new ComponentRegistry().findInstalledJar(ComponentRegistry.KOMPILE_MODEL_STAGING);
+                    return installed != null ? Optional.of(installed.toPath()) : Optional.empty();
+                })
                 .or(() -> findSourceRoot(projectRoot).flatMap(ProjectCrawlCommand::findModelStagingExecutableJar));
         if (stagingJar.isEmpty()) {
-            System.err.println("No model staging jar found. Set KOMPILE_STAGING_COMMAND or KOMPILE_MODEL_STAGING_JAR.");
+            System.err.println("No model staging jar found. Install with: kompile install kompile-model-staging"
+                    + " or set KOMPILE_STAGING_COMMAND / KOMPILE_MODEL_STAGING_JAR.");
             return Optional.empty();
         }
-        String port = firstNonBlank(System.getenv("KOMPILE_STAGING_PORT"),
-                System.getProperty("kompile.staging.port"), "19090");
         return Optional.of("exec java -jar " + shellQuote(stagingJar.get().toString())
-                + " --server.port=" + shellQuote(port)
+                + " --server.port=" + shellQuote(stagingPort)
                 + " --kompile.staging.models-dir=" + shellQuote(modelDir.toString())
                 + " --spring.main.banner-mode=off");
     }
 
     private static Optional<String> defaultServingCommand(KompileProjectManifest manifest,
                                                           Path projectRoot) throws IOException {
+        String servingPort = firstNonBlank(System.getenv("KOMPILE_SERVING_PORT"),
+                System.getProperty("kompile.serving.port"), "8091");
+        if (isPortInUse(Integer.parseInt(servingPort))) {
+            System.out.println("Pipeline serving already running on port " + servingPort + " — skipping.");
+            return Optional.of("echo 'Pipeline serving already running on port " + servingPort + " — skipping.'");
+        }
         Path argsPath = resolveServingArgsPath(manifest, projectRoot);
         String configuredCommand = firstNonBlank(System.getenv("KOMPILE_PIPELINE_SERVING_COMMAND"),
                 System.getProperty("kompile.pipelineServing.command"));
@@ -626,10 +718,20 @@ public class ProjectCrawlCommand implements Callable<Integer> {
     }
 
     private static Optional<String> defaultAppCommand(Path projectRoot) throws IOException {
-        Optional<Path> appJar = configuredPath("KOMPILE_APP_JAR", "kompile.app.jar")
-                .or(() -> findSourceRoot(projectRoot).flatMap(ProjectCrawlCommand::findAppExecutableJar));
         String port = firstNonBlank(System.getenv("KOMPILE_APP_PORT"),
                 System.getProperty("kompile.app.port"), "8080");
+        // If the app is already listening, return a no-op rather than spawning a duplicate
+        if (isPortInUse(Integer.parseInt(port))) {
+            System.out.println("Kompile app already running on port " + port + " — skipping.");
+            return Optional.of("echo 'Kompile app already running on port " + port + " — skipping.'");
+        }
+        // Resolution order: explicit env/property → installed component → source-tree build output → mvnw dev run
+        Optional<Path> appJar = configuredPath("KOMPILE_APP_JAR", "kompile.app.jar")
+                .or(() -> {
+                    File installed = new ComponentRegistry().findInstalledJar(ComponentRegistry.KOMPILE_APP_MAIN);
+                    return installed != null ? Optional.of(installed.toPath()) : Optional.empty();
+                })
+                .or(() -> findSourceRoot(projectRoot).flatMap(ProjectCrawlCommand::findAppExecutableJar));
         if (appJar.isPresent()) {
             return Optional.of("exec java -jar " + shellQuote(appJar.get().toString())
                     + " --server.port=" + shellQuote(port)
@@ -923,19 +1025,23 @@ public class ProjectCrawlCommand implements Callable<Integer> {
         if (profile == null || profile.getSources().isEmpty()) {
             return false;
         }
-        if (profile.isMultimodal() || profile.isGraphExtraction()) {
+        // Multimodal profiles require VLM services that only run in-app.
+        if (profile.isMultimodal()) {
             return false;
         }
+        // Web/URL source types require network fetching handled by the app crawler.
         String sourceType = normalizeEnum(profile.getSourceType());
         if ("WEB".equals(sourceType) || "URL".equals(sourceType)) {
             return false;
         }
+        // Any HTTP/HTTPS source string also needs the app crawler.
         for (String source : profile.getSources()) {
             String lower = firstNonBlank(source, "").toLowerCase(Locale.ROOT);
             if (lower.startsWith("http://") || lower.startsWith("https://")) {
                 return false;
             }
         }
+        // All sources are local filesystem paths — can run headlessly.
         return true;
     }
 
@@ -1190,7 +1296,7 @@ public class ProjectCrawlCommand implements Callable<Integer> {
         if (name.endsWith(".pdf")) {
             body = extractPdfText(file);
         } else if (name.endsWith(".html") || name.endsWith(".htm")) {
-            org.jsoup.nodes.Document html = Jsoup.parse(file.toFile(), StandardCharsets.UTF_8.name());
+            Document html = Jsoup.parse(file.toFile(), StandardCharsets.UTF_8.name());
             title = firstNonBlank(html.title(), title);
             body = htmlToMarkdown(html);
         } else if (name.endsWith(".md") || name.endsWith(".markdown")) {
@@ -1203,7 +1309,7 @@ public class ProjectCrawlCommand implements Callable<Integer> {
     }
 
     private static String extractPdfText(Path file) throws IOException {
-        if (isNativeImageRuntime()) {
+        if (NativeImageInfo.isRunningInNativeImage()) {
             return extractPdfTextWithPdftotext(file);
         }
         try (PDDocument pdf = Loader.loadPDF(file.toFile())) {
@@ -1238,11 +1344,7 @@ public class ProjectCrawlCommand implements Callable<Integer> {
         return normalizeKnowledgeText(output);
     }
 
-    private static boolean isNativeImageRuntime() {
-        return System.getProperty("org.graalvm.nativeimage.imagecode") != null;
-    }
-
-    private static String htmlToMarkdown(org.jsoup.nodes.Document html) {
+    private static String htmlToMarkdown(Document html) {
         html.select("script, style, noscript, svg, canvas").remove();
         StringBuilder markdown = new StringBuilder();
         Element body = html.body();
@@ -1577,9 +1679,7 @@ public class ProjectCrawlCommand implements Callable<Integer> {
             args.add("--multimodal");
         }
         addValue(args, "--vlm-model", profile.getVlmModel());
-        if (profile.isGraphExtraction()) {
-            args.add("--graph");
-        }
+        args.add("--graph");
         addJoined(args, "--graph-entities", profile.getGraphEntityTypes());
         addJoined(args, "--graph-relations", profile.getGraphRelationTypes());
         addValue(args, "--graph-model-provider", profile.getGraphModelProvider());
@@ -1608,6 +1708,17 @@ public class ProjectCrawlCommand implements Callable<Integer> {
         }
         addValue(args, "--type", profile.getSourceType());
         addValue(args, "--fact-sheet", profile.getFactSheetName());
+        if (profileMetadataBoolean(profile, "preprocessing.languageDetection", false)) {
+            args.add("--language-detection");
+        }
+        String translationTarget = profileMetadataValue(profile, "preprocessing.translationTarget", null);
+        if (profileMetadataBoolean(profile, "preprocessing.translation", false) || translationTarget != null) {
+            args.add("--translate-to");
+            args.add(firstNonBlank(translationTarget, "en"));
+        }
+        if (profileMetadataBoolean(profile, "preprocessing.translationDualIndex", false)) {
+            args.add("--translation-dual-index");
+        }
         addValue(args, "--name", profile.getName());
         boolean shouldWatch = watchOverride == null ? profile.isWatch() : watchOverride;
         if (shouldWatch) {
@@ -1630,6 +1741,21 @@ public class ProjectCrawlCommand implements Callable<Integer> {
         }
     }
 
+    private static boolean profileMetadataBoolean(KompileProjectCrawlProfile profile, String key, boolean fallback) {
+        String value = profileMetadataValue(profile, key, null);
+        return value == null ? fallback : Boolean.parseBoolean(value.trim());
+    }
+
+    private static String profileMetadataValue(KompileProjectCrawlProfile profile, String key, String fallback) {
+        if (profile != null && profile.getMetadata() != null) {
+            String value = profile.getMetadata().get(key);
+            if (value != null && !value.isBlank()) {
+                return value.trim();
+            }
+        }
+        return fallback;
+    }
+
     private static List<String> quoteArgs(List<String> args) {
         List<String> quoted = new ArrayList<>();
         for (String arg : args) {
@@ -1640,6 +1766,19 @@ public class ProjectCrawlCommand implements Callable<Integer> {
             }
         }
         return quoted;
+    }
+
+    /**
+     * Returns {@code true} when the given loopback port is already bound (i.e.
+     * something is listening on it). Used to skip service-start steps when the
+     * target service is already running.
+     */
+    static boolean isPortInUse(int port) {
+        try (ServerSocket s = new ServerSocket(port, 0, InetAddress.getLoopbackAddress())) {
+            return false; // successfully bound — port is free
+        } catch (IOException e) {
+            return true; // could not bind — port is in use
+        }
     }
 
     private static KompileProjectWorkflowStep scriptStep(String id, String ref) {

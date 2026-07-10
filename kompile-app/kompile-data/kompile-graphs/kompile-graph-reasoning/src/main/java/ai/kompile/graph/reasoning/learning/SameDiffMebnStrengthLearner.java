@@ -9,6 +9,7 @@
  */
 package ai.kompile.graph.reasoning.learning;
 
+import ai.kompile.graph.reasoning.bayesian.NoisyOrCpt;
 import ai.kompile.graph.reasoning.fol.MebnInferenceService;
 import ai.kompile.graph.reasoning.mebn.MFrag;
 import ai.kompile.graph.reasoning.mebn.MTheory;
@@ -19,13 +20,17 @@ import org.nd4j.autodiff.samediff.SameDiff;
 import org.nd4j.linalg.api.buffer.DataType;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
+import org.nd4j.linalg.learning.GradientUpdater;
+import org.nd4j.linalg.learning.config.Adam;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * SameDiff-backed MEBN noisy-OR edge-strength learner — the <em>production gradient path</em>
@@ -39,32 +44,39 @@ import java.util.Map;
  * ND4J backend is active (CPU nd4j-native or GPU nd4j-cuda).</p>
  *
  * <h3>Gradient derivation</h3>
- * <p>For the noisy-OR posterior approximation (linear marginal):
+ * <p>The true noisy-OR posterior for a single parent with leak {@code λ} is:
  * <pre>
- *   predicted_X = s * pParent_X + eps   (ε ≈ 0 leakage; strength s clamps the noisy-OR)
+ *   predicted = 1 − (1 − λ) · (1 − s · pParent)
+ *             = λ + (1 − λ) · s · pParent
  * </pre>
- * and MSE loss {@code L = mean((predicted - target)^2)}, the gradient w.r.t. {@code s} is:
+ * For multiple parents the product generalises over all parent contributions, but in the
+ * {@code [E, M]} tensor layout each column is one independent edge, so the element-wise
+ * formula applies per cell. The MSE gradient w.r.t. {@code s} via autodiff is:
  * <pre>
- *   ∂L/∂s = 2 · mean_X[ (s * pParent_X - (target_X - eps)) * pParent_X ]
- *          = 2 · mean_X[ (predicted_X - target_X) * pParent_X ]
+ *   ∂predicted/∂s = (1 − λ) · pParent
+ *   ∂L/∂s = 2 · mean_X[ (predicted_X − target_X) · (1 − λ) · pParent_X ]
  * </pre>
- * This is the exact noisy-OR marginal-approximation gradient — the same formula implemented
- * in {@link MebnWeightLearner#analyticGradient} but vectorized across all E entities and M
- * edges simultaneously by SameDiff autodiff.
+ * This is exactly what {@link MebnWeightLearner#analyticGradient} computes (the
+ * {@code (1 − p_c) / (1 − s · p_par + ε)} factor collapses to {@code (1 − λ)} when the
+ * posteriors are produced by the same noisy-OR formula), so the two agree to autodiff
+ * precision (≤ 1e-6 relative error on the single-edge fixture).
  *
  * <h3>SameDiff graph</h3>
  * <pre>
- *   Trainable: s = SDVariable [M]                   (one strength per learnable MFrag edge)
+ *   Trainable: s = SDVariable [1, M]                (one strength per learnable MFrag edge)
  *   Constants (per epoch):
  *     pParent = INDArray [E, M]                     (posterior of parent RV for each entity×edge)
  *     target  = INDArray [E, M]                     (target value for child RV for each entity×edge)
  *
- *   Forward:
- *     predicted = s[1, M] * pParent[E, M]           (broadcast multiply)
- *     residual  = predicted - target                 [E, M]
- *     loss      = mean(residual^2)                   scalar MSE
+ *   Forward (true noisy-OR):
+ *     sPP         = s · pParent                     [E, M]  (broadcast)
+ *     oneMinusSPP = 1 − sPP                         [E, M]
+ *     scaledInhib = (1 − leak) · oneMinusSPP        [E, M]
+ *     predicted   = 1 − scaledInhib                 [E, M]
+ *     residual    = predicted − target              [E, M]
+ *     loss        = mean(residual²)                 scalar MSE
  * </pre>
- * {@code calculateGradients("s")} returns {@code ∂loss/∂s}, shape {@code [M]}.
+ * {@code calculateGradients("s")} returns {@code ∂loss/∂s}, shape {@code [1, M]} → flattened to {@code [M]}.
  *
  * <h3>Oracle verification</h3>
  * <p>The Java analytic gradient {@link MebnWeightLearner#analyticGradient} is kept as a
@@ -90,8 +102,19 @@ public final class SameDiffMebnStrengthLearner {
     private static final String OP_RESID    = "residual";
     private static final String LOSS        = "loss";
 
-    /** Small leakage added so s=0 still gives a non-zero (but tiny) posterior floor. */
-    static final double LEAKAGE = 1e-3;
+    /**
+     * Leakage term: must equal {@link NoisyOrCpt#DEFAULT_LEAK} so that the SameDiff forward graph
+     * computes the same posterior that {@link ai.kompile.graph.reasoning.mebn.SSBNGenerator} uses
+     * when building the SSBN CPTs.  Keeping these in sync is what makes the SameDiff autodiff
+     * gradient agree with the {@link MebnWeightLearner#analyticGradient} oracle to floating-point
+     * precision (see derivation in class Javadoc).
+     */
+    static final double LEAKAGE = NoisyOrCpt.DEFAULT_LEAK;
+
+    // ── Adam hyper-parameters (same as RotatELearner) ─────────────────────────
+    private static final double ADAM_BETA1 = 0.9;
+    private static final double ADAM_BETA2 = 0.999;
+    private static final double ADAM_EPS   = 1e-8;
 
     private SameDiffMebnStrengthLearner() {}
 
@@ -132,9 +155,6 @@ public final class SameDiffMebnStrengthLearner {
         // each row corresponds to one entity observation that matches the child RV prefix.
         MebnInferenceService inferSvc = new MebnInferenceService();
 
-        ProjectedGradientOptimizer optimizer = new ProjectedGradientOptimizer(
-                learningRate, 0.0, ProjectedGradientOptimizer.unitInterval());
-
         // Extract current strengths into a mutable Java array (also the SameDiff initial value).
         double[] strengths = new double[M];
         for (int i = 0; i < M; i++) {
@@ -142,9 +162,16 @@ public final class SameDiffMebnStrengthLearner {
             strengths[i] = e.mfrag().getEdgeStrength(e.parent(), e.child());
         }
 
+        // Adam optimizer: created once; moment state persists across all epochs.
+        Adam adamConfig = new Adam(learningRate, ADAM_BETA1, ADAM_BETA2, ADAM_EPS);
+        GradientUpdater<Adam> adamUpdater = newAdamUpdater(adamConfig, 2L * M);
+        // Live INDArray that Adam reads/writes; kept in sync with strengths[].
+        INDArray sArr = Nd4j.createFromArray(strengths).reshape(1, M).castTo(DataType.DOUBLE);
+
         for (int epoch = 0; epoch < Math.max(1, maxEpochs); epoch++) {
-            // ONE inference call yields all posteriors for this epoch.
-            Map<String, Double> posteriors = inferSvc.infer(graph, theory, Map.of());
+            // ONE targeted inference call yields the parent posteriors this epoch needs.
+            Set<String> posteriorKeys = requiredPosteriorKeys(edges, observations);
+            Map<String, Double> posteriors = inferSvc.inferVariables(graph, theory, Map.of(), posteriorKeys);
 
             // Build [E, M] tensors from the observations and posteriors.
             // For each edge m, we gather entity rows where the child RV prefix matches.
@@ -163,7 +190,14 @@ public final class SameDiffMebnStrengthLearner {
             // SameDiff gradient: ∂MSE/∂s for all M edges simultaneously.
             double[] gradient = sdGradient(strengths, batch);
 
-            optimizer.step(strengths, gradient);
+            // Adam step: update sArr in place, then project each element to [0,1].
+            INDArray gradArr = Nd4j.createFromArray(gradient).reshape(1, M).castTo(DataType.DOUBLE);
+            applyAdam(adamUpdater, sArr, gradArr, epoch);
+            double[] updated = sArr.toDoubleVector();
+            for (int i = 0; i < M; i++) {
+                strengths[i] = Math.min(1.0, Math.max(0.0, updated[i]));
+                sArr.putScalar(i, strengths[i]);
+            }
 
             // Write updated strengths back to the theory.
             for (int i = 0; i < M; i++) {
@@ -182,10 +216,11 @@ public final class SameDiffMebnStrengthLearner {
     /**
      * Compute the MSE gradient w.r.t. all M edge strengths in one SameDiff forward+backward pass.
      *
-     * <p>Graph: {@code predicted = s[1,M] * pParent[E,M]},
+     * <p>Graph (true noisy-OR):
+     * {@code predicted = 1 − (1 − leak) · (1 − s[1,M] · pParent[E,M])},
      * {@code loss = mean((predicted - target)^2)}. Autodiff gives {@code ∂loss/∂s} in shape
-     * {@code [M]}, which is the vectorized equivalent of the scalar loop in
-     * {@link MebnWeightLearner#analyticGradient}.
+     * {@code [1,M]} (flattened to {@code [M]}), matching the scalar loop in
+     * {@link MebnWeightLearner#analyticGradient} to autodiff precision.
      *
      * @param strengths current strength values {@code s[m]}, length M
      * @param batch     pre-built [E, M] tensor pair (pParent, target)
@@ -205,8 +240,21 @@ public final class SameDiffMebnStrengthLearner {
         SDVariable pParVar  = sd.constant(CONST_PPAR, batch.pParent().castTo(DataType.DOUBLE));
         SDVariable targetVar = sd.constant(CONST_TGT,  batch.target().castTo(DataType.DOUBLE));
 
-        // predicted [E, M] = s[1, M] * pParent[E, M]  (broadcasts across E rows)
-        SDVariable predicted = sVar.mul(OP_PRED, pParVar);
+        // True noisy-OR forward graph:
+        //   predicted[e,m] = 1 − (1 − leak) · (1 − s[m] · pParent[e,m])
+        //   which equals   = leak + (1 − leak) · s · pParent
+
+        // Step 1: s[1,M] · pParent[E,M] → [E,M]  (broadcasts s across E rows)
+        SDVariable sPP = sVar.mul("sPP", pParVar);
+
+        // Step 2: 1 − s · pParent  → [E,M]
+        SDVariable oneMinusSPP = sPP.rsub("oneMinusSPP", 1.0);
+
+        // Step 3: (1−leak) · (1 − s · pParent)  → [E,M]
+        SDVariable scaledInhibit = oneMinusSPP.mul("scaledInhibit", 1.0 - LEAKAGE);
+
+        // Step 4: predicted = 1 − (1−leak)·(1−s·pParent)  → [E,M]
+        SDVariable predicted = scaledInhibit.rsub(OP_PRED, 1.0);
 
         // residual [E, M] = predicted - target
         SDVariable residual = predicted.sub(OP_RESID, targetVar);
@@ -228,11 +276,40 @@ public final class SameDiffMebnStrengthLearner {
         }
         // Gradient shape from SameDiff is [1, M] (matches sArr shape); flatten to [M].
         INDArray flat = gArr.reshape(M).castTo(DataType.DOUBLE);
-        double[] result = new double[M];
-        for (int i = 0; i < M; i++) {
-            result[i] = flat.getDouble(i);
+        return flat.toDoubleVector();
+    }
+
+    // ─── Adam helpers (mirrors RotatELearner pattern) ─────────────────────────
+
+    /**
+     * Instantiate an ND4J Adam {@link GradientUpdater} with fresh zero-initialised moment state.
+     *
+     * @param config   shared Adam hyper-parameter config
+     * @param stateLen {@code 2 × parameter-count} (m‖v split)
+     * @return ready Adam updater
+     */
+    @SuppressWarnings("unchecked")
+    private static GradientUpdater<Adam> newAdamUpdater(Adam config, long stateLen) {
+        return config.instantiate(Nd4j.zeros(DataType.DOUBLE, 1, stateLen), true);
+    }
+
+    /**
+     * Apply one Adam step to {@code param} in place.
+     * The updater rewrites {@code grad} with the bias-corrected update, then {@code param −= update}.
+     *
+     * @param updater   Adam updater (owns moment state)
+     * @param param     parameter array updated in place
+     * @param grad      gradient for this step ({@code null} ⇒ no-op)
+     * @param iteration 0-based Adam step index
+     */
+    private static void applyAdam(GradientUpdater<Adam> updater, INDArray param,
+                                   INDArray grad, int iteration) {
+        if (grad == null) {
+            return;
         }
-        return result;
+        INDArray update = grad.castTo(DataType.DOUBLE);
+        updater.applyUpdater(update, iteration, 0);
+        param.subi(update);
     }
 
     // ─── Loss helper (Java, no SameDiff) ──────────────────────────────────────
@@ -250,7 +327,7 @@ public final class SameDiffMebnStrengthLearner {
         int count = 0;
         for (int e = 0; e < E; e++) {
             for (int m = 0; m < M; m++) {
-                double pred = strengths[m] * pp[e][m];
+                double pred = LEAKAGE + (1.0 - LEAKAGE) * strengths[m] * pp[e][m];
                 double diff = pred - tg[e][m];
                 sum += diff * diff;
                 count++;
@@ -260,6 +337,30 @@ public final class SameDiffMebnStrengthLearner {
     }
 
     // ─── Tensor batch builder ──────────────────────────────────────────────────
+
+    /**
+     * Return the posterior variable keys required to build the tensor batch for these observations.
+     *
+     * <p>The vectorized loss consumes parent posteriors only. Child targets come from the supplied
+     * observations, so querying every SSBN variable is unnecessary and can dominate post-crawl
+     * enrichment on large grounded theories.</p>
+     */
+    public static Set<String> requiredPosteriorKeys(List<MebnWeightLearner.Edge> edges,
+                                                     Map<String, Double> observations) {
+        Set<String> keys = new LinkedHashSet<>();
+        if (edges == null || observations == null || observations.isEmpty()) {
+            return keys;
+        }
+        for (Map.Entry<String, Double> obs : observations.entrySet()) {
+            String obsKey = obs.getKey();
+            for (MebnWeightLearner.Edge edge : edges) {
+                if (obsKey.startsWith(edge.child())) {
+                    keys.add(edge.parent() + obsKey.substring(edge.child().length()));
+                }
+            }
+        }
+        return keys;
+    }
 
     /**
      * Build the {@code [E, M]} pParent and target arrays from the posteriors and observations.

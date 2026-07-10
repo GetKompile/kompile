@@ -47,6 +47,28 @@ public class SpringAiEmbeddingModelAdapter implements org.springframework.ai.emb
     
     private final EmbeddingModel kompileEmbeddingModel;
 
+    private static float[] toHostFloatVector(INDArray array) {
+        if (array == null || array.isEmpty()) {
+            return new float[0];
+        }
+        long length = array.length();
+        if (length > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException("INDArray too large to materialize as float[]: " + length);
+        }
+        if (array.elementWiseStride() == 1) {
+            return array.data().getFloatsAt(array.offset(), (int) length);
+        }
+        INDArray copy = null;
+        try {
+            copy = array.dup('c');
+            return copy.data().getFloatsAt(copy.offset(), (int) length);
+        } finally {
+            if (copy != null && !copy.wasClosed()) {
+                copy.close();
+            }
+        }
+    }
+
     @Autowired
     public SpringAiEmbeddingModelAdapter(@Qualifier("anseriniEmbeddingModelImpl") EmbeddingModel kompileEmbeddingModel) {
         this.kompileEmbeddingModel = kompileEmbeddingModel;
@@ -80,7 +102,7 @@ public class SpringAiEmbeddingModelAdapter implements org.springframework.ai.emb
                 return new float[0];
             }
 
-            return embedding.toFloatVector();
+            return toHostFloatVector(embedding);
         } catch (NullPointerException e) {
             // This catches JavaCPP "Pointer address of argument X is NULL" errors
             // that can occur during ANY native operation on the INDArray
@@ -140,7 +162,7 @@ public class SpringAiEmbeddingModelAdapter implements org.springframework.ai.emb
                     row = embeddings.getRow(i);
                     if (row != null && !row.isEmpty() && row.length() > 0 &&
                         !row.wasClosed() && row.data() != null && !row.data().wasClosed()) {
-                        ret.add(new Embedding(row.toFloatVector(), i));
+                        ret.add(new Embedding(toHostFloatVector(row), i));
                     }
                 } catch (Exception e) {
                     log.warn("Error processing embedding row {}, skipping", i, e);
@@ -203,7 +225,7 @@ public class SpringAiEmbeddingModelAdapter implements org.springframework.ai.emb
                 return new float[0];
             }
 
-            return embedding.toFloatVector();
+            return toHostFloatVector(embedding);
         } catch (NullPointerException e) {
             log.warn("Native pointer error during text embedding operation", e);
             return new float[0];
@@ -258,7 +280,7 @@ public class SpringAiEmbeddingModelAdapter implements org.springframework.ai.emb
                     row = embeddings.getRow(i);
                     if (row != null && !row.isEmpty() && row.length() > 0 &&
                         !row.wasClosed() && row.data() != null && !row.data().wasClosed()) {
-                        ret.add(row.toFloatVector());
+                        ret.add(toHostFloatVector(row));
                     } else {
                         ret.add(new float[0]);
                     }

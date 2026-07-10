@@ -6,14 +6,20 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
-import java.nio.file.Paths;
+import java.nio.file.Path;
 import java.util.Set;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 class TodoReadToolTest {
+
+    /** Fresh per test — todo state persists to <workDir>/.kompile/memory, and a shared
+     *  working directory leaks persisted todos into every later session's first load. */
+    @TempDir
+    Path workDir;
 
     private TodoReadTool readTool;
     private TodoWriteTool writeTool;
@@ -33,7 +39,7 @@ class TodoReadToolTest {
                 .build();
         PermissionService perms = new PermissionService();
         ToolRegistry registry = new ToolRegistry(om);
-        context = new ToolContext(sessionId, agent, perms, Paths.get("."), registry);
+        context = new ToolContext(sessionId, agent, perms, workDir, registry);
     }
 
     @Test

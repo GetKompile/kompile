@@ -116,59 +116,42 @@ class EmailGraphExtractor {
             Map<String, Object> meta = doc.getMetadata();
             if (meta == null) continue;
 
-            // Detect email.* or gmail.* namespace and normalize to common keys
-            String emailFrom = meta.get("email.from") instanceof String
-                    ? (String) meta.get("email.from") : null;
-            String emailTo = meta.get("email.to") instanceof String
-                    ? (String) meta.get("email.to") : null;
-            String emailCc = meta.get("email.cc") instanceof String
-                    ? (String) meta.get("email.cc") : null;
-            String emailBcc = meta.get("email.bcc") instanceof String
-                    ? (String) meta.get("email.bcc") : null;
-            String emailSubject = meta.get("email.subject") instanceof String
-                    ? (String) meta.get("email.subject") : null;
-            String emailInReplyTo = meta.get("email.inReplyTo") instanceof String
-                    ? (String) meta.get("email.inReplyTo") : null;
+            // Detect email.* or gmail.* namespace and normalize to common keys.
+            // asString() coerces List-typed values to a comma-joined string: the IMAP loader emits
+            // to/cc/bcc as List<String> (multiple recipients), which instanceof String silently
+            // dropped — every recipient edge was lost.
+            String emailFrom = asString(meta.get("email.from"));
+            String emailTo = asString(meta.get("email.to"));
+            String emailCc = asString(meta.get("email.cc"));
+            String emailBcc = asString(meta.get("email.bcc"));
+            String emailSubject = asString(meta.get("email.subject"));
+            String emailInReplyTo = asString(meta.get("email.inReplyTo"));
             Object emailRefsObj = meta.get("email.references");
-            String emailMessageId = meta.get("email.messageId") instanceof String
-                    ? (String) meta.get("email.messageId") : null;
+            String emailMessageId = asString(meta.get("email.messageId"));
+            String emailThreadId = asString(meta.get("email.threadId"));
+            String emailConversationId = asString(meta.get("email.conversationId"));
             Object attachObj = meta.get(GraphConstants.META_EMAIL_ATTACHMENT_NAMES);
 
             // Fall back to gmail.* namespace
-            if (emailFrom == null) {
-                emailFrom = meta.get("gmail.from") instanceof String
-                        ? (String) meta.get("gmail.from") : null;
-            }
-            if (emailTo == null) {
-                emailTo = meta.get("gmail.to") instanceof String
-                        ? (String) meta.get("gmail.to") : null;
-            }
-            if (emailCc == null) {
-                emailCc = meta.get("gmail.cc") instanceof String
-                        ? (String) meta.get("gmail.cc") : null;
-            }
-            if (emailSubject == null) {
-                emailSubject = meta.get("gmail.subject") instanceof String
-                        ? (String) meta.get("gmail.subject") : null;
-            }
-            if (emailBcc == null) {
-                emailBcc = meta.get("gmail.bcc") instanceof String
-                        ? (String) meta.get("gmail.bcc") : null;
-            }
-            if (emailInReplyTo == null) {
-                emailInReplyTo = meta.get("gmail.inReplyTo") instanceof String
-                        ? (String) meta.get("gmail.inReplyTo") : null;
-            }
-            if (emailRefsObj == null) {
-                emailRefsObj = meta.get("gmail.references");
-            }
-            if (emailMessageId == null) {
-                emailMessageId = meta.get("gmail.messageId") instanceof String
-                        ? (String) meta.get("gmail.messageId") : null;
-            }
-            if (attachObj == null) {
-                attachObj = meta.get("gmail.attachments");
-            }
+            if (emailFrom == null) emailFrom = asString(meta.get("gmail.from"));
+            if (emailTo == null) emailTo = asString(meta.get("gmail.to"));
+            if (emailCc == null) emailCc = asString(meta.get("gmail.cc"));
+            if (emailSubject == null) emailSubject = asString(meta.get("gmail.subject"));
+            if (emailBcc == null) emailBcc = asString(meta.get("gmail.bcc"));
+            if (emailInReplyTo == null) emailInReplyTo = asString(meta.get("gmail.inReplyTo"));
+            if (emailRefsObj == null) emailRefsObj = meta.get("gmail.references");
+            if (emailMessageId == null) emailMessageId = asString(meta.get("gmail.messageId"));
+            if (emailThreadId == null) emailThreadId = asString(meta.get("gmail.threadId"));
+            if (emailConversationId == null) emailConversationId = asString(meta.get("gmail.conversationId"));
+            if (attachObj == null) attachObj = meta.get("gmail.attachments");
+
+            // The message's real-world timestamp (RFC-822 Date). Read from the loader's email.date /
+            // gmail.date (falling back to received/internal date); stamped as occurredAt on the email
+            // node and every email relation so temporal / process-mining consumers order the thread.
+            String emailDate = asString(meta.get("email.date"));
+            if (emailDate == null) emailDate = asString(meta.get("email.receivedDate"));
+            if (emailDate == null) emailDate = asString(meta.get("gmail.date"));
+            if (emailDate == null) emailDate = asString(meta.get("gmail.internalDate"));
 
             if (emailFrom == null) continue;
             if (emailSubject == null) emailSubject = "Email";
@@ -208,13 +191,25 @@ class EmailGraphExtractor {
                     if (docNode.isPresent()) parentNodeId = docNode.get().getNodeId();
                 }
 
-                // Create EMAIL_MESSAGE entity
-                String emailId = "email-msg:" + UUID.nameUUIDFromBytes(
-                        (emailFrom + "|" + emailSubject).getBytes()).toString();
+                // Create EMAIL_MESSAGE entity. Key the node by the RFC-822 Message-ID when present so
+                // In-Reply-To / References threading edges resolve to the real message node instead of
+                // dangling to an unresolved node - the node id and the threading targets now share the
+                // same normalized-message-id scheme. Fall back to from|subject only when absent.
+                String emailId = emailMessageId != null && !emailMessageId.isBlank()
+                        ? emailMessageNodeId(emailMessageId)
+                        : emailFallbackNodeId(emailFrom, emailSubject);
                 Map<String, Object> emailMeta = new LinkedHashMap<>();
                 emailMeta.put("entity_type", "EMAIL_MESSAGE");
                 emailMeta.put(GraphConstants.META_SOURCE, jobId);
+                if (emailMessageId != null && !emailMessageId.isBlank()) {
+                    emailMeta.put("messageId", emailMessageId);
+                }
+                if (emailThreadId != null) emailMeta.put("threadId", emailThreadId);
+                if (emailConversationId != null) emailMeta.put("conversationId", emailConversationId);
+                if (emailDate != null) emailMeta.put("occurredAt", emailDate);
                 if (sourcePath != null) emailMeta.put(GraphConstants.META_SOURCE_PATH, sourcePath);
+                CrawlGraphProcessMetadata.normalizeEntityMetadata(emailMeta, "EMAIL_MESSAGE", jobId, sourcePath,
+                        emailMessageId != null ? emailMessageId : emailId);
 
                 GraphNode emailNode;
                 Optional<GraphNode> existingEmail = entityNodeCache.computeIfAbsent(emailId,
@@ -237,7 +232,11 @@ class EmailGraphExtractor {
                             graphPersistenceHelper.metadataProperties(
                                     "entityType", "EMAIL_MESSAGE",
                                     "subject", emailSubject,
-                                    "from", emailFrom));
+                                    "from", emailFrom,
+                                    "messageId", emailMessageId,
+                                    "threadId", emailThreadId,
+                                    "conversationId", emailConversationId,
+                                    "occurredAt", emailDate));
                     knowledgeGraphService.createEdgeWithMetadata(parentNodeId, emailNode.getNodeId(),
                             EdgeType.CONTAINS, 1.0, containsLabel, description, metaJson,
                             EdgeProvenance.EXTRACTED, factSheetId);
@@ -283,6 +282,8 @@ class EmailGraphExtractor {
                         personMeta.put("email", emailAddr);
                         personMeta.put(GraphConstants.META_SOURCE, jobId);
                         if (sourcePath != null) personMeta.put(GraphConstants.META_SOURCE_PATH, sourcePath);
+                        CrawlGraphProcessMetadata.normalizeEntityMetadata(personMeta, "PERSON", jobId, sourcePath,
+                                personId);
 
                         GraphNode personNode;
                         Optional<GraphNode> existingPerson = entityNodeCache.computeIfAbsent(personId,
@@ -330,7 +331,11 @@ class EmailGraphExtractor {
                         Map<String, Object> addrProps = graphPersistenceHelper.metadataProperties(
                                 "email", finalEmailAddr,
                                 "personName", finalPersonName,
-                                "subject", finalEmailSubject);
+                                "subject", finalEmailSubject,
+                                "messageId", emailMessageId,
+                                "threadId", emailThreadId,
+                                "conversationId", emailConversationId,
+                                "occurredAt", emailDate);
                         if (structuralFactAssertionService != null) {
                             Opinion addrOpinion = structuralFactAssertionService.structural(addrTrust, 0.5);
                             addrWeight = addrOpinion.expectation();
@@ -371,6 +376,9 @@ class EmailGraphExtractor {
                                     orgMeta.put("entity_type", "ORGANIZATION");
                                     orgMeta.put("domain", domain);
                                     orgMeta.put(GraphConstants.META_SOURCE, jobId);
+                                    if (sourcePath != null) orgMeta.put(GraphConstants.META_SOURCE_PATH, sourcePath);
+                                    CrawlGraphProcessMetadata.normalizeEntityMetadata(orgMeta, "ORGANIZATION", jobId,
+                                            sourcePath, orgId);
                                     orgNode = knowledgeGraphService.createNode(NodeLevel.ENTITY, orgId,
                                             domain, "Organization (email domain " + domain + ")", orgMeta, factSheetId);
                                     entityNodeCache.put(orgId, Optional.of(orgNode));
@@ -384,6 +392,9 @@ class EmailGraphExtractor {
                                 Map<String, Object> orgProps = graphPersistenceHelper.metadataProperties(
                                         "domain", domain,
                                         "personName", finalPersonName,
+                                        "messageId", emailMessageId,
+                                        "threadId", emailThreadId,
+                                        "conversationId", emailConversationId,
                                         "inferredFrom", "email-domain");
                                 if (structuralFactAssertionService != null) {
                                     Opinion orgOpinion = structuralFactAssertionService.structural(kbCfg().getBelongsToOrgStrength(), 0.5);
@@ -425,6 +436,8 @@ class EmailGraphExtractor {
                         attMeta.put("filename", attName);
                         attMeta.put(GraphConstants.META_SOURCE, jobId);
                         if (sourcePath != null) attMeta.put(GraphConstants.META_SOURCE_PATH, sourcePath);
+                        CrawlGraphProcessMetadata.normalizeEntityMetadata(attMeta, "ATTACHMENT", jobId, sourcePath,
+                                attId);
 
                         GraphNode attNode;
                         Optional<GraphNode> existingAtt = entityNodeCache.computeIfAbsent(attId,
@@ -444,7 +457,11 @@ class EmailGraphExtractor {
                                 "email_graph", emailId, attId, hasAttachmentLabel, description, 1.0,
                                 graphPersistenceHelper.metadataProperties(
                                         "subject", finalEmailSubject,
-                                        "attachmentName", attName));
+                                        "attachmentName", attName,
+                                        "messageId", emailMessageId,
+                                        "threadId", emailThreadId,
+                                        "conversationId", emailConversationId,
+                                        "occurredAt", emailDate));
                         knowledgeGraphService.createEdgeWithMetadata(emailNode.getNodeId(), attNode.getNodeId(),
                                 EdgeType.USER_DEFINED, 1.0, hasAttachmentLabel, description, metaJson,
                                 EdgeProvenance.EXTRACTED, factSheetId);
@@ -454,12 +471,16 @@ class EmailGraphExtractor {
 
                 // Create REPLIED_TO edge from In-Reply-To header
                 if (emailInReplyTo != null && !emailInReplyTo.isBlank()) {
-                    String repliedMsgId = "email-msg:" + UUID.nameUUIDFromBytes(
-                            emailInReplyTo.getBytes()).toString();
+                    String repliedMsgId = emailMessageNodeId(emailInReplyTo);
                     Map<String, Object> repliedMeta = new LinkedHashMap<>();
                     repliedMeta.put("entity_type", "EMAIL_MESSAGE");
                     repliedMeta.put("messageId", emailInReplyTo);
                     repliedMeta.put(GraphConstants.META_SOURCE, jobId);
+                    if (sourcePath != null) repliedMeta.put(GraphConstants.META_SOURCE_PATH, sourcePath);
+                    if (emailThreadId != null) repliedMeta.put("threadId", emailThreadId);
+                    if (emailConversationId != null) repliedMeta.put("conversationId", emailConversationId);
+                    CrawlGraphProcessMetadata.normalizeEntityMetadata(repliedMeta, "EMAIL_MESSAGE", jobId, sourcePath,
+                            emailInReplyTo);
 
                     GraphNode repliedNode;
                     Optional<GraphNode> existingReplied = entityNodeCache.computeIfAbsent(repliedMsgId,
@@ -480,7 +501,11 @@ class EmailGraphExtractor {
                             "email_graph", emailId, repliedMsgId, repliedToLabel, description, 1.0,
                             graphPersistenceHelper.metadataProperties(
                                     "subject", finalEmailSubject,
-                                    "messageId", finalEmailInReplyTo));
+                                    "messageId", emailMessageId,
+                                    "targetMessageId", finalEmailInReplyTo,
+                                    "threadId", emailThreadId,
+                                    "conversationId", emailConversationId,
+                                    "occurredAt", emailDate));
                     knowledgeGraphService.createEdgeWithMetadata(emailNode.getNodeId(), repliedNode.getNodeId(),
                             EdgeType.USER_DEFINED, 1.0, repliedToLabel, description, metaJson,
                             EdgeProvenance.EXTRACTED, factSheetId);
@@ -506,12 +531,16 @@ class EmailGraphExtractor {
                     for (String ref : refsList) {
                         // Skip the In-Reply-To message — already handled above
                         if (ref.equals(finalEmailInReplyTo)) continue;
-                        String refMsgId = "email-msg:" + UUID.nameUUIDFromBytes(
-                                ref.getBytes()).toString();
+                        String refMsgId = emailMessageNodeId(ref);
                         Map<String, Object> refMeta = new LinkedHashMap<>();
                         refMeta.put("entity_type", "EMAIL_MESSAGE");
                         refMeta.put("messageId", ref);
                         refMeta.put(GraphConstants.META_SOURCE, jobId);
+                        if (sourcePath != null) refMeta.put(GraphConstants.META_SOURCE_PATH, sourcePath);
+                        if (emailThreadId != null) refMeta.put("threadId", emailThreadId);
+                        if (emailConversationId != null) refMeta.put("conversationId", emailConversationId);
+                        CrawlGraphProcessMetadata.normalizeEntityMetadata(refMeta, "EMAIL_MESSAGE", jobId, sourcePath,
+                                ref);
 
                         GraphNode refNode;
                         Optional<GraphNode> existingRef = entityNodeCache.computeIfAbsent(refMsgId,
@@ -531,7 +560,11 @@ class EmailGraphExtractor {
                                 "email_graph", emailId, refMsgId, referencesLabel, description, 0.9,
                                 graphPersistenceHelper.metadataProperties(
                                         "subject", finalEmailSubject,
-                                        "messageId", ref));
+                                        "messageId", emailMessageId,
+                                        "targetMessageId", ref,
+                                        "threadId", emailThreadId,
+                                        "conversationId", emailConversationId,
+                                        "occurredAt", emailDate));
                         knowledgeGraphService.createEdgeWithMetadata(emailNode.getNodeId(), refNode.getNodeId(),
                                 EdgeType.USER_DEFINED, 0.9, referencesLabel, description, metaJson,
                                 EdgeProvenance.EXTRACTED, factSheetId);
@@ -575,6 +608,66 @@ class EmailGraphExtractor {
             return true;
         }
         return false;
+    }
+
+    /**
+     * Coerces an email-header metadata value to a single string. IMAP emits {@code email.to/cc/bcc}
+     * as {@code List<String>} (multiple recipients); reading them as {@code String} silently dropped
+     * every recipient. Lists/arrays are joined with {@code ", "}; blank/empty yields {@code null}.
+     */
+    static String asString(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof String s) {
+            return s.isBlank() ? null : s;
+        }
+        if (value instanceof Collection<?> c) {
+            StringBuilder sb = new StringBuilder();
+            for (Object o : c) {
+                if (o == null) {
+                    continue;
+                }
+                String v = String.valueOf(o).trim();
+                if (v.isEmpty()) {
+                    continue;
+                }
+                if (sb.length() > 0) {
+                    sb.append(", ");
+                }
+                sb.append(v);
+            }
+            return sb.length() == 0 ? null : sb.toString();
+        }
+        if (value instanceof Object[] arr) {
+            return asString(Arrays.asList(arr));
+        }
+        String s = String.valueOf(value).trim();
+        return s.isEmpty() ? null : s;
+    }
+
+    /**
+     * Stable node id for an email message keyed by its RFC-822 Message-ID. Used both for the message
+     * node (when it has a Message-ID) and for In-Reply-To / References threading targets, so a reply
+     * resolves to the real prior-message node instead of dangling to an unresolved node. The id is
+     * normalized (angle brackets stripped, lower-cased) so a bracketed In-Reply-To ({@code <x@h>})
+     * matches a bare Message-ID ({@code x@h}).
+     */
+    static String emailMessageNodeId(String messageId) {
+        return "email-msg:" + UUID.nameUUIDFromBytes(normalizeMessageId(messageId).getBytes()).toString();
+    }
+
+    /** Fallback node id when a message has no Message-ID header. */
+    static String emailFallbackNodeId(String from, String subject) {
+        return "email-msg:" + UUID.nameUUIDFromBytes((from + "|" + subject).getBytes()).toString();
+    }
+
+    private static String normalizeMessageId(String messageId) {
+        String s = messageId.trim();
+        if (s.length() >= 2 && s.startsWith("<") && s.endsWith(">")) {
+            s = s.substring(1, s.length() - 1).trim();
+        }
+        return s.toLowerCase(Locale.ROOT);
     }
 
     private Long jobFactSheetId(UnifiedCrawlJob job) {

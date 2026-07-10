@@ -15,6 +15,7 @@ import ai.kompile.graph.reasoning.bayesian.Factor;
 import ai.kompile.graph.reasoning.bayesian.VariableElimination;
 import ai.kompile.graph.reasoning.mebn.MFrag;
 import ai.kompile.graph.reasoning.mebn.MTheory;
+import ai.kompile.graph.reasoning.mebn.SSBNGenerator;
 import ai.kompile.graph.reasoning.model.ReasoningGraph;
 import ai.kompile.graph.reasoning.psl.GroundRule;
 import ai.kompile.graph.reasoning.psl.HlMrfMapInference;
@@ -142,8 +143,8 @@ public final class EntailmentEngine {
 
         // Generate the SSBN via the standard service path.
         ReasoningGraphKnowledgeBase kb = new ReasoningGraphKnowledgeBase(graph);
-        ai.kompile.graph.reasoning.mebn.SSBNGenerator generator =
-                new ai.kompile.graph.reasoning.mebn.SSBNGenerator(theory, kb);
+        SSBNGenerator generator =
+                new SSBNGenerator(theory, kb);
         BayesianNetwork ssbn = generator.generate();
 
         // Inject virtual child nodes for each soft finding (Pearl virtual evidence).

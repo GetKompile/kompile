@@ -30,6 +30,7 @@ import ai.kompile.core.graphbuilder.GraphBuildCompletedEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.DisposableBean;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
@@ -40,6 +41,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Centralized service for tracking document ingest progress.
@@ -59,23 +61,23 @@ public class IngestProgressTracker implements DisposableBean {
     private final Map<String, IngestProgressUpdate> activeTasks = new ConcurrentHashMap<>();
     private final Map<String, Long> taskStartTimes = new ConcurrentHashMap<>();
     private final Map<String, Long> taskFactSheetIds = new ConcurrentHashMap<>();
-    private final Map<String, java.util.concurrent.atomic.AtomicLong> logSequenceCounters = new ConcurrentHashMap<>();
+    private final Map<String, AtomicLong> logSequenceCounters = new ConcurrentHashMap<>();
     private final ScheduledExecutorService cleanupScheduler = Executors.newSingleThreadScheduledExecutor();
 
     // Keep completed tasks for 5 minutes before cleanup
     private static final long COMPLETED_TASK_RETENTION_MS = 5 * 60 * 1000;
 
     public IngestProgressTracker(
-            @org.springframework.beans.factory.annotation.Autowired(required = false) SimpMessagingTemplate messagingTemplate,
-            @org.springframework.beans.factory.annotation.Autowired(required = false) JobLogService jobLogService) {
+            @Autowired(required = false) SimpMessagingTemplate messagingTemplate,
+            @Autowired(required = false) JobLogService jobLogService) {
         this(messagingTemplate, jobLogService, null);
     }
 
-    @org.springframework.beans.factory.annotation.Autowired
+    @Autowired
     public IngestProgressTracker(
-            @org.springframework.beans.factory.annotation.Autowired(required = false) SimpMessagingTemplate messagingTemplate,
-            @org.springframework.beans.factory.annotation.Autowired(required = false) JobLogService jobLogService,
-            @org.springframework.beans.factory.annotation.Autowired(required = false) ApplicationEventPublisher eventPublisher) {
+            @Autowired(required = false) SimpMessagingTemplate messagingTemplate,
+            @Autowired(required = false) JobLogService jobLogService,
+            @Autowired(required = false) ApplicationEventPublisher eventPublisher) {
         this.messagingTemplate = messagingTemplate; // May be null if WebSocket not configured
         this.jobLogService = jobLogService; // May be null if job logging not configured
         this.eventPublisher = eventPublisher; // May be null in minimal test contexts
@@ -427,8 +429,8 @@ public class IngestProgressTracker implements DisposableBean {
         }
 
         // Get or create sequence counter for this task
-        java.util.concurrent.atomic.AtomicLong seqCounter = logSequenceCounters.computeIfAbsent(
-                taskId, k -> new java.util.concurrent.atomic.AtomicLong(0));
+        AtomicLong seqCounter = logSequenceCounters.computeIfAbsent(
+                taskId, k -> new AtomicLong(0));
         long seq = seqCounter.incrementAndGet();
 
         IngestLogEntry logEntry;
@@ -457,8 +459,8 @@ public class IngestProgressTracker implements DisposableBean {
             return;
         }
 
-        java.util.concurrent.atomic.AtomicLong seqCounter = logSequenceCounters.computeIfAbsent(
-                taskId, k -> new java.util.concurrent.atomic.AtomicLong(0));
+        AtomicLong seqCounter = logSequenceCounters.computeIfAbsent(
+                taskId, k -> new AtomicLong(0));
         long seq = seqCounter.incrementAndGet();
 
         IngestLogEntry logEntry = new IngestLogEntry(taskId, level, source, message, null,

@@ -180,4 +180,117 @@ class SameDiffPslWeightGradientTest {
         assertTrue(w1 >= 0.0, "w1 must remain non-negative after learning (got " + w1 + ")");
         assertTrue(w2 >= 0.0, "w2 must remain non-negative after learning (got " + w2 + ")");
     }
+
+    // ─── Test B: GradientSession placeholder-reuse gradient parity ────────────
+
+    /**
+     * {@link SameDiffPslWeightGradient.GradientSession#computeGradient} (placeholder-reuse path)
+     * must produce identical gradients to the rebuild-per-epoch static {@link SameDiffPslWeightGradient#compute}
+     * call for the same inputs, within 1e-6 tolerance.
+     */
+    @Test
+    void gradientSession_placeholderReuse_producesIdenticalGradients() {
+        PslProgram program = buildProgram(1.0, 1.0);
+        List<PslRule> rules = program.rules();
+
+        HlMrfMapInference.Result result = HlMrfMapInference.solve(program);
+        Map<String, Double> predicted = result.values();
+        List<GroundRule> groundRules = result.groundRules();
+
+        Map<String, Double> groundTruth = new HashMap<>();
+        groundTruth.put("likes(alice,bob)",    1.0);
+        groundTruth.put("likes(alice,carol)",   0.0);
+        groundTruth.put("friends(alice,bob)",  0.9);
+        groundTruth.put("enemies(alice,carol)", 0.9);
+
+        // Gradient via static compute() (rebuild-per-call path).
+        double[] staticGrad = SameDiffPslWeightGradient.compute(
+                rules, groundRules, predicted, groundTruth);
+
+        // Gradient via GradientSession (placeholder-reuse path).
+        double[] initialWeights = new double[rules.size()];
+        for (int i = 0; i < rules.size(); i++) {
+            initialWeights[i] = rules.get(i).weight();
+        }
+        SameDiffPslWeightGradient.GradientSession session =
+                new SameDiffPslWeightGradient.GradientSession(
+                        rules, groundRules, initialWeights, 0.1);
+        double[] sessionGrad = session.computeGradient(groundRules, predicted, groundTruth);
+
+        assertEquals(staticGrad.length, sessionGrad.length,
+                "gradient length must match rule count");
+        for (int i = 0; i < staticGrad.length; i++) {
+            assertEquals(staticGrad[i], sessionGrad[i], 1e-6,
+                    "GradientSession gradient[" + i + "] must match static compute() within 1e-6"
+                            + " (static=" + staticGrad[i] + ", session=" + sessionGrad[i] + ")");
+        }
+    }
+
+    // ─── Test C: GradientSession Adam step moves weights in correct direction ──
+
+    /**
+     * {@link SameDiffPslWeightGradient.GradientSession#applyAdamStep} must move weights
+     * in the correct descent direction and keep them non-negative.
+     *
+     * <p>We test the Adam step independently of gradient sign by injecting a known
+     * synthetic gradient directly. A positive gradient causes Adam to DECREASE the weight
+     * (descent direction: {@code w -= lr * g}). A negative gradient INCREASES the weight.
+     * After projection to ≥ 0, the weight must never go below zero.</p>
+     *
+     * <p>This test decouples Adam step correctness from PSL distance semantics and avoids
+     * the degenerate case where MAP near-perfectly satisfies all rules (distPred ≈ 0 and
+     * distGt ≈ 0 → zero gradient). The {link #gradientSession_placeholderReuse_producesIdenticalGradients}
+     * test already verifies gradient correctness via parity with the scalar path.</p>
+     */
+    @Test
+    void gradientSession_adamStep_weightsMoveinCorrectDirection() {
+        PslProgram program = buildProgram(1.0, 1.0);
+        List<PslRule> rules = program.rules();
+
+        HlMrfMapInference.Result result = HlMrfMapInference.solve(program);
+        List<GroundRule> groundRules = result.groundRules();
+
+        double[] weights = { 1.0, 1.0 };
+        SameDiffPslWeightGradient.GradientSession session =
+                new SameDiffPslWeightGradient.GradientSession(
+                        rules, groundRules, weights.clone(), 0.1);
+
+        // ── Case A: positive gradient for w0 → Adam must decrease w0 ──────────
+        // (descent: w -= lr * g, g > 0 → w decreases)
+        double[] posGrad = { 0.5, 0.0 };
+        double w0Before = weights[0];
+        session.applyAdamStep(weights, posGrad, 0);
+        double w0After = weights[0];
+        assertTrue(w0After < w0Before,
+                "Positive gradient → Adam must decrease w0 (before=" + w0Before
+                        + ", after=" + w0After + ")");
+        assertTrue(w0After >= 0.0, "w0 must stay non-negative (got " + w0After + ")");
+
+        // ── Case B: large positive gradient that would push below 0 → projection clips at 0 ─
+        double[] largeGrad = { 1000.0, 0.0 };
+        // Reset weights to a small positive value
+        weights[0] = 0.01;
+        weights[1] = 1.0;
+        // Recreate session so Adam moment state is fresh for this sub-test
+        SameDiffPslWeightGradient.GradientSession session2 =
+                new SameDiffPslWeightGradient.GradientSession(
+                        rules, groundRules, weights.clone(), 0.1);
+        session2.applyAdamStep(weights, largeGrad, 0);
+        assertTrue(weights[0] >= 0.0,
+                "Very large positive gradient must not push w0 below 0 (got " + weights[0] + ")");
+
+        // ── Case C: negative gradient for w1 → Adam must increase w1 ──────────
+        double[] negGrad = { 0.0, -0.5 };
+        weights[0] = 1.0;
+        weights[1] = 1.0;
+        SameDiffPslWeightGradient.GradientSession session3 =
+                new SameDiffPslWeightGradient.GradientSession(
+                        rules, groundRules, weights.clone(), 0.1);
+        double w1Before = weights[1];
+        session3.applyAdamStep(weights, negGrad, 0);
+        double w1After = weights[1];
+        assertTrue(w1After > w1Before,
+                "Negative gradient → Adam must increase w1 (before=" + w1Before
+                        + ", after=" + w1After + ")");
+    }
 }

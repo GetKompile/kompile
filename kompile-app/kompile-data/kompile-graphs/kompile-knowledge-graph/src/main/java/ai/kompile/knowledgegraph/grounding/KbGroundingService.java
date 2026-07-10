@@ -22,11 +22,19 @@ import ai.kompile.graph.reasoning.fol.InferredFactStore;
 import ai.kompile.graph.reasoning.fol.InMemoryInferredFactStore;
 import ai.kompile.graph.reasoning.fol.grounding.ConjunctiveQueryEngine;
 import ai.kompile.graph.reasoning.confidence.Opinion;
+import ai.kompile.graph.reasoning.claims.ClaimDossier;
+import ai.kompile.graph.reasoning.claims.DossierBuilder;
 import ai.kompile.graph.reasoning.fol.grounding.ConcurrentFactStore;
+import ai.kompile.graph.reasoning.fol.grounding.DeepWhyNot;
 import ai.kompile.graph.reasoning.fol.grounding.DefaultKbVerifier;
 import ai.kompile.graph.reasoning.fol.grounding.DerivationTree;
 import ai.kompile.graph.reasoning.fol.grounding.QueryBinding;
 import ai.kompile.graph.reasoning.fol.grounding.VerifyResult;
+import ai.kompile.graph.reasoning.fol.grounding.WhyNotExplainer;
+import ai.kompile.graph.reasoning.model.ReasoningGraph;
+import ai.kompile.graph.reasoning.psl.PslRule;
+import ai.kompile.graph.reasoning.tms.BeliefReviser;
+import ai.kompile.graph.reasoning.tms.BeliefRevisionResult;
 import ai.kompile.graph.reasoning.tms.ContradictionDetector;
 import ai.kompile.graph.reasoning.tms.JustificationIndex;
 import ai.kompile.knowledgegraph.persistence.dual.DualStoreGroundingFactory;
@@ -365,6 +373,42 @@ public class KbGroundingService {
     }
 
     /**
+     * Assert a batch under one write lock and emit a single cascade trigger after all facts are
+     * visible. The returned version is the MVCC version after the final assertion.
+     */
+    public AssertResult assertFactsBatch(long factSheetId, List<Fact> facts) {
+        List<Fact> batch = facts == null
+                ? List.of()
+                : facts.stream().filter(java.util.Objects::nonNull).toList();
+        if (batch.isEmpty()) {
+            return new AssertResult(getState(factSheetId).concurrentFactStore().version(), List.of());
+        }
+
+        FactSheetKbState state = getState(factSheetId);
+        ReadWriteLock lock = state.lock();
+        AssertResult result;
+        lock.writeLock().lock();
+        try {
+            long version = state.concurrentFactStore().version();
+            for (Fact fact : batch) {
+                version = state.concurrentFactStore().assertFact(fact);
+                state.factStore().assertFact(fact);
+            }
+            List<String> contradictionKeys =
+                    ContradictionDetector.findFactContradictions(state.factStore()).stream()
+                            .map(pair -> pair.first().atomKey() + " vs " + pair.second().atomKey())
+                            .collect(Collectors.toList());
+            result = new AssertResult(version, contradictionKeys);
+        } finally {
+            lock.writeLock().unlock();
+        }
+
+        // One event is sufficient: all batch members are visible before the cascade starts.
+        publishAgentAssertEvent(factSheetId, batch.get(batch.size() - 1));
+        return result;
+    }
+
+    /**
      * Optimistic-locking variant: asserts the fact only if the MVCC store has not been
      * modified since {@code expectedVersion}.
      *
@@ -403,6 +447,40 @@ public class KbGroundingService {
         // Publish AgentFactAssertedEvent AFTER releasing the write lock
         publishAgentAssertEvent(factSheetId, fact);
         return result;
+    }
+
+    /**
+     * Retract an observed fact and purge inferred atoms whose only justification was that fact.
+     */
+    public RetractResult retractFact(long factSheetId, String atomKey) {
+        if (atomKey == null || atomKey.isBlank()) {
+            throw new IllegalArgumentException("atomKey must not be blank");
+        }
+
+        FactSheetKbState state = getState(factSheetId);
+        ReadWriteLock lock = state.lock();
+        lock.writeLock().lock();
+        try {
+            boolean found = state.factStore().factFor(atomKey).isPresent()
+                    || state.concurrentFactStore().factFor(atomKey).isPresent();
+            state.concurrentFactStore().retract(atomKey);
+            BeliefRevisionResult revision = BeliefReviser.retractAndPurge(
+                    atomKey,
+                    state.factStore(),
+                    state.justificationIndex(),
+                    state.inferredFactStore());
+            return new RetractResult(found, revision);
+        } finally {
+            lock.writeLock().unlock();
+        }
+    }
+
+    /**
+     * Synchronous consistency variant. Unsupported inferred atoms are purged before returning;
+     * the normal graph-change cascade performs the next full MAP solve.
+     */
+    public RetractResult retractAndRevise(long factSheetId, String atomKey) {
+        return retractFact(factSheetId, atomKey);
     }
 
     // ── State management ─────────────────────────────────────────────────────────
@@ -492,6 +570,43 @@ public class KbGroundingService {
      * @param runId        the runId of the MAP inference run that just completed
      * @param newIndex     the freshly-built {@link JustificationIndex} from the MAP result
      */
+    /**
+     * Rules used by the last grounding cascade, converted to why-not normal form — the chaining
+     * vocabulary for deep why-not completion search on UNKNOWN verdicts.
+     */
+    private final ConcurrentHashMap<Long, List<WhyNotExplainer.RuleNf>> groundingRulesMap =
+            new ConcurrentHashMap<>();
+
+    /**
+     * {@link #markEpoch(long, String, JustificationIndex)} plus retention of the grounding rule
+     * set: the rules that produced the materialized state are converted to why-not normal form
+     * and kept per fact sheet so {@link #verifyEnriched} can run deep completion-set search for
+     * UNKNOWN verdicts. Rules that cannot be normalized are skipped individually.
+     *
+     * @param factSheetId    the fact sheet whose grounding was refreshed
+     * @param runId          the runId of the MAP inference run that just completed
+     * @param newIndex       the freshly-built justification index from the MAP result
+     * @param groundingRules the PSL rules the cascade ran with (null/empty clears nothing)
+     */
+    public void markEpoch(long factSheetId, String runId, JustificationIndex newIndex,
+                          List<PslRule> groundingRules) {
+        if (groundingRules != null && !groundingRules.isEmpty()) {
+            List<WhyNotExplainer.RuleNf> normalized = new java.util.ArrayList<>();
+            for (PslRule rule : groundingRules) {
+                try {
+                    normalized.add(WhyNotExplainer.fromPslRule(rule));
+                } catch (Exception skipped) {
+                    log.debug("markEpoch: rule not normalizable for why-not chaining: {}",
+                            skipped.getMessage());
+                }
+            }
+            if (!normalized.isEmpty()) {
+                groundingRulesMap.put(factSheetId, List.copyOf(normalized));
+            }
+        }
+        markEpoch(factSheetId, runId, newIndex);
+    }
+
     public void markEpoch(long factSheetId, String runId, JustificationIndex newIndex) {
         // Update epoch reference
         epochMap.computeIfAbsent(factSheetId, id -> new AtomicReference<>(""))
@@ -582,6 +697,229 @@ public class KbGroundingService {
         log.info("KbGroundingService: evicted cached KB state for factSheet={} (snapshot restore)", factSheetId);
     }
 
+    /**
+     * Permanently destroy all KB reasoning state for a deleted fact sheet: the cached
+     * {@link FactSheetKbState} (fact stores, justification index), the grounding epoch, and the
+     * stale flag. Unlike {@link #resetState}, no re-ground is expected afterwards — the sheet is
+     * gone. Safe to call for sheets that never had state.
+     *
+     * @param factSheetId the deleted fact sheet; null is a no-op
+     */
+    public void destroyFactSheet(Long factSheetId) {
+        if (factSheetId == null) {
+            return;
+        }
+        stateMap.remove(factSheetId);
+        epochMap.remove(factSheetId);
+        groundingRulesMap.remove(factSheetId);
+        clearStale(factSheetId);
+        log.info("KbGroundingService: destroyed KB state for deleted factSheet={}", factSheetId);
+    }
+
+    /**
+     * Assess a subject-predicate-object claim against the fact sheet's KB plus a reasoning
+     * graph, producing the full evidence dossier (direct edges, paths, verifier verdicts, and
+     * optional KGE/mined-rule signals when configured). Runs under the sheet's read lock.
+     *
+     * @param factSheetId the fact sheet scope
+     * @param graph       reasoning graph for structural evidence (never null; may be empty)
+     * @param subject     subject entity id
+     * @param predicate   relation type
+     * @param object      object entity id
+     * @return the assembled dossier with fused score and supporting/refuting items
+     */
+    public ClaimDossier assessClaim(long factSheetId, ReasoningGraph graph,
+                                    String subject, String predicate, String object) {
+        FactSheetKbState state = getState(factSheetId);
+        ReadWriteLock lock = state.lock();
+        lock.readLock().lock();
+        try {
+            return new DossierBuilder().assess(graph, subject, predicate, object,
+                    state.factStore(), state.inferredFactStore(), null, null);
+        } finally {
+            lock.readLock().unlock();
+        }
+    }
+
+    /**
+     * Enriched verification result: the plain {@link VerifyResult} plus the derived context the
+     * verify API surfaces — near-miss suggestions, contradicting evidence, an open-world Opinion
+     * for UNKNOWN verdicts, a structural fragility estimate for SUPPORTED verdicts, and an
+     * optional deep why-not report.
+     */
+    public record EnrichedVerifyResult(
+            VerifyResult result,
+            List<String> nearMissSuggestions,
+            List<String> contradictions,
+            Opinion opinion,
+            boolean openWorld,
+            int derivationDepth,
+            int evidenceCount,
+            List<String> sourceProvenance,
+            Double fragilityRobustness,
+            List<String> fragilityWouldFlipIf,
+            Integer fragilityMinimalSupportSize,
+            DeepWhyNot.DeepWhyNotReport deepWhyNotReport) {
+
+        public EnrichedVerifyResult {
+            nearMissSuggestions = nearMissSuggestions == null
+                    ? List.of() : List.copyOf(nearMissSuggestions);
+            contradictions = contradictions == null ? List.of() : List.copyOf(contradictions);
+            sourceProvenance = sourceProvenance == null
+                    ? List.of() : List.copyOf(sourceProvenance);
+            fragilityWouldFlipIf = fragilityWouldFlipIf == null
+                    ? List.of() : List.copyOf(fragilityWouldFlipIf);
+        }
+    }
+
+    /**
+     * Verify an atom and enrich the verdict in one pass:
+     * <ul>
+     *   <li>near-miss suggestions and counter-evidence come from the verifier itself;</li>
+     *   <li>UNKNOWN verdicts additionally carry an open-world {@link Opinion} (sparse-graph
+     *       aware via {@link #verifyOpinion}) and — when the last grounding cascade registered
+     *       its rule set via {@link #markEpoch(long, String, JustificationIndex, List)} — a deep
+     *       why-not report with multi-hop completion sets;</li>
+     *   <li>SUPPORTED verdicts carry counterfactual fragility computed on the justification
+     *       index: {@code wouldFlipIf} lists the facts whose individual retraction leaves the
+     *       atom fully unsupported ({@link JustificationIndex#solelyDependentOn}, rule-level
+     *       exact), {@code minimalSupportSize} is the smallest contributing rule body (1 for a
+     *       direct observation), and robustness is the fraction of the support universe that is
+     *       NOT a single point of failure.</li>
+     * </ul>
+     *
+     * @param factSheetId the fact sheet scope
+     * @param atomKey     the canonical atom key
+     * @param threshold   minimum confidence to report SUPPORTED; {@code <= 0} uses the default
+     * @param baseRate    open-world prior for the UNKNOWN-verdict Opinion, in [0,1]
+     */
+    public EnrichedVerifyResult verifyEnriched(long factSheetId, String atomKey,
+                                               double threshold, double baseRate) {
+        VerifyResult result = threshold > 0.0
+                ? verify(factSheetId, atomKey, threshold)
+                : verify(factSheetId, atomKey);
+
+        Opinion opinion = result.status() == VerifyResult.Status.UNKNOWN
+                ? verifyOpinion(factSheetId, atomKey, baseRate)
+                : null;
+
+        // Deep why-not for UNKNOWN verdicts: chain over the grounding rule set retained from the
+        // last cascade to find multi-hop completion sets that would derive the claim.
+        DeepWhyNot.DeepWhyNotReport whyNotReport = null;
+        if (result.status() == VerifyResult.Status.UNKNOWN) {
+            List<WhyNotExplainer.RuleNf> rules =
+                    groundingRulesMap.getOrDefault(factSheetId, List.of());
+            if (!rules.isEmpty()) {
+                FactSheetKbState state = getState(factSheetId);
+                ReadWriteLock lock = state.lock();
+                lock.readLock().lock();
+                try {
+                    whyNotReport = new DeepWhyNot(rules, state.inferredFactStore(),
+                            state.factStore()).explainDeep(atomKey, 3);
+                } catch (Exception e) {
+                    log.debug("verifyEnriched: deep why-not failed for {}: {}",
+                            atomKey, e.getMessage());
+                } finally {
+                    lock.readLock().unlock();
+                }
+            }
+        }
+
+        // Derivation context + counterfactual fragility for supported verdicts, computed on the
+        // justification index under one read lock.
+        int derivationDepth = 0;
+        java.util.LinkedHashSet<String> provenance = new java.util.LinkedHashSet<>();
+        Double robustness = null;
+        List<String> wouldFlipIf = List.of();
+        Integer minimalSupportSize = null;
+        if (result.status() == VerifyResult.Status.SUPPORTED) {
+            try {
+                DerivationTree tree = explain(factSheetId, atomKey, DerivationTree.DEFAULT_MAX_DEPTH);
+                if (tree != null) {
+                    derivationDepth = treeHeight(tree);
+                    collectProvenance(tree, provenance);
+                }
+            } catch (Exception e) {
+                log.debug("verifyEnriched: derivation explain failed for {}: {}",
+                        atomKey, e.getMessage());
+            }
+            FactSheetKbState state = getState(factSheetId);
+            ReadWriteLock lock = state.lock();
+            lock.readLock().lock();
+            try {
+                for (String evidenceAtom : result.evidence()) {
+                    // Direct observations arrive as "observed:<sourceId>" evidence strings.
+                    if (evidenceAtom.startsWith("observed:")) {
+                        String source = evidenceAtom.substring("observed:".length()).trim();
+                        if (!source.isBlank()) {
+                            provenance.add(source);
+                        }
+                        continue;
+                    }
+                    state.factStore().factFor(evidenceAtom)
+                            .map(Fact::sourceId)
+                            .filter(source -> source != null && !source.isBlank())
+                            .ifPresent(provenance::add);
+                }
+
+                JustificationIndex index = state.justificationIndex();
+                boolean directlyObserved = state.factStore().factFor(atomKey).isPresent();
+                java.util.Set<String> supportingFacts = index.supportingFacts(atomKey);
+                List<java.util.Set<String>> ruleBodies = index.perRuleBodyFacts(atomKey);
+
+                java.util.LinkedHashSet<String> critical = new java.util.LinkedHashSet<>();
+                if (directlyObserved && ruleBodies.isEmpty()) {
+                    // The observation itself is the only support: retracting it flips.
+                    critical.add(atomKey);
+                } else if (!directlyObserved) {
+                    // Exact rule-level counterfactual: a fact flips the verdict iff every
+                    // contributing rule body contains it.
+                    for (String fact : supportingFacts) {
+                        if (index.solelyDependentOn(fact).contains(atomKey)) {
+                            critical.add(fact);
+                        }
+                    }
+                }
+                // directlyObserved && derivations exist: no single retraction flips — the
+                // observation and the derivations back each other up.
+
+                int supportUniverse = (directlyObserved ? 1 : 0) + supportingFacts.size();
+                minimalSupportSize = directlyObserved ? 1
+                        : ruleBodies.stream().mapToInt(java.util.Set::size).min()
+                                .orElse(Math.max(1, supportingFacts.size()));
+                wouldFlipIf = List.copyOf(critical);
+                robustness = supportUniverse == 0
+                        ? 0.0 : 1.0 - (double) critical.size() / supportUniverse;
+            } finally {
+                lock.readLock().unlock();
+            }
+        }
+
+        return new EnrichedVerifyResult(result, result.nearMissSuggestions(),
+                result.counterEvidence(), opinion, opinion != null,
+                derivationDepth, result.evidence().size(), List.copyOf(provenance),
+                robustness, wouldFlipIf, minimalSupportSize, whyNotReport);
+    }
+
+    /** Height of a derivation tree: a leaf derivation counts as depth 1. */
+    private static int treeHeight(DerivationTree tree) {
+        int childMax = 0;
+        for (DerivationTree child : tree.children()) {
+            childMax = Math.max(childMax, treeHeight(child));
+        }
+        return 1 + childMax;
+    }
+
+    /** Collect distinct non-blank source provenance identifiers from a derivation tree. */
+    private static void collectProvenance(DerivationTree tree, java.util.Set<String> out) {
+        if (tree.sourceProvenance() != null && !tree.sourceProvenance().isBlank()) {
+            out.add(tree.sourceProvenance());
+        }
+        for (DerivationTree child : tree.children()) {
+            collectProvenance(child, out);
+        }
+    }
+
     // ── Internal helpers ──────────────────────────────────────────────────────────
 
     /**
@@ -611,6 +949,15 @@ public class KbGroundingService {
      *                        if the write was rejected)
      * @param contradictions  list of detected contradiction descriptions (empty if none)
      */
+    /** Result of TMS-aware fact retraction. */
+    public record RetractResult(boolean found, BeliefRevisionResult revision) {
+        public RetractResult {
+            if (revision == null) {
+                throw new IllegalArgumentException("revision must not be null");
+            }
+        }
+    }
+
     public record AssertResult(long version, List<String> contradictions) {
 
         public AssertResult {

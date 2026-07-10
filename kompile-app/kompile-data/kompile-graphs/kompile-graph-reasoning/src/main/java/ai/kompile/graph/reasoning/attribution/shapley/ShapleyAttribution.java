@@ -17,6 +17,7 @@ package ai.kompile.graph.reasoning.attribution.shapley;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -108,7 +109,7 @@ public final class ShapleyAttribution {
             throw new IllegalArgumentException("samples must be ≥ 1, got: " + samples);
         }
         // Validate no duplicates
-        if (new java.util.HashSet<>(players).size() != players.size()) {
+        if (new HashSet<>(players).size() != players.size()) {
             throw new IllegalArgumentException(
                     "players list must not contain duplicates: " + players);
         }
@@ -122,7 +123,7 @@ public final class ShapleyAttribution {
 
         // Compute the game values at the boundary coalitions for the efficiency check
         double vEmpty = eval.holds(Set.of()) ? 1.0 : 0.0;
-        double vAll   = eval.holds(new java.util.HashSet<>(players)) ? 1.0 : 0.0;
+        double vAll   = eval.holds(new HashSet<>(players)) ? 1.0 : 0.0;
         double targetDelta = vAll - vEmpty;
 
         // Accumulators: sum and sum-of-squares per player (for variance / std-error)
@@ -145,7 +146,7 @@ public final class ShapleyAttribution {
 
             // Walk the permutation prefix-by-prefix
             // prefix is built incrementally; we only store it as a mutable HashSet
-            java.util.HashSet<String> prefix = new java.util.HashSet<>(n);
+            HashSet<String> prefix = new HashSet<>(n);
             boolean prevHolds = eval.holds(prefix); // eval(∅)
 
             for (int i = 0; i < n; i++) {

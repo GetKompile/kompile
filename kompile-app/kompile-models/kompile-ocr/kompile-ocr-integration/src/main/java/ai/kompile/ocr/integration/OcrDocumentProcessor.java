@@ -235,30 +235,7 @@ public class OcrDocumentProcessor implements DocumentLoader {
     private List<Document> processImage(File imageFile, DocumentSourceDescriptor sourceDescriptor) throws Exception {
         logger.info("Processing image with OCR: {}", imageFile.getName());
 
-        // For images, we need to convert to INDArray first
-        // This is a simplified implementation - real implementation would use ImageIO
-
-        // For now, create a placeholder that indicates this needs to be implemented
-        // with proper image loading
-        List<Document> documents = new ArrayList<>();
-
-        Document doc = new Document("[Image OCR processing for: " + imageFile.getName() + "]");
-        doc.getMetadata().put("source", imageFile.getAbsolutePath());
-        doc.getMetadata().put("fileName", imageFile.getName());
-        doc.getMetadata().put("loader", getName());
-        doc.getMetadata().put("ocr_processed", true);
-        doc.getMetadata().put("pending_implementation", true);
-
-        if (sourceDescriptor.getSourceId() != null) {
-            doc.getMetadata().put("source_id", sourceDescriptor.getSourceId());
-        }
-        if (sourceDescriptor.getCollectionName() != null) {
-            doc.getMetadata().put("collection_name", sourceDescriptor.getCollectionName());
-        }
-
-        documents.add(doc);
-
-        return documents;
+        throw new UnsupportedOperationException("Image OCR input is not implemented for " + imageFile.getName());
     }
 
     /**

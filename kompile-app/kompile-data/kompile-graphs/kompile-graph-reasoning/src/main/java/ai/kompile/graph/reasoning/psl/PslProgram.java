@@ -9,8 +9,10 @@
  */
 package ai.kompile.graph.reasoning.psl;
 
+import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -45,7 +47,7 @@ import org.slf4j.LoggerFactory;
  * During grounding, body literals whose predicate is registered as a function have their
  * value computed on the fly and stored as temporary observed atoms.</p>
  */
-public class PslProgram implements java.io.Serializable {
+public class PslProgram implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
@@ -366,7 +368,7 @@ public class PslProgram implements java.io.Serializable {
         List<GroundRule> out = new ArrayList<>();
         // Identity lookup so instantiate() can stamp each grounding with its template-rule
         // index — signature matching downstream cannot disambiguate equal-weight rules.
-        templateIndexLookup = new java.util.IdentityHashMap<>();
+        templateIndexLookup = new IdentityHashMap<>();
         for (int i = 0; i < rules.size(); i++) {
             templateIndexLookup.put(rules.get(i), i);
         }
@@ -639,7 +641,7 @@ public class PslProgram implements java.io.Serializable {
         // the __SUM_* wildcard variables (one per candidate in the summation domain).
         // We collapse these to unique non-summation bindings.
         Set<String> summationWildcards = collectSummationWildcardNames(rule);
-        java.util.Set<String> seen = new java.util.LinkedHashSet<>();
+        Set<String> seen = new LinkedHashSet<>();
         for (Map<String, String> outerBinding : outerBindings) {
             // Build a signature from non-wildcard entries only
             Map<String, String> reducedBinding = new LinkedHashMap<>(outerBinding);
@@ -709,7 +711,7 @@ public class PslProgram implements java.io.Serializable {
     /** Remove atoms with identical predicate+args from the outer template list. */
     private List<PslAtom> deduplicateOuterAtoms(List<PslAtom> atoms) {
         List<PslAtom> result = new ArrayList<>();
-        java.util.Set<String> seen = new java.util.LinkedHashSet<>();
+        Set<String> seen = new LinkedHashSet<>();
         for (PslAtom a : atoms) {
             if (seen.add(a.predicate() + a.args().toString())) result.add(a);
         }

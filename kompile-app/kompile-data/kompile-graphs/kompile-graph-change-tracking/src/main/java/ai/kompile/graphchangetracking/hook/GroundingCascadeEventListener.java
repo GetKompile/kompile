@@ -16,8 +16,12 @@
 package ai.kompile.graphchangetracking.hook;
 
 import ai.kompile.gateway.core.gateway.channel.ChannelMessageReceivedEvent;
+import ai.kompile.graphchangetracking.event.EdgeMutationEvent;
+import ai.kompile.graphchangetracking.event.GraphBatchMutationEvent;
 import ai.kompile.graphchangetracking.event.GraphChangesetCompletedEvent;
+import ai.kompile.graphchangetracking.event.NodeMutationEvent;
 import ai.kompile.knowledgegraph.grounding.AgentFactAssertedEvent;
+import ai.kompile.knowledgegraph.grounding.AgentFactRetractedEvent;
 import ai.kompile.knowledgegraph.grounding.GroundingProgressEvent;
 import ai.kompile.knowledgegraph.grounding.GroundingResetPort;
 import lombok.extern.slf4j.Slf4j;
@@ -67,7 +71,8 @@ public class GroundingCascadeEventListener {
     /**
      * React to a completed graph changeset (crawl / channel extraction).
      *
-     * <p>Schedules a full re-ground of the affected fact sheet.</p>
+     * <p>Schedules a full re-ground of the affected fact sheet IMMEDIATELY (no debounce) because
+     * a changeset-completed event signals the end of a discrete write phase.</p>
      *
      * @param event the changeset event carrying the affected factSheetId
      */
@@ -89,6 +94,105 @@ public class GroundingCascadeEventListener {
                 event.getNodesCreated(), event.getEdgesCreated());
         groundingResetPort.schedule(factSheetId, "changeset:" + event.getChangesetId(),
                 GroundingProgressEvent.TRIGGER_CRAWL);
+    }
+
+    /**
+     * React to a single-item node mutation (created / updated / deleted via tool or API).
+     *
+     * <p>Routes through the debounced cascade so a rapid sequence of manual mutations
+     * (e.g. graph_create_node called in a loop) does not thrash the reasoner.</p>
+     *
+     * @param event the node mutation event
+     */
+    @EventListener
+    @Async
+    public void onNodeMutation(NodeMutationEvent event) {
+        if (groundingResetPort == null) {
+            return;
+        }
+        Long factSheetId = event.getFactSheetId();
+        if (factSheetId == null) {
+            log.debug("GroundingCascadeEventListener: node mutation {} has no factSheetId — skipping debounce",
+                    event.getEntityId());
+            return;
+        }
+        log.debug("GroundingCascadeEventListener: debouncing cascade for factSheet={} on node mutation {} type={}",
+                factSheetId, event.getEntityId(), event.getMutationType());
+        if (groundingResetPort instanceof GroundingCascadeHook hook) {
+            hook.scheduleDebounced(factSheetId,
+                    event.getMutationType() + ":" + event.getEntityId(),
+                    GroundingProgressEvent.TRIGGER_CASCADE);
+        } else {
+            // Fallback for non-hook implementations: immediate schedule
+            groundingResetPort.schedule(factSheetId,
+                    event.getMutationType() + ":" + event.getEntityId(),
+                    GroundingProgressEvent.TRIGGER_CASCADE);
+        }
+    }
+
+    /**
+     * React to a single-item edge mutation (created / updated / deleted via tool or API).
+     *
+     * <p>Routes through the debounced cascade — same rationale as {@link #onNodeMutation}.</p>
+     *
+     * @param event the edge mutation event
+     */
+    @EventListener
+    @Async
+    public void onEdgeMutation(EdgeMutationEvent event) {
+        if (groundingResetPort == null) {
+            return;
+        }
+        Long factSheetId = event.getFactSheetId();
+        if (factSheetId == null) {
+            log.debug("GroundingCascadeEventListener: edge mutation {} has no factSheetId — skipping debounce",
+                    event.getEntityId());
+            return;
+        }
+        log.debug("GroundingCascadeEventListener: debouncing cascade for factSheet={} on edge mutation {} type={}",
+                factSheetId, event.getEntityId(), event.getMutationType());
+        if (groundingResetPort instanceof GroundingCascadeHook hook) {
+            hook.scheduleDebounced(factSheetId,
+                    event.getMutationType() + ":" + event.getEntityId(),
+                    GroundingProgressEvent.TRIGGER_CASCADE);
+        } else {
+            groundingResetPort.schedule(factSheetId,
+                    event.getMutationType() + ":" + event.getEntityId(),
+                    GroundingProgressEvent.TRIGGER_CASCADE);
+        }
+    }
+
+    /**
+     * React to a batch graph mutation (createNodesBatch, createEdgesBatch, etc.).
+     *
+     * <p>Batch writes arrive in bursts during a crawl. Routes through the debounced cascade
+     * so thousands of batch events collapse into a single reground after the crawl quiets down.</p>
+     *
+     * @param event the batch mutation event carrying factSheetId and item count
+     */
+    @EventListener
+    @Async
+    public void onBatchMutation(GraphBatchMutationEvent event) {
+        if (groundingResetPort == null) {
+            return;
+        }
+        Long factSheetId = event.getFactSheetId();
+        if (factSheetId == null) {
+            log.debug("GroundingCascadeEventListener: batch mutation {} has no factSheetId — skipping debounce",
+                    event.getBatchType());
+            return;
+        }
+        log.debug("GroundingCascadeEventListener: debouncing cascade for factSheet={} on batch {} count={}",
+                factSheetId, event.getBatchType(), event.getItemCount());
+        if (groundingResetPort instanceof GroundingCascadeHook hook) {
+            hook.scheduleDebounced(factSheetId,
+                    "batch:" + event.getBatchType(),
+                    GroundingProgressEvent.TRIGGER_CRAWL);
+        } else {
+            groundingResetPort.schedule(factSheetId,
+                    "batch:" + event.getBatchType(),
+                    GroundingProgressEvent.TRIGGER_CRAWL);
+        }
     }
 
     /**
@@ -116,7 +220,8 @@ public class GroundingCascadeEventListener {
     /**
      * React to an agent asserting a fact.
      *
-     * <p>Schedules a full re-ground of the affected fact sheet.</p>
+     * <p>Schedules a full re-ground of the affected fact sheet IMMEDIATELY (no debounce) because
+     * an agent assertion is an explicit, discrete action with low latency requirements.</p>
      *
      * @param event the agent fact assertion event carrying factSheetId and atomKey
      */
@@ -131,6 +236,28 @@ public class GroundingCascadeEventListener {
                         + "value={} session={}",
                 factSheetId, event.getAtomKey(), event.getValue(), event.getSessionId());
         groundingResetPort.schedule(factSheetId, "agentAssert:" + event.getAtomKey(),
+                GroundingProgressEvent.TRIGGER_ASSERT);
+    }
+
+    /**
+     * React to an agent (or REST endpoint) performing a true TMS retraction.
+     *
+     * <p>Schedules a full re-ground of the affected fact sheet IMMEDIATELY (no debounce) — a
+     * retraction is a discrete, complete write, just like an assertion. The cascade re-evaluates
+     * dependent atoms whose support may have changed due to the retraction.</p>
+     *
+     * @param event the retraction event carrying factSheetId, atomKey, and dependency counts
+     */
+    @EventListener
+    @Async
+    public void onAgentFactRetracted(AgentFactRetractedEvent event) {
+        if (groundingResetPort == null) {
+            return;
+        }
+        long factSheetId = event.getFactSheetId();
+        log.info("GroundingCascadeEventListener: scheduling cascade for factSheet={} on TMS retract '{}'",
+                factSheetId, event.getAtomKey());
+        groundingResetPort.schedule(factSheetId, "agentRetract:" + event.getAtomKey(),
                 GroundingProgressEvent.TRIGGER_ASSERT);
     }
 }

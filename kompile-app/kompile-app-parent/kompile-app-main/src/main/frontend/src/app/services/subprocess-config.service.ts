@@ -231,6 +231,14 @@ export interface JavaPathValidation {
 }
 
 /**
+ * Per-subprocess-type override (graph-matrix, learning, etc.).
+ */
+export interface SubprocessTypeConfig {
+  enabled?: boolean;
+  heapSize?: string;
+}
+
+/**
  * Service for managing subprocess ingest configuration.
  */
 @Injectable({
@@ -347,6 +355,25 @@ export class SubprocessConfigService {
    */
   getNativeImageInfo(): Observable<NativeImageInfo> {
     return this.http.get<NativeImageInfo>(`${this.baseUrl}/native-image-info`);
+  }
+
+  /**
+   * Get per-subprocess-type overrides (enabled toggle + heap size).
+   * Returns a map keyed by type id (e.g. "graph-matrix", "learning").
+   */
+  getSubprocessTypes(): Observable<{ [type: string]: SubprocessTypeConfig }> {
+    return this.http.get<{ [type: string]: SubprocessTypeConfig }>(`${this.baseUrl}/subprocess-types`);
+  }
+
+  /**
+   * Update the enabled and/or heapSize override for a specific subprocess type.
+   * Returns the full updated map after the write.
+   */
+  updateSubprocessType(type: string, cfg: SubprocessTypeConfig): Observable<{ [type: string]: SubprocessTypeConfig }> {
+    return this.http.post<{ [type: string]: SubprocessTypeConfig }>(
+      `${this.baseUrl}/subprocess-types/${encodeURIComponent(type)}`,
+      cfg
+    );
   }
 
   // ==================== Subprocess Restart Methods ====================

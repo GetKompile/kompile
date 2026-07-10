@@ -58,6 +58,13 @@
 .csm-title { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; }
 .csm-title strong { font-size: 0.9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .csm-subtitle { font-size: 0.72rem; color: var(--text-secondary); }
+.csm-live-hint {
+  font-size: 0.72rem;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 .csm-badges { display: flex; gap: 4px; flex: 0 0 auto; }
 .csm-badge {

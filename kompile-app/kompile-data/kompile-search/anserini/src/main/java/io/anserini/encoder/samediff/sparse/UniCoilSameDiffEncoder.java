@@ -186,6 +186,7 @@ public class UniCoilSameDiffEncoder extends SameDiffSparseEncoder {
             }
             int iterLength = Math.min(actualLength, (int) reluOutput.columns());
 
+            float[] weights = toHostFloatVector(reluOutput, iterLength);
             for (int i = 0; i < iterLength; ++i) {
                 String token = vocab.getToken((int) encoding.inputIds[i]);
                 if (token.equals(SamediffBertVocabulary.CLS_TOKEN) ||
@@ -194,7 +195,7 @@ public class UniCoilSameDiffEncoder extends SameDiffSparseEncoder {
                         token.equals(vocab.getUnknownTokenValue())) {
                     continue;
                 }
-                float weight = reluOutput.getFloat(0, i);
+                float weight = weights[i];
                 if (weight > 1e-5) {
                     tokenWeightMap.merge(token, weight, Float::sum);
                 }
@@ -207,6 +208,19 @@ public class UniCoilSameDiffEncoder extends SameDiffSparseEncoder {
             // CRITICAL: Close all intermediate arrays to prevent off-heap memory leaks
             closeArraySafely(reshapedActivations);
             closeArraySafely(reluOutput);
+        }
+    }
+
+    private float[] toHostFloatVector(INDArray array, int length) {
+        if (array.elementWiseStride() == 1) {
+            return array.data().getFloatsAt(array.offset(), length);
+        }
+        INDArray copy = null;
+        try {
+            copy = array.dup('c');
+            return copy.data().getFloatsAt(copy.offset(), length);
+        } finally {
+            closeArraySafely(copy);
         }
     }
 

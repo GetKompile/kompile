@@ -18,6 +18,11 @@ import { Injectable } from '@angular/core';
 import { HttpClient, HttpParams } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import { BaseService } from './base.service';
+import {
+  ProcessReasoningTrace,
+  ProcessSuggestionListResponse,
+  ProcessSuggestionSummary
+} from '../models/process-reasoning-models';
 
 // ─── Interfaces ───────────────────────────────────────────────────────────────
 
@@ -616,6 +621,27 @@ export class ProcessEngineService extends BaseService {
     return this.http.post<any>(`${this.backendUrl}/process/discovery/suggest`, { graphNodeIds, options });
   }
 
+  /**
+   * Run the LLM-free mining + entailment engine over every fact sheet that has a graph.
+   * Suggestions land in the same store the legacy engine writes to, carrying ENTAILED /
+   * FUSION / CONTRADICTION evidence and mined step dependencies.
+   */
+  mineAllProcesses(): Observable<any> {
+    return this.http.post<any>(`${this.backendUrl}/process/mining/discover-all`, {});
+  }
+
+  /** Run graph event mining and reasoning for one fact sheet. */
+  mineProcesses(factSheetId: number): Observable<ProcessSuggestionSummary | null> {
+    return this.http.get<ProcessSuggestionSummary | null>(
+      `${this.backendUrl}/process/mining/discover`, { params: { factSheetId } });
+  }
+
+  /** Mermaid sources of the mined process map: dfg (directly-follows) + tree (Inductive Miner blocks). */
+  miningMermaid(factSheetId: number): Observable<{ dfg: string; tree: string }> {
+    return this.http.get<{ dfg: string; tree: string }>(
+      `${this.backendUrl}/process/mining/mermaid`, { params: { factSheetId: factSheetId } });
+  }
+
   analyzeEmailFlows(graphNodeIds?: string[]): Observable<any> {
     return this.http.post<any>(`${this.backendUrl}/process/discovery/email-flows`, { graphNodeIds });
   }
@@ -638,15 +664,24 @@ export class ProcessEngineService extends BaseService {
 
   // ── Process Suggestion Store ──────────────────────────────────────────────
 
-  listStoredSuggestions(factSheetId?: number, pendingOnly: boolean = false): Observable<any> {
+  listStoredSuggestions(
+    factSheetId?: number,
+    pendingOnly: boolean = false
+  ): Observable<ProcessSuggestionListResponse> {
     let params: any = {};
     if (factSheetId != null) params.factSheetId = factSheetId.toString();
     if (pendingOnly) params.pendingOnly = 'true';
-    return this.http.get<any>(`${this.backendUrl}/process/discovery/suggestions`, { params });
+    return this.http.get<ProcessSuggestionListResponse>(
+      `${this.backendUrl}/process/discovery/suggestions`, { params });
   }
 
   getStoredSuggestion(id: string): Observable<any> {
     return this.http.get<any>(`${this.backendUrl}/process/discovery/suggestions/${id}`);
+  }
+
+  getStoredSuggestionTrace(id: string): Observable<ProcessReasoningTrace> {
+    return this.http.get<ProcessReasoningTrace>(
+      `${this.backendUrl}/process/discovery/suggestions/${id}/trace`);
   }
 
   acceptStoredSuggestion(id: string): Observable<any> {

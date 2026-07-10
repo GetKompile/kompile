@@ -63,11 +63,14 @@ class EnforcerJudgementSupportTest {
         EnforcerConfig projectActive = new EnforcerConfig();
         projectActive.setKeywordMode(true); // a project config that would otherwise enforce
 
-        // No explicit session choice (wizard skipped) → honor the project config on disk.
-        assertTrue(EnforcerConfig.shouldActivate(null, false, projectActive));
+        // Enforcement is per-session OPT-IN: when the user was never asked this run
+        // (sessionChoice == null), a config on disk must NEVER activate by itself —
+        // callers prompt via EnforcerActivationPrompt first.
+        assertFalse(EnforcerConfig.shouldActivate(null, false, projectActive),
+                "a .kompile/enforcer-config.json alone must not activate enforcement");
         assertTrue(EnforcerConfig.shouldActivate(Boolean.TRUE, false, projectActive));
 
-        // The bug fix: an explicit session "N" must win over a project config on disk.
+        // An explicit session "N" must win over a project config on disk.
         assertFalse(EnforcerConfig.shouldActivate(Boolean.FALSE, false, projectActive),
                 "a stale .kompile/enforcer-config.json must not override the session opt-out");
 

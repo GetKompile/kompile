@@ -20,6 +20,11 @@ import { MatSnackBar } from '@angular/material/snack-bar';
 import { Subject, interval } from 'rxjs';
 import { takeUntil, filter } from 'rxjs/operators';
 import { ConfirmDialogComponent, ConfirmDialogData } from '../confirm-dialog/confirm-dialog.component';
+import { BridgeDialogComponent, BridgeDialogData } from './bridge-dialog.component';
+import { MappingDialogComponent, MappingDialogData } from './mapping-dialog.component';
+import { AuthDialogComponent, AuthDialogData } from './auth-dialog.component';
+import { BridgeImportDialogComponent } from './bridge-import-dialog.component';
+import { TestMappingDialogComponent, TestMappingDialogData } from './test-mapping-dialog.component';
 import {
   RestMcpBridgeService,
   RestMcpBridgeConfig,
@@ -29,9 +34,6 @@ import {
   AuthType,
   TransformType,
   AuthConfig,
-  TransformConfig,
-  ParameterDef,
-  EndpointTestResult,
   DiscoveredTool
 } from '../../services/rest-mcp-bridge.service';
 
@@ -47,11 +49,6 @@ export class RestMcpBridgeComponent implements OnInit, OnDestroy {
   bridges: RestMcpBridgeConfig[] = [];
   selectedBridge: RestMcpBridgeConfig | null = null;
   isLoading = false;
-  isEditing = false;
-
-  // Editing state
-  editingBridge: RestMcpBridgeConfig | null = null;
-  editingMapping: EndpointMapping | null = null;
 
   // Discovery state
   discoverUrl = '';
@@ -64,11 +61,6 @@ export class RestMcpBridgeComponent implements OnInit, OnDestroy {
   builtInMappings: EndpointMapping[] = [];
   isLoadingBuiltIn = false;
 
-  // Test state
-  testInput = '{}';
-  testResult: EndpointTestResult | null = null;
-  isTesting = false;
-
   // Configuration options
   bridgeDirections: BridgeDirection[] = ['REST_TO_MCP', 'MCP_TO_REST'];
   authTypes: AuthType[] = ['NONE', 'API_KEY', 'BEARER', 'BASIC', 'OAUTH2'];
@@ -78,12 +70,6 @@ export class RestMcpBridgeComponent implements OnInit, OnDestroy {
 
   // UI state
   activeTab = 0; // 0=bridges, 1=mappings, 2=discover
-  showBridgeDialog = false;
-  showMappingDialog = false;
-  showAuthDialog = false;
-  showImportDialog = false;
-  showTestDialog = false;
-  importJson = '';
 
   private destroy$ = new Subject<void>();
 
@@ -139,38 +125,53 @@ export class RestMcpBridgeComponent implements OnInit, OnDestroy {
   }
 
   createBridge(): void {
-    this.editingBridge = this.bridgeService.createDefaultConfig();
-    this.isEditing = false;
-    this.showBridgeDialog = true;
+    const bridge = this.bridgeService.createDefaultConfig();
+    const data: BridgeDialogData = {
+      bridge,
+      isEditing: false,
+      bridgeDirections: this.bridgeDirections,
+      authTypes: this.authTypes
+    };
+    this.dialog.open(BridgeDialogComponent, { data })
+      .afterClosed()
+      .pipe(takeUntil(this.destroy$))
+      .subscribe((result: RestMcpBridgeConfig | null) => {
+        if (!result) return;
+        this.bridgeService.createBridge(result).subscribe({
+          next: (saved) => {
+            this.showSuccess('Bridge created successfully');
+            this.loadBridges();
+            this.selectedBridge = saved;
+          },
+          error: (err) => {
+            this.showError('Failed to save bridge: ' + (err.error?.error || err.message));
+          }
+        });
+      });
   }
 
   editBridge(bridge: RestMcpBridgeConfig): void {
-    this.editingBridge = JSON.parse(JSON.stringify(bridge)); // Deep copy
-    this.isEditing = true;
-    this.showBridgeDialog = true;
-  }
-
-  saveBridge(): void {
-    if (!this.editingBridge) return;
-
-    const operation = this.isEditing && this.editingBridge.id
-      ? this.bridgeService.updateBridge(this.editingBridge.id, this.editingBridge)
-      : this.bridgeService.createBridge(this.editingBridge);
-
-    operation.subscribe({
-      next: (saved) => {
-        this.showSuccess(`Bridge ${this.isEditing ? 'updated' : 'created'} successfully`);
-        this.showBridgeDialog = false;
-        this.editingBridge = null;
-        this.loadBridges();
-        if (!this.isEditing) {
-          this.selectedBridge = saved;
-        }
-      },
-      error: (err) => {
-        this.showError('Failed to save bridge: ' + (err.error?.error || err.message));
-      }
-    });
+    const data: BridgeDialogData = {
+      bridge: JSON.parse(JSON.stringify(bridge)),
+      isEditing: true,
+      bridgeDirections: this.bridgeDirections,
+      authTypes: this.authTypes
+    };
+    this.dialog.open(BridgeDialogComponent, { data })
+      .afterClosed()
+      .pipe(takeUntil(this.destroy$))
+      .subscribe((result: RestMcpBridgeConfig | null) => {
+        if (!result || !result.id) return;
+        this.bridgeService.updateBridge(result.id, result).subscribe({
+          next: () => {
+            this.showSuccess('Bridge updated successfully');
+            this.loadBridges();
+          },
+          error: (err) => {
+            this.showError('Failed to save bridge: ' + (err.error?.error || err.message));
+          }
+        });
+      });
   }
 
   deleteBridge(bridge: RestMcpBridgeConfig): void {
@@ -267,17 +268,19 @@ export class RestMcpBridgeComponent implements OnInit, OnDestroy {
   }
 
   openImportDialog(): void {
-    this.importJson = '';
-    this.showImportDialog = true;
+    this.dialog.open(BridgeImportDialogComponent)
+      .afterClosed()
+      .pipe(takeUntil(this.destroy$))
+      .subscribe((result: string | null) => {
+        if (!result) return;
+        this.importBridgeJson(result);
+      });
   }
 
-  importBridge(): void {
-    if (!this.importJson.trim()) return;
-    this.bridgeService.importConfig(this.importJson).subscribe({
+  importBridgeJson(json: string): void {
+    this.bridgeService.importConfig(json).subscribe({
       next: () => {
         this.showSuccess('Bridge imported successfully');
-        this.showImportDialog = false;
-        this.importJson = '';
         this.loadBridges();
       },
       error: (err) => {
@@ -289,47 +292,49 @@ export class RestMcpBridgeComponent implements OnInit, OnDestroy {
   // Mapping Operations
   createMapping(): void {
     if (!this.selectedBridge) return;
-    this.editingMapping = this.bridgeService.createDefaultMapping();
-    this.showMappingDialog = true;
+    const data: MappingDialogData = {
+      mapping: this.bridgeService.createDefaultMapping(),
+      httpMethods: this.httpMethods,
+      parameterTypes: this.parameterTypes
+    };
+    this.dialog.open(MappingDialogComponent, { data })
+      .afterClosed()
+      .pipe(takeUntil(this.destroy$))
+      .subscribe((result: EndpointMapping | null) => {
+        if (!result || !this.selectedBridge?.id) return;
+        this.bridgeService.addMapping(this.selectedBridge.id, result).subscribe({
+          next: (updated) => {
+            this.showSuccess('Mapping added successfully');
+            this.selectedBridge = updated;
+          },
+          error: (err) => {
+            this.showError('Failed to add mapping: ' + (err.error?.error || err.message));
+          }
+        });
+      });
   }
 
   editMapping(mapping: EndpointMapping): void {
-    this.editingMapping = JSON.parse(JSON.stringify(mapping));
-    this.showMappingDialog = true;
-  }
-
-  saveMapping(): void {
-    if (!this.editingMapping || !this.selectedBridge?.id) return;
-
-    const existingIndex = this.selectedBridge.mappings.findIndex(m => m.id === this.editingMapping!.id);
-
-    if (existingIndex >= 0 && this.editingMapping.id) {
-      // Update existing mapping
-      this.bridgeService.updateMapping(this.selectedBridge.id, this.editingMapping.id, this.editingMapping).subscribe({
-        next: (updated) => {
-          this.showSuccess('Mapping updated successfully');
-          this.selectedBridge = updated;
-          this.showMappingDialog = false;
-          this.editingMapping = null;
-        },
-        error: (err) => {
-          this.showError('Failed to update mapping: ' + (err.error?.error || err.message));
-        }
+    const data: MappingDialogData = {
+      mapping: JSON.parse(JSON.stringify(mapping)),
+      httpMethods: this.httpMethods,
+      parameterTypes: this.parameterTypes
+    };
+    this.dialog.open(MappingDialogComponent, { data })
+      .afterClosed()
+      .pipe(takeUntil(this.destroy$))
+      .subscribe((result: EndpointMapping | null) => {
+        if (!result || !this.selectedBridge?.id || !result.id) return;
+        this.bridgeService.updateMapping(this.selectedBridge.id, result.id, result).subscribe({
+          next: (updated) => {
+            this.showSuccess('Mapping updated successfully');
+            this.selectedBridge = updated;
+          },
+          error: (err) => {
+            this.showError('Failed to update mapping: ' + (err.error?.error || err.message));
+          }
+        });
       });
-    } else {
-      // Add new mapping
-      this.bridgeService.addMapping(this.selectedBridge.id, this.editingMapping).subscribe({
-        next: (updated) => {
-          this.showSuccess('Mapping added successfully');
-          this.selectedBridge = updated;
-          this.showMappingDialog = false;
-          this.editingMapping = null;
-        },
-        error: (err) => {
-          this.showError('Failed to add mapping: ' + (err.error?.error || err.message));
-        }
-      });
-    }
   }
 
   deleteMapping(mapping: EndpointMapping): void {
@@ -565,81 +570,27 @@ export class RestMcpBridgeComponent implements OnInit, OnDestroy {
 
   // Test Operations
   openTestDialog(mapping: EndpointMapping): void {
-    this.editingMapping = mapping;
-    this.testInput = '{}';
-    this.testResult = null;
-    this.showTestDialog = true;
+    if (!this.selectedBridge?.id) return;
+    const data: TestMappingDialogData = {
+      mapping,
+      bridgeId: this.selectedBridge.id
+    };
+    this.dialog.open(TestMappingDialogComponent, { data });
   }
 
-  runTest(): void {
-    if (!this.selectedBridge?.id || !this.editingMapping?.id) return;
-
-    this.isTesting = true;
-    this.testResult = null;
-
-    let input: any;
-    try {
-      input = JSON.parse(this.testInput);
-    } catch (e) {
-      this.showError('Invalid JSON input');
-      this.isTesting = false;
-      return;
-    }
-
-    this.bridgeService.testMapping(this.selectedBridge.id, this.editingMapping.id, input).subscribe({
-      next: (result) => {
-        this.testResult = result;
-        this.isTesting = false;
-      },
-      error: (err) => {
-        this.testResult = {
-          success: false,
-          statusCode: 0,
-          error: err.error?.error || err.message,
-          durationMs: 0
-        };
-        this.isTesting = false;
-      }
-    });
-  }
-
-  // Auth Configuration
-  openAuthDialog(): void {
-    if (!this.editingBridge) return;
-    this.showAuthDialog = true;
-  }
-
-  onAuthTypeChange(): void {
-    if (!this.editingBridge?.authConfig) return;
-    const type = this.editingBridge.authConfig.type;
-    this.editingBridge.authConfig = this.bridgeService.createDefaultAuthConfig(type);
-  }
-
-  // Parameter Management
-  addQueryParam(): void {
-    if (!this.editingMapping?.restEndpoint) return;
-    if (!this.editingMapping.restEndpoint.queryParams) {
-      this.editingMapping.restEndpoint.queryParams = [];
-    }
-    this.editingMapping.restEndpoint.queryParams.push(this.bridgeService.createDefaultParameter());
-  }
-
-  removeQueryParam(index: number): void {
-    if (!this.editingMapping?.restEndpoint?.queryParams) return;
-    this.editingMapping.restEndpoint.queryParams.splice(index, 1);
-  }
-
-  addPathParam(): void {
-    if (!this.editingMapping?.restEndpoint) return;
-    if (!this.editingMapping.restEndpoint.pathParams) {
-      this.editingMapping.restEndpoint.pathParams = [];
-    }
-    this.editingMapping.restEndpoint.pathParams.push(this.bridgeService.createDefaultParameter());
-  }
-
-  removePathParam(index: number): void {
-    if (!this.editingMapping?.restEndpoint?.pathParams) return;
-    this.editingMapping.restEndpoint.pathParams.splice(index, 1);
+  // Auth Configuration — opened from within the bridge context
+  openAuthDialog(authConfig: AuthConfig): void {
+    const data: AuthDialogData = {
+      authConfig,
+      authTypes: this.authTypes
+    };
+    this.dialog.open(AuthDialogComponent, { data })
+      .afterClosed()
+      .pipe(takeUntil(this.destroy$))
+      .subscribe((result: AuthConfig) => {
+        if (!result || !this.selectedBridge) return;
+        this.selectedBridge.authConfig = result;
+      });
   }
 
   // Helper methods
@@ -668,31 +619,6 @@ export class RestMcpBridgeComponent implements OnInit, OnDestroy {
 
   getAuthTypeDisplayName(type: AuthType): string {
     return this.bridgeService.getAuthTypeDisplayName(type);
-  }
-
-  cancelBridgeDialog(): void {
-    this.showBridgeDialog = false;
-    this.editingBridge = null;
-  }
-
-  cancelMappingDialog(): void {
-    this.showMappingDialog = false;
-    this.editingMapping = null;
-  }
-
-  cancelAuthDialog(): void {
-    this.showAuthDialog = false;
-  }
-
-  cancelImportDialog(): void {
-    this.showImportDialog = false;
-    this.importJson = '';
-  }
-
-  cancelTestDialog(): void {
-    this.showTestDialog = false;
-    this.testResult = null;
-    this.editingMapping = null;
   }
 
   private showSuccess(message: string): void {

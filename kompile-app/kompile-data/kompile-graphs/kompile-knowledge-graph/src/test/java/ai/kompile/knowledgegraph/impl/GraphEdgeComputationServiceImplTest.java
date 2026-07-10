@@ -27,6 +27,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.ArgumentMatchers;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
@@ -40,6 +41,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -117,13 +119,30 @@ class GraphEdgeComputationServiceImplTest {
     // ═══════════════════════════════════════════════════════════════════════════
 
     @Test
-    void embeddingSimilarity_skipsWhenEmbeddingModelIsNull() {
-        // embeddingModel NOT injected — field stays null
-        // impl returns early when embeddingModel == null, before calling knowledgeGraphService
+    void embeddingSimilarity_withoutModelOrPersistedVectorsCreatesNoEdges() {
+        when(knowledgeGraphService.getNodesByType(NodeLevel.DOCUMENT)).thenReturn(List.of());
+
         service.computeEmbeddingSimilarityEdges(0.7, 10);
 
-        verify(knowledgeGraphService, never()).getNodesByType(any());
         verify(knowledgeGraphService, never()).createEdge(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void embeddingSimilarity_reusesPersistedVectorsWithoutModel() {
+        GraphNode first = documentNode("n1", "First");
+        GraphNode second = documentNode("n2", "Second");
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(77L, NodeLevel.DOCUMENT))
+                .thenReturn(List.of(first, second));
+        when(knowledgeGraphService.exportNodeEmbeddings(77L)).thenReturn(Map.of(
+                "n1", Nd4j.create(new float[]{1.0f, 0.0f}),
+                "n2", Nd4j.create(new float[]{1.0f, 0.0f})));
+        when(knowledgeGraphService.findEdgeBetweenNodesBidirectional("n1", "n2"))
+                .thenReturn(Optional.empty());
+
+        service.computeEmbeddingSimilarityEdges(77L, 0.7, 10);
+
+        verify(knowledgeGraphService).createEdge(
+                eq("n1"), eq("n2"), eq(EdgeType.EMBEDDING_SIMILARITY), anyDouble(), anyString());
     }
 
     @Test
@@ -265,6 +284,57 @@ class GraphEdgeComputationServiceImplTest {
         // Should not propagate exception — running flag must be cleared
         assertDoesNotThrow(() -> service.computeEmbeddingSimilarityEdges(0.7, 10));
         assertFalse(service.isComputationRunning());
+    }
+
+    @Test
+    void backfillDocumentNodeEmbeddingsUsesInjectedModelAndActiveStore() throws Exception {
+        injectField("embeddingModel", embeddingModel);
+        when(embeddingModel.canEmbed()).thenReturn(true);
+        when(embeddingModel.getOptimalBatchSize()).thenReturn(8);
+        when(embeddingModel.getMaxBatchSize()).thenReturn(16);
+
+        GraphNode first = documentNode("n1", "First");
+        GraphNode second = documentNode("n2", "Second");
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(7L, NodeLevel.DOCUMENT))
+                .thenReturn(List.of(first, second));
+        when(knowledgeGraphService.exportNodeEmbeddings(7L)).thenReturn(Map.of());
+        when(embeddingModel.embed(anyList())).thenReturn(Nd4j.create(new float[][]{
+                {1.0f, 0.0f, 0.0f},
+                {0.0f, 1.0f, 0.0f}
+        }));
+        when(knowledgeGraphService.applyNodeEmbeddings(anyMap())).thenReturn(2);
+
+        int applied = service.backfillDocumentNodeEmbeddings(7L);
+
+        assertEquals(2, applied);
+        verify(embeddingModel).embed(ArgumentMatchers.<List<String>>argThat(
+                texts -> texts.size() == 2));
+        verify(knowledgeGraphService).applyNodeEmbeddings(argThat(embeddings ->
+                embeddings.keySet().equals(Set.of("n1", "n2"))));
+    }
+
+    @Test
+    void backfillDocumentNodeEmbeddingsSkipsVectorsAlreadyInStore() throws Exception {
+        injectField("embeddingModel", embeddingModel);
+        when(embeddingModel.canEmbed()).thenReturn(true);
+        when(embeddingModel.getOptimalBatchSize()).thenReturn(8);
+        when(embeddingModel.getMaxBatchSize()).thenReturn(16);
+
+        GraphNode existing = documentNode("n1", "Existing");
+        GraphNode missing = documentNode("n2", "Missing");
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(8L, NodeLevel.DOCUMENT))
+                .thenReturn(List.of(existing, missing));
+        when(knowledgeGraphService.exportNodeEmbeddings(8L))
+                .thenReturn(Map.of("n1", Nd4j.create(new float[]{1.0f, 0.0f})));
+        when(embeddingModel.embed(anyList()))
+                .thenReturn(Nd4j.create(new float[][]{{0.0f, 1.0f}}));
+        when(knowledgeGraphService.applyNodeEmbeddings(anyMap())).thenReturn(1);
+
+        assertEquals(1, service.backfillDocumentNodeEmbeddings(8L));
+        verify(embeddingModel).embed(ArgumentMatchers.<List<String>>argThat(
+                texts -> texts.size() == 1 && texts.get(0).startsWith("Missing")));
+        verify(knowledgeGraphService).applyNodeEmbeddings(argThat(embeddings ->
+                embeddings.keySet().equals(Set.of("n2"))));
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

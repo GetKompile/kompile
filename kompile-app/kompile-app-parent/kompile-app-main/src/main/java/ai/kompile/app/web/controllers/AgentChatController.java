@@ -18,7 +18,11 @@ package ai.kompile.app.web.controllers;
 
 import ai.kompile.app.services.agent.AgentChatService;
 import ai.kompile.app.services.agent.AgentRegistryService;
+import ai.kompile.app.services.agent.ChatContextBudgetService;
+import ai.kompile.app.services.agent.ChatHistoryCompactor;
+import ai.kompile.app.web.dto.AgentChatCompactRequest;
 import ai.kompile.app.web.dto.AgentChatRequest;
+import ai.kompile.core.agent.AgentProvider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
@@ -26,7 +30,9 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -129,6 +135,71 @@ public class AgentChatController {
                 "status", "ok",
                 "service", "agent-chat"
         ));
+    }
+
+    /**
+     * The context budget for an agent's lane: the model's real context window
+     * (staging metadata for local models, model catalogs otherwise), its output
+     * reservation, and the resulting input budget. The chat window uses this to
+     * show context usage and decide when to compact.
+     */
+    @GetMapping("/context-budget")
+    public ResponseEntity<Map<String, Object>> contextBudget(@RequestParam String agentName) {
+        Optional<AgentProvider> agent = agentRegistryService.getAgent(agentName);
+        if (agent.isEmpty()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Agent not found: " + agentName));
+        }
+        try {
+            ChatContextBudgetService.ContextBudget budget = chatService.resolveContextBudget(agent.get());
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("agentName", budget.agentName());
+            body.put("model", budget.model());
+            body.put("contextWindow", budget.contextWindow());
+            body.put("maxOutputTokens", budget.maxOutputTokens());
+            body.put("inputBudgetTokens", budget.inputBudgetTokens());
+            body.put("source", budget.source());
+            body.put("compactTriggerRatio", ChatHistoryCompactor.TRIGGER_RATIO);
+            return ResponseEntity.ok(body);
+        } catch (Exception e) {
+            log.warn("Context budget resolution failed for {}: {}", sanitizeForLog(agentName), e.getMessage());
+            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    /**
+     * Manually compact a chat window's history: older messages are summarized through
+     * the same lane the agent chats on, recent messages are preserved verbatim, and the
+     * compacted history (led by the summary exchange) is returned for the window to adopt.
+     */
+    @PostMapping("/compact")
+    public ResponseEntity<Map<String, Object>> compact(@RequestBody AgentChatCompactRequest request) {
+        Optional<AgentProvider> agent = agentRegistryService.getAgent(request.getAgentName());
+        if (agent.isEmpty()) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("error", "Agent not found: " + request.getAgentName()));
+        }
+        if (request.getChatHistory() == null || request.getChatHistory().isEmpty()) {
+            return ResponseEntity.ok(Map.of("compacted", false, "reason", "history is empty"));
+        }
+        try {
+            ChatContextBudgetService.ContextBudget budget = chatService.resolveContextBudget(agent.get());
+            ChatHistoryCompactor.Result result = chatService.compactHistory(
+                    agent.get(), request.getChatHistory(), request.getFocusInstruction());
+
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("compacted", result.compacted());
+            body.put("tokensBefore", result.tokensBefore());
+            body.put("tokensAfter", result.tokensAfter());
+            body.put("contextWindow", budget.contextWindow());
+            body.put("model", budget.model());
+            body.put("summary", result.summary());
+            body.put("usedFallback", result.usedFallback());
+            body.put("compactedHistory", result.history());
+            return ResponseEntity.ok(body);
+        } catch (Exception e) {
+            log.error("Chat compaction failed for {}: {}", sanitizeForLog(request.getAgentName()), e.getMessage());
+            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
+        }
     }
 
     /**

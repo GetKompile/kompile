@@ -371,63 +371,6 @@
   word-break: break-word;
 }
 
-/* Dialog */
-.dialog-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-color: rgba(0, 0, 0, 0.5);
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  z-index: 1000;
-}
-
-.dialog {
-  background-color: var(--bg-surface);
-  border-radius: 8px;
-  padding: 24px;
-  max-width: 500px;
-  width: 90%;
-  max-height: 90vh;
-  overflow-y: auto;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
-}
-
-.dialog-large {
-  max-width: 600px;
-}
-
-.dialog h3 {
-  margin: 0 0 20px;
-  color: var(--text-primary);
-}
-
-.form-content {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.form-content mat-form-field {
-  width: 100%;
-}
-
-.full-width {
-  width: 100%;
-}
-
-.dialog-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-top: 24px;
-  padding-top: 16px;
-  border-top: 1px solid var(--border-color);
-}
-
 /* Environment Variables Section */
 .env-section {
   margin-top: 8px;
@@ -669,11 +612,6 @@ code.detail-value {
 
   .toolbar button {
     width: 100%;
-  }
-
-  .dialog {
-    width: 95%;
-    padding: 16px;
   }
 
   .env-row {

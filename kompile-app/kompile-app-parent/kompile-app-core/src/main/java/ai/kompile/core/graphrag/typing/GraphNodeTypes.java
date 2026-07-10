@@ -43,8 +43,54 @@ public final class GraphNodeTypes {
     private static final List<String> TYPE_KEYS = List.of("entity_type", "entityType");
     private static final List<String> SUBTYPE_KEYS = List.of("entity_subtype", "entitySubtype");
 
+    /**
+     * The metadata keys carrying an OWL is-a CLOSURE (most-specific-first list, e.g.
+     * {@code [Chianti, RedWine, Wine]}), as written by OWL classification
+     * ({@code owlInferredTypes}) and its historical variants. The SINGLE definition — hierarchy
+     * retrieval ({@code matchesEntityType}), aggregation, and process-mining taxonomy roll-up all
+     * read these same keys; per-consumer copies of this list drift.
+     */
+    public static final List<String> TYPE_CLOSURE_KEYS = List.of(
+            "owlInferredTypes", "ontology.inferredTypes", "owl.inferredTypes",
+            "inferredTypes", "inferred_types", "typeClosure");
+
     /** Specific-to-broad is-a edge extracted from crawl type metadata. */
     public record TypeHierarchyEdge(String type, String parentType, String typeKey, String parentKey) {
+    }
+
+    /**
+     * The node's materialized is-a closure from the first populated {@link #TYPE_CLOSURE_KEYS}
+     * entry (blank elements skipped); empty when OWL classification never touched the node.
+     */
+    public static List<String> resolveTypeClosure(Map<String, Object> metadata) {
+        if (metadata == null || metadata.isEmpty()) {
+            return List.of();
+        }
+        for (String key : TYPE_CLOSURE_KEYS) {
+            Object value = metadata.get(key);
+            if (value instanceof List<?> list && !list.isEmpty()) {
+                List<String> closure = new ArrayList<>(list.size());
+                for (Object element : list) {
+                    if (element instanceof String s && !s.isBlank()) {
+                        closure.add(s.trim());
+                    }
+                }
+                if (!closure.isEmpty()) {
+                    return List.copyOf(closure);
+                }
+            }
+        }
+        return List.of();
+    }
+
+    /**
+     * The DECLARED entity type only ({@code entity_type}/{@code entityType}) — no category or
+     * subtype fallback. This is the reading activity classification, actor typing, and relation
+     * domain/range induction want: the crawl's own type declaration, with
+     * {@link #resolveEntityType} reserved for the category-first conformance precedence.
+     */
+    public static String resolveDeclaredType(Map<String, Object> metadata) {
+        return firstNonBlank(metadata, TYPE_KEYS);
     }
 
     /**

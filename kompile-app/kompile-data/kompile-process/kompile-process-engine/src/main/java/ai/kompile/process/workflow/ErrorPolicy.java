@@ -21,6 +21,8 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.io.Serializable;
+
 /**
  * Defines how the engine responds to an unexpected error in a {@link ProcessStep}.
  */
@@ -28,7 +30,9 @@ import lombok.NoArgsConstructor;
 @Builder
 @AllArgsConstructor
 @NoArgsConstructor
-public class ErrorPolicy {
+public class ErrorPolicy implements Serializable {
+
+    private static final long serialVersionUID = 1L;
 
     private ErrorAction onError;
     /** Maximum number of automatic retries before the policy falls through. */

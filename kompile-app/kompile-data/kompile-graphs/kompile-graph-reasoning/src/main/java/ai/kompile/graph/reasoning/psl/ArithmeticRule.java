@@ -9,9 +9,11 @@
  */
 package ai.kompile.graph.reasoning.psl;
 
+import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -55,9 +57,19 @@ import java.util.regex.Pattern;
  */
 public record ArithmeticRule(double weight, boolean hard, boolean squared,
                              List<ArithmeticTerm> lhs, List<ArithmeticTerm> rhs,
-                             RelOp op, List<FilterClause> filters) {
+                             RelOp op, List<FilterClause> filters) implements Serializable {
 
     public ArithmeticRule {
+        if (Double.isNaN(weight) || weight < 0.0) {
+            throw new IllegalArgumentException("Rule weight must be non-negative, got: " + weight);
+        }
+        if (weight == Double.POSITIVE_INFINITY) {
+            hard = true;
+            squared = true;
+        } else if (hard) {
+            weight = Double.POSITIVE_INFINITY;
+            squared = true;
+        }
         lhs = List.copyOf(lhs);
         rhs = List.copyOf(rhs);
         filters = List.copyOf(filters);
@@ -70,7 +82,7 @@ public record ArithmeticRule(double weight, boolean hard, boolean squared,
      * If {@code predicate} is {@code null} this is a numeric constant ({@code coefficient}).
      */
     public record ArithmeticTerm(String predicate, List<Term> args,
-                                 double coefficient, boolean summationVariable) {
+                                 double coefficient, boolean summationVariable) implements Serializable {
         public ArithmeticTerm {
             args = (args == null) ? List.of() : List.copyOf(args);
         }
@@ -79,7 +91,7 @@ public record ArithmeticRule(double weight, boolean hard, boolean squared,
         public boolean isConstant() { return predicate == null; }
 
         /** The canonical atom key for a fully ground term (no summation variables). */
-        public String groundKey(java.util.Map<String, String> binding) {
+        public String groundKey(Map<String, String> binding) {
             if (isConstant()) throw new IllegalStateException("Cannot key a numeric constant term");
             StringBuilder sb = new StringBuilder(predicate).append('(');
             for (int i = 0; i < args.size(); i++) {
@@ -96,7 +108,7 @@ public record ArithmeticRule(double weight, boolean hard, boolean squared,
      * A filter clause {@code {V: Predicate(V)}} that restricts the domain of a
      * summation variable to constants for which the given predicate is true.
      */
-    public record FilterClause(String variable, PslAtom condition) {}
+    public record FilterClause(String variable, PslAtom condition) implements Serializable {}
 
     // ─── Factory methods ──────────────────────────────────────────────────────
 

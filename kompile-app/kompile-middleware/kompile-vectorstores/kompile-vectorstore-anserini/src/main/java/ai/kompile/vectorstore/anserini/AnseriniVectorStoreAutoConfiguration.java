@@ -38,6 +38,21 @@ public class AnseriniVectorStoreAutoConfiguration {
 
     private static final Logger log = LoggerFactory.getLogger(AnseriniVectorStoreAutoConfiguration.class);
 
+    /**
+     * Self-contained fallback: auto-configurations activate in EVERY Spring context
+     * (subprocess contexts included) regardless of component scanning, but
+     * {@link AnseriniVectorStoreProperties} is a plain {@code @Component} in this
+     * package — contexts that don't scan it (e.g. the graph-matrix subprocess,
+     * which scans knowledgegraph/core only) failed with NoSuchBeanDefinition.
+     * The main context's scanned bean wins via {@code @ConditionalOnMissingBean}.
+     */
+    @Bean
+    @org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean(AnseriniVectorStoreProperties.class)
+    public AnseriniVectorStoreProperties anseriniVectorStoreProperties(
+            org.springframework.core.env.Environment environment) {
+        return new AnseriniVectorStoreProperties(environment.getProperty("kompile.data.dir"));
+    }
+
     @Bean
     public AnseriniVectorStoreImpl anseriniVectorStore(
             AnseriniVectorStoreProperties properties,

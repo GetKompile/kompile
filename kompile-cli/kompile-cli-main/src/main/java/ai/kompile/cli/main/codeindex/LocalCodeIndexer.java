@@ -219,11 +219,11 @@ public class LocalCodeIndexer {
             Map<String, IndexFileStore.FileFingerprint> oldFingerprints =
                     forceReindex ? new LinkedHashMap<>() : store.loadFingerprints();
 
-            // Collect current source files
-            List<Path> sourceFiles = collectSourceFiles(absRoot, includeSet, excludeSet);
+            // Collect current source files (walk captures mtime+size — no re-stat later)
+            List<SourceFile> sourceFiles = collectSourceFiles(absRoot, includeSet, excludeSet);
             Set<String> currentRelPaths = new LinkedHashSet<>();
-            for (Path f : sourceFiles) {
-                currentRelPaths.add(absRoot.relativize(f).toString());
+            for (SourceFile f : sourceFiles) {
+                currentRelPaths.add(f.relPath());
             }
 
             out.println("Found " + sourceFiles.size() + " source files");
@@ -232,34 +232,32 @@ public class LocalCodeIndexer {
             Set<String> deleted = new LinkedHashSet<>(oldFingerprints.keySet());
             deleted.removeAll(currentRelPaths);
 
-            List<Path> toReparse = new ArrayList<>();
+            List<SourceFile> toReparse = new ArrayList<>();
             // Cache SHA-256 computed during diff phase to avoid recomputing in parse phase
-            Map<Path, String> precomputedSha = new HashMap<>();
+            Map<String, String> precomputedSha = new HashMap<>();
             int skipped = 0;
+            boolean fingerprintDriftOnly = false;
 
-            for (Path file : sourceFiles) {
-                String relPath = absRoot.relativize(file).toString();
-                BasicFileAttributes attrs = Files.readAttributes(file, BasicFileAttributes.class);
-                long mtime = attrs.lastModifiedTime().toMillis();
-                long size = attrs.size();
-
-                IndexFileStore.FileFingerprint old = oldFingerprints.get(relPath);
-                if (old != null && old.lastModified() == mtime && old.size() == size) {
+            for (SourceFile file : sourceFiles) {
+                IndexFileStore.FileFingerprint old = oldFingerprints.get(file.relPath());
+                if (old != null && old.lastModified() == file.mtime() && old.size() == file.size()) {
                     skipped++;
                     continue; // mtime+size unchanged — skip
                 }
 
                 // mtime or size changed — compute SHA-256 to confirm
                 if (old != null && !forceReindex) {
-                    String sha = IndexFileStore.sha256File(file);
+                    String sha = IndexFileStore.sha256File(file.path());
                     if (sha.equals(old.sha256())) {
                         // Content unchanged, just timestamp drift — update fingerprint only
-                        oldFingerprints.put(relPath, new IndexFileStore.FileFingerprint(mtime, size, sha));
+                        oldFingerprints.put(file.relPath(),
+                                new IndexFileStore.FileFingerprint(file.mtime(), file.size(), sha));
+                        fingerprintDriftOnly = true;
                         skipped++;
                         continue;
                     }
                     // SHA was computed and content differs — cache it for the parse phase
-                    precomputedSha.put(file, sha);
+                    precomputedSha.put(file.relPath(), sha);
                 }
 
                 toReparse.add(file);
@@ -268,6 +266,32 @@ public class LocalCodeIndexer {
             out.println("  Skipped (unchanged): " + skipped);
             out.println("  To re-index: " + toReparse.size());
             out.println("  Deleted: " + deleted.size());
+
+            // Fast path: clean tree — don't open the DB or rewrite index files.
+            // The auto-refresher runs this method before read actions every 30s;
+            // without this, every clean pass still paid a DB open, two COUNT
+            // scans and a full fingerprints+metadata rewrite.
+            if (toReparse.isEmpty() && deleted.isEmpty()) {
+                Map<String, Object> priorMeta = store.loadMetadata();
+                if (!priorMeta.isEmpty()) {
+                    if (fingerprintDriftOnly) {
+                        store.saveFingerprints(oldFingerprints);
+                    }
+                    Map<String, Integer> storedLangCounts = new TreeMap<>();
+                    if (priorMeta.get("languageCounts") instanceof Map<?, ?> lc) {
+                        for (Map.Entry<?, ?> e : lc.entrySet()) {
+                            if (e.getValue() instanceof Number n) {
+                                storedLangCounts.put(String.valueOf(e.getKey()), n.intValue());
+                            }
+                        }
+                    }
+                    int knownEntities = priorMeta.get("entitiesFound") instanceof Number n
+                            ? n.intValue() : 0;
+                    out.println("  No changes — index is up to date");
+                    return new IndexResult(projectId, absRoot.toString(), currentRelPaths.size(),
+                            knownEntities, 0, storedLangCounts, skipped, 0);
+                }
+            }
 
             // Open DB and perform incremental update
             Map<String, IndexFileStore.FileFingerprint> newFingerprints = new LinkedHashMap<>(oldFingerprints);
@@ -278,165 +302,145 @@ public class LocalCodeIndexer {
             // Capture a single timestamp for the entire indexing run
             String indexTimestamp = Instant.now().toString();
 
-            // Phase 1: Parse files and compute SHA in parallel (CPU-bound, embarrassingly parallel)
+            // A fully processed file: entities + relations extracted, shard written.
             record ParsedFile(String relPath, String lang, List<Map<String, Object>> entities,
-                              String[] fileLines, IndexFileStore.FileFingerprint fingerprint) {}
+                              List<Map<String, Object>> relations,
+                              IndexFileStore.FileFingerprint fingerprint) {}
 
-            int parallelism = Math.min(Runtime.getRuntime().availableProcessors(), toReparse.size());
-            List<ParsedFile> parsedFiles;
-            if (parallelism > 1 && toReparse.size() > 10) {
-                ExecutorService parsePool = Executors.newFixedThreadPool(parallelism);
-                try {
-                    List<Future<ParsedFile>> futures = new ArrayList<>(toReparse.size());
-                    for (Path file : toReparse) {
-                        futures.add(parsePool.submit(() -> {
-                            String relPath = absRoot.relativize(file).toString();
-                            String lang = detectLanguage(file);
-                            if (lang == null) return null;
-
-                            String content = Files.readString(file);
-                            String[] lines = content.split("\n", -1);
-
-                            List<Map<String, Object>> fileEntities = new ArrayList<>();
-
-                            // FILE entity
-                            Map<String, Object> fileEntity = new LinkedHashMap<>();
-                            fileEntity.put("projectId", projectId);
-                            fileEntity.put("entityType", "FILE");
-                            fileEntity.put("name", file.getFileName().toString());
-                            fileEntity.put("fullyQualifiedName", relPath);
-                            fileEntity.put("filePath", relPath);
-                            fileEntity.put("language", lang);
-                            fileEntity.put("startLine", 1);
-                            fileEntity.put("endLine", lines.length);
-                            fileEntity.put("indexedAt", indexTimestamp);
-                            fileEntities.add(fileEntity);
-
-                            // Parse entities from content
-                            fileEntities.addAll(parseEntities(lines, relPath, projectId, lang));
-
-                            // Compute fingerprint — reuse SHA from diff phase if available
-                            BasicFileAttributes attrs = Files.readAttributes(file, BasicFileAttributes.class);
-                            String sha = precomputedSha.getOrDefault(file, IndexFileStore.sha256File(file));
-                            IndexFileStore.FileFingerprint fp = new IndexFileStore.FileFingerprint(
-                                    attrs.lastModifiedTime().toMillis(), attrs.size(), sha);
-
-                            return new ParsedFile(relPath, lang, fileEntities, lines, fp);
-                        }));
-                    }
-
-                    parsedFiles = new ArrayList<>(futures.size());
-                    int completed = 0;
-                    for (Future<ParsedFile> future : futures) {
-                        try {
-                            ParsedFile result = future.get();
-                            if (result != null) {
-                                parsedFiles.add(result);
-                            }
-                            completed++;
-                            if (completed % 100 == 0) {
-                                out.print("  Parsed " + completed + "/" + toReparse.size() + " files\r");
-                                out.flush();
-                            }
-                        } catch (Exception e) {
-                            errorCount.incrementAndGet();
-                            if (errorCount.get() <= 5) {
-                                out.println("  Error parsing file: " + e.getMessage());
-                            } else if (errorCount.get() == 6) {
-                                out.println("  (suppressing further error details)");
-                            }
-                        }
-                    }
-                } finally {
-                    parsePool.shutdown();
-                }
-            } else {
-                // Small number of files — process sequentially to avoid thread pool overhead
-                parsedFiles = new ArrayList<>(toReparse.size());
-                for (Path file : toReparse) {
-                    try {
-                        String relPath = absRoot.relativize(file).toString();
-                        String lang = detectLanguage(file);
-                        if (lang == null) continue;
-
-                        String content = Files.readString(file);
-                        String[] lines = content.split("\n", -1);
-
-                        List<Map<String, Object>> fileEntities = new ArrayList<>();
-
-                        Map<String, Object> fileEntity = new LinkedHashMap<>();
-                        fileEntity.put("projectId", projectId);
-                        fileEntity.put("entityType", "FILE");
-                        fileEntity.put("name", file.getFileName().toString());
-                        fileEntity.put("fullyQualifiedName", relPath);
-                        fileEntity.put("filePath", relPath);
-                        fileEntity.put("language", lang);
-                        fileEntity.put("startLine", 1);
-                        fileEntity.put("endLine", lines.length);
-                        fileEntity.put("indexedAt", indexTimestamp);
-                        fileEntities.add(fileEntity);
-
-                        fileEntities.addAll(parseEntities(lines, relPath, projectId, lang));
-
-                        BasicFileAttributes attrs = Files.readAttributes(file, BasicFileAttributes.class);
-                        String sha = precomputedSha.getOrDefault(file, IndexFileStore.sha256File(file));
-                        IndexFileStore.FileFingerprint fp = new IndexFileStore.FileFingerprint(
-                                attrs.lastModifiedTime().toMillis(), attrs.size(), sha);
-
-                        parsedFiles.add(new ParsedFile(relPath, lang, fileEntities, lines, fp));
-                    } catch (Exception e) {
-                        errorCount.incrementAndGet();
-                        if (errorCount.get() <= 5) {
-                            out.println("  Error indexing file: " + e.getMessage());
-                        } else if (errorCount.get() == 6) {
-                            out.println("  (suppressing further error details)");
-                        }
-                    }
-                }
-            }
-
-            out.println("  Parsed " + parsedFiles.size() + " files, writing index...");
-
-            // Phase 2: Write to DB + shards sequentially (SQLite is single-writer)
+            // Everything per-file and DB-free runs on the parse pool: read,
+            // entity parse, relation extraction, shard write. (Relation
+            // extraction and shard writes used to run on the single DB-writer
+            // thread, and every parsed file's full line array was retained
+            // until that phase — slow and memory-heavy on big passes.)
             store.ensureFilesDir();
+            java.util.function.Function<SourceFile, ParsedFile> parseOne = file -> {
+                try {
+                    String lang = detectLanguage(file.path());
+                    if (lang == null) return null;
+
+                    String content = Files.readString(file.path());
+                    String[] lines = content.split("\n", -1);
+
+                    List<Map<String, Object>> fileEntities = new ArrayList<>();
+
+                    // FILE entity
+                    Map<String, Object> fileEntity = new LinkedHashMap<>();
+                    fileEntity.put("projectId", projectId);
+                    fileEntity.put("entityType", "FILE");
+                    fileEntity.put("name", file.path().getFileName().toString());
+                    fileEntity.put("fullyQualifiedName", file.relPath());
+                    fileEntity.put("filePath", file.relPath());
+                    fileEntity.put("language", lang);
+                    fileEntity.put("startLine", 1);
+                    fileEntity.put("endLine", lines.length);
+                    fileEntity.put("indexedAt", indexTimestamp);
+                    fileEntities.add(fileEntity);
+
+                    // Parse entities from content
+                    fileEntities.addAll(parseEntities(lines, file.relPath(), projectId, lang));
+
+                    List<Map<String, Object>> relations = LocalRelationExtractor.extract(
+                            file.relPath(), projectId, fileEntities, lines, lang);
+
+                    // Fingerprint from walk-time stat — reuse SHA from diff phase if available
+                    String sha = precomputedSha.get(file.relPath());
+                    if (sha == null) sha = IndexFileStore.sha256File(file.path());
+                    IndexFileStore.FileFingerprint fp = new IndexFileStore.FileFingerprint(
+                            file.mtime(), file.size(), sha);
+
+                    store.writeFileShard(file.relPath(), fp, fileEntities);
+
+                    return new ParsedFile(file.relPath(), lang, fileEntities, relations, fp);
+                } catch (Exception e) {
+                    int n = errorCount.incrementAndGet();
+                    if (n <= 5) {
+                        out.println("  Error indexing file: " + e.getMessage());
+                    } else if (n == 6) {
+                        out.println("  (suppressing further error details)");
+                    }
+                    return null;
+                }
+            };
+
+            int parallelism = Math.min(Runtime.getRuntime().availableProcessors(),
+                    Math.max(1, toReparse.size()));
+            boolean parallel = parallelism > 1 && toReparse.size() > 10;
+            ExecutorService parsePool = parallel ? Executors.newFixedThreadPool(parallelism) : null;
+
+            // Parsed results are drained in completion order and written to the
+            // DB as they arrive, so parsing and DB writes overlap instead of
+            // running as strict phases, and peak memory stays bounded by the
+            // in-flight files instead of the whole change set.
+            List<String> writtenPaths = new ArrayList<>(toReparse.size());
             try (IndexDatabase db = IndexDatabase.open(indexDir)) {
                 db.beginTransaction();
                 try {
-                    // Remove deleted files
+                    // Remove deleted files (bulk)
+                    db.deleteFiles(deleted);
                     for (String delPath : deleted) {
-                        db.deleteFile(delPath);
                         store.deleteFileShard(delPath);
                         newFingerprints.remove(delPath);
                     }
 
-                    // Write parsed results
+                    Iterator<ParsedFile> results;
+                    if (parallel) {
+                        CompletionService<ParsedFile> completion =
+                                new ExecutorCompletionService<>(parsePool);
+                        for (SourceFile file : toReparse) {
+                            completion.submit(() -> parseOne.apply(file));
+                        }
+                        int total = toReparse.size();
+                        results = new Iterator<>() {
+                            private int received = 0;
+
+                            @Override
+                            public boolean hasNext() {
+                                return received < total;
+                            }
+
+                            @Override
+                            public ParsedFile next() {
+                                received++;
+                                try {
+                                    return completion.take().get();
+                                } catch (InterruptedException e) {
+                                    Thread.currentThread().interrupt();
+                                    throw new RuntimeException(e);
+                                } catch (ExecutionException e) {
+                                    // parseOne handles its own errors; belt and braces
+                                    errorCount.incrementAndGet();
+                                    return null;
+                                }
+                            }
+                        };
+                    } else {
+                        results = toReparse.stream().map(parseOne).iterator();
+                    }
+
                     int processed = 0;
-                    for (ParsedFile pf : parsedFiles) {
+                    while (results.hasNext()) {
+                        ParsedFile pf = results.next();
+                        if (pf == null) continue;
                         try {
                             langCounts.merge(pf.lang(), 1, Integer::sum);
 
                             db.deleteFile(pf.relPath());
                             db.insertEntities(pf.relPath(), pf.entities());
+                            db.insertRelations(pf.relPath(), pf.relations());
+                            db.upsertFile(pf.relPath(), IndexFileStore.shardName(pf.relPath()),
+                                    pf.fingerprint());
 
-                            // Extract and insert relations for this file
-                            List<Map<String, Object>> relations = LocalRelationExtractor.extract(
-                                    pf.relPath(), projectId, pf.entities(),
-                                    pf.fileLines(), pf.lang());
-                            db.insertRelations(pf.relPath(), relations);
-
-                            db.upsertFile(pf.relPath(), IndexFileStore.shardName(pf.relPath()), pf.fingerprint());
-
-                            store.writeFileShard(pf.relPath(), pf.fingerprint(), pf.entities());
                             newFingerprints.put(pf.relPath(), pf.fingerprint());
+                            writtenPaths.add(pf.relPath());
 
                             processed++;
-                            if (processed % 500 == 0) {
-                                out.print("  Written " + processed + "/" + parsedFiles.size() + " files\r");
+                            if (processed % 200 == 0) {
+                                out.print("  Indexed " + processed + "/" + toReparse.size() + " files\r");
                                 out.flush();
                             }
                         } catch (Exception e) {
-                            errorCount.incrementAndGet();
-                            if (errorCount.get() <= 5) {
+                            int n = errorCount.incrementAndGet();
+                            if (n <= 5) {
                                 out.println("  Error writing file: " + e.getMessage());
                             }
                         }
@@ -450,11 +454,14 @@ public class LocalCodeIndexer {
                         langCounts = db.getLanguageCounts();
                     }
 
-                    // Post-commit: resolve cross-file FQN targets in relations
-                    if (!parsedFiles.isEmpty()) {
+                    // Post-commit: resolve cross-file FQN targets in relations.
+                    // Incremental passes only resolve the changed scope; a full
+                    // pass (everything re-parsed) resolves across the index.
+                    if (!writtenPaths.isEmpty()) {
                         try {
                             db.beginTransaction();
-                            int resolved = db.ensureConnectivity();
+                            int resolved = db.ensureConnectivity(
+                                    writtenPaths.size() == sourceFiles.size() ? null : writtenPaths);
                             db.commit();
                             if (resolved > 0) {
                                 out.println("  Graph: resolved " + resolved + " cross-file relation targets");
@@ -471,6 +478,8 @@ public class LocalCodeIndexer {
                 }
             } catch (java.sql.SQLException e) {
                 throw new IOException("Database error: " + e.getMessage(), e);
+            } finally {
+                if (parsePool != null) parsePool.shutdown();
             }
 
             // Save fingerprints
@@ -1302,9 +1311,17 @@ public class LocalCodeIndexer {
         return null;
     }
 
-    private List<Path> collectSourceFiles(Path root, Set<String> includes,
-                                           Set<String> excludes) throws IOException {
-        List<Path> files = new ArrayList<>();
+    /**
+     * A source file discovered during the walk, carrying the stat data the
+     * visitor already had — the diff and fingerprint steps reuse it instead
+     * of re-statting every file (previously each file was statted up to three
+     * times per pass).
+     */
+    private record SourceFile(Path path, String relPath, long mtime, long size) {}
+
+    private List<SourceFile> collectSourceFiles(Path root, Set<String> includes,
+                                                Set<String> excludes) throws IOException {
+        List<SourceFile> files = new ArrayList<>();
         SearchExclusions.GitignoreDirFilter gitFilter = SearchExclusions.loadGitignoreDirFilter(root);
         Files.walkFileTree(root, new SimpleFileVisitor<>() {
             @Override
@@ -1333,7 +1350,8 @@ public class LocalCodeIndexer {
                 if (!excludes.isEmpty() && matchesAny(fileName, excludes)) {
                     return FileVisitResult.CONTINUE;
                 }
-                files.add(file);
+                files.add(new SourceFile(file, root.relativize(file).toString(),
+                        attrs.lastModifiedTime().toMillis(), attrs.size()));
                 return FileVisitResult.CONTINUE;
             }
 

@@ -16,15 +16,34 @@
 
 package ai.kompile.cli.main.serve;
 
+import ai.kompile.cli.main.chat.agent.AgentConfig;
+import ai.kompile.cli.main.chat.enforcer.EnforcerToolCallDecision;
+import ai.kompile.cli.main.chat.enforcer.EnforcerToolCallGuard;
+import ai.kompile.cli.main.chat.gateway.CliToolGatewayInterceptor;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.tools.*;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphAssertTool;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphExplainTool;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphMebnTool;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphQueryTool;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphSubscribeTool;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphVerifyTool;
+import ai.kompile.cli.main.chat.tools.grounding.GraphReasonTool;
 import ai.kompile.cli.main.coordination.CoordinationStateManager;
+import ai.kompile.cli.mcp.stdio.DirectSubagentRunnerStdio;
+import ai.kompile.cli.mcp.stdio.McpToolAuditLogger;
+import ai.kompile.cli.mcp.stdio.StdioEnforcerTool;
+import ai.kompile.cli.mcp.stdio.StdioMultiTaskTool;
+import ai.kompile.cli.mcp.stdio.StdioPostFeedbackTool;
+import ai.kompile.cli.mcp.stdio.StdioQuorumTaskTool;
+import ai.kompile.cli.mcp.stdio.StdioTaskTool;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.io.*;
+import java.nio.channels.Channels;
 import java.nio.channels.SocketChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -32,6 +51,10 @@ import java.nio.file.Paths;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 
 /**
@@ -51,13 +74,13 @@ public class McpSocketSession implements Runnable {
     private final Runnable onClose;
 
     /** Per-session tool map — built lazily in background after first initialize request. */
-    private final java.util.concurrent.ConcurrentHashMap<String, ToolDef> tools = new java.util.concurrent.ConcurrentHashMap<>();
-    private final java.util.concurrent.atomic.AtomicBoolean toolsReady = new java.util.concurrent.atomic.AtomicBoolean(false);
+    private final ConcurrentHashMap<String, ToolDef> tools = new ConcurrentHashMap<>();
+    private final AtomicBoolean toolsReady = new AtomicBoolean(false);
     private volatile Path workDir;
     private volatile CoordinationStateManager coordinator;
-    private volatile ai.kompile.cli.main.chat.enforcer.EnforcerToolCallGuard enforcerGuard;
-    private volatile ai.kompile.cli.main.chat.gateway.CliToolGatewayInterceptor gatewayInterceptor;
-    private volatile ai.kompile.cli.mcp.stdio.McpToolAuditLogger auditLogger;
+    private volatile EnforcerToolCallGuard enforcerGuard;
+    private volatile CliToolGatewayInterceptor gatewayInterceptor;
+    private volatile McpToolAuditLogger auditLogger;
 
     /** Output writer for sending notifications. */
     private volatile OutputStreamWriter mcpOut;
@@ -73,8 +96,8 @@ public class McpSocketSession implements Runnable {
 
     @Override
     public void run() {
-        try (InputStream rawIn = java.nio.channels.Channels.newInputStream(channel);
-             OutputStream rawOut = java.nio.channels.Channels.newOutputStream(channel)) {
+        try (InputStream rawIn = Channels.newInputStream(channel);
+             OutputStream rawOut = Channels.newOutputStream(channel)) {
 
             BufferedReader in = new BufferedReader(new InputStreamReader(rawIn, StandardCharsets.UTF_8));
             mcpOut = new OutputStreamWriter(rawOut, StandardCharsets.UTF_8);
@@ -87,12 +110,12 @@ public class McpSocketSession implements Runnable {
             JsonNode header = sessionOm.readTree(headerLine);
             String workDirStr = header.has("workDir") ? header.get("workDir").asText() : null;
             this.workDir = workDirStr != null ? Paths.get(workDirStr) : pool.defaultWorkDir();
-            this.gatewayInterceptor = ai.kompile.cli.main.chat.gateway.CliToolGatewayInterceptor.fromConfig(sessionOm);
-            this.auditLogger = new ai.kompile.cli.mcp.stdio.McpToolAuditLogger(
+            this.gatewayInterceptor = CliToolGatewayInterceptor.fromConfig(sessionOm);
+            this.auditLogger = new McpToolAuditLogger(
                     sessionId, "kompile-daemon", "mcp-daemon", workDir, sessionOm);
             String enforcerPolicyFile = header.has("enforcerPolicyFile")
                     ? header.get("enforcerPolicyFile").asText(null) : null;
-            this.enforcerGuard = ai.kompile.cli.main.chat.enforcer.EnforcerToolCallGuard
+            this.enforcerGuard = EnforcerToolCallGuard
                     .fromPolicyFile(enforcerPolicyFile, sessionOm);
             if (enforcerGuard != null && enforcerGuard.isActive()) {
                 System.err.println("[daemon] Enforcer MCP guard active (" + enforcerGuard.describe() + ")");
@@ -119,8 +142,8 @@ public class McpSocketSession implements Runnable {
             // Standard MCP JSON-RPC loop — same protocol as McpStdioCommand.
             // Tool calls dispatched to a thread pool so long-running tools
             // don't block ping responses (which would cause Claude Code to drop).
-            java.util.concurrent.ExecutorService toolExecutor =
-                    java.util.concurrent.Executors.newCachedThreadPool(r -> {
+            ExecutorService toolExecutor =
+                    Executors.newCachedThreadPool(r -> {
                         Thread t = new Thread(r, "daemon-tool-exec-" + sessionId);
                         t.setDaemon(true);
                         return t;
@@ -270,7 +293,7 @@ public class McpSocketSession implements Runnable {
                         var gatewayDecision = evaluateGatewayToolCall(toolName, argMap);
                         if (gatewayDecision != null) {
                             if (gatewayDecision.action
-                                    == ai.kompile.cli.main.chat.gateway.CliToolGatewayInterceptor.InterceptAction.BLOCK) {
+                                    == CliToolGatewayInterceptor.InterceptAction.BLOCK) {
                                 result.set("result", gatewayBlockedCallResult(om, gatewayDecision.reason));
                                 if (auditLogger != null) {
                                     auditLogger.recordDecision(toolName, originalArgMap, argMap,
@@ -278,7 +301,7 @@ public class McpSocketSession implements Runnable {
                                 }
                                 return result;
                             } else if (gatewayDecision.action
-                                    == ai.kompile.cli.main.chat.gateway.CliToolGatewayInterceptor.InterceptAction.REWRITE
+                                    == CliToolGatewayInterceptor.InterceptAction.REWRITE
                                     && gatewayDecision.rewrittenArgs != null) {
                                 argMap = new LinkedHashMap<>(gatewayDecision.rewrittenArgs);
                                 auditDecision = "gateway_rewritten";
@@ -493,25 +516,26 @@ public class McpSocketSession implements Runnable {
         register(map, new CodeSearchTool(null, om), om, wd);
         register(map, new CodeGraphTool(null, om), om, wd);
         register(map, new LocalCodeIndexTool(), om, wd);
+        register(map, new LspTool(), om, wd);
 
         // Tool call catalog
         register(map, new ToolCallCatalogTool(), om, wd);
 
         // Full knowledge graph CRUD + graph capabilities
-        register(map, new ai.kompile.cli.main.chat.tools.KnowledgeGraphTool(null, om), om, wd);
+        register(map, new KnowledgeGraphTool(null, om), om, wd);
 
         // KB Grounding tools (LLM→MCP→KB path, require kompile-app backend)
-        register(map, new ai.kompile.cli.main.chat.tools.grounding.AskGraphVerifyTool(null, om), om, wd);
-        register(map, new ai.kompile.cli.main.chat.tools.grounding.AskGraphQueryTool(null, om), om, wd);
-        register(map, new ai.kompile.cli.main.chat.tools.grounding.AskGraphExplainTool(null, om), om, wd);
-        register(map, new ai.kompile.cli.main.chat.tools.grounding.AskGraphAssertTool(null, om), om, wd);
-        register(map, new ai.kompile.cli.main.chat.tools.grounding.AskGraphSubscribeTool(om), om, wd);
-        register(map, new ai.kompile.cli.main.chat.tools.grounding.AskGraphMebnTool(null, om), om, wd);
-        register(map, new ai.kompile.cli.main.chat.tools.grounding.GraphReasonTool(null, om), om, wd);
+        register(map, new AskGraphVerifyTool(null, om), om, wd);
+        register(map, new AskGraphQueryTool(null, om), om, wd);
+        register(map, new AskGraphExplainTool(null, om), om, wd);
+        register(map, new AskGraphAssertTool(null, om), om, wd);
+        register(map, new AskGraphSubscribeTool(null, om), om, wd);
+        register(map, new AskGraphMebnTool(null, om), om, wd);
+        register(map, new GraphReasonTool(null, om), om, wd);
 
         // Process management
-        var processManager = new BackgroundProcessManager(coordSessionId);
-        var procTool = new ProcessManagementTool(processManager);
+        var processManager = new BackgroundProcessManager(coordSessionId, wd);
+        var procTool = new ProcessManagementTool(processManager, coordinator);
         map.put(procTool.id(), new ToolDef(procTool.id(), procTool.description(), procTool.parameterSchema(),
                 procTool.mcpAnnotations(),
                 args -> { try { return procTool.execute(om.valueToTree(args), ctx(wd)); } catch (Exception e) { return ToolResult.error(e.getMessage()); } }));
@@ -520,30 +544,30 @@ public class McpSocketSession implements Runnable {
         register(map, new EditCoordinatorTool(coordinator), om, wd);
 
         // Delegation tools — use shared registries from the pool
-        var subagentRunner = new ai.kompile.cli.mcp.stdio.DirectSubagentRunnerStdio(wd, pool.roleManager());
-        var enforcerTool = new ai.kompile.cli.mcp.stdio.StdioEnforcerTool(subagentRunner, om, wd, processManager);
+        var subagentRunner = new DirectSubagentRunnerStdio(wd, pool.roleManager());
+        var enforcerTool = new StdioEnforcerTool(subagentRunner, om, wd, processManager);
         map.put(enforcerTool.id(), new ToolDef(enforcerTool.id(), enforcerTool.description(), enforcerTool.parameterSchema(),
                 McpToolAnnotations.DELEGATION,
                 args -> { try { return enforcerTool.execute(args); } catch (Exception e) { return ToolResult.error(e.getMessage()); } }));
 
-        var postFeedbackTool = new ai.kompile.cli.mcp.stdio.StdioPostFeedbackTool(om, wd);
+        var postFeedbackTool = new StdioPostFeedbackTool(om, wd);
         map.put(postFeedbackTool.id(), new ToolDef(postFeedbackTool.id(), postFeedbackTool.description(), postFeedbackTool.parameterSchema(),
                 McpToolAnnotations.DELEGATION,
                 args -> { try { return postFeedbackTool.execute(args); } catch (Exception e) { return ToolResult.error(e.getMessage()); } }));
 
-        var taskTool = new ai.kompile.cli.mcp.stdio.StdioTaskTool(
+        var taskTool = new StdioTaskTool(
                 pool.agentRegistry(), subagentRunner, om, pool.roleManager());
         map.put(taskTool.id(), new ToolDef(taskTool.id(), taskTool.description(), taskTool.parameterSchema(),
                 McpToolAnnotations.DELEGATION,
                 args -> { try { return taskTool.execute(args); } catch (Exception e) { return ToolResult.error(e.getMessage()); } }));
 
-        var quorumTool = new ai.kompile.cli.mcp.stdio.StdioQuorumTaskTool(
+        var quorumTool = new StdioQuorumTaskTool(
                 pool.agentRegistry(), subagentRunner, om, wd);
         map.put(quorumTool.id(), new ToolDef(quorumTool.id(), quorumTool.description(), quorumTool.parameterSchema(),
                 McpToolAnnotations.DELEGATION,
                 args -> { try { return quorumTool.execute(args); } catch (Exception e) { return ToolResult.error(e.getMessage()); } }));
 
-        var multiTool = new ai.kompile.cli.mcp.stdio.StdioMultiTaskTool(
+        var multiTool = new StdioMultiTaskTool(
                 pool.agentRegistry(), subagentRunner, om, wd, pool.roleManager());
         map.put(multiTool.id(), new ToolDef(multiTool.id(), multiTool.description(), multiTool.parameterSchema(),
                 McpToolAnnotations.DELEGATION,
@@ -587,7 +611,7 @@ public class McpSocketSession implements Runnable {
         return new ToolContext(sessionId, null, new AllowAllPermissionService(), wd, null);
     }
 
-    private ai.kompile.cli.main.chat.enforcer.EnforcerToolCallDecision evaluateEnforcerToolCall(
+    private EnforcerToolCallDecision evaluateEnforcerToolCall(
             String toolName, Map<String, Object> argMap) {
         var guard = enforcerGuard;
         if (guard == null || !guard.isActive()) {
@@ -596,7 +620,7 @@ public class McpSocketSession implements Runnable {
         return guard.evaluate(toolName, argMap);
     }
 
-    private ai.kompile.cli.main.chat.gateway.CliToolGatewayInterceptor.InterceptResult evaluateGatewayToolCall(
+    private CliToolGatewayInterceptor.InterceptResult evaluateGatewayToolCall(
             String toolName, Map<String, Object> argMap) {
         var gateway = gatewayInterceptor;
         if (gateway == null || !gateway.isEnabled()) {
@@ -606,7 +630,7 @@ public class McpSocketSession implements Runnable {
     }
 
     private ObjectNode blockedCallResult(ObjectMapper om,
-                                         ai.kompile.cli.main.chat.enforcer.EnforcerToolCallDecision decision) {
+                                         EnforcerToolCallDecision decision) {
         ObjectNode callResult = om.createObjectNode();
         var content = callResult.putArray("content");
         var textObj = content.addObject();
@@ -644,7 +668,7 @@ public class McpSocketSession implements Runnable {
     /** MCP stdio sessions run trusted — all tools are auto-approved. */
     static class AllowAllPermissionService extends PermissionService {
         @Override
-        public PermissionResult check(ai.kompile.cli.main.chat.agent.AgentConfig agent,
+        public PermissionResult check(AgentConfig agent,
                                       String permissionKey, String description) {
             return PermissionResult.ALLOWED;
         }

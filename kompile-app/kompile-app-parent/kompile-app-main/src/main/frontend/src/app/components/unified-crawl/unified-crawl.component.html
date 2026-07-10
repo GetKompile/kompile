@@ -344,8 +344,8 @@
                   <span *ngIf="job.retriedBatches" class="meta-item" matTooltip="Batch retries with backoff">
                     <mat-icon inline>replay</mat-icon> {{ job.retriedBatches }} retries
                   </span>
-                  <span *ngIf="job.deadLetterCount" class="meta-item stat-error" matTooltip="Items sent to dead-letter queue">
-                    <mat-icon inline>report</mat-icon> {{ job.deadLetterCount }} DLQ
+                  <span *ngIf="job.deadLetterCount" class="meta-item stat-error" matTooltip="Dead-letter queue: items that failed after retries">
+                    <mat-icon inline>report</mat-icon> {{ job.deadLetterCount }} failed
                   </span>
                   <span *ngIf="job.backendsCoolingDown" class="meta-item" matTooltip="Backends in cooldown">
                     <mat-icon inline>hourglass_top</mat-icon> {{ job.backendsCoolingDown }} cooling
@@ -433,11 +433,9 @@
                     <div class="config-section" *ngIf="selectedJob.requestConfig.graphExtraction">
                       <div class="config-label">
                         <mat-icon inline>hub</mat-icon> Graph Extraction
-                        <span class="config-status-tag" [class.enabled]="selectedJob.requestConfig.graphExtraction.enabled">
-                          {{ selectedJob.requestConfig.graphExtraction.enabled ? 'Enabled' : 'Disabled' }}
-                        </span>
+                        <span class="config-status-tag enabled">Mandatory</span>
                       </div>
-                      <div class="config-details" *ngIf="selectedJob.requestConfig.graphExtraction.enabled">
+                      <div class="config-details">
                         <span *ngIf="selectedJob.requestConfig.graphExtraction.llmProvider">
                           <strong>LLM:</strong> {{ selectedJob.requestConfig.graphExtraction.llmProvider }}
                           <ng-container *ngIf="selectedJob.requestConfig.graphExtraction.modelName"> / {{ selectedJob.requestConfig.graphExtraction.modelName }}</ng-container>
@@ -569,8 +567,9 @@
                       (model optimal={{ selectedJob.embeddingModelOptimalBatchSize }} max={{ selectedJob.embeddingModelMaxBatchSize }})
                     </ng-container>
                   </div>
-                  <div *ngIf="selectedJob.embeddingSingleDspPlan !== undefined">
-                    <strong>DSP plan:</strong>
+                  <div *ngIf="selectedJob.embeddingSingleDspPlan !== undefined"
+                       title="Embedding batch plan (DSP = dispatcher plan): single-pass fixed batch size vs. dynamic batching">
+                    <strong>Batching:</strong>
                     {{ selectedJob.embeddingSingleDspPlan ? 'single (batch=' + selectedJob.embeddingDspPlanBatchSize + ')' : 'dynamic' }}
                   </div>
                   <div *ngIf="selectedJob.currentBatchStep">
@@ -591,6 +590,9 @@
                     (runStepRequested)="runStep($event.jobId, $event.stepId)">
                   </app-crawl-step-monitor>
                 </div>
+
+                <!-- Post-processing (enrichment) progress: WebSocket + SSE, self-contained -->
+                <app-hydration-progress-panel *ngIf="isCrawlJobRunning(selectedJob.status)"></app-hydration-progress-panel>
 
                 <div class="document-stream-panel" *ngIf="selectedJob.documentProgress && selectedJob.documentProgress.length > 0">
                   <h3>

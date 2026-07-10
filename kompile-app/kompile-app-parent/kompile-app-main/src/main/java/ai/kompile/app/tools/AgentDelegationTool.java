@@ -20,6 +20,7 @@ import ai.kompile.app.services.agent.AgentChatService;
 import ai.kompile.app.services.agent.AgentRegistryService;
 import ai.kompile.app.web.dto.AgentChatRequest;
 import ai.kompile.core.agent.AgentProvider;
+import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
@@ -436,7 +437,7 @@ public class AgentDelegationTool {
             long startTime
     ) {}
 
-    @jakarta.annotation.PreDestroy
+    @PreDestroy
     public void shutdown() {
         asyncExecutor.shutdown();
         try {

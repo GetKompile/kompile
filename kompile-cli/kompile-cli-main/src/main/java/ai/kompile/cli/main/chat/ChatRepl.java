@@ -26,7 +26,10 @@ import ai.kompile.project.KompileProjectStore;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.config.SetupWizard;
+import ai.kompile.cli.main.chat.enforcer.EnforcerActivationPrompt;
 import ai.kompile.cli.main.chat.enforcer.EnforcerConfig;
+import ai.kompile.cli.main.chat.enforcer.EnforcerPolicy;
+import ai.kompile.cli.main.chat.enforcer.KeywordEnforcerEvaluator;
 import ai.kompile.cli.main.chat.harness.PerformanceHarness;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
@@ -42,7 +45,9 @@ import ai.kompile.cli.main.chat.tui.StatusBar;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.jline.reader.LineReader;
 import org.jline.reader.LineReaderBuilder;
+import org.jline.reader.Reference;
 import org.jline.reader.UserInterruptException;
+import org.jline.reader.Widget;
 import org.jline.reader.EndOfFileException;
 import org.jline.terminal.Terminal;
 import org.jline.keymap.KeyMap;
@@ -247,7 +252,7 @@ public class ChatRepl {
         }
 
         // Create background process manager for this session
-        this.processManager = new BackgroundProcessManager(sessionId);
+        this.processManager = new BackgroundProcessManager(sessionId, workDir);
 
         this.toolRegistry = ToolRegistryFactory.create(
                 objectMapper, baseUrl != null ? baseUrl : "", agentRegistry,
@@ -296,8 +301,9 @@ public class ChatRepl {
         // Wire cancel signal into agentic loop
         this.agenticLoop.setCancelSignal(cancelSignal);
 
-        // Auto-load inline enforcer from project config if present
-        loadInlineEnforcer(workDir);
+        // Load inline enforcer rules from project config if present. Never auto-enables:
+        // the user is prompted (interactive) or it stays off (/enforcer on to enable).
+        loadInlineEnforcerWithPrompt(workDir);
 
         // Wire up extracted collaborators
         initCollaborators();
@@ -330,7 +336,31 @@ public class ChatRepl {
 
     // ── Inline enforcer loading (called from router on /enforcer on|reload) ──
 
+    /**
+     * Explicit load + enable. Used by {@code /enforcer on|reload} where the slash command
+     * itself is the user's opt-in — no extra prompt.
+     */
     public void loadInlineEnforcer(Path workDir) {
+        loadInlineEnforcer(workDir, true);
+    }
+
+    /**
+     * Startup variant: enforcement is per-session opt-in, so a project config found on
+     * disk prompts the user before enabling. Declined (or non-interactive) sessions keep
+     * the rules loaded but DISABLED so {@code /enforcer on} can enable them instantly.
+     */
+    private void loadInlineEnforcerWithPrompt(Path workDir) {
+        EnforcerConfig enforcerConfig = EnforcerConfig.load(workDir);
+        if (enforcerConfig == null || !enforcerConfig.isKeywordMode()
+                || !enforcerConfig.isEnforcementEnabled()) {
+            return;
+        }
+        Boolean choice = EnforcerActivationPrompt
+                .confirmViaConsole(enforcerConfig);
+        loadInlineEnforcer(workDir, Boolean.TRUE.equals(choice));
+    }
+
+    private void loadInlineEnforcer(Path workDir, boolean enable) {
         EnforcerConfig enforcerConfig = EnforcerConfig.load(workDir);
         if (enforcerConfig == null || !enforcerConfig.isKeywordMode()) {
             return;
@@ -339,13 +369,14 @@ public class ChatRepl {
             String rulesText = enforcerConfig.buildRulesText(workDir);
             if (rulesText == null || rulesText.isBlank()) return;
 
-            ai.kompile.cli.main.chat.enforcer.EnforcerPolicy policy =
-                    new ai.kompile.cli.main.chat.enforcer.EnforcerPolicy(rulesText, enforcerConfig.getMaxCorrections(), false);
-            ai.kompile.cli.main.chat.enforcer.KeywordEnforcerEvaluator evaluator =
-                    ai.kompile.cli.main.chat.enforcer.KeywordEnforcerEvaluator.fromPolicy(policy, objectMapper, enforcerConfig);
+            EnforcerPolicy policy =
+                    new EnforcerPolicy(rulesText, enforcerConfig.getMaxCorrections(), false);
+            KeywordEnforcerEvaluator evaluator =
+                    KeywordEnforcerEvaluator.fromPolicy(policy, objectMapper, enforcerConfig);
 
             if (evaluator.isAvailable()) {
                 agenticLoop.setInlineEnforcer(evaluator, policy, enforcerConfig.getMaxCorrections());
+                agenticLoop.setInlineEnforcerEnabled(enable);
             }
         } catch (Exception e) {
             // Silently skip — don't break chat startup
@@ -409,11 +440,11 @@ public class ChatRepl {
 
         // Bind Ctrl+B to background current task
         ((LineReaderImpl) reader).getKeyMaps().get(LineReader.EMACS).bind(
-            new org.jline.reader.Reference("background-task"),
+            new Reference("background-task"),
             KeyMap.ctrl('B')
         );
 
-        ((LineReaderImpl) reader).setVariable("background-task", new org.jline.reader.Widget() {
+        ((LineReaderImpl) reader).setVariable("background-task", new Widget() {
             @Override
             public boolean apply() {
                 if (llmBusy && backgroundTaskManager.getCurrentTask() != null) {
@@ -439,11 +470,11 @@ public class ChatRepl {
         // Bind cancel key (default: Escape) to cancel in-progress operations
         String cancelKeyBinding = resolveCancelKeyBinding();
         ((LineReaderImpl) reader).getKeyMaps().get(LineReader.EMACS).bind(
-            new org.jline.reader.Reference("cancel-operation"),
+            new Reference("cancel-operation"),
             cancelKeyBinding
         );
 
-        ((LineReaderImpl) reader).setVariable("cancel-operation", new org.jline.reader.Widget() {
+        ((LineReaderImpl) reader).setVariable("cancel-operation", new Widget() {
             @Override
             public boolean apply() {
                 if (llmBusy) {
@@ -465,15 +496,15 @@ public class ChatRepl {
 
         // Ctrl+X P — Toggle planning mode
         ((LineReaderImpl) reader).getKeyMaps().get(LineReader.EMACS).bind(
-            new org.jline.reader.Reference("toggle-plan-mode"),
+            new Reference("toggle-plan-mode"),
             KeyMap.ctrl('X'), "p"
         );
         ((LineReaderImpl) reader).getKeyMaps().get(LineReader.EMACS).bind(
-            new org.jline.reader.Reference("toggle-plan-mode"),
+            new Reference("toggle-plan-mode"),
             KeyMap.ctrl('X'), "P"
         );
 
-        ((LineReaderImpl) reader).setVariable("toggle-plan-mode", new org.jline.reader.Widget() {
+        ((LineReaderImpl) reader).setVariable("toggle-plan-mode", new Widget() {
             @Override
             public boolean apply() {
                 boolean newState = !agenticLoop.isPlanningMode();
@@ -496,15 +527,15 @@ public class ChatRepl {
 
         // Ctrl+X T — Show todos / checklist
         ((LineReaderImpl) reader).getKeyMaps().get(LineReader.EMACS).bind(
-            new org.jline.reader.Reference("show-todos"),
+            new Reference("show-todos"),
             KeyMap.ctrl('X'), "t"
         );
         ((LineReaderImpl) reader).getKeyMaps().get(LineReader.EMACS).bind(
-            new org.jline.reader.Reference("show-todos"),
+            new Reference("show-todos"),
             KeyMap.ctrl('X'), "T"
         );
 
-        ((LineReaderImpl) reader).setVariable("show-todos", new org.jline.reader.Widget() {
+        ((LineReaderImpl) reader).setVariable("show-todos", new Widget() {
             @Override
             public boolean apply() {
                 List<TodoWriteTool.TodoItem> todos = TodoWriteTool.getTodos(sessionId);
@@ -522,15 +553,15 @@ public class ChatRepl {
 
         // Ctrl+X A — Cycle primary agent (coder → planner → coder)
         ((LineReaderImpl) reader).getKeyMaps().get(LineReader.EMACS).bind(
-            new org.jline.reader.Reference("cycle-agent"),
+            new Reference("cycle-agent"),
             KeyMap.ctrl('X'), "a"
         );
         ((LineReaderImpl) reader).getKeyMaps().get(LineReader.EMACS).bind(
-            new org.jline.reader.Reference("cycle-agent"),
+            new Reference("cycle-agent"),
             KeyMap.ctrl('X'), "A"
         );
 
-        ((LineReaderImpl) reader).setVariable("cycle-agent", new org.jline.reader.Widget() {
+        ((LineReaderImpl) reader).setVariable("cycle-agent", new Widget() {
             @Override
             public boolean apply() {
                 List<AgentConfig> primaries = agentRegistry.getPrimaryAgents();
@@ -598,10 +629,13 @@ public class ChatRepl {
         agentInfo.append(")");
         System.out.println(renderer.dim(agentInfo.toString()));
 
-        // Show enforcer status if auto-loaded
+        // Show enforcer status (enabled via the activation prompt, or loaded-but-off)
         if (agenticLoop.isInlineEnforcerEnabled()) {
             System.out.println(renderer.green("  Enforcer: " + agenticLoop.describeInlineEnforcer()
                     + " — /enforcer off to disable"));
+        } else if (agenticLoop.describeInlineEnforcer() != null) {
+            System.out.println(renderer.dim("  Enforcer: " + agenticLoop.describeInlineEnforcer()
+                    + " — loaded but OFF, /enforcer on to enable"));
         }
         System.out.println();
 
@@ -618,9 +652,9 @@ public class ChatRepl {
         processManager.addChangeListener(statusRedraw);
 
         // Wire subagent lifecycle tracking into the status bar
-        ai.kompile.cli.main.chat.agent.SubagentRunner runner = toolRegistry.getSubagentRunner();
+        SubagentRunner runner = toolRegistry.getSubagentRunner();
         if (runner != null) {
-            runner.setLifecycleListener(new ai.kompile.cli.main.chat.agent.SubagentRunner.LifecycleListener() {
+            runner.setLifecycleListener(new SubagentRunner.LifecycleListener() {
                 @Override
                 public void onSubagentStart(String id, String type, String description) {
                     statusBar.registerSubagent(id, type, description);

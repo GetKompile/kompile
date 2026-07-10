@@ -51,6 +51,15 @@
                     <groupId>org.apache.pdfbox</groupId>
                     <artifactId>fontbox</artifactId>
                 </exclusion>
+                <!-- Tabula drags the legacy bc*-jdk15on family; the rest of the tree is
+                     on bc*-jdk18on. Same packages, different signers — mixing them fails
+                     signed-jar verification (SecurityException) when a GraalVM native
+                     build loads classes from both. jdk18on provides everything pdfbox
+                     needs for encrypted PDFs. -->
+                <exclusion>
+                    <groupId>org.bouncycastle</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
             </exclusions>
         </dependency>
 

@@ -589,7 +589,7 @@ public class AppConfigWizard {
                 "guardrailsInputEnabled", "guardrailsOutputEnabled",
                 "queryTransformationEnabled", "toolGatewayEnabled",
                 "evaluationEnabled", "kvCacheEnabled",
-                "contextualRagEnabled", "graphExtractionEnabled"
+                "contextualRagEnabled"
         };
         String[] flagLabels = {
                 "Input Guardrails          — Filter/validate user inputs",
@@ -598,10 +598,9 @@ public class AppConfigWizard {
                 "Tool Gateway              — LLM-based tool call filtering",
                 "RAG Evaluation            — Evaluate retrieval quality",
                 "KV Cache                  — Key-value cache for inference",
-                "Contextual RAG            — Add context to document chunks",
-                "Knowledge Graph Extraction — Extract entities and relations"
+                "Contextual RAG            — Add context to document chunks"
         };
-        boolean[] defaults = {false, false, false, false, false, false, false, false};
+        boolean[] defaults = {false, false, false, false, false, false, false};
 
         String CHECK   = GREEN + "[x]" + RESET;
         String UNCHECK_STR = DIM + "[ ]" + RESET;
@@ -953,7 +952,7 @@ public class AppConfigWizard {
                 "guardrailsInputEnabled", "guardrailsOutputEnabled",
                 "queryTransformationEnabled", "toolGatewayEnabled",
                 "evaluationEnabled", "kvCacheEnabled",
-                "contextualRagEnabled", "graphExtractionEnabled"
+                "contextualRagEnabled"
         });
 
         showSection("LLM Provider", LLM_PROVIDER_CONFIG, new String[]{

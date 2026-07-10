@@ -17,9 +17,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Instant;
+import java.util.ArrayDeque;
+import java.util.Objects;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -125,7 +128,7 @@ public final class RecursiveQueryEngine {
     public record RuleAtom(String predicate, List<String> args, boolean negated) {
 
         public RuleAtom {
-            java.util.Objects.requireNonNull(predicate, "predicate must not be null");
+            Objects.requireNonNull(predicate, "predicate must not be null");
             args = (args == null) ? List.of() : List.copyOf(args);
         }
 
@@ -157,7 +160,7 @@ public final class RecursiveQueryEngine {
     public record DatalogRule(String headPredicate, List<String> headArgs, List<RuleAtom> body) {
 
         public DatalogRule {
-            java.util.Objects.requireNonNull(headPredicate, "headPredicate must not be null");
+            Objects.requireNonNull(headPredicate, "headPredicate must not be null");
             headArgs = (headArgs == null) ? List.of() : List.copyOf(headArgs);
             body = (body == null) ? List.of() : List.copyOf(body);
         }
@@ -233,7 +236,7 @@ public final class RecursiveQueryEngine {
     public record Derivation(String ruleDisplay, List<String> parentAtomKeys) {
 
         public Derivation {
-            java.util.Objects.requireNonNull(ruleDisplay, "ruleDisplay must not be null");
+            Objects.requireNonNull(ruleDisplay, "ruleDisplay must not be null");
             parentAtomKeys = (parentAtomKeys == null) ? List.of() : List.copyOf(parentAtomKeys);
         }
     }
@@ -354,8 +357,8 @@ public final class RecursiveQueryEngine {
                                           int maxRounds,
                                           int maxFacts,
                                           int maxDerivationsPerAtom) {
-        java.util.Objects.requireNonNull(rules, "rules must not be null");
-        java.util.Objects.requireNonNull(edb, "edb must not be null");
+        Objects.requireNonNull(rules, "rules must not be null");
+        Objects.requireNonNull(edb, "edb must not be null");
         if (rules.isEmpty()) {
             return new FixpointResult(Map.of(), 0, true, "", Map.of(), 0);
         }
@@ -540,8 +543,8 @@ public final class RecursiveQueryEngine {
                                                              int maxRounds,
                                                              int maxFacts,
                                                              int maxDerivationsPerAtom) {
-        java.util.Objects.requireNonNull(semiring, "semiring must not be null");
-        java.util.Objects.requireNonNull(edbAnnotator, "edbAnnotator must not be null");
+        Objects.requireNonNull(semiring, "semiring must not be null");
+        Objects.requireNonNull(edbAnnotator, "edbAnnotator must not be null");
 
         // Step 1: Run crisp fixpoint to get derived facts + derivation index
         FixpointResult fixpoint = evaluate(rules, edb, maxRounds, maxFacts, maxDerivationsPerAtom);
@@ -1094,7 +1097,7 @@ public final class RecursiveQueryEngine {
             onStack.put(p, false);
         }
         int[] counter = {0};
-        java.util.Deque<String> stack = new java.util.ArrayDeque<>();
+        Deque<String> stack = new ArrayDeque<>();
         List<List<String>> sccs = new ArrayList<>();
 
         for (String p : predList) {
@@ -1160,7 +1163,7 @@ public final class RecursiveQueryEngine {
                                    Map<String, Integer> index,
                                    Map<String, Integer> lowLink,
                                    Map<String, Boolean> onStack,
-                                   java.util.Deque<String> stack,
+                                   Deque<String> stack,
                                    List<List<String>> sccs,
                                    int[] counter) {
         int idx = counter[0]++;

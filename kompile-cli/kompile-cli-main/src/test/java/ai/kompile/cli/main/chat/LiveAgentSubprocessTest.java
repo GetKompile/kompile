@@ -11,6 +11,7 @@ import java.util.*;
 import java.util.concurrent.*;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Live integration tests that launch real agent CLI binaries through the
@@ -77,7 +78,12 @@ class LiveAgentSubprocessTest {
     @Test
     @Timeout(value = TIMEOUT_SECONDS, unit = TimeUnit.SECONDS)
     void opencodeManagedSubprocess() {
-        assertAgentOnPath("opencode");
+        // Skip when opencode is absent or when its session is known to be inactive.
+        // Set KOMPILE_OPENCODE_LIVE=true to opt in (account must have credits).
+        String opencodeBinary = SubprocessAgentRunner.resolveAgentBinary("opencode");
+        assumeTrue(opencodeBinary != null, "opencode binary not on PATH — live test skipped");
+        assumeTrue("true".equalsIgnoreCase(System.getenv("KOMPILE_OPENCODE_LIVE")),
+                "opencode live test skipped — set KOMPILE_OPENCODE_LIVE=true to enable");
         ManagedRunResult result = runThroughManagedPipeline("opencode", SIMPLE_PROMPT);
         assertNotNull(result.responseText, "opencode response text must not be null");
     }
@@ -1094,7 +1100,11 @@ class LiveAgentSubprocessTest {
     @Test
     @Timeout(value = TIMEOUT_SECONDS, unit = TimeUnit.SECONDS)
     void opencodeProducesFormattedResponse() {
-        assertAgentOnPath("opencode");
+        // Skip when opencode is absent or when its session is known to be inactive.
+        String opencodeBinary = SubprocessAgentRunner.resolveAgentBinary("opencode");
+        assumeTrue(opencodeBinary != null, "opencode binary not on PATH — live test skipped");
+        assumeTrue("true".equalsIgnoreCase(System.getenv("KOMPILE_OPENCODE_LIVE")),
+                "opencode live test skipped — set KOMPILE_OPENCODE_LIVE=true to enable");
         ManagedRunResult result = runThroughManagedPipeline("opencode",
                 "Say one word: TEST");
         assertNotNull(result.responseText, "opencode must return non-null response");
@@ -1145,7 +1155,12 @@ class LiveAgentSubprocessTest {
     @Test
     @Timeout(value = TIMEOUT_SECONDS, unit = TimeUnit.SECONDS)
     void metricsTrackToolCallCount() {
-        assertAgentOnPath("claude");
+        // Skip when the binary is absent or when a CI-safe flag is set (binary present but no auth/session).
+        String claudeBinary = SubprocessAgentRunner.resolveAgentBinary("claude");
+        assumeTrue(claudeBinary != null, "claude binary not on PATH — live test skipped");
+        assumeTrue(!"true".equalsIgnoreCase(System.getenv("CI"))
+                && !"true".equalsIgnoreCase(System.getProperty("kompile.skip.live.tests")),
+                "live agent tests skipped in CI/headless environments");
 
         TerminalRenderer renderer = new TerminalRenderer(true);
         AsciiRenderer ascii = new AsciiRenderer(renderer, 200);

@@ -52,7 +52,7 @@ class JobResourceProfilesTest {
     void unifiedCrawlHasPhaseBreakdown() {
         JobResourceProfile unified = JobResourceProfiles.UNIFIED_CRAWL;
         assertTrue(unified.hasPhaseBreakdown());
-        assertEquals(8, unified.phaseProfiles().size());
+        assertEquals(10, unified.phaseProfiles().size());
 
         // CPU-only early phases
         assertFalse(unified.phaseRequiresGpu("LOADING"));
@@ -60,6 +60,8 @@ class JobResourceProfilesTest {
         assertFalse(unified.phaseRequiresGpu("ROUTING"));
         assertFalse(unified.phaseRequiresGpu("CHUNKING"));
         assertFalse(unified.phaseRequiresGpu("GRAPH_EXTRACTION"));
+        assertFalse(unified.phaseRequiresGpu("ENRICHMENT"));
+        assertFalse(unified.phaseRequiresGpu("LEARNING"));
 
         // GPU tail phases
         assertTrue(unified.phaseRequiresGpu("ENTITY_RESOLUTION"));

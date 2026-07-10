@@ -29,12 +29,13 @@ import org.springframework.stereotype.Component;
  * Optionally runs the LLM-free process miner automatically whenever a graph build finishes — the
  * principled counterpart to {@code ProcessDiscoveryServiceImpl.onGraphBuildCompleted}.
  *
- * <p>Disabled by default; enable with {@code kompile.process.mining.auto-discover=true}. Kept as a
- * separate, conditional bean (rather than a method on the service) so the default behaviour is strictly
- * additive: nothing about the existing discovery flow changes unless this is switched on.
+ * <p>Enabled by default (disable with {@code kompile.process.mining.auto-discover=false}), so every
+ * graph build yields a mined — and entailed — suggestion in the store without anyone having to call
+ * the mining endpoint. Kept as a separate conditional bean (rather than a method on the service) so
+ * the flow stays independently switchable.
  */
 @Component
-@ConditionalOnProperty(name = "kompile.process.mining.auto-discover", havingValue = "true")
+@ConditionalOnProperty(name = "kompile.process.mining.auto-discover", havingValue = "true", matchIfMissing = true)
 public class MiningAutoDiscoveryListener {
 
     private static final Logger log = LoggerFactory.getLogger(MiningAutoDiscoveryListener.class);

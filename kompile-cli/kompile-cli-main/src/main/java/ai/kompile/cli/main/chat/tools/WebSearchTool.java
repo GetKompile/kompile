@@ -21,7 +21,10 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
 import java.net.URI;
+import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -31,6 +34,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -81,6 +85,9 @@ public class WebSearchTool implements CliTool {
 
     @Override
     public String permissionKey() { return "websearch"; }
+
+    @Override
+    public McpToolAnnotations mcpAnnotations() { return McpToolAnnotations.NETWORK; }
 
     @Override
     public ToolResult execute(JsonNode params, ToolContext context) throws ToolExecutionException {
@@ -287,7 +294,7 @@ public class WebSearchTool implements CliTool {
             Matcher m = uddgPattern.matcher(url);
             if (m.find()) {
                 try {
-                    return java.net.URLDecoder.decode(m.group(1), StandardCharsets.UTF_8);
+                    return URLDecoder.decode(m.group(1), StandardCharsets.UTF_8);
                 } catch (Exception e) {
                     // Return original URL if decode fails
                 }
@@ -319,15 +326,15 @@ public class WebSearchTool implements CliTool {
         Process process = pb.start();
 
         StringBuilder output = new StringBuilder();
-        try (var reader = new java.io.BufferedReader(
-                new java.io.InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
+        try (var reader = new BufferedReader(
+                new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
             String line;
             while ((line = reader.readLine()) != null) {
                 output.append(line).append("\n");
             }
         }
 
-        process.waitFor(TIMEOUT_SECONDS + 5, java.util.concurrent.TimeUnit.SECONDS);
+        process.waitFor(TIMEOUT_SECONDS + 5, TimeUnit.SECONDS);
         if (process.exitValue() != 0) {
             throw new RuntimeException("curl exited with code " + process.exitValue());
         }
@@ -351,7 +358,7 @@ public class WebSearchTool implements CliTool {
         while (matcher.find() && results.size() < count) {
             String url;
             try {
-                url = java.net.URLDecoder.decode(matcher.group(1), StandardCharsets.UTF_8);
+                url = URLDecoder.decode(matcher.group(1), StandardCharsets.UTF_8);
             } catch (Exception e) {
                 url = matcher.group(1);
             }

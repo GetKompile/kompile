@@ -38,15 +38,12 @@ export class DistillationConfigComponent implements OnInit {
   studentModelId = '';
   distillationType: DistillationType = 'LOGIT_KD';
   temperature = 4.0;
-  alpha = 0.5;
+  alpha = 1.0;
   datasetId = '';
   enableStudentPeft = false;
 
   distillationTypeCards: { id: DistillationType; name: string; description: string; icon: string }[] = [
-    { id: 'LOGIT_KD', name: 'Logit Distillation', description: 'Transfer knowledge through output probability distributions (soft labels)', icon: 'functions' },
-    { id: 'FEATURE_KD', name: 'Feature Distillation', description: 'Match intermediate layer representations between teacher and student', icon: 'layers' },
-    { id: 'ATTENTION_KD', name: 'Attention Distillation', description: 'Transfer attention patterns from teacher to student model', icon: 'center_focus_strong' },
-    { id: 'COMBINED', name: 'Combined', description: 'Combine logit, feature, and attention distillation for best results', icon: 'merge_type' }
+    { id: 'LOGIT_KD', name: 'Logit Distillation', description: 'Match raw teacher and student logits with temperature-scaled KL divergence', icon: 'functions' }
   ];
 
   constructor(

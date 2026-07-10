@@ -27,6 +27,7 @@ import org.springframework.stereotype.Component;
 import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 /**
  * Extracts a structured knowledge graph from email documents using header
@@ -158,9 +159,9 @@ public class EmailGraphExtractor implements DocumentGraphExtractor {
         Object userFlagsObj = meta.get(GraphConstants.META_EMAIL_USER_FLAGS);
         if (userFlagsObj instanceof List<?> userFlagsList && !userFlagsList.isEmpty()) {
             String joined = userFlagsList.stream()
-                    .filter(java.util.Objects::nonNull)
+                    .filter(Objects::nonNull)
                     .map(Object::toString)
-                    .collect(java.util.stream.Collectors.joining(", "));
+                    .collect(Collectors.joining(", "));
             if (!joined.isEmpty()) msgProps.put("userFlags", joined);
         }
 
@@ -513,7 +514,7 @@ public class EmailGraphExtractor implements DocumentGraphExtractor {
 
         // Attachments → HAS_ATTACHMENT
         // Support both singular (email.attachmentName) and list (email.attachmentNames) keys
-        java.util.Set<String> attachNames = new java.util.LinkedHashSet<>();
+        Set<String> attachNames = new LinkedHashSet<>();
         Object attachNamesObj = meta.get(GraphConstants.META_EMAIL_ATTACHMENT_NAMES);
         // Build a name→size map from the parallel email.attachmentSizes list (if present)
         Map<String, String> attachSizeByName = new LinkedHashMap<>();
@@ -1185,7 +1186,7 @@ public class EmailGraphExtractor implements DocumentGraphExtractor {
             return list.stream()
                     .filter(Objects::nonNull)
                     .map(Object::toString)
-                    .collect(java.util.stream.Collectors.joining(", "));
+                    .collect(Collectors.joining(", "));
         }
         String s = obj.toString().trim();
         return s.isEmpty() ? null : s;

@@ -64,6 +64,10 @@ public class GraphEdge {
     @EqualsAndHashCode.Exclude
     private GraphNode sourceNode;
 
+    /** Store-neutral source ID used when the full endpoint is not materialized. */
+    @Transient
+    private String sourceNodeId;
+
     /**
      * Target node of this edge
      */
@@ -72,6 +76,10 @@ public class GraphEdge {
     @ToString.Exclude
     @EqualsAndHashCode.Exclude
     private GraphNode targetNode;
+
+    /** Store-neutral target ID used when the full endpoint is not materialized. */
+    @Transient
+    private String targetNodeId;
 
     /**
      * Type of this edge
@@ -269,5 +277,56 @@ public class GraphEdge {
     public boolean isStale(int days) {
         if (computedAt == null) return true;
         return computedAt.isBefore(LocalDateTime.now().minusDays(days));
+    }
+
+    /**
+     * Source endpoint, synthesized as an ID-only placeholder when transport supplied only an ID.
+     */
+    public GraphNode getSourceNode() {
+        return sourceNode != null
+                ? sourceNode
+                : sourceNodeId != null ? GraphNode.builder().nodeId(sourceNodeId).build() : null;
+    }
+
+    /**
+     * Target endpoint, synthesized as an ID-only placeholder when transport supplied only an ID.
+     */
+    public GraphNode getTargetNode() {
+        return targetNode != null
+                ? targetNode
+                : targetNodeId != null ? GraphNode.builder().nodeId(targetNodeId).build() : null;
+    }
+
+    /** Source endpoint ID independent of whether the endpoint is fully materialized. */
+    @Transient
+    public String getSourceNodeId() {
+        return sourceNode != null ? sourceNode.getNodeId() : sourceNodeId;
+    }
+
+    /** Target endpoint ID independent of whether the endpoint is fully materialized. */
+    @Transient
+    public String getTargetNodeId() {
+        return targetNode != null ? targetNode.getNodeId() : targetNodeId;
+    }
+
+    /** Resolve an ID-only source endpoint from a caller-provided node index. */
+    public GraphNode resolvedSourceNode(java.util.Map<String, GraphNode> nodesById) {
+        return resolveEndpoint(getSourceNode(), getSourceNodeId(), nodesById);
+    }
+
+    /** Resolve an ID-only target endpoint from a caller-provided node index. */
+    public GraphNode resolvedTargetNode(java.util.Map<String, GraphNode> nodesById) {
+        return resolveEndpoint(getTargetNode(), getTargetNodeId(), nodesById);
+    }
+
+    private static GraphNode resolveEndpoint(
+            GraphNode endpoint, String endpointId, java.util.Map<String, GraphNode> nodesById) {
+        if (endpointId == null || nodesById == null || nodesById.isEmpty()) {
+            return endpoint;
+        }
+        if (endpoint != null && !endpoint.isHollow()) {
+            return endpoint;
+        }
+        return nodesById.getOrDefault(endpointId, endpoint);
     }
 }

@@ -16,6 +16,8 @@
 
 package ai.kompile.cli.main.exec;
 
+import java.util.WeakHashMap;
+
 import ai.kompile.pipelines.framework.api.PipelineStepRunnerFactory;
 import ai.kompile.pipelines.framework.api.StepConfig;
 import ai.kompile.pipelines.framework.api.configschema.ParameterSchema;
@@ -61,7 +63,7 @@ public class NewStepCreator implements Callable<Integer>, CommandLine.IModelTran
     private final SchemaRegistry schemaRegistry = SchemaRegistry.getInstance();
     private final Scanner scanner = new Scanner(System.in);
 
-    private static final Set<Integer> TRANSFORMED_SPECS = Collections.newSetFromMap(new java.util.WeakHashMap<>());
+    private static final Set<Integer> TRANSFORMED_SPECS = Collections.newSetFromMap(new WeakHashMap<>());
 
     /**
      * Known pipeline step runner types whose schemas are bundled with the CLI.

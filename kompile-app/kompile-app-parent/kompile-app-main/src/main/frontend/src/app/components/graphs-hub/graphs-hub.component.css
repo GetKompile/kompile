@@ -7,69 +7,141 @@
   padding: 16px;
 }
 
-.hub-header h2 {
+/* ── Hub header ──────────────────────────────────────────────────────────── */
+.hub-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.hub-header-left h2 {
   margin: 0;
 }
 
-.hub-header .subtitle {
-  margin: 4px 0 16px;
+.hub-header-left .subtitle {
+  margin: 4px 0 0;
   color: rgba(0, 0, 0, 0.6);
   font-size: 13px;
 }
 
-.sub-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.1);
-  padding-bottom: 8px;
-  margin-bottom: 16px;
+.hub-header-actions {
+  flex-shrink: 0;
 }
 
-.sub-tab {
+.ask-graph-btn {
+  white-space: nowrap;
+}
+
+/* ── Outer section tabs ───────────────────────────────────────────────────── */
+.section-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 2px solid rgba(0, 0, 0, 0.1);
+  margin-bottom: 0;
+  padding-bottom: 0;
+}
+
+.section-tab {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 14px;
-  border: 1px solid rgba(0, 0, 0, 0.12);
-  border-radius: 8px;
-  background: var(--bg-surface);
+  padding: 10px 16px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  border-radius: 6px 6px 0 0;
+  background: transparent;
   cursor: pointer;
   font: inherit;
-  color: rgba(0, 0, 0, 0.75);
+  font-size: 14px;
+  font-weight: 500;
+  color: rgba(0, 0, 0, 0.65);
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.section-tab:hover {
+  background: rgba(63, 81, 181, 0.06);
+  color: rgba(0, 0, 0, 0.85);
+}
+
+.section-tab.active {
+  border-bottom-color: #3f51b5;
+  color: #3f51b5;
+  font-weight: 600;
+  background: rgba(63, 81, 181, 0.05);
+}
+
+.section-tab .tab-icon {
+  font-size: 18px;
+  height: 18px;
+  width: 18px;
+}
+
+/* ── Inner leaf tabs ─────────────────────────────────────────────────────── */
+.inner-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  background: var(--bg-surface, #fafafa);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+  padding: 8px 0 8px;
+  margin-bottom: 16px;
+}
+
+.inner-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 20px;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  color: rgba(0, 0, 0, 0.70);
   transition: background 0.15s, border-color 0.15s;
 }
 
-.sub-tab:hover {
-  background: var(--bg-surface-elevated);
+.inner-tab:hover {
+  background: rgba(63, 81, 181, 0.06);
+  border-color: rgba(63, 81, 181, 0.3);
 }
 
-.sub-tab.active {
+.inner-tab.active {
   background: #e8eaf6;
   border-color: #3f51b5;
   color: #303f9f;
   font-weight: 600;
 }
 
-.sub-tab .tab-icon {
-  font-size: 18px;
-  height: 18px;
-  width: 18px;
+.inner-tab .tab-icon {
+  font-size: 16px;
+  height: 16px;
+  width: 16px;
 }
 
-.sub-tab-content {
+/* ── Content area ─────────────────────────────────────────────────────────── */
+.tab-content-area {
   min-height: 200px;
 }
 
-/* Interactive explorer views (visualizer / entity browser / hierarchy) need a definite
-   viewport so the graph canvas (height: 100%) renders and long lists scroll internally. */
+/* Interactive explorer views (visualizer / hierarchy) need a definite
+   viewport so the graph canvas (height: 100%) renders correctly. */
 .graph-explore-panel {
   height: calc(100vh - 320px);
   min-height: 480px;
   overflow: auto;
 }
 
-/* D1 Cold-start lifecycle banner */
+/* Ontology inner mat-tab-group */
+.ontology-subtabs {
+  margin-top: 8px;
+}
+
+/* ── D1 Cold-start lifecycle banner ──────────────────────────────────────── */
 .cold-start-banner {
   display: flex;
   align-items: flex-start;

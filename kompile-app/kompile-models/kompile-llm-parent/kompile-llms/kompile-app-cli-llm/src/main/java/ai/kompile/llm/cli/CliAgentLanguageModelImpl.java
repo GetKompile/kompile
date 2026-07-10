@@ -80,7 +80,7 @@ public class CliAgentLanguageModelImpl implements LanguageModel {
     @Override
     public String generateResponse(String userQuery, List<String> context) {
         if (!configService.isEnabled()) {
-            return "Error: CLI Agent LLM is not enabled. Enable it via the UI at /api/llm/cli-agent/config.";
+            throw new IllegalStateException("CLI Agent LLM is not enabled. Enable it via the UI at /api/llm/cli-agent/config.");
         }
 
         log.debug("CLI Agent generating response for query: {}", userQuery);
@@ -91,9 +91,7 @@ public class CliAgentLanguageModelImpl implements LanguageModel {
     @Override
     public ChatResponse generateResponseWithPotentialToolCalls(String userQuery, List<String> context) {
         if (!configService.isEnabled()) {
-            String msg = "Error: CLI Agent LLM is not enabled. Enable it via the UI at /api/llm/cli-agent/config.";
-            Generation generation = new Generation(new AssistantMessage(msg), null);
-            return new ChatResponse(Collections.singletonList(generation));
+            throw new IllegalStateException("CLI Agent LLM is not enabled. Enable it via the UI at /api/llm/cli-agent/config.");
         }
 
         log.debug("CLI Agent generating response with tool context for query: {}", userQuery);
@@ -149,9 +147,9 @@ public class CliAgentLanguageModelImpl implements LanguageModel {
                 if (pooled != null && !pooled.isBlank()) {
                     return pooled.trim();
                 }
-                log.warn("Pooled LLMChat returned empty output; falling back to one-shot CLI spawn");
+                throw new IllegalStateException("Pooled CLI LLMChat returned empty output");
             } catch (Exception e) {
-                log.warn("Pooled LLMChat call failed ({}); falling back to one-shot CLI spawn", e.getMessage());
+                throw new IllegalStateException("Pooled CLI LLMChat call failed", e);
             }
         }
 
@@ -159,8 +157,7 @@ public class CliAgentLanguageModelImpl implements LanguageModel {
 
         if (!configService.checkAvailability(command)) {
             String msg = "CLI agent '" + command + "' is not available. Install it or change the active agent via the UI.";
-            log.error(msg);
-            return "Error: " + msg;
+            throw new IllegalStateException(msg);
         }
 
         try {
@@ -201,22 +198,23 @@ public class CliAgentLanguageModelImpl implements LanguageModel {
             boolean completed = process.waitFor(timeout, TimeUnit.SECONDS);
             if (!completed) {
                 process.destroyForcibly();
-                log.warn("CLI agent '{}' timed out after {} seconds", command, timeout);
-                return "Error: CLI agent timed out after " + timeout + " seconds.";
+                throw new IllegalStateException("CLI agent timed out after " + timeout + " seconds");
             }
 
             int exitCode = process.exitValue();
             if (exitCode != 0) {
-                log.warn("CLI agent '{}' exited with code {}", command, exitCode);
+                throw new IllegalStateException("CLI agent '" + command + "' exited with code " + exitCode);
             }
 
             String result = output.toString().trim();
+            if (result.isBlank()) {
+                throw new IllegalStateException("CLI agent '" + command + "' returned no output");
+            }
             log.debug("CLI agent '{}' response length: {} chars", command, result.length());
             return result;
 
         } catch (Exception e) {
-            log.error("Error executing CLI agent '{}': {}", command, e.getMessage(), e);
-            return "Error executing CLI agent: " + e.getMessage();
+            throw new IllegalStateException("Error executing CLI agent '" + command + "': " + e.getMessage(), e);
         }
     }
 

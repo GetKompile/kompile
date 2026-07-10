@@ -16,6 +16,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
@@ -84,6 +85,34 @@ class SubprocessLogRoundTripTest {
         assertNotNull(meta.getStartedAt());
         assertNotNull(meta.getEndedAt());
         assertNotNull(meta.getDurationMs());
+    }
+
+    @Test
+    void writesAndReadsProjectScopedSubprocessRun() throws Exception {
+        Path projectRoot = Files.createTempDirectory("kompile-subprocess-project");
+        Files.createDirectories(projectRoot.resolve(".kompile"));
+        String type = "embedding";
+        String runId = UUID.randomUUID().toString();
+
+        try (SubprocessLogWriter writer = new SubprocessLogWriter(type, runId, projectRoot.toString())) {
+            writer.writeStart(new SubprocessLogWriter.SubprocessRunContext(
+                    "project-task-1", List.of("java"), projectRoot.toString(), 111L, "1g"));
+            writer.writeLine(AgentLogRecord.Stream.STDOUT, "project run");
+            writer.writeEnd(new SubprocessLogWriter.SubprocessRunResult(
+                    "COMPLETED", 0, null, false, false));
+        }
+
+        SubprocessLogMetadata meta = AgentLogReader.findSubprocessByRunId(projectRoot, runId).orElseThrow();
+        assertEquals(type, meta.getSubprocessType());
+        assertEquals(runId, meta.getRunId());
+        assertEquals(projectRoot.toString(), meta.getWorkingDirectory());
+
+        List<SubprocessLogMetadata> projectRuns = AgentLogReader.listSubprocessRuns(
+                projectRoot,
+                new AgentLogReader.SubprocessRunFilter(type, runId, null, null));
+        assertEquals(1, projectRuns.size(), "project scoped listing must include scoped run");
+        assertTrue(AgentLogReader.findSubprocessByRunId(runId).isEmpty(),
+                "global listing should not include project-scoped run");
     }
 
     @Test

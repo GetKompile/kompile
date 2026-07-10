@@ -303,8 +303,10 @@ class CrawlResumabilityTest {
             assertEquals(List.of("VECTOR_INDEXING"), remaining);
 
             // Build the resume request from the snapshot.
+            // strictSteps=true: skip the mandatory graph spine — graph steps already completed.
             UnifiedCrawlRequest resumeReq = UnifiedCrawlRequest.builder()
                     .enabledSteps(new ArrayList<>(remaining))
+                    .strictSteps(true)
                     .build();
             CrawlStepPlan plan = CrawlStepPlan.from(resumeReq);
 
@@ -347,8 +349,10 @@ class CrawlResumabilityTest {
             List<String> remaining = svc.loadSnapshot("resume-er").archivedSteps();
             assertEquals(List.of("ENTITY_RESOLUTION"), remaining);
 
+            // strictSteps=true: only run the failed step + its transitive deps, nothing beyond.
             UnifiedCrawlRequest resumeReq = UnifiedCrawlRequest.builder()
                     .enabledSteps(new ArrayList<>(remaining))
+                    .strictSteps(true)
                     .build();
             CrawlStepPlan plan = CrawlStepPlan.from(resumeReq);
 
@@ -389,8 +393,10 @@ class CrawlResumabilityTest {
             assertTrue(remaining.contains("VECTOR_INDEXING"));
             assertTrue(remaining.contains("ENTITY_RESOLUTION"));
 
+            // strictSteps=true: each failed step runs with just its dep closure; no mandatory spine.
             UnifiedCrawlRequest resumeReq = UnifiedCrawlRequest.builder()
                     .enabledSteps(new ArrayList<>(remaining))
+                    .strictSteps(true)
                     .build();
             CrawlStepPlan plan = CrawlStepPlan.from(resumeReq);
 

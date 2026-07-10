@@ -2,6 +2,7 @@ package ai.kompile.compute.graph.rest;
 
 import ai.kompile.compute.graph.model.ComputeArtifact;
 import ai.kompile.compute.graph.store.WorkflowFileStore;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
@@ -102,7 +103,7 @@ public class WorkflowController {
     @PostMapping("/inspect/xircuits")
     public ResponseEntity<?> inspectXircuits(@RequestBody String workflowJson) {
         try {
-            com.fasterxml.jackson.databind.ObjectMapper om = new com.fasterxml.jackson.databind.ObjectMapper();
+            ObjectMapper om = new ObjectMapper();
             var tree = om.readTree(workflowJson);
 
             Map<String, Object> inspection = new LinkedHashMap<>();
@@ -193,7 +194,7 @@ public class WorkflowController {
     @PostMapping("/inspect/n8n")
     public ResponseEntity<?> inspectN8n(@RequestBody String workflowJson) {
         try {
-            com.fasterxml.jackson.databind.ObjectMapper om = new com.fasterxml.jackson.databind.ObjectMapper();
+            ObjectMapper om = new ObjectMapper();
             var tree = om.readTree(workflowJson);
 
             Map<String, Object> inspection = new LinkedHashMap<>();

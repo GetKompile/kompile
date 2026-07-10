@@ -58,6 +58,13 @@ public class EditTool implements CliTool {
     }
 
     @Override
+    public String compactHint() {
+        return "Exact string replace — READ the file first. old_string must match byte-for-byte "
+                + "and be UNIQUE (add surrounding context, or set replace_all). Don't paste read's "
+                + "line-number prefix.";
+    }
+
+    @Override
     public JsonNode parameterSchema() {
         ObjectMapper om = JsonUtils.standardMapper();
         ObjectNode schema = om.createObjectNode();
@@ -111,6 +118,9 @@ public class EditTool implements CliTool {
         }
 
         context.checkPermission(permissionKey(), "Edit file: " + path);
+        if (!context.hasFreshFileRead(path)) {
+            return ToolResult.error(context.staleReadMessage(path, "edit"));
+        }
 
         try {
             String content = Files.readString(path);
@@ -123,6 +133,9 @@ public class EditTool implements CliTool {
                 String trimmedResult = tryTrimmedMatch(content, oldString, newString, replaceAll);
                 if (trimmedResult != null) {
                     Files.writeString(path, trimmedResult);
+                    context.recordFileRead(path);
+                    ai.kompile.cli.main.codeindex.BackgroundIndexService.getInstance()
+                            .noteFileWritten(path);
                     String relativePath;
                     try {
                         relativePath = context.getWorkingDirectory().toAbsolutePath().relativize(path.toAbsolutePath()).toString();
@@ -150,6 +163,9 @@ public class EditTool implements CliTool {
             }
 
             Files.writeString(path, newContent);
+            context.recordFileRead(path);
+            ai.kompile.cli.main.codeindex.BackgroundIndexService.getInstance()
+                    .noteFileWritten(path);
 
             String relativePath = context.getWorkingDirectory().relativize(path).toString();
             return ToolResult.success(relativePath,

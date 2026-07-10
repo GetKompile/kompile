@@ -54,6 +54,9 @@
     <java.version>17</java.version>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <frontend.basedir>${project.basedir}/src/main/frontend</frontend.basedir>
+    <!-- Default empty so ${argLine} in surefire resolves when JaCoCo is absent.
+         JaCoCo's prepare-agent goal overrides this with its agent string at build time. -->
+    <argLine></argLine>
   </properties>
 
   <scm>
@@ -119,9 +122,12 @@
         <artifactId>maven-surefire-plugin</artifactId>
         <version>3.1.0</version>
         <configuration>
-          <!-- Need to add @{argLine} for JaCoCo to work; see
-          https://stackoverflow.com/questions/71568474/getting-skipping-jacoco-execution-due-to-missing-execution-data-file-with-jaco -->
-          <argLine>@{argLine} -Xmx8192m</argLine>
+          <!-- Use ${argLine} (standard Maven property) so tests run without JaCoCo in
+               the lifecycle. If JaCoCo is added later its prepare-agent goal will set
+               the argLine Maven property before surefire executes.
+               Previously used @{argLine} (JaCoCo late-binding syntax) which caused JVM
+               crash when JaCoCo was absent because @{argLine} was never substituted. -->
+          <argLine>${argLine} -Xmx8192m</argLine>
         </configuration>
       </plugin>
       <plugin>
@@ -383,6 +389,19 @@
       <groupId>junit</groupId>
       <artifactId>junit</artifactId>
       <version>4.13.2</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency> <!-- nd4j CPU backend required for unit tests using Nd4j -->
+      <groupId>org.eclipse.deeplearning4j</groupId>
+      <artifactId>nd4j-native</artifactId>
+      <version>${nd4j.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency> <!-- nd4j CPU backend native binaries for the current platform -->
+      <groupId>org.eclipse.deeplearning4j</groupId>
+      <artifactId>nd4j-native</artifactId>
+      <version>${nd4j.version}</version>
+      <classifier>${javacpp.platform}</classifier>
       <scope>test</scope>
     </dependency>
     <dependency>

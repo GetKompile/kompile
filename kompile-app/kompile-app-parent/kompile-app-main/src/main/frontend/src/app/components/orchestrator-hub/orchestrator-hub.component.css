@@ -42,17 +42,17 @@
   justify-content: space-between;
   align-items: center;
   padding: 12px 16px;
-  background: #fef2f2;
-  border: 1px solid #fecaca;
+  background: var(--status-error-bg);
+  border: 1px solid var(--status-error-border);
   border-radius: 8px;
-  color: #dc2626;
+  color: var(--status-error-text);
   margin-bottom: 16px;
 }
 
 .error-banner .close-btn {
   background: none;
   border: none;
-  color: #dc2626;
+  color: var(--status-error-text);
   cursor: pointer;
   font-size: 1.2rem;
   padding: 0 8px;
@@ -91,7 +91,7 @@
 
 .sub-tab.active {
   background: var(--bg-surface);
-  color: #4f46e5;
+  color: var(--color-primary);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
 }
 
@@ -115,8 +115,8 @@
   align-items: center;
   gap: 12px;
   padding: 12px 16px;
-  background: #f0f4ff;
-  border: 1px solid #c7d2fe;
+  background: var(--status-info-bg);
+  border: 1px solid var(--status-info-border);
   border-radius: 8px;
   margin-bottom: 16px;
 }
@@ -189,13 +189,13 @@
 }
 
 .instance-card:hover {
-  border-color: #c7d2fe;
+  border-color: var(--status-info-border);
   background: var(--bg-body);
 }
 
 .instance-card.selected {
-  border-color: #4f46e5;
-  background: #f0f4ff;
+  border-color: var(--color-primary);
+  background: var(--status-info-bg);
 }
 
 .instance-header {
@@ -241,18 +241,18 @@
 }
 
 .status-running {
-  background: #dcfce7;
-  color: #16a34a;
+  background: var(--status-success-bg);
+  color: var(--status-success-text);
 }
 
 .status-completed {
-  background: #dbeafe;
-  color: #2563eb;
+  background: var(--status-info-bg);
+  color: var(--status-info-text);
 }
 
 .status-paused {
-  background: #fef3c7;
-  color: #d97706;
+  background: var(--status-warning-bg);
+  color: var(--status-warning-text);
 }
 
 .status-stopped {
@@ -261,8 +261,8 @@
 }
 
 .status-error {
-  background: #fef2f2;
-  color: #dc2626;
+  background: var(--status-error-bg);
+  color: var(--status-error-text);
 }
 
 .status-default {
@@ -292,12 +292,12 @@
 }
 
 .btn-primary {
-  background: #4f46e5;
+  background: var(--color-primary);
   color: #fff;
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: #4338ca;
+  background: var(--color-primary-dark);
 }
 
 .btn-secondary {
@@ -310,30 +310,30 @@
 }
 
 .btn-success {
-  background: #22c55e;
+  background: var(--status-success-icon);
   color: #fff;
 }
 
 .btn-success:hover:not(:disabled) {
-  background: #16a34a;
+  background: var(--status-success-text);
 }
 
 .btn-warning {
-  background: #f59e0b;
+  background: var(--status-warning-icon);
   color: #fff;
 }
 
 .btn-warning:hover:not(:disabled) {
-  background: #d97706;
+  background: var(--status-warning-text);
 }
 
 .btn-danger {
-  background: #ef4444;
+  background: var(--status-error-icon);
   color: #fff;
 }
 
 .btn-danger:hover:not(:disabled) {
-  background: #dc2626;
+  background: var(--status-error-text);
 }
 
 /* Command Section */
@@ -365,8 +365,8 @@
 
 .command-input input:focus {
   outline: none;
-  border-color: #4f46e5;
-  box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.1);
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px rgba(25, 118, 210, 0.1);
 }
 
 /* Task Section */
@@ -394,8 +394,8 @@
 }
 
 .task-card.running {
-  border-color: #86efac;
-  background: #f0fdf4;
+  border-color: var(--status-success-border);
+  background: var(--status-success-bg);
 }
 
 .task-header {
@@ -438,8 +438,8 @@
 }
 
 .task-error {
-  background: #fef2f2;
-  color: #dc2626;
+  background: var(--status-error-bg);
+  color: var(--status-error-text);
 }
 
 .task-actions {
@@ -478,8 +478,8 @@
 .workflow-form input:focus,
 .workflow-form textarea:focus {
   outline: none;
-  border-color: #4f46e5;
-  box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.1);
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px rgba(25, 118, 210, 0.1);
 }
 
 .workflow-options {
@@ -529,12 +529,12 @@
 }
 
 .workflow-card:hover {
-  border-color: #c7d2fe;
+  border-color: var(--status-info-border);
 }
 
 .workflow-card.selected {
-  border-color: #4f46e5;
-  background: #f0f4ff;
+  border-color: var(--color-primary);
+  background: var(--status-info-bg);
 }
 
 .workflow-header {
@@ -658,8 +658,8 @@
 .form-group input:focus,
 .form-group textarea:focus {
   outline: none;
-  border-color: #4f46e5;
-  box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.1);
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px rgba(25, 118, 210, 0.1);
 }
 
 .form-actions {
@@ -670,8 +670,8 @@
 
 /* Enhanced Task Styles */
 .task-card.task-failed {
-  border-color: #fecaca;
-  background: #fef2f2;
+  border-color: var(--status-error-border);
+  background: var(--status-error-bg);
 }
 
 .task-name {
@@ -682,8 +682,8 @@
 
 .task-type-badge {
   padding: 2px 8px;
-  background: #e0e7ff;
-  color: #4338ca;
+  background: var(--status-info-bg);
+  color: var(--status-info-text);
   border-radius: 4px;
   font-size: 0.75rem;
   font-weight: 500;
@@ -692,16 +692,16 @@
 
 .exit-code {
   padding: 2px 8px;
-  background: #dcfce7;
-  color: #16a34a;
+  background: var(--status-success-bg);
+  color: var(--status-success-text);
   border-radius: 4px;
   font-size: 0.8rem;
   font-weight: 500;
 }
 
 .exit-code.exit-error {
-  background: #fef2f2;
-  color: #dc2626;
+  background: var(--status-error-bg);
+  color: var(--status-error-text);
 }
 
 .task-meta {
@@ -738,8 +738,8 @@
 .step-error {
   margin: 8px 0;
   padding: 12px;
-  background: #fef2f2;
-  border: 1px solid #fecaca;
+  background: var(--status-error-bg);
+  border: 1px solid var(--status-error-border);
   border-radius: 6px;
 }
 
@@ -756,7 +756,7 @@
 
 .error-label {
   font-weight: 600;
-  color: #dc2626;
+  color: var(--status-error-text);
   font-size: 0.9rem;
 }
 
@@ -765,7 +765,7 @@
   padding: 8px;
   background: var(--bg-surface);
   border-radius: 4px;
-  color: #991b1b;
+  color: var(--status-error-text);
   font-size: 0.85rem;
   white-space: pre-wrap;
   word-break: break-word;
@@ -776,7 +776,7 @@
 .parsed-errors {
   margin-top: 8px;
   padding-top: 8px;
-  border-top: 1px solid #fecaca;
+  border-top: 1px solid var(--status-error-border);
 }
 
 .parsed-error {
@@ -788,12 +788,12 @@
 
 .error-type {
   font-weight: 600;
-  color: #b91c1c;
+  color: var(--status-error-text);
   white-space: nowrap;
 }
 
 .error-detail {
-  color: #991b1b;
+  color: var(--status-error-text);
   word-break: break-word;
 }
 
@@ -862,7 +862,7 @@
 
 .task-llm-link a,
 .step-links a {
-  color: #4f46e5;
+  color: var(--color-primary);
   text-decoration: none;
   font-size: 0.9rem;
   cursor: pointer;
@@ -879,8 +879,8 @@
 
 /* Enhanced Step Styles */
 .step-card.step-failed {
-  border-color: #fecaca;
-  background: #fef2f2;
+  border-color: var(--status-error-border);
+  background: var(--status-error-bg);
 }
 
 .step-description {
@@ -891,8 +891,8 @@
 
 .approval-badge {
   padding: 2px 8px;
-  background: #dcfce7;
-  color: #16a34a;
+  background: var(--status-success-bg);
+  color: var(--status-success-text);
   border-radius: 4px;
   font-size: 0.75rem;
   font-weight: 500;
@@ -910,8 +910,8 @@
 .step-action-section {
   margin: 12px 0;
   padding: 12px;
-  background: #f0f4ff;
-  border: 1px solid #c7d2fe;
+  background: var(--status-info-bg);
+  border: 1px solid var(--status-info-border);
   border-radius: 6px;
 }
 
@@ -924,7 +924,7 @@
 
 .action-type {
   padding: 4px 10px;
-  background: #4f46e5;
+  background: var(--color-primary);
   color: #fff;
   border-radius: 4px;
   font-size: 0.8rem;
@@ -934,7 +934,7 @@
 
 .confidence {
   font-size: 0.85rem;
-  color: #4338ca;
+  color: var(--color-primary-dark);
   font-weight: 500;
 }
 
@@ -998,15 +998,15 @@
 .step-rejection {
   margin: 8px 0;
   padding: 12px;
-  background: #fef3c7;
-  border: 1px solid #fcd34d;
+  background: var(--status-warning-bg);
+  border: 1px solid var(--status-warning-border);
   border-radius: 6px;
 }
 
 .step-rejection label {
   display: block;
   font-size: 0.75rem;
-  color: #92400e;
+  color: var(--status-warning-text);
   margin-bottom: 4px;
   text-transform: uppercase;
   font-weight: 600;
@@ -1014,7 +1014,7 @@
 
 .step-rejection p {
   margin: 0;
-  color: #78350f;
+  color: var(--status-warning-text);
   font-size: 0.9rem;
 }
 
@@ -1077,8 +1077,8 @@
 
 .form-select:focus {
   outline: none;
-  border-color: #4f46e5;
-  box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.1);
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px rgba(25, 118, 210, 0.1);
 }
 
 .form-input-sm {
@@ -1091,7 +1091,7 @@
 
 .form-input-sm:focus {
   outline: none;
-  border-color: #4f46e5;
+  border-color: var(--color-primary);
 }
 
 .code-textarea {
@@ -1172,13 +1172,13 @@
 }
 
 .tool-card:hover {
-  border-color: #c7d2fe;
+  border-color: var(--status-info-border);
   background: var(--bg-body);
 }
 
 .tool-card.selected {
-  border-color: #4f46e5;
-  background: #f0f4ff;
+  border-color: var(--color-primary);
+  background: var(--status-info-bg);
 }
 
 .tool-icon {
@@ -1199,7 +1199,7 @@
   right: 8px;
   width: 20px;
   height: 20px;
-  background: #4f46e5;
+  background: var(--color-primary);
   color: #fff;
   border-radius: 50%;
   display: flex;
@@ -1262,13 +1262,13 @@
 }
 
 .btn-add {
-  background: #ecfdf5;
-  color: #059669;
-  border: 1px solid #a7f3d0;
+  background: var(--status-success-bg);
+  color: var(--status-success-icon);
+  border: 1px solid var(--status-success-border);
 }
 
 .btn-add:hover:not(:disabled) {
-  background: #d1fae5;
+  background: var(--status-success-border);
 }
 
 /* Workflow Step Cards */
@@ -1286,24 +1286,24 @@
 }
 
 .workflow-step-card.editing {
-  border-color: #4f46e5;
-  box-shadow: 0 4px 12px rgba(79, 70, 229, 0.15);
+  border-color: var(--color-primary);
+  box-shadow: 0 4px 12px rgba(25, 118, 210, 0.15);
 }
 
 .workflow-step-card.step-prompt {
-  border-left: 4px solid #4f46e5;
+  border-left: 4px solid var(--color-primary);
 }
 
 .workflow-step-card.step-tool {
-  border-left: 4px solid #059669;
+  border-left: 4px solid var(--status-success-icon);
 }
 
 .workflow-step-card.step-condition {
-  border-left: 4px solid #f59e0b;
+  border-left: 4px solid var(--status-warning-icon);
 }
 
 .workflow-step-card.step-parallel {
-  border-left: 4px solid #8b5cf6;
+  border-left: 4px solid var(--color-secondary);
 }
 
 .step-card-header {
@@ -1318,7 +1318,7 @@
 .step-number {
   width: 28px;
   height: 28px;
-  background: #4f46e5;
+  background: var(--color-primary);
   color: #fff;
   border-radius: 50%;
   display: flex;
@@ -1349,7 +1349,7 @@
 
 .step-name-input:focus {
   outline: none;
-  border-color: #4f46e5;
+  border-color: var(--color-primary);
 }
 
 .step-card-actions {
@@ -1382,12 +1382,12 @@
 }
 
 .btn-icon.btn-danger {
-  background: #fef2f2;
-  color: #dc2626;
+  background: var(--status-error-bg);
+  color: var(--status-error-text);
 }
 
 .btn-icon.btn-danger:hover:not(:disabled) {
-  background: #fecaca;
+  background: var(--status-error-border);
 }
 
 /* Step Content (when editing) */
@@ -1515,8 +1515,8 @@
   align-items: center;
   gap: 20px;
   padding: 16px 20px;
-  background: linear-gradient(135deg, #f0f4ff 0%, #e0e7ff 100%);
-  border-bottom: 1px solid #c7d2fe;
+  background: var(--status-info-bg);
+  border-bottom: 1px solid var(--status-info-border);
   margin-bottom: 0;
 }
 
@@ -1590,8 +1590,8 @@
 }
 
 .orch-sub-tab.active {
-  background: #f0f4ff;
-  color: #4f46e5;
+  background: var(--status-info-bg);
+  color: var(--color-primary);
 }
 
 .orch-sub-tab.active::after {
@@ -1601,7 +1601,7 @@
   left: 0;
   right: 0;
   height: 2px;
-  background: #4f46e5;
+  background: var(--color-primary);
 }
 
 /* Orchestrator Detail Content */
@@ -1637,7 +1637,7 @@
   content: '';
   width: 4px;
   height: 16px;
-  background: #4f46e5;
+  background: var(--color-primary);
   border-radius: 2px;
 }
 
@@ -1675,15 +1675,15 @@
 }
 
 .stat-card.stat-running .stat-value {
-  color: #16a34a;
+  color: var(--status-success-text);
 }
 
 .stat-card.stat-error .stat-value {
-  color: #dc2626;
+  color: var(--status-error-text);
 }
 
 .stat-card.stat-pending .stat-value {
-  color: #d97706;
+  color: var(--status-warning-text);
 }
 
 /* Info Grid */
@@ -1741,18 +1741,18 @@
 }
 
 .activity-item.activity-success .activity-icon {
-  background: #dcfce7;
-  color: #16a34a;
+  background: var(--status-success-bg);
+  color: var(--status-success-text);
 }
 
 .activity-item.activity-error .activity-icon {
-  background: #fef2f2;
-  color: #dc2626;
+  background: var(--status-error-bg);
+  color: var(--status-error-text);
 }
 
 .activity-item.activity-running .activity-icon {
-  background: #dbeafe;
-  color: #2563eb;
+  background: var(--status-info-bg);
+  color: var(--status-info-text);
 }
 
 .activity-content {
@@ -1812,7 +1812,7 @@
 }
 
 .config-value.enabled {
-  color: #16a34a;
+  color: var(--status-success-text);
 }
 
 .config-value.disabled {
@@ -1933,9 +1933,9 @@
   cursor: pointer; background: var(--bg-body);
 }
 .log-run-header:hover { background: var(--bg-surface-elevated); }
-.log-run-agent { font-weight: 600; color: #1565c0; flex: 1; }
+.log-run-agent { font-weight: 600; color: var(--status-info-text); flex: 1; }
 .log-run-time { font-size: 12px; color: var(--text-tertiary); }
-.log-run-count { font-size: 11px; color: var(--text-secondary); background: #e3f2fd; padding: 2px 8px; border-radius: 4px; }
+.log-run-count { font-size: 11px; color: var(--text-secondary); background: var(--status-info-bg); padding: 2px 8px; border-radius: 4px; }
 .log-run-records {
   max-height: 400px; overflow-y: auto; padding: 8px 14px;
   border-top: 1px solid var(--border-color); background: var(--bg-surface);
@@ -1946,16 +1946,16 @@
 .log-level {
   min-width: 50px; font-weight: 600; text-transform: uppercase;
 }
-.log-info { color: #1565c0; }
-.log-warn, .log-warning { color: #e65100; }
-.log-error { color: #c62828; }
+.log-info { color: var(--status-info-text); }
+.log-warn, .log-warning { color: var(--status-warning-text); }
+.log-error { color: var(--status-error-text); }
 .log-debug { color: var(--text-tertiary); }
 .log-msg { word-break: break-word; color: var(--text-primary); }
 .log-empty { text-align: center; padding: 16px; color: var(--text-tertiary); font-size: 13px; }
 
 /* Task Duration & Retry */
-.task-duration { color: #1565c0; font-weight: 600; }
-.retry-badge { color: #e65100; font-weight: 600; }
+.task-duration { color: var(--status-info-text); font-weight: 600; }
+.retry-badge { color: var(--status-warning-text); font-weight: 600; }
 
 /* LLM Session Overlay */
 .llm-session-overlay {
@@ -1987,22 +1987,22 @@
   display: flex; gap: 8px; padding: 6px 10px; margin-bottom: 4px;
   border-radius: 4px; font-size: 12px;
 }
-.llm-msg-user { background: #e3f2fd; }
-.llm-msg-assistant { background: #f3e5f5; }
-.llm-msg-system { background: #fff3e0; }
-.llm-msg-tool_call, .llm-msg-tool_result { background: #e8f5e9; }
+.llm-msg-user { background: var(--status-info-bg); }
+.llm-msg-assistant { background: var(--bg-surface-elevated); }
+.llm-msg-system { background: var(--status-warning-bg); }
+.llm-msg-tool_call, .llm-msg-tool_result { background: var(--status-success-bg); }
 .llm-msg-task_output { background: var(--bg-surface-elevated); }
-.llm-msg-error { background: #fef2f2; }
-.llm-msg-feedback { background: #fef3c7; }
+.llm-msg-error { background: var(--status-error-bg); }
+.llm-msg-feedback { background: var(--status-warning-bg); }
 .llm-msg-role { font-weight: 600; min-width: 70px; text-transform: uppercase; font-size: 11px; }
 .llm-msg-content { word-break: break-word; flex: 1; }
-.llm-msg-tool { font-size: 10px; color: #059669; font-family: monospace; }
+.llm-msg-tool { font-size: 10px; color: var(--status-success-icon); font-family: monospace; }
 .llm-msg-tokens { font-size: 10px; color: var(--text-tertiary); white-space: nowrap; }
 .llm-empty { text-align: center; color: var(--text-tertiary); }
 .llm-session-meta { display: flex; align-items: center; gap: 8px; }
 .llm-provider { font-size: 12px; color: var(--text-secondary); }
 .llm-tokens { font-size: 12px; color: var(--text-tertiary); }
-.llm-error-content { color: #dc2626; background: #fef2f2; }
+.llm-error-content { color: var(--status-error-text); background: var(--status-error-bg); }
 
 /* Task Definition List */
 .task-def-list { display: flex; flex-direction: column; gap: 8px; }
@@ -2010,16 +2010,16 @@
   border: 1px solid var(--border-color); border-radius: 8px; padding: 12px 16px;
   transition: border-color 0.15s;
 }
-.task-def-card:hover { border-color: #c7d2fe; }
+.task-def-card:hover { border-color: var(--status-info-border); }
 .task-def-header { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
 .task-def-name { font-weight: 600; font-size: 14px; color: var(--text-primary); }
 .task-rag-badge {
   font-size: 10px; padding: 1px 6px; border-radius: 8px;
-  background: #ecfdf5; color: #059669; font-weight: 600; text-transform: uppercase;
+  background: var(--status-success-bg); color: var(--status-success-icon); font-weight: 600; text-transform: uppercase;
 }
 .task-tools-badge {
   font-size: 10px; padding: 1px 6px; border-radius: 8px;
-  background: #eff6ff; color: #2563eb; font-weight: 600; text-transform: uppercase;
+  background: var(--status-info-bg); color: var(--status-info-text); font-weight: 600; text-transform: uppercase;
 }
 .task-def-desc { font-size: 13px; color: var(--text-secondary); margin-bottom: 6px; }
 .task-def-meta {
@@ -2043,8 +2043,8 @@
 }
 .overview-tags { display: flex; flex-wrap: wrap; gap: 6px; }
 .tag-chip {
-  padding: 2px 10px; border-radius: 12px; background: #eff6ff;
-  color: #2563eb; font-size: 12px; font-weight: 500;
+  padding: 2px 10px; border-radius: 12px; background: var(--status-info-bg);
+  color: var(--status-info-text); font-size: 12px; font-weight: 500;
 }
 .context-grid { display: flex; flex-direction: column; gap: 4px; }
 .context-row {
@@ -2060,7 +2060,7 @@
   flex: 1; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 6px;
   font-size: 14px; background: var(--bg-surface);
 }
-.task-select:focus { outline: none; border-color: #4f46e5; box-shadow: 0 0 0 2px rgba(79,70,229,0.1); }
+.task-select:focus { outline: none; border-color: var(--color-primary); box-shadow: 0 0 0 2px rgba(25,118,210,0.1); }
 .task-variables-section { margin-top: 10px; }
 .task-var-header {
   display: flex; justify-content: space-between; align-items: center;
@@ -2071,13 +2071,13 @@
   flex: 1; padding: 4px 8px; border: 1px solid var(--border-color); border-radius: 4px;
   font-size: 13px;
 }
-.task-var-input:focus { outline: none; border-color: #4f46e5; }
+.task-var-input:focus { outline: none; border-color: var(--color-primary); }
 
 /* Success banner */
 .success-banner {
   display: flex; align-items: center; justify-content: space-between;
   padding: 10px 16px; margin-bottom: 12px; border-radius: 8px;
-  background: #f0fdf4; border: 1px solid #bbf7d0; color: #16a34a; font-size: 14px;
+  background: var(--status-success-bg); border: 1px solid var(--status-success-border); color: var(--status-success-text); font-size: 14px;
 }
 
 /* State transition */
@@ -2100,7 +2100,7 @@
   width: 100%; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 6px;
   font-size: 13px; resize: vertical; margin-bottom: 8px; box-sizing: border-box;
 }
-.llm-invoke-textarea:focus { outline: none; border-color: #4f46e5; box-shadow: 0 0 0 2px rgba(79,70,229,0.1); }
+.llm-invoke-textarea:focus { outline: none; border-color: var(--color-primary); box-shadow: 0 0 0 2px rgba(25,118,210,0.1); }
 
 /* Trigger form */
 .trigger-form {

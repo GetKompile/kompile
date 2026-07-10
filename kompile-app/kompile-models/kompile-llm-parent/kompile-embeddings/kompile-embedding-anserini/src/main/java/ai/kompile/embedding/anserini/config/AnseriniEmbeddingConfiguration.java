@@ -20,6 +20,7 @@ import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.sun.management.OperatingSystemMXBean;
 import jakarta.annotation.PostConstruct;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
@@ -31,6 +32,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
+import java.lang.management.ManagementFactory;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -93,10 +95,11 @@ public class AnseriniEmbeddingConfiguration {
         private boolean eagerInit = true;
 
         /**
-         * Model identifier for the embedding model.
-         * Examples: "bge-base-en-v1.5-onnx", "arctic-embed-base-onnx"
+         * Model identifier for the embedding model. Must match a registered/downloadable encoder in
+         * ModelConstants (the default-bundle embedding model). The "-onnx" suffix is NOT a real model.
+         * Examples: "bge-base-en-v1.5", "arctic-embed-l", "cosdpr-distil".
          */
-        private String modelIdentifier = "bge-base-en-v1.5-onnx";
+        private String modelIdentifier = "bge-base-en-v1.5";
 
         /**
          * Path to the ONNX model file (optional if using model management).
@@ -211,28 +214,71 @@ public class AnseriniEmbeddingConfiguration {
         private int subprocessHeapMb = 4096;
 
         /**
-         * JavaCPP maxphysicalbytes cap for the embedding subprocess, in MB.
-         * Passed as {@code -Dorg.bytedeco.javacpp.maxphysicalbytes=<N>m} to the subprocess
+         * JavaCPP maxbytes cap for the embedding subprocess, in MB.
+         * Passed as {@code -Dorg.bytedeco.javacpp.maxbytes=<N>m} to the subprocess
          * so native activation memory is bounded even if the JVM heap limit is not triggered.
-         * A value of 0 means "4 × subprocessHeapMb" (the default multiplier).
+         * A value of 0 means a host-aware default derived from the same RSS envelope used by
+         * the parent-side subprocess watchdog.
          *
-         * Default: 0 (auto = 4 × subprocessHeapMb)
+         * Default: 0 (auto = 90% of the per-subprocess RSS watchdog budget, with a heap-based floor)
          */
         private long subprocessMaxPhysicalMb = 0;
 
         /**
-         * Returns the effective JavaCPP maxphysicalbytes value in MB.
-         * Uses {@code subprocessMaxPhysicalMb} if > 0, otherwise 4 × {@code subprocessHeapMb}.
+         * Returns the effective JavaCPP maxbytes value in MB.
+         * Uses {@code subprocessMaxPhysicalMb} if > 0, otherwise derives a host-aware ceiling from
+         * the RSS watchdog envelope. On a 128 GB workstation with the default 50% RSS watchdog this
+         * yields about 57 GB, which lets BGE use a single ~32-row fixed 512-token plan instead of
+         * being pinned to the earlier 18-row plan. Smaller machines scale down instead of blindly
+         * inheriting a 64-row plan.
          */
         public long getEffectiveSubprocessMaxPhysicalMb() {
             if (subprocessMaxPhysicalMb > 0) {
                 return subprocessMaxPhysicalMb;
             }
-            // Ceiling for the embedding subprocess's native memory. With per-batch session-cache clearing
-            // (InferenceSession.clearAllCaches between batches) the encode is bounded to ~model-resident +
-            // one batch's activations (the ~47MB/batch is reclaimed each batch, not accumulated), so a 32GB
-            // ceiling has ample headroom; the reactive OOM-split guard + RSS watchdog are backstops.
+            long watchdogBudgetMb = estimateSubprocessRssWatchdogBudgetMb();
+            if (watchdogBudgetMb > 0) {
+                double planningFraction = parseDoubleSystemProperty(
+                        "kompile.embedding.anserini.native-budget-rss-fraction", 0.90, 0.10, 0.95);
+                long hostAwareBudgetMb = Math.max(1L, (long) (watchdogBudgetMb * planningFraction));
+                long heapFloorMb = Math.max(4096L, (long) subprocessHeapMb * 4L);
+                return Math.max(heapFloorMb, hostAwareBudgetMb);
+            }
             return Math.max(32768L, (long) subprocessHeapMb * 8L);
+        }
+
+        private long estimateSubprocessRssWatchdogBudgetMb() {
+            try {
+                long totalBytes = ((OperatingSystemMXBean) ManagementFactory.getOperatingSystemMXBean())
+                        .getTotalMemorySize();
+                if (totalBytes <= 0) {
+                    return 0L;
+                }
+                double fraction = parseDoubleSystemProperty(
+                        "kompile.subprocess.max-rss-fraction", 0.50, 0.0, 1.0);
+                if (fraction <= 0.0) {
+                    return 0L;
+                }
+                return (long) ((totalBytes / (1024.0 * 1024.0)) * fraction);
+            } catch (Throwable t) {
+                return 0L;
+            }
+        }
+
+        private double parseDoubleSystemProperty(String key, double defaultValue, double minInclusive, double maxInclusive) {
+            try {
+                String value = System.getProperty(key);
+                if (value == null || value.isBlank()) {
+                    return defaultValue;
+                }
+                double parsed = Double.parseDouble(value.trim());
+                if (parsed < minInclusive || parsed > maxInclusive) {
+                    return defaultValue;
+                }
+                return parsed;
+            } catch (NumberFormatException e) {
+                return defaultValue;
+            }
         }
 
         /**

@@ -2,7 +2,6 @@ package ai.kompile.cli.mcp.stdio;
 
 import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.agent.AgentRegistry;
-import ai.kompile.cli.main.chat.agent.PersistentAgentProcess;
 import ai.kompile.cli.main.chat.roles.RoleManager;
 import ai.kompile.cli.main.chat.tools.ToolResult;
 import ai.kompile.core.agent.CliAgentRegistry;
@@ -336,7 +335,8 @@ public class StdioMultiTaskTool {
 
     /**
      * Resolve the list of agent types for a subtask.
-     * If 'agents' (array) is provided, use that. Otherwise fall back to 'agent' (string, default "qwen").
+     * If 'agents' (array) is provided, use that. Otherwise fall back to 'agent' (string, default
+     * "opencode" — qwen's OAuth free tier was discontinued).
      */
     @SuppressWarnings("unchecked")
     private static List<String> resolveAgentTypes(Map<String, Object> subtask) {
@@ -347,7 +347,7 @@ public class StdioMultiTaskTool {
                 return agents;
             }
         }
-        return List.of((String) subtask.getOrDefault("agent", "qwen"));
+        return List.of((String) subtask.getOrDefault("agent", "opencode"));
     }
 
     /**
@@ -381,20 +381,11 @@ public class StdioMultiTaskTool {
                     .roleName(roleName)
                     .build();
 
-                String result = subagentRunner.runSubagent(agentConfig, prompt);
-                if (result.contains("not found in PATH")) {
-                    continue; // Try next agent
+                String result = subagentRunner.forkForSubagent().runSubagent(agentConfig, prompt);
+                if (StdioTaskTool.isAgentMissing(result)) {
+                    continue;
                 }
                 return SubtaskResult.completed(result);
-            } catch (PersistentAgentProcess.TimedOutException toe) {
-                // The turn timed out — surface as TIMED_OUT, NOT as a success.
-                // Partial output is preserved so it can be written to the result file.
-                String partial = toe.getPartialOutput();
-                String snippet = partial.isEmpty() ? "(no output captured)"
-                    : partial.substring(0, Math.min(80, partial.length()));
-                System.err.println("\u001B[31m    \u23f1 " + name + ": " + agentName
-                    + " timed out. Partial: " + snippet + "\u001B[0m");
-                return SubtaskResult.timedOut(partial);
             } catch (RateLimitException e) {
                 System.err.println("\u001B[33m    \u26a0 " + name + ": " + agentName
                     + " rate limited, trying fallback...\u001B[0m");
@@ -443,12 +434,12 @@ public class StdioMultiTaskTool {
     /**
      * Outcome codes for a completed subtask.
      * <p>
-     * <b>COMPLETED</b> — the agent produced a result event (stream-json {@code "type":"result"})
-     * and the turn ended normally.  This is the only outcome counted as "succeeded".<br>
-     * <b>TIMED_OUT</b> — the per-turn timeout fired before a result event was received.
-     * The {@code output} field holds whatever partial text was captured up to that point.
-     * This MUST NOT be counted as success; it means the subtask ran out of time.<br>
-     * <b>FAILED</b> — a communication error, process crash, or explicit error return.
+     * <b>COMPLETED</b> -- the managed agent turn returned normally. This is the only
+     * outcome counted as "succeeded".<br>
+     * <b>TIMED_OUT</b> -- a managed turn timed out before completion. The {@code output}
+     * field holds whatever partial text was captured up to that point. This MUST NOT
+     * be counted as success; it means the subtask ran out of time.<br>
+     * <b>FAILED</b> -- a communication error, process crash, or explicit error return.
      */
     enum SubtaskOutcome { COMPLETED, TIMED_OUT, FAILED }
 

@@ -33,7 +33,11 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -119,7 +123,7 @@ public class ComponentPruner {
 
         // Load TABLE and DOCUMENT structural anchors and register them in the graph so
         // CONTAINS / HEADER_OF edges to them make their ENTITY children look connected.
-        java.util.Set<String> structuralAnchorIds = new java.util.HashSet<>();
+        Set<String> structuralAnchorIds = new HashSet<>();
         for (NodeLevel anchorType : new NodeLevel[]{NodeLevel.TABLE, NodeLevel.DOCUMENT}) {
             try {
                 List<GraphNode> anchors = knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, anchorType);
@@ -164,7 +168,7 @@ public class ComponentPruner {
         List<String> toPrune = new ArrayList<>();
 
         // Build a fast lookup: nodeId → GraphNode for pin checks
-        java.util.Map<String, GraphNode> nodeById = new java.util.HashMap<>();
+        Map<String, GraphNode> nodeById = new HashMap<>();
         for (GraphNode n : activeEntities) {
             nodeById.put(n.getNodeId(), n);
         }

@@ -9,9 +9,13 @@
  */
 package ai.kompile.tool.graph;
 
+import ai.kompile.graph.reasoning.model.GraphEntity;
+import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
+import ai.kompile.knowledgegraph.domain.NodeLevel;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
+import ai.kompile.knowledgegraph.unified.UnifiedGraphBridge;
 import com.fasterxml.jackson.core.type.TypeReference;
 import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -39,6 +43,7 @@ public class GraphLabelTool {
 
     private final KnowledgeGraphService graphService;
     private final ObjectMapper objectMapper;
+    private final UnifiedGraphBridge unifiedGraphBridge;
 
     // ═══════════════════════════════════════════════════════════════════════════
     // INPUT RECORDS
@@ -54,7 +59,11 @@ public class GraphLabelTool {
             List<String> labels
     ) {}
 
-    public record GetNodeLabelsInput(String nodeId) {}
+    public record GetNodeLabelsInput(String nodeId, Long factSheetId) {
+        public GetNodeLabelsInput(String nodeId) {
+            this(nodeId, null);
+        }
+    }
 
     public record FindByLabelInput(
             String label,
@@ -80,11 +89,18 @@ public class GraphLabelTool {
 
     public record ListAllLabelsInput(Long factSheetId) {}
 
+    public GraphLabelTool(KnowledgeGraphService graphService,
+                          ObjectMapper objectMapper) {
+        this(graphService, objectMapper, null);
+    }
+
     @Autowired
     public GraphLabelTool(KnowledgeGraphService graphService,
-                          @Autowired(required = false) ObjectMapper objectMapper) {
+                          @Autowired(required = false) ObjectMapper objectMapper,
+                          @org.springframework.lang.Nullable UnifiedGraphBridge unifiedGraphBridge) {
         this.graphService = graphService;
         this.objectMapper = objectMapper != null ? objectMapper : JsonUtils.standardMapper();
+        this.unifiedGraphBridge = unifiedGraphBridge;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -177,6 +193,20 @@ public class GraphLabelTool {
         try {
             Optional<GraphNode> opt = graphService.getNode(input.nodeId());
             if (opt.isEmpty()) {
+                UnifiedGraph unified = unifiedGraph(input.factSheetId());
+                if (unified != null) {
+                    return unified.entity(input.nodeId())
+                            .map(entity -> {
+                                Set<String> labels = labelsFromEntity(entity);
+                                Map<String, Object> result = new LinkedHashMap<>();
+                                result.put("source", sourceLabel(unified));
+                                result.put("nodeId", input.nodeId());
+                                result.put("title", entity.label());
+                                result.put("labels", new ArrayList<>(labels));
+                                return result;
+                            })
+                            .orElseGet(() -> Map.of("error", "Node not found: " + input.nodeId()));
+                }
                 return Map.of("error", "Node not found: " + input.nodeId());
             }
 
@@ -208,6 +238,12 @@ public class GraphLabelTool {
         int limit = GraphSearchTool.clampLimit(input.maxResults(), 50);
 
         try {
+            var nodeType = GraphSearchTool.parseNodeLevel(input.nodeType());
+            UnifiedGraph unified = unifiedGraph(input.factSheetId());
+            if (unified != null) {
+                return findUnifiedByLabel(input.label(), nodeType, limit, unified);
+            }
+
             List<GraphNode> candidates;
             if (input.factSheetId() != null) {
                 candidates = graphService.getNodesInFactSheet(input.factSheetId());
@@ -215,7 +251,6 @@ public class GraphLabelTool {
                 candidates = graphService.getAllNodes(5000);
             }
 
-            var nodeType = GraphSearchTool.parseNodeLevel(input.nodeType());
             List<Map<String, Object>> results = candidates.stream()
                     .filter(n -> nodeType == null || n.getNodeType() == nodeType)
                     .filter(n -> {
@@ -364,6 +399,11 @@ public class GraphLabelTool {
                   + "Useful for discovering the labeling taxonomy already applied.")
     public Map<String, Object> listAllLabels(ListAllLabelsInput input) {
         try {
+            UnifiedGraph unified = unifiedGraph(input.factSheetId());
+            if (unified != null) {
+                return listUnifiedLabels(unified);
+            }
+
             List<GraphNode> nodes;
             if (input.factSheetId() != null) {
                 nodes = graphService.getNodesInFactSheet(input.factSheetId());
@@ -404,6 +444,90 @@ public class GraphLabelTool {
     // ═══════════════════════════════════════════════════════════════════════════
     // HELPERS
     // ═══════════════════════════════════════════════════════════════════════════
+
+    private UnifiedGraph unifiedGraph(Long factSheetId) {
+        if (unifiedGraphBridge == null || factSheetId == null) {
+            return null;
+        }
+        try {
+            return unifiedGraphBridge.export(factSheetId);
+        } catch (RuntimeException ex) {
+            log.warn("Falling back to live label reads; unified export failed for factSheet={}", factSheetId, ex);
+            return null;
+        }
+    }
+
+    private String sourceLabel(UnifiedGraph unified) {
+        return unified != null ? "unified_graph" : "knowledge_graph_service";
+    }
+
+    private Map<String, Object> findUnifiedByLabel(String label, NodeLevel nodeType, int limit, UnifiedGraph unified) {
+        List<Map<String, Object>> results = unified.entities().stream()
+                .filter(entity -> nodeType == null || matchesNodeType(entity, nodeType))
+                .filter(entity -> labelsFromEntity(entity).contains(label))
+                .limit(limit)
+                .map(entity -> {
+                    Map<String, Object> m = new LinkedHashMap<>();
+                    m.put("nodeId", entity.id());
+                    m.put("title", entity.label() == null || entity.label().isBlank() ? "Untitled" : entity.label());
+                    m.put("type", entity.type() == null || entity.type().isBlank() ? "UNKNOWN" : entity.type());
+                    m.put("labels", new ArrayList<>(labelsFromEntity(entity)));
+                    return m;
+                })
+                .collect(Collectors.toList());
+
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("source", sourceLabel(unified));
+        response.put("label", label);
+        response.put("resultCount", results.size());
+        response.put("results", results);
+        return response;
+    }
+
+    private Map<String, Object> listUnifiedLabels(UnifiedGraph unified) {
+        Map<String, Long> labelCounts = new TreeMap<>();
+        for (GraphEntity entity : unified.entities()) {
+            for (String label : labelsFromEntity(entity)) {
+                labelCounts.merge(label, 1L, Long::sum);
+            }
+        }
+
+        List<Map<String, Object>> labelList = labelCounts.entrySet().stream()
+                .sorted(Map.Entry.<String, Long>comparingByValue().reversed())
+                .map(e -> {
+                    Map<String, Object> m = new LinkedHashMap<>();
+                    m.put("label", e.getKey());
+                    m.put("count", e.getValue());
+                    return m;
+                })
+                .collect(Collectors.toList());
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("source", sourceLabel(unified));
+        result.put("distinctLabels", labelList.size());
+        result.put("labels", labelList);
+        return result;
+    }
+
+    private boolean matchesNodeType(GraphEntity entity, NodeLevel nodeType) {
+        if (nodeType.name().equalsIgnoreCase(entity.type())) return true;
+        return entity.typeMemberships().stream().anyMatch(t -> nodeType.name().equalsIgnoreCase(t));
+    }
+
+    private Set<String> labelsFromEntity(GraphEntity entity) {
+        LinkedHashSet<String> labels = new LinkedHashSet<>(entity.tags());
+        Object raw = entity.attributes().get(LABELS_KEY);
+        if (raw instanceof Collection<?> values) {
+            for (Object value : values) {
+                if (value != null && !value.toString().isBlank()) {
+                    labels.add(value.toString());
+                }
+            }
+        } else if (raw instanceof String value && !value.isBlank()) {
+            labels.add(value);
+        }
+        return labels;
+    }
 
     Map<String, Object> parseMetadata(String json) {
         if (json == null || json.isBlank()) return new LinkedHashMap<>();

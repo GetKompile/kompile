@@ -22,6 +22,8 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.io.Serializable;
+
 /**
  * Overrides the default escalation routing for a specific variance pattern.
  * Example: "channel mismatch → always route to M.Chen regardless of auto-fix capability".
@@ -30,7 +32,9 @@ import lombok.NoArgsConstructor;
 @Builder
 @AllArgsConstructor
 @NoArgsConstructor
-public class EscalationOverride {
+public class EscalationOverride implements Serializable {
+
+    private static final long serialVersionUID = 1L;
 
     /** ID of the variance pattern that triggers this override. */
     private String patternId;

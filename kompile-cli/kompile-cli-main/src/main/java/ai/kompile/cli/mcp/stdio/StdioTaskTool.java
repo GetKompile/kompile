@@ -2,7 +2,6 @@ package ai.kompile.cli.mcp.stdio;
 
 import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.agent.AgentRegistry;
-import ai.kompile.cli.main.chat.agent.PersistentAgentProcess;
 import ai.kompile.cli.main.chat.roles.RoleManager;
 import ai.kompile.cli.main.chat.tools.ToolResult;
 import ai.kompile.core.agent.CliAgentRegistry;
@@ -48,9 +47,9 @@ public class StdioTaskTool {
 
     public String description() {
         return "Spawn a subagent to handle a delegated task. " +
-            "The subagent runs as an external agent process (qwen, claude, codex, etc.) " +
+            "The subagent runs through the same managed terminal launcher used by interactive passthrough " +
             "with its own context window, then returns a summary.\n\n" +
-            "Available agents: qwen (default), claude, codex, gemini, opencode.\n" +
+            "Available agents: opencode (default), claude, codex, gemini, qwen.\n" +
             "Returns a concise summary. Full output is written to a file under .kompile/task-results/ " +
             "which can be read with the `read` tool if more detail is needed.\n" +
             "The subagent runs once and returns — it cannot send follow-up messages.";
@@ -68,7 +67,7 @@ public class StdioTaskTool {
         prompt.put("description", "Detailed task description for the subagent. Include all necessary context.");
         var agent = props.putObject("agent");
         agent.put("type", "string");
-        agent.put("description", "Which agent to spawn. Options: qwen (default), claude, codex, gemini, opencode.");
+        agent.put("description", "Which agent to spawn. Options: opencode (default), claude, codex, gemini, qwen.");
         ArrayNode enumValues = agent.putArray("enum");
         for (String name : CliAgentRegistry.commandNames()) enumValues.add(name);
         var role = props.putObject("role");
@@ -81,7 +80,9 @@ public class StdioTaskTool {
     public ToolResult execute(Map<String, Object> arguments) {
         String desc = (String) arguments.getOrDefault("description", "");
         String prompt = (String) arguments.getOrDefault("prompt", "");
-        String requestedAgent = (String) arguments.getOrDefault("agent", "qwen");
+        // Default agent is opencode: qwen's OAuth free tier was discontinued (2026-04-15), and the
+        // managed runner supplies the provider-specific one-shot flags used by passthrough sessions.
+        String requestedAgent = (String) arguments.getOrDefault("agent", "opencode");
         String roleName = (String) arguments.get("role"); // optional
 
         if (prompt == null || prompt.isEmpty()) {
@@ -117,22 +118,13 @@ public class StdioTaskTool {
 
             try {
                 String result = subagentRunner.runSubagent(agentConfig, prompt);
-                if (result.contains("not found in PATH")) {
-                    // Agent not installed — skip to next
+                if (isAgentMissing(result)) {
                     System.err.println("\u001B[2m  " + agentName + " not found, trying next agent...\u001B[0m");
                     continue;
                 }
                 return ToolResult.success("task:" + agentName, result,
-                    Map.of("agent", agentName, "description", desc, "mode", "external-process",
+                    Map.of("agent", agentName, "description", desc, "mode", "managed-terminal",
                            "fallbacksUsed", String.valueOf(rateLimitedAgents.size())));
-            } catch (PersistentAgentProcess.TimedOutException toe) {
-                // Turn timed out -- surface the partial output so the caller
-                // knows this was NOT a successful completion.
-                String partial = toe.getPartialOutput();
-                String timedOutMsg = "Subagent '" + agentName + "' timed out after turn limit.\n\n"
-                    + "**This task was NOT completed -- the output below is partial:**\n\n"
-                    + (partial.isEmpty() ? "(no output captured)" : partial);
-                return ToolResult.error(timedOutMsg);
             } catch (RateLimitException e) {
                 rateLimitedAgents.add(agentName);
                 System.err.println("\u001B[33m  \u26a0 " + agentName + " rate limited, trying fallback...\u001B[0m");
@@ -146,5 +138,9 @@ public class StdioTaskTool {
         return ToolResult.error("All agents were rate limited or unavailable: "
             + String.join(", ", rateLimitedAgents)
             + ". Please try again later.");
+    }
+
+    static boolean isAgentMissing(String result) {
+        return result != null && (result.contains("not found in PATH") || result.contains("not found on PATH"));
     }
 }

@@ -21,6 +21,7 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.io.Serializable;
 import java.util.List;
 
 /**
@@ -31,7 +32,9 @@ import java.util.List;
 @Builder
 @AllArgsConstructor
 @NoArgsConstructor
-public class ApprovalPolicy {
+public class ApprovalPolicy implements Serializable {
+
+    private static final long serialVersionUID = 1L;
 
     /** Ordered list of approver identifiers (person IDs or role names) by priority. */
     private List<String> approverPool;

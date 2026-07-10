@@ -94,8 +94,9 @@ public final class ModelContextWindows {
             entry("deepseek-reasoner", 64_000, 8_192, false),
             // DeepSeek V4 family. Provider-specific OpenCode limits are resolved live by the
             // CLI resume path; these are fallback values for bare model IDs or unavailable live
-            // metadata. The free model is smaller than the paid flash/pro variants.
-            entry("deepseek-v4-flash-free", 200_000, 128_000, false),
+            // metadata. DeepSeek V4 flash variants expose a ~1M-token context window; do not
+            // down-budget the preferred free alias to the generic remote default.
+            entry("deepseek-v4-flash-free", 1_000_000, 384_000, false),
             entry("deepseek-v4-flash", 1_000_000, 384_000, false),
             entry("deepseek-v4-pro", 1_000_000, 384_000, false),
             // Prefix catch-all for any other deepseek-v4-* variant.

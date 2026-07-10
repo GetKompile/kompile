@@ -27,12 +27,14 @@ import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 
 @AutoConfiguration // Spring Boot 3+ style, for 2.x use @Configuration
 @ConditionalOnClass({EmbeddingModel.class, SameDiff.class, Nd4j.class})
-@EnableConfigurationProperties(SameDiffEmbeddingProperties.class)
+// NOTE: no @EnableConfigurationProperties here — the properties class is
+// @Component-scanned (with @ConfigurationProperties) and registering it twice
+// creates two beans; Spring AOT/native bakes both and injection fails with
+// "expected single matching bean but found 2".
 @ConditionalOnProperty(prefix = "kompile.embedding.samediff", name = "enabled", havingValue = "true", matchIfMissing = true)
 public class SameDiffEmbeddingAutoConfiguration {
 

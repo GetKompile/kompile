@@ -28,8 +28,16 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.awt.Color;
 import java.text.Normalizer;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.NoSuchElementException;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
 /**
@@ -160,7 +168,7 @@ public class EntityCategoryServiceImpl {
                     @SuppressWarnings("unchecked")
                     Map<String, Object> meta = node.getMetadataJson() != null && !node.getMetadataJson().isBlank()
                             ? objectMapper.readValue(node.getMetadataJson(), new TypeReference<Map<String, Object>>() {})
-                            : new java.util.LinkedHashMap<>();
+                            : new LinkedHashMap<>();
                     meta.put("taxonomyCategory", cat.getLabel());
                     meta.put("taxonomyDomain", domain);
                     knowledgeGraphService.updateNode(node.getNodeId(), node.getTitle(), node.getDescription(), meta);
@@ -179,7 +187,7 @@ public class EntityCategoryServiceImpl {
                     @SuppressWarnings("unchecked")
                     Map<String, Object> meta = node.getMetadataJson() != null && !node.getMetadataJson().isBlank()
                             ? objectMapper.readValue(node.getMetadataJson(), new TypeReference<Map<String, Object>>() {})
-                            : new java.util.LinkedHashMap<>();
+                            : new LinkedHashMap<>();
                     meta.remove("taxonomyCategory");
                     meta.remove("taxonomyDomain");
                     knowledgeGraphService.updateNode(node.getNodeId(), node.getTitle(), node.getDescription(), meta);
@@ -267,7 +275,7 @@ public class EntityCategoryServiceImpl {
                 @SuppressWarnings("unchecked")
                 Map<String, Object> meta = entity.getMetadataJson() != null && !entity.getMetadataJson().isBlank()
                         ? objectMapper.readValue(entity.getMetadataJson(), new TypeReference<Map<String, Object>>() {})
-                        : new java.util.LinkedHashMap<>();
+                        : new LinkedHashMap<>();
                 meta.put("taxonomyCategory", targetCat.getLabel());
                 meta.put("taxonomyDomain", domain);
                 knowledgeGraphService.updateNode(entity.getNodeId(), entity.getTitle(), entity.getDescription(), meta);
@@ -373,7 +381,7 @@ public class EntityCategoryServiceImpl {
                 @SuppressWarnings("unchecked")
                 Map<String, Object> meta = entity.getMetadataJson() != null && !entity.getMetadataJson().isBlank()
                         ? objectMapper.readValue(entity.getMetadataJson(), new TypeReference<Map<String, Object>>() {})
-                        : new java.util.LinkedHashMap<>();
+                        : new LinkedHashMap<>();
                 meta.remove("taxonomyCategory");
                 meta.remove("taxonomyDomain");
                 knowledgeGraphService.updateNode(entity.getNodeId(), entity.getTitle(), entity.getDescription(), meta);
@@ -423,6 +431,6 @@ public class EntityCategoryServiceImpl {
     private String generateColor(String label) {
         int hash = label != null ? label.hashCode() : 0;
         int hue = Math.abs(hash) % 360;
-        return String.format("#%06x", java.awt.Color.HSBtoRGB(hue / 360f, 0.65f, 0.85f) & 0xFFFFFF);
+        return String.format("#%06x", Color.HSBtoRGB(hue / 360f, 0.65f, 0.85f) & 0xFFFFFF);
     }
 }

@@ -34,6 +34,17 @@ public final class StringUtils {
     }
 
     /**
+     * Truncate a string so the complete result, including a trailing "...", is at most maxLen.
+     * Returns empty string for null input. Non-positive limits produce an empty string.
+     */
+    public static String truncateToLength(String s, int maxLen) {
+        if (s == null || maxLen <= 0) return "";
+        if (s.length() <= maxLen) return s;
+        if (maxLen <= 3) return s.substring(0, maxLen);
+        return s.substring(0, maxLen - 3) + "...";
+    }
+
+    /**
      * Truncate a string to maxLen characters, appending a unicode ellipsis if truncated.
      * Returns empty string for null input.
      */

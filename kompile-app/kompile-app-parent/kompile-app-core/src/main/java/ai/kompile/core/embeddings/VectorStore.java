@@ -46,6 +46,28 @@ import java.util.Map;
  */
 public interface VectorStore {
 
+    private static float[] toHostFloatVector(INDArray array) {
+        if (array == null || array.isEmpty()) {
+            return new float[0];
+        }
+        long length = array.length();
+        if (length > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException("INDArray too large to materialize as float[]: " + length);
+        }
+        if (array.elementWiseStride() == 1) {
+            return array.data().getFloatsAt(array.offset(), (int) length);
+        }
+        INDArray copy = null;
+        try {
+            copy = array.dup('c');
+            return copy.data().getFloatsAt(copy.offset(), (int) length);
+        } finally {
+            if (copy != null && !copy.wasClosed()) {
+                copy.close();
+            }
+        }
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // BROWSING AND STATUS METHODS (for Index Browser)
     // ═══════════════════════════════════════════════════════════════════════════
@@ -147,7 +169,7 @@ public interface VectorStore {
             INDArray rowView = null;
             try {
                 rowView = embeddings.getRow(i);
-                float[] row = rowView.toFloatVector();
+                float[] row = toHostFloatVector(rowView);
                 List<Float> rowList = new ArrayList<>(row.length);
                 for (float v : row) {
                     rowList.add(v);
@@ -187,12 +209,12 @@ public interface VectorStore {
         // CRITICAL: If not a vector, get row view and close it after extracting float[]
         float[] vector;
         if (queryEmbedding.isVector()) {
-            vector = queryEmbedding.toFloatVector();
+            vector = toHostFloatVector(queryEmbedding);
         } else {
             INDArray rowView = null;
             try {
                 rowView = queryEmbedding.getRow(0);
-                vector = rowView.toFloatVector();
+                vector = toHostFloatVector(rowView);
             } finally {
                 if (rowView != null && !rowView.wasClosed()) {
                     try {
@@ -443,6 +465,33 @@ public interface VectorStore {
      */
     default void awaitPendingEmbeddings() {
         // No-op for implementations without async embedding.
+    }
+
+    /**
+     * Persists documents to the store as metadata-only records, WITHOUT computing or
+     * storing an embedding vector.
+     *
+     * <p>Use this for documents that carry structured metadata (id + content + metadata map)
+     * but must NOT be returned by similarity search and do NOT require an embedding model.
+     * Typical use cases: graph metadata, adjacency-matrix serialization, node-embedding
+     * matrix snapshots — all of which are stored-field blobs read back by
+     * {@link #listVectorDocuments}, never by KNN search.</p>
+     *
+     * <p>This method must work even when the vector store is in <em>read/stored-vector
+     * mode</em> (embedding model disabled, e.g. in the graph-matrix subprocess).  The
+     * default implementation falls back to {@link #add(List)}, which works in the main
+     * process (embedding model available) but silently drops documents in the subprocess
+     * (embeddingDisabled=true).  {@code AnseriniVectorStoreImpl} overrides this to write
+     * directly to the Lucene {@code IndexWriter} without a KNN vector field, so it always
+     * persists regardless of whether an embedding model is present.</p>
+     *
+     * @param documents documents to persist; id, text (content), and metadata are stored
+     * @return number of documents successfully written
+     */
+    default int addStoredOnlyDocuments(List<Document> documents) {
+        // Fallback: delegate to add() for implementations that do not override.
+        // Works in main-process mode (has embedding model); may silently drop in subprocess.
+        return add(documents);
     }
 
     /**

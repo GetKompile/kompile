@@ -290,13 +290,9 @@ public final class HardwareAutoConfigurator {
         c.put("profiling", false);
         c.put("leaksDetector", false);
 
-        // Graph optimiser on by default
+        // Graph optimiser and FP16 conversion are on by default for local model throughput.
         c.put("optimizerEnabled", true);
-
-        // GPU-specific
-        if (gpu) {
-            c.put("optimizerFp16", true);
-        }
+        c.put("optimizerFp16", true);
 
         return c;
     }
@@ -361,5 +357,43 @@ public final class HardwareAutoConfigurator {
         c.put("optimizeGraphOnLoad", true);
 
         return c;
+    }
+
+    // ── Service heap defaults (jar-tier launch) ─────────────────────────────
+
+    /** Default {@code -Xmx} for the main app when the caller supplies none. */
+    public static String appHeapForTier(Tier tier) {
+        return switch (tier) {
+            case SMALL -> "2g";
+            case MEDIUM -> "3g";
+            case LARGE -> "4g";
+            case XLARGE -> "6g";
+            case SERVER -> "8g";
+        };
+    }
+
+    /** Default {@code -Xmx} for the model-staging server. */
+    public static String stagingHeapForTier(Tier tier) {
+        return switch (tier) {
+            case SMALL -> "2g";
+            case MEDIUM -> "3g";
+            default -> "4g";
+        };
+    }
+
+    /** Default {@code -Xmx} for the serving subprocess. */
+    public static String servingHeapForTier(Tier tier) {
+        return switch (tier) {
+            case SMALL -> "2g";
+            case MEDIUM -> "4g";
+            case LARGE -> "8g";
+            case XLARGE -> "12g";
+            case SERVER -> "16g";
+        };
+    }
+
+    /** Convenience: tier of the current machine. */
+    public static Tier currentTier() {
+        return resolveTier(detectSystemRamBytes());
     }
 }

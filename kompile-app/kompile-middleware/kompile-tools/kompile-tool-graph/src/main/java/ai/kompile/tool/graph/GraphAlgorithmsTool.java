@@ -12,8 +12,11 @@ package ai.kompile.tool.graph;
 import ai.kompile.graph.algorithms.DegreeCentrality;
 import ai.kompile.graph.algorithms.ShortestPathAlgorithm;
 import ai.kompile.graph.algorithms.service.GraphAlgorithmService;
+import ai.kompile.graph.reasoning.model.GraphEntity;
+import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
+import ai.kompile.knowledgegraph.unified.UnifiedGraphBridge;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
@@ -36,6 +39,7 @@ public class GraphAlgorithmsTool {
 
     private final GraphAlgorithmService algorithmService;
     private final KnowledgeGraphService graphService;
+    private final UnifiedGraphBridge unifiedGraphBridge;
 
     // ═══════════════════════════════════════════════════════════════════════════
     // INPUT RECORDS
@@ -73,11 +77,18 @@ public class GraphAlgorithmsTool {
             Long factSheetId
     ) {}
 
-    @Autowired
     public GraphAlgorithmsTool(GraphAlgorithmService algorithmService,
                                KnowledgeGraphService graphService) {
+        this(algorithmService, graphService, null);
+    }
+
+    @Autowired
+    public GraphAlgorithmsTool(GraphAlgorithmService algorithmService,
+                               KnowledgeGraphService graphService,
+                               @org.springframework.lang.Nullable UnifiedGraphBridge unifiedGraphBridge) {
         this.algorithmService = algorithmService;
         this.graphService = graphService;
+        this.unifiedGraphBridge = unifiedGraphBridge;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -98,10 +109,12 @@ public class GraphAlgorithmsTool {
                     ? input.maxIterations() : 100;
             int topK = input.topK() != null && input.topK() > 0 ? Math.min(input.topK(), 100) : 20;
 
-            Map<String, Double> scores = algorithmService.pageRank(
-                    input.factSheetId(), damping, maxIter, 1e-6);
+            UnifiedGraph unified = unifiedGraph(input.factSheetId());
+            Map<String, Double> scores = unified != null
+                    ? algorithmService.pageRankGraph(unified, damping, maxIter, 1e-6)
+                    : algorithmService.pageRank(input.factSheetId(), damping, maxIter, 1e-6);
 
-            return buildRankedResult("pagerank", scores, topK);
+            return buildRankedResult("pagerank", scores, topK, unified);
 
         } catch (Exception e) {
             log.error("PageRank failed: {}", e.getMessage(), e);
@@ -128,11 +141,13 @@ public class GraphAlgorithmsTool {
             }
 
             int topK = input.topK() != null && input.topK() > 0 ? Math.min(input.topK(), 100) : 20;
-            Map<String, Double> scores = algorithmService.degreeCentrality(
-                    input.factSheetId(), degreeType);
+            UnifiedGraph unified = unifiedGraph(input.factSheetId());
+            Map<String, Double> scores = unified != null
+                    ? algorithmService.degreeCentralityGraph(unified, degreeType)
+                    : algorithmService.degreeCentrality(input.factSheetId(), degreeType);
 
             return buildRankedResult("degree_centrality_" + degreeType.name().toLowerCase(),
-                    scores, topK);
+                    scores, topK, unified);
 
         } catch (Exception e) {
             log.error("Degree centrality failed: {}", e.getMessage(), e);
@@ -152,10 +167,12 @@ public class GraphAlgorithmsTool {
                     ? input.sampleSize() : 100;
             int topK = input.topK() != null && input.topK() > 0 ? Math.min(input.topK(), 100) : 20;
 
-            Map<String, Double> scores = algorithmService.betweennessCentrality(
-                    input.factSheetId(), sampleSize, 42L);
+            UnifiedGraph unified = unifiedGraph(input.factSheetId());
+            Map<String, Double> scores = unified != null
+                    ? algorithmService.betweennessCentralityGraph(unified, sampleSize, 42L)
+                    : algorithmService.betweennessCentrality(input.factSheetId(), sampleSize, 42L);
 
-            return buildRankedResult("betweenness_centrality", scores, topK);
+            return buildRankedResult("betweenness_centrality", scores, topK, unified);
 
         } catch (Exception e) {
             log.error("Betweenness centrality failed: {}", e.getMessage(), e);
@@ -177,8 +194,10 @@ public class GraphAlgorithmsTool {
 
         try {
             boolean weighted = input.weighted() != null && input.weighted();
-            ShortestPathAlgorithm.PathResult pathResult = algorithmService.shortestPath(
-                    input.factSheetId(), input.fromNodeId(), input.toNodeId(), weighted);
+            UnifiedGraph unified = unifiedGraph(input.factSheetId());
+            ShortestPathAlgorithm.PathResult pathResult = unified != null
+                    ? algorithmService.shortestPathGraph(unified, input.fromNodeId(), input.toNodeId(), weighted)
+                    : algorithmService.shortestPath(input.factSheetId(), input.fromNodeId(), input.toNodeId(), weighted);
 
             if (pathResult.path().isEmpty()) {
                 return Map.of(
@@ -189,20 +208,12 @@ public class GraphAlgorithmsTool {
                 );
             }
 
-            // Resolve node details for the path
-            List<GraphNode> nodes = graphService.getNodesByIds(pathResult.path());
-            Map<String, GraphNode> nodeMap = nodes.stream()
-                    .collect(Collectors.toMap(GraphNode::getNodeId, n -> n, (a, b) -> a));
-
+            Map<String, GraphNode> liveNodes = unified == null
+                    ? graphService.getNodesByIds(pathResult.path()).stream()
+                            .collect(Collectors.toMap(GraphNode::getNodeId, n -> n, (a, b) -> a))
+                    : Map.of();
             List<Map<String, Object>> pathNodes = pathResult.path().stream()
-                    .map(id -> {
-                        GraphNode n = nodeMap.get(id);
-                        Map<String, Object> m = new LinkedHashMap<>();
-                        m.put("nodeId", id);
-                        m.put("title", n != null ? n.getTitle() : "Unknown");
-                        m.put("type", n != null ? n.getNodeType().name() : "UNKNOWN");
-                        return m;
-                    })
+                    .map(id -> nodeDetails(id, unified, liveNodes))
                     .collect(Collectors.toList());
 
             Map<String, Object> result = new LinkedHashMap<>();
@@ -229,24 +240,23 @@ public class GraphAlgorithmsTool {
         }
 
         try {
-            double similarity = algorithmService.jaccardSimilarity(
-                    input.factSheetId(), input.nodeIdA(), input.nodeIdB());
+            UnifiedGraph unified = unifiedGraph(input.factSheetId());
+            double similarity = unified != null
+                    ? algorithmService.jaccardSimilarityGraph(unified, input.nodeIdA(), input.nodeIdB())
+                    : algorithmService.jaccardSimilarity(input.factSheetId(), input.nodeIdA(), input.nodeIdB());
 
-            // Resolve titles
-            List<GraphNode> nodes = graphService.getNodesByIds(
-                    List.of(input.nodeIdA(), input.nodeIdB()));
-            Map<String, String> titles = nodes.stream()
-                    .collect(Collectors.toMap(
-                            GraphNode::getNodeId,
-                            n -> n.getTitle() != null ? n.getTitle() : "Untitled",
-                            (a, b) -> a
-                    ));
+            Map<String, GraphNode> liveNodes = unified == null
+                    ? graphService.getNodesByIds(List.of(input.nodeIdA(), input.nodeIdB())).stream()
+                            .collect(Collectors.toMap(GraphNode::getNodeId, n -> n, (a, b) -> a))
+                    : Map.of();
+            Map<String, Object> nodeA = nodeDetails(input.nodeIdA(), unified, liveNodes);
+            Map<String, Object> nodeB = nodeDetails(input.nodeIdB(), unified, liveNodes);
 
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("nodeIdA", input.nodeIdA());
-            result.put("titleA", titles.getOrDefault(input.nodeIdA(), "Unknown"));
+            result.put("titleA", nodeA.get("title"));
             result.put("nodeIdB", input.nodeIdB());
-            result.put("titleB", titles.getOrDefault(input.nodeIdB(), "Unknown"));
+            result.put("titleB", nodeB.get("title"));
             result.put("jaccardSimilarity", similarity);
             result.put("interpretation", similarity > 0.5 ? "highly similar neighborhoods"
                     : similarity > 0.2 ? "moderate overlap" : "low similarity");
@@ -262,36 +272,64 @@ public class GraphAlgorithmsTool {
     // HELPERS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    private Map<String, Object> buildRankedResult(String algorithm, Map<String, Double> scores, int topK) {
-        // Sort by score descending and take top K
+    private UnifiedGraph unifiedGraph(Long factSheetId) {
+        if (unifiedGraphBridge == null || factSheetId == null) {
+            return null;
+        }
+        try {
+            return unifiedGraphBridge.export(factSheetId);
+        } catch (RuntimeException ex) {
+            log.warn("Falling back to live graph algorithms; unified export failed for factSheet={}", factSheetId, ex);
+            return null;
+        }
+    }
+
+    private Map<String, Object> buildRankedResult(String algorithm, Map<String, Double> scores,
+                                                  int topK, UnifiedGraph unified) {
         List<Map.Entry<String, Double>> sorted = scores.entrySet().stream()
                 .sorted(Map.Entry.<String, Double>comparingByValue().reversed())
                 .limit(topK)
                 .collect(Collectors.toList());
 
-        // Resolve node titles
         List<String> topIds = sorted.stream().map(Map.Entry::getKey).collect(Collectors.toList());
-        Map<String, GraphNode> nodeMap = graphService.getNodesByIds(topIds).stream()
-                .collect(Collectors.toMap(GraphNode::getNodeId, n -> n, (a, b) -> a));
+        Map<String, GraphNode> liveNodes = unified == null
+                ? graphService.getNodesByIds(topIds).stream()
+                        .collect(Collectors.toMap(GraphNode::getNodeId, n -> n, (a, b) -> a))
+                : Map.of();
 
-        List<Map<String, Object>> ranked = sorted.stream()
-                .map(e -> {
-                    GraphNode n = nodeMap.get(e.getKey());
-                    Map<String, Object> m = new LinkedHashMap<>();
-                    m.put("rank", sorted.indexOf(e) + 1);
-                    m.put("nodeId", e.getKey());
-                    m.put("title", n != null && n.getTitle() != null ? n.getTitle() : "Unknown");
-                    m.put("type", n != null ? n.getNodeType().name() : "UNKNOWN");
-                    m.put("score", e.getValue());
-                    return m;
-                })
-                .collect(Collectors.toList());
+        List<Map<String, Object>> ranked = new ArrayList<>();
+        for (int i = 0; i < sorted.size(); i++) {
+            Map.Entry<String, Double> e = sorted.get(i);
+            Map<String, Object> m = nodeDetails(e.getKey(), unified, liveNodes);
+            m.put("rank", i + 1);
+            m.put("score", e.getValue());
+            ranked.add(m);
+        }
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("algorithm", algorithm);
+        result.put("source", unified != null ? "unified_graph" : "knowledge_graph_service");
         result.put("totalNodes", scores.size());
         result.put("topK", ranked.size());
         result.put("rankings", ranked);
         return result;
+    }
+
+    private Map<String, Object> nodeDetails(String nodeId, UnifiedGraph unified, Map<String, GraphNode> liveNodes) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("nodeId", nodeId);
+        if (unified != null) {
+            Optional<GraphEntity> entity = unified.entity(nodeId);
+            if (entity.isPresent()) {
+                GraphEntity e = entity.get();
+                m.put("title", e.label() == null || e.label().isBlank() ? "Unknown" : e.label());
+                m.put("type", e.type() == null || e.type().isBlank() ? "UNKNOWN" : e.type());
+                return m;
+            }
+        }
+        GraphNode n = liveNodes.get(nodeId);
+        m.put("title", n != null && n.getTitle() != null ? n.getTitle() : "Unknown");
+        m.put("type", n != null ? n.getNodeType().name() : "UNKNOWN");
+        return m;
     }
 }

@@ -31,7 +31,7 @@
  */
 
 import { Container } from '@chakra-ui/react';
-import SearchBar from './components/SearchBar';
+import SearchBar from '../components/SearchBar';
 
 export default function Home() {
   return (

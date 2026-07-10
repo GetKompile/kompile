@@ -77,7 +77,7 @@ class GraphReasonToolTest {
 
         @BeforeEach
         void setUp() {
-            tool = new GraphReasonTool(null, om);
+            tool = new GraphReasonTool((String) null, om);
         }
 
         @Test
@@ -123,7 +123,7 @@ class GraphReasonToolTest {
 
         @BeforeEach
         void setUp() {
-            tool = new GraphReasonTool(null, om);
+            tool = new GraphReasonTool((String) null, om);
         }
 
         @Test
@@ -179,7 +179,7 @@ class GraphReasonToolTest {
         @BeforeEach
         void setUp() {
             // null baseUrl → backend will not be reachable
-            tool = new GraphReasonTool(null, om);
+            tool = new GraphReasonTool((String) null, om);
         }
 
         @Test
@@ -223,7 +223,7 @@ class GraphReasonToolTest {
 
         @BeforeEach
         void setUp() {
-            tool = new GraphReasonTool(null, om);
+            tool = new GraphReasonTool((String) null, om);
         }
 
         @Test
@@ -383,7 +383,7 @@ class GraphReasonToolTest {
         @Test
         @DisplayName("ask_graph_mebn description contains no 'MEBN' or 'MFrag'")
         void mebnDescriptionNoJargon() {
-            AskGraphMebnTool mebn = new AskGraphMebnTool(null, om);
+            AskGraphMebnTool mebn = new AskGraphMebnTool((String) null, om);
             String desc = mebn.description();
             assertFalse(desc.contains("MEBN"),
                     "ask_graph_mebn description must not contain 'MEBN' — found: " + desc);
@@ -394,7 +394,7 @@ class GraphReasonToolTest {
         @Test
         @DisplayName("ask_graph_mebn formatted output contains no 'MEBN Inference' or 'mfrag='")
         void mebnFormatterNoJargon() {
-            AskGraphMebnTool mebn = new AskGraphMebnTool(null, om);
+            AskGraphMebnTool mebn = new AskGraphMebnTool((String) null, om);
             ObjectNode posteriors = om.createObjectNode();
             posteriors.put("var_x", 0.8);
             ObjectNode priors = om.createObjectNode();
@@ -431,7 +431,7 @@ class GraphReasonToolTest {
         @Test
         @DisplayName("ask_graph_explain description does not expose 'atom' as jargon")
         void explainDescriptionNoAtomJargon() {
-            AskGraphExplainTool explain = new AskGraphExplainTool(null, om);
+            AskGraphExplainTool explain = new AskGraphExplainTool((String) null, om);
             String desc = explain.description();
             // "supporting atoms" was the specific jargon phrase — now replaced with "supporting facts"
             assertFalse(desc.contains("supporting atoms"),

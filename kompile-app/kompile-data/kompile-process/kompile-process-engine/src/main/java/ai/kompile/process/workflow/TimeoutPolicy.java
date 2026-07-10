@@ -21,6 +21,8 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.io.Serializable;
+
 /**
  * Defines SLA and hard-cap timeout behaviour for a {@link ProcessStep}.
  */
@@ -28,7 +30,9 @@ import lombok.NoArgsConstructor;
 @Builder
 @AllArgsConstructor
 @NoArgsConstructor
-public class TimeoutPolicy {
+public class TimeoutPolicy implements Serializable {
+
+    private static final long serialVersionUID = 1L;
 
     /** Target SLA in seconds for the step to complete. */
     private int slaSeconds;

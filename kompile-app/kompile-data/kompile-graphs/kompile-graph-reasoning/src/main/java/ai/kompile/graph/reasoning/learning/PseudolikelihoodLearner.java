@@ -18,9 +18,11 @@ import org.slf4j.LoggerFactory;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.Set;
 
 /**
  * Max-pseudolikelihood weight learner for PSL (HL-MRF) rules.
@@ -308,7 +310,7 @@ public class PseudolikelihoodLearner implements WeightLearner {
 
             // Deduplicate: collect the set of ground rules that contain atom i.
             // Build a sorted-unique list of ground-rule indices that touch atom i.
-            java.util.Set<Integer> giSet = new java.util.LinkedHashSet<>();
+            Set<Integer> giSet = new LinkedHashSet<>();
             for (int[] e : entries) {
                 giSet.add(e[1]);
             }

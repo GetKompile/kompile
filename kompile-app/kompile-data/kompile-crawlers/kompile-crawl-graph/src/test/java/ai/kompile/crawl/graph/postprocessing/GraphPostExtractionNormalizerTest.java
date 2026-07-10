@@ -16,8 +16,12 @@ import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.junit.jupiter.MockitoSettings;
+import org.mockito.quality.Strictness;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -28,7 +32,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 /**
@@ -39,10 +42,14 @@ import static org.mockito.Mockito.*;
  * and safety (null factSheetId, over-cap graphs, service exceptions).</p>
  */
 @ExtendWith(MockitoExtension.class)
+@MockitoSettings(strictness = Strictness.LENIENT)
 class GraphPostExtractionNormalizerTest {
 
     @Mock
     private KnowledgeGraphService knowledgeGraphService;
+
+    @Captor
+    private ArgumentCaptor<List<KnowledgeGraphService.NodeUpdate>> nodeUpdateBatchCaptor;
 
     private GraphPostExtractionNormalizer normalizer;
 
@@ -171,7 +178,17 @@ class GraphPostExtractionNormalizerTest {
                 normalizer.normalize(1L, 3, 10_000);
 
         assertThat(result.canonicalized()).isEqualTo(1);
-        verify(knowledgeGraphService).updateNode(eq("id1"), eq("Acme Corp"), any(), any());
+
+        // per-node updateNode must NOT be called — title rename goes through the batch
+        verify(knowledgeGraphService, never()).updateNode(anyString(), anyString(), any(), any());
+
+        verify(knowledgeGraphService).updateNodesBatch(nodeUpdateBatchCaptor.capture());
+        List<KnowledgeGraphService.NodeUpdate> updates = nodeUpdateBatchCaptor.getValue();
+        assertThat(updates).hasSize(1);
+        KnowledgeGraphService.NodeUpdate u = updates.get(0);
+        assertThat(u.nodeId()).isEqualTo("id1");
+        assertThat(u.title()).isEqualTo("Acme Corp");
+        assertThat(u.metadata()).isNull(); // title-only update, no metadata change
     }
 
     @Test
@@ -215,6 +232,8 @@ class GraphPostExtractionNormalizerTest {
         assertThat(result.totalNodes()).isEqualTo(0);
         assertThat(result.canonicalized()).isEqualTo(0);
         assertThat(result.duplicatesMerged()).isEqualTo(0);
+        // only the read call expected — no mutations when node list is empty
+        verify(knowledgeGraphService).getNodesByTypeInFactSheet(4L, NodeLevel.ENTITY);
         verifyNoMoreInteractions(knowledgeGraphService);
     }
 
@@ -233,6 +252,42 @@ class GraphPostExtractionNormalizerTest {
         // No mutations should happen when skipped
         verify(knowledgeGraphService, never()).deleteNode(anyString());
         verify(knowledgeGraphService, never()).updateNode(anyString(), anyString(), any(), any());
+        verify(knowledgeGraphService, never()).updateNodesBatch(any());
+    }
+
+    @Test
+    void normalize_batchesTitleRenames_neverCallsPerNodeUpdateNode() {
+        // 3 nodes with dirty titles; 1 clean node (no rename needed)
+        GraphNode dirty1 = makeNode("d1", "  Alice Smith  ");
+        GraphNode dirty2 = makeNode("d2", "[Bob Jones]");
+        GraphNode dirty3 = makeNode("d3", "\"Carol White\"");
+        GraphNode clean  = makeNode("c1", "Dave Brown");
+
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(10L, NodeLevel.ENTITY))
+                .thenReturn(new ArrayList<>(List.of(dirty1, dirty2, dirty3, clean)));
+
+        GraphPostExtractionNormalizer.NormalizationResult result =
+                normalizer.normalize(10L, 3, 10_000);
+
+        assertThat(result.canonicalized()).isEqualTo(3);
+
+        // per-node updateNode must NEVER be called — all 3 renames go through one batch
+        verify(knowledgeGraphService, never()).updateNode(anyString(), anyString(), any(), any());
+
+        verify(knowledgeGraphService).updateNodesBatch(nodeUpdateBatchCaptor.capture());
+        List<KnowledgeGraphService.NodeUpdate> updates = nodeUpdateBatchCaptor.getValue();
+        assertThat(updates).hasSize(3);
+
+        // verify canonical titles
+        Map<String, String> titleById = new java.util.HashMap<>();
+        for (KnowledgeGraphService.NodeUpdate u : updates) {
+            titleById.put(u.nodeId(), u.title());
+        }
+        assertThat(titleById).containsEntry("d1", "Alice Smith");
+        assertThat(titleById).containsEntry("d2", "Bob Jones");
+        assertThat(titleById).containsEntry("d3", "Carol White");
+        // clean node not in batch
+        assertThat(titleById).doesNotContainKey("c1");
     }
 
     @Test
@@ -240,8 +295,9 @@ class GraphPostExtractionNormalizerTest {
         GraphNode node = makeNode("id1", "  Alice  ");
         when(knowledgeGraphService.getNodesByTypeInFactSheet(6L, NodeLevel.ENTITY))
                 .thenReturn(List.of(node));
+        // Exception thrown by the batch flush must be caught and not propagate
         doThrow(new RuntimeException("DB error"))
-                .when(knowledgeGraphService).updateNode(anyString(), anyString(), any(), any());
+                .when(knowledgeGraphService).updateNodesBatch(any());
 
         // Must not propagate the exception
         assertThat(normalizer.normalize(6L, 3, 10_000))

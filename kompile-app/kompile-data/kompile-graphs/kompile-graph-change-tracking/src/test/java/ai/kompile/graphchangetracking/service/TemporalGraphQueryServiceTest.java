@@ -10,13 +10,10 @@
 package ai.kompile.graphchangetracking.service;
 
 import ai.kompile.graphchangetracking.domain.GraphMutationRecord;
-import ai.kompile.graphchangetracking.repository.GraphMutationRecordRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
-import org.springframework.data.domain.PageImpl;
 
 import java.time.LocalDateTime;
-import java.util.List;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -32,8 +29,8 @@ class TemporalGraphQueryServiceTest {
 
     private static final Long FS = 42L;
 
-    private final GraphMutationRecordRepository repo = mock(GraphMutationRecordRepository.class);
-    private final TemporalGraphQueryService service = new TemporalGraphQueryService(repo, new ObjectMapper());
+    private final GraphMutationStore store = mock(GraphMutationStore.class);
+    private final TemporalGraphQueryService service = new TemporalGraphQueryService(store, new ObjectMapper());
 
     private GraphMutationRecord rec(String type, String kind, String id, String before, String after) {
         return GraphMutationRecord.builder()
@@ -44,10 +41,10 @@ class TemporalGraphQueryServiceTest {
                 .build();
     }
 
-    /** The repo returns newest-first; tests pass records in that order. */
-    private void stub(List<GraphMutationRecord> records) {
-        when(repo.findByFactSheetIdAndOccurredAtBetweenOrderByOccurredAtDesc(anyLong(), any(), any(), any()))
-                .thenReturn(new PageImpl<>(records));
+    /** The store returns newest-first; tests pass records in that order. */
+    private void stub(java.util.List<GraphMutationRecord> records) {
+        when(store.findByFactSheetIdAndOccurredAtBetweenOrderByOccurredAtDesc(anyLong(), any(), any(), any()))
+                .thenReturn(new org.springframework.data.domain.PageImpl<>(records));
     }
 
     private TemporalGraphQueryService.EntityDiff diff() {
@@ -56,7 +53,7 @@ class TemporalGraphQueryServiceTest {
 
     @Test
     void nodeCreated_isAdded() {
-        stub(List.of(rec("NODE_CREATED", "NODE", "n1", null,
+        stub(java.util.List.of(rec("NODE_CREATED", "NODE", "n1", null,
                 "{\"nodeId\":\"n1\",\"nodeType\":\"PERSON\",\"title\":\"Alice\"}")));
 
         TemporalGraphQueryService.EntityDiff d = diff();
@@ -72,7 +69,7 @@ class TemporalGraphQueryServiceTest {
 
     @Test
     void nodeDeleted_isRemoved() {
-        stub(List.of(rec("NODE_DELETED", "NODE", "n1",
+        stub(java.util.List.of(rec("NODE_DELETED", "NODE", "n1",
                 "{\"nodeId\":\"n1\",\"nodeType\":\"PERSON\",\"title\":\"Alice\"}", null)));
 
         TemporalGraphQueryService.EntityDiff d = diff();
@@ -84,7 +81,7 @@ class TemporalGraphQueryServiceTest {
 
     @Test
     void nodeUpdated_titleChange_isReportedAsAttributeDelta() {
-        stub(List.of(rec("NODE_UPDATED", "NODE", "n1",
+        stub(java.util.List.of(rec("NODE_UPDATED", "NODE", "n1",
                 "{\"nodeId\":\"n1\",\"nodeType\":\"PERSON\",\"title\":\"Old\"}",
                 "{\"nodeId\":\"n1\",\"nodeType\":\"PERSON\",\"title\":\"New\"}")));
 
@@ -105,7 +102,7 @@ class TemporalGraphQueryServiceTest {
     @Test
     void identicalSnapshots_areNotChanged() {
         String state = "{\"nodeId\":\"n1\",\"nodeType\":\"PERSON\",\"title\":\"Alice\"}";
-        stub(List.of(rec("NODE_UPDATED", "NODE", "n1", state, state)));
+        stub(java.util.List.of(rec("NODE_UPDATED", "NODE", "n1", state, state)));
 
         assertEquals(0, diff().changedCount());
     }
@@ -113,7 +110,7 @@ class TemporalGraphQueryServiceTest {
     @Test
     void volatileKeysOnly_areIgnored() {
         // Only updatedAt differs — denylisted, so no semantic change.
-        stub(List.of(rec("NODE_UPDATED", "NODE", "n1",
+        stub(java.util.List.of(rec("NODE_UPDATED", "NODE", "n1",
                 "{\"nodeId\":\"n1\",\"title\":\"Alice\",\"updatedAt\":\"2026-06-19T10:00:00\"}",
                 "{\"nodeId\":\"n1\",\"title\":\"Alice\",\"updatedAt\":\"2026-06-19T11:00:00\"}")));
 
@@ -123,7 +120,7 @@ class TemporalGraphQueryServiceTest {
     @Test
     void createdThenDeletedInWindow_netsToNoChange() {
         // Newest-first: delete then create.
-        stub(List.of(
+        stub(java.util.List.of(
                 rec("NODE_DELETED", "NODE", "n1", "{\"nodeId\":\"n1\",\"title\":\"Alice\"}", null),
                 rec("NODE_CREATED", "NODE", "n1", null, "{\"nodeId\":\"n1\",\"title\":\"Alice\"}")));
 
@@ -135,7 +132,7 @@ class TemporalGraphQueryServiceTest {
 
     @Test
     void edgeWeightChange_isReported() {
-        stub(List.of(rec("EDGE_UPDATED", "EDGE", "e1",
+        stub(java.util.List.of(rec("EDGE_UPDATED", "EDGE", "e1",
                 "{\"edgeId\":\"e1\",\"edgeType\":\"REL\",\"weight\":0.5}",
                 "{\"edgeId\":\"e1\",\"edgeType\":\"REL\",\"weight\":0.9}")));
 

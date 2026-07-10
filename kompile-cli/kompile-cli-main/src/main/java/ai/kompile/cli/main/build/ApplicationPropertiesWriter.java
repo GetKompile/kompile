@@ -26,6 +26,7 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
@@ -128,7 +129,7 @@ public class ApplicationPropertiesWriter {
             throws IOException {
         writer.write("# Generated application.properties\n");
         writer.write("# Project: " + pomProperties.getProperty("instanceArtifactId", this.instanceArtifactId) + "\n");
-        writer.write("# Generated on: " + new java.util.Date() + "\n");
+        writer.write("# Generated on: " + new Date() + "\n");
         writer.write("# Configured providers: " + getProviderSummary() + "\n\n");
 
         writer.write("# Logging for model loading and general app behavior\n");
@@ -479,7 +480,7 @@ public class ApplicationPropertiesWriter {
     private void writeApplicationPropertiesHeader(FileWriter writer) throws IOException {
         writer.write("# Generated application.properties\n");
         writer.write("# Project: " + instanceArtifactId + "\n");
-        writer.write("# Generated on: " + new java.util.Date() + "\n");
+        writer.write("# Generated on: " + new Date() + "\n");
         writer.write("# Configured providers: " + getProviderSummary() + "\n");
         writer.write("\n");
 

@@ -37,7 +37,7 @@ public class DistillationConfigRequest {
     @Builder.Default
     private double temperature = 4.0;
     @Builder.Default
-    private double alpha = 0.5;
+    private double alpha = 1.0;
     private Map<String, String> layerMappings;
     private String datasetId;
     private TrainingConfigRequest trainingConfig;

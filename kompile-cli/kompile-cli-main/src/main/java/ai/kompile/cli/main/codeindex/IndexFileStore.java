@@ -16,15 +16,12 @@
 
 package ai.kompile.cli.main.codeindex;
 
+import ai.kompile.utils.HashUtils;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
-import java.io.BufferedInputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.nio.file.*;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.*;
 
@@ -71,12 +68,13 @@ public class IndexFileStore {
     }
 
     /**
-     * Save fingerprints atomically.
+     * Save fingerprints atomically. Written compact — with one entry per
+     * indexed file this is the largest index-side JSON, rewritten on every
+     * changed pass, and nothing human reads it.
      */
     public void saveFingerprints(Map<String, FileFingerprint> fingerprints) throws IOException {
         atomicWrite(indexDir.resolve("fingerprints.json"),
-                objectMapper.writerWithDefaultPrettyPrinter()
-                        .writeValueAsBytes(fingerprints));
+                objectMapper.writeValueAsBytes(fingerprints));
     }
 
     // -----------------------------------------------------------------------
@@ -224,36 +222,14 @@ public class IndexFileStore {
      * SHA-256 of a file's contents.
      */
     public static String sha256File(Path file) throws IOException {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            try (InputStream in = new BufferedInputStream(Files.newInputStream(file))) {
-                byte[] buf = new byte[8192];
-                int n;
-                while ((n = in.read(buf)) >= 0) digest.update(buf, 0, n);
-            }
-            return hexEncode(digest.digest());
-        } catch (NoSuchAlgorithmException e) {
-            throw new RuntimeException("SHA-256 not available", e);
-        }
+        return HashUtils.sha256Hex(file);
     }
 
     /**
      * SHA-256 of a string (used for shard naming).
      */
     static String sha256String(String input) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            digest.update(input.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            return hexEncode(digest.digest());
-        } catch (NoSuchAlgorithmException e) {
-            throw new RuntimeException("SHA-256 not available", e);
-        }
-    }
-
-    private static String hexEncode(byte[] bytes) {
-        StringBuilder sb = new StringBuilder(bytes.length * 2);
-        for (byte b : bytes) sb.append(String.format("%02x", b));
-        return sb.toString();
+        return HashUtils.sha256Hex(input);
     }
 
     /**

@@ -48,6 +48,20 @@ public class ComponentRegistry {
     // Component metadata map
     private static final Map<String, ComponentDescriptor> COMPONENTS = new HashMap<>();
 
+    /**
+     * Alternate artifact/binary base names per component. Distributions ship the
+     * app as {@code kompile-server} (bin/kompile-server, lib/kompile-server.jar)
+     * while the component id stays {@code kompile-app-main}.
+     */
+    private static final Map<String, List<String>> BINARY_ALIASES = Map.of(
+            KOMPILE_APP_MAIN, List.of("kompile-app-main", "kompile-server"),
+            KOMPILE_MODEL_STAGING, List.of("kompile-model-staging"),
+            KOMPILE_CLI, List.of("kompile-cli", "kompile"));
+
+    private static List<String> aliasesFor(String componentId) {
+        return BINARY_ALIASES.getOrDefault(componentId, List.of(componentId));
+    }
+
     static {
         // Register kompile-app-main
         COMPONENTS.put(KOMPILE_APP_MAIN, ComponentDescriptor.builder()
@@ -95,7 +109,30 @@ public class ComponentRegistry {
         this.mavenRepoUrl = MAVEN_CENTRAL_BASE;
         this.version = Info.getVersion();
         this.customUrls = new HashMap<>();
-        this.installBaseDir = Info.homeDirectory();
+        this.installBaseDir = resolveInstallBaseDir();
+    }
+
+    /**
+     * Installation base directory holding {@code bin/} native binaries and
+     * {@code lib/} distribution jars. Custom install locations
+     * ({@code install.sh --dir}, {@code KOMPILE_INSTALL_DIR}) must be honored
+     * here — otherwise every component lookup silently falls back to
+     * {@code ~/.kompile} and {@code project start} cannot find the installed
+     * binaries. User/project STATE remains under {@link Info#homeDirectory()}
+     * regardless of where the binaries are installed.
+     * Resolution: {@code -Dkompile.install.dir} &gt; {@code $KOMPILE_INSTALL_DIR}
+     * &gt; {@code ~/.kompile}.
+     */
+    static File resolveInstallBaseDir() {
+        String prop = System.getProperty("kompile.install.dir");
+        if (prop != null && !prop.isBlank()) {
+            return new File(prop);
+        }
+        String env = System.getenv("KOMPILE_INSTALL_DIR");
+        if (env != null && !env.isBlank()) {
+            return new File(env);
+        }
+        return Info.homeDirectory();
     }
 
     /**
@@ -182,10 +219,32 @@ public class ComponentRegistry {
     public File getDistributionJarPath(String componentId) {
         File libDir = new File(installBaseDir, "lib");
         if (!libDir.isDirectory()) return null;
-        File[] jars = libDir.listFiles((dir, name) ->
-                name.startsWith(componentId) && name.endsWith(".jar"));
-        if (jars != null && jars.length > 0) {
-            return jars[0];
+        for (String alias : aliasesFor(componentId)) {
+            File[] jars = libDir.listFiles((dir, name) ->
+                    name.startsWith(alias) && name.endsWith(".jar"));
+            if (jars != null && jars.length > 0) {
+                return jars[0];
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Get the native executable from a distribution-style install (bin/ directory),
+     * e.g. {@code ~/.kompile/bin/kompile-server}. Returns null if none is present.
+     */
+    public File getDistributionBinaryPath(String componentId) {
+        File binDir = new File(installBaseDir, "bin");
+        if (!binDir.isDirectory()) return null;
+        for (String alias : aliasesFor(componentId)) {
+            File exe = new File(binDir, alias);
+            if (exe.isFile() && exe.canExecute() && !exe.getName().endsWith(".jar")) {
+                return exe;
+            }
+            File exeWindows = new File(binDir, alias + ".exe");
+            if (exeWindows.isFile() && exeWindows.canExecute()) {
+                return exeWindows;
+            }
         }
         return null;
     }
@@ -200,13 +259,19 @@ public class ComponentRegistry {
     /**
      * Find the installed JAR or native executable for a component.
      * Searches multiple locations and naming conventions:
-     *   1. Distribution install at ~/.kompile/lib/
+     *   0. Distribution native binary at ~/.kompile/bin/ (AOT-first; aliases apply,
+     *      e.g. kompile-app-main resolves bin/kompile-server)
+     *   1. Distribution install at ~/.kompile/lib/ (aliases apply)
      *   2. Canonical name at ~/.kompile/components/<id>/<version>/<id>-<version>.jar
      *   3. Exec JAR at ~/.kompile/components/<id>/<version>/<id>-<version>-exec.jar
      *   4. Any matching JAR in the latest version directory
      *   5. Native executable at ~/.kompile/components/<id>/<id>
      */
     public File findInstalledJar(String componentId) {
+        // 0. Distribution native binary
+        File distBinary = getDistributionBinaryPath(componentId);
+        if (distBinary != null) return distBinary;
+
         // 1. Distribution install
         File distJar = getDistributionJarPath(componentId);
         if (distJar != null && distJar.isFile()) return distJar;

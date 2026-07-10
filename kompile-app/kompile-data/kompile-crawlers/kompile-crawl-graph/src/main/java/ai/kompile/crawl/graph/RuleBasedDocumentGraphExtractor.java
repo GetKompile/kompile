@@ -23,6 +23,7 @@ import ai.kompile.knowledgegraph.domain.EdgeProvenance;
 import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
+import ai.kompile.knowledgegraph.domain.OccurredAtParser;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -31,6 +32,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -45,6 +47,7 @@ import java.util.stream.Collectors;
 class RuleBasedDocumentGraphExtractor {
 
     private static final Logger log = LoggerFactory.getLogger(RuleBasedDocumentGraphExtractor.class);
+    private static final int NODE_UPDATE_BATCH_SIZE = 500;
 
     @Autowired(required = false)
     private KnowledgeGraphService knowledgeGraphService;
@@ -89,6 +92,7 @@ class RuleBasedDocumentGraphExtractor {
         Map<String, Optional<GraphNode>> docNodeCache = new HashMap<>();
         // Cross-document cache: same entity ID → same ENTITY node (avoids N+1 DB lookups)
         Map<String, Optional<GraphNode>> entityNodeCache = new HashMap<>();
+        List<KnowledgeGraphService.NodeUpdate> entityMergeUpdates = new ArrayList<>(NODE_UPDATE_BATCH_SIZE);
         // Pre-compute the CONTAINS label — constant for every document in this batch
         String containsLabel = graphPersistenceHelper.semanticRelationLabel(GraphConstants.REL_CONTAINS);
 
@@ -250,6 +254,12 @@ class RuleBasedDocumentGraphExtractor {
                     }
                 }
 
+                // Lift the extractor-stamped relation occurredAt onto the participating entity nodes
+                // so node-time consumers (EventLogExtractor orders events by GraphNode.getOccurredAt())
+                // have a real event time. ExtractedEntity carries no occurredAt field, so the earliest
+                // incident relation timestamp is the entity's best "when it appeared".
+                Map<String, String> entityOccurredAt = deriveEntityOccurredAt(result.relations());
+
                 Map<String, String> externalToNodeId = new HashMap<>();
                 for (var entity : result.entities()) {
                     if (job != null && isCancelled(job)) {
@@ -262,8 +272,15 @@ class RuleBasedDocumentGraphExtractor {
                         entityMeta.put(GraphConstants.META_SOURCE, jobId);
                         if (sourcePath != null) entityMeta.put(GraphConstants.META_SOURCE_PATH, sourcePath);
                         if (entity.properties() != null) entityMeta.putAll(entity.properties());
+                        // putIfAbsent: an extractor-provided entity occurredAt wins over the derived one.
+                        String derivedOccurredAt = entityOccurredAt.get(entity.id());
+                        if (derivedOccurredAt != null) {
+                            entityMeta.putIfAbsent("occurredAt", derivedOccurredAt);
+                        }
                         // Re-assert after properties merge so LLM can't overwrite with a junk value.
                         entityMeta.put("entity_type", entityType);
+                        CrawlGraphProcessMetadata.normalizeEntityMetadata(entityMeta, entityType, jobId, sourcePath,
+                                entity.id());
 
                         final Long eFsId = factSheetId;
                         GraphNode node;
@@ -271,13 +288,12 @@ class RuleBasedDocumentGraphExtractor {
                                 eid -> knowledgeGraphService.getNodeByExternalId(eid, NodeLevel.ENTITY, eFsId));
                         if (existing.isPresent()) {
                             node = existing.get();
-                            // Merge properties from additional extractors into existing node
+                            // Merge properties from additional extractors into existing nodes in batches.
                             if (entity.properties() != null && !entity.properties().isEmpty()) {
-                                try {
-                                    knowledgeGraphService.updateNode(node.getNodeId(), null, null, entityMeta);
-                                } catch (Exception mergeEx) {
-                                    log.debug("[Job {}] Failed to merge properties into existing entity '{}': {}",
-                                            jobId, entity.name(), mergeEx.getMessage());
+                                entityMergeUpdates.add(new KnowledgeGraphService.NodeUpdate(
+                                        node.getNodeId(), null, null, entityMeta));
+                                if (entityMergeUpdates.size() >= NODE_UPDATE_BATCH_SIZE) {
+                                    flushEntityMergeUpdates(jobId, entityMergeUpdates);
                                 }
                             }
                         } else {
@@ -346,6 +362,10 @@ class RuleBasedDocumentGraphExtractor {
             }
         }
 
+        if (!entityMergeUpdates.isEmpty()) {
+            flushEntityMergeUpdates(jobId, entityMergeUpdates);
+        }
+
         if ((job == null || !isCancelled(job)) && (entitiesExtracted > 0 || relationsExtracted > 0)) {
             if (job != null) {
                 job.getEntitiesExtracted().addAndGet(entitiesExtracted);
@@ -353,6 +373,21 @@ class RuleBasedDocumentGraphExtractor {
             }
             log.info("[Job {}] Document graph extraction: {} entities, {} relations extracted ({} entities, {} relations created)",
                     jobId, entitiesExtracted, relationsExtracted, entitiesCreated, relationsCreated);
+        }
+    }
+
+    private void flushEntityMergeUpdates(String jobId, List<KnowledgeGraphService.NodeUpdate> updates) {
+        if (updates.isEmpty()) {
+            return;
+        }
+        int batchSize = updates.size();
+        try {
+            knowledgeGraphService.updateNodesBatch(updates);
+            updates.clear();
+        } catch (Exception e) {
+            String message = "Failed to flush " + batchSize + " entity metadata merge update(s): " + e.getMessage();
+            log.warn("[Job {}] {}", jobId, message, e);
+            throw new IllegalStateException(message, e);
         }
     }
 
@@ -366,5 +401,62 @@ class RuleBasedDocumentGraphExtractor {
 
     private Long jobFactSheetId(UnifiedCrawlJob job) {
         return job != null && job.getRequest() != null ? job.getRequest().getFactSheetId() : null;
+    }
+
+    /**
+     * Maps entity id → earliest occurredAt (raw string) across the relations that reference each
+     * entity. Extractors stamp occurredAt on relation properties (or the {@code ExtractedRelation}
+     * field); this lifts it onto the participating entity nodes. Earliest wins so an entity's event
+     * time reflects when it first appears. Raw strings are kept (not reformatted) so the store parses
+     * them with the same {@link OccurredAtParser} used everywhere else.
+     */
+    private Map<String, String> deriveEntityOccurredAt(
+            List<GraphExtractionSchema.ExtractedRelation> relations) {
+        if (relations == null || relations.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, String> earliestRaw = new HashMap<>();
+        Map<String, LocalDateTime> earliestParsed = new HashMap<>();
+        for (var rel : relations) {
+            String raw = relationOccurredAt(rel);
+            if (raw == null) {
+                continue;
+            }
+            LocalDateTime parsed = OccurredAtParser.parse(raw);
+            if (parsed == null) {
+                continue;
+            }
+            accumulateEarliest(earliestRaw, earliestParsed, rel.source(), raw, parsed);
+            accumulateEarliest(earliestRaw, earliestParsed, rel.target(), raw, parsed);
+        }
+        return earliestRaw;
+    }
+
+    private void accumulateEarliest(Map<String, String> earliestRaw,
+                                    Map<String, LocalDateTime> earliestParsed,
+                                    String entityId, String raw, LocalDateTime parsed) {
+        if (entityId == null) {
+            return;
+        }
+        LocalDateTime current = earliestParsed.get(entityId);
+        if (current == null || parsed.isBefore(current)) {
+            earliestParsed.put(entityId, parsed);
+            earliestRaw.put(entityId, raw);
+        }
+    }
+
+    /** The relation's occurredAt from the typed field, falling back to the flattened property. */
+    private static String relationOccurredAt(GraphExtractionSchema.ExtractedRelation rel) {
+        if (rel.occurredAt() != null && !rel.occurredAt().isBlank()) {
+            return rel.occurredAt();
+        }
+        Map<String, String> props = rel.properties();
+        if (props != null) {
+            String v = props.get("occurredAt");
+            if (v != null && !v.isBlank()) {
+                return v;
+            }
+        }
+        return null;
     }
 }

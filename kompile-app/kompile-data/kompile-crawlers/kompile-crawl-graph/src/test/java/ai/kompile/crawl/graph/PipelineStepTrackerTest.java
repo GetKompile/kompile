@@ -116,6 +116,21 @@ class PipelineStepTrackerTest {
     }
 
     @Test
+    void completePipelineStep_setsCompletedItemsToStepTotal() {
+        UnifiedCrawlJob job = newJob();
+        tracker.initializePipelineSteps(job);
+
+        tracker.updatePipelineStep(job, "ENTITY_RESOLUTION", PipelineStepStatus.RUNNING,
+                1, 7225, 0, 0, 0, 0, "block 1", "resolving");
+        tracker.completePipelineStep(job, "ENTITY_RESOLUTION", 1, "312 merge(s), 6913 final entities");
+
+        PipelineStepProgress step = stepById(job, "ENTITY_RESOLUTION");
+        assertEquals(7225, step.getCompletedItems().get(),
+                "completed steps must not render as partial item counts");
+        assertEquals(100, step.getProgressPercent().get());
+    }
+
+    @Test
     void updatePipelineStep_runningStep_setsStartedAt() {
         UnifiedCrawlJob job = newJob();
         tracker.initializePipelineSteps(job);
@@ -127,6 +142,22 @@ class PipelineStepTrackerTest {
 
         assertNotNull(stepById(job, "CHUNKING").getStartedAt(),
                 "startedAt must be set when a step transitions to RUNNING");
+    }
+
+    @Test
+    void runningStepShowsAtLeastOneActiveTask() {
+        UnifiedCrawlJob job = newJob();
+        tracker.initializePipelineSteps(job);
+
+        tracker.updatePipelineStep(job, "ENRICHMENT", PipelineStepStatus.RUNNING,
+                1, 4, 0, 0, 0, 0, "WEIGHT_LEARNING", "weight learning");
+
+        assertEquals(1, stepById(job, "ENRICHMENT").getActiveTasks().get(),
+                "running steps must not render as idle");
+
+        tracker.completePipelineStep(job, "ENRICHMENT", 4, "done");
+        assertEquals(0, stepById(job, "ENRICHMENT").getActiveTasks().get(),
+                "terminal steps must clear active task count");
     }
 
     // -----------------------------------------------------------------------
@@ -298,6 +329,26 @@ class PipelineStepTrackerTest {
         PipelineStepProgress step = stepById(job, "CHUNKING");
         assertEquals(25, step.getCompletedItems().get(), "completed items must accumulate across increments");
         assertEquals(1, step.getCompletedBatches().get(), "completed batches must accumulate across increments");
+    }
+
+    @Test
+    void vectorIndexingCounterRefreshClampsCompletedBatchesToTotal() {
+        UnifiedCrawlJob job = newJob();
+        tracker.initializePipelineSteps(job);
+
+        job.getChunksQueuedForEmbedding().set(50);
+        job.getChunksEmbedded().set(50);
+        job.getDocumentsIndexed().set(50);
+        job.getVectorBatchesTotal().set(2);
+        job.getVectorBatchesCompleted().set(6);
+
+        tracker.updatePipelineStepFromCounters(job, "VECTOR_INDEXING", "indexing", null);
+
+        PipelineStepProgress step = stepById(job, "VECTOR_INDEXING");
+        assertEquals(2, step.getCompletedBatches().get(),
+                "completedBatches must not exceed totalBatches in UI state");
+        assertEquals(2, step.getTotalBatches().get());
+        assertEquals(50, step.getCompletedItems().get());
     }
 
     @Test

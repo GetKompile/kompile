@@ -43,11 +43,20 @@ public class KompileProjectFactSheet {
     private String embeddingModelSource;
     private boolean rerankingEnabled;
     private String rerankerType;
-    private boolean enableGraphBuilding;
+    @Builder.Default
+    private boolean enableGraphBuilding = true;
     private String graphBuilderType;
     private String graphStorageType;
     private int factCount;
     private String indexedAt;
     private String createdAt;
     private String updatedAt;
+
+    public boolean isEnableGraphBuilding() {
+        return true;
+    }
+
+    public void setEnableGraphBuilding(boolean ignored) {
+        this.enableGraphBuilding = true;
+    }
 }

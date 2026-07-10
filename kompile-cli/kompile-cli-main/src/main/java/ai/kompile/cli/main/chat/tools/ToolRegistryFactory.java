@@ -24,6 +24,21 @@ import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.roles.RoleManager;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphAssertTool;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphClaimTool;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphExplainTool;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphRetractTool;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphFusedTool;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphMebnTool;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphQueryTool;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphSubscribeTool;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphSynthesizeTool;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphVerifyTool;
+import ai.kompile.cli.main.chat.tools.grounding.CrawlSourceTool;
+import ai.kompile.cli.main.chat.tools.grounding.GraphExportTool;
+import ai.kompile.cli.main.chat.tools.grounding.GraphImportTool;
+import ai.kompile.cli.main.chat.tools.grounding.GraphReasonTool;
+import ai.kompile.cli.main.chat.tools.grounding.GraphReasoningQueryTool;
 import ai.kompile.cli.main.chat.tui.SidePanelManager;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -79,12 +94,16 @@ public class ToolRegistryFactory {
         registry.register(new GlobTool());
         registry.register(new ListTool());
 
+        // Language-server code intelligence
+        registry.register(new LspTool());
+
         // Execution tools
         registry.register(new BashTool());
 
         // Network tools
         registry.register(new WebFetchTool());
         registry.register(new WebSearchTool());
+        registry.register(new BrowserTool());
 
         // Workflow and TUI tools
         registry.register(new TodoWriteTool());
@@ -101,6 +120,29 @@ public class ToolRegistryFactory {
         registry.register(new ConversationImportTool());
         registry.register(new RagSearchTool(baseUrl, objectMapper));
         registry.register(new GraphRagSearchTool(baseUrl, objectMapper));
+        registry.register(new GraphAggregateTool(baseUrl, objectMapper));
+        registry.register(new GraphForecastTool(baseUrl, objectMapper));
+        registry.register(new GraphCentralityTool(baseUrl, objectMapper));
+        registry.register(new KnowledgeGraphTool(baseUrl, objectMapper));
+        registry.register(new AskGraphQueryTool(baseUrl, objectMapper));
+        registry.register(new AskGraphVerifyTool(baseUrl, objectMapper));
+        registry.register(new AskGraphAssertTool(baseUrl, objectMapper));
+        registry.register(new AskGraphRetractTool(baseUrl, objectMapper));
+        registry.register(new AskGraphMebnTool(baseUrl, objectMapper));
+        registry.register(new AskGraphExplainTool(baseUrl, objectMapper));
+        registry.register(new AskGraphFusedTool(baseUrl, objectMapper));
+        registry.register(new AskGraphSynthesizeTool(baseUrl, objectMapper));
+        registry.register(new AskGraphSubscribeTool(baseUrl, objectMapper));
+        registry.register(new GraphReasonTool(baseUrl, objectMapper));
+        registry.register(new GraphImportTool(baseUrl, objectMapper));
+        registry.register(new GraphExportTool(baseUrl, objectMapper));
+        registry.register(new CrawlSourceTool(baseUrl, objectMapper));
+        registry.register(new ProcessMiningCliTool(baseUrl, objectMapper));
+        registry.register(new AskGraphClaimTool(baseUrl, objectMapper));
+        registry.register(new GraphReasoningQueryTool(baseUrl, objectMapper));
+        registry.register(new GraphBayesTool(baseUrl, objectMapper));
+        registry.register(new GraphEmbeddingsTool(baseUrl, objectMapper));
+        registry.register(new GraphSimulateTool(baseUrl, objectMapper));
         registry.register(new MemoryTool());
 
         // Delegation tools (subagent spawning)

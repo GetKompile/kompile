@@ -24,8 +24,10 @@ import ai.kompile.graph.reasoning.fol.grounding.RecursiveQueryEngine.DatalogRule
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -275,7 +277,7 @@ public final class LogicBasedReducer {
                                              String forbiddenDst) {
         // BFS from start's neighbors (skip the direct edge)
         Set<String> visited = new LinkedHashSet<>();
-        java.util.Deque<String> queue = new java.util.ArrayDeque<>();
+        Deque<String> queue = new ArrayDeque<>();
 
         Set<String> directNeighbors = adj.getOrDefault(start, Set.of());
         for (String neighbor : directNeighbors) {

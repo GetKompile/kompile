@@ -58,7 +58,7 @@ public class RerankerProperties {
     /**
      * Whether reranking is enabled.
      */
-    private boolean enabled = false;
+    private boolean enabled = true;
 
     /**
      * Type of reranker to use (rm3, bm25prf, rocchio, etc.)

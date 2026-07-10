@@ -18,6 +18,7 @@ package ai.kompile.app.tools;
 
 import ai.kompile.core.embeddings.VectorStore;
 import ai.kompile.core.retrievers.DocumentRetriever;
+import ai.kompile.utils.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
@@ -310,7 +311,6 @@ public class IndexOperationsTool {
 
     // Helper methods
     private String truncateForLog(String text) {
-        if (text == null) return "null";
-        return text.length() > 50 ? text.substring(0, 50) + "..." : text;
+        return text == null ? "null" : StringUtils.truncate(text, 50);
     }
 }

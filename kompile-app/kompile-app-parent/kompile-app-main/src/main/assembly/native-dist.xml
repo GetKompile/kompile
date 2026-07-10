@@ -37,6 +37,20 @@
             <fileMode>0755</fileMode>
         </fileSet>
 
+        <!-- Side-loaded native libraries (ND4J/OpenBLAS/JavaCPP .so files unpacked by the
+             unpack-native-libs execution). NativeLibraryResolver resolves bin/../lib at runtime. -->
+        <fileSet>
+            <directory>${project.build.directory}/native-libs</directory>
+            <outputDirectory>lib</outputDirectory>
+            <includes>
+                <include>**/*.so</include>
+                <include>**/*.so.*</include>
+                <include>**/*.dylib</include>
+                <include>**/*.dll</include>
+            </includes>
+            <fileMode>0755</fileMode>
+        </fileSet>
+
         <!-- Application configuration -->
         <fileSet>
             <directory>${project.basedir}/src/main/resources</directory>

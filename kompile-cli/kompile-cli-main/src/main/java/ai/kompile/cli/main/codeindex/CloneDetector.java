@@ -10,12 +10,11 @@
 
 package ai.kompile.cli.main.codeindex;
 
+import ai.kompile.utils.HashUtils;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.sql.*;
 import java.time.Instant;
 import java.util.*;
@@ -448,18 +447,7 @@ public class CloneDetector {
     }
 
     private static String sha256Short(String input) {
-        try {
-            MessageDigest md = MessageDigest.getInstance("SHA-256");
-            byte[] hash = md.digest(input.getBytes(StandardCharsets.UTF_8));
-            // Use first 8 bytes as hex (64-bit hash)
-            StringBuilder sb = new StringBuilder(16);
-            for (int i = 0; i < 8; i++) {
-                sb.append(String.format("%02x", hash[i]));
-            }
-            return sb.toString();
-        } catch (NoSuchAlgorithmException e) {
-            throw new RuntimeException(e);
-        }
+        return HashUtils.sha256HexShort(input, 16);
     }
 
     // --- Storage ---

@@ -18,9 +18,11 @@ package ai.kompile.graph.reasoning.tms.atms;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -468,7 +470,7 @@ public final class Atms {
      */
     private void propagate(String changed) {
         // BFS worklist: nodes whose label just changed
-        java.util.Deque<String> worklist = new java.util.ArrayDeque<>();
+        Deque<String> worklist = new ArrayDeque<>();
         worklist.add(changed);
 
         while (!worklist.isEmpty()) {

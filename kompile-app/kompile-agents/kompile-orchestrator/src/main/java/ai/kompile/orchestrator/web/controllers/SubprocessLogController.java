@@ -32,6 +32,8 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.io.File;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -42,7 +44,8 @@ import java.util.stream.Stream;
  * REST endpoints for reading subprocess logs written by the various
  * subprocess launchers via {@link ai.kompile.cli.common.logs.SubprocessLogWriter}.
  *
- * <p>Operates on the filesystem store under {@code ~/.kompile/logs/subprocesses}.
+ * <p>Operates on the filesystem store under the configured project root's
+ * {@code .kompile/logs/subprocesses} (or {@code ~/.kompile} as a fallback).
  */
 @Slf4j
 @RestController
@@ -64,10 +67,12 @@ public class SubprocessLogController {
             @RequestParam(value = "runId", required = false) String runId,
             @RequestParam(value = "since", required = false) String since,
             @RequestParam(value = "until", required = false) String until,
+            @RequestParam(value = "projectRoot", required = false) String projectRoot,
             @RequestParam(value = "limit", defaultValue = "200") int limit) {
+        Path workingDirectory = resolveProjectRoot(projectRoot);
         AgentLogReader.SubprocessRunFilter filter = new AgentLogReader.SubprocessRunFilter(
                 subprocessType, runId, parseInstant(since), parseInstant(until));
-        List<SubprocessLogMetadata> runs = AgentLogReader.listSubprocessRuns(filter);
+        List<SubprocessLogMetadata> runs = AgentLogReader.listSubprocessRuns(workingDirectory, filter);
         if (runs.size() > limit) {
             runs = runs.subList(0, limit);
         }
@@ -75,8 +80,11 @@ public class SubprocessLogController {
     }
 
     @GetMapping("/{runId}")
-    public ResponseEntity<SubprocessLogMetadata> get(@PathVariable String runId) {
-        return AgentLogReader.findSubprocessByRunId(runId)
+    public ResponseEntity<SubprocessLogMetadata> get(
+            @PathVariable String runId,
+            @RequestParam(value = "projectRoot", required = false) String projectRoot) {
+        Path workingDirectory = resolveProjectRoot(projectRoot);
+        return AgentLogReader.findSubprocessByRunId(workingDirectory, runId)
                 .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
     }
@@ -84,11 +92,13 @@ public class SubprocessLogController {
     @GetMapping("/{runId}/records")
     public ResponseEntity<List<AgentLogRecord>> records(
             @PathVariable String runId,
+            @RequestParam(value = "projectRoot", required = false) String projectRoot,
             @RequestParam(value = "fromSeq", required = false) Integer fromSeq,
             @RequestParam(value = "limit", defaultValue = "5000") int limit) {
-        return AgentLogReader.findSubprocessByRunId(runId).map(meta -> {
-            File logFile = LogPaths.subprocessLogFile(meta.getSubprocessType(), meta.getRunId());
-            if (!logFile.isFile()) {
+        Path workingDirectory = resolveProjectRoot(projectRoot);
+        return AgentLogReader.findSubprocessByRunId(workingDirectory, runId).map(meta -> {
+            File logFile = AgentLogReader.resolveSubprocessLogFile(workingDirectory, meta);
+            if (logFile == null || !logFile.isFile()) {
                 return ResponseEntity.ok(List.<AgentLogRecord>of());
             }
             List<AgentLogRecord> out = new ArrayList<>(Math.min(limit, 1024));
@@ -114,22 +124,26 @@ public class SubprocessLogController {
             @RequestParam(value = "runId", required = false) String runId,
             @RequestParam(value = "since", required = false) String since,
             @RequestParam(value = "until", required = false) String until,
+            @RequestParam(value = "projectRoot", required = false) String projectRoot,
             @RequestParam(value = "limit", defaultValue = "10000") int limit) {
+        Path workingDirectory = resolveProjectRoot(projectRoot);
         AgentLogReader.SubprocessRunFilter filter = new AgentLogReader.SubprocessRunFilter(
                 subprocessType, runId, parseInstant(since), parseInstant(until));
-        List<SubprocessLogMetadata> runs = AgentLogReader.listSubprocessRuns(filter);
+        List<SubprocessLogMetadata> runs = AgentLogReader.listSubprocessRuns(workingDirectory, filter);
         List<AgentLogRecord> records = new ArrayList<>();
-        try (Stream<AgentLogRecord> stream = AgentLogReader.aggregateAcrossSubprocessRuns(runs)) {
+        try (Stream<AgentLogRecord> stream = AgentLogReader.aggregateAcrossSubprocessRuns(workingDirectory, runs)) {
             stream.limit(limit).forEach(records::add);
         }
         return ResponseEntity.ok(records);
     }
 
     @PostMapping("/cleanup")
-    public ResponseEntity<Map<String, Object>> cleanup() {
+    public ResponseEntity<Map<String, Object>> cleanup(
+            @RequestParam(value = "projectRoot", required = false) String projectRoot) {
+        Path workingDirectory = resolveProjectRoot(projectRoot);
         LogRetentionPolicy policy = LogRetentionPolicy.of(
                 retentionMaxAgeDays, retentionMaxTotalMb, retentionMaxFilesPerAgent);
-        LogRetentionManager.RetentionResult result = new LogRetentionManager(policy).applyToSubprocesses();
+        LogRetentionManager.RetentionResult result = new LogRetentionManager(policy).applyToSubprocesses(workingDirectory);
         return ResponseEntity.ok(Map.of(
                 "deletedByAge", result.deletedByAge(),
                 "deletedByPerTypeCap", result.deletedByPerAgent(),
@@ -140,6 +154,18 @@ public class SubprocessLogController {
                         "maxTotalMb", retentionMaxTotalMb,
                         "maxFilesPerType", retentionMaxFilesPerAgent)
         ));
+    }
+
+    private static Path resolveProjectRoot(String projectRoot) {
+        if (projectRoot == null || projectRoot.isBlank()) {
+            return null;
+        }
+        try {
+            return Paths.get(projectRoot).toAbsolutePath().normalize();
+        } catch (Exception e) {
+            log.warn("Invalid projectRoot '{}': {}", projectRoot, e.getMessage());
+            return null;
+        }
     }
 
     private static Instant parseInstant(String value) {

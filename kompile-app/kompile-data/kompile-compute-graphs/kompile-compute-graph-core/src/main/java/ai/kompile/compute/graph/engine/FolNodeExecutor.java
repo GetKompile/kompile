@@ -208,7 +208,7 @@ public class FolNodeExecutor implements NodeExecutor {
             RecursiveQueryEngine.FixpointResult fixpoint = RecursiveQueryEngine.evaluate(datalogRules, edb);
             // Inject derived facts back into the PSL program as observations.
             // derivedFacts() returns Map<predicate, Set<List<args>>>
-            for (Map.Entry<String, java.util.Set<List<String>>> entry : fixpoint.derivedFacts().entrySet()) {
+            for (Map.Entry<String, Set<List<String>>> entry : fixpoint.derivedFacts().entrySet()) {
                 String predicate = entry.getKey();
                 for (List<String> args : entry.getValue()) {
                     program.observe(predicate, 1.0, args.toArray(String[]::new));

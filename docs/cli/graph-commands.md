@@ -24,9 +24,15 @@ kompile graph query "MATCH (n) RETURN n LIMIT 10" # Run a Cypher query
 ## Import and export
 
 ```bash
-# Supported formats: JSON, JSON-LD, CSV, GraphML, Cypher
-kompile graph import --file=data.json --format=json
+# kgraph is the default and the only full-fidelity round-trip format.
+# It preserves structure, confidence scores, learned state, and embeddings.
+kompile graph export --output=my-graph.kgraph            # --format defaults to kgraph
+kompile graph import --file=my-graph.kgraph --format=kgraph
+
+# Other formats (structure only, no embeddings or learned state):
 kompile graph export --output=graph.graphml --format=graphml
+kompile graph export --output=graph.json    --format=json
+kompile graph import --file=data.json       --format=json
 ```
 
 ## Graph management
@@ -64,8 +70,8 @@ kompile graph report
 
 ```bash
 kompile graph config show
-kompile graph config set --key=llmProvider --value=anthropic
-kompile graph config toggle --key=piiRedaction
+kompile graph config set --model-provider=anthropic
+kompile graph config set --schema-mode=STRICT
 kompile graph config reset
 
 # Schema

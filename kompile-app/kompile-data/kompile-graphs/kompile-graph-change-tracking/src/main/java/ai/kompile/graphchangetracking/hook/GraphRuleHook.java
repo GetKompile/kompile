@@ -12,8 +12,8 @@ package ai.kompile.graphchangetracking.hook;
 import ai.kompile.graphchangetracking.domain.GraphRuleConfig;
 import ai.kompile.graphchangetracking.event.GraphChangesetCompletedEvent;
 import ai.kompile.graphchangetracking.event.GraphMutationEvent;
-import ai.kompile.graphchangetracking.repository.GraphRuleConfigRepository;
 import ai.kompile.graphchangetracking.service.GraphActionService;
+import ai.kompile.graphchangetracking.service.GraphRuleConfigStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -29,13 +29,13 @@ import java.util.Map;
 @Slf4j
 public class GraphRuleHook implements GraphUpdateHook {
 
-    private final GraphRuleConfigRepository ruleRepository;
+    private final GraphRuleConfigStore ruleStore;
     private final GraphActionService actionService;
     private final ObjectMapper objectMapper;
 
-    public GraphRuleHook(GraphRuleConfigRepository ruleRepository, GraphActionService actionService,
+    public GraphRuleHook(GraphRuleConfigStore ruleStore, GraphActionService actionService,
                          ObjectMapper objectMapper) {
-        this.ruleRepository = ruleRepository;
+        this.ruleStore = ruleStore;
         this.actionService = actionService;
         this.objectMapper = objectMapper;
     }
@@ -52,7 +52,7 @@ public class GraphRuleHook implements GraphUpdateHook {
 
     @Override
     public void onChangesetComplete(GraphChangesetCompletedEvent event) {
-        for (GraphRuleConfig rule : ruleRepository.findByEnabledTrue()) {
+        for (GraphRuleConfig rule : ruleStore.findByEnabledTrue()) {
             if (isMutationRule(rule)) {
                 continue; // mutation-scoped rules fire in onGraphMutated, not here
             }
@@ -73,7 +73,7 @@ public class GraphRuleHook implements GraphUpdateHook {
      */
     @Override
     public void onGraphMutated(GraphMutationEvent event) {
-        for (GraphRuleConfig rule : ruleRepository.findByEnabledTrue()) {
+        for (GraphRuleConfig rule : ruleStore.findByEnabledTrue()) {
             if (!isMutationRule(rule)) {
                 continue;
             }

@@ -18,6 +18,7 @@ package ai.kompile.core.retrievers;
 
 import ai.kompile.core.source.SourceAttributionHelper;
 import ai.kompile.core.source.SourceMetadataConstants;
+import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
@@ -128,9 +129,12 @@ public class RetrievedDoc {
     @JsonIgnore
     private ContentFormatter contentFormatter = DEFAULT_CONTENT_FORMATTER;
 
-    @JsonCreator(mode = JsonCreator.Mode.PROPERTIES)
-    public RetrievedDoc(@JsonProperty("content") String content) {
-        this(content, new HashMap<>());
+    /**
+     * Single-arg convenience constructor (code use only — not the Jackson creator).
+     * Kept for call sites that build a doc from a plain content string.
+     */
+    public RetrievedDoc(String content) {
+        this(generateRandomId(), content, null, new HashMap<>(), null);
     }
 
     public RetrievedDoc(String text, Map<String, Object> metadata) {
@@ -157,7 +161,24 @@ public class RetrievedDoc {
         this(id, text, null, metadata, score);
     }
 
-    private RetrievedDoc(String id, String text, Media media, Map<String, Object> metadata, Double score) {
+    /**
+     * Terminal all-args constructor and Jackson deserializer.
+     * <p>
+     * {@code @JsonCreator} here means Jackson uses this constructor for both the
+     * serialized field name {@code "text"} and the legacy field name {@code "content"}
+     * (kept for backward-compat with producers that still send the old form).
+     * The {@code id} defaults to a random UUID if absent from JSON.
+     * The {@code metadata} defaults to an empty map if absent from JSON.
+     * The invariant — exactly one of text or media — is enforced here; genuinely-empty
+     * docs that slip through are caught at this boundary.
+     */
+    @JsonCreator(mode = JsonCreator.Mode.PROPERTIES)
+    private RetrievedDoc(
+            @JsonProperty("id") String id,
+            @JsonProperty("text") @JsonAlias("content") String text,
+            @JsonProperty("media") Media media,
+            @JsonProperty("metadata") Map<String, Object> metadata,
+            @JsonProperty("score") Double score) {
         if (id == null || id.trim().isEmpty()) {
             throw new IllegalArgumentException("id cannot be null or empty");
         }
@@ -216,6 +237,7 @@ public class RetrievedDoc {
      * {@link #getText()}), false if it contains media content (accessible via
      * {@link #getMedia()})
      */
+    @JsonIgnore
     public boolean isText() {
         return this.text != null;
     }

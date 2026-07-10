@@ -44,35 +44,55 @@ public class ArcticEmbedSameDiffEncoder extends SameDiffEncoder<float[]> {
 
     // ========== DYNAMIC BATCH SIZE CONFIGURATION ==========
     // Batch sizes are calculated dynamically based on sequence length.
-    // Shorter sequences allow larger batches (attention is O(n²) in sequence length).
+    // Shorter sequences allow larger batches (attention is O(n^2) in sequence length).
     // Sorting by sequence length groups similar-length items together to minimize padding waste.
 
-    private static final int BASE_OPTIMAL_BATCH_SIZE = 4;
-    private static final int BASE_MAX_BATCH_SIZE = 8;
+    private static final int DEFAULT_BASE_OPTIMAL_BATCH_SIZE = 4;
+    private static final int DEFAULT_BASE_MAX_BATCH_SIZE = 8;
     private static final int REFERENCE_SEQ_LENGTH = 512;
     private static final int ABSOLUTE_MIN_BATCH_SIZE = 1;
-    private static final int ABSOLUTE_MAX_BATCH_SIZE = 64;
-    private static final double MEMORY_SCALE_FACTOR;
+    private static final int DEFAULT_ABSOLUTE_MAX_BATCH_SIZE = 64;
 
-    static {
+    private volatile int baseOptimalBatchSize = DEFAULT_BASE_OPTIMAL_BATCH_SIZE;
+    private volatile int baseMaxBatchSize = DEFAULT_BASE_MAX_BATCH_SIZE;
+    private volatile int absoluteMaxBatchSize = DEFAULT_ABSOLUTE_MAX_BATCH_SIZE;
+    private volatile double memoryScaleFactor = defaultMemoryScaleFactor();
+
+    private static double defaultMemoryScaleFactor() {
         long maxHeapMB = Runtime.getRuntime().maxMemory() / (1024 * 1024);
         if (maxHeapMB < 4096) {
-            MEMORY_SCALE_FACTOR = 0.5;
+            return 0.5;
         } else if (maxHeapMB < 8192) {
-            MEMORY_SCALE_FACTOR = 0.75;
+            return 0.75;
         } else if (maxHeapMB < 16384) {
-            MEMORY_SCALE_FACTOR = 1.0;
+            return 1.0;
         } else {
-            MEMORY_SCALE_FACTOR = 1.5;
+            return 1.5;
         }
     }
 
-    private static int calculateOptimalBatchSize(int maxSeqLength) {
+    public void configureBatchSize(int optimalBatchSize, int maxBatchSize, int absoluteMaxBatchSize) {
+        int configuredAbsoluteMax = absoluteMaxBatchSize > 0
+                ? Math.max(ABSOLUTE_MIN_BATCH_SIZE, absoluteMaxBatchSize)
+                : Math.max(ABSOLUTE_MIN_BATCH_SIZE, maxBatchSize);
+        int configuredMax = Math.max(ABSOLUTE_MIN_BATCH_SIZE, Math.min(maxBatchSize, configuredAbsoluteMax));
+        int configuredOptimal = Math.max(ABSOLUTE_MIN_BATCH_SIZE, Math.min(optimalBatchSize, configuredMax));
+        this.baseOptimalBatchSize = configuredOptimal;
+        this.baseMaxBatchSize = configuredMax;
+        this.absoluteMaxBatchSize = configuredAbsoluteMax;
+        this.memoryScaleFactor = 1.0;
+        LOG.info("[{}] Configured dynamic batch sizing: baseOptimal={}, baseMax={}, absoluteMax={}",
+                modelIdentifier, configuredOptimal, configuredMax, configuredAbsoluteMax);
+    }
+
+    private int calculateOptimalBatchSize(int maxSeqLength) {
         if (maxSeqLength <= 0) maxSeqLength = REFERENCE_SEQ_LENGTH;
         double seqLengthRatio = (double) REFERENCE_SEQ_LENGTH / maxSeqLength;
-        double scaleFactor = seqLengthRatio * seqLengthRatio * MEMORY_SCALE_FACTOR;
-        int optimalBatch = (int) Math.round(BASE_OPTIMAL_BATCH_SIZE * scaleFactor);
-        return Math.max(ABSOLUTE_MIN_BATCH_SIZE, Math.min(optimalBatch, ABSOLUTE_MAX_BATCH_SIZE));
+        double scaleFactor = seqLengthRatio * seqLengthRatio * memoryScaleFactor;
+        int optimalBatch = (int) Math.round(baseOptimalBatchSize * scaleFactor);
+        int maxForSeq = (int) Math.round(baseMaxBatchSize * scaleFactor);
+        int cap = Math.max(ABSOLUTE_MIN_BATCH_SIZE, Math.min(maxForSeq, absoluteMaxBatchSize));
+        return Math.max(ABSOLUTE_MIN_BATCH_SIZE, Math.min(optimalBatch, cap));
     }
 
     /**
@@ -473,22 +493,31 @@ public class ArcticEmbedSameDiffEncoder extends SameDiffEncoder<float[]> {
             LOG.error("[{}] Cannot convert null array to float vector", this.modelIdentifier);
             return null;
         }
+        INDArray copy = null;
         try {
-            return array.toFloatVector();
+            long length = array.length();
+            if (length > Integer.MAX_VALUE) {
+                throw new IllegalArgumentException("INDArray too large to materialize as float[]: " + length);
+            }
+            if (array.elementWiseStride() == 1) {
+                return array.data().getFloatsAt(array.offset(), (int) length);
+            }
+            copy = array.dup('c');
+            return copy.data().getFloatsAt(copy.offset(), (int) length);
         } catch (NullPointerException e) {
-            // This catches JavaCPP "Pointer address of argument X is NULL" errors
-            LOG.error("[{}] Native pointer is null during toFloatVector - array may have been closed or corrupted: {}",
+            LOG.error("[{}] Native pointer is null during float extraction - array may have been closed or corrupted: {}",
                     this.modelIdentifier, e.getMessage());
             return null;
         } catch (IllegalStateException e) {
-            // This catches "DataBuffer was already released" errors
-            LOG.error("[{}] DataBuffer was released during toFloatVector: {}",
+            LOG.error("[{}] DataBuffer was released during float extraction: {}",
                     this.modelIdentifier, e.getMessage());
             return null;
         } catch (Exception e) {
-            LOG.error("[{}] Unexpected error during toFloatVector: {}",
+            LOG.error("[{}] Unexpected error during float extraction: {}",
                     this.modelIdentifier, e.getMessage(), e);
             return null;
+        } finally {
+            closeArraySafely(copy);
         }
     }
 

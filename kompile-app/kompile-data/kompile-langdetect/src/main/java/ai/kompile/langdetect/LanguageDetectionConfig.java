@@ -37,7 +37,7 @@ public class LanguageDetectionConfig {
     @Builder.Default
     private boolean enabled = true;
 
-    /** Minimum confidence threshold (0.0-1.0). Below this, fallback language is used. */
+    /** Minimum confidence threshold (0.0-1.0). Below this, language is marked undetermined by default. */
     @Builder.Default
     private double minConfidenceThreshold = 0.50;
 
@@ -55,7 +55,7 @@ public class LanguageDetectionConfig {
 
     /** Language code to use when detection fails or is disabled */
     @Builder.Default
-    private String fallbackLanguage = "en";
+    private String fallbackLanguage = "und";
 
     /** Embedding model ID to use for non-English content */
     @Builder.Default

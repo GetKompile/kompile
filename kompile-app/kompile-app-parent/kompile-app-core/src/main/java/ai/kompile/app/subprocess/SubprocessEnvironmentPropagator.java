@@ -23,6 +23,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Shared utility for propagating ND4J/CUDA/threading environment variables
@@ -67,9 +68,9 @@ public final class SubprocessEnvironmentPropagator {
             "GOTO_NUM_THREADS",
             "VECLIB_MAXIMUM_THREADS",
             "NUMEXPR_NUM_THREADS",
-            // CUDA
-            "CUDA_VISIBLE_DEVICES",
-            "CUDA_DEVICE_ORDER",
+            // CUDA — NOTE: device-SELECTION vars (CUDA_VISIBLE_DEVICES / CUDA_DEVICE_ORDER) are
+            // deliberately NOT propagated. Device selection is device-agnostic via ND4J placement
+            // (nd4j.placement.defaultDevice / DeviceMemoryManager.switchDevice), never a vendor env var.
             "CUDA_LAUNCH_BLOCKING",
             "CUDA_CACHE_PATH",
             "SD_CUDA_PINNED_HOST_LIMIT",
@@ -97,6 +98,15 @@ public final class SubprocessEnvironmentPropagator {
     private static final String[] SWEEP_PREFIXES = {
             "ND4J_", "KOMPILE_", "CUDA_", "SD_"
     };
+
+    /**
+     * Device-SELECTION env vars that must NEVER cross into a subprocess — even if present in the parent
+     * shell — because device placement is device-agnostic (ND4J placement, not a vendor knob). The
+     * {@code CUDA_} sweep would otherwise re-introduce them.
+     */
+    private static final Set<String> DEVICE_SELECTION_DENYLIST = Set.of(
+            "CUDA_VISIBLE_DEVICES", "CUDA_DEVICE_ORDER"
+    );
 
     /**
      * Convenience overload: propagate all env vars with no config-based overrides.
@@ -133,10 +143,10 @@ public final class SubprocessEnvironmentPropagator {
             }
         }
 
-        // Sweep all prefixed vars not already covered
+        // Sweep all prefixed vars not already covered — but never device-selection vars (a vendor leak).
         for (Map.Entry<String, String> e : System.getenv().entrySet()) {
             String key = e.getKey();
-            if (!env.containsKey(key)) {
+            if (!env.containsKey(key) && !DEVICE_SELECTION_DENYLIST.contains(key)) {
                 for (String prefix : SWEEP_PREFIXES) {
                     if (key.startsWith(prefix)) {
                         env.put(key, e.getValue());

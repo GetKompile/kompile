@@ -125,6 +125,19 @@ public final class OntologyConformanceValidator {
     }
 
     /**
+     * Whether {@code incomingCount} edges of a relationship entering a single target entity are within
+     * its cardinality. {@code ONE_TO_ONE}/{@code ONE_TO_MANY} cap a target at one source; the
+     * {@code MANY_TO_*} cardinalities (and a {@code null} cardinality) are unbounded.
+     */
+    public static boolean withinTargetCardinality(Cardinality cardinality, long incomingCount) {
+        if (cardinality == null) return true;
+        return switch (cardinality) {
+            case ONE_TO_ONE, ONE_TO_MANY -> incomingCount <= 1;
+            case MANY_TO_ONE, MANY_TO_MANY -> true;
+        };
+    }
+
+    /**
      * Validate a single field's value against its {@link FieldDefinition}: required presence,
      * numeric min/max, regex, enum membership, and max length. Returns violation messages
      * (empty = valid).

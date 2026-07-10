@@ -18,6 +18,8 @@ package ai.kompile.graph.reasoning.embedding.learn;
 import ai.kompile.graph.reasoning.embedding.Embeddings;
 import ai.kompile.graph.reasoning.model.GraphEntity;
 import ai.kompile.graph.reasoning.model.MutableReasoningGraph;
+import ai.kompile.graph.reasoning.model.ReasoningGraph;
+import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 
 import org.junit.jupiter.api.Test;
 
@@ -328,6 +330,30 @@ class Node2VecLearnerTest {
         double cos = Embeddings.cosine(qa, qb);
         assertTrue(Double.isFinite(cos),
                 "Embeddings.cosine(A, B) must be finite, got " + cos);
+    }
+
+    @Test
+    void learnIntoLayerPreservesPrimaryEmbeddingsAndProvidesReasoningView() {
+        UnifiedGraph graph = UnifiedGraph.of(buildClusterGraph());
+        graph.addEntity(GraphEntity.builder("A")
+                .type("NODE")
+                .label("A")
+                .embedding(new double[]{0.25, 0.75})
+                .build());
+        EmbeddingConfig cfg = new EmbeddingConfig(
+                8, 5, 3, 2, 2, 1.0, 1.0, 1, 0.025, 55L);
+
+        EmbeddingTable table = new Node2VecLearner().learnIntoLayer(graph, "node2vec", cfg);
+
+        assertEquals(6, table.size());
+        assertArrayEquals(new double[]{0.25, 0.75},
+                graph.entity("A").orElseThrow().embedding(), 1.0e-9,
+                "learning a named layer must not replace the primary vector");
+        assertEquals(6, graph.vectorLayer("node2vec").size());
+
+        ReasoningGraph learnedView = graph.withEmbeddingLayer("node2vec");
+        assertEquals(8, learnedView.entity("A").orElseThrow().embedding().length);
+        assertEquals(8, learnedView.entity("F").orElseThrow().embedding().length);
     }
 
     /**

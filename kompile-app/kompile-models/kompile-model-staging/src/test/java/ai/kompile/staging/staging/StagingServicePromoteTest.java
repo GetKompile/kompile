@@ -7,6 +7,7 @@ import ai.kompile.staging.conversion.ConversionResult;
 import ai.kompile.staging.conversion.ConversionService;
 import ai.kompile.staging.download.DownloadService;
 import ai.kompile.staging.optimization.OptimizationService;
+import ai.kompile.staging.web.dto.TrainingArtifactStageRequest;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -70,6 +71,95 @@ class StagingServicePromoteTest {
         map.put(modelId, info);
     }
 
+    private Path writeTrainingArtifactManifest(Path outputDir, String modelId, String taskId) throws IOException {
+        Files.createDirectories(outputDir);
+        Path modelFile = outputDir.resolve("model.fb");
+        Files.write(modelFile, new byte[]{1, 2, 3, 4});
+        Files.writeString(outputDir.resolve("tokenizer.json"), "{\"type\":\"BPE\"}");
+
+        Path manifest = outputDir.resolve("training-artifact.json");
+        Files.writeString(manifest, "{\n"
+                + "  \"schema\": \"kompile.training-artifact.v1\",\n"
+                + "  \"taskId\": \"" + jsonEscape(taskId) + "\",\n"
+                + "  \"trainingType\": \"LORA\",\n"
+                + "  \"baseModelId\": \"base-qwen\",\n"
+                + "  \"trainedModelId\": \"" + jsonEscape(modelId) + "\",\n"
+                + "  \"outputDir\": \"" + jsonEscape(outputDir.toString()) + "\",\n"
+                + "  \"modelPath\": \"" + jsonEscape(modelFile.toString()) + "\",\n"
+                + "  \"modelFile\": \"model.fb\",\n"
+                + "  \"modelFormat\": \"SAMEDIFF_FLATBUFFERS\",\n"
+                + "  \"deployable\": true,\n"
+                + "  \"dataset\": {\n"
+                + "    \"datasetId\": \"dataset-1\",\n"
+                + "    \"sourcePath\": \"" + jsonEscape(outputDir.resolve("dataset.jsonl").toString()) + "\"\n"
+                + "  }\n"
+                + "}\n");
+        return manifest;
+    }
+
+    private String jsonEscape(String value) {
+        return value.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
+    // ==================== training artifact staging ====================
+
+    @Test
+    void stageTrainingArtifact_copiesDeployableFilesToVerifiedStaging() throws Exception {
+        String modelId = "qwen-lora-staged";
+        Path outputDir = tempDir.resolve("training-output");
+        Path manifest = writeTrainingArtifactManifest(outputDir, modelId, "task-stage-1");
+
+        StagingModelInfo info = stagingService.stageTrainingArtifact(
+                TrainingArtifactStageRequest.builder()
+                        .manifestPath(manifest.toString())
+                        .build());
+
+        assertEquals(modelId, info.getModelId());
+        assertEquals(StagingStatus.READY, info.getStatus());
+        assertTrue(registryService.getModel(modelId).isEmpty(), "Manual staging should not register the model");
+
+        Path verifiedDir = tempDir.resolve(".staging/verified").resolve(modelId);
+        assertTrue(Files.exists(verifiedDir.resolve("model.fb")));
+        assertTrue(Files.exists(verifiedDir.resolve("training-artifact.json")));
+        assertTrue(Files.exists(verifiedDir.resolve("tokenizer.json")));
+        assertTrue(Files.exists(outputDir.resolve("model.fb")), "Training output should be copied, not moved");
+    }
+
+    @Test
+    void stageTrainingArtifact_autoPromoteRegistersTrainedModel() throws Exception {
+        String modelId = "qwen-lora-promoted";
+        Path outputDir = tempDir.resolve("training-output-promote");
+        Path manifest = writeTrainingArtifactManifest(outputDir, modelId, "task-promote-1");
+
+        StagingModelInfo info = stagingService.stageTrainingArtifact(
+                TrainingArtifactStageRequest.builder()
+                        .manifestPath(manifest.toString())
+                        .autoPromote(true)
+                        .description("Promoted LoRA training artifact")
+                        .build());
+
+        assertEquals(modelId, info.getModelId());
+        assertEquals(StagingStatus.COMPLETED, info.getStatus());
+
+        ModelEntry model = registryService.getModel(modelId).orElseThrow();
+        assertEquals(ModelType.DENSE_ENCODER, model.getType());
+        assertEquals("model.fb", model.getModelFile());
+        assertEquals("tokenizer.json", model.getVocabFile());
+        assertEquals("base-qwen", model.getMetadata().getSourceRepository());
+        assertEquals("training-artifact", model.getMetadata().getSourceOrigin());
+        assertEquals("lora", model.getMetadata().getModelType());
+        assertEquals("dataset-1", model.getMetadata().getTrainingData());
+        assertEquals("SAMEDIFF_FLATBUFFERS", model.getMetadata().getOriginalFormat());
+        assertEquals("Promoted LoRA training artifact", model.getMetadata().getDescription());
+
+        Path productionDir = tempDir.resolve(model.getPath());
+        assertTrue(Files.exists(productionDir.resolve("model.fb")));
+        assertTrue(Files.exists(productionDir.resolve("training-artifact.json")));
+        assertTrue(Files.exists(outputDir.resolve("model.fb")), "Auto-promotion should not consume training output");
+        assertFalse(Files.exists(tempDir.resolve(".staging/verified").resolve(modelId)),
+                "Promoted model should move out of verified staging");
+    }
+
     // ==================== promoteModel with sharded GGUF ====================
 
     @Test
@@ -124,6 +214,41 @@ class StagingServicePromoteTest {
         assertNotNull(model.getTokenizer());
         assertFalse(model.getTokenizer().isDoLowerCase(),
                 "LLM tokenizer should not lowercase");
+    }
+
+    @Test
+    void promoteVlmOnnxComponents_setsCorrectRegistryEntry() throws Exception {
+        String modelId = "smoldocling-256m";
+
+        Path stagingDir = tempDir.resolve(".staging/verified").resolve(modelId);
+        Files.createDirectories(stagingDir);
+        Files.write(stagingDir.resolve("decoder_model_merged.onnx"), new byte[]{1, 2, 3});
+        Files.write(stagingDir.resolve("vision_encoder.onnx"), new byte[]{4, 5, 6});
+        Files.write(stagingDir.resolve("embed_tokens.onnx"), new byte[]{7, 8, 9});
+        Files.writeString(stagingDir.resolve("tokenizer.json"),
+                "{\"type\":\"BPE\",\"model\":{}}" + "x".repeat(100));
+
+        StagingModelInfo info = StagingModelInfo.create(
+                modelId,
+                "huggingface:docling-project/SmolDocling-256M-preview",
+                ModelType.VLM_PIPELINE);
+        info.withStatus(StagingStatus.PROMOTING, 95, "Auto-promoting");
+        injectStagingModel(modelId, info);
+
+        boolean result = stagingService.promoteModel(modelId, null);
+        assertTrue(result);
+
+        ModelEntry model = registryService.getModel(modelId).orElseThrow();
+        assertEquals(ModelType.VLM_PIPELINE, model.getType());
+        assertEquals("decoder_model_merged.onnx", model.getModelFile());
+        assertEquals("tokenizer.json", model.getVocabFile());
+        assertTrue(model.getPath().contains("vlm-pipelines"));
+
+        Path productionDir = tempDir.resolve(model.getPath());
+        assertTrue(Files.exists(productionDir.resolve("decoder_model_merged.onnx")));
+        assertTrue(Files.exists(productionDir.resolve("vision_encoder.onnx")));
+        assertTrue(Files.exists(productionDir.resolve("embed_tokens.onnx")));
+        assertTrue(Files.exists(productionDir.resolve("tokenizer.json")));
     }
 
     @Test

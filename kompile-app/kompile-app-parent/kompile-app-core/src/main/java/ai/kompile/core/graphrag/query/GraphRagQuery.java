@@ -86,4 +86,15 @@ public class GraphRagQuery {
      * enabling ontology-typed / schema-aware graph queries.
      */
     private String entityType;
+
+    /**
+     * Pre-computed embedding of {@link #query}, produced by the single main-app embedding lane and
+     * serialized with ND4J's dtype-preserving FlatBuffers array format (see
+     * {@code ai.kompile.knowledgegraph.matrix.serde.FlatArrayCodec}). When set, the graph-matrix
+     * subprocess reconstructs and uses this vector directly instead of embedding the query itself — so
+     * BGE runs in exactly one place and no second embedding process is spawned. A {@code byte[]}
+     * (jackson base64) so it rides the JSON subprocess-RPC seam while preserving the vector's dtype
+     * (fp16/int8/… round-trip exactly rather than being flattened to float32).
+     */
+    private byte[] queryEmbeddingFlat;
 }

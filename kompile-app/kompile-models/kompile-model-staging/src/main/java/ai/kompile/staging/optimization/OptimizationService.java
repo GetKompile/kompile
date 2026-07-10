@@ -30,6 +30,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
@@ -327,10 +328,8 @@ public class OptimizationService {
                 try {
                     optimizedSd = GraphOptimizer.optimize(sd, targetOutputs, optimizers);
                 } catch (Exception e) {
-                    log.error("GraphOptimizer failed. Skipping optimization.", e);
-                    optimizedSd = sd;
-                    appliedOptimizationNames.clear();
-                    appliedOptimizationNames.add("NONE (optimization failed)");
+                    log.error("GraphOptimizer failed for model {}", modelId, e);
+                    return OptimizationResult.failure(modelId, "Graph optimization failed: " + e.getMessage());
                 }
             } else {
                 optimizedSd = sd;
@@ -351,7 +350,7 @@ public class OptimizationService {
             // Validate by loading the saved model back and running inference
             // This catches serialization issues that only appear after save/load
             try {
-                validateSavedModel(modelPath, targetOutputs, isZipFormat);
+                validateSavedModel(modelPath, targetOutputs, isZipFormat, config.getSampleInputs());
             } catch (Exception e) {
                 log.error("Saved model validation failed. Restoring from backup.", e);
                 // Restore backup if validation fails
@@ -531,9 +530,11 @@ public class OptimizationService {
      * @param modelPath Path to the saved model file
      * @param outputs The expected output variable names
      * @param isZipFormat Whether the model is in ZIP/SDZ format
+     * @param sampleInputs Real validation arrays keyed by SameDiff placeholder name
      * @throws Exception if validation fails
      */
-    private void validateSavedModel(Path modelPath, List<String> outputs, boolean isZipFormat) throws Exception {
+    private void validateSavedModel(Path modelPath, List<String> outputs, boolean isZipFormat,
+                                    Map<String, String> sampleInputs) throws Exception {
         log.info("Validating saved model can be loaded and executed...");
 
         // Load the model back from disk
@@ -550,57 +551,10 @@ public class OptimizationService {
 
         log.info("Loaded saved model, now validating execution...");
 
-        // Get placeholders (inputs)
         List<String> placeholders = sd.inputs();
-        if (placeholders == null || placeholders.isEmpty()) {
-            log.warn("Model has no placeholders defined, skipping validation");
-            return;
-        }
+        Map<String, org.nd4j.linalg.api.ndarray.INDArray> placeholderValues =
+                loadValidationInputs(modelPath, placeholders == null ? Collections.emptyList() : placeholders, sampleInputs);
 
-        // Create dummy inputs for validation
-        Map<String, org.nd4j.linalg.api.ndarray.INDArray> placeholderValues = new LinkedHashMap<>();
-        for (String placeholder : placeholders) {
-            org.nd4j.autodiff.samediff.SDVariable var = sd.getVariable(placeholder);
-            if (var == null) {
-                throw new RuntimeException("Placeholder variable not found: " + placeholder);
-            }
-
-            long[] shape = var.getShape();
-            if (shape == null) {
-                // Try to infer shape from placeholder info or use default
-                log.warn("Placeholder {} has no shape, using default [1, 512]", placeholder);
-                shape = new long[]{1, 512};
-            }
-
-            // Replace any -1 (dynamic) dimensions with 1 for validation
-            for (int i = 0; i < shape.length; i++) {
-                if (shape[i] <= 0) {
-                    shape[i] = 1;
-                }
-            }
-
-            // Create appropriate input based on expected dtype
-            org.nd4j.linalg.api.buffer.DataType dtype = var.dataType();
-            if (dtype == null) {
-                dtype = org.nd4j.linalg.api.buffer.DataType.FLOAT;
-            }
-
-            org.nd4j.linalg.api.ndarray.INDArray input;
-            if (dtype == org.nd4j.linalg.api.buffer.DataType.INT64 ||
-                dtype == org.nd4j.linalg.api.buffer.DataType.INT32 ||
-                dtype == org.nd4j.linalg.api.buffer.DataType.LONG) {
-                // Token IDs - use small positive integers
-                input = org.nd4j.linalg.factory.Nd4j.ones(dtype, shape);
-            } else {
-                // Float inputs
-                input = org.nd4j.linalg.factory.Nd4j.ones(dtype, shape);
-            }
-
-            placeholderValues.put(placeholder, input);
-            log.debug("Validation placeholder {}: shape={}, dtype={}", placeholder, shape, dtype);
-        }
-
-        // Try to execute the model
         try {
             Map<String, org.nd4j.linalg.api.ndarray.INDArray> result = sd.output(placeholderValues, outputs);
 
@@ -616,12 +570,67 @@ public class OptimizationService {
             log.info("Optimized model validation passed - {} outputs generated successfully", outputs.size());
 
         } finally {
-            // Clean up dummy inputs
             for (org.nd4j.linalg.api.ndarray.INDArray arr : placeholderValues.values()) {
                 if (arr != null) {
                     arr.close();
                 }
             }
+        }
+    }
+
+    private Map<String, org.nd4j.linalg.api.ndarray.INDArray> loadValidationInputs(
+            Path modelPath, List<String> placeholders, Map<String, String> sampleInputs) throws IOException {
+        Map<String, org.nd4j.linalg.api.ndarray.INDArray> placeholderValues = new LinkedHashMap<>();
+        if (placeholders.isEmpty()) {
+            return placeholderValues;
+        }
+        if (sampleInputs == null || sampleInputs.isEmpty()) {
+            throw new IllegalArgumentException("Optimization validation requires sampleInputs keyed by SameDiff placeholder name");
+        }
+        try {
+            for (String placeholder : placeholders) {
+                String configuredPath = sampleInputs.get(placeholder);
+                if (configuredPath == null || configuredPath.isBlank()) {
+                    throw new IllegalArgumentException("Missing optimization validation sample input for placeholder: " + placeholder);
+                }
+                Path inputPath = Path.of(configuredPath);
+                if (!inputPath.isAbsolute()) {
+                    Path parent = modelPath.toAbsolutePath().getParent();
+                    inputPath = (parent == null ? inputPath : parent.resolve(inputPath)).normalize();
+                }
+                if (!Files.isRegularFile(inputPath)) {
+                    throw new IllegalArgumentException("Optimization validation sample input does not exist: " + inputPath);
+                }
+                org.nd4j.linalg.api.ndarray.INDArray input = readValidationArray(inputPath);
+                placeholderValues.put(placeholder, input);
+                log.debug("Validation placeholder {} loaded from {}: shape={}, dtype={}",
+                        placeholder, inputPath, java.util.Arrays.toString(input.shape()), input.dataType());
+            }
+            return placeholderValues;
+        } catch (RuntimeException | IOException e) {
+            for (org.nd4j.linalg.api.ndarray.INDArray arr : placeholderValues.values()) {
+                if (arr != null) {
+                    arr.close();
+                }
+            }
+            throw e;
+        }
+    }
+
+    private org.nd4j.linalg.api.ndarray.INDArray readValidationArray(Path inputPath) throws IOException {
+        if (inputPath.getFileName().toString().endsWith(".npy")) {
+            return readNpy(inputPath.toFile());
+        }
+        return org.nd4j.linalg.factory.Nd4j.readBinary(inputPath.toFile());
+    }
+
+    private org.nd4j.linalg.api.ndarray.INDArray readNpy(File inputFile) throws IOException {
+        try {
+            return org.nd4j.linalg.factory.Nd4j.createFromNpyFile(inputFile);
+        } catch (RuntimeException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IOException("Failed to read NPY validation input: " + inputFile, e);
         }
     }
 

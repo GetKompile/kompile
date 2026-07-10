@@ -191,16 +191,48 @@ public class GraphRagSearchTool implements CliTool {
             sb.append("### Context\n").append(contextText).append("\n");
         }
 
+        // Surface source chunks for provenance/traceability
+        JsonNode sourceChunks = result.path("sourceChunks");
+        JsonNode sourceChunkRefs = result.path("sourceChunkRefs");
+        if (sourceChunks.isArray() && !sourceChunks.isEmpty()) {
+            sb.append("\n### Source Chunks\n");
+            int chunkIdx = 0;
+            for (JsonNode chunk : sourceChunks) {
+                chunkIdx++;
+                double score = chunk.path("score").asDouble(chunk.path("relevance").asDouble(0.0));
+                String chunkText = chunk.path("text").asText(chunk.path("content").asText(""));
+                String chunkSource = chunk.path("source").asText(
+                        chunk.path("metadata").path("source").asText("unknown"));
+                sb.append("[").append(chunkIdx).append("] source: ").append(chunkSource);
+                if (score > 0.0) sb.append(" (score: ").append(String.format("%.3f", score)).append(")");
+                sb.append("\n");
+                if (!chunkText.isEmpty()) {
+                    String preview = chunkText.length() > 300
+                            ? chunkText.substring(0, 300) + "..." : chunkText;
+                    sb.append(preview.strip()).append("\n");
+                }
+                sb.append("\n");
+            }
+        } else if (sourceChunkRefs.isArray() && !sourceChunkRefs.isEmpty()) {
+            sb.append("\n### Source References\n");
+            for (JsonNode ref : sourceChunkRefs) {
+                sb.append("- ").append(ref.asText(ref.toString())).append("\n");
+            }
+        }
+
         if (sb.toString().trim().endsWith("\"")) {
             return ToolResult.success("No graph results found for: " + query);
         }
 
         int entityCount = entities.isArray() ? entities.size() : 0;
         int relCount = relationships.isArray() ? relationships.size() : 0;
+        int chunkCount = sourceChunks.isArray() ? sourceChunks.size()
+                : (sourceChunkRefs.isArray() ? sourceChunkRefs.size() : 0);
 
         return ToolResult.success("graph_search: " + query, sb.toString(),
                 Map.of("query", query, "searchType", searchType,
-                        "entityCount", entityCount, "relationshipCount", relCount));
+                        "entityCount", entityCount, "relationshipCount", relCount,
+                        "sourceChunkCount", chunkCount));
     }
 
     private String extractError(String body) {

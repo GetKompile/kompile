@@ -14,17 +14,25 @@ import ai.kompile.graph.reasoning.mebn.MFrag;
 import ai.kompile.graph.reasoning.mebn.MTheory;
 import ai.kompile.graph.reasoning.mebn.RandomVariable;
 import ai.kompile.graph.reasoning.mebn.RelationalMTheoryBuilder;
+import ai.kompile.graph.reasoning.model.ReasoningGraph;
 import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
+import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
+import ai.kompile.knowledgegraph.staging.ModelTrainedEvent;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import org.nd4j.linalg.api.ndarray.INDArray;
+import org.springframework.test.util.ReflectionTestUtils;
 
+import java.nio.file.Path;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
 
 /**
  * Infra-level tests for {@link MebnTheoryRegistrationService#buildEnrichedMTheory}.
@@ -270,6 +278,50 @@ class MebnTheoryRegistrationServiceTest {
 
         assertTrue(hasSrcIsA, "IsA(arg0, ENTITY) context constraint must be present");
         assertTrue(hasTgtIsA, "IsA(arg1, ENTITY) context constraint must be present");
+    }
+
+    @Test
+    void kgeCompletionRefreshesBackendNeutralReasoningGraph() {
+        IncrementalReasoningOrchestrator orchestrator = mock(IncrementalReasoningOrchestrator.class);
+        KnowledgeGraphService graphService = mock(KnowledgeGraphService.class);
+        MebnTheoryRegistrationService service = new MebnTheoryRegistrationService(orchestrator);
+        ReflectionTestUtils.setField(service, "knowledgeGraphService", graphService);
+
+        INDArray nodeEmbedding = mock(INDArray.class);
+        when(nodeEmbedding.toDoubleVector()).thenReturn(new double[]{0.2, 0.4, 0.6});
+        GraphNode source = GraphNode.builder()
+                .nodeId("source")
+                .externalId("source")
+                .title("Source")
+                .nodeType(NodeLevel.ENTITY)
+                .confidence(0.9)
+                .kgEmbedding(nodeEmbedding)
+                .build();
+        GraphNode target = entityNode("target");
+        GraphEdge relation = GraphEdge.builder()
+                .edgeId("relation-1")
+                .sourceNode(source)
+                .targetNode(target)
+                .edgeType(EdgeType.USER_DEFINED)
+                .relationType("supports")
+                .weight(0.8)
+                .confidence(0.9)
+                .build();
+
+        when(graphService.getNodesInFactSheet(42L)).thenReturn(List.of(source, target));
+        when(graphService.getEdgesInFactSheet(42L)).thenReturn(List.of(relation));
+
+        service.refreshReasoningGraphAfterKge(
+                new ModelTrainedEvent(this, "kge", 42L, Path.of("target", "kge.bin")));
+
+        ArgumentCaptor<ReasoningGraph> graphCaptor = ArgumentCaptor.forClass(ReasoningGraph.class);
+        verify(orchestrator).registerReasoningGraph(eq(42L), graphCaptor.capture());
+        ReasoningGraph registered = graphCaptor.getValue();
+        assertEquals(2, registered.entityCount());
+        assertEquals(1, registered.relationCount());
+        assertArrayEquals(new double[]{0.2, 0.4, 0.6},
+                registered.entity("source").orElseThrow().embedding(), 1.0e-9);
+        assertEquals("supports", registered.relations().iterator().next().type());
     }
 
     @Test

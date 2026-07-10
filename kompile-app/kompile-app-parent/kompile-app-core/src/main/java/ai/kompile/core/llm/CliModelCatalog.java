@@ -257,6 +257,40 @@ public final class CliModelCatalog {
                 ids.putIfAbsent(providerId.toLowerCase(Locale.ROOT) + "/" + bare, spec);
                 provModels.add(modelId);
             }
+            reconcileFreeAliases(providerId, ids, provModels);
+        }
+    }
+
+    /**
+     * Some catalogs publish a free alias with conservative limits while the canonical sibling carries
+     * the true model geometry (for example opencode/deepseek-v4-flash-free vs deepseek-v4-flash).
+     * Selection must still use the free alias, but batch planning needs the canonical context/output
+     * ceiling. Reconcile only aliases that end in "-free" and only upward, preserving free cost/status.
+     */
+    private static void reconcileFreeAliases(String providerId,
+                                             Map<String, ModelSpec> ids,
+                                             List<String> providerModels) {
+        String providerKey = providerId.toLowerCase(Locale.ROOT);
+        for (String modelId : new ArrayList<>(providerModels)) {
+            if (modelId == null) continue;
+            String aliasKey = modelId.toLowerCase(Locale.ROOT);
+            if (!aliasKey.endsWith("-free")) continue;
+            String baseKey = aliasKey.substring(0, aliasKey.length() - "-free".length());
+            ModelSpec alias = ids.get(providerKey + "/" + aliasKey);
+            if (alias == null) alias = ids.get(aliasKey);
+            ModelSpec base = ids.get(providerKey + "/" + baseKey);
+            if (base == null) base = ids.get(baseKey);
+            if (alias == null || base == null) continue;
+            int context = Math.max(alias.contextWindow(), base.contextWindow());
+            int output = Math.max(alias.maxOutputTokens(), base.maxOutputTokens());
+            if (context == alias.contextWindow() && output == alias.maxOutputTokens()) continue;
+            ModelSpec reconciled = new ModelSpec(
+                    alias.id(), alias.providerId(), context, output,
+                    alias.supportsVision() || base.supportsVision(),
+                    alias.supportsTools() || base.supportsTools(),
+                    alias.free(), alias.status());
+            ids.put(aliasKey, reconciled);
+            ids.put(providerKey + "/" + aliasKey, reconciled);
         }
     }
 

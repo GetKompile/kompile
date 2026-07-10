@@ -936,4 +936,16 @@ public class McpToolInjection {
             System.err.println("[MCP] Warning: Could not clean up kompile TOML entry: " + e.getMessage());
         }
     }
+
+    /**
+     * Public accessor for {@link #isCrushFormat()} so callers outside this package
+     * (e.g. {@code InitAgentProvisioner}) can detect the opencode config format
+     * without duplicating the version-probe logic.
+     *
+     * <p>This is a pure additive delegation — it does not change the behaviour of
+     * the package-private method.</p>
+     */
+    public static boolean detectCrushFormat() {
+        return isCrushFormat();
+    }
 }

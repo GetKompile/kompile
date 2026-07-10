@@ -9,6 +9,7 @@
  */
 package ai.kompile.graph.reasoning.mebn;
 
+import java.io.Serializable;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -28,7 +29,7 @@ import java.util.stream.Collectors;
  * grounded into a Situation-Specific Bayesian Network (SSBN) by the
  * {@link SSBNGenerator}.</p>
  */
-public class MTheory {
+public class MTheory implements Serializable {
 
     private final String name;
     private final Map<String, EntityType> entityTypes;

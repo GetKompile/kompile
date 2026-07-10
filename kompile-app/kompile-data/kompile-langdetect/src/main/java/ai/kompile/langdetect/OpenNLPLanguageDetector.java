@@ -31,6 +31,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Language detector using the OpenNLP 183-language model.
@@ -39,12 +40,14 @@ import java.util.List;
  * downloaded on first use via {@link KompileModelManager} and cached
  * at {@code ~/.kompile/models/opennlp/langdetect/langdetect-183.bin}.</p>
  *
- * <p>When disabled or when detection fails, all methods return the
- * configured fallback language (default: {@code "en"}).</p>
+     * <p>When disabled or when detection fails, language detection returns the
+     * configured fallback language (default: {@code "und"}).</p>
  */
 @Slf4j
 @Component("openNLPLanguageDetector")
 public class OpenNLPLanguageDetector {
+
+    private static final String UNDETERMINED_LANGUAGE = "und";
 
     private final KompileModelManager modelManager;
     private final LanguageDetectionConfigService configService;
@@ -205,9 +208,18 @@ public class OpenNLPLanguageDetector {
     }
 
     private String getFallbackLanguage() {
-        return configService != null
+        String fallback = configService != null
                 ? configService.getConfig().getFallbackLanguage()
-                : "en";
+                : UNDETERMINED_LANGUAGE;
+        String normalized = normalizeLanguageCode(fallback);
+        return normalized == null ? UNDETERMINED_LANGUAGE : normalized;
+    }
+
+    private String normalizeLanguageCode(String language) {
+        if (language == null || language.isBlank()) {
+            return null;
+        }
+        return language.trim().replace('_', '-').toLowerCase(Locale.ROOT);
     }
 
     /**

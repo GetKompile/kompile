@@ -17,10 +17,12 @@ import ai.kompile.graph.algorithms.service.GraphAlgorithmService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
@@ -111,6 +113,68 @@ public class GraphAlgorithmController {
         if (req.factSheetId() == null) service.invalidateCache();
         else service.invalidateCache(req.factSheetId());
         return ResponseEntity.noContent().build();
+    }
+
+    // ─── Live GET Centrality Endpoints ──────────────────────────────────────────
+    // Accept a graphId query-parameter (String). Numeric graphId values are
+    // interpreted as factSheetId; non-numeric or absent values use the full graph
+    // (factSheetId = null). Returns a flat map of nodeId → score.
+
+    /**
+     * GET /api/graph/algorithms/centrality/degree?graphId=X[&type=in|out|total]
+     * Computes degree centrality for all nodes in the specified graph.
+     */
+    @GetMapping("/centrality/degree")
+    public ResponseEntity<Map<String, Double>> degreeCentralityGet(
+            @RequestParam(value = "graphId", required = false) String graphId,
+            @RequestParam(value = "type", required = false) String type) {
+        Long factSheetId = parseGraphId(graphId);
+        DegreeCentrality.Type degreeType = parseDegreeType(type);
+        log.info("GET degree centrality: graphId={} type={}", graphId, degreeType);
+        return ResponseEntity.ok(service.degreeCentrality(factSheetId, degreeType));
+    }
+
+    /**
+     * GET /api/graph/algorithms/centrality/pagerank?graphId=X[&damping=0.85&maxIterations=100]
+     * Computes PageRank for all nodes in the specified graph.
+     */
+    @GetMapping("/centrality/pagerank")
+    public ResponseEntity<Map<String, Double>> pageRankGet(
+            @RequestParam(value = "graphId", required = false) String graphId,
+            @RequestParam(value = "damping", required = false, defaultValue = "0.85") double damping,
+            @RequestParam(value = "maxIterations", required = false, defaultValue = "100") int maxIterations) {
+        Long factSheetId = parseGraphId(graphId);
+        log.info("GET pagerank: graphId={} damping={} maxIter={}", graphId, damping, maxIterations);
+        return ResponseEntity.ok(service.pageRank(factSheetId, damping, maxIterations, 1e-6));
+    }
+
+    /**
+     * GET /api/graph/algorithms/centrality/betweenness?graphId=X[&sampleSize=100]
+     * Computes betweenness centrality for all nodes in the specified graph.
+     */
+    @GetMapping("/centrality/betweenness")
+    public ResponseEntity<Map<String, Double>> betweennessGet(
+            @RequestParam(value = "graphId", required = false) String graphId,
+            @RequestParam(value = "sampleSize", required = false, defaultValue = "-1") int sampleSize) {
+        Long factSheetId = parseGraphId(graphId);
+        log.info("GET betweenness centrality: graphId={} sampleSize={}", graphId, sampleSize);
+        return ResponseEntity.ok(service.betweennessCentrality(factSheetId, sampleSize, 42L));
+    }
+
+    /**
+     * Converts a graphId string to a factSheetId Long.
+     * Numeric strings are parsed directly; non-numeric or null values return null (full graph).
+     */
+    private static Long parseGraphId(String graphId) {
+        if (graphId == null || graphId.isBlank()) {
+            return null;
+        }
+        try {
+            return Long.parseLong(graphId.trim());
+        } catch (NumberFormatException e) {
+            log.debug("graphId '{}' is not numeric — using full graph (factSheetId=null)", graphId);
+            return null;
+        }
     }
 
     private static DegreeCentrality.Type parseDegreeType(String type) {

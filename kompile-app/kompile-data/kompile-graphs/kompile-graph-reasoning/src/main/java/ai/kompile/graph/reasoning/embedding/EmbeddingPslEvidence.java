@@ -98,7 +98,10 @@ public final class EmbeddingPslEvidence {
                 if (vj == null || Embeddings.magnitude(vj) == 0.0) continue;
                 double cosine = Embeddings.cosine(vi, vj);
                 if (cosine >= threshold) {
-                    program.observe(predicate, cosine, ids.get(i), ids.get(j));
+                    // Clamp anti-correlation to no-evidence: raw cosine ∈ [-1,1] but PSL soft-truth is
+                    // [0,1]; a negative cosine means "not evidence", not "negative evidence" (matches
+                    // HybridReasoner's max(0,cos) convention). The threshold gate is unchanged. WP1a.
+                    program.observe(predicate, Math.max(0.0, cosine), ids.get(i), ids.get(j));
                     added++;
                 }
             }
@@ -167,9 +170,11 @@ public final class EmbeddingPslEvidence {
                 int    jIdx   = (int) candidates.get(n)[1];
                 String otherId = ids.get(jIdx);
 
-                // Both directions
-                program.observe(predicate, cosine, entityId, otherId);
-                program.observe(predicate, cosine, otherId, entityId);
+                // Both directions. Clamp anti-correlation to no-evidence (raw cosine ∈ [-1,1] but PSL
+                // soft-truth is [0,1]; matches HybridReasoner's max(0,cos) convention). WP1a.
+                double obs = Math.max(0.0, cosine);
+                program.observe(predicate, obs, entityId, otherId);
+                program.observe(predicate, obs, otherId, entityId);
                 added += 2;
             }
         }

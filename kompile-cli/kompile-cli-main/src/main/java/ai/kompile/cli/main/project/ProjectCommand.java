@@ -23,6 +23,7 @@ import static ai.kompile.cli.main.project.ProjectCommandUtils.normalizeEnum;
 import static ai.kompile.cli.main.project.ProjectCommandUtils.parseBackend;
 import static ai.kompile.cli.main.project.ProjectCommandUtils.parseLifecycle;
 import static ai.kompile.cli.main.project.ProjectCommandUtils.parseType;
+import static ai.kompile.cli.main.project.ProjectCommandUtils.requireExistingProjectRoot;
 import static ai.kompile.cli.main.project.ProjectCommandUtils.resolveProjectRoot;
 import static ai.kompile.cli.main.project.ProjectPrintUtils.printComponents;
 import static ai.kompile.cli.main.project.ProjectPrintUtils.printCodingProjects;
@@ -30,9 +31,15 @@ import static ai.kompile.cli.main.project.ProjectPrintUtils.printCrawlProfiles;
 import static ai.kompile.cli.main.project.ProjectPrintUtils.printManifest;
 import static ai.kompile.cli.main.project.ProjectPrintUtils.printScripts;
 
+import ai.kompile.cli.common.config.HardwareAutoConfigurator;
+import ai.kompile.cli.common.config.ProjectHardwareProvisioner;
+import ai.kompile.cli.common.util.GitRunner;
+import ai.kompile.cli.main.GlobalBootstrap;
 import ai.kompile.cli.main.Info;
+import ai.kompile.cli.main.chat.EnforcerCommand;
 import ai.kompile.cli.main.chat.enforcer.EnforcerConfig;
 import ai.kompile.cli.main.codeindex.LocalCodeIndexer;
+import ai.kompile.cli.main.install.InstallGitXet;
 import ai.kompile.project.KompileProjectChatSession;
 import ai.kompile.project.KompileProjectCrawlProfile;
 import ai.kompile.project.KompileProjectCrawlResult;
@@ -89,6 +96,16 @@ import java.util.stream.Stream;
         subcommands = {
                 ProjectCommand.Init.class,
                 ProjectServiceCommand.class,
+                // Convenience aliases: `kompile project open`, `kompile project start`,
+                // `kompile project stop`, `kompile project status`, and `kompile project logs`
+                // are double-registered here so they work without the `service` qualifier.
+                // All five classes are standalone Callables with no @ParentCommand — safe to
+                // register at multiple levels (same precedent as Crawl below).
+                ProjectServiceCommand.Open.class,
+                ProjectServiceCommand.Start.class,
+                ProjectServiceCommand.Stop.class,
+                ProjectServiceCommand.Status.class,
+                ProjectServiceCommand.Logs.class,
                 ProjectModelCommand.class,
                 ProjectCommand.Clone.class,
                 ProjectCommand.ListComponents.class,
@@ -98,6 +115,7 @@ import java.util.stream.Stream;
                 ProjectCommand.IndexCodeProject.class,
                 ProjectCommand.EnforcerStart.class,
                 ProjectCommand.JudgeConfig.class,
+                ProjectCommand.ProjectConfig.class,
                 ProjectCommand.ListScripts.class,
                 ProjectCommand.AddScript.class,
                 ProjectCommand.ListCrawlProfiles.class,
@@ -113,6 +131,10 @@ import java.util.stream.Stream;
                 ProjectCommand.ListNoteSyncConnections.class,
                 ProjectCommand.ListIndexedDocuments.class,
                 ProjectCrawlCommand.class,
+                ProjectCrawlCommand.Crawl.class,
+                // `kompile project workflow-run` — double-registered from crawl-group so
+                // the runbook/script/summary paths (kompile project workflow-run …) are real.
+                ProjectCrawlCommand.RunWorkflow.class,
                 ProjectCommand.Tag.class,
                 ProjectCommand.Lifecycle.class,
                 ProjectCommand.Commit.class,
@@ -186,6 +208,9 @@ public class ProjectCommand implements Callable<Integer> {
                 defaultValue = "MARKDOWN")
         private String ocrOutputFormat;
 
+        @Option(names = "--schema-preset", description = "Graph schema preset ID to persist on generated crawl profiles.")
+        private String schemaPresetId;
+
         @Option(names = "--no-standard-components", description = "Do not seed markdown, models, sources, chats, and prompts.")
         private boolean noStandardComponents;
 
@@ -238,8 +263,8 @@ public class ProjectCommand implements Callable<Integer> {
             // Auto-install git-xet if git-xet backend is selected
             KompileProjectStorageBackend parsedBackend = parseBackend(backend);
             if (parsedBackend == KompileProjectStorageBackend.GIT_XET || installGitXet) {
-                if (!ai.kompile.cli.common.util.GitRunner.isGitXetAvailable()) {
-                    ai.kompile.cli.main.install.InstallGitXet.ensureGitXet();
+                if (!GitRunner.isGitXetAvailable()) {
+                    InstallGitXet.ensureGitXet();
                 }
             }
 
@@ -285,7 +310,7 @@ public class ProjectCommand implements Callable<Integer> {
                 scenario = classifyScenario(signals);
 
                 if (scenario == ProjectScenario.WIZARD) {
-                    scenario = runWizard(rootPath, request, signals);
+                    scenario = runWizard(rootPath, request, signals, schemaPresetId);
                     // WIZARD returned means blank or vlm-ocr choice — just proceed
                     // For wizard choices 1/2, applyScenario was already called inside runWizard
                     // Check if VLM was auto-configured (wizard choice 1 with PDFs)
@@ -298,11 +323,11 @@ public class ProjectCommand implements Callable<Integer> {
                                     ? List.of() : request.getCrawlProfiles().get(0).getSources();
                             autoDetectedVlm = new VlmOcrPresetConfig(
                                     "auto-ingest", "auto-ingest", "smoldocling-256m",
-                                    "AUTO", "DOCTAGS", "MARKDOWN", vlmSources);
+                                    "AUTO", "DOCTAGS", "MARKDOWN", schemaPresetId, vlmSources);
                         }
                     }
                 } else {
-                    autoDetectedVlm = applyScenario(scenario, signals, request, rootPath);
+                    autoDetectedVlm = applyScenario(scenario, signals, request, rootPath, schemaPresetId);
                     printDetectionSummary(scenario, signals);
                 }
 
@@ -318,7 +343,8 @@ public class ProjectCommand implements Callable<Integer> {
             }
 
             VlmOcrPresetConfig vlmOcrPreset = applyInitPreset(request, preset, presetSources, presetCrawlId,
-                    presetCollection, presetVlmModel, pdfRoutingMode, vlmOutputFormat, ocrOutputFormat);
+                    presetCollection, presetVlmModel, pdfRoutingMode, vlmOutputFormat, ocrOutputFormat,
+                    schemaPresetId);
             // Merge: auto-detected VLM takes effect if no explicit preset was given
             if (vlmOcrPreset == null) {
                 vlmOcrPreset = autoDetectedVlm;
@@ -329,13 +355,71 @@ public class ProjectCommand implements Callable<Integer> {
                 request.getCrawlProfiles().add(buildAutoIngestProfile(presetSources));
             }
 
+            // Box-fitting model plan: record catalog models in the manifest so the
+            // serve-time auto-stage loop downloads them. Merges by role so that
+            // pre-seeded ENCODER+VLM (from applyScenario) still get RERANKER+LLM added.
+            HardwareAutoConfigurator.Tier tier = HardwareAutoConfigurator.currentTier();
+            boolean richDocs = vlmOcrPreset != null || request.getTags().contains("vlm");
+            try {
+                ModelProvisioningPlanner.ModelPlan modelPlan =
+                        ModelProvisioningPlanner.plan(tier, richDocs, request.getModels(), rootPath);
+                // The planner already filters by role/id — add all returned models directly.
+                request.getModels().addAll(modelPlan.models());
+                modelPlan.summaryLines().forEach(System.out::println);
+                modelPlan.warnings().forEach(w -> System.out.println("  ! " + w));
+            } catch (Exception e) {
+                System.out.println("Model plan skipped: " + e.getMessage());
+            }
+
+            // Quick PATH check for opencode — used to decide whether to add the
+            // opencode-extraction backend to processing-route-config.json (F6).
+            boolean opencodeOnPath = isOpencodeOnPath();
+
+            // Part (b): if opencode is on PATH, stamp it as the graphModelProvider on any
+            // auto-built crawl profiles with no provider set.
+            if (opencodeOnPath) {
+                for (KompileProjectCrawlProfile p : request.getCrawlProfiles()) {
+                    if (p.getGraphModelProvider() == null || p.getGraphModelProvider().isBlank()) {
+                        p.setGraphModelProvider("opencode");
+                    }
+                }
+            }
+
             KompileProjectManifest manifest = store.init(rootPath, request);
             if (vlmOcrPreset != null) {
-                writeVlmOcrPresetFiles(rootPath, vlmOcrPreset);
+                writeVlmOcrPresetFiles(rootPath, vlmOcrPreset, opencodeOnPath);
+                store.openProject(rootPath);
             }
             printManifest(manifest, store.status(rootPath));
             if (vlmOcrPreset != null) {
                 printVlmOcrPresetSummary(vlmOcrPreset);
+            }
+
+            // Global ~/.kompile bootstrap + hardware-sized per-project config.
+            // Previously only --serve ran the hardware probe; a plain init now
+            // provisions too. Both are idempotent and write-only-when-missing.
+            try {
+                GlobalBootstrap.ensureHomeDirectory();
+                GlobalBootstrap.ensureConfigs();
+                boolean localEmbedding = manifest.getModels().stream()
+                        .anyMatch(m -> "ENCODER".equalsIgnoreCase(m.getRole()));
+                ProjectHardwareProvisioner.ProvisionResult hw =
+                        ProjectHardwareProvisioner.provision(rootPath,
+                                localEmbedding || !manifest.getModels().isEmpty());
+                hw.summaryLines().forEach(System.out::println);
+            } catch (Exception e) {
+                System.out.println("Hardware provisioning skipped: " + e.getMessage());
+            }
+
+            // Agent provisioning: detect installed agent CLIs, write persistent
+            // .mcp.json + opencode config + AGENTS.md, fall back to a local API lane.
+            try {
+                InitAgentProvisioner.AgentProvisionResult agents =
+                        InitAgentProvisioner.provision(rootPath, servePort, stagingPort);
+                agents.summaryLines().forEach(System.out::println);
+                agents.warnings().forEach(w -> System.out.println("  ! " + w));
+            } catch (Exception e) {
+                System.out.println("Agent provisioning skipped: " + e.getMessage());
             }
 
             // One-command end-to-end: optionally serve, crawl, and push.
@@ -360,6 +444,56 @@ public class ProjectCommand implements Callable<Integer> {
                 }
             }
             return 0;
+        }
+
+        /**
+         * Quick PATH probe: returns true if the {@code opencode} binary is executable on PATH.
+         * Used to decide whether to add the opencode-extraction backend to
+         * processing-route-config.json without waiting for full agent provisioning.
+         */
+        private static boolean isOpencodeOnPath() {
+            String path = System.getenv("PATH");
+            if (path == null) return false;
+            for (String dir : path.split(File.pathSeparator)) {
+                File candidate = new File(dir, "opencode");
+                if (candidate.canExecute()) return true;
+            }
+            return false;
+        }
+
+        /**
+         * Relativize sources that live inside the project root.
+         *
+         * <p>For each source path:
+         * <ul>
+         *   <li>If it is absolute and starts with {@code projectRoot}, replace it with the
+         *       relative portion (e.g. {@code "data/input_documents"}).</li>
+         *   <li>Otherwise (external or already relative) leave it unchanged.</li>
+         * </ul>
+         * </p>
+         *
+         * <p>This prevents the generated {@code kompile.project.json} from embedding the
+         * generating machine's home directory into crawl-profile sources.</p>
+         */
+        private static List<String> relativizeSources(Path projectRoot, List<String> sources) {
+            if (sources == null) return List.of();
+            List<String> result = new ArrayList<>(sources.size());
+            for (String s : sources) {
+                if (s == null) continue;
+                try {
+                    Path p = Path.of(s).toAbsolutePath().normalize();
+                    Path root = projectRoot.toAbsolutePath().normalize();
+                    if (p.startsWith(root)) {
+                        String rel = root.relativize(p).toString();
+                        result.add(rel.isEmpty() ? "." : rel);
+                    } else {
+                        result.add(s);
+                    }
+                } catch (Exception ignored) {
+                    result.add(s); // leave unchanged on any parse failure
+                }
+            }
+            return result;
         }
 
         /**
@@ -632,6 +766,11 @@ public class ProjectCommand implements Callable<Integer> {
          */
         private static VlmOcrPresetConfig applyScenario(ProjectScenario scenario, DetectedSignals signals,
                                            KompileProjectInitRequest request, Path rootPath) {
+            return applyScenario(scenario, signals, request, rootPath, null);
+        }
+
+        private static VlmOcrPresetConfig applyScenario(ProjectScenario scenario, DetectedSignals signals,
+                                           KompileProjectInitRequest request, Path rootPath, String schemaPresetId) {
             boolean hasModels = !signals.models().isEmpty();
             boolean hasDocs = !signals.docDirs().isEmpty();
             boolean hasCode = signals.codeProject() != null;
@@ -660,12 +799,15 @@ public class ProjectCommand implements Callable<Integer> {
 
             VlmOcrPresetConfig autoVlmConfig = null;
             if (scenarioHasData && signals.hasRichDocuments()) {
-                // PDFs or images detected — apply VLM OCR preset for proper extraction
+                // PDFs or images detected — apply VLM OCR preset for proper extraction.
+                // Relativize sources so the manifest stores "data/input_documents", not
+                // "/home/user/…/data/input_documents".
+                List<String> relativeSources = relativizeSources(rootPath, signals.docDirs());
                 tags.add("vlm");
                 tags.add("ocr");
                 autoVlmConfig = new VlmOcrPresetConfig(
                         "auto-ingest", "auto-ingest", "smoldocling-256m",
-                        "AUTO", "DOCTAGS", "MARKDOWN", signals.docDirs());
+                        "AUTO", "DOCTAGS", "MARKDOWN", schemaPresetId, relativeSources);
                 request.getModels().add(vlmOcrModel(autoVlmConfig));
                 if (!hasModels) {
                     // Also add a text encoder for vector search
@@ -684,8 +826,9 @@ public class ProjectCommand implements Callable<Integer> {
                     // Text-only data without models — add default encoder
                     request.getModels().add(defaultEncoderModel());
                 }
-                // Standard text crawl profile
-                request.getCrawlProfiles().add(buildAutoIngestProfile(signals.docDirs()));
+                // Standard text crawl profile — relativize sources for portability
+                request.getCrawlProfiles().add(
+                        buildAutoIngestProfile(relativizeSources(rootPath, signals.docDirs())));
             }
 
             // Coding project
@@ -709,6 +852,7 @@ public class ProjectCommand implements Callable<Integer> {
             model.setTags(List.of("encoder", "rag", "default", "auto-detected"));
             model.getMetadata().put("registry.framework", "onnx");
             model.getMetadata().put("registry.modelType", "dense");
+            model.getMetadata().put("registry.supportedLanguages", "en");
             model.getMetadata().put("staging.requiresDownload", "true");
             model.setCreatedAt(Instant.now());
             model.setUpdatedAt(Instant.now());
@@ -724,6 +868,12 @@ public class ProjectCommand implements Callable<Integer> {
             profile.setName("Auto ingest");
             profile.setSources(sources);
             profile.setSourceType("DIRECTORY");
+            // Enable graph extraction with lenient schema for doc/data-centric scenarios.
+            // graphAutoStart stays false — the operator drives pipeline launch.
+            profile.setGraphExtraction(true);
+            profile.setGraphSchemaMode("LENIENT");
+            profile.getMetadata().put("preprocessing.languageDetection", "true");
+            profile.getMetadata().put("preprocessing.translation", "false");
             profile.setLifecycle(KompileProjectLifecycleState.ACTIVE);
             profile.setCreatedAt(Instant.now());
             profile.setUpdatedAt(Instant.now());
@@ -784,7 +934,7 @@ public class ProjectCommand implements Callable<Integer> {
          * Interactive wizard for empty/ambiguous directories.
          */
         private static ProjectScenario runWizard(Path rootPath, KompileProjectInitRequest request,
-                                                  DetectedSignals signals) {
+                                                 DetectedSignals signals, String schemaPresetId) {
             Console console = System.console();
             if (console == null) {
                 System.out.println("No project files detected (non-interactive mode). Creating blank project.");
@@ -809,11 +959,12 @@ public class ProjectCommand implements Callable<Integer> {
                     if (docPath == null || docPath.isBlank()) docPath = "data/input_documents";
                     Path docDir = rootPath.resolve(docPath);
                     try { Files.createDirectories(docDir); } catch (IOException ignored) {}
-                    // Create modified signals with the user-specified doc dir
+                    // Use a relative path so the manifest stays portable
                     boolean docDirHasPdf = containsRichDocuments(docDir.toString());
+                    List<String> docDirSources = relativizeSources(rootPath, List.of(docDir.toString()));
                     DetectedSignals wizardSignals = new DetectedSignals(
-                            List.of(docDir.toString()), signals.models(), signals.codeProject(), docDirHasPdf);
-                    applyScenario(ProjectScenario.DATA_ONLY, wizardSignals, request, rootPath);
+                            docDirSources, signals.models(), signals.codeProject(), docDirHasPdf);
+                    applyScenario(ProjectScenario.DATA_ONLY, wizardSignals, request, rootPath, schemaPresetId);
                     return ProjectScenario.DATA_ONLY;
                 }
                 case "2": {
@@ -824,7 +975,7 @@ public class ProjectCommand implements Callable<Integer> {
                     CodeProjectSignal wizardCode = new CodeProjectSignal(codeRoot, "manual", "Unknown");
                     DetectedSignals wizardSignals = new DetectedSignals(
                             signals.docDirs(), signals.models(), wizardCode, false);
-                    applyScenario(ProjectScenario.CODE_ONLY, wizardSignals, request, rootPath);
+                    applyScenario(ProjectScenario.CODE_ONLY, wizardSignals, request, rootPath, schemaPresetId);
                     return ProjectScenario.CODE_ONLY;
                 }
                 case "3": {
@@ -871,7 +1022,7 @@ public class ProjectCommand implements Callable<Integer> {
         @Override
         public Integer call() {
             KompileProjectStore store = new KompileProjectStore();
-            KompileProjectManifest manifest = store.load(resolveProjectRoot(store, root));
+            KompileProjectManifest manifest = store.load(requireExistingProjectRoot(store, root));
             printComponents(manifest);
             return 0;
         }
@@ -908,7 +1059,7 @@ public class ProjectCommand implements Callable<Integer> {
         @Override
         public Integer call() {
             KompileProjectStore store = new KompileProjectStore();
-            Path projectRoot = resolveProjectRoot(store, root);
+            Path projectRoot = requireExistingProjectRoot(store, root);
             KompileProjectComponent component = new KompileProjectComponent();
             component.setId(id);
             component.setType(parseType(type));
@@ -932,7 +1083,7 @@ public class ProjectCommand implements Callable<Integer> {
         @Override
         public Integer call() {
             KompileProjectStore store = new KompileProjectStore();
-            KompileProjectManifest manifest = store.load(resolveProjectRoot(store, root));
+            KompileProjectManifest manifest = store.load(requireExistingProjectRoot(store, root));
             printCodingProjects(manifest);
             return 0;
         }
@@ -974,7 +1125,7 @@ public class ProjectCommand implements Callable<Integer> {
         @Override
         public Integer call() {
             KompileProjectStore store = new KompileProjectStore();
-            Path projectRoot = resolveProjectRoot(store, root);
+            Path projectRoot = requireExistingProjectRoot(store, root);
             KompileCodingProject codingProject = new KompileCodingProject();
             codingProject.setId(id);
             codingProject.setCodeProjectId(codeProjectId);
@@ -1016,7 +1167,7 @@ public class ProjectCommand implements Callable<Integer> {
         @Override
         public Integer call() {
             KompileProjectStore store = new KompileProjectStore();
-            Path projectRoot = resolveProjectRoot(store, root);
+            Path projectRoot = requireExistingProjectRoot(store, root);
             KompileProjectManifest manifest = store.load(projectRoot);
             List<KompileCodingProject> selected = selectCodingProjects(manifest, projectId, all);
             if (selected.isEmpty()) {
@@ -1074,7 +1225,7 @@ public class ProjectCommand implements Callable<Integer> {
         @Override
         public Integer call() {
             KompileProjectStore store = new KompileProjectStore();
-            Path projectRoot = resolveProjectRoot(store, root);
+            Path projectRoot = requireExistingProjectRoot(store, root);
             KompileProjectManifest manifest = store.load(projectRoot);
             KompileCodingProject codingProject = findCodingProjectOrThrow(manifest, projectId);
 
@@ -1173,8 +1324,8 @@ public class ProjectCommand implements Callable<Integer> {
             System.out.println();
 
             // Delegate to the enforcer command by invoking it through picocli
-            picocli.CommandLine enforcerCmd = new picocli.CommandLine(
-                    new ai.kompile.cli.main.chat.EnforcerCommand());
+            CommandLine enforcerCmd = new CommandLine(
+                    new EnforcerCommand());
             return enforcerCmd.execute(args.toArray(new String[0]));
         }
     }
@@ -1205,7 +1356,7 @@ public class ProjectCommand implements Callable<Integer> {
         @Override
         public Integer call() {
             KompileProjectStore store = new KompileProjectStore();
-            Path projectRoot = resolveProjectRoot(store, root);
+            Path projectRoot = requireExistingProjectRoot(store, root);
             KompileProjectManifest manifest = store.load(projectRoot);
             KompileCodingProject codingProject = findCodingProjectOrThrow(manifest, projectId);
             String cpId = codingProject.getId();
@@ -1443,6 +1594,177 @@ public class ProjectCommand implements Callable<Integer> {
         }
     }
 
+    @Command(name = "config", mixinStandardHelpOptions = true,
+            description = "Manage project-local config JSON files.",
+            subcommands = {ProjectConfig.Set.class})
+    public static class ProjectConfig implements Callable<Integer> {
+        @Override
+        public Integer call() {
+            new CommandLine(this).usage(System.out);
+            return 0;
+        }
+
+        @Command(name = "set", mixinStandardHelpOptions = true,
+                description = "Set values in project-local config/<file>.json files.")
+        public static class Set implements Callable<Integer> {
+            @Option(names = {"--root", "-r"}, description = "Project root. Defaults to current directory.", defaultValue = ".")
+            private File root;
+
+            @Parameters(arity = "1..*", paramLabel = "<file.key=value>",
+                    description = "Assignments such as graph-extraction-config.batchSize=10 or resource-scheduler-config.heavyMemoryOpEstimatesMb.embedding=8192.")
+            private List<String> assignments = new ArrayList<>();
+
+            @Override
+            public Integer call() {
+                KompileProjectStore store = new KompileProjectStore();
+                Path projectRoot = requireExistingProjectRoot(store, root);
+                Path configDir = projectRoot.resolve("config").normalize();
+                ObjectMapper mapper = JsonUtils.newStandardMapper()
+                        .enable(SerializationFeature.INDENT_OUTPUT);
+                int errors = 0;
+                for (String assignment : assignments) {
+                    try {
+                        setConfigValue(configDir, mapper, assignment);
+                    } catch (Exception e) {
+                        System.err.println("Config set failed for '" + assignment + "': " + e.getMessage());
+                        errors++;
+                    }
+                }
+                return errors == 0 ? 0 : 1;
+            }
+
+            private static void setConfigValue(Path configDir, ObjectMapper mapper, String assignment) throws IOException {
+                int eq = assignment.indexOf('=');
+                if (eq <= 0) {
+                    throw new IllegalArgumentException("expected <file.key=value>");
+                }
+                ConfigAssignment target = parseAssignmentTarget(assignment.substring(0, eq).trim());
+                Object value = parseConfigValue(mapper, assignment.substring(eq + 1).trim());
+                if ("graph-extraction-config.json".equals(target.fileName()) && "enabled".equals(target.keyPath())) {
+                    throw new IllegalArgumentException("graph extraction is mandatory; enabled is not configurable");
+                }
+                Files.createDirectories(configDir);
+                Path configFile = configDir.resolve(target.fileName()).normalize();
+                if (!configFile.startsWith(configDir)) {
+                    throw new IllegalArgumentException("config file must stay under " + configDir);
+                }
+                Map<String, Object> config = readConfig(mapper, configFile);
+                setDottedValue(config, target.keyPath(), value);
+                mapper.writeValue(configFile.toFile(), config);
+                System.out.println("Set config/" + target.fileName() + " " + target.keyPath() + " = " + value);
+            }
+
+            private static ConfigAssignment parseAssignmentTarget(String lhs) {
+                int jsonSep = lhs.indexOf(".json.");
+                String filePart;
+                String keyPath;
+                if (jsonSep >= 0) {
+                    filePart = lhs.substring(0, jsonSep + ".json".length());
+                    keyPath = lhs.substring(jsonSep + ".json.".length());
+                } else {
+                    int sep = lhs.indexOf('.');
+                    if (sep <= 0 || sep + 1 >= lhs.length()) {
+                        throw new IllegalArgumentException("expected <file.key=value>");
+                    }
+                    filePart = lhs.substring(0, sep);
+                    keyPath = lhs.substring(sep + 1);
+                }
+                String fileName = normalizeConfigFileName(filePart);
+                if (keyPath.isBlank()) {
+                    throw new IllegalArgumentException("config key is required");
+                }
+                return new ConfigAssignment(fileName, keyPath);
+            }
+
+            private static String normalizeConfigFileName(String filePart) {
+                String fileName = filePart.trim();
+                if (fileName.startsWith("config/")) {
+                    fileName = fileName.substring("config/".length());
+                }
+                if (!fileName.endsWith(".json")) {
+                    fileName = fileName + ".json";
+                }
+                if (fileName.isBlank() || fileName.contains("/") || fileName.contains("\\") || fileName.contains("..")) {
+                    throw new IllegalArgumentException("config file must be a file name under config/");
+                }
+                return fileName;
+            }
+
+            @SuppressWarnings("unchecked")
+            private static Map<String, Object> readConfig(ObjectMapper mapper, Path configFile) throws IOException {
+                if (!Files.isRegularFile(configFile)) {
+                    return new LinkedHashMap<>();
+                }
+                Object loaded = mapper.readValue(configFile.toFile(), Object.class);
+                if (!(loaded instanceof Map<?, ?> loadedMap)) {
+                    throw new IllegalArgumentException(configFile.getFileName() + " is not a JSON object");
+                }
+                return stringKeyMap((Map<?, ?>) loadedMap);
+            }
+
+            private static void setDottedValue(Map<String, Object> config, String keyPath, Object value) {
+                String[] parts = keyPath.split("\\.");
+                Map<String, Object> cursor = config;
+                for (int i = 0; i < parts.length; i++) {
+                    String part = parts[i].trim();
+                    if (part.isEmpty()) {
+                        throw new IllegalArgumentException("empty key segment in " + keyPath);
+                    }
+                    if (i == parts.length - 1) {
+                        cursor.put(part, value);
+                    } else {
+                        Object existing = cursor.get(part);
+                        Map<String, Object> child = existing instanceof Map<?, ?> map
+                                ? stringKeyMap(map)
+                                : new LinkedHashMap<>();
+                        cursor.put(part, child);
+                        cursor = child;
+                    }
+                }
+            }
+
+            private static Map<String, Object> stringKeyMap(Map<?, ?> map) {
+                Map<String, Object> copy = new LinkedHashMap<>();
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    copy.put(String.valueOf(entry.getKey()), entry.getValue());
+                }
+                return copy;
+            }
+
+            private static Object parseConfigValue(ObjectMapper mapper, String raw) throws IOException {
+                if (raw.isEmpty()) {
+                    return "";
+                }
+                if ("null".equalsIgnoreCase(raw)) {
+                    return null;
+                }
+                if ("true".equalsIgnoreCase(raw) || "false".equalsIgnoreCase(raw)) {
+                    return Boolean.parseBoolean(raw);
+                }
+                if (raw.startsWith("{") || raw.startsWith("[") || raw.startsWith("\"")) {
+                    return mapper.readValue(raw, Object.class);
+                }
+                try {
+                    return Integer.parseInt(raw);
+                } catch (NumberFormatException ignored) {
+                    // try wider numeric types below
+                }
+                try {
+                    return Long.parseLong(raw);
+                } catch (NumberFormatException ignored) {
+                    // try decimal below
+                }
+                try {
+                    return Double.parseDouble(raw);
+                } catch (NumberFormatException ignored) {
+                    return raw;
+                }
+            }
+
+            private record ConfigAssignment(String fileName, String keyPath) { }
+        }
+    }
+
     @Command(name = "script-list", mixinStandardHelpOptions = true,
             description = "List managed lifecycle scripts and runbook commands.")
     public static class ListScripts implements Callable<Integer> {
@@ -1452,7 +1774,7 @@ public class ProjectCommand implements Callable<Integer> {
         @Override
         public Integer call() {
             KompileProjectStore store = new KompileProjectStore();
-            KompileProjectManifest manifest = store.load(resolveProjectRoot(store, root));
+            KompileProjectManifest manifest = store.load(requireExistingProjectRoot(store, root));
             printScripts(manifest);
             return 0;
         }
@@ -1497,7 +1819,7 @@ public class ProjectCommand implements Callable<Integer> {
         @Override
         public Integer call() {
             KompileProjectStore store = new KompileProjectStore();
-            Path projectRoot = resolveProjectRoot(store, root);
+            Path projectRoot = requireExistingProjectRoot(store, root);
             KompileProjectScript script = new KompileProjectScript();
             script.setId(id);
             script.setName(name);
@@ -1524,7 +1846,7 @@ public class ProjectCommand implements Callable<Integer> {
         @Override
         public Integer call() {
             KompileProjectStore store = new KompileProjectStore();
-            KompileProjectManifest manifest = store.load(resolveProjectRoot(store, root));
+            KompileProjectManifest manifest = store.load(requireExistingProjectRoot(store, root));
             printCrawlProfiles(manifest);
             return 0;
         }
@@ -1579,7 +1901,7 @@ public class ProjectCommand implements Callable<Integer> {
         @Option(names = "--vlm-model", description = "VLM model ID.")
         private String vlmModel;
 
-        @Option(names = "--graph", description = "Enable graph extraction.")
+        @Option(names = "--graph", description = "Compatibility flag; graph extraction is always enabled.")
         private boolean graphExtraction;
 
         @Option(names = "--schema-preset", description = "Graph schema preset ID.")
@@ -1615,13 +1937,22 @@ public class ProjectCommand implements Callable<Integer> {
         @Option(names = "--fact-sheet", description = "Fact sheet name to associate with crawled documents.")
         private String factSheetName;
 
+        @Option(names = "--language-detection", description = "Enable language detection preprocessing for this profile.")
+        private boolean languageDetection;
+
+        @Option(names = "--translate-to", description = "Translate detected non-target language content to this language during preprocessing.")
+        private String translateToLanguage;
+
+        @Option(names = "--translation-dual-index", description = "Keep original-language documents alongside translated documents.")
+        private boolean translationDualIndex;
+
         @Option(names = "--tag", split = ",", description = "Crawl profile tags. Can be repeated or comma-separated.")
         private List<String> tags = new ArrayList<>();
 
         @Override
         public Integer call() {
             KompileProjectStore store = new KompileProjectStore();
-            Path projectRoot = resolveProjectRoot(store, root);
+            Path projectRoot = requireExistingProjectRoot(store, root);
             KompileProjectCrawlProfile profile = new KompileProjectCrawlProfile();
             profile.setId(id);
             profile.setName(name);
@@ -1637,7 +1968,7 @@ public class ProjectCommand implements Callable<Integer> {
             profile.setCollection(collection);
             profile.setMultimodal(multimodal);
             profile.setVlmModel(vlmModel);
-            profile.setGraphExtraction(graphExtraction);
+            profile.setGraphExtraction(true);
             profile.setSchemaPresetId(schemaPresetId);
             profile.setGraphSchemaMode(graphSchemaMode);
             profile.setGraphModelProvider(graphModelProvider);
@@ -1649,6 +1980,14 @@ public class ProjectCommand implements Callable<Integer> {
             profile.setSourceType(sourceType);
             profile.setWatch(watch);
             profile.setFactSheetName(factSheetName);
+            if (languageDetection || translateToLanguage != null && !translateToLanguage.isBlank()) {
+                profile.getMetadata().put("preprocessing.languageDetection", "true");
+            }
+            if (translateToLanguage != null && !translateToLanguage.isBlank()) {
+                profile.getMetadata().put("preprocessing.translation", "true");
+                profile.getMetadata().put("preprocessing.translationTarget", translateToLanguage.trim());
+                profile.getMetadata().put("preprocessing.translationDualIndex", Boolean.toString(translationDualIndex));
+            }
             profile.setTags(tags);
             KompileProjectManifest manifest = store.registerCrawlProfile(projectRoot, profile);
             printCrawlProfiles(manifest);
@@ -1962,7 +2301,7 @@ public class ProjectCommand implements Callable<Integer> {
         @Override
         public Integer call() {
             KompileProjectStore store = new KompileProjectStore();
-            Path projectRoot = resolveProjectRoot(store, root);
+            Path projectRoot = requireExistingProjectRoot(store, root);
             KompileProjectManifest manifest = store.load(projectRoot);
             List<String> nextTags = new ArrayList<>(setTags);
             if (nextTags.isEmpty()) {
@@ -1992,7 +2331,7 @@ public class ProjectCommand implements Callable<Integer> {
         @Override
         public Integer call() {
             KompileProjectStore store = new KompileProjectStore();
-            Path projectRoot = resolveProjectRoot(store, root);
+            Path projectRoot = requireExistingProjectRoot(store, root);
             KompileProjectManifest manifest = store.setLifecycle(projectRoot, parseLifecycle(state));
             printManifest(manifest, store.status(projectRoot));
             return 0;
@@ -2011,7 +2350,7 @@ public class ProjectCommand implements Callable<Integer> {
         @Override
         public Integer call() {
             KompileProjectStore store = new KompileProjectStore();
-            KompileProjectGitResult result = store.gitCommitAll(resolveProjectRoot(store, root), message);
+            KompileProjectGitResult result = store.gitCommitAll(requireExistingProjectRoot(store, root), message);
             System.out.println(result.getOutput().trim());
             return result.getExitCode();
         }
@@ -2026,7 +2365,7 @@ public class ProjectCommand implements Callable<Integer> {
         @Override
         public Integer call() {
             KompileProjectStore store = new KompileProjectStore();
-            KompileProjectGitResult result = store.gitPull(resolveProjectRoot(store, root));
+            KompileProjectGitResult result = store.gitPull(requireExistingProjectRoot(store, root));
             System.out.println(result.getOutput().trim());
             return result.getExitCode();
         }
@@ -2041,7 +2380,7 @@ public class ProjectCommand implements Callable<Integer> {
         @Override
         public Integer call() {
             KompileProjectStore store = new KompileProjectStore();
-            KompileProjectGitResult result = store.gitPush(resolveProjectRoot(store, root));
+            KompileProjectGitResult result = store.gitPush(requireExistingProjectRoot(store, root));
             System.out.println(result.getOutput().trim());
             return result.getExitCode();
         }
@@ -2055,7 +2394,8 @@ public class ProjectCommand implements Callable<Integer> {
                                                       String vlmModel,
                                                       String pdfRoutingMode,
                                                       String vlmOutputFormat,
-                                                      String ocrOutputFormat) {
+                                                      String ocrOutputFormat,
+                                                      String schemaPresetId) {
         String presetId = normalizePresetId(preset);
         if (presetId == null || "generic".equals(presetId)) {
             return null;
@@ -2075,7 +2415,7 @@ public class ProjectCommand implements Callable<Integer> {
                 ? List.of("data/input_documents")
                 : new ArrayList<>(sources);
         VlmOcrPresetConfig config = new VlmOcrPresetConfig(resolvedCrawlId, resolvedCollection, resolvedModel,
-                resolvedPdfRouting, resolvedVlmOutput, resolvedOcrOutput, resolvedSources);
+                resolvedPdfRouting, resolvedVlmOutput, resolvedOcrOutput, firstNonBlank(schemaPresetId), resolvedSources);
 
         addMissing(request.getTags(), "vlm", "ocr", "knowledge", "pipeline");
         addMissing(request.getModules(), "loader-pdf-extended", "ocr-core", "ocr-models", "ocr-postprocess",
@@ -2177,7 +2517,7 @@ public class ProjectCommand implements Callable<Integer> {
         profile.setDescription("Multi-route pipeline: text PDFs→PDFBox+Tabula, scanned PDFs→VLM, "
                 + "images→VLM, Office→Office loader, HTML→web loader, email→mail loader.");
         profile.setSources(config.sources());
-        profile.setSourceType("file");
+        profile.setSourceType("DIRECTORY");
         // Include all rich document types — each routes to the appropriate pipeline
         profile.setIncludePatterns(List.of(
                 // PDFs and images — classified per-page for text vs VLM routing
@@ -2185,8 +2525,8 @@ public class ProjectCommand implements Callable<Integer> {
                 // Office documents — Office/Excel loader → standard-text pipeline
                 "*.doc", "*.docx", "*.xls", "*.xlsx", "*.xlsm", "*.ods",
                 "*.ppt", "*.pptx", "*.odt", "*.odp", "*.rtf",
-                // HTML — web loader → standard-text pipeline
-                "*.html", "*.htm", "*.xhtml",
+                // HTML and Markdown — web/text loaders → standard-text pipeline
+                "*.html", "*.htm", "*.xhtml", "*.md", "*.markdown",
                 // Email files — mail/inbox loader → standard-text pipeline
                 "*.eml", "*.msg", "*.mbox", "*.mbx", "*.pst", "*.ost", "*.emlx"));
         profile.setContentTypes(List.of(
@@ -2202,16 +2542,27 @@ public class ProjectCommand implements Callable<Integer> {
                 "application/vnd.oasis.opendocument.presentation",
                 "application/rtf",
                 "text/html",
+                "text/markdown",
+                "text/x-markdown",
                 "message/rfc822",
                 "application/vnd.ms-outlook",
                 "application/mbox"));
         profile.setCollection(config.collection());
         profile.setMultimodal(true);
         profile.setVlmModel(config.vlmModelId());
+        // Enable graph extraction with lenient schema for rich-document scenarios.
+        // graphAutoStart stays false — operator drives pipeline launch.
+        profile.setGraphExtraction(true);
+        profile.setGraphSchemaMode("LENIENT");
+        if (config.schemaPresetId() != null && !config.schemaPresetId().isBlank()) {
+            profile.setSchemaPresetId(config.schemaPresetId());
+        }
         profile.setTags(List.of("multi-route", "vlm", "ocr", "office", "html", "email", "crawl"));
         profile.setMetadata(metadata(
                 "pipelineId", "vlm-ocr-pdf",
                 "routeConfigPath", "data/pipelines/vlm-ocr-routing.json",
+                "preprocessing.languageDetection", "true",
+                "preprocessing.translation", "false",
                 "pdf.routingMode", config.pdfRoutingMode(),
                 "vlm.outputFormat", config.vlmOutputFormat(),
                 "ocr.outputFormat", config.ocrOutputFormat(),
@@ -2264,15 +2615,19 @@ public class ProjectCommand implements Callable<Integer> {
         return metadata;
     }
 
-    private static void writeVlmOcrPresetFiles(Path projectRoot, VlmOcrPresetConfig config) throws IOException {
+    private static void writeVlmOcrPresetFiles(Path projectRoot, VlmOcrPresetConfig config,
+                                               boolean opencodeAvailable) throws IOException {
         Path pipelinesDir = projectRoot.resolve("data/pipelines").normalize();
         Path promptsDir = projectRoot.resolve("data/prompt-templates").normalize();
         Path scriptsDir = projectRoot.resolve("scripts").normalize();
         Path ocrDir = projectRoot.resolve("data/ocr").resolve(config.crawlId()).normalize();
+        // App-readable config dir (read by ProcessingRouteConfigService via kompile.data.dir)
+        Path configDir = projectRoot.resolve("config").normalize();
         Files.createDirectories(pipelinesDir);
         Files.createDirectories(promptsDir);
         Files.createDirectories(scriptsDir);
         Files.createDirectories(ocrDir);
+        Files.createDirectories(configDir);
         Files.writeString(pipelinesDir.resolve("vlm-ocr-pipeline.json"), vlmOcrPipelineJson(config), StandardCharsets.UTF_8);
         Files.writeString(pipelinesDir.resolve("vlm-ocr-routing.json"), vlmOcrRoutingJson(config), StandardCharsets.UTF_8);
         Files.writeString(pipelinesDir.resolve("vlm-ocr-runbook.md"), vlmOcrRunbook(config), StandardCharsets.UTF_8);
@@ -2281,10 +2636,19 @@ public class ProjectCommand implements Callable<Integer> {
         Path script = scriptsDir.resolve("run-vlm-ocr.sh");
         Files.writeString(script, vlmOcrScriptText(config), StandardCharsets.UTF_8);
         script.toFile().setExecutable(true, false);
+
         // Write processing route config — used as global fallback by the backend
-        // and documents the multi-route PDF pipeline for the project
+        // and documents the multi-route PDF pipeline for the project.
+        //
+        // TWO locations:
+        //  1. data/pipelines/ — legacy/compat location referenced by the runbook
+        //  2. config/         — app-readable path: ProcessingRouteConfigService resolves
+        //                       <kompile.data.dir>/config/processing-route-config.json
+        String routeConfigJson = processingRouteConfigJson(config, opencodeAvailable);
         Files.writeString(pipelinesDir.resolve("processing-route-config.json"),
-                processingRouteConfigJson(config), StandardCharsets.UTF_8);
+                routeConfigJson, StandardCharsets.UTF_8);
+        Files.writeString(configDir.resolve("processing-route-config.json"),
+                routeConfigJson, StandardCharsets.UTF_8);
     }
 
     private static String vlmOcrPipelineJson(VlmOcrPresetConfig config) {
@@ -2382,32 +2746,85 @@ public class ProjectCommand implements Callable<Integer> {
     }
 
     /**
-     * Generate the processing route config JSON that controls per-PDF classification.
-     * This is the key config that enables multi-route PDF processing:
-     *   - pdfRoutingMode=AUTO: PdfContentClassifier inspects each PDF
-     *   - TEXT_ONLY PDFs → standard text extraction (PDFBox + Tabula)
-     *   - IMAGE_BASED PDFs → VLM pipeline (scanned docs)
-     *   - MIXED PDFs → VLM for image pages, text extraction for text pages
+     * Generate the processing route config JSON that controls per-PDF classification
+     * and the fallback backend chain for LLM-assisted extraction.
+     *
+     * <p>Written to BOTH {@code data/pipelines/processing-route-config.json} (legacy) and
+     * {@code config/processing-route-config.json} (app-readable via
+     * {@code ProcessingRouteConfigService}, which resolves
+     * {@code <kompile.data.dir>/config/processing-route-config.json}).</p>
+     *
+     * <p>PDF routing behaviour (same as before):
+     * <ul>
+     *   <li>{@code pdfRoutingMode=AUTO}: PdfContentClassifier inspects each PDF</li>
+     *   <li>TEXT_ONLY PDFs → standard text extraction (PDFBox + Tabula)</li>
+     *   <li>IMAGE_BASED PDFs → VLM pipeline (scanned docs)</li>
+     *   <li>MIXED PDFs → VLM for image pages, text extraction for text pages</li>
+     * </ul>
+     * </p>
+     *
+     * <p>Backends written (field names match {@code ProcessingRouteConfig.ProcessingBackend}):
+     * <ol>
+     *   <li>{@code local-vlm}          — LOCAL_MODEL, capabilities=[vlm] (always)</li>
+     *   <li>{@code opencode-extraction} — CLI_AGENT, capabilities=[llm], backupBackendId=local-serving
+     *       (only when opencode is on PATH)</li>
+     *   <li>{@code local-serving}       — LOCAL_MODEL, agentName=serving, capabilities=[llm]
+     *       (always; inert until operator loads a GGUF via staging)</li>
+     * </ol>
+     * </p>
      */
-    private static String processingRouteConfigJson(VlmOcrPresetConfig config) {
-        return "{\n"
-                + "  \"pdfRoutingMode\" : " + jsonString(config.pdfRoutingMode()) + ",\n"
-                + "  \"vlmModelId\" : " + jsonString(config.vlmModelId()) + ",\n"
-                + "  \"extractTablesFromTextPdfs\" : true,\n"
-                + "  \"textThresholdCharsPerPage\" : 50,\n"
-                + "  \"fallbackEnabled\" : false,\n"
-                + "  \"backends\" : [\n"
-                + "    {\n"
-                + "      \"id\" : \"local-vlm\",\n"
-                + "      \"displayName\" : \"Local VLM (" + config.vlmModelId() + ")\",\n"
-                + "      \"type\" : \"LOCAL_MODEL\",\n"
-                + "      \"priority\" : 1,\n"
-                + "      \"maxConcurrent\" : 1,\n"
-                + "      \"enabled\" : true,\n"
-                + "      \"capabilities\" : [\"vlm\"]\n"
-                + "    }\n"
-                + "  ]\n"
-                + "}\n";
+    private static String processingRouteConfigJson(VlmOcrPresetConfig config,
+                                                    boolean opencodeAvailable) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("{\n")
+          .append("  \"pdfRoutingMode\" : ").append(jsonString(config.pdfRoutingMode())).append(",\n")
+          .append("  \"vlmModelId\" : ").append(jsonString(config.vlmModelId())).append(",\n")
+          .append("  \"extractTablesFromTextPdfs\" : true,\n")
+          .append("  \"textThresholdCharsPerPage\" : 50,\n")
+          .append("  \"fallbackEnabled\" : true,\n")
+          .append("  \"backends\" : [\n")
+          // Backend 1: local VLM (unchanged)
+          .append("    {\n")
+          .append("      \"id\" : \"local-vlm\",\n")
+          .append("      \"displayName\" : \"Local VLM (").append(config.vlmModelId()).append(")\",\n")
+          .append("      \"type\" : \"LOCAL_MODEL\",\n")
+          .append("      \"priority\" : 1,\n")
+          .append("      \"maxConcurrent\" : 1,\n")
+          .append("      \"enabled\" : true,\n")
+          .append("      \"capabilities\" : [\"vlm\"]\n")
+          .append("    }");
+
+        if (opencodeAvailable) {
+            // Backend 2: opencode CLI agent — primary extraction LLM lane
+            sb.append(",\n")
+              .append("    {\n")
+              .append("      \"id\" : \"opencode-extraction\",\n")
+              .append("      \"displayName\" : \"opencode (extraction primary)\",\n")
+              .append("      \"type\" : \"CLI_AGENT\",\n")
+              .append("      \"agentName\" : \"opencode-cli\",\n")
+              .append("      \"priority\" : 1,\n")
+              .append("      \"maxConcurrent\" : 2,\n")
+              .append("      \"enabled\" : true,\n")
+              .append("      \"capabilities\" : [\"llm\"],\n")
+              .append("      \"backupBackendId\" : \"local-serving\"\n")
+              .append("    }");
+        }
+
+        // Backend 3 (always): local serving lane — inert until a model is staged
+        sb.append(",\n")
+          .append("    {\n")
+          .append("      \"id\" : \"local-serving\",\n")
+          .append("      \"displayName\" : \"Local serving lane (staging GGUF)\",\n")
+          .append("      \"type\" : \"LOCAL_MODEL\",\n")
+          .append("      \"agentName\" : \"serving\",\n")
+          .append("      \"priority\" : 2,\n")
+          .append("      \"enabled\" : true,\n")
+          .append("      \"capabilities\" : [\"llm\"]\n")
+          .append("    }\n")
+          .append("  ]\n")
+          .append("}\n");
+
+        return sb.toString();
     }
 
     private static String vlmOcrPromptJson(VlmOcrPresetConfig config) {
@@ -2492,6 +2909,9 @@ public class ProjectCommand implements Callable<Integer> {
         System.out.println("  VLM model:   " + config.vlmModelId());
         System.out.println("  Scanned threshold: 50 chars/page");
         System.out.println("  Crawl profile: " + config.crawlId());
+        if (config.schemaPresetId() != null && !config.schemaPresetId().isBlank()) {
+            System.out.println("  Schema preset: " + config.schemaPresetId());
+        }
         System.out.println("  Processing route: data/pipelines/processing-route-config.json");
         System.out.println("  Pipeline routing: data/pipelines/vlm-ocr-routing.json");
         System.out.println("  Dry run: kompile project workflow-run --root . --id vlm-ocr-ingest --dry-run");
@@ -2503,6 +2923,7 @@ public class ProjectCommand implements Callable<Integer> {
                                       String pdfRoutingMode,
                                       String vlmOutputFormat,
                                       String ocrOutputFormat,
+                                      String schemaPresetId,
                                       List<String> sources) {
     }
 

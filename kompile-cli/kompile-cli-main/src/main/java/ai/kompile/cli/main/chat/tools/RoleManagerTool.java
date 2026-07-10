@@ -25,8 +25,10 @@ import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.io.IOException;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * MCP tool for managing chat roles.
@@ -159,13 +161,13 @@ public class RoleManagerTool implements CliTool {
 
     private ToolResult listRoles() {
         List<RoleConfig> roles = roleManager.getAllRoles();
-        Map<String, java.util.List<String>> byCategory = roleManager.getRolesByCategory();
+        Map<String, List<String>> byCategory = roleManager.getRolesByCategory();
         String activeRole = roleManager.getActiveRoleName();
 
         StringBuilder sb = new StringBuilder();
         sb.append("Available Roles:\n\n");
 
-        for (Map.Entry<String, java.util.List<String>> entry : byCategory.entrySet()) {
+        for (Map.Entry<String, List<String>> entry : byCategory.entrySet()) {
             sb.append("[").append(entry.getKey()).append("]\n");
             for (String roleName : entry.getValue()) {
                 RoleConfig role = roleManager.getRole(roleName);
@@ -289,7 +291,7 @@ public class RoleManagerTool implements CliTool {
         }
     }
 
-    private static final java.util.Set<String> VALID_AGENTS = new java.util.HashSet<>(CliAgentRegistry.commandNames());
+    private static final Set<String> VALID_AGENTS = new HashSet<>(CliAgentRegistry.commandNames());
 
     private ToolResult assignRole(JsonNode params) {
         String name = params.path("name").asText("");

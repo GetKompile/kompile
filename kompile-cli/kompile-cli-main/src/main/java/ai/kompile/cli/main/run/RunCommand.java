@@ -266,9 +266,10 @@ public class RunCommand implements Callable<Integer> {
         pb.redirectError(ProcessBuilder.Redirect.INHERIT);
         pb.redirectOutput(ProcessBuilder.Redirect.DISCARD);
 
-        // Propagate relevant env vars
+        // Propagate relevant env vars. Device selection is device-agnostic (ND4J placement), so the
+        // vendor CUDA_VISIBLE_DEVICES is deliberately NOT propagated.
         Map<String, String> env = pb.environment();
-        propagateEnv(env, "ND4J_BACKEND", "CUDA_VISIBLE_DEVICES", "OMP_NUM_THREADS",
+        propagateEnv(env, "ND4J_BACKEND", "OMP_NUM_THREADS",
                 "MKL_NUM_THREADS", "KOMPILE_MODELS_DIR", "JAVACPP_PLATFORM");
 
         return pb.start();

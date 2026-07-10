@@ -65,6 +65,7 @@ public class PersistentAgentProcess implements AutoCloseable {
     private final String model;
     private final boolean skipPermissions;
     private final List<String> extraArgs;
+    private final List<String> clearEnvPrefixes;
 
     private volatile Process process;
     private volatile OutputStream stdin;
@@ -83,6 +84,7 @@ public class PersistentAgentProcess implements AutoCloseable {
         this.model = builder.model;
         this.skipPermissions = builder.skipPermissions;
         this.extraArgs = builder.extraArgs != null ? builder.extraArgs : List.of();
+        this.clearEnvPrefixes = builder.clearEnvPrefixes != null ? builder.clearEnvPrefixes : List.of();
     }
 
     /**
@@ -100,6 +102,13 @@ public class PersistentAgentProcess implements AutoCloseable {
         if (workDir != null) pb.directory(workDir.toFile());
         pb.redirectErrorStream(false);
         inheritEnv(pb.environment());
+        // Drop inherited env by prefix (ProcessBuilder pre-populates the FULL parent
+        // env). E.g. the enforcer judge strips KOMPILE_ENFORCER_* so its subprocess
+        // tree does not treat itself as an enforced session and re-spawn judges.
+        if (!clearEnvPrefixes.isEmpty()) {
+            pb.environment().keySet().removeIf(
+                    key -> clearEnvPrefixes.stream().anyMatch(key::startsWith));
+        }
 
         processReady = new CountDownLatch(1);
         process = pb.start();
@@ -461,6 +470,7 @@ public class PersistentAgentProcess implements AutoCloseable {
         private String model;
         private boolean skipPermissions = true;
         private List<String> extraArgs;
+        private List<String> clearEnvPrefixes;
 
         Builder(String agentBinary) {
             this.agentBinary = agentBinary;
@@ -471,6 +481,15 @@ public class PersistentAgentProcess implements AutoCloseable {
         public Builder model(String m) { this.model = m; return this; }
         public Builder skipPermissions(boolean b) { this.skipPermissions = b; return this; }
         public Builder extraArgs(List<String> args) { this.extraArgs = args; return this; }
+
+        /** Remove inherited env vars whose name starts with the given prefix. */
+        public Builder clearEnvPrefix(String prefix) {
+            if (prefix != null && !prefix.isBlank()) {
+                if (this.clearEnvPrefixes == null) this.clearEnvPrefixes = new ArrayList<>();
+                this.clearEnvPrefixes.add(prefix);
+            }
+            return this;
+        }
 
         public PersistentAgentProcess build() {
             return new PersistentAgentProcess(this);

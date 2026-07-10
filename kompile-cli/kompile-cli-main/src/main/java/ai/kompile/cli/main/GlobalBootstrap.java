@@ -128,14 +128,14 @@ public final class GlobalBootstrap {
         // --- feature-flags-config.json ---
         if (!configExists(AppConfigWizard.FEATURE_FLAGS_CONFIG)) {
             Map<String, Object> flags = new LinkedHashMap<>();
-            flags.put("guardrails", false);
-            flags.put("queryTransformation", false);
-            flags.put("contextualRag", false);
-            flags.put("toolGatewayEnabled", false);
-            flags.put("kvcache", false);
-            flags.put("graphRag", false);
-            flags.put("multiModal", false);
-            flags.put("sourceAttribution", false);
+            flags.put("guardrails", true);
+            flags.put("queryTransformation", true);
+            flags.put("contextualRag", true);
+            flags.put("toolGatewayEnabled", true);
+            flags.put("kvcache", true);
+            flags.put("graphRag", true);
+            flags.put("multiModal", true);
+            flags.put("sourceAttribution", true);
             AppConfigWizard.saveConfig(AppConfigWizard.FEATURE_FLAGS_CONFIG, flags);
             System.out.println("  Bootstrapped: ~/.kompile/config/" + AppConfigWizard.FEATURE_FLAGS_CONFIG);
             wroteAny = true;
@@ -150,7 +150,7 @@ public final class GlobalBootstrap {
             gwConfig.put("verboseLogging", false);
             gwConfig.put("hotReload", false);
             gwConfig.put("dryRun", false);
-            gwConfig.put("judgeScoringEnabled", false);
+            gwConfig.put("judgeScoringEnabled", true);
             AppConfigWizard.saveConfig("tool-gateway-config.json", gwConfig);
             System.out.println("  Bootstrapped: ~/.kompile/config/tool-gateway-config.json");
             wroteAny = true;

@@ -31,7 +31,7 @@ import java.util.*;
  */
 @Service
 @Slf4j
-@ConditionalOnProperty(name = "kompile.scheduling.enabled", havingValue = "true")
+@ConditionalOnProperty(name = "kompile.scheduling.enabled", havingValue = "true", matchIfMissing = true)
 public class ScheduledPipelineService {
 
     private static final String GROUP = "kompile-pipeline";

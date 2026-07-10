@@ -382,9 +382,10 @@ public class DL4JLanguageModelStepRunner implements PipelineStepRunner {
             if (kValue == 0 && probabilities.length() > 0) kValue = (int) probabilities.length();
             else if (kValue == 0) return tokenizer.getUnkTokenId();
 
-            List<Pair<Integer, Double>> tokenProbs = new ArrayList<>();
-            for (int k_idx = 0; k_idx < probabilities.length(); k_idx++) {
-                tokenProbs.add(Pair.of(k_idx, probabilities.getDouble(k_idx)));
+            double[] probabilityValues = toHostDoubleVector(probabilities);
+            List<Pair<Integer, Double>> tokenProbs = new ArrayList<>(probabilityValues.length);
+            for (int k_idx = 0; k_idx < probabilityValues.length; k_idx++) {
+                tokenProbs.add(Pair.of(k_idx, probabilityValues[k_idx]));
             }
             tokenProbs.sort((p1, p2) -> Double.compare(p2.getRight(), p1.getRight()));
             List<Pair<Integer, Double>> topKTokens = tokenProbs.subList(0, Math.min(kValue, tokenProbs.size()));
@@ -411,6 +412,24 @@ public class DL4JLanguageModelStepRunner implements PipelineStepRunner {
         } finally {
             closeArraySafely(tempDiv);
             closeArraySafely(probabilities);
+        }
+    }
+
+    private double[] toHostDoubleVector(INDArray array) {
+        if (array == null) return new double[0];
+        long length = array.length();
+        if (length > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException("INDArray too large to materialize as double[]: " + length);
+        }
+        if (array.elementWiseStride() == 1) {
+            return array.data().getDoublesAt(array.offset(), (int) length);
+        }
+        INDArray copy = null;
+        try {
+            copy = array.dup('c');
+            return copy.data().getDoublesAt(copy.offset(), (int) length);
+        } finally {
+            closeArraySafely(copy);
         }
     }
 

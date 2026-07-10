@@ -33,6 +33,8 @@ import org.graalvm.word.PointerBase;
 import org.graalvm.word.WordFactory;
 
 import java.io.File;
+import java.lang.reflect.Field;
+import java.nio.Buffer;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Map;
@@ -78,7 +80,7 @@ public class PipelineNativeEntryPoints {
 
     static {
         try {
-            java.lang.reflect.Field f = sun.misc.Unsafe.class.getDeclaredField("theUnsafe");
+            Field f = sun.misc.Unsafe.class.getDeclaredField("theUnsafe");
             f.setAccessible(true);
             UNSAFE = (sun.misc.Unsafe) f.get(null);
         } catch (Exception e) {
@@ -312,7 +314,7 @@ public class PipelineNativeEntryPoints {
 
     private static long getDirectBufferAddress(ByteBuffer buffer) {
         try {
-            java.lang.reflect.Field addressField = java.nio.Buffer.class.getDeclaredField("address");
+            Field addressField = Buffer.class.getDeclaredField("address");
             addressField.setAccessible(true);
             return addressField.getLong(buffer);
         } catch (Exception e) {

@@ -61,6 +61,16 @@ public interface StepExecutionDispatcher {
     Map<String, Object> executeScript(String language, String scriptBody, Map<String, Object> runData);
 
     /**
+     * Runs or resumes a conversational agent session. The result should include a conversationId
+     * and may include structured values that subsequent SCRIPT steps consume.
+     */
+    default Map<String, Object> executeAgentSession(String agentSpecId, String promptTemplate,
+                                                    String conversationId,
+                                                    Map<String, Object> context) {
+        throw new UnsupportedOperationException("Agent session execution is not supported by this dispatcher");
+    }
+
+    /**
      * Converts an Excel spreadsheet's formulas to code via LLM without executing.
      * Returns the generated code as an artifact for review/editing.
      *

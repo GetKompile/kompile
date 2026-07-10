@@ -15,10 +15,12 @@
  */
 package ai.kompile.graph.reasoning.mebn.type;
 
+import java.io.Serializable;
 import ai.kompile.graph.reasoning.model.GraphEntity;
 import ai.kompile.graph.reasoning.model.ReasoningGraph;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -63,13 +65,13 @@ import java.util.Objects;
  * populates the registry and calls {@link #buildFor}; the lib never reaches out to load
  * schemas on its own.</p>
  */
-public final class TypeRegistry {
+public final class TypeRegistry implements Serializable {
 
     /** Structural declarations keyed by lower-cased type name. */
     private final Map<String, Declaration> declarations = new LinkedHashMap<>();
 
     /** Internal holder for per-type declared state (all mutable during registry construction). */
-    private static final class Declaration {
+    private static final class Declaration implements Serializable {
         final String typeName;           // original casing
         String parentName;               // lower-cased parent name, or null
         TypeAttributeSchema schema;
@@ -191,7 +193,7 @@ public final class TypeRegistry {
      * @return a fully constructed {@link TypeHierarchy}
      */
     public TypeHierarchy buildFor(ReasoningGraph graph,
-                                  Map<String, ? extends java.util.Collection<String>> extraMembersByType) {
+                                  Map<String, ? extends Collection<String>> extraMembersByType) {
         Objects.requireNonNull(graph, "graph");
         Objects.requireNonNull(extraMembersByType, "extraMembersByType");
 
@@ -234,7 +236,7 @@ public final class TypeRegistry {
         }
 
         // Step 2b: add extra (OWL-inferred) memberships
-        for (Map.Entry<String, ? extends java.util.Collection<String>> e : extraMembersByType.entrySet()) {
+        for (Map.Entry<String, ? extends Collection<String>> e : extraMembersByType.entrySet()) {
             if (e.getKey() == null || e.getValue() == null) continue;
             TypeNode node = nodes.get(e.getKey().toLowerCase());
             if (node == null) continue;

@@ -19,12 +19,9 @@ package ai.kompile.core.llm;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.model.ChatResponse;
-import org.springframework.ai.chat.model.Generation;
-import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.stereotype.Service;
 import java.util.List;
-import java.util.Collections;
 
 @Service
 @ConditionalOnMissingBean(value = LanguageModel.class, ignored = NoOpLanguageModelImpl.class)
@@ -32,22 +29,20 @@ public class NoOpLanguageModelImpl implements LanguageModel {
     private static final Logger logger = LoggerFactory.getLogger(NoOpLanguageModelImpl.class);
 
     public NoOpLanguageModelImpl() {
-        logger.warn("No specific LanguageModel implementation found. Initializing NoOpLanguageModelImpl. LLM functionality will be disabled.");
+        logger.warn("No specific LanguageModel implementation found. Initializing NoOpLanguageModelImpl. Invocations will fail until a real LanguageModel is configured.");
     }
 
     @Override
     public String generateResponse(String userQuery, List<String> context) {
-        String message = "Language Model is not configured. Cannot generate response.";
-        logger.warn(message + " Query: " + userQuery);
-        return "Error: " + message;
+        throw notConfigured();
     }
 
     @Override
     public ChatResponse generateResponseWithPotentialToolCalls(String userQuery, List<String> context) {
-        String message = "Language Model is not configured. Cannot generate response with tool calls.";
-        logger.warn(message + " Query: " + userQuery);
-        // Return a dummy ChatResponse indicating an error or no-op
-        Generation generation = new Generation(new AssistantMessage("Error: " + message), null);
-        return new ChatResponse(Collections.singletonList(generation));
+        throw notConfigured();
+    }
+
+    private IllegalStateException notConfigured() {
+        return new IllegalStateException("LanguageModel is not configured");
     }
 }

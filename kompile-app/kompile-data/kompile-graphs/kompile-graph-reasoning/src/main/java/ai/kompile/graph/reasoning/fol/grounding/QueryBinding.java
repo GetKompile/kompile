@@ -20,7 +20,8 @@ import java.util.Objects;
  * <p>A binding maps each query variable (e.g. {@code "?X"}) to the ground constant
  * (e.g. {@code "Alice"}) that satisfies the conjunctive pattern for this row.
  * The {@link #confidence()} is the minimum soft-truth value across all matched atoms
- * in the row (Łukasiewicz T-norm, consistent with PSL semantics).</p>
+ * in the row (Gödel / minimum T-norm; WP1c — previously mislabelled "Łukasiewicz", which is
+ * {@code max(0, Σsᵢ − (n−1))} and would collapse long conjunctions to 0).</p>
  *
  * @param bindings   variable → ground-constant map (query variables as keys, constants as values)
  * @param confidence minimum confidence across matched atoms, in [0, 1]

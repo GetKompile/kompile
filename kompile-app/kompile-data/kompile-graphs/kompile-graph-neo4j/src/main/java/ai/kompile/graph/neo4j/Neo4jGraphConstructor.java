@@ -110,14 +110,21 @@ public class Neo4jGraphConstructor implements GraphConstructor {
 
     @Override
     public Graph constructGraph(String collectionName) throws IOException {
-        log.warn("constructGraph(collectionName) is not fully implemented. It would require an IndexerService to fetch documents.");
-        return new Graph();
+        throw new UnsupportedOperationException("constructGraph(collectionName) requires an IndexerService; "
+                + "use constructGraphFromDocs for direct document processing");
     }
 
 
 
     @Override
     public Graph constructGraphFromDocs(List<RetrievedDoc> docs, GraphSchema schema, SchemaEnforcementMode enforcementMode) {
+        if (docs == null || docs.isEmpty()) {
+            return new Graph();
+        }
+        if (llmChat == null) {
+            throw new IllegalStateException("graph extraction LLM backend unavailable");
+        }
+
         List<ExtractedGraphDTO.ExtractedEntity> allExtractedEntities = new ArrayList<>();
         List<ExtractedGraphDTO.ExtractedRelationship> allExtractedRelationships = new ArrayList<>();
         List<ExtractionResult> chunkExtractions = new ArrayList<>();
@@ -188,6 +195,9 @@ public class Neo4jGraphConstructor implements GraphConstructor {
                     }
                 } catch (Exception e) {
                     log.error("Failed to process chunk: {} for document: {}", chunk.getId(), doc.getId(), e);
+                    throw new IllegalStateException("Failed to process graph extraction chunk " + chunk.getId()
+                            + " for document " + doc.getId() + ": "
+                            + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()), e);
                 }
             }
         }
@@ -269,6 +279,11 @@ public class Neo4jGraphConstructor implements GraphConstructor {
             relationship.setConfidence(er.getConfidence() != null ? er.getConfidence() : 1.0);
             return relationship;
         }).collect(Collectors.toList()));
+
+        if (finalGraph.getEntities().isEmpty() && finalGraph.getRelationships().isEmpty()) {
+            throw new IllegalStateException("GraphConstructor produced empty extraction graph for "
+                    + docs.size() + " non-empty document(s)");
+        }
 
         return finalGraph;
     }

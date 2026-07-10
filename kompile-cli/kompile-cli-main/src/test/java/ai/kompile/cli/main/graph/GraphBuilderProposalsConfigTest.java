@@ -359,7 +359,7 @@ class GraphBuilderProposalsConfigTest {
         Map<String, CommandLine> subcommands = configCmd.getSubcommands();
         assertTrue(subcommands.containsKey("show"), "missing 'show' under config");
         assertTrue(subcommands.containsKey("set"), "missing 'set' under config");
-        assertTrue(subcommands.containsKey("toggle"), "missing 'toggle' under config");
+        assertFalse(subcommands.containsKey("toggle"), "graph extraction is mandatory and must not expose toggle");
         assertTrue(subcommands.containsKey("reset"), "missing 'reset' under config");
         assertTrue(subcommands.containsKey("status"), "missing 'status' under config");
         assertTrue(subcommands.containsKey("schema-modes"), "missing 'schema-modes' under config");
@@ -369,8 +369,8 @@ class GraphBuilderProposalsConfigTest {
         assertTrue(subcommands.containsKey("presets"), "missing 'presets' under config");
         assertTrue(subcommands.containsKey("preset-detail"), "missing 'preset-detail' under config");
         assertTrue(subcommands.containsKey("apply-preset"), "missing 'apply-preset' under config");
-        assertEquals(12, subcommands.size(),
-                "Expected exactly 12 subcommands under 'config'");
+        assertEquals(11, subcommands.size(),
+                "Expected exactly 11 subcommands under 'config'");
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -384,8 +384,8 @@ class GraphBuilderProposalsConfigTest {
         CommandLine setCmd = configCmd.getSubcommands().get("set");
         assertNotNull(setCmd, "set subcommand must be registered under config");
 
-        assertNotNull(setCmd.getCommandSpec().findOption("--enabled"),
-                "--enabled must be declared");
+        assertNull(setCmd.getCommandSpec().findOption("--enabled"),
+                "--enabled must not be declared because graph extraction is mandatory");
         assertNotNull(setCmd.getCommandSpec().findOption("--schema-mode"),
                 "--schema-mode must be declared");
         assertNotNull(setCmd.getCommandSpec().findOption("--batch-size"),

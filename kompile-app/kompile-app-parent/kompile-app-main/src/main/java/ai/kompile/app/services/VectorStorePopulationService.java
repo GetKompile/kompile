@@ -236,6 +236,9 @@ public class VectorStorePopulationService implements org.springframework.beans.f
                 .resourceProfile(JobResourceProfiles.VECTOR_POPULATION)
                 .priority(30)
                 .executor(ctx -> {
+                    if (subprocessLauncher != null && ctx.placement() != null) {
+                        subprocessLauncher.applyPlacement(ctx.placement());
+                    }
                     PopulationResult result = populateVectorStore(finalTaskId);
                     if (!result.success()) {
                         throw new RuntimeException("Vector population failed: " + result.errorMessage());
@@ -272,6 +275,11 @@ public class VectorStorePopulationService implements org.springframework.beans.f
                         .description("Vector population: " + finalTaskId)
                         .resourceProfile(JobResourceProfiles.VECTOR_POPULATION)
                         .executor(ctx -> {
+                            // Deliver the scheduler's device-agnostic placement to the launcher before it
+                            // spawns (per-invocation, from the execution context — no shared-field race).
+                            if (subprocessLauncher != null && ctx.placement() != null) {
+                                subprocessLauncher.applyPlacement(ctx.placement());
+                            }
                             try {
                                 PopulationResult result = populateVectorStoreViaSubprocess(finalTaskId).get();
                                 if (!result.success()) {

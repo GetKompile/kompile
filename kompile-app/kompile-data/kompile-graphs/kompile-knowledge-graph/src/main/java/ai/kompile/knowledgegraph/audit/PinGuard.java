@@ -14,7 +14,9 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
 
+import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -67,14 +69,14 @@ public class PinGuard {
     /**
      * Retrieve the PinRecord for a specific atom key, if any.
      */
-    public java.util.Optional<PinRecord> get(long factSheetId, String atomKey) {
+    public Optional<PinRecord> get(long factSheetId, String atomKey) {
         return getStore(factSheetId).get(atomKey);
     }
 
     /**
      * All currently active (pinned=true) records for a fact sheet.
      */
-    public java.util.List<PinRecord> activePins(long factSheetId) {
+    public List<PinRecord> activePins(long factSheetId) {
         return getStore(factSheetId).activePins();
     }
 

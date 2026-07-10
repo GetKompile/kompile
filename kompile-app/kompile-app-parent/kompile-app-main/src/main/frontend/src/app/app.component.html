@@ -53,6 +53,15 @@
       </mat-menu>
     </div>
 
+    <!-- Settings button -->
+    <button mat-icon-button
+            routerLink="/settings"
+            aria-label="Settings"
+            title="Settings"
+            class="settings-btn">
+      <mat-icon>settings</mat-icon>
+    </button>
+
     <!-- Light/Dark theme toggle (ThemeService). Components conform via the shared design tokens. -->
     <button mat-icon-button class="theme-toggle-btn"
             (click)="toggleTheme()"
@@ -62,54 +71,33 @@
     </button>
   </header>
 
-  <!-- Create Fact Sheet Dialog -->
-  <div class="dialog-overlay" *ngIf="showCreateFactSheetDialog" (click)="closeCreateFactSheetDialog()">
-    <div class="dialog-content" (click)="$event.stopPropagation()">
-      <h2>Create New Fact Sheet</h2>
-      <mat-form-field appearance="outline" class="full-width">
-        <mat-label>Name</mat-label>
-        <input matInput [(ngModel)]="newFactSheetName" [ngModelOptions]="{standalone: true}" placeholder="My Fact Sheet">
-      </mat-form-field>
-      <mat-form-field appearance="outline" class="full-width">
-        <mat-label>Description (optional)</mat-label>
-        <textarea matInput [(ngModel)]="newFactSheetDescription" [ngModelOptions]="{standalone: true}" rows="2" placeholder="What is this fact sheet for?"></textarea>
-      </mat-form-field>
-      <div class="dialog-actions">
-        <button mat-button (click)="closeCreateFactSheetDialog()">Cancel</button>
-        <button mat-raised-button color="primary" (click)="createFactSheet()" [disabled]="!newFactSheetName.trim()">
-          Create
-        </button>
-      </div>
-    </div>
-  </div>
-
   <nav mat-tab-nav-bar [tabPanel]="tabPanel" backgroundColor="primary">
-    <a mat-tab-link (click)="activeTab = 'unifiedChat'" [active]="activeTab === 'unifiedChat'">
+    <a mat-tab-link routerLink="/chat" routerLinkActive="active" [routerLinkActiveOptions]="{exact:true}">
       Chat
     </a>
-    <a mat-tab-link (click)="activeTab = 'project'" [active]="activeTab === 'project'">
+    <a mat-tab-link routerLink="/project" routerLinkActive="active">
       Project
     </a>
-    <a mat-tab-link (click)="activeTab = 'sources'" [active]="activeTab === 'sources'" class="fact-sheets-tab">
+    <a mat-tab-link routerLink="/fact-sheets" routerLinkActive="active" class="fact-sheets-tab">
       Fact Sheets
       <span class="active-jobs-badge" *ngIf="activeJobsCount > 0" [title]="getActiveJobsSummary()">
         <span class="badge-pulse"></span>
         {{ activeJobsCount }}
       </span>
     </a>
-    <a mat-tab-link (click)="activeTab = 'tools'" [active]="activeTab === 'tools'">
+    <a mat-tab-link routerLink="/data" routerLinkActive="active">
       Data
     </a>
-    <a mat-tab-link (click)="activeTab = 'developer'" [active]="activeTab === 'developer'">
+    <a mat-tab-link routerLink="/graph" routerLinkActive="active">
+      Graph
+    </a>
+    <a mat-tab-link routerLink="/developer" routerLinkActive="active">
       Developer
     </a>
-    <a mat-tab-link (click)="activeTab = 'kclaw'" [active]="activeTab === 'kclaw'">
+    <a mat-tab-link routerLink="/agents" routerLinkActive="active">
       Agents
     </a>
-    <a mat-tab-link (click)="activeTab = 'grounding'" [active]="activeTab === 'grounding'">
-      Grounding
-    </a>
-    <a mat-tab-link (click)="activeTab = 'enforcer'" [active]="activeTab === 'enforcer'">
+    <a mat-tab-link routerLink="/enforcer" routerLinkActive="active">
       Enforcer
     </a>
   </nav>
@@ -120,35 +108,8 @@
     <app-project-explorer (navigateToTab)="handleBannerNavigation($event)"></app-project-explorer>
 
     <main>
-      <div *ngIf="activeTab === 'unifiedChat'">
-        <app-unified-chat></app-unified-chat>
-      </div>
-      <div *ngIf="activeTab === 'project'">
-        <app-project-manager></app-project-manager>
-        <app-project-store-panel></app-project-store-panel>
-      </div>
-      <div *ngIf="activeTab === 'sources'">
-        <app-fact-sheet-manager (openModelStaging)="openModelStaging()"></app-fact-sheet-manager>
-      </div>
-      <div *ngIf="activeTab === 'tools'">
-        <app-tools-hub></app-tools-hub>
-      </div>
-      <div *ngIf="activeTab === 'developer'">
-        <app-developer-hub></app-developer-hub>
-      </div>
-      <div *ngIf="activeTab === 'kclaw'">
-        <app-kclaw-hub></app-kclaw-hub>
-      </div>
-      <div *ngIf="activeTab === 'enforcer'">
-        <app-enforcer-hub></app-enforcer-hub>
-      </div>
-      <div *ngIf="activeTab === 'grounding'">
-        <app-grounding-console-panel></app-grounding-console-panel>
-      </div>
+      <router-outlet></router-outlet>
     </main>
   </div>
 
-  <footer>
-    <p>{{ title }}</p>
-  </footer>
 </div>

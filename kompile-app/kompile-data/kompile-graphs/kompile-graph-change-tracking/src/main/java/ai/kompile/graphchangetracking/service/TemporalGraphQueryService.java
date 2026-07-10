@@ -1,7 +1,6 @@
 package ai.kompile.graphchangetracking.service;
 
 import ai.kompile.graphchangetracking.domain.GraphMutationRecord;
-import ai.kompile.graphchangetracking.repository.GraphMutationRecordRepository;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
@@ -24,26 +23,26 @@ import java.util.TreeSet;
 @Slf4j
 public class TemporalGraphQueryService {
 
-    private final GraphMutationRecordRepository mutationRepo;
+    private final GraphMutationStore mutationStore;
     private final ObjectMapper objectMapper;
 
-    public TemporalGraphQueryService(GraphMutationRecordRepository mutationRepo,
+    public TemporalGraphQueryService(GraphMutationStore mutationStore,
                                       ObjectMapper objectMapper) {
-        this.mutationRepo = mutationRepo;
+        this.mutationStore = mutationStore;
         this.objectMapper = objectMapper;
     }
 
     public List<GraphMutationRecord> getNodeHistory(String nodeId) {
-        return mutationRepo.findByEntityKindAndEntityIdOrderByOccurredAtDesc("NODE", nodeId);
+        return mutationStore.findByEntityKindAndEntityIdOrderByOccurredAtDesc("NODE", nodeId);
     }
 
     public List<GraphMutationRecord> getEdgeHistory(String edgeId) {
-        return mutationRepo.findByEntityKindAndEntityIdOrderByOccurredAtDesc("EDGE", edgeId);
+        return mutationStore.findByEntityKindAndEntityIdOrderByOccurredAtDesc("EDGE", edgeId);
     }
 
     @SuppressWarnings("unchecked")
     public Optional<Map<String, Object>> reconstructNodeAt(String nodeId, LocalDateTime asOf) {
-        List<GraphMutationRecord> records = mutationRepo.findMostRecentBefore(
+        List<GraphMutationRecord> records = mutationStore.findMostRecentBefore(
                 "NODE", nodeId, asOf, PageRequest.of(0, 1));
         if (records.isEmpty()) {
             return Optional.empty();
@@ -65,7 +64,7 @@ public class TemporalGraphQueryService {
     }
 
     public GraphDiff diffFactSheet(Long factSheetId, LocalDateTime from, LocalDateTime to) {
-        Page<GraphMutationRecord> mutations = mutationRepo
+        Page<GraphMutationRecord> mutations = mutationStore
                 .findByFactSheetIdAndOccurredAtBetweenOrderByOccurredAtDesc(
                         factSheetId, from, to, Pageable.unpaged());
         List<GraphMutationRecord> records = mutations.getContent();
@@ -120,7 +119,7 @@ public class TemporalGraphQueryService {
      * created-and-deleted within the window net to no change.
      */
     public EntityDiff semanticDiffFactSheet(Long factSheetId, LocalDateTime from, LocalDateTime to) {
-        List<GraphMutationRecord> records = mutationRepo
+        List<GraphMutationRecord> records = mutationStore
                 .findByFactSheetIdAndOccurredAtBetweenOrderByOccurredAtDesc(
                         factSheetId, from, to, Pageable.unpaged())
                 .getContent();

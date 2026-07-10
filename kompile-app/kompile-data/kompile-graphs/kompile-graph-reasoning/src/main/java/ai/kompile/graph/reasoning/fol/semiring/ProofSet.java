@@ -17,8 +17,10 @@ package ai.kompile.graph.reasoning.fol.semiring;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * An immutable, score-sorted set of {@link Proof}s, truncated to at most {@code k} entries.
@@ -151,7 +153,7 @@ public final class ProofSet {
     private static List<Proof> dedup(List<Proof> sorted) {
         // Since input is sorted descending by score, first occurrence for each leaf-set wins
         List<Proof> out = new ArrayList<>(sorted.size());
-        java.util.Set<List<String>> seen = new java.util.LinkedHashSet<>();
+        Set<List<String>> seen = new LinkedHashSet<>();
         for (Proof p : sorted) {
             // Normalize the leaf key set to a sorted list for dedup key
             List<String> leafKey = sorted(p.leafFactKeys());
@@ -172,7 +174,7 @@ public final class ProofSet {
 
     /** Sorted union of two string lists (for cross-product leaf combination). */
     private static List<String> unionSorted(List<String> a, List<String> b) {
-        java.util.Set<String> set = new java.util.LinkedHashSet<>(a);
+        Set<String> set = new LinkedHashSet<>(a);
         set.addAll(b);
         List<String> result = new ArrayList<>(set);
         Collections.sort(result);

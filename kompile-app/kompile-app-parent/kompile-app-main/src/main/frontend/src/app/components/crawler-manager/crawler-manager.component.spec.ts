@@ -34,10 +34,11 @@ import {
   StartCrawlResponse,
   SimpleResponse
 } from '../../services/crawler.service';
-import { UnifiedCrawlService } from '../../services/unified-crawl.service';
+import { UnifiedCrawlService, PipelineStepCatalogEntry, SingleSourceRunResponse } from '../../services/unified-crawl.service';
 import { DistributedCrawlService } from '../../services/distributed-crawl.service';
 import { WebSocketService } from '../../services/websocket.service';
 import { GraphExtractionService } from '../../services/graph-extraction.service';
+import { MatSnackBar } from '@angular/material/snack-bar';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Test helpers
@@ -116,11 +117,13 @@ describe('CrawlerManagerComponent', () => {
 
     // The component now merges 3 job sources + live streams; mock them all so ngOnInit is inert.
     unifiedSpy = jasmine.createSpyObj('UnifiedCrawlService',
-      ['listJobs', 'getJob', 'runStep', 'crawlEventsStreamUrl']);
+      ['listJobs', 'getJob', 'runStep', 'crawlEventsStreamUrl', 'runSingleSource', 'getStepCatalog']);
     unifiedSpy.listJobs.and.returnValue(of([]));
     unifiedSpy.getJob.and.returnValue(of({} as any));
     unifiedSpy.runStep.and.returnValue(of({}));
     unifiedSpy.crawlEventsStreamUrl.and.returnValue('http://localhost/api/crawl-events/stream');
+    unifiedSpy.runSingleSource.and.returnValue(of({} as any));
+    unifiedSpy.getStepCatalog.and.returnValue(of([]));
 
     distributedSpy = jasmine.createSpyObj('DistributedCrawlService',
       ['listSessions', 'getAggregate', 'cancelSession']);
@@ -148,7 +151,8 @@ describe('CrawlerManagerComponent', () => {
         { provide: UnifiedCrawlService, useValue: unifiedSpy },
         { provide: DistributedCrawlService, useValue: distributedSpy },
         { provide: WebSocketService, useValue: wsSpy },
-        { provide: GraphExtractionService, useValue: graphSpy }
+        { provide: GraphExtractionService, useValue: graphSpy },
+        { provide: MatSnackBar, useValue: jasmine.createSpyObj('MatSnackBar', ['open']) }
       ],
       schemas: [CUSTOM_ELEMENTS_SCHEMA]
     }).compileComponents();
@@ -479,7 +483,149 @@ describe('CrawlerManagerComponent', () => {
   });
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // 7. Distributed crawl sessions (Phase D)
+  // 7. Single source crawl panel
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  describe('single source crawl panel', () => {
+
+    function makeDryRunResponse(overrides: Partial<SingleSourceRunResponse> = {}): SingleSourceRunResponse {
+      return {
+        dryRun: true,
+        completed: true,
+        jobId: null,
+        factSheetId: null,
+        persisted: false,
+        status: 'DRY_RUN_COMPLETE',
+        stepsPlanned: null,
+        steps: null,
+        entityCount: 3,
+        relationCount: 2,
+        entityTypeCounts: { PERSON: 2, ORG: 1 },
+        relationshipTypeCounts: { WORKS_AT: 2 },
+        chunksCreated: 5,
+        documentsLoaded: 1,
+        errorCount: 0,
+        errors: [],
+        warnings: [],
+        sampleEntities: [
+          { id: 'e1', name: 'Alice', type: 'PERSON', confidence: 0.9 }
+        ],
+        sampleRelations: [
+          { source: 'e1', target: 'e2', type: 'WORKS_AT', confidence: 0.8 }
+        ],
+        elapsedMs: 450,
+        ...overrides
+      };
+    }
+
+    function fakeCatalog(): PipelineStepCatalogEntry[] {
+      return [
+        { id: 'SOURCE_LOAD', displayName: 'Source Load', stepType: 'IO', dependsOn: [], chunkConsumerOnly: false, chunkProducer: true, foundational: true, archivable: false },
+        { id: 'GRAPH_EXTRACTION', displayName: 'Graph Extraction', stepType: 'LLM', dependsOn: ['SOURCE_LOAD'], chunkConsumerOnly: true, chunkProducer: false, foundational: false, archivable: true },
+        { id: 'ENRICHMENT', displayName: 'Enrichment', stepType: 'CPU', dependsOn: ['GRAPH_EXTRACTION'], chunkConsumerOnly: false, chunkProducer: false, foundational: false, archivable: false }
+      ];
+    }
+
+    it('(a) dry-run submit calls runSingleSource with dryRun=true and pathOrUrl, and sets ssResult', () => {
+      const resp = makeDryRunResponse();
+      unifiedSpy.runSingleSource.and.returnValue(of(resp));
+      fixture.detectChanges();
+
+      component.ssDryRun = true;
+      component.ssMode = 'file';
+      component.ssPathOrUrl = '/tmp/test.pdf';
+
+      component.runSingleSource();
+
+      expect(unifiedSpy.runSingleSource).toHaveBeenCalledWith(
+        jasmine.objectContaining({ dryRun: true, pathOrUrl: '/tmp/test.pdf' })
+      );
+      // waitTimeoutSeconds must NOT be sent for dry run
+      const arg = unifiedSpy.runSingleSource.calls.mostRecent().args[0];
+      expect(arg.waitTimeoutSeconds).toBeUndefined();
+      expect(component.ssResult).toBe(resp);
+      expect(component.ssRunning).toBeFalse();
+      expect(component.ssError).toBeNull();
+    });
+
+    it('(b) persist submit sends waitTimeoutSeconds=5 and calls loadJobs on jobId response', () => {
+      const resp = makeDryRunResponse({
+        dryRun: false, jobId: 'job-xyz-1234', completed: false,
+        status: 'RUNNING', persisted: true
+      });
+      unifiedSpy.runSingleSource.and.returnValue(of(resp));
+      const listJobsCallsBefore = crawlerServiceSpy.listJobs.calls.count();
+      fixture.detectChanges();
+
+      component.ssDryRun = false;
+      component.ssMode = 'url';
+      component.ssPathOrUrl = 'https://example.com/doc';
+
+      component.runSingleSource();
+
+      const arg = unifiedSpy.runSingleSource.calls.mostRecent().args[0];
+      expect(arg.dryRun).toBeFalse();
+      expect(arg.waitTimeoutSeconds).toBe(5);
+      // loadJobs is called (crawlerServiceSpy.listJobs gets invoked inside loadJobs via forkJoin)
+      expect(crawlerServiceSpy.listJobs.calls.count()).toBeGreaterThan(listJobsCallsBefore);
+    });
+
+    it('(c) setStepSelection GRAPH_EXTRACTION=skip cascades ENRICHMENT to skip', () => {
+      fixture.detectChanges();
+
+      // Seed the catalog and initialise all selections to run
+      component.ssStepCatalog = fakeCatalog();
+      component.ssStepSelections = { SOURCE_LOAD: 'run', GRAPH_EXTRACTION: 'run', ENRICHMENT: 'run' };
+
+      component.ssSetsStepSelection('GRAPH_EXTRACTION', 'skip');
+
+      expect(component.ssStepSelections['GRAPH_EXTRACTION']).toBe('skip');
+      // ENRICHMENT depends on GRAPH_EXTRACTION → must be cascaded to skip
+      expect(component.ssStepSelections['ENRICHMENT']).toBe('skip');
+      // SOURCE_LOAD has no dependents listed → unchanged
+      expect(component.ssStepSelections['SOURCE_LOAD']).toBe('run');
+    });
+
+    it('ssCanRun is false when ssPathOrUrl is empty (file mode)', () => {
+      fixture.detectChanges();
+      component.ssMode = 'file';
+      component.ssPathOrUrl = '';
+      expect(component.ssCanRun).toBeFalse();
+    });
+
+    it('ssCanRun is true when ssPathOrUrl is set (file mode)', () => {
+      fixture.detectChanges();
+      component.ssMode = 'file';
+      component.ssPathOrUrl = '/some/file.pdf';
+      expect(component.ssCanRun).toBeTrue();
+    });
+
+    it('ssCanRun uses ssText in text mode', () => {
+      fixture.detectChanges();
+      component.ssMode = 'text';
+      component.ssText = '';
+      expect(component.ssCanRun).toBeFalse();
+      component.ssText = 'Hello world';
+      expect(component.ssCanRun).toBeTrue();
+    });
+
+    it('sets ssError on failure and clears ssRunning', () => {
+      unifiedSpy.runSingleSource.and.returnValue(
+        throwError(() => ({ error: { error: 'Backend error' }, message: 'Internal Server Error' }))
+      );
+      fixture.detectChanges();
+      component.ssMode = 'file';
+      component.ssPathOrUrl = '/tmp/test.pdf';
+
+      component.runSingleSource();
+
+      expect(component.ssError).toContain('Backend error');
+      expect(component.ssRunning).toBeFalse();
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // 8. Distributed crawl sessions (Phase D)
   // ─────────────────────────────────────────────────────────────────────────────
 
   describe('Distributed crawl sessions', () => {

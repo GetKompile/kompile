@@ -20,13 +20,32 @@ import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.BufferedReader;
+import java.io.File;
+import java.io.IOException;
 import java.io.InputStreamReader;
+import java.nio.file.FileVisitOption;
+import java.nio.file.FileSystems;
+import java.nio.file.FileVisitResult;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.PathMatcher;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.util.EnumSet;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 
 /**
  * Search file contents using regex patterns. Uses ripgrep (rg) if available,
@@ -34,15 +53,23 @@ import java.util.Map;
  */
 public class GrepTool implements CliTool {
 
-    private static final int MAX_MATCHES = 100;
+    private static final Logger log = LoggerFactory.getLogger(GrepTool.class);
 
-    /** Hard wall-clock cap on a single grep invocation. A watchdog kills the process at
-     *  this deadline so a no-match scan over a huge tree can never hang the MCP client. */
+    private static final int MAX_MATCHES = 100;
+    private static final int MAX_CONTEXT_LINES = 20;
+    private static final int MAX_LINE_LENGTH = 2000;
+    private static final Set<String> PARAM_KEYS = Set.of(
+            "pattern", "path", "glob", "case_insensitive", "output_mode", "context_lines", "hidden");
+
+    /** Hard wall-clock cap on a single grep invocation, for both rg and Java fallback scans. */
     private static final int TIMEOUT_SECONDS = 20;
 
     /** Cached result of probing for a real ripgrep executable, computed once per JVM
      *  (the answer can't change without a restart, and probing spawns a process). */
     private static volatile Boolean ripgrepAvailable;
+
+    /** Grep flavor classifier kept for version-output tests and diagnostics. */
+    enum GrepFlavor { GNU, UGREP, OTHER }
 
     @Override
     public String id() { return "grep"; }
@@ -53,7 +80,14 @@ public class GrepTool implements CliTool {
                 "and line numbers. Uses ripgrep if available. Supports glob filtering to narrow " +
                 "the search to specific file types. Output modes: 'content' shows matching lines, " +
                 "'files' shows only file paths, 'count' shows match counts per file. " +
-                "Maximum 100 matches returned.";
+                "Up to 100 matching results are shown; context lines may add surrounding output.";
+    }
+
+    @Override
+    public String compactHint() {
+        return "Regex content search. Required: pattern. Scope with path/glob. "
+                + "output_mode=content|files|count; context_lines=N; hidden=true. "
+                + "Portable regex: use [0-9], not \\d.";
     }
 
     @Override
@@ -61,6 +95,7 @@ public class GrepTool implements CliTool {
         ObjectMapper om = JsonUtils.standardMapper();
         ObjectNode schema = om.createObjectNode();
         schema.put("type", "object");
+        schema.put("additionalProperties", false);
         ObjectNode props = schema.putObject("properties");
 
         ObjectNode pattern = props.putObject("pattern");
@@ -73,24 +108,31 @@ public class GrepTool implements CliTool {
 
         ObjectNode glob = props.putObject("glob");
         glob.put("type", "string");
-        glob.put("description", "Glob pattern to filter files (e.g. '*.java', '*.{ts,tsx}')");
+        glob.put("description", "Glob pattern(s) to filter files (e.g. '*.java', '*.cpp,*.cu,*.h', '*.{ts,tsx}')");
 
         ObjectNode caseInsensitive = props.putObject("case_insensitive");
         caseInsensitive.put("type", "boolean");
         caseInsensitive.put("description", "Case insensitive search (default: false)");
+        caseInsensitive.put("default", false);
 
         ObjectNode outputMode = props.putObject("output_mode");
         outputMode.put("type", "string");
         outputMode.put("description", "Output mode: 'content' (default), 'files', or 'count'");
+        outputMode.put("default", "content");
+        outputMode.putArray("enum").add("content").add("files").add("count");
 
         ObjectNode contextLines = props.putObject("context_lines");
         contextLines.put("type", "integer");
         contextLines.put("description", "Number of context lines before and after each match");
+        contextLines.put("default", 0);
+        contextLines.put("minimum", 0);
+        contextLines.put("maximum", MAX_CONTEXT_LINES);
 
         ObjectNode hidden = props.putObject("hidden");
         hidden.put("type", "boolean");
         hidden.put("description", "Search hidden files and directories (dot-prefixed). Default false. "
                 + "Heavy trees like .git/node_modules/target are always skipped regardless.");
+        hidden.put("default", false);
 
         schema.putArray("required").add("pattern");
         return schema;
@@ -98,6 +140,24 @@ public class GrepTool implements CliTool {
 
     @Override
     public String permissionKey() { return "grep"; }
+
+    @Override
+    public McpToolAnnotations mcpAnnotations() { return McpToolAnnotations.READ_ONLY; }
+
+    private static List<String> unknownParams(JsonNode params) {
+        if (params == null || !params.isObject()) {
+            return List.of();
+        }
+        List<String> unknown = new ArrayList<>();
+        Iterator<String> names = params.fieldNames();
+        while (names.hasNext()) {
+            String name = names.next();
+            if (!PARAM_KEYS.contains(name)) {
+                unknown.add(name);
+            }
+        }
+        return unknown;
+    }
 
     @Override
     public ToolResult execute(JsonNode params, ToolContext context) throws ToolExecutionException {
@@ -111,132 +171,52 @@ public class GrepTool implements CliTool {
         int contextLines = params.path("context_lines").asInt(0);
         boolean includeHidden = params.path("hidden").asBoolean(false);
 
+        List<String> unknownParams = unknownParams(params);
+        if (!unknownParams.isEmpty()) {
+            return ToolResult.error("Unknown grep parameter(s): " + String.join(", ", unknownParams)
+                    + ". Accepted parameters: " + String.join(", ", PARAM_KEYS));
+        }
         if (pattern.isEmpty()) {
             return ToolResult.error("pattern is required");
         }
+        if (!"content".equals(outputMode) && !"files".equals(outputMode) && !"count".equals(outputMode)) {
+            return ToolResult.error("output_mode must be one of: content, files, count");
+        }
+        if (contextLines < 0 || contextLines > MAX_CONTEXT_LINES) {
+            return ToolResult.error("context_lines must be between 0 and " + MAX_CONTEXT_LINES);
+        }
 
         Path dir = searchPath.isEmpty() ? context.getWorkingDirectory() : context.resolvePath(searchPath);
+        if (!Files.exists(dir)) {
+            return ToolResult.error("Search path not found: " + dir);
+        }
+        if (!Files.isDirectory(dir) && !Files.isRegularFile(dir)) {
+            return ToolResult.error("Search path is not a regular file or directory: " + dir);
+        }
+        List<String> globPatterns = splitGlobPatterns(glob);
 
         // Load the .gitignore directory prunes for this search root. This skips huge ignored
         // DATA directories (model builds, downloaded corpora, generated indices) that the static
         // exclusion list below can't know about — without suppressing ignored file *types*
         // (*.json, *.log), which --no-ignore deliberately keeps searchable.
-        SearchExclusions.GitignoreDirFilter gitFilter = SearchExclusions.loadGitignoreDirFilter(dir);
+        Path gitignoreRoot = Files.isDirectory(dir) ? dir : dir.getParent();
+        SearchExclusions.GitignoreDirFilter gitFilter = SearchExclusions.loadGitignoreDirFilter(gitignoreRoot);
 
-        // Try ripgrep first, fall back to grep
-        List<String> cmd = new ArrayList<>();
+        // Try ripgrep first, fall back to the in-process Java search.
+        List<String> cmd;
         boolean useRg = isRipgrepAvailable();
 
         if (useRg) {
-            cmd.add("rg");
-            cmd.add("--no-heading");
-            // Do not let rg respect .gitignore / .rgignore. The repo's .gitignore typically
-            // contains entries like *.json, *.log, etc. that are perfectly valid files to search
-            // for code references. Silently skipping them is more harmful than accidentally
-            // including a large auto-generated file. rg's own binary-content detection (-I by
-            // default) still skips true binary blobs regardless of this flag.
-            cmd.add("--no-ignore");
-            // rg skips hidden files/dirs by default (--no-ignore does not change that). Opt in
-            // with --hidden; the SearchExclusions "!<dir>" globs below still prune .git etc.
-            if (includeHidden) {
-                cmd.add("--hidden");
-            }
-            if ("files".equals(outputMode)) {
-                cmd.add("-l");
-            } else if ("count".equals(outputMode)) {
-                cmd.add("-c");
-            } else {
-                cmd.add("-n");
-            }
-            if (caseInsensitive) cmd.add("-i");
-            if (contextLines > 0) {
-                cmd.add("-C");
-                cmd.add(String.valueOf(contextLines));
-            }
-            if (!glob.isEmpty()) {
-                cmd.add("--glob");
-                cmd.add(glob);
-            }
-            // --no-ignore disables .gitignore handling, so rg no longer prunes build/dependency
-            // dirs on its own. Exclude them explicitly (mirrors the grep fallback's --exclude-dir)
-            // so a default search doesn't drag in node_modules/, target/, dist/, etc. Added AFTER
-            // any caller glob because rg resolves overlapping globs last-match-wins, so these
-            // exclusions must take precedence over an include like "*.xml".
-            for (String ex : SearchExclusions.DIRS) {
-                cmd.add("--glob");
-                cmd.add("!" + ex);
-            }
-            // Project-specific git-ignored data directories (no hard-coded names).
-            for (String ex : gitFilter.excludeDirArgs()) {
-                cmd.add("--glob");
-                cmd.add("!" + ex);
-            }
-            cmd.add("--max-count");
-            cmd.add(String.valueOf(MAX_MATCHES));
-            cmd.add(pattern);
-            cmd.add(dir.toString());
+            cmd = buildRipgrepCommand(
+                    pattern, dir, globPatterns, outputMode, caseInsensitive,
+                    contextLines, includeHidden, gitFilter);
         } else {
-            cmd.add("grep");
-            cmd.add("-r");
-            // -E: extended regex, so a pattern is interpreted like ripgrep's default — alternation
-            // (a|b), groups, and +/?/{n} quantifiers all work. Plain grep is BRE, where `|` is a
-            // LITERAL character, so `a|b` silently matches nothing (a false negative).
-            cmd.add("-E");
-            // -I: skip binary files (.git objects, model blobs, .so/.jar) — avoids wasted work
-            // and "Binary file ... matches" noise.
-            cmd.add("-I");
-            // -D skip: don't read device/FIFO/socket files. NOTE: grep -r ALREADY skips FIFOs it
-            // encounters while recursing (GNU default — verified), so this only matters when a
-            // FIFO is passed directly as the search 'path'. Cheap belt-and-suspenders, no downside.
-            cmd.add("-D");
-            cmd.add("skip");
-            // Skip hidden dirs/files by default so the grep fallback matches GlobTool
-            // (SearchExclusions.isExcludedDir) and ripgrep's default. Without this the fallback
-            // was the only backend that walked .claude/worktrees (full repo copies) — ~47% of
-            // results were duplicate noise, and grep vs rg returned different counts. The 'hidden'
-            // param lifts only the generic dot rule; the DIRS excludes below still prune .git etc.
-            if (!includeHidden) {
-                cmd.add("--exclude-dir=.*");
-                cmd.add("--exclude=.*");
-            }
-            // Always prune the heavy build/dependency dirs. Without this, grep -r walks the whole
-            // monorepo (every target/, node_modules/, native build trees) — measured >30s (timed out)
-            // vs ~2s with these excludes — and the blocking read makes the MCP call return "No matches".
-            for (String ex : SearchExclusions.DIRS) {
-                cmd.add("--exclude-dir=" + ex);
-            }
-            // Project-specific git-ignored data directories (no hard-coded names).
-            for (String ex : gitFilter.excludeDirArgs()) {
-                cmd.add("--exclude-dir=" + ex);
-            }
-            if ("files".equals(outputMode)) {
-                cmd.add("-l");
-            } else if ("count".equals(outputMode)) {
-                cmd.add("-c");
-            } else {
-                cmd.add("-n");
-            }
-            if (caseInsensitive) cmd.add("-i");
-            if (contextLines > 0) {
-                cmd.add("-C");
-                cmd.add(String.valueOf(contextLines));
-            }
-            if (!glob.isEmpty()) {
-                // grep --include matches the BASENAME with fnmatch — it understands neither
-                // ripgrep/git-style "**/" recursion nor "{a,b}" brace groups, so a glob like
-                // "**/pom.xml" or "*.{ts,tsx}" silently matches nothing. Translate to basename
-                // include(s); grep ORs multiple --include patterns.
-                for (String inc : globToGrepIncludes(glob)) {
-                    cmd.add("--include=" + inc);
-                }
-            }
-            cmd.add("-m");
-            cmd.add(String.valueOf(MAX_MATCHES));
-            cmd.add(pattern);
-            cmd.add(dir.toString());
+            return executeJavaSearch(pattern, dir, globPatterns, caseInsensitive,
+                    outputMode, contextLines, includeHidden, gitignoreRoot, gitFilter);
         }
 
         try {
+            log.debug("grep: launching command {}", cmd);
             ProcessBuilder pb = new ProcessBuilder(cmd);
             pb.redirectErrorStream(true);
             Process process = pb.start();
@@ -263,15 +243,11 @@ public class GrepTool implements CliTool {
 
             StringBuilder output = new StringBuilder();
             int lineCount = 0;
+            int outputLineLimit = outputLineLimit(contextLines);
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
                 String line;
-                while ((line = reader.readLine()) != null && lineCount < MAX_MATCHES * 3) {
-                    // Relativize paths for cleaner output
-                    String workDirStr = context.getWorkingDirectory().toString();
-                    if (line.startsWith(workDirStr)) {
-                        line = line.substring(workDirStr.length() + 1);
-                    }
-                    output.append(line).append("\n");
+                while ((line = reader.readLine()) != null && lineCount < outputLineLimit) {
+                    output.append(relativizeOutputLine(truncateLine(line), context.getWorkingDirectory())).append("\n");
                     lineCount++;
                 }
             }
@@ -279,13 +255,20 @@ public class GrepTool implements CliTool {
             // We stopped reading because grep finished, we hit the line cap, or the watchdog
             // killed it. If grep is still alive (line cap hit), kill it now so the final
             // waitFor() can't block on a process stuck writing to a full stdout pipe.
+            boolean lineCapHit = lineCount >= outputLineLimit;
             if (process.isAlive()) {
                 process.destroyForcibly();
             }
             process.waitFor();
             watchdog.interrupt();
+            int exitCode = process.exitValue();
+            log.debug("grep: command {} exited with code {}", cmd, exitCode);
 
             String result = output.toString().trim();
+            if (exitCode > 1 && !timedOut.get() && !lineCapHit) {
+                String detail = result.isEmpty() ? "no diagnostic output" : result;
+                return ToolResult.error("grep failed (exit " + exitCode + "):\n" + detail);
+            }
             if (result.isEmpty()) {
                 return ToolResult.success(timedOut.get()
                         ? "Search timed out after " + TIMEOUT_SECONDS + "s with no matches for: " + pattern
@@ -293,14 +276,430 @@ public class GrepTool implements CliTool {
                         : "No matches found for: " + pattern);
             }
 
-            boolean truncated = lineCount >= MAX_MATCHES * 3 || timedOut.get();
+            boolean truncated = lineCapHit || timedOut.get();
+            Map<String, Object> metadata = new LinkedHashMap<>();
+            metadata.put("outputMode", outputMode);
+            metadata.put("outputLineCount", lineCount);
+            metadata.put("linesReturned", lineCount);
+            if ("content".equals(outputMode) && contextLines == 0) {
+                metadata.put("matchCount", lineCount);
+            }
+            metadata.put("truncated", truncated);
+            metadata.put("timedOut", timedOut.get());
             return ToolResult.success("grep: " + pattern,
                     result + (truncated ? "\n... (results truncated)" : ""),
-                    Map.of("matchCount", lineCount, "truncated", truncated, "timedOut", timedOut.get()));
+                    metadata);
 
         } catch (Exception e) {
             return ToolResult.error("Error running grep: " + e.getMessage());
         }
+    }
+
+    static List<String> buildRipgrepCommand(String pattern, Path dir, List<String> globPatterns,
+                                           String outputMode, boolean caseInsensitive, int contextLines,
+                                           boolean includeHidden, SearchExclusions.GitignoreDirFilter gitFilter) {
+        List<String> cmd = new ArrayList<>();
+        cmd.add("rg");
+        cmd.add("--no-heading");
+        cmd.add("--line-buffered");
+        cmd.add("-I");
+        // Do not let rg respect .gitignore / .rgignore. The repo's .gitignore typically contains
+        // file-type ignores like *.json or *.log that are valid files to search for code references.
+        // Those remain searchable here, but known binary extensions are added as explicit globs.
+        cmd.add("--no-ignore");
+        // rg skips hidden files/dirs by default (--no-ignore does not change that). Opt in
+        // with --hidden; the SearchExclusions "!<dir>" globs below still prune .git etc.
+        if (includeHidden) {
+            cmd.add("--hidden");
+        }
+        if ("files".equals(outputMode)) {
+            cmd.add("-l");
+        } else if ("count".equals(outputMode)) {
+            cmd.add("-c");
+            cmd.add("--with-filename");
+        } else {
+            cmd.add("-n");
+            cmd.add("--with-filename");
+        }
+        if (caseInsensitive) cmd.add("-i");
+        if (contextLines > 0) {
+            cmd.add("-C");
+            cmd.add(String.valueOf(contextLines));
+        }
+        for (String globPattern : globPatterns) {
+            cmd.add("--glob");
+            cmd.add(globPattern);
+        }
+        // --no-ignore disables .gitignore handling, so rg no longer prunes build/dependency
+        // dirs on its own. Exclude them explicitly, matching the Java fallback's pruning,
+        // so a default search doesn't drag in node_modules/, target/, dist/, etc. Added AFTER
+        // any caller glob because rg resolves overlapping globs last-match-wins, so these
+        // exclusions must take precedence over an include like "*.xml".
+        for (String ex : SearchExclusions.DIRS) {
+            cmd.add("--glob");
+            cmd.add("!" + ex);
+        }
+        // Project-specific git-ignored data directories (no hard-coded names).
+        if (gitFilter != null) {
+            for (String ex : gitFilter.excludeDirArgs(dir)) {
+                cmd.add("--glob");
+                cmd.add("!" + ex);
+            }
+        }
+        // Skip known binary extensions up-front to avoid expensive reads of auto-generated
+        // model/vector artifacts that aren't obvious from extensionless or late-occurring payloads.
+        for (String ex : SearchExclusions.binaryFileGlobs()) {
+            cmd.add("--glob");
+            cmd.add("!" + ex);
+        }
+        if (!"count".equals(outputMode)) {
+            cmd.add("--max-count");
+            cmd.add(String.valueOf(MAX_MATCHES));
+        }
+        cmd.add("--");
+        cmd.add(pattern);
+        cmd.add(dir.toString());
+        return cmd;
+    }
+
+    private ToolResult executeJavaSearch(String pattern, Path root, List<String> globPatterns,
+                                         boolean caseInsensitive, String outputMode, int contextLines,
+                                         boolean includeHidden, Path gitignoreRoot,
+                                         SearchExclusions.GitignoreDirFilter gitFilter) {
+        Pattern compiled;
+        try {
+            int flags = caseInsensitive ? Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE : 0;
+            compiled = Pattern.compile(pattern, flags);
+        } catch (PatternSyntaxException e) {
+            return ToolResult.error("grep failed (invalid regex): " + e.getMessage());
+        }
+
+        List<GlobMatcher> globMatchers;
+        try {
+            globMatchers = compileGlobMatchers(globPatterns);
+        } catch (RuntimeException e) {
+            return ToolResult.error("Invalid glob pattern: " + e.getMessage());
+        }
+
+        JavaSearchState state = new JavaSearchState(outputMode, contextLines,
+                System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(TIMEOUT_SECONDS));
+        Path baseRoot = Files.isDirectory(root) ? root : root.getParent();
+        if (baseRoot == null) {
+            baseRoot = root.toAbsolutePath().getParent();
+        }
+        if (baseRoot == null) {
+            baseRoot = root.toAbsolutePath();
+        }
+        final Path traversalRoot = root;
+        final Path relativeRoot = baseRoot;
+        final Path ignoreRoot = gitignoreRoot != null ? gitignoreRoot : relativeRoot;
+
+        try {
+            if (Files.isRegularFile(root)) {
+                searchJavaFile(root, relativeRoot, globMatchers, compiled, state);
+            } else {
+                Files.walkFileTree(root, EnumSet.noneOf(FileVisitOption.class), Integer.MAX_VALUE,
+                        new SimpleFileVisitor<>() {
+                    @Override
+                    public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
+                        if (state.shouldStop()) {
+                            return FileVisitResult.TERMINATE;
+                        }
+                        if (!dir.equals(traversalRoot)) {
+                            String name = dir.getFileName() != null ? dir.getFileName().toString() : "";
+                            String rel = gitFilter.relativePath(dir, ignoreRoot);
+                            if (SearchExclusions.isExcludedDir(name, includeHidden)
+                                    || gitFilter.isIgnoredDir(rel, name)) {
+                                return FileVisitResult.SKIP_SUBTREE;
+                            }
+                        }
+                        return FileVisitResult.CONTINUE;
+                    }
+
+                    @Override
+                    public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
+                        if (state.shouldStop()) {
+                            return FileVisitResult.TERMINATE;
+                        }
+                        if (!attrs.isRegularFile()) {
+                            return FileVisitResult.CONTINUE;
+                        }
+                        if (!includeHidden) {
+                            Path fileName = file.getFileName();
+                            if (fileName != null && fileName.toString().startsWith(".")) {
+                                return FileVisitResult.CONTINUE;
+                            }
+                        }
+                        searchJavaFile(file, relativeRoot, globMatchers, compiled, state);
+                        return state.shouldStop() ? FileVisitResult.TERMINATE : FileVisitResult.CONTINUE;
+                    }
+
+                    @Override
+                    public FileVisitResult visitFileFailed(Path file, IOException exc) {
+                        return FileVisitResult.CONTINUE;
+                    }
+                });
+            }
+        } catch (IOException e) {
+            return ToolResult.error("Error running grep: " + e.getMessage());
+        }
+
+        String result = state.output().trim();
+        if (result.isEmpty()) {
+            return ToolResult.success(state.timedOut
+                    ? "Search timed out after " + TIMEOUT_SECONDS + "s with no matches for: " + pattern
+                      + " (tree too large — narrow the search with 'path' or 'glob')"
+                    : "No matches found for: " + pattern);
+        }
+
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("outputMode", outputMode);
+        metadata.put("outputLineCount", state.outputLineCount);
+        metadata.put("linesReturned", state.outputLineCount);
+        if ("content".equals(outputMode) && contextLines == 0) {
+            metadata.put("matchCount", state.matchCount);
+        }
+        metadata.put("truncated", state.truncated || state.timedOut);
+        metadata.put("timedOut", state.timedOut);
+        return ToolResult.success("grep: " + pattern,
+                result + ((state.truncated || state.timedOut) ? "\n... (results truncated)" : ""),
+                metadata);
+    }
+
+    private void searchJavaFile(Path file, Path root, List<GlobMatcher> globMatchers,
+                                Pattern pattern, JavaSearchState state) {
+        if (state.shouldStop() || !matchesGlob(file, root, globMatchers)) {
+            return;
+        }
+        try {
+            if (SearchExclusions.isLikelyBinaryFile(file)) {
+                return;
+            }
+            String rel = relativeString(root, file);
+            if (state.contextLines > 0 && "content".equals(state.outputMode)) {
+                searchJavaFileWithContext(file, rel, pattern, state);
+            } else {
+                searchJavaFileStreaming(file, rel, pattern, state);
+            }
+        } catch (IOException | RuntimeException ignored) {
+            // Match grep's tolerance for unreadable/non-text files during recursive scans.
+        }
+    }
+
+    private static void searchJavaFileStreaming(Path file, String rel, Pattern pattern,
+                                                JavaSearchState state) throws IOException {
+        int fileMatches = 0;
+        int lineNo = 0;
+        try (BufferedReader reader = Files.newBufferedReader(file)) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                lineNo++;
+                if (state.shouldStop()) {
+                    return;
+                }
+                if (!pattern.matcher(line).find()) {
+                    continue;
+                }
+                if ("files".equals(state.outputMode)) {
+                    if (state.addLine(rel)) {
+                        state.matchCount++;
+                    }
+                    return;
+                }
+                fileMatches++;
+                if ("content".equals(state.outputMode)) {
+                    if (state.addLine(rel + ":" + lineNo + ":" + truncateLine(line))) {
+                        state.matchCount++;
+                    }
+                } else {
+                    state.matchCount++;
+                }
+            }
+        }
+        if ("count".equals(state.outputMode) && fileMatches > 0) {
+            state.addLine(rel + ":" + fileMatches);
+        }
+    }
+
+    private static void searchJavaFileWithContext(Path file, String rel, Pattern pattern,
+                                                  JavaSearchState state) throws IOException {
+        Deque<LineEntry> before = new ArrayDeque<>();
+        int afterRemaining = 0;
+        int lineNo = 0;
+        try (BufferedReader reader = Files.newBufferedReader(file)) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                lineNo++;
+                if (state.shouldStop()) {
+                    return;
+                }
+                boolean matched = pattern.matcher(line).find();
+                if (matched) {
+                    for (LineEntry prev : before) {
+                        state.addLine(rel + "-" + prev.lineNo + "-" + truncateLine(prev.text));
+                    }
+                    before.clear();
+                    if (state.addLine(rel + ":" + lineNo + ":" + truncateLine(line))) {
+                        state.matchCount++;
+                    }
+                    afterRemaining = state.contextLines;
+                } else if (afterRemaining > 0) {
+                    state.addLine(rel + "-" + lineNo + "-" + truncateLine(line));
+                    afterRemaining--;
+                } else {
+                    before.addLast(new LineEntry(lineNo, line));
+                    while (before.size() > state.contextLines) {
+                        before.removeFirst();
+                    }
+                }
+            }
+        }
+    }
+
+    private static List<GlobMatcher> compileGlobMatchers(List<String> globPatterns) {
+        if (globPatterns == null || globPatterns.isEmpty()) {
+            return List.of();
+        }
+        List<GlobMatcher> matchers = new ArrayList<>();
+        for (String glob : globPatterns) {
+            boolean basename = glob.indexOf('/') < 0 && glob.indexOf(File.separatorChar) < 0;
+            matchers.add(new GlobMatcher(glob,
+                    FileSystems.getDefault().getPathMatcher("glob:" + glob), basename));
+        }
+        return matchers;
+    }
+
+    private static boolean matchesGlob(Path file, Path root, List<GlobMatcher> matchers) {
+        if (matchers.isEmpty()) {
+            return true;
+        }
+        Path rel;
+        try {
+            rel = root.toAbsolutePath().normalize().relativize(file.toAbsolutePath().normalize());
+        } catch (IllegalArgumentException e) {
+            rel = file.getFileName();
+        }
+        Path fileName = file.getFileName();
+        for (GlobMatcher matcher : matchers) {
+            if (matcher.matcher().matches(rel)
+                    || (matcher.basenameOnly() && fileName != null && matcher.matcher().matches(fileName))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static String relativeString(Path root, Path path) {
+        try {
+            return root.toAbsolutePath().normalize().relativize(path.toAbsolutePath().normalize()).toString();
+        } catch (IllegalArgumentException e) {
+            return path.toString();
+        }
+    }
+
+    private record GlobMatcher(String glob, PathMatcher matcher, boolean basenameOnly) {}
+    private record LineEntry(int lineNo, String text) {}
+
+    private static final class JavaSearchState {
+        private final String outputMode;
+        private final int contextLines;
+        private final long deadlineNanos;
+        private final StringBuilder output = new StringBuilder();
+        private final int outputLineLimit;
+        private int outputLineCount;
+        private int matchCount;
+        private boolean truncated;
+        private boolean timedOut;
+
+        private JavaSearchState(String outputMode, int contextLines, long deadlineNanos) {
+            this.outputMode = outputMode;
+            this.contextLines = contextLines;
+            this.deadlineNanos = deadlineNanos;
+            this.outputLineLimit = outputLineLimit(contextLines);
+        }
+
+        private boolean addLine(String line) {
+            if (shouldStop()) {
+                return false;
+            }
+            if (outputLineCount >= outputLineLimit) {
+                truncated = true;
+                return false;
+            }
+            output.append(line).append('\n');
+            outputLineCount++;
+            return true;
+        }
+
+        private boolean shouldStop() {
+            if (truncated) {
+                return true;
+            }
+            if (System.nanoTime() > deadlineNanos) {
+                timedOut = true;
+                return true;
+            }
+            return false;
+        }
+
+        private String output() {
+            return output.toString();
+        }
+    }
+
+    static List<String> splitGlobPatterns(String glob) {
+        if (glob == null || glob.isBlank()) {
+            return List.of();
+        }
+        List<String> result = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        int braceDepth = 0;
+        for (int i = 0; i < glob.length(); i++) {
+            char ch = glob.charAt(i);
+            if (ch == '{') {
+                braceDepth++;
+            } else if (ch == '}' && braceDepth > 0) {
+                braceDepth--;
+            }
+            if (ch == ',' && braceDepth == 0) {
+                addGlobPart(result, current);
+            } else {
+                current.append(ch);
+            }
+        }
+        addGlobPart(result, current);
+        return result;
+    }
+
+    private static void addGlobPart(List<String> result, StringBuilder current) {
+        String part = current.toString().trim();
+        if (!part.isEmpty()) {
+            result.add(part);
+        }
+        current.setLength(0);
+    }
+
+    private static int outputLineLimit(int contextLines) {
+        if (contextLines <= 0) {
+            return MAX_MATCHES;
+        }
+        int linesPerMatch = (contextLines * 2) + 1;
+        return Math.min(1000, MAX_MATCHES * linesPerMatch);
+    }
+
+    private static String relativizeOutputLine(String line, Path workingDirectory) {
+        String prefix = workingDirectory.toAbsolutePath().normalize().toString() + File.separator;
+        return line.startsWith(prefix) ? line.substring(prefix.length()) : line;
+    }
+
+    private static String truncateLine(String line) {
+        if (line == null) {
+            return "";
+        }
+        if (line.length() <= MAX_LINE_LENGTH) {
+            return line;
+        }
+        return line.substring(0, MAX_LINE_LENGTH) + "... (truncated)";
     }
 
     /**
@@ -313,6 +712,18 @@ public class GrepTool implements CliTool {
      * group into one include per option. The {@code rg} backend handles the raw glob natively.
      */
     static List<String> globToGrepIncludes(String glob) {
+        List<String> globParts = splitGlobPatterns(glob);
+        if (globParts.size() > 1) {
+            List<String> includes = new ArrayList<>();
+            for (String part : globParts) {
+                includes.addAll(globToGrepIncludes(part));
+            }
+            return includes;
+        }
+        if (globParts.isEmpty()) {
+            return List.of();
+        }
+        glob = globParts.get(0);
         int lastSlash = glob.lastIndexOf('/');
         String base = lastSlash >= 0 ? glob.substring(lastSlash + 1) : glob;
         if (base.isEmpty()) {
@@ -338,41 +749,76 @@ public class GrepTool implements CliTool {
         return List.of(base);
     }
 
+
     /**
      * True if a real ripgrep executable is usable. Cached for the life of the JVM.
+     * Requires both exit 0 AND stdout that identifies itself as ripgrep, so a shell
+     * function/shim named {@code rg} that exits 0 but isn't ripgrep is rejected.
      */
     private boolean isRipgrepAvailable() {
         Boolean cached = ripgrepAvailable;
         if (cached != null) {
             return cached;
         }
-        boolean available = probeExecutable("rg");
+        String versionOutput = captureVersionOutput("rg");
+        boolean available = isRipgrepVersion(versionOutput);
+        log.debug("grep: rg --version output={}, identified as ripgrep={}", versionOutput, available);
         ripgrepAvailable = available;
         return available;
     }
 
     /**
-     * Probes whether {@code command} can actually be executed by running
-     * "{@code command} --version" directly via {@link ProcessBuilder} (no shell).
+     * Pure predicate: returns {@code true} iff {@code versionOutput} (stdout from
+     * {@code rg --version}) identifies the binary as ripgrep. A shell function/shim that
+     * exits 0 but emits a different tool name is rejected here, preventing ripgrep-only
+     * flags ({@code --glob}, {@code --no-heading}) from being passed to the wrong tool.
      *
-     * <p>Deliberately more robust than shelling out to {@code which}: {@code which} may be
-     * absent on minimal systems, and neither it nor ProcessBuilder resolves shell
-     * functions/aliases. In some environments {@code rg} on the interactive PATH is only a
-     * shell function (a wrapper), which a {@code which} probe can misreport; executing the
-     * binary directly matches exactly what the real search call does, so we report
-     * "available" only when a genuine {@code rg} executable is on PATH.
+     * <p>This method is package-private for unit testing.
      */
-    private boolean probeExecutable(String command) {
+    static boolean isRipgrepVersion(String versionOutput) {
+        return versionOutput != null
+                && versionOutput.toLowerCase().contains("ripgrep");
+    }
+
+    /**
+     * Pure classifier: maps {@code grep --version} output to a {@link GrepFlavor}.
+     * Kept package-private for unit tests that verify version-output parsing.
+     */
+    static GrepFlavor detectGrepFlavor(String versionOutput) {
+        if (versionOutput == null || versionOutput.isEmpty()) {
+            return GrepFlavor.OTHER;
+        }
+        String lower = versionOutput.toLowerCase();
+        if (lower.contains("ugrep")) {
+            return GrepFlavor.UGREP;
+        }
+        if (lower.contains("gnu")) {
+            return GrepFlavor.GNU;
+        }
+        return GrepFlavor.OTHER;
+    }
+
+    /**
+     * Captures the first line of stdout from "{@code command} --version" executed directly
+     * via {@link ProcessBuilder} (no shell, so shell functions/aliases are invisible).
+     * Returns an empty string if the command is not on PATH, fails to start, times out,
+     * or produces no output.
+     */
+    private String captureVersionOutput(String command) {
         Process p = null;
         try {
             p = new ProcessBuilder(command, "--version")
-                    .redirectOutput(ProcessBuilder.Redirect.DISCARD)
-                    .redirectError(ProcessBuilder.Redirect.DISCARD)
+                    .redirectErrorStream(true)
                     .start();
-            return p.waitFor(5, java.util.concurrent.TimeUnit.SECONDS) && p.exitValue() == 0;
+            String firstLine;
+            try (BufferedReader br = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
+                firstLine = br.readLine();
+            }
+            p.waitFor(5, java.util.concurrent.TimeUnit.SECONDS);
+            return firstLine != null ? firstLine : "";
         } catch (Exception e) {
-            // Not on PATH / not runnable → treat as unavailable and use the grep fallback.
-            return false;
+            // Not on PATH / not runnable.
+            return "";
         } finally {
             if (p != null) {
                 p.destroyForcibly();

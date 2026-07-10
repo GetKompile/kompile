@@ -91,6 +91,28 @@ public final class GraphProvenanceKeys {
     }
 
     /**
+     * Resolve a stable, human-readable source label from graph metadata.
+     * Reserved provenance keys are preferred after an explicit display label.
+     */
+    public static String sourceLabel(Map<String, Object> metadata) {
+        if (metadata == null || metadata.isEmpty()) {
+            return null;
+        }
+        for (String key : List.of(
+                "sourceLabel", "source", SOURCE, SOURCE_DOCUMENT_ID,
+                CRAWL_RUN_ID, "url", "path", "channel")) {
+            Object value = metadata.get(key);
+            if (value != null) {
+                String label = String.valueOf(value).trim();
+                if (!label.isEmpty()) {
+                    return label;
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
      * Build a store-agnostic provenance view of a node: its structural lineage (source node it
      * belongs to, timestamps) plus the reserved provenance metadata keys (with the leading
      * underscore stripped for readability).

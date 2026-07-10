@@ -45,6 +45,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
+import ai.kompile.utils.NativeImageInfo;
 
 /**
  * Shared base for every managed JVM subprocess launcher in Kompile.
@@ -72,7 +73,7 @@ import java.util.jar.JarFile;
  * the subclass instance. Concrete behaviour is added by overriding the abstract config
  * getters and calling {@link #startProcess}.</p>
  */
-public abstract class ManagedSubprocessLauncher implements RestartableSubprocess {
+public abstract class ManagedSubprocessLauncher implements RestartableSubprocess, BackendConfigurable {
 
     protected final Logger log = LoggerFactory.getLogger(getClass());
 
@@ -84,6 +85,9 @@ public abstract class ManagedSubprocessLauncher implements RestartableSubprocess
 
     /** In-flight runs keyed by runId, so {@link #requestRestart}/{@link #stopAll} can reach them. */
     private final ConcurrentHashMap<String, ManagedRun> activeRuns = new ConcurrentHashMap<>();
+
+    /** Set when shutdown has begun; prevents requestRestart from spawning new threads after shutdown. */
+    private final java.util.concurrent.atomic.AtomicBoolean shutdownStarted = new java.util.concurrent.atomic.AtomicBoolean(false);
 
     // ── abstract / overridable configuration ──────────────────────────────────
 
@@ -115,9 +119,65 @@ public abstract class ManagedSubprocessLauncher implements RestartableSubprocess
         return null;
     }
 
+    /**
+     * The {@code --subprocess=} type token the unified native binary dispatches on.
+     *
+     * <p>In native self-exec mode (GraalVM native image with no classpath),
+     * {@link #buildJvmCommand} passes {@code --subprocess=<type>} as the first
+     * program argument so {@code MainApplication.main()} routes to this subprocess's
+     * main class. Defaults to {@link #getSubprocessId()}; override when the dispatch
+     * type key differs from the subprocess id (e.g. the id is a registry handle but
+     * the switch-case key is different).</p>
+     */
+    protected String getSubprocessDispatchType() {
+        return getSubprocessId();
+    }
+
     /** Extra JVM flags appended after the standard set (GC tuning, system props, …). */
     protected List<String> getExtraJvmArgs() {
         return List.of();
+    }
+
+    /**
+     * Which ND4J compute backend this subprocess should select.
+     *
+     * <p>Backend selection in {@link org.nd4j.linalg.factory.Nd4jBackend#load()} is driven by the
+     * ServiceLoader ordering properties {@code org.nd4j.cpu.priority} / {@code org.nd4j.gpu.priority}
+     * — NOT by {@code nd4j.backend.priority}, which only orders {@code BackendManager}'s device list
+     * and is inert for selection. On a classpath carrying both {@code nd4j-native} and
+     * {@code nd4j-cuda} (the dual-backend jar) both priorities default to 0, so {@code JCublasBackend}
+     * wins the tie and a subprocess with no GPU role loads CUDA anyway and crashes on a device context
+     * it never set up. Declaring a preference here makes selection explicit and device-abstract — via
+     * ND4J's own backend-priority mechanism, with no CUDA-specific environment variables.</p>
+     */
+    public enum BackendPreference { INHERIT, CPU, GPU }
+
+    /** Default {@link BackendPreference#INHERIT}: emit no selection flags (legacy behaviour). */
+    protected BackendPreference getBackendPreference() {
+        return BackendPreference.INHERIT;
+    }
+
+    /**
+     * Scheduler-assigned placement for the NEXT spawn (device-agnostic). When set it overrides the
+     * static {@link #getBackendPreference()} and delivers the device + memory bound via ND4J's real
+     * knobs: {@code nd4j.placement.defaultDevice} for device select, {@code nd4j.environment.maxDeviceMemory}
+     * for the physical environment cap, and {@code SD_MAX_DEVICE_BYTES} for early native process setup.
+     * NEVER {@code CUDA_VISIBLE_DEVICES}. Set through {@link #applyPlacement}.
+     */
+    private volatile SubprocessPlacement schedulerPlacement;
+
+    /** {@link BackendConfigurable} contract — the scheduler sets placement before spawn. */
+    public void applyPlacement(SubprocessPlacement placement) {
+        this.schedulerPlacement = placement;
+    }
+
+    /**
+     * Translate the effective backend + device into real ND4J ServiceLoader/placement flags via the
+     * shared {@link SubprocessBackendFlags} — the SAME device-agnostic delivery every standalone
+     * launcher uses, so there is one code path, not per-type copies.
+     */
+    private List<String> backendSelectionFlags() {
+        return SubprocessBackendFlags.jvmFlags(schedulerPlacement, getBackendPreference());
     }
 
     /**
@@ -128,6 +188,9 @@ public abstract class ManagedSubprocessLauncher implements RestartableSubprocess
         // Propagate the parent's ND4J/CUDA/threading/Triton environment variables to the subprocess
         // (single source of truth). Subclasses overriding this should also call super.
         SubprocessEnvironmentPropagator.propagateToEnvironment(env);
+        // Scheduler-assigned early native memory bound. The matching physical ND4J cap is emitted by
+        // backendSelectionFlags() as nd4j.environment.maxDeviceMemory and applied by child startup code.
+        SubprocessBackendFlags.applyEnv(env, schedulerPlacement);
     }
 
     // ── command building ──────────────────────────────────────────────────────
@@ -158,6 +221,61 @@ public abstract class ManagedSubprocessLauncher implements RestartableSubprocess
     }
 
     protected List<String> buildJvmCommand(List<String> programArgs) {
+        // In GraalVM native image mode (no classpath available) re-exec the unified binary so
+        // MainApplication dispatches to this subprocess type via --subprocess=<type>.
+        if (NativeImageInfo.isRunningInNativeImage() && !NativeImageInfo.hasClasspath()) {
+            return buildNativeSelfExecCommand(programArgs);
+        }
+        return buildJvmClasspathCommand(programArgs);
+    }
+
+    /**
+     * Build the native self-exec command used when the launcher is running inside a GraalVM
+     * native image and there is no classpath to fork a child JVM from.
+     *
+     * <p>GraalVM native binaries accept {@code -Xmx} and {@code -D} runtime flags but reject
+     * unknown HotSpot flags ({@code -XX:+UseG1GC}, etc.), and there is no classpath — the image
+     * re-execs itself and {@code MainApplication} dispatches on {@code --subprocess=}. Only
+     * {@code -Xm*} and {@code -D*} flags from {@link #getExtraJvmArgs()} are forwarded; other
+     * flags (GC tuning, etc.) are silently dropped because they are JVM-only.</p>
+     */
+    private List<String> buildNativeSelfExecCommand(List<String> programArgs) {
+        String selfExe = NativeImageInfo.getExecutablePath();
+        if (selfExe == null || selfExe.isBlank()) {
+            log.warn("[{}] native self-exec: could not determine executable path; falling back to JVM command",
+                    getSubprocessId());
+            return buildJvmClasspathCommand(programArgs);
+        }
+
+        long physicalMb = getMaxPhysicalMb() > 0 ? getMaxPhysicalMb() : (long) getHeapMb() * 4L;
+
+        List<String> cmd = new ArrayList<>();
+        cmd.add(selfExe);
+        cmd.add("-Xmx" + getHeapMb() + "m");
+        // Forward ND4J/JavaCPP system properties (same set as the JVM path).
+        cmd.addAll(SubprocessEnvironmentPropagator.buildSystemPropertyFlags());
+        cmd.add("-Dfile.encoding=UTF-8");
+        cmd.add("-Dorg.bytedeco.javacpp.maxbytes=" + physicalMb + "m");
+        cmd.add("-Dorg.bytedeco.javacpp.maxphysicalbytes=" + resolveSystemPhysicalCeilingMb(physicalMb) + "m");
+        cmd.addAll(backendSelectionFlags());
+        // From getExtraJvmArgs(), forward only -D and -Xm* flags — GraalVM native rejects -XX:.
+        for (String extra : getExtraJvmArgs()) {
+            if (extra.startsWith("-D") || extra.startsWith("-Xm")) {
+                cmd.add(extra);
+            }
+        }
+        // Dispatch type token: MainApplication.dispatchSubprocess() switches on this value.
+        cmd.add("--subprocess=" + getSubprocessDispatchType());
+        if (programArgs != null) {
+            cmd.addAll(programArgs);
+        }
+        return cmd;
+    }
+
+    /**
+     * Build the standard {@code java -cp … MainClass <programArgs>} command used in JVM mode.
+     */
+    private List<String> buildJvmClasspathCommand(List<String> programArgs) {
         String javaPath = ProcessHandle.current().info().command().orElse("java");
 
         long physicalMb = getMaxPhysicalMb() > 0 ? getMaxPhysicalMb() : (long) getHeapMb() * 4L;
@@ -184,6 +302,7 @@ public abstract class ManagedSubprocessLauncher implements RestartableSubprocess
         //    guard), never the per-process budget.
         cmd.add("-Dorg.bytedeco.javacpp.maxbytes=" + physicalMb + "m");
         cmd.add("-Dorg.bytedeco.javacpp.maxphysicalbytes=" + resolveSystemPhysicalCeilingMb(physicalMb) + "m");
+        cmd.addAll(backendSelectionFlags());
         cmd.addAll(getExtraJvmArgs());
         cmd.add("-cp");
         cmd.add(resolveClasspath());
@@ -402,6 +521,7 @@ public abstract class ManagedSubprocessLauncher implements RestartableSubprocess
 
     @PreDestroy
     public void shutdown() {
+        shutdownStarted.set(true);
         if (!activeRuns.isEmpty()) {
             log.info("[{}] shutting down — stopping {} active run(s)", getSubprocessId(), activeRuns.size());
             stopAll();
@@ -417,7 +537,15 @@ public abstract class ManagedSubprocessLauncher implements RestartableSubprocess
      */
     @Override
     public void requestRestart(String reason) {
+        if (shutdownStarted.get()) {
+            log.debug("[{}] restart suppressed — launcher shutdown has started", getSubprocessId());
+            return;
+        }
         Thread t = new Thread(() -> {
+            if (shutdownStarted.get()) {
+                log.debug("[{}] restart thread suppressed — shutdown began before it ran", getSubprocessId());
+                return;
+            }
             log.warn("[{}] restart requested: {} — destroying {} active run(s)",
                     getSubprocessId(), reason, activeRuns.size());
             stopAll();

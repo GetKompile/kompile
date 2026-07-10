@@ -269,6 +269,10 @@
         <div class="chunk-content" *ngIf="!showRenderedMarkdown">
           <pre>{{ selectedChunk.content }}</pre>
         </div>
+        <!-- Angular's built-in [innerHTML] binding sanitizes the content using its
+             own HTML sanitizer — no bypassSecurityTrustHtml is used here.
+             Chunk content is stored plain text/markdown from the crawl pipeline;
+             Angular strips any injected script/event-handler markup automatically. -->
         <div class="chunk-content rendered" *ngIf="showRenderedMarkdown" [innerHTML]="selectedChunk.content">
         </div>
       </div>
@@ -383,76 +387,4 @@
     </div>
   </div>
 
-  <!-- Deduplication Dialog -->
-  <div class="dedup-dialog-overlay" *ngIf="showDedupDialog" (click)="closeDedupDialog()">
-    <div class="dedup-dialog" (click)="$event.stopPropagation()">
-      <div class="dialog-header">
-        <h3>Deduplicate Chunks</h3>
-        <button mat-icon-button (click)="closeDedupDialog()">
-          <mat-icon>close</mat-icon>
-        </button>
-      </div>
-
-      <div class="dialog-content">
-        <mat-form-field appearance="outline" class="full-width">
-          <mat-label>Deduplication Strategy</mat-label>
-          <mat-select [(ngModel)]="dedupStrategy" [ngModelOptions]="{standalone: true}">
-            <mat-option value="content_hash">
-              Content Hash (SHA-256) - Finds exact text duplicates
-            </mat-option>
-            <mat-option value="source_and_index">
-              Source + Index - Finds re-indexed files
-            </mat-option>
-          </mat-select>
-        </mat-form-field>
-
-        <mat-form-field appearance="outline" class="full-width">
-          <mat-label>Keep Policy</mat-label>
-          <mat-select [(ngModel)]="dedupKeepPolicy" [ngModelOptions]="{standalone: true}">
-            <mat-option value="first">Keep First (oldest)</mat-option>
-            <mat-option value="latest">Keep Latest (newest)</mat-option>
-          </mat-select>
-        </mat-form-field>
-
-        <mat-checkbox [(ngModel)]="dedupDryRun" [ngModelOptions]="{standalone: true}">
-          Dry Run (preview only, don't delete)
-        </mat-checkbox>
-
-        <div class="analysis-results" *ngIf="duplicateAnalysis">
-          <mat-divider></mat-divider>
-          <h4>Analysis Results</h4>
-          <div class="result-stats">
-            <div class="stat">
-              <span class="stat-value">{{ duplicateAnalysis.totalDuplicateGroups }}</span>
-              <span class="stat-label">Duplicate Groups</span>
-            </div>
-            <div class="stat">
-              <span class="stat-value">{{ duplicateAnalysis.totalDuplicateChunks }}</span>
-              <span class="stat-label">Total Duplicates</span>
-            </div>
-            <div class="stat">
-              <span class="stat-value">{{ duplicateAnalysis.chunksToRemove }}</span>
-              <span class="stat-label">To Remove</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="dialog-actions">
-        <button mat-stroked-button (click)="analyzeDuplicates()" [disabled]="isDeduplicating">
-          <mat-icon>search</mat-icon>
-          Analyze
-        </button>
-        <button mat-raised-button color="primary" (click)="runDeduplication()" [disabled]="isDeduplicating">
-          <mat-icon>{{ dedupDryRun ? 'preview' : 'delete_sweep' }}</mat-icon>
-          {{ dedupDryRun ? 'Preview' : 'Remove Duplicates' }}
-        </button>
-      </div>
-
-      <div class="dialog-loading" *ngIf="isDeduplicating">
-        <mat-spinner diameter="24"></mat-spinner>
-        <span>Processing...</span>
-      </div>
-    </div>
-  </div>
 </div>

@@ -100,16 +100,17 @@
             <scope>test</scope>
         </dependency>
 
-        <!-- ND4J native CPU backend so TensorHlMrfInferenceTest can execute tensor ops -->
+        <!-- ND4J backend for TensorHlMrfInferenceTest; resolved from ${nd4j.backend}
+             so CUDA builds run the test suite against the same backend as the rest of the build. -->
         <dependency>
             <groupId>org.eclipse.deeplearning4j</groupId>
-            <artifactId>nd4j-native</artifactId>
+            <artifactId>${nd4j.backend}</artifactId>
             <version>${nd4j.version}</version>
             <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>org.eclipse.deeplearning4j</groupId>
-            <artifactId>nd4j-native</artifactId>
+            <artifactId>${nd4j.backend}</artifactId>
             <version>${nd4j.version}</version>
             <classifier>${javacpp.platform}</classifier>
             <scope>test</scope>

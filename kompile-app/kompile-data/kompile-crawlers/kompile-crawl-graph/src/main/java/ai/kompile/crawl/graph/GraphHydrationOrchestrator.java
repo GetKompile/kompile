@@ -17,6 +17,7 @@
 package ai.kompile.crawl.graph;
 
 import ai.kompile.core.crawl.graph.GraphEnrichmentService;
+import ai.kompile.core.graphrag.conformance.OntologyProjectionProvider;
 import ai.kompile.crawl.graph.ontology.OntologyConformanceTagger;
 import ai.kompile.graph.reasoning.confidence.StrengthBand;
 import ai.kompile.knowledgegraph.confidence.KbConfig;
@@ -24,6 +25,7 @@ import ai.kompile.knowledgegraph.confidence.KbConfigManager;
 import ai.kompile.knowledgegraph.maintenance.HealthSetpoints;
 import ai.kompile.knowledgegraph.maintenance.PruneCompactOrchestrator;
 import ai.kompile.knowledgegraph.maintenance.PruneCompactResult;
+import ai.kompile.knowledgegraph.matrix.gnn.GraphNeuralScoringService;
 import ai.kompile.knowledgegraph.reasoning.FactPromotionTracker;
 import ai.kompile.knowledgegraph.reasoning.IncrementalReasoningOrchestrator;
 import ai.kompile.knowledgegraph.reasoning.MebnTheoryRegistrationService;
@@ -34,6 +36,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
 
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
@@ -47,16 +51,18 @@ import java.util.function.BiConsumer;
 /**
  * Client-side orchestrator for the ENRICHMENT crawl step.
  *
- * <p>Sequences the three top-level hydration stages on a single fact sheet after
+     * <p>Sequences the top-level hydration stages on a single fact sheet after
  * ENTITY_RESOLUTION and EDGE_COMPUTATION have completed:
  *
  * <ol>
  *   <li><b>DERIVATION</b> — {@link IncrementalReasoningOrchestrator#runFullReground}:
  *       MAP inference (S4 rule derivation + S9 TMS contradiction pass + S10 materialization
  *       into InferredFactStore). Returns retracted atom keys for P1.</li>
- *   <li><b>PRUNE_COMPACT</b> — {@link PruneCompactOrchestrator#run}: P1 retraction pruning
- *       + P2 entity compaction + P3 confidence pruning + P4 orphan GC + P5 component sweep +
- *       PH(post) health snapshot persist.</li>
+     *   <li><b>PRUNE_COMPACT</b> — {@link PruneCompactOrchestrator#run}: P1 retraction pruning
+     *       + P2 entity compaction + P3 confidence pruning + P4 orphan GC + P5 component sweep +
+     *       PH(post) health snapshot persist.</li>
+     *   <li><b>GNN_SCORING</b> — score existing retained edges via {@link GraphNeuralScoringService}
+     *       and merge neural score metadata for UI and downstream ranking.</li>
  *   <li><b>HEALTH</b> — already covered by PH(post) inside PRUNE_COMPACT; this is a
  *       no-op sentinel retained so {@link HydrationConfig#stageEnabled("HEALTH")} can
  *       gate callers that want to skip health logging.</li>
@@ -84,11 +90,12 @@ public class GraphHydrationOrchestrator implements GraphEnrichmentService {
      * Total number of stages; used by callers to initialise {@code totalItems} in
      * the pipeline-step progress tracker.
      */
-    public static final int TOTAL_STAGES = 4;
+    public static final int TOTAL_STAGES = 7;
 
     /** Stage IDs for progress callbacks and {@link HydrationConfig#stageEnabled}. */
     public static final String STAGE_DERIVATION          = "DERIVATION";
     public static final String STAGE_PRUNE_COMPACT       = "PRUNE_COMPACT";
+    public static final String STAGE_GNN_SCORING         = "GNN_SCORING";
     public static final String STAGE_HEALTH              = "HEALTH";
 
     /**
@@ -160,6 +167,11 @@ public class GraphHydrationOrchestrator implements GraphEnrichmentService {
     @Nullable
     private KbConfigManager kbConfigManager;
 
+    /** Optional: bounded graph-neural edge scorer for crawl-time neural overlays. */
+    @Autowired(required = false)
+    @Nullable
+    private GraphNeuralScoringService graphNeuralScoringService;
+
     /**
      * Optional: MEBN MTheory registration service.  When non-null and
      * {@code kbMebnTheoryRegistrationOnCrawlEnabled} is {@code true} in the live
@@ -174,6 +186,16 @@ public class GraphHydrationOrchestrator implements GraphEnrichmentService {
     @Autowired(required = false)
     @Nullable
     private MebnTheoryRegistrationService mebnRegistrationService;
+
+    /**
+     * Optional: ontology projection provider (read side of the ontology-binding bridge). Used to detect
+     * whether a fact sheet has a bound ontology so MEBN registration can auto-enable for that deliberate
+     * subset ({@code kbMebnAutoEnableWhenOntologyBound}). Null in test contexts / Spring contexts without
+     * app-main's implementation → treated as "no ontology bound" (permissive: MEBN simply does not fire).
+     */
+    @Autowired(required = false)
+    @Nullable
+    private OntologyProjectionProvider ontologyProjectionProvider;
 
     /** Return the current KB config (defaults when no manager is wired). */
     private KbConfig kbCfg() {
@@ -204,6 +226,7 @@ public class GraphHydrationOrchestrator implements GraphEnrichmentService {
         int mergesPerformed         = 0;
         int orphansRemoved          = 0;
         int componentNodesRemoved   = 0;
+        int gnnEdgesScored          = 0;
         int stagesRun               = 0;
         String runId                = null;
         Set<String> retractedAtomKeys = Set.of();
@@ -234,16 +257,25 @@ public class GraphHydrationOrchestrator implements GraphEnrichmentService {
                             "Derivation + weight learning starting (PSL online gradient; MEBN when theory registered)"
                             + " — factSheet=" + factSheetId);
 
-                    // ── MEBN MTheory pre-registration (kbMebnTheoryRegistrationOnCrawlEnabled, default OFF) ──
-                    // When the flag is on and the service is present, auto-build an MTheory from
-                    // live graph topology and register it now so STEP 9 (SSBN gradient-descent weight
-                    // learning) fires inside runFullReground below.  Failures are non-fatal: the
-                    // derivation still runs; it will simply not perform MEBN weight learning.
-                    if (mebnRegistrationService != null && kbCfg().isMebnTheoryRegistrationOnCrawlEnabled()) {
+                    // ── MEBN MTheory pre-registration ────────────────────────────────────────────────
+                    // Register a bounded, typed MTheory from live graph topology so STEP 9 (SSBN
+                    // gradient-descent weight learning) fires inside runFullReground below. Enabled when
+                    // EITHER kbMebnTheoryRegistrationOnCrawlEnabled (all crawls, default OFF) OR
+                    // kbMebnAutoEnableWhenOntologyBound (default ON) AND this fact sheet has a bound
+                    // ontology — the deliberate, structured subset where MEBN is "real by default"
+                    // (reasoning-stack rec 4). The theory is bounded (≤20 MFrags, edge-gated) and SSBN
+                    // learning is throttled to every kbMebnLearningInterval cascades, so the per-crawl
+                    // cost is low. Failures are non-fatal: the derivation still runs without MEBN.
+                    boolean mebnByFlag = kbCfg().isMebnTheoryRegistrationOnCrawlEnabled();
+                    boolean mebnByOntology = kbCfg().isMebnAutoEnableWhenOntologyBound()
+                            && ontologyProjectionProvider != null
+                            && ontologyProjectionProvider.hasBoundOntology(factSheetId);
+                    if (mebnRegistrationService != null && (mebnByFlag || mebnByOntology)) {
                         try {
                             int mFragCount = mebnRegistrationService.registerMTheoryForFactSheet(factSheetId);
-                            log.info("[Hydration factSheet={}] MEBN MTheory pre-registered: {} MFrag(s) — "
-                                    + "SSBN weight learning will run in this cascade", factSheetId, mFragCount);
+                            log.info("[Hydration factSheet={}] MEBN MTheory pre-registered: {} MFrag(s) "
+                                    + "(trigger: {}) — SSBN weight learning will run in this cascade",
+                                    factSheetId, mFragCount, mebnByFlag ? "crawl-flag" : "ontology-bound");
                         } catch (Exception mebnEx) {
                             log.warn("[Hydration factSheet={}] MEBN MTheory registration failed "
                                     + "(non-fatal, crawl continues): {}",
@@ -397,7 +429,49 @@ public class GraphHydrationOrchestrator implements GraphEnrichmentService {
             }
         }
 
-        // ── Stage 3: ONTOLOGY_CONFORMANCE — tag nodes against bound ontology ───────────
+        // ── Stage 3: GNN_SCORING — annotate retained edges with neural/link scores ──────
+        if (config.stageEnabled(STAGE_GNN_SCORING)) {
+            KbConfig cfg = kbCfg();
+            if (!cfg.isGnnScoringOnCrawlEnabled()) {
+                safeCallback(progressCallback, STAGE_GNN_SCORING,
+                        "GNN_SCORING skipped: disabled by kbGnnScoringOnCrawlEnabled=false");
+            } else if (graphNeuralScoringService != null) {
+                try {
+                    log.info("[Hydration factSheet={}] GNN_SCORING: scoring retained edges "
+                                    + "(maxNodes={}, maxEdges={}, batchSize={})",
+                            factSheetId, cfg.getGnnMaxNodes(), cfg.getGnnMaxEdges(), cfg.getGnnScoreBatchSize());
+                    GraphNeuralScoringService.ScoringResult gnn = graphNeuralScoringService.scoreFactSheetEdges(
+                            factSheetId,
+                            cfg.getGnnMaxNodes(),
+                            cfg.getGnnMaxEdges(),
+                            cfg.getGnnScoreBatchSize(),
+                            cfg.getGnnSelfWeight(),
+                            cfg.getGnnNeighborWeight());
+                    gnnEdgesScored = gnn.edgesScored();
+                    stagesRun++;
+                    String msg = gnn.skipped()
+                            ? "GNN_SCORING skipped: " + gnn.reason()
+                                    + " (nodes=" + gnn.nodeCount() + ", edges=" + gnn.edgesSeen() + ")"
+                            : "GNN_SCORING complete: scoredEdges=" + gnnEdgesScored
+                                    + " edgesSeen=" + gnn.edgesSeen()
+                                    + " graphId=" + gnn.graphId();
+                    log.info("[Hydration factSheet={}] {}", factSheetId, msg);
+                    safeCallback(progressCallback, STAGE_GNN_SCORING, msg);
+                } catch (Exception e) {
+                    log.warn("[Hydration factSheet={}] GNN_SCORING failed (non-fatal): {}",
+                            factSheetId, e.getMessage(), e);
+                    safeCallback(progressCallback, STAGE_GNN_SCORING,
+                            "GNN_SCORING skipped: " + e.getMessage());
+                }
+            } else {
+                log.debug("[Hydration factSheet={}] GNN_SCORING skipped: GraphNeuralScoringService not available",
+                        factSheetId);
+                safeCallback(progressCallback, STAGE_GNN_SCORING,
+                        "GNN_SCORING skipped: neural scoring service not available");
+            }
+        }
+
+        // ── Stage 4: ONTOLOGY_CONFORMANCE — tag nodes against bound ontology ───────────
         // LENIENT: tags only, never deletes.  No-op when no ontology is bound or tagger absent.
         int nodesConformant    = 0;
         int nodesNonConformant = 0;
@@ -431,7 +505,7 @@ public class GraphHydrationOrchestrator implements GraphEnrichmentService {
             }
         }
 
-        // ── Stage 4: HEALTH — covered by PH(post) inside PruneCompactOrchestrator ───
+        // ── Stage 5: HEALTH — covered by PH(post) inside PruneCompactOrchestrator ───
         // This stage is a sentinel so callers can gate HEALTH-only runs via enabledStageIds.
         if (config.stageEnabled(STAGE_HEALTH)) {
             stagesRun++;
@@ -448,6 +522,7 @@ public class GraphHydrationOrchestrator implements GraphEnrichmentService {
                 mergesPerformed,
                 orphansRemoved,
                 componentNodesRemoved,
+                gnnEdgesScored,
                 stagesRun,
                 runId,
                 learningMetrics);     // populated during DERIVATION stage; skipped() if stage not enabled
@@ -519,11 +594,11 @@ public class GraphHydrationOrchestrator implements GraphEnrichmentService {
                 // module decoupled from the reasoning API shape).
                 Map<StrengthBand, Integer> rawCounts = promotionTracker.bandCounts(factSheetId);
                 if (rawCounts != null && !rawCounts.isEmpty()) {
-                    java.util.LinkedHashMap<String, Integer> bands = new java.util.LinkedHashMap<>();
+                    LinkedHashMap<String, Integer> bands = new LinkedHashMap<>();
                     for (Map.Entry<StrengthBand, Integer> e : rawCounts.entrySet()) {
                         bands.put(e.getKey().name(), e.getValue());
                     }
-                    bandCountsStr = java.util.Collections.unmodifiableMap(bands);
+                    bandCountsStr = Collections.unmodifiableMap(bands);
                 }
             } catch (Exception e) {
                 log.debug("[Hydration factSheet={}] Could not collect promotion metrics: {}",

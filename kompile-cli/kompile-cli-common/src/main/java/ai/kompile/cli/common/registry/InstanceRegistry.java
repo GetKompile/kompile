@@ -125,4 +125,38 @@ public class InstanceRegistry {
         }
         return null;
     }
+
+    /**
+     * Remove stale instance entries where the registered PID is dead AND the
+     * port is no longer bound. This prevents stale ~/.kompile/instances/*.json
+     * files from accumulating across restarts.
+     *
+     * @return the list of entries that were removed
+     */
+    public static List<InstanceInfo> gcDeadInstances() throws IOException {
+        List<InstanceInfo> removed = new ArrayList<>();
+        for (InstanceInfo info : listAll()) {
+            boolean pidAlive = ProcessHandle.of(info.getPid())
+                    .map(ProcessHandle::isAlive)
+                    .orElse(false);
+            if (!pidAlive && !isPortBound(info.getPort())) {
+                unregister(info.getName());
+                removed.add(info);
+            }
+        }
+        return removed;
+    }
+
+    /**
+     * Returns {@code true} when the loopback port is already bound (something
+     * is listening on it), {@code false} when it is free.
+     */
+    static boolean isPortBound(int port) {
+        try (java.net.ServerSocket s = new java.net.ServerSocket(port, 0,
+                java.net.InetAddress.getLoopbackAddress())) {
+            return false; // successfully bound — port is free
+        } catch (IOException e) {
+            return true; // could not bind — port is in use
+        }
+    }
 }

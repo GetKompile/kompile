@@ -79,12 +79,34 @@ public class MinedRulePersistenceService {
      */
     public PersistResult persistCausalRules(long factSheetId,
                                              ProcessCausalAnalyzer.ProcessCausalModel causalModel) {
+        return persistCausalRules(factSheetId, causalModel, List.of());
+    }
+
+    /**
+     * As {@link #persistCausalRules(long, ProcessCausalAnalyzer.ProcessCausalModel)} but also
+     * persists additional mined rules — the Declare-constraint PSL encodings from the entailment
+     * pass — into the same rule file, so the cascade loader picks up the declarative process
+     * constraints together with the causal arcs.
+     *
+     * @param extraRules extra PSL rule lines (e.g. {@code DeclareConstraint.toPslRule()} output);
+     *                   deduplicated against the causal rules
+     */
+    public PersistResult persistCausalRules(long factSheetId,
+                                             ProcessCausalAnalyzer.ProcessCausalModel causalModel,
+                                             List<String> extraRules) {
         if (dataDir == null || dataDir.isBlank()) {
             log.debug("MinedRulePersistenceService: dataDir not configured — rule persistence skipped");
             return PersistResult.empty(factSheetId);
         }
 
-        List<String> rules = causalModel.pslRules();
+        List<String> rules = new ArrayList<>(causalModel.pslRules());
+        if (extraRules != null) {
+            for (String extra : extraRules) {
+                if (extra != null && !extra.isBlank() && !rules.contains(extra)) {
+                    rules.add(extra);
+                }
+            }
+        }
         if (rules.isEmpty()) {
             log.debug("MinedRulePersistenceService: no CAUSES/TRIGGERS arcs in fact sheet {} — nothing to persist",
                     factSheetId);
@@ -140,7 +162,8 @@ public class MinedRulePersistenceService {
         sb.append("# Mined PSL rules for fact sheet ").append(factSheetId).append("\n");
         sb.append("# Generated: ").append(Instant.now()).append("\n");
         sb.append("# Rule count: ").append(rules.size()).append("\n");
-        sb.append("# Source: ProcessCausalAnalyzer (chi-squared-significant directly-follows arcs)\n");
+        sb.append("# Source: ProcessCausalAnalyzer (chi-squared-significant directly-follows arcs)")
+                .append(" + Declare->PSL constraint encodings (entailment pass), when present\n");
         sb.append("# Arcs used:\n");
         for (CausalDependency d : dependencies) {
             if (d.type() == CausalEdgeType.CAUSES || d.type() == CausalEdgeType.TRIGGERS) {
@@ -247,9 +270,9 @@ public class MinedRulePersistenceService {
         );
     }
 
-    /** Mirror of ProcessCausalAnalyzer.sanitize to keep arc matching stable. */
+    /** Mirror of ProcessCausalAnalyzer.sanitize (both delegate to ProcessAtoms) to keep arc matching stable. */
     private static String sanitize(String label) {
-        return label.replace('"', ' ').trim();
+        return ai.kompile.process.discovery.mining.entail.ProcessAtoms.sanitize(label);
     }
 
     // ── Result type ───────────────────────────────────────────────────────────────

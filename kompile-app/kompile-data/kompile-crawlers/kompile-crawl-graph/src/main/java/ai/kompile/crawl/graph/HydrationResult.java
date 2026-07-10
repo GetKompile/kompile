@@ -31,7 +31,8 @@ package ai.kompile.crawl.graph;
  * @param mergesPerformed     entity merges in P2 compaction
  * @param orphansRemoved      orphan nodes removed in P4
  * @param componentNodesRemoved disconnected-component nodes removed in P5
- * @param stagesRun           how many of the three top-level stages actually ran
+ * @param gnnEdgesScored      existing graph edges annotated by the GNN scoring stage
+ * @param stagesRun           how many top-level stages actually ran
  * @param runId               the PSL re-ground run ID; null when derivation was skipped
  * @param learningMetrics     rich learning diagnostics captured during the WEIGHT_LEARNING
  *                            sub-stage; never null — use {@link LearningMetrics#skipped()}
@@ -46,6 +47,7 @@ public record HydrationResult(
         int mergesPerformed,
         int orphansRemoved,
         int componentNodesRemoved,
+        int gnnEdgesScored,
         int stagesRun,
         String runId,
         LearningMetrics learningMetrics) {
@@ -62,13 +64,13 @@ public record HydrationResult(
                            int stagesRun, String runId) {
         this(relationsDerived, retractedAtomCount, factsMaterialized,
              factsRetractedPruned, factsConfidencePruned, mergesPerformed,
-             orphansRemoved, componentNodesRemoved, stagesRun, runId,
+             orphansRemoved, componentNodesRemoved, 0, stagesRun, runId,
              LearningMetrics.skipped());
     }
 
     /** Zero-result for when hydration is fully skipped. */
     public static HydrationResult empty() {
-        return new HydrationResult(0, 0, 0, 0, 0, 0, 0, 0, 0, null, LearningMetrics.skipped());
+        return new HydrationResult(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, null, LearningMetrics.skipped());
     }
 
     /** Total facts changed (derived + materialized). */

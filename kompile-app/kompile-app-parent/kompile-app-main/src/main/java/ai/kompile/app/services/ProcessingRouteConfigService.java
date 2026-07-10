@@ -147,7 +147,7 @@ public class ProcessingRouteConfigService {
     private ProcessingRouteConfig createDefault() {
         return ProcessingRouteConfig.builder()
                 .pdfRoutingMode(ProcessingRouteConfig.PdfRoutingMode.AUTO)
-                .fallbackEnabled(false)
+                .fallbackEnabled(true)
                 .extractTablesFromTextPdfs(true)
                 .textThresholdCharsPerPage(50)
                 .build();

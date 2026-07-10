@@ -74,7 +74,7 @@ class LlmProcessDiscoveryServiceTest {
         snippet.setNodeType(NodeLevel.SNIPPET);
         snippet.setTitle(title);
         snippet.setContentPreview(contentPreview);
-        snippet.setParent(parent);
+        snippet.setParentId(parent != null ? parent.getNodeId() : null);
         return snippet;
     }
 

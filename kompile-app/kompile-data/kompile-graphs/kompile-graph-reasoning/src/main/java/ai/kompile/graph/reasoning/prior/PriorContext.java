@@ -52,14 +52,22 @@ public final class PriorContext {
      * Enables the EmpiricalPriorBlend tier (d) when non-null and non-empty.
      */
     private final Map<String, Long> typeFrequencies;
+    /**
+     * WP19 — the entity's PageRank percentile in {@code [0,1]} (fraction of nodes it outranks), or
+     * {@code null} when no topology stats have been computed for this epoch. Feeds the topology-prior
+     * tier; a hub (high percentile) is a stronger a-priori bet than a leaf. Percentile (rank-normalised)
+     * not raw PageRank so the prior is scale-free across graphs of different size/density.
+     */
+    private final Double pageRankPercentile;
 
     private PriorContext(Builder b) {
-        this.entityType      = b.entityType;
-        this.embedding       = b.embedding;
-        this.occurredAt      = b.occurredAt;
-        this.lastVerifiedAt  = b.lastVerifiedAt;
-        this.gamma           = b.gamma;
-        this.typeFrequencies = b.typeFrequencies;
+        this.entityType         = b.entityType;
+        this.embedding          = b.embedding;
+        this.occurredAt         = b.occurredAt;
+        this.lastVerifiedAt     = b.lastVerifiedAt;
+        this.gamma              = b.gamma;
+        this.typeFrequencies    = b.typeFrequencies;
+        this.pageRankPercentile = b.pageRankPercentile;
     }
 
     /** Entity type label, or {@code null}. */
@@ -74,6 +82,8 @@ public final class PriorContext {
     public double gamma()                       { return gamma; }
     /** Type-frequency map for empirical-prior tier, or {@code null}. */
     public Map<String, Long> typeFrequencies()  { return typeFrequencies; }
+    /** PageRank percentile in {@code [0,1]} for the WP19 topology tier, or {@code null} when absent. */
+    public Double pageRankPercentile()          { return pageRankPercentile; }
 
     /** Start a fluent builder. */
     public static Builder builder() { return new Builder(); }
@@ -90,6 +100,7 @@ public final class PriorContext {
         private Instant lastVerifiedAt;
         private double gamma = DEFAULT_GAMMA;
         private Map<String, Long> typeFrequencies;
+        private Double pageRankPercentile;
 
         private Builder() {}
 
@@ -99,6 +110,7 @@ public final class PriorContext {
         public Builder lastVerifiedAt(Instant i)            { this.lastVerifiedAt = i;     return this; }
         public Builder gamma(double g)                      { this.gamma = g;              return this; }
         public Builder typeFrequencies(Map<String, Long> m) { this.typeFrequencies = m;    return this; }
+        public Builder pageRankPercentile(Double p)         { this.pageRankPercentile = p; return this; }
 
         public PriorContext build() { return new PriorContext(this); }
     }

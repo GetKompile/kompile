@@ -127,7 +127,8 @@ public final class HeadlessAgentRunner {
         PermissionService permissionService = new PermissionService();
         permissionService.setAutoApproveAll(true);
         AgentRegistry agentRegistry = new AgentRegistry();
-        BackgroundProcessManager processManager = new BackgroundProcessManager(opts.sessionId());
+        BackgroundProcessManager processManager = new BackgroundProcessManager(
+                opts.sessionId(), opts.workingDirectory());
         TerminalRenderer renderer = new TerminalRenderer();
         ToolRegistry toolRegistry = ToolRegistryFactory.create(
                 mapper, "", agentRegistry, permissionService, renderer, processManager, config, null);

@@ -59,6 +59,13 @@ public class WriteTool implements CliTool {
     }
 
     @Override
+    public String compactHint() {
+        return "Create or OVERWRITE an entire file (no merge — provide the full final content). "
+                + "Use for NEW files; prefer edit to modify existing ones. Parent dirs are "
+                + "auto-created.";
+    }
+
+    @Override
     public JsonNode parameterSchema() {
         ObjectMapper om = JsonUtils.standardMapper();
         ObjectNode schema = om.createObjectNode();
@@ -78,7 +85,7 @@ public class WriteTool implements CliTool {
     }
 
     @Override
-    public String permissionKey() { return "edit"; }
+    public String permissionKey() { return "write"; }
 
     @Override
     public ToolResult execute(JsonNode params, ToolContext context) throws ToolExecutionException {
@@ -94,6 +101,9 @@ public class WriteTool implements CliTool {
 
         context.checkPermission(permissionKey(),
                 (exists ? "Overwrite" : "Create") + " file: " + path);
+        if (exists && !context.hasFreshFileRead(path)) {
+            return ToolResult.error(context.staleReadMessage(path, "overwrite"));
+        }
 
         try {
             // Create parent directories
@@ -103,6 +113,9 @@ public class WriteTool implements CliTool {
             }
 
             Files.writeString(path, content);
+            context.recordFileRead(path);
+            ai.kompile.cli.main.codeindex.BackgroundIndexService.getInstance()
+                    .noteFileWritten(path);
 
             long lines = content.lines().count();
             String relativePath;

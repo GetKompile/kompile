@@ -16,6 +16,8 @@
 
 package ai.kompile.cli.mcp.stdio;
 
+import ai.kompile.cli.common.logs.LogPaths;
+
 import java.io.BufferedWriter;
 import java.io.IOException;
 import java.nio.file.*;
@@ -27,7 +29,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Centralized progress logger for all MCP tool executions.
- * Writes timestamped entries to {@code ~/.kompile/logs/mcp-activity.log},
+ * Writes timestamped entries to {@code <kompile-home>/logs/mcp-activity.log},
  * allowing users to {@code tail -f} the file during long-running operations
  * since Claude Code does not surface MCP progress notifications.
  *
@@ -45,7 +47,7 @@ public class McpToolProgressLogger {
     private final ConcurrentHashMap<String, Long> activeTools = new ConcurrentHashMap<>();
 
     public McpToolProgressLogger() {
-        this(Paths.get(System.getProperty("user.home"), ".kompile", "logs"));
+        this(LogPaths.logsDirectory().toPath());
     }
 
     public McpToolProgressLogger(Path logDir) {

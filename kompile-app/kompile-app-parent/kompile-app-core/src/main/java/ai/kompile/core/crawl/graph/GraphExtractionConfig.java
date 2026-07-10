@@ -17,6 +17,7 @@
 package ai.kompile.core.crawl.graph;
 
 import ai.kompile.core.graphrag.model.schema.SchemaEnforcementMode;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonSetter;
 import lombok.AllArgsConstructor;
@@ -38,9 +39,19 @@ import java.util.List;
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class GraphExtractionConfig {
 
-    /** Whether graph extraction is enabled (default: true) */
-    @Builder.Default
-    private boolean enabled = true;
+    /**
+     * Compatibility accessor for callers that still ask whether graph extraction is enabled.
+     * Graph extraction is mandatory for unified crawls.
+     */
+    @JsonIgnore
+    public boolean isEnabled() {
+        return true;
+    }
+
+    @JsonSetter("enabled")
+    public void setEnabled(boolean ignored) {
+        // Legacy JSON may still contain this key. It no longer controls graph extraction.
+    }
 
     /** Named schema preset ID to load entity/relationship types from (e.g., "fpna-cpg-channel-v1").
      *  When set, the server resolves the preset and populates entityTypes/relationshipTypes. */
@@ -146,6 +157,15 @@ public class GraphExtractionConfig {
      * crawl to exactly those two models (in order) regardless of what the agent discovers.</p>
      */
     private List<String> extractionModelAllow;
+
+    /**
+     * Soft ordered preference list for extraction model selection.  Unlike
+     * {@link #extractionModelAllow}, this does not restrict candidates: discovered models in this
+     * list are tried first when healthy, then all remaining provider-allowed candidates stay in the
+     * fallback rotation.  Null means the model service's default priority applies; an explicit empty
+     * list disables soft prioritization.
+     */
+    private List<String> extractionModelPriority;
 
     /**
      * Per-job / per-project override: allow the PAID last-resort model tier (e.g. a small amount of

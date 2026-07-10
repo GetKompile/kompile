@@ -21,7 +21,6 @@ import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import ai.kompile.process.service.ProcessEngineService;
 import ai.kompile.process.workflow.ProcessDefinition;
@@ -52,9 +51,6 @@ class FactSheetProcessBridgeTest {
     private KnowledgeGraphService knowledgeGraphService;
 
     @Mock
-    private GraphNodeRepository graphNodeRepository;
-
-    @Mock
     private ProcessEngineService processEngineService;
 
     private ProcessDiscoveryServiceImpl service;
@@ -64,7 +60,6 @@ class FactSheetProcessBridgeTest {
     @BeforeEach
     void setUp() {
         service = new ProcessDiscoveryServiceImpl(knowledgeGraphService);
-        service.setGraphNodeRepository(graphNodeRepository);
         service.setProcessEngineService(processEngineService);
     }
 
@@ -143,8 +138,8 @@ class FactSheetProcessBridgeTest {
         GraphNode alice = personNode("alice", "Alice", FACT_SHEET_ID);
         GraphNode bob = personNode("bob", "Bob", FACT_SHEET_ID);
 
-        // Repository returns fact-sheet-scoped nodes
-        when(graphNodeRepository.findByFactSheetId(FACT_SHEET_ID))
+        // KG service returns fact-sheet-scoped nodes (used by collectNodeIdsForFactSheet)
+        when(knowledgeGraphService.getNodesInFactSheet(FACT_SHEET_ID))
                 .thenReturn(List.of(alice, bob));
 
         // Existing KG methods used for scoped graph node lookup
@@ -175,7 +170,7 @@ class FactSheetProcessBridgeTest {
         GraphNode fc = formulaCellNode("fc1", FACT_SHEET_ID);
         GraphNode ic = inputCellNode("ic1", FACT_SHEET_ID);
 
-        when(graphNodeRepository.findByFactSheetId(FACT_SHEET_ID))
+        when(knowledgeGraphService.getNodesInFactSheet(FACT_SHEET_ID))
                 .thenReturn(List.of(sheet, fc, ic));
 
         // analyzeExcelFlows(nodeIds) calls getNode for each nodeId
@@ -205,7 +200,7 @@ class FactSheetProcessBridgeTest {
         GraphNode fc = formulaCellNode("fc1", FACT_SHEET_ID);
         GraphNode ic = inputCellNode("ic1", FACT_SHEET_ID);
 
-        when(graphNodeRepository.findByFactSheetId(FACT_SHEET_ID))
+        when(knowledgeGraphService.getNodesInFactSheet(FACT_SHEET_ID))
                 .thenReturn(List.of(alice, bob, sheet, fc, ic));
 
         // Email edges for alice→bob (2 occurrences — meets minimum)
@@ -280,7 +275,7 @@ class FactSheetProcessBridgeTest {
     @Test
     void onGraphBuildCompleted_withFactSheetId_runsFactSheetScopedDiscovery() {
         // Set up a minimal graph so discovery completes without errors
-        when(graphNodeRepository.findByFactSheetId(FACT_SHEET_ID))
+        when(knowledgeGraphService.getNodesInFactSheet(FACT_SHEET_ID))
                 .thenReturn(Collections.emptyList());
 
         GraphBuildCompletedEvent event = new GraphBuildCompletedEvent(
@@ -288,8 +283,8 @@ class FactSheetProcessBridgeTest {
 
         service.onGraphBuildCompleted(event);
 
-        // Verify the repository was queried with the fact sheet ID
-        verify(graphNodeRepository, atLeastOnce()).findByFactSheetId(FACT_SHEET_ID);
+        // Verify the KG service was queried with the fact sheet ID
+        verify(knowledgeGraphService, atLeastOnce()).getNodesInFactSheet(FACT_SHEET_ID);
     }
 
     @Test
@@ -305,7 +300,6 @@ class FactSheetProcessBridgeTest {
 
         // Verify global search was called (not fact-sheet-scoped)
         verify(knowledgeGraphService, atLeastOnce()).searchNodes(eq(""), any(NodeLevel.class), anyInt());
-        verify(graphNodeRepository, never()).findByFactSheetId(any());
     }
 
     // ── FlowPattern and ProcessSuggestion factSheetId propagation ─────────
@@ -348,7 +342,7 @@ class FactSheetProcessBridgeTest {
 
     @Test
     void discoverProcessesForFactSheet_emptyGraph_returnsEmptySuggestions() {
-        when(graphNodeRepository.findByFactSheetId(FACT_SHEET_ID))
+        when(knowledgeGraphService.getNodesInFactSheet(FACT_SHEET_ID))
                 .thenReturn(Collections.emptyList());
 
         List<ProcessSuggestion> suggestions = service.discoverProcessesForFactSheet(
@@ -364,7 +358,7 @@ class FactSheetProcessBridgeTest {
         GraphNode doc1 = documentNode("doc1", "Report v1", FACT_SHEET_ID);
         GraphNode doc2 = documentNode("doc2", "Report v2", FACT_SHEET_ID);
 
-        when(graphNodeRepository.findByFactSheetId(FACT_SHEET_ID))
+        when(knowledgeGraphService.getNodesInFactSheet(FACT_SHEET_ID))
                 .thenReturn(List.of(doc1, doc2));
 
         // analyzeDocumentFlows(nodeIds) calls getNode per ID, getConnectedNodes, then

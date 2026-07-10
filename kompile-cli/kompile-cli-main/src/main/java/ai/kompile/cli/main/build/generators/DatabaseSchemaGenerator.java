@@ -19,6 +19,7 @@ package ai.kompile.cli.main.build.generators;
 import ai.kompile.cli.main.build.config.BuildConfiguration;
 
 import java.io.*;
+import java.util.Date;
 
 /**
  * Generates SQL schema files and Java configuration classes for pgvector-based builds.
@@ -57,7 +58,7 @@ public class DatabaseSchemaGenerator {
         File schemaFile = new File(resourcesDir, "schema.sql");
         try (FileWriter writer = new FileWriter(schemaFile)) {
             writer.write("-- Schema initialization for Kompile RAG application\n");
-            writer.write("-- Generated on: " + new java.util.Date() + "\n\n");
+            writer.write("-- Generated on: " + new Date() + "\n\n");
 
             writer.write("DO $\n");
             writer.write("BEGIN\n");

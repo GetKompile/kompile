@@ -114,18 +114,21 @@ public class NativeLibraryResolver {
 
         // 2. Adjacent lib/ directory (assembly layout)
         //    Checks both <binary-dir>/lib/ and <binary-dir>/../lib/
-        //    so the dist layout (bin/kompile-server + lib/) works.
+        //    so the dist layout (bin/kompile-server + lib/) works. Handles both
+        //    flat lib/ (build-dist.sh) and nested jar-path layouts (assembly unpack).
         Path binaryDir = getBinaryDirectory();
         if (binaryDir != null) {
             Path adjacentLib = binaryDir.resolve("lib");
-            if (containsAnyNativeLib(adjacentLib)) {
-                logger.info("Using native libs from adjacent lib/: " + adjacentLib);
-                return List.of(adjacentLib);
+            List<Path> fromAdjacent = libDirsUnder(adjacentLib, "adjacent lib/");
+            if (!fromAdjacent.isEmpty()) {
+                return fromAdjacent;
             }
             Path parentLib = binaryDir.getParent() != null ? binaryDir.getParent().resolve("lib") : null;
-            if (parentLib != null && !parentLib.equals(adjacentLib) && containsAnyNativeLib(parentLib)) {
-                logger.info("Using native libs from dist lib/: " + parentLib);
-                return List.of(parentLib);
+            if (parentLib != null && !parentLib.equals(adjacentLib)) {
+                List<Path> fromParent = libDirsUnder(parentLib, "dist lib/");
+                if (!fromParent.isEmpty()) {
+                    return fromParent;
+                }
             }
         }
 
@@ -475,6 +478,24 @@ public class NativeLibraryResolver {
         } catch (IOException e) {
             return false;
         }
+    }
+
+    /**
+     * Native-lib directories under a dist lib/ root: the root itself when the
+     * layout is flat, else every nested directory holding natives (assembly
+     * unpack layouts preserve jar-internal paths).
+     */
+    private static List<Path> libDirsUnder(Path libRoot, String label) {
+        if (libRoot == null || !Files.isDirectory(libRoot)) return List.of();
+        if (containsAnyNativeLib(libRoot)) {
+            logger.info("Using native libs from " + label + ": " + libRoot);
+            return List.of(libRoot);
+        }
+        List<Path> nested = findNativeLibDirectories(libRoot);
+        if (!nested.isEmpty()) {
+            logger.info("Using native libs from " + label + " (nested, " + nested.size() + " dirs): " + libRoot);
+        }
+        return nested;
     }
 
     private static boolean hasClassifierJarsOnClasspath() {

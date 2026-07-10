@@ -92,7 +92,7 @@ class ToolResultReferenceCacheTest {
 
         @Test
         void largeOutput_shouldCache() {
-            String large = "X".repeat(8000);
+            String large = "X".repeat(ToolResultReferenceCache.DEFAULT_CACHE_THRESHOLD_CHARS + 1);
             assertTrue(cache.shouldCache(large));
         }
 
@@ -221,6 +221,70 @@ class ToolResultReferenceCacheTest {
 
             assertFalse((boolean) result.getMetadata().get("truncated"));
         }
+
+        // ── pattern filter (grep over a cached result) ──────────────────
+
+        @Test
+        void sliceWithPattern_returnsOnlyMatchingLines() {
+            String content = "alpha\nERROR: boom\nbeta\nerror again\ngamma";
+            String id = cache.store("Grep", content, Map.of());
+
+            ToolResult result = cache.getSlice(id, 0, 10, "error");
+
+            assertFalse(result.isError());
+            assertTrue(result.getOutput().contains("boom"), "matches ERROR case-insensitively");
+            assertTrue(result.getOutput().contains("error again"));
+            assertFalse(result.getOutput().contains("alpha"), "non-matching lines excluded");
+            assertEquals(2, (int) result.getMetadata().get("matchCount"));
+        }
+
+        @Test
+        void sliceWithPattern_prefixesOriginalLineNumbers() {
+            String content = "one\ntwo\nthree match\nfour";
+            String id = cache.store("Read", content, Map.of());
+
+            ToolResult result = cache.getSlice(id, 0, 10, "match");
+
+            assertTrue(result.getOutput().contains("3: three match"),
+                    "matched line keeps its original 1-based line number");
+        }
+
+        @Test
+        void sliceWithPattern_noMatch_reportsZero() {
+            String id = cache.store("Read", "a\nb\nc", Map.of());
+
+            ToolResult result = cache.getSlice(id, 0, 10, "zzz");
+
+            assertFalse(result.isError());
+            assertTrue(result.getOutput().contains("no lines match"));
+            assertEquals(0, (int) result.getMetadata().get("matchCount"));
+        }
+
+        @Test
+        void sliceWithPattern_invalidRegex_fallsBackToLiteral() {
+            String content = "call func(a(\nother line\nmore";
+            String id = cache.store("Read", content, Map.of());
+
+            // "a(" is an invalid regex (unclosed group) → literal substring match
+            ToolResult result = cache.getSlice(id, 0, 10, "a(");
+
+            assertFalse(result.isError());
+            assertTrue(result.getOutput().contains("func(a("));
+            assertEquals(1, (int) result.getMetadata().get("matchCount"));
+        }
+
+        @Test
+        void sliceWithNullPattern_behavesAsRawSlice() {
+            String content = "line0\nline1\nline2";
+            String id = cache.store("Read", content, Map.of());
+
+            ToolResult result = cache.getSlice(id, 0, 2, null);
+
+            assertFalse(result.isError());
+            assertTrue(result.getOutput().contains("line0"));
+            assertFalse(result.getOutput().contains("0: line0"),
+                    "raw slice has no line-number prefix");
+        }
     }
 
     // ===================================================================
@@ -345,8 +409,8 @@ class ToolResultReferenceCacheTest {
     class Constants {
 
         @Test
-        void defaultThreshold_is8000() {
-            assertEquals(8000, ToolResultReferenceCache.DEFAULT_CACHE_THRESHOLD_CHARS);
+        void defaultThreshold_is16000() {
+            assertEquals(16000, ToolResultReferenceCache.DEFAULT_CACHE_THRESHOLD_CHARS);
         }
     }
 

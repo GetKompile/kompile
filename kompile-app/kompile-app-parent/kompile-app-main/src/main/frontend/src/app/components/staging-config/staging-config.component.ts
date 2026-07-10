@@ -40,8 +40,6 @@ import { MatSelectModule } from '@angular/material/select';
 import { Subject, forkJoin, Subscription, interval, of } from 'rxjs';
 import { takeUntil, filter, switchMap, catchError } from 'rxjs/operators';
 import { ConfirmDialogComponent, ConfirmDialogData } from '../confirm-dialog/confirm-dialog.component';
-import { SdkHubComponent } from '../sdk-hub/sdk-hub.component';
-
 import {
   StagingConfigService,
   StagingServiceConfig,
@@ -132,8 +130,7 @@ interface RemoteModelRegistry {
     MatTableModule,
     MatBadgeModule,
     MatSelectModule,
-    ConfirmDialogComponent,
-    SdkHubComponent
+    ConfirmDialogComponent
   ],
   templateUrl: './staging-config.component.html',
   styleUrls: ['./staging-config.component.css']

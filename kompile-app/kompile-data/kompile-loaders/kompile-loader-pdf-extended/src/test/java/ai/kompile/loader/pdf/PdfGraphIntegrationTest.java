@@ -35,12 +35,20 @@ import org.apache.pdfbox.pdmodel.interactive.documentnavigation.destination.PDPa
 import org.apache.pdfbox.pdmodel.interactive.form.PDAcroForm;
 import org.apache.pdfbox.pdmodel.interactive.form.PDTextField;
 import org.apache.pdfbox.pdmodel.interactive.form.PDCheckBox;
+import org.apache.pdfbox.pdmodel.PDDocumentNameDictionary;
+import org.apache.pdfbox.pdmodel.PDEmbeddedFilesNameTreeNode;
+import org.apache.pdfbox.pdmodel.common.filespecification.PDComplexFileSpecification;
+import org.apache.pdfbox.pdmodel.common.filespecification.PDEmbeddedFile;
+import org.apache.pdfbox.pdmodel.interactive.digitalsignature.PDSignature;
+import org.apache.pdfbox.pdmodel.interactive.form.PDSignatureField;
+import org.apache.pdfbox.cos.COSName;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.ai.document.Document;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.*;
@@ -161,17 +169,21 @@ class PdfGraphIntegrationTest {
             assertNotNull(findRelation(result, GraphConstants.REL_AUTHORED_BY),
                     "Should have AUTHORED_BY relation");
 
-            // ORGANIZATION from producer (Apache PDFBox → organization)
+            // Producer "Apache PDFBox" (stamped by PDFBox on save) looks like software → it must NOT
+            // be materialized as a junk ORGANIZATION; it is retained as a document property instead.
             List<ExtractedEntity> orgs = findEntities(result, GraphConstants.ENTITY_ORGANIZATION);
-            assertTrue(orgs.stream().anyMatch(o -> o.name().contains("Apache PDFBox")),
-                    "Should extract producer as ORGANIZATION: " + orgs);
-            assertNotNull(findRelation(result, GraphConstants.REL_PRODUCED_BY),
-                    "Should have PRODUCED_BY relation");
+            assertTrue(orgs.stream().noneMatch(o -> o.name() != null && o.name().contains("PDFBox")),
+                    "software producer must not become a junk ORGANIZATION: " + orgs);
+            String producerProp = pdfDoc.properties().get("producer");
+            assertNotNull(producerProp, "software producer retained as a document property");
+            assertTrue(producerProp.contains("PDFBox"), "producer property should carry the software name");
 
             // ORGANIZATION from creator (Microsoft Word → org since looksLikeSoftware)
-            // Creator "Microsoft Word" is recognized as software, creating ORGANIZATION + PRODUCED_BY
+            // Creator "Microsoft Word" is recognized as software, creating ORGANIZATION + PRODUCED_BY.
             assertTrue(orgs.stream().anyMatch(o -> o.name().contains("Microsoft Word")),
                     "Creator 'Microsoft Word' should be ORGANIZATION since it looks like software");
+            assertNotNull(findRelation(result, GraphConstants.REL_PRODUCED_BY),
+                    "Should have PRODUCED_BY relation (from the software creator)");
 
             // TOPIC from keywords
             List<ExtractedEntity> topics = findEntities(result, GraphConstants.ENTITY_TOPIC);
@@ -1057,6 +1069,116 @@ class PdfGraphIntegrationTest {
                     "Should have HAS_FORM: " + allRelationTypes);
             assertTrue(allRelationTypes.contains(GraphConstants.REL_HAS_FORM_FIELD),
                     "Should have HAS_FORM_FIELD: " + allRelationTypes);
+        }
+    }
+
+    // ================================================================
+    //  PDF with an embedded file (attachment)
+    // ================================================================
+
+    @Nested
+    class EmbeddedFiles {
+
+        @Test
+        void pdfWithEmbeddedFile_producesEmbeddedFileEntity() throws Exception {
+            Path pdfFile = tempDir.resolve("with-attachment.pdf");
+            try (PDDocument doc = new PDDocument()) {
+                PDPage page = new PDPage(PDRectangle.A4);
+                doc.addPage(page);
+                try (PDPageContentStream cs = new PDPageContentStream(doc, page)) {
+                    cs.beginText();
+                    cs.setFont(new PDType1Font(Standard14Fonts.FontName.HELVETICA), 12);
+                    cs.newLineAtOffset(72, 700);
+                    cs.showText("Document with an attachment.");
+                    cs.endText();
+                }
+
+                PDComplexFileSpecification fs = new PDComplexFileSpecification();
+                fs.setFile("data.txt");
+                PDEmbeddedFile ef = new PDEmbeddedFile(doc,
+                        new ByteArrayInputStream("hello world".getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+                ef.setSubtype("text/plain");
+                ef.setSize(11);
+                fs.setEmbeddedFile(ef);
+
+                PDEmbeddedFilesNameTreeNode efTree = new PDEmbeddedFilesNameTreeNode();
+                Map<String, PDComplexFileSpecification> efNames = new HashMap<>();
+                efNames.put("data.txt", fs);
+                efTree.setNames(efNames);
+
+                PDDocumentNameDictionary names = new PDDocumentNameDictionary(doc.getDocumentCatalog());
+                names.setEmbeddedFiles(efTree);
+                doc.getDocumentCatalog().setNames(names);
+
+                doc.save(pdfFile.toFile());
+            }
+
+            Document mainDoc = loadFile(pdfFile).stream()
+                    .filter(d -> d.getMetadata().containsKey(GraphConstants.META_PDF_EMBEDDED_FILES))
+                    .findFirst().orElse(null);
+            assertNotNull(mainDoc, "loader must stamp pdf.embeddedFiles metadata (was a dead consumer branch)");
+
+            ExtractionResult result = extractGraph(mainDoc);
+            List<ExtractedEntity> embedded = findEntities(result, GraphConstants.ENTITY_EMBEDDED_FILE);
+            assertEquals(1, embedded.size(), "one EMBEDDED_FILE entity for the embedded attachment");
+            assertEquals("data.txt", embedded.get(0).name());
+            assertNotNull(findRelation(result, GraphConstants.REL_HAS_EMBEDDED_FILE),
+                    "document should HAS_EMBEDDED_FILE the attachment");
+        }
+    }
+
+    // ================================================================
+    //  PDF with a digital signature
+    // ================================================================
+
+    @Nested
+    class Signatures {
+
+        @Test
+        void pdfWithSignature_producesSignatureEntity() throws Exception {
+            Path pdfFile = tempDir.resolve("signed.pdf");
+            try (PDDocument doc = new PDDocument()) {
+                PDPage page = new PDPage(PDRectangle.A4);
+                doc.addPage(page);
+                try (PDPageContentStream cs = new PDPageContentStream(doc, page)) {
+                    cs.beginText();
+                    cs.setFont(new PDType1Font(Standard14Fonts.FontName.HELVETICA), 12);
+                    cs.newLineAtOffset(72, 700);
+                    cs.showText("Signed document.");
+                    cs.endText();
+                }
+
+                PDSignature sig = new PDSignature();
+                sig.setFilter(PDSignature.FILTER_ADOBE_PPKLITE);
+                sig.setSubFilter(PDSignature.SUBFILTER_ADBE_PKCS7_DETACHED);
+                sig.setName("Jane Signer");
+                sig.setReason("Approval");
+                sig.setLocation("New York");
+                sig.setSignDate(java.util.Calendar.getInstance());
+
+                PDAcroForm acroForm = new PDAcroForm(doc);
+                doc.getDocumentCatalog().setAcroForm(acroForm);
+                PDSignatureField sigField = new PDSignatureField(acroForm);
+                // Attach the signature dictionary as the field value; getSignatureDictionaries()
+                // reads it from the AcroForm signature field (no cryptographic signing needed to
+                // expose the /Name /Reason /Location metadata).
+                sigField.getCOSObject().setItem(COSName.V, sig.getCOSObject());
+                acroForm.getFields().add(sigField);
+
+                doc.save(pdfFile.toFile());
+            }
+
+            Document mainDoc = loadFile(pdfFile).stream()
+                    .filter(d -> d.getMetadata().containsKey(GraphConstants.META_PDF_SIGNATURES))
+                    .findFirst().orElse(null);
+            assertNotNull(mainDoc, "loader must stamp pdf.signatures metadata (was a dead consumer branch)");
+
+            ExtractionResult result = extractGraph(mainDoc);
+            List<ExtractedEntity> sigs = findEntities(result, GraphConstants.ENTITY_PDF_SIGNATURE);
+            assertEquals(1, sigs.size(), "one PDF_SIGNATURE entity for the signature");
+            assertEquals("Jane Signer", sigs.get(0).name());
+            assertNotNull(findRelation(result, GraphConstants.REL_HAS_SIGNATURE),
+                    "document should HAS_SIGNATURE the signature");
         }
     }
 

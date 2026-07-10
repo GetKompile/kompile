@@ -171,6 +171,25 @@ public class GraphMaintenanceServiceImpl implements GraphMaintenanceService {
     }
 
     @Override
+    public MaintenanceReport resolveContradictionsByEdgeSelection(Long factSheetId,
+                                                                   List<String> staleEdgeIds,
+                                                                   boolean dryRun) {
+        log.info("resolveContradictionsByEdgeSelection factSheet={}, edgeCount={}, dryRun={}",
+                factSheetId, staleEdgeIds != null ? staleEdgeIds.size() : 0, dryRun);
+        Instant start = Instant.now();
+        if (!dryRun && staleEdgeIds != null && !staleEdgeIds.isEmpty()) {
+            staleEdgeIds.forEach(knowledgeGraphService::deleteEdge);
+        }
+        int affected = (!dryRun && staleEdgeIds != null) ? staleEdgeIds.size() : 0;
+        TaskReport taskReport = new TaskReport(MaintenanceTask.CONTRADICTION_DETECT,
+                staleEdgeIds != null ? staleEdgeIds.size() : 0, affected, 0,
+                List.of(), Duration.between(start, Instant.now()));
+        MaintenanceReport report = singleTaskReport(factSheetId, start, dryRun, taskReport);
+        addToHistory(report);
+        return report;
+    }
+
+    @Override
     public MaintenanceReport reResolveEntities(Long factSheetId, ReResolutionConfig config, boolean dryRun) {
         ReResolutionConfig cfg = config != null ? config : ReResolutionConfig.defaults();
         // Only mutate when the caller asked to merge AND this is not a dry run.

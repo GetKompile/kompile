@@ -17,13 +17,14 @@
 package ai.kompile.core.llm;
 
 
+import ai.kompile.core.language.LanguageSupport;
 import org.springframework.ai.chat.model.ChatResponse; // Using Spring AI's ChatClient
 import org.springframework.ai.chat.prompt.Prompt;
 
 import java.util.List;
 import java.util.Map;
 
-public interface LanguageModel {
+public interface LanguageModel extends LanguageSupport {
 
     String generateResponse(String userQuery, List<String> context);
 

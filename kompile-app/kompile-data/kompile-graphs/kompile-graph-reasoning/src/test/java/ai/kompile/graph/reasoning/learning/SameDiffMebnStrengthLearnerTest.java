@@ -21,6 +21,7 @@ import org.junit.jupiter.api.Test;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -110,13 +111,13 @@ class SameDiffMebnStrengthLearnerTest {
         assertEquals(1, sdGrads.length);
         double sdGrad = sdGrads[0];
 
-        // The two gradients must agree in sign and be within 5% relative tolerance.
-        // They differ slightly because:
-        //   - Java oracle uses the full noisy-OR formula: ∂p_c/∂s = pPar*(1-pChild)/(1-s*pPar+ε)
-        //   - SameDiff uses the linear marginal approx: predicted = s * pPar, ∂/∂s = pPar
-        // These agree when pChild ≈ s * pPar (marginal approx holds) and diverge when there are
-        // multiple parents, which the fixture doesn't have. For the single-edge causal theory
-        // the tolerance below is achievable.
+        // The SameDiff forward graph now implements the true noisy-OR:
+        //   predicted = 1 − (1 − leak) · (1 − s · pParent)
+        // and the Java oracle computes:
+        //   ∂p_c/∂s = pParent · (1 − p_c) / (1 − s · pParent + ε)
+        // When pChild from inference equals predicted_noisy_or, the (1−p_c)/(1−s·pPar+ε)
+        // factor collapses exactly to (1−leak), so both formulas give the same gradient to
+        // floating-point (autodiff) precision.  Tolerance target: 1e-6 relative error.
         assertFalse(Double.isNaN(sdGrad), "SameDiff gradient must be finite");
         assertFalse(Double.isNaN(javaGrad), "Java analytic gradient must be finite");
         // Both must be negative (fitting effect=1.0 must increase s, so gradient is negative
@@ -125,11 +126,13 @@ class SameDiffMebnStrengthLearnerTest {
                 "Java analytic gradient must be negative (need to raise s), got " + javaGrad);
         assertTrue(sdGrad < 0,
                 "SameDiff gradient must be negative (need to raise s), got " + sdGrad);
-        // Within 10% relative tolerance (the two formulas are first-order equivalent for small s).
+        // Tight tolerance: the noisy-OR SameDiff graph must match the analytic oracle to autodiff
+        // precision (1e-6 relative error).  Any larger divergence indicates the forward graph
+        // still uses the wrong (linear) approximation.
         double relErr = Math.abs(sdGrad - javaGrad) / (Math.abs(javaGrad) + 1e-9);
-        assertTrue(relErr < 0.10,
+        assertTrue(relErr < 1e-6,
                 "SameDiff gradient " + sdGrad + " must match Java oracle " + javaGrad
-                        + " within 10% relative error (got " + String.format("%.4f", relErr * 100) + "%)");
+                        + " within 1e-6 relative error (got " + String.format("%.2e", relErr) + ")");
     }
 
     // ─── Test 2: Learning direction ────────────────────────────────────────────
@@ -215,6 +218,75 @@ class SameDiffMebnStrengthLearnerTest {
         MTheory result = SameDiffMebnStrengthLearner.learn(
                 simple, graph, Map.of("isActive(alice)", 1.0), 5, 0.5, 1234L);
         assertTrue(result == simple || result != null, "non-null return on empty-edge theory");
+    }
+
+    @Test
+    void requiredPosteriorKeys_returnsOnlyParentsForMatchingChildObservations() {
+        ReasoningGraph graph = people();
+        MTheory theory = MebnInferenceService.buildCausalTheory(graph, "Person", "cause", "effect", 0.3);
+        List<MebnWeightLearner.Edge> edges = SameDiffMebnStrengthLearner.collectEdges(theory);
+
+        Set<String> keys = SameDiffMebnStrengthLearner.requiredPosteriorKeys(edges, Map.of(
+                "effect(alice)", 1.0,
+                "unrelated(alice)", 1.0));
+
+        assertEquals(Set.of("cause(alice)"), keys,
+                "learning should request only parent posteriors needed by matching child targets");
+    }
+
+    // ─── Test 5: Adam convergence + [0,1] projection ──────────────────────────
+
+    /**
+     * Adam optimizer (in {@link SameDiffMebnStrengthLearner}) must converge at least as fast as
+     * SGD ({@link MebnWeightLearner}) on a small convex noisy-OR MSE problem with known optimum
+     * near s=1.0 (all effect observations = 1.0).
+     *
+     * <p>Both learners are run for {@code maxEpochs=50} and their final MSE losses are compared.
+     * Adam should achieve equal or lower final MSE (adaptive step sizes help near-convex landscapes).
+     * Additionally, the final Adam strength must be in [0, 1] (projection correctness).</p>
+     */
+    @Test
+    void mebnAdam_convergesAsWellAsSgd_andProjectsToUnitInterval() {
+        // Shared setup: single edge cause->effect, all effects observed = 1.0 (optimum at s=1).
+        ReasoningGraph graph = people();
+
+        MTheory tAdam = MebnInferenceService.buildCausalTheory(graph, "Person", "cause", "effect", 0.2);
+        MTheory tSgd  = MebnInferenceService.buildCausalTheory(graph, "Person", "cause", "effect", 0.2);
+
+        MebnInferenceService svc = new MebnInferenceService();
+        Map<String, Double> posteriors = svc.infer(graph, tAdam, Map.of());
+        Map<String, Double> observations = new LinkedHashMap<>();
+        posteriors.keySet().stream()
+                .filter(k -> k.startsWith("effect"))
+                .forEach(k -> observations.put(k, 1.0));
+        assertFalse(observations.isEmpty(), "effect observations must exist");
+
+        int maxEpochs = 50;
+
+        // Adam path (SameDiffMebnStrengthLearner — now uses Adam internally).
+        SameDiffMebnStrengthLearner.learn(tAdam, graph, observations, maxEpochs, 0.1, 1234L);
+        double sAdam = edgeStrength(tAdam, "cause", "effect");
+        double lossAdam = mseLoss(svc.infer(graph, tAdam, Map.of()), observations);
+
+        // SGD path (MebnWeightLearner — uses ProjectedGradientOptimizer SGD).
+        new MebnWeightLearner(0.1, 1e-6).learn(tSgd, graph, observations, maxEpochs);
+        double sSgd  = edgeStrength(tSgd, "cause", "effect");
+        double lossSgd  = mseLoss(svc.infer(graph, tSgd, Map.of()), observations);
+
+        // Adam must converge toward the optimum (s>0.5 means it moved well above initial 0.2).
+        assertTrue(sAdam >= 0.5,
+                "Adam path must drive s toward optimum 1.0 (got s=" + sAdam + ")");
+
+        // Adam final loss must be <= SGD final loss (it should converge at least as well).
+        assertTrue(lossAdam <= lossSgd + 1e-3,
+                "Adam final loss " + lossAdam + " must be <= SGD final loss " + lossSgd
+                        + " (within 1e-3 tolerance for platform variance)");
+
+        // Projection: final strength must remain in [0, 1].
+        assertTrue(sAdam >= 0.0 && sAdam <= 1.0,
+                "Adam strength must remain in [0,1] (got s=" + sAdam + ")");
+        assertTrue(sSgd >= 0.0 && sSgd <= 1.0,
+                "SGD strength must remain in [0,1] (got s=" + sSgd + ")");
     }
 
     // ─── Helpers ──────────────────────────────────────────────────────────────

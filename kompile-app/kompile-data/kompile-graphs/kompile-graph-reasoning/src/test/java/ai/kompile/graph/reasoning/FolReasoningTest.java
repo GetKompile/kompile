@@ -36,6 +36,7 @@ import ai.kompile.graph.reasoning.bayesian.BayesianNetwork;
 import ai.kompile.graph.reasoning.bayesian.VariableElimination;
 import ai.kompile.graph.reasoning.model.GraphEntity;
 import ai.kompile.graph.reasoning.model.MutableReasoningGraph;
+import ai.kompile.graph.reasoning.psl.GroundRule;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -46,6 +47,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -181,6 +183,27 @@ class FolReasoningTest {
 
             Set<String> none = kb.getEntitiesOfType("Organization");
             assertTrue(none.isEmpty());
+        }
+
+        @Test
+        @DisplayName("type membership lookups include deterministic supplemental memberships")
+        void getEntitiesOfType_includesSupplementalMemberships() {
+            graph.addEntity(GraphEntity.builder("acct-1")
+                    .type("Account")
+                    .label("Account 1")
+                    .attribute("additionalTypes", List.of("Customer"))
+                    .attribute("ontology.typeCandidates", List.of(
+                            Map.of("type", "AuditableEntity", "source", "owl-rl", "confidence", 1.0d),
+                            Map.of("type", "NeuralGuess", "source", "samediff", "confidence", 0.99d)))
+                    .build());
+            ReasoningGraphKnowledgeBase kb2 = new ReasoningGraphKnowledgeBase(graph);
+
+            assertTrue(kb2.getEntitiesOfType("Customer").contains("acct-1"));
+            assertTrue(kb2.getEntitiesOfType("AuditableEntity").contains("acct-1"));
+            assertFalse(kb2.getEntitiesOfType("NeuralGuess").contains("acct-1"),
+                    "SameDiff/neural candidates must not become crisp KB type memberships");
+            assertTrue(Constraints.hasType("X", "Customer").evaluate(kb2, Map.of("X", "acct-1")));
+            assertTrue(Constraints.hasType("X", "AuditableEntity").evaluate(kb2, Map.of("X", "acct-1")));
         }
 
         @Test
@@ -410,6 +433,30 @@ class FolReasoningTest {
             // We just verify that dave's score is a valid probability.
             assertTrue(daveLh >= 0.0 && daveLh <= 1.0, "dave likelihood invalid: " + daveLh);
             assertTrue(aliceLh >= 0.0 && aliceLh <= 1.0, "alice likelihood invalid: " + aliceLh);
+        }
+
+        @Test
+        @DisplayName("Infinite-weight FOL rules become hard PSL implications")
+        void infiniteWeightFolRuleGroundsHardPrimaryImplicationOnly() {
+            FolRule rule = FolRule.builder("infinite-type-rule")
+                    .weight(Double.POSITIVE_INFINITY)
+                    .antecedent(Constraints.hasType("X", "Person"))
+                    .consequent(Constraints.hasType("X", "Admin"))
+                    .build();
+
+            FolRuleSet rules = FolRuleSet.named("infinite-weight").add(rule).build();
+            FolInferenceResult result = service.infer(graph, rules);
+
+            List<GroundRule> groundRules = result.pslResult().groundRules();
+            assertTrue(groundRules.stream()
+                            .anyMatch(gr -> gr.hard()
+                                    && gr.toString().contains("Ante_infinite_type_rule")
+                                    && gr.toString().contains("Cons_infinite_type_rule")),
+                    "The primary FOL implication must be grounded as a hard PSL rule");
+            assertTrue(groundRules.stream()
+                            .filter(gr -> gr.toString().contains("State("))
+                            .allMatch(gr -> !gr.hard() && Double.isFinite(gr.weight())),
+                    "Auxiliary State support rules must remain finite soft rules");
         }
 
         @Test
@@ -654,6 +701,196 @@ class FolReasoningTest {
             var aliceKnowsAll = Constraints.forAll("Z", "Person",
                     Constraints.edgeExists("X", "Z"));
             assertFalse(aliceKnowsAll.evaluate(kb, Map.of("X", "alice")));
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // 5. Memoized type-index performance fix (ReasoningGraphKnowledgeBase)
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Verifies that the memoized type→entityIds index in {@link ReasoningGraphKnowledgeBase}:
+     * <ul>
+     *   <li>Returns the same id sets as the original linear scan (parity).</li>
+     *   <li>Works case-insensitively (query "person" vs stored "Person").</li>
+     *   <li>Covers types coming from BOTH {@code type()} AND attribute-based memberships
+     *       ({@code additionalType}, {@code owlInferredTypes}).</li>
+     *   <li>Handles shared types across multiple entities correctly.</li>
+     *   <li>Returns consistent results on repeated calls (index is memoized, not rebuilt).</li>
+     *   <li>{@code getEntitiesOfTypeObjects} returns the correct {@link GraphEntity} objects.</li>
+     *   <li>Type-scoped FOL rules via {@link FolInferenceService} select exactly the right entities.</li>
+     * </ul>
+     */
+    @Nested
+    @DisplayName("Memoized type-index (performance fix)")
+    class TypeIndexTests {
+
+        MutableReasoningGraph indexGraph;
+        ReasoningGraphKnowledgeBase indexKb;
+
+        @BeforeEach
+        void buildIndexGraph() {
+            indexGraph = new MutableReasoningGraph();
+
+            // e1: primary type "Person" only
+            indexGraph.addEntity(GraphEntity.builder("e1")
+                    .type("Person").label("E1").weight(1.0).build());
+
+            // e2: primary type "Person" + additionalType "Employee"
+            indexGraph.addEntity(GraphEntity.builder("e2")
+                    .type("Person").label("E2").weight(1.0)
+                    .attribute("additionalType", "Employee")
+                    .build());
+
+            // e3: primary type "Organization" + owlInferredTypes list containing "LegalEntity"
+            indexGraph.addEntity(GraphEntity.builder("e3")
+                    .type("Organization").label("E3").weight(1.0)
+                    .attribute("owlInferredTypes", List.of("LegalEntity", "Entity"))
+                    .build());
+
+            // e4: primary type "Document" (no supplemental memberships)
+            indexGraph.addEntity(GraphEntity.builder("e4")
+                    .type("Document").label("E4").weight(1.0).build());
+
+            // e5: primary type "Person" + owlInferredTypes comma-string "Employee,LegalEntity"
+            indexGraph.addEntity(GraphEntity.builder("e5")
+                    .type("Person").label("E5").weight(1.0)
+                    .attribute("owlInferredTypes", "Employee,LegalEntity")
+                    .build());
+
+            indexKb = new ReasoningGraphKnowledgeBase(indexGraph);
+        }
+
+        @Test
+        @DisplayName("getEntitiesOfType: primary type lookup returns correct ids")
+        void primaryTypeLookup() {
+            Set<String> persons = indexKb.getEntitiesOfType("Person");
+            assertEquals(Set.of("e1", "e2", "e5"), persons,
+                    "Person type should match e1, e2, e5");
+
+            Set<String> orgs = indexKb.getEntitiesOfType("Organization");
+            assertEquals(Set.of("e3"), orgs);
+
+            Set<String> docs = indexKb.getEntitiesOfType("Document");
+            assertEquals(Set.of("e4"), docs);
+        }
+
+        @Test
+        @DisplayName("getEntitiesOfType: case-insensitive — 'person' matches stored 'Person'")
+        void caseInsensitiveLookup() {
+            Set<String> lower = indexKb.getEntitiesOfType("person");
+            Set<String> upper = indexKb.getEntitiesOfType("PERSON");
+            Set<String> mixed = indexKb.getEntitiesOfType("Person");
+
+            assertEquals(mixed, lower, "case-insensitive: lower == canonical");
+            assertEquals(mixed, upper, "case-insensitive: upper == canonical");
+            assertTrue(lower.containsAll(Set.of("e1", "e2", "e5")));
+        }
+
+        @Test
+        @DisplayName("getEntitiesOfType: attribute-based memberships (additionalType / owlInferredTypes)")
+        void attributeBasedMemberships() {
+            // "Employee" comes from additionalType on e2 and owlInferredTypes on e5
+            Set<String> employees = indexKb.getEntitiesOfType("Employee");
+            assertEquals(Set.of("e2", "e5"), employees,
+                    "Employee should match e2 (additionalType) and e5 (owlInferredTypes csv)");
+
+            // "LegalEntity" comes from owlInferredTypes on e3 and e5
+            Set<String> legal = indexKb.getEntitiesOfType("LegalEntity");
+            assertEquals(Set.of("e3", "e5"), legal);
+        }
+
+        @Test
+        @DisplayName("getEntitiesOfType: repeated calls return identical results (memoized index)")
+        void memoizedConsistency() {
+            Set<String> first  = indexKb.getEntitiesOfType("Person");
+            Set<String> second = indexKb.getEntitiesOfType("Person");
+            Set<String> third  = indexKb.getEntitiesOfType("person");
+
+            assertEquals(first, second, "same result on repeated call");
+            assertEquals(first, third,  "case-insensitive result stable");
+        }
+
+        @Test
+        @DisplayName("getEntitiesOfType: unknown type returns empty set")
+        void unknownTypeReturnsEmpty() {
+            Set<String> none = indexKb.getEntitiesOfType("Alien");
+            assertTrue(none.isEmpty());
+
+            Set<String> nullResult = indexKb.getEntitiesOfType(null);
+            assertTrue(nullResult.isEmpty());
+
+            Set<String> blankResult = indexKb.getEntitiesOfType("   ");
+            assertTrue(blankResult.isEmpty());
+        }
+
+        @Test
+        @DisplayName("getEntitiesOfTypeObjects: returns correct GraphEntity objects for type scope")
+        void entitiesOfTypeObjectsMatchIds() {
+            List<GraphEntity> personEntities = indexKb.getEntitiesOfTypeObjects("Person");
+            Set<String> returnedIds = personEntities.stream()
+                    .map(GraphEntity::id)
+                    .collect(Collectors.toSet());
+            assertEquals(Set.of("e1", "e2", "e5"), returnedIds);
+
+            // Case-insensitive
+            List<GraphEntity> lower = indexKb.getEntitiesOfTypeObjects("person");
+            Set<String> lowerIds = lower.stream().map(GraphEntity::id).collect(Collectors.toSet());
+            assertEquals(returnedIds, lowerIds);
+        }
+
+        @Test
+        @DisplayName("getEntitiesOfTypeObjects: null/blank scope returns empty list")
+        void entitiesOfTypeObjectsNullBlank() {
+            assertTrue(indexKb.getEntitiesOfTypeObjects(null).isEmpty());
+            assertTrue(indexKb.getEntitiesOfTypeObjects("").isEmpty());
+            assertTrue(indexKb.getEntitiesOfTypeObjects("  ").isEmpty());
+        }
+
+        @Test
+        @DisplayName("Parity: memoized index matches original linear scan for all types in the graph")
+        void parityWithLinearScan() {
+            // Collect all types that appear in the graph via the original typeMemberships() method.
+            Set<String> allTypes = indexGraph.entities().stream()
+                    .flatMap(e -> e.typeMemberships().stream())
+                    .collect(Collectors.toSet());
+
+            for (String type : allTypes) {
+                // Reference: linear scan (original behaviour)
+                Set<String> linear = new java.util.HashSet<>();
+                for (GraphEntity e : indexGraph.entities()) {
+                    if (e.hasTypeMembership(type)) linear.add(e.id());
+                }
+                // Indexed result
+                Set<String> indexed = indexKb.getEntitiesOfType(type);
+                assertEquals(linear, indexed,
+                        "index must match linear scan for type '" + type + "'");
+            }
+        }
+
+        @Test
+        @DisplayName("Type-scoped FOL rule selects only entities of the declared type")
+        void typeScopedFolRuleSelectsCorrectEntities() {
+            // Rule: Person entities should have a high state — scope to "Person"
+            FolRule rule = FolRule.builder("person-scope-rule")
+                    .weight(3.0)
+                    .entityTypeScope("Person")
+                    .consequent(Constraints.hasType("N", "Person"))
+                    .build();
+
+            FolRuleSet rules = FolRuleSet.named("scoped").add(rule).build();
+            FolInferenceService svc = new FolInferenceService();
+            FolInferenceResult result = svc.infer(indexGraph, rules);
+
+            // All returned likelihoods must be in [0,1]
+            result.entityLikelihoods().values().forEach(v ->
+                    assertTrue(v >= 0.0 && v <= 1.0,
+                            "likelihood out of [0,1]: " + v));
+
+            // e1, e2, e5 are Person entities — they must appear in the results
+            assertTrue(result.entityLikelihoods().containsKey("e1"), "e1 (Person) must have a likelihood");
+            assertTrue(result.entityLikelihoods().containsKey("e2"), "e2 (Person) must have a likelihood");
+            assertTrue(result.entityLikelihoods().containsKey("e5"), "e5 (Person) must have a likelihood");
         }
     }
 }

@@ -579,6 +579,7 @@ public class RagPomGenerator implements Callable<Void> {
         parentPom.setGroupId("org.springframework.boot");
         parentPom.setArtifactId("spring-boot-starter-parent");
         parentPom.setVersion(DEFAULT_SPRING_BOOT_VERSION);
+        parentPom.setRelativePath("");
         model.setParent(parentPom);
         model.getProperties().setProperty("javacpp.platform", javacppPlatform);
 
@@ -691,6 +692,7 @@ public class RagPomGenerator implements Callable<Void> {
         props.setProperty("maven-compiler-plugin.version", DEFAULT_MAVEN_COMPILER_PLUGIN_VERSION);
         props.setProperty("maven-resources-plugin.version", DEFAULT_MAVEN_RESOURCES_PLUGIN_VERSION);
         props.setProperty("maven-jar-plugin.version", DEFAULT_MAVEN_JAR_PLUGIN_VERSION);
+        props.setProperty("nd4j.version", "1.0.0-SNAPSHOT");
         props.setProperty("postgres.version", DEFAULT_POSTGRES_VERSION);
         props.setProperty("native-maven-plugin.version", DEFAULT_NATIVE_MAVEN_PLUGIN_VERSION);
         props.setProperty("build-helper-maven-plugin.version", DEFAULT_BUILD_HELPER_MAVEN_PLUGIN_VERSION);
@@ -942,10 +944,17 @@ public class RagPomGenerator implements Callable<Void> {
 
             Plugin jarPlugin = createPlugin("org.apache.maven.plugins", "maven-jar-plugin",
                     "${maven-jar-plugin.version}");
+            // Bake the ND4J/JavaCPP module-access flags into the jar MANIFEST (honoured automatically by
+            // `java -jar`), so no --add-opens/--add-exports are needed on the launch command line.
             Xpp3Dom jarConfig = Xpp3DomBuilder.build(new StringReader(
                     "<configuration>" +
-                            "  <archive><manifest><mainClass>${start-class}</mainClass><addClasspath>true</addClasspath><classpathPrefix>BOOT-INF/lib/</classpathPrefix></manifest></archive>"
-                            +
+                            "  <archive>" +
+                            "    <manifest><mainClass>${start-class}</mainClass><addClasspath>true</addClasspath><classpathPrefix>BOOT-INF/lib/</classpathPrefix></manifest>" +
+                            "    <manifestEntries>" +
+                            "      <Add-Opens>java.base/java.lang java.base/java.lang.invoke java.base/java.lang.reflect java.base/java.io java.base/java.net java.base/java.nio java.base/java.util java.base/java.util.concurrent java.base/sun.nio.ch java.base/sun.misc</Add-Opens>" +
+                            "      <Add-Exports>java.base/jdk.internal.misc</Add-Exports>" +
+                            "    </manifestEntries>" +
+                            "  </archive>" +
                             "</configuration>"));
             jarPlugin.setConfiguration(jarConfig);
             build.addPlugin(jarPlugin);

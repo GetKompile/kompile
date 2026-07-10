@@ -23,18 +23,21 @@ import java.util.concurrent.Callable;
  */
 @CommandLine.Command(
         name = "export",
-        description = "Export the graph to JSON, JSON-LD, CSV (zip), GraphML, or Cypher dump",
+        description = "Export the graph to JSON, JSON-LD, CSV (zip), GraphML, Cypher dump, "
+                + "or the full native .kgraph (--format kgraph)",
         mixinStandardHelpOptions = true
 )
 public class GraphExportCommand implements Callable<Integer> {
 
-    static final Set<String> SUPPORTED_FORMATS = Set.of("json", "jsonld", "json-ld", "csv", "graphml", "cypher");
+    static final Set<String> SUPPORTED_FORMATS =
+            Set.of("json", "jsonld", "json-ld", "csv", "graphml", "cypher", "kgraph", "unified");
 
     @CommandLine.Mixin
     private AppClientMixin app;
 
-    @CommandLine.Option(names = "--format", required = true,
-            description = "One of: json, jsonld, csv, graphml, cypher")
+    @CommandLine.Option(names = "--format", required = false, defaultValue = "kgraph",
+            description = "One of: json, jsonld, csv, graphml, cypher, kgraph (default: kgraph — "
+                    + "the only format that preserves full graph state for round-trip via 'graph import')")
     private String format;
 
     @CommandLine.Option(names = {"--output", "-o"}, required = true,
@@ -54,9 +57,16 @@ public class GraphExportCommand implements Callable<Integer> {
         KompileHttpClient client = app.requireClient();
         if (client == null) return 1;
         try {
-            StringBuilder url = new StringBuilder("/api/graph/io/export?format=").append(format);
-            if (factSheetId != null) url.append("&factSheetId=").append(factSheetId);
-            String contentDisposition = client.downloadToFile(url.toString(), output);
+            String url;
+            if (isUnifiedFormat(format)) {
+                // The full native graph (all vector layers, opinions, weights) is a distinct endpoint.
+                url = "/api/graph/unified/export" + (factSheetId != null ? "?factSheetId=" + factSheetId : "");
+            } else {
+                StringBuilder u = new StringBuilder("/api/graph/io/export?format=").append(format);
+                if (factSheetId != null) u.append("&factSheetId=").append(factSheetId);
+                url = u.toString();
+            }
+            String contentDisposition = client.downloadToFile(url, output);
             System.out.println("Wrote " + output.toAbsolutePath());
             if (contentDisposition != null) {
                 String suggested = parseFilename(contentDisposition);
@@ -67,6 +77,10 @@ public class GraphExportCommand implements Callable<Integer> {
             System.err.println("Error: " + e.getMessage());
             return 1;
         }
+    }
+
+    static boolean isUnifiedFormat(String format) {
+        return "kgraph".equalsIgnoreCase(format) || "unified".equalsIgnoreCase(format);
     }
 
     static String parseFilename(String contentDisposition) {

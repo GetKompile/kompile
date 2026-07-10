@@ -16,7 +16,10 @@
 
 package ai.kompile.pipeline.serving.launcher;
 
+import ai.kompile.app.subprocess.BackendConfigurable;
 import ai.kompile.app.subprocess.SubprocessEnvironmentPropagator;
+import ai.kompile.app.subprocess.SubprocessPlacement;
+import ai.kompile.app.subprocess.SubprocessPlacementSupport;
 import ai.kompile.pipeline.serving.definition.UnifiedPipelineDefinition;
 import ai.kompile.pipeline.serving.subprocess.PipelineServingMessage;
 import ai.kompile.pipeline.serving.subprocess.PipelineServingSubprocessArgs;
@@ -29,6 +32,7 @@ import org.slf4j.LoggerFactory;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.net.ServerSocket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -37,7 +41,14 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Properties;
+import java.util.UUID;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -59,9 +70,18 @@ import java.util.concurrent.atomic.AtomicLong;
  *   <li>Subprocess registry integration</li>
  * </ul>
  */
-public class PipelineSubprocessLauncher {
+public class PipelineSubprocessLauncher implements BackendConfigurable {
 
     private static final Logger logger = LoggerFactory.getLogger(PipelineSubprocessLauncher.class);
+
+    /** Shared device-agnostic placement (same base infra every subprocess uses). */
+    private final SubprocessPlacementSupport placement = new SubprocessPlacementSupport();
+
+    /** {@link BackendConfigurable} — the scheduler assigns backend/device/memory before spawn. */
+    @Override
+    public void applyPlacement(SubprocessPlacement p) {
+        this.placement.applyPlacement(p);
+    }
 
     private static final String SUBPROCESS_MAIN_CLASS =
             "ai.kompile.pipeline.serving.subprocess.PipelineServingSubprocessMain";
@@ -321,6 +341,8 @@ public class PipelineSubprocessLauncher {
             }
         }
 
+        // Device-agnostic backend/device selection from the shared base infra — no CUDA_VISIBLE_DEVICES.
+        cmd.addAll(placement.jvmFlags());
         cmd.add("-cp");
         cmd.add(classpath);
         cmd.add(SUBPROCESS_MAIN_CLASS);
@@ -331,6 +353,8 @@ public class PipelineSubprocessLauncher {
 
     private void propagateEnvironment(Map<String, String> env) {
         SubprocessEnvironmentPropagator.propagateToEnvironment(env);
+        // Device-agnostic per-device memory bound (SD_MAX_DEVICE_BYTES) — shared base infra.
+        placement.applyEnv(env);
     }
 
     private void waitForReady(int port) throws Exception {
@@ -443,7 +467,7 @@ public class PipelineSubprocessLauncher {
     }
 
     private int findAvailablePort() {
-        try (var socket = new java.net.ServerSocket(0)) {
+        try (var socket = new ServerSocket(0)) {
             return socket.getLocalPort();
         } catch (IOException e) {
             return 9090; // fallback
@@ -456,7 +480,7 @@ public class PipelineSubprocessLauncher {
      */
     private String captureNd4jConfigFromSystemProperties() {
         try {
-            Map<String, String> nd4jProps = new java.util.LinkedHashMap<>();
+            Map<String, String> nd4jProps = new LinkedHashMap<>();
             for (Map.Entry<Object, Object> entry : System.getProperties().entrySet()) {
                 String key = entry.getKey().toString();
                 for (String prefix : FORWARDED_PROPERTY_PREFIXES) {

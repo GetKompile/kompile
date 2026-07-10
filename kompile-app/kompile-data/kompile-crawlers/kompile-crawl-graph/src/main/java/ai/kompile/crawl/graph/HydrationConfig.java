@@ -25,14 +25,16 @@ import java.util.Set;
  * stage runs; when non-empty only stages whose IDs appear in the set run.
  *
  * <p>Stage IDs mirror the design-doc labels:
- * {@code DERIVATION}, {@code PRUNE_COMPACT}, {@code HEALTH}.
+ * {@code DERIVATION}, {@code PRUNE_COMPACT}, {@code GNN_SCORING},
+ * {@code ONTOLOGY_CONFORMANCE}, {@code HEALTH}.
  *
  * <p>Use {@link #defaults()} for a "run everything" configuration.
  */
 public record HydrationConfig(
         /**
          * Stage IDs to execute. Empty set = run all stages (default behaviour).
-         * Valid values: {@code DERIVATION}, {@code PRUNE_COMPACT}, {@code HEALTH}.
+         * Valid values: {@code DERIVATION}, {@code PRUNE_COMPACT},
+         * {@code GNN_SCORING}, {@code ONTOLOGY_CONFORMANCE}, {@code HEALTH}.
          */
         Set<String> enabledStageIds,
 
@@ -48,7 +50,8 @@ public record HydrationConfig(
         boolean dryRun) {
 
     /**
-     * All stages enabled (DERIVATION + PRUNE_COMPACT + HEALTH + ONTOLOGY_CONFORMANCE).
+     * All stages enabled (DERIVATION + PRUNE_COMPACT + GNN_SCORING +
+     * ONTOLOGY_CONFORMANCE + HEALTH).
      * Threshold 0.4, live mode.
      *
      * <p>DERIVATION was previously disabled because the PSL FactStore was always empty
@@ -64,7 +67,7 @@ public record HydrationConfig(
      */
     public static HydrationConfig defaults() {
         return new HydrationConfig(
-                Set.of("DERIVATION", "PRUNE_COMPACT", "HEALTH", "ONTOLOGY_CONFORMANCE"),
+                Set.of("DERIVATION", "PRUNE_COMPACT", "GNN_SCORING", "HEALTH", "ONTOLOGY_CONFORMANCE"),
                 0.4, false);
     }
 

@@ -22,10 +22,10 @@
  *   1. Auto-refresh LOD routing — getTopKVisualization vs getVisualizationData
  *      driven by component.totalAvailableNodes.
  *   2. Auto-refresh skips when document.hidden is true (background-tab guard).
- *   3. toggleNodeTypeFilter / toggleEdgeTypeFilter re-apply filters in-memory
- *      when fullGraphData cache is populated (no network round-trip).
- *   4. The same toggles fall back to loadGraph() (via getStatistics) when the
- *      cache is absent but graphData is already set.
+ *   3. toggleNodeTypeFilter re-applies filters in-memory when fullGraphData
+ *      cache is populated (no network round-trip).
+ *   4. The node-type toggle falls back to loadGraph() (via getStatistics) when
+ *      the cache is absent but graphData is already set.
  *   5. Auto-refresh signature gating — graphData is NOT replaced when the
  *      node/edge count is unchanged between ticks.
  *
@@ -90,6 +90,9 @@ class GraphCanvasStubComponent {
   @Input() linkMode: boolean = false;
   @Input() showLegend: boolean = false;
   @Input() focusedNodeId: string | null = null;
+  @Input() reasoningLayerOverlayEnabled: boolean = false;
+  @Input() reasoningNodeLayerMap: Map<string, any> = new Map();
+  @Input() reasoningEdgeLayerMap: Map<string, any> = new Map();
   @Output() nodeSelected   = new EventEmitter<D3Node | null>();
   @Output() nodeDoubleClicked = new EventEmitter<D3Node>();
   @Output() edgeCreated    = new EventEmitter<{ source: string; target: string }>();
@@ -182,7 +185,8 @@ describe('GraphVisualizerComponent — perf fixes (LOD auto-refresh + in-memory 
       'deleteEdge',
       'getEdges',
       'getConnectedNodes',
-      'getAncestors'
+      'getAncestors',
+      'getReasoningLayers'
     ]);
 
     weightServiceSpy = jasmine.createSpyObj<SourceWeightService>('SourceWeightService', [
@@ -199,6 +203,12 @@ describe('GraphVisualizerComponent — perf fixes (LOD auto-refresh + in-memory 
     graphServiceSpy.getNodeNeighborhood.and.returnValue(of(smallGraphData));
     graphServiceSpy.getFactSheetVisualizationData.and.returnValue(of(smallGraphData));
     graphServiceSpy.getAncestors.and.returnValue(of([]));
+    graphServiceSpy.getReasoningLayers.and.returnValue(of({
+      factSheetId: 42,
+      nodes: [],
+      edges: [],
+      statistics: { nodeCount: 0, edgeCount: 0 }
+    }));
     weightServiceSpy.getWeights.and.returnValue(of([]));
     snackBarSpy.open.and.returnValue(makeSnackBarRef() as any);
     dialogSpy.open.and.returnValue(makeDialogRef() as any);
@@ -515,11 +525,10 @@ describe('GraphVisualizerComponent — perf fixes (LOD auto-refresh + in-memory 
   });
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // 4. TOGGLE EDGE TYPE FILTER — IN-MEMORY PATH
-  //    Mirror of the node-type tests for the edge-type toggle.
+  // 4. EDGE TYPES ARE DESCRIPTIVE, NOT VISIBILITY FILTERS
   // ═══════════════════════════════════════════════════════════════════════════
 
-  describe('toggleEdgeTypeFilter — in-memory when fullGraphData cache is present', () => {
+  describe('edge type visibility invariant', () => {
 
     function initAndResetCounts(): void {
       createAndInit();
@@ -529,49 +538,26 @@ describe('GraphVisualizerComponent — perf fixes (LOD auto-refresh + in-memory 
       graphServiceSpy.getTopKVisualization.calls.reset();
     }
 
-    it('does NOT call any graphService method when fullGraphData is cached',
+    it('keeps links of every edge type in-memory without service calls',
       fakeAsync(() => {
         initAndResetCounts();
-        expect((component as any).fullGraphData).not.toBeNull();
 
-        component.toggleEdgeTypeFilter('HIERARCHICAL');
+        component.filter.nodeTypes = ['SOURCE', 'DOCUMENT', 'ENTITY'];
+        component.graphData = component.applyFilters(smallGraphData);
 
+        expect(component.graphData!.links.length).toBe(smallGraphData.links.length);
         expect(graphServiceSpy.getStatistics).not.toHaveBeenCalled();
         expect(graphServiceSpy.getVisualizationData).not.toHaveBeenCalled();
         expect(graphServiceSpy.getTopKVisualization).not.toHaveBeenCalled();
       })
     );
 
-    it('removes edge type from filter and filters out those links in graphData immediately',
+    it('does not expose edge-type toggle state',
       fakeAsync(() => {
         initAndResetCounts();
 
-        (component as any).fullGraphData = smallGraphData;
-        component.filter.nodeTypes = ['SOURCE', 'DOCUMENT', 'ENTITY'];
-        component.filter.edgeTypes = ['HIERARCHICAL'];
-
-        component.toggleEdgeTypeFilter('HIERARCHICAL'); // removes HIERARCHICAL
-
-        expect(component.filter.edgeTypes).not.toContain('HIERARCHICAL');
-        // With no edge types active, all links must be filtered away.
-        expect(component.graphData!.links.length).toBe(0);
-        // But nodes remain (edge filter does not remove nodes).
-        expect(component.graphData!.nodes.length).toBeGreaterThan(0);
-      })
-    );
-
-    it('adds edge type and widens graphData links in-memory',
-      fakeAsync(() => {
-        initAndResetCounts();
-
-        (component as any).fullGraphData = smallGraphData;
-        component.filter.nodeTypes = ['SOURCE', 'DOCUMENT'];
-        component.filter.edgeTypes = []; // start with no edge types — all links hidden
-
-        component.toggleEdgeTypeFilter('HIERARCHICAL'); // adds HIERARCHICAL
-
-        expect(component.filter.edgeTypes).toContain('HIERARCHICAL');
-        expect(component.graphData!.links.length).toBeGreaterThan(0);
+        expect((component as any).toggleEdgeTypeFilter).toBeUndefined();
+        expect((component.filter as any).edgeTypes).toBeUndefined();
       })
     );
   });
@@ -626,43 +612,6 @@ describe('GraphVisualizerComponent — perf fixes (LOD auto-refresh + in-memory 
     );
   });
 
-  describe('toggleEdgeTypeFilter — loadGraph fallback when cache is absent', () => {
-
-    it('calls getStatistics (via loadGraph) when fullGraphData is null but graphData is set',
-      fakeAsync(() => {
-        createAndInit();
-        tick();
-
-        (component as any).fullGraphData = null;
-        component.graphData = smallGraphData;
-
-        graphServiceSpy.getStatistics.calls.reset();
-
-        component.toggleEdgeTypeFilter('CITATION');
-        tick();
-
-        expect(graphServiceSpy.getStatistics).toHaveBeenCalled();
-      })
-    );
-
-    it('does NOT call any service when both fullGraphData and graphData are null',
-      fakeAsync(() => {
-        createAndInit();
-        tick();
-
-        (component as any).fullGraphData = null;
-        component.graphData = null;
-
-        graphServiceSpy.getStatistics.calls.reset();
-        graphServiceSpy.getVisualizationData.calls.reset();
-
-        component.toggleEdgeTypeFilter('CITATION');
-
-        expect(graphServiceSpy.getStatistics).not.toHaveBeenCalled();
-        expect(graphServiceSpy.getVisualizationData).not.toHaveBeenCalled();
-      })
-    );
-  });
 
   // ═══════════════════════════════════════════════════════════════════════════
   // 6. AUTO-REFRESH SIGNATURE GATING

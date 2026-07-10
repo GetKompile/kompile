@@ -23,6 +23,7 @@ import ai.kompile.cli.common.config.ArchiveInfo;
 import ai.kompile.cli.common.config.ConfigArchiveService.ImportResult;
 import ai.kompile.cli.common.config.ImportMode;
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.utils.FormatUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -213,7 +214,7 @@ public class ConfigArchiveTool implements CliTool {
         sb.append("Saved archives (").append(archives.size()).append("):\n\n");
         for (ArchiveInfo info : archives) {
             sb.append("  ").append(info.getFileName());
-            sb.append("  (").append(formatSize(info.getSizeBytes())).append(")");
+            sb.append("  (").append(FormatUtils.formatBytes(info.getSizeBytes())).append(")");
             sb.append("  ").append(info.getLastModified()).append("\n");
             ConfigArchiveManifest m = info.getManifest();
             if (m != null) {
@@ -343,9 +344,4 @@ public class ConfigArchiveTool implements CliTool {
         }
     }
 
-    private String formatSize(long bytes) {
-        if (bytes < 1024) return bytes + " B";
-        if (bytes < 1024 * 1024) return String.format("%.1f KB", bytes / 1024.0);
-        return String.format("%.1f MB", bytes / (1024.0 * 1024.0));
-    }
 }

@@ -17,6 +17,7 @@ package ai.kompile.orchestrator.integration.cli;
 
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.core.graphrag.agent.ExtractionLlmService;
+import ai.kompile.utils.AnsiConstants;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
@@ -30,7 +31,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.regex.Pattern;
 
 /**
  * {@link ExtractionLlmService} backed by CLI agent subprocesses.
@@ -55,15 +55,6 @@ public class CliAgentExtractionLlmService implements ExtractionLlmService {
     private final int timeoutSeconds;
     private final ObjectMapper objectMapper = JsonUtils.standardMapper();
     private volatile String modelOverride;
-
-    /** Regex covering CSI, OSC, charset, keypad, and string terminator escape sequences. */
-    private static final Pattern ANSI_PATTERN = Pattern.compile(
-            "\033\\[[0-9;?><]*[a-zA-Z]"
-            + "|\033\\].*?(?:\033\\\\|\007)"
-            + "|\033[()][0-9A-B]"
-            + "|\033[>=<]"
-            + "|\033\\\\"
-    );
 
     // ═══════════════════════════════════════════════════════════════════════════
     // PROCESS POOL — pre-spawns CLI agent processes to eliminate startup latency
@@ -147,10 +138,13 @@ public class CliAgentExtractionLlmService implements ExtractionLlmService {
         return null;
     }
 
+    private static Path resolveCliLlmConfigPath() {
+        return ai.kompile.cli.common.KompileHome.configDirectory().toPath().resolve("cli-llm-config.json");
+    }
+
     private int readPoolSizeFromConfig() {
         try {
-            Path configPath = Path.of(
-                    System.getProperty("user.home"), ".kompile", "config", "cli-llm-config.json");
+            Path configPath = resolveCliLlmConfigPath();
             if (Files.exists(configPath)) {
                 JsonNode root = objectMapper.readTree(configPath.toFile());
                 if (root.has("processPoolSize")) {
@@ -336,8 +330,7 @@ public class CliAgentExtractionLlmService implements ExtractionLlmService {
             return modelOverride;
         }
         try {
-            Path configPath = Path.of(
-                    System.getProperty("user.home"), ".kompile", "config", "cli-llm-config.json");
+            Path configPath = resolveCliLlmConfigPath();
             if (Files.exists(configPath)) {
                 JsonNode root = objectMapper.readTree(configPath.toFile());
                 JsonNode agentModels = root.get("agentModels");
@@ -444,7 +437,6 @@ public class CliAgentExtractionLlmService implements ExtractionLlmService {
     }
 
     private static String stripAnsi(String text) {
-        if (text == null || text.isEmpty()) return text;
-        return ANSI_PATTERN.matcher(text).replaceAll("");
+        return AnsiConstants.stripAnsi(text);
     }
 }

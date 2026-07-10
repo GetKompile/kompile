@@ -115,7 +115,7 @@ public class NativeImageSupportWriter {
         File springProps = new File(resourcesDir, "spring.properties");
         // Only create if it doesn't exist - don't overwrite user customizations
         if (!springProps.exists()) {
-            try (java.io.FileWriter writer = new java.io.FileWriter(springProps)) {
+            try (FileWriter writer = new FileWriter(springProps)) {
                 writer.write("spring.objenesis.ignore=true\n");
             }
             System.out.println("Generated spring.properties: " + springProps.getAbsolutePath());

@@ -29,6 +29,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import picocli.CommandLine;
 
 import java.io.File;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.format.DateTimeFormatter;
@@ -77,6 +79,17 @@ public class SubprocessLogsCommand implements Callable<Integer> {
                 description = "Orchestrator port")
         int port;
 
+        @CommandLine.Option(names = {"--project-root"},
+                description = "Project root to scope log discovery/tail/list")
+        String projectRoot;
+
+        Path workingDirectory() {
+            if (projectRoot != null && !projectRoot.isBlank()) {
+                return Paths.get(projectRoot).toAbsolutePath().normalize();
+            }
+            return null;
+        }
+
         boolean useRemote() {
             return remote || (url != null && !url.isBlank());
         }
@@ -98,9 +111,10 @@ public class SubprocessLogsCommand implements Callable<Integer> {
 
         @Override
         public Integer call() throws Exception {
+            Path workingDirectory = resolveWorkingDirectory(remote);
             List<SubprocessLogMetadata> runs = remote.useRemote()
                     ? fetchRemoteRuns(remote, type, runId, since, until, limit)
-                    : fetchLocalRuns(type, runId, since, until, limit);
+                    : fetchLocalRuns(workingDirectory, type, runId, since, until, limit);
 
             if (json) {
                 System.out.println(MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(runs));
@@ -122,9 +136,10 @@ public class SubprocessLogsCommand implements Callable<Integer> {
 
         @Override
         public Integer call() throws Exception {
+            Path workingDirectory = resolveWorkingDirectory(remote);
             List<AgentLogRecord> records = remote.useRemote()
                     ? fetchRemoteRecords(remote, runId, null, Integer.MAX_VALUE)
-                    : fetchLocalRecords(runId);
+                    : fetchLocalRecords(workingDirectory, runId);
             if (records == null) {
                 System.err.println("No subprocess run found with runId=" + runId);
                 return 1;
@@ -153,10 +168,11 @@ public class SubprocessLogsCommand implements Callable<Integer> {
 
         @Override
         public Integer call() throws Exception {
+            Path workingDirectory = resolveWorkingDirectory(remote);
             if (remote.useRemote()) {
                 return tailRemote(remote, runId, pollMs, quietTimeoutS);
             }
-            return tailLocal(runId, pollMs, quietTimeoutS);
+            return tailLocal(workingDirectory, runId, pollMs, quietTimeoutS);
         }
     }
 
@@ -174,9 +190,10 @@ public class SubprocessLogsCommand implements Callable<Integer> {
 
         @Override
         public Integer call() throws Exception {
+            Path workingDirectory = resolveWorkingDirectory(remote);
             List<AgentLogRecord> records = remote.useRemote()
                     ? fetchRemoteAggregate(remote, type, runId, since, until, limit)
-                    : fetchLocalAggregate(type, runId, since, until, limit);
+                    : fetchLocalAggregate(workingDirectory, type, runId, since, until, limit);
 
             for (AgentLogRecord r : records) {
                 if (json) {
@@ -200,33 +217,37 @@ public class SubprocessLogsCommand implements Callable<Integer> {
 
         @Override
         public Integer call() throws Exception {
+            Path workingDirectory = resolveWorkingDirectory(remote);
             if (remote.useRemote()) {
+                StringBuilder path = new StringBuilder("/api/subprocess-logs/cleanup");
+                appendProjectRootParam(path, remote);
                 KompileHttpClient client = KompileHttpClient.create(remote.url, remote.port);
-                System.out.println(client.postEmpty("/api/subprocess-logs/cleanup"));
+                System.out.println(client.postEmpty(path.toString()));
                 return 0;
             }
             LogRetentionPolicy policy = LogRetentionPolicy.of(maxAgeDays, maxTotalMb, maxFilesPerType);
-            LogRetentionManager.RetentionResult result = new LogRetentionManager(policy).applyToSubprocesses();
+            LogRetentionManager.RetentionResult result = new LogRetentionManager(policy).applyToSubprocesses(workingDirectory);
             System.out.printf("Deleted %d runs (age=%d, perType=%d, size=%d)%n",
                     result.totalDeleted(), result.deletedByAge(),
                     result.deletedByPerAgent(), result.deletedBySize());
-            System.out.println("Logs root: " + LogPaths.subprocessesRoot().getAbsolutePath());
+            System.out.println("Logs root: " + LogPaths.subprocessesRoot(workingDirectory).getAbsolutePath());
             return 0;
         }
     }
 
     private static List<SubprocessLogMetadata> fetchLocalRuns(
+            Path workingDirectory,
             String type, String runId, String since, String until, int limit) {
         AgentLogReader.SubprocessRunFilter filter = new AgentLogReader.SubprocessRunFilter(
                 type, runId, parseInstant(since), parseInstant(until));
-        List<SubprocessLogMetadata> runs = AgentLogReader.listSubprocessRuns(filter);
+        List<SubprocessLogMetadata> runs = AgentLogReader.listSubprocessRuns(workingDirectory, filter);
         return runs.size() > limit ? runs.subList(0, limit) : runs;
     }
 
-    private static List<AgentLogRecord> fetchLocalRecords(String runId) {
-        return AgentLogReader.findSubprocessByRunId(runId).map(meta -> {
-            File logFile = LogPaths.subprocessLogFile(meta.getSubprocessType(), meta.getRunId());
-            if (!logFile.isFile()) return List.<AgentLogRecord>of();
+    private static List<AgentLogRecord> fetchLocalRecords(Path workingDirectory, String runId) {
+        return AgentLogReader.findSubprocessByRunId(workingDirectory, runId).map(meta -> {
+            File logFile = AgentLogReader.resolveSubprocessLogFile(workingDirectory, meta);
+            if (logFile == null || !logFile.isFile()) return List.<AgentLogRecord>of();
             try (Stream<AgentLogRecord> stream = AgentLogReader.readRecords(logFile)) {
                 return stream.toList();
             } catch (Exception e) {
@@ -236,22 +257,26 @@ public class SubprocessLogsCommand implements Callable<Integer> {
     }
 
     private static List<AgentLogRecord> fetchLocalAggregate(
-            String type, String runId, String since, String until, int limit) {
+            Path workingDirectory, String type, String runId, String since, String until, int limit) {
         AgentLogReader.SubprocessRunFilter filter = new AgentLogReader.SubprocessRunFilter(
                 type, runId, parseInstant(since), parseInstant(until));
-        List<SubprocessLogMetadata> runs = AgentLogReader.listSubprocessRuns(filter);
-        try (Stream<AgentLogRecord> stream = AgentLogReader.aggregateAcrossSubprocessRuns(runs)) {
+        List<SubprocessLogMetadata> runs = AgentLogReader.listSubprocessRuns(workingDirectory, filter);
+        try (Stream<AgentLogRecord> stream = AgentLogReader.aggregateAcrossSubprocessRuns(workingDirectory, runs)) {
             return stream.limit(limit).toList();
         }
     }
 
-    private static int tailLocal(String runId, long pollMs, long quietTimeoutS) throws Exception {
-        SubprocessLogMetadata meta = AgentLogReader.findSubprocessByRunId(runId).orElse(null);
+    private static int tailLocal(Path workingDirectory, String runId, long pollMs, long quietTimeoutS) throws Exception {
+        SubprocessLogMetadata meta = AgentLogReader.findSubprocessByRunId(workingDirectory, runId).orElse(null);
         if (meta == null) {
             System.err.println("No subprocess run found with runId=" + runId);
             return 1;
         }
-        File logFile = LogPaths.subprocessLogFile(meta.getSubprocessType(), meta.getRunId());
+        File logFile = AgentLogReader.resolveSubprocessLogFile(workingDirectory, meta);
+        if (logFile == null || !logFile.isFile()) {
+            System.err.println("No log file found for runId=" + runId);
+            return 1;
+        }
         try (Stream<AgentLogRecord> stream = AgentLogReader.readRecords(logFile)) {
             stream.forEach(SubprocessLogsCommand::printRecordLine);
         }
@@ -270,6 +295,7 @@ public class SubprocessLogsCommand implements Callable<Integer> {
         appendParam(path, "runId", runId);
         appendParam(path, "since", since);
         appendParam(path, "until", until);
+        appendProjectRootParam(path, remote);
         KompileHttpClient client = KompileHttpClient.create(remote.url, remote.port);
         return client.get(path.toString(), new TypeReference<List<SubprocessLogMetadata>>() {});
     }
@@ -280,6 +306,7 @@ public class SubprocessLogsCommand implements Callable<Integer> {
         if (fromSeq != null) {
             path.append("&fromSeq=").append(fromSeq);
         }
+        appendProjectRootParam(path, remote);
         KompileHttpClient client = KompileHttpClient.create(remote.url, remote.port);
         return client.get(path.toString(), new TypeReference<List<AgentLogRecord>>() {});
     }
@@ -291,6 +318,7 @@ public class SubprocessLogsCommand implements Callable<Integer> {
         appendParam(path, "runId", runId);
         appendParam(path, "since", since);
         appendParam(path, "until", until);
+        appendProjectRootParam(path, remote);
         KompileHttpClient client = KompileHttpClient.create(remote.url, remote.port);
         return client.get(path.toString(), new TypeReference<List<AgentLogRecord>>() {});
     }
@@ -350,11 +378,25 @@ public class SubprocessLogsCommand implements Callable<Integer> {
                 ts, stream, type, run, r.getLine() == null ? "" : r.getLine());
     }
 
+    private static Path resolveWorkingDirectory(RemoteOptions remote) {
+        if (remote.workingDirectory() != null) {
+            return remote.workingDirectory();
+        }
+        return Paths.get(System.getProperty("user.dir")).toAbsolutePath().normalize();
+    }
+
+    private static void appendProjectRootParam(StringBuilder path, RemoteOptions remote) {
+        Path projectRoot = resolveWorkingDirectory(remote);
+        appendParam(path, "projectRoot", projectRoot);
+    }
+
     private static void appendParam(StringBuilder sb, String name, Object value) {
         if (value == null) return;
         String s = value.toString();
         if (s.isBlank()) return;
-        sb.append('&').append(name).append('=').append(java.net.URLEncoder.encode(s, java.nio.charset.StandardCharsets.UTF_8));
+        char separator = sb.indexOf("?") >= 0 ? '&' : '?';
+        sb.append(separator).append(name).append('=')
+                .append(java.net.URLEncoder.encode(s, java.nio.charset.StandardCharsets.UTF_8));
     }
 
     private static Instant parseInstant(String value) {

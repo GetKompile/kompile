@@ -17,12 +17,14 @@
 package ai.kompile.codeindexer.domain;
 
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 @Repository
@@ -70,7 +72,7 @@ public interface CodeEntityRepository extends JpaRepository<CodeEntity, UUID> {
     void deleteByProjectIdAndFilePath(String projectId, String filePath);
 
     @Query("DELETE FROM CodeEntity e WHERE e.projectId = :projectId AND e.filePath IN :filePaths")
-    @org.springframework.data.jpa.repository.Modifying
+    @Modifying
     void deleteByProjectIdAndFilePathIn(@Param("projectId") String projectId,
-                                        @Param("filePaths") java.util.Set<String> filePaths);
+                                        @Param("filePaths") Set<String> filePaths);
 }

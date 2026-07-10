@@ -105,26 +105,13 @@ public class GraphExtractionController {
     }
 
     /**
-     * Toggle entity extraction enabled/disabled.
-     */
-    @PostMapping("/config/toggle")
-    public ResponseEntity<GraphExtractionConfig> toggleEnabled() {
-        GraphExtractionConfig current = configService.getConfig();
-        GraphExtractionConfig update = new GraphExtractionConfig();
-        update.enabled = !(current.enabled != null && current.enabled);
-        GraphExtractionConfig updated = configService.updateConfig(update);
-        logger.info("Toggled graph extraction: enabled={}", updated.enabled);
-        return ResponseEntity.ok(updated);
-    }
-
-    /**
-     * Get current enabled status.
+     * Get current mandatory graph extraction status.
      */
     @GetMapping("/status")
     public ResponseEntity<Map<String, Object>> getStatus() {
         GraphExtractionConfig config = configService.getConfig();
         return ResponseEntity.ok(Map.of(
-                "enabled", config.enabled != null && config.enabled,
+                "enabled", true,
                 "batchSize", config.batchSize != null ? config.batchSize : 10,
                 "schemaEnforcement", config.schemaEnforcement != null ? config.schemaEnforcement : "LENIENT",
                 "neo4jEnabled", config.neo4jEnabled != null && config.neo4jEnabled,

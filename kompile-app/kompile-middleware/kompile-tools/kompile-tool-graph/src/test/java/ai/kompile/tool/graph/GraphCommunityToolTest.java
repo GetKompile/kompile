@@ -11,10 +11,11 @@ package ai.kompile.tool.graph;
 
 import ai.kompile.graph.algorithms.JaccardNodeSimilarity;
 import ai.kompile.graph.algorithms.service.GraphAlgorithmService;
+import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
+import ai.kompile.knowledgegraph.unified.UnifiedGraphBridge;
 import ai.kompile.graph.algorithms.community.CommunitySummary;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -33,14 +34,14 @@ import static org.mockito.Mockito.*;
 class GraphCommunityToolTest {
 
     @Mock private GraphAlgorithmService algorithmService;
-    @Mock private GraphNodeRepository nodeRepository;
     @Mock private KnowledgeGraphService graphService;
+    @Mock private UnifiedGraphBridge unifiedGraphBridge;
 
     private GraphCommunityTool tool;
 
     @BeforeEach
     void setUp() {
-        tool = new GraphCommunityTool(algorithmService, graphService);
+        tool = new GraphCommunityTool(algorithmService, graphService, unifiedGraphBridge);
     }
 
     @Test
@@ -140,6 +141,29 @@ class GraphCommunityToolTest {
     }
 
     @Test
+    void summarizeCommunities_scopedFactSheetUsesUnifiedGraph() {
+        UnifiedGraph unified = new UnifiedGraph()
+                .addEntity("n1", "ENTITY", "Unified AI")
+                .addEntity("n2", "ENTITY", "Unified Systems")
+                .addRelation("r1", "n1", "n2", "RELATED", 1.0);
+        List<CommunitySummary> summaries = List.of(
+                new CommunitySummary(0, List.of("n1", "n2"), "Unified graph cluster", Instant.now())
+        );
+        when(unifiedGraphBridge.export(7L)).thenReturn(unified);
+        when(algorithmService.summarizeCommunitiesGraph(eq(unified), eq("wcc"), eq(5)))
+                .thenReturn(summaries);
+
+        var result = tool.summarizeCommunities(
+                new GraphCommunityTool.SummarizeCommunitiesInput(7L, "wcc", 5));
+
+        assertEquals("wcc", result.get("algorithm"));
+        assertEquals("unified_graph", result.get("source"));
+        assertEquals(1, result.get("communityCount"));
+        verify(algorithmService).summarizeCommunitiesGraph(eq(unified), eq("wcc"), eq(5));
+        verify(algorithmService, never()).summarizeCommunities(any(), anyString(), anyInt());
+    }
+
+    @Test
     void nodeCommunity_missingNodeId_returnsError() {
         var result = tool.getNodeCommunity(
                 new GraphCommunityTool.NodeCommunityInput("", null, null));
@@ -208,7 +232,6 @@ class GraphCommunityToolTest {
     void similarPairs_respectsTopKAndThreshold() {
         when(algorithmService.jaccardTopK(isNull(), eq(5), eq(0.3)))
                 .thenReturn(List.of());
-        when(graphService.getNodesByIds(anyList())).thenReturn(List.of());
 
         var result = tool.findSimilarPairs(
                 new GraphCommunityTool.SimilarNodePairsInput(null, 5, 0.3));

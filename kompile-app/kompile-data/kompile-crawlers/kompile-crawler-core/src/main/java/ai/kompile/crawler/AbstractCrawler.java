@@ -18,6 +18,8 @@ package ai.kompile.crawler;
 
 import ai.kompile.core.crawler.*;
 
+import jakarta.annotation.PreDestroy;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -74,7 +76,7 @@ public abstract class AbstractCrawler implements Crawler {
         try {
             executor.submit(() -> {
             job.crawlThread = Thread.currentThread();
-            job.startedAt = java.time.Instant.now();
+            job.startedAt = Instant.now();
             job.status.set(CrawlStatus.RUNNING);
             try {
                 executeCrawl(job);
@@ -131,11 +133,11 @@ public abstract class AbstractCrawler implements Crawler {
      */
     protected abstract void executeCrawl(AbstractCrawlJob job) throws Exception;
 
-    @jakarta.annotation.PreDestroy
+    @PreDestroy
     public void shutdown() {
         executor.shutdown();
         try {
-            if (!executor.awaitTermination(10, java.util.concurrent.TimeUnit.SECONDS)) {
+            if (!executor.awaitTermination(10, TimeUnit.SECONDS)) {
                 executor.shutdownNow();
             }
         } catch (InterruptedException e) {

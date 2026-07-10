@@ -4,10 +4,11 @@ import org.antlr.v4.runtime.*;
 
 import java.util.ArrayDeque;
 import java.util.Deque;
+import java.util.LinkedList;
 
 abstract class Python3LexerBase extends Lexer {
     // A queue where extra tokens are pushed on (see the NEWLINE lexer rule).
-    private java.util.LinkedList<Token> tokens = new java.util.LinkedList<>();
+    private LinkedList<Token> tokens = new LinkedList<>();
     // The stack that keeps track of the indentation level.
     private Deque<Integer> indents = new ArrayDeque<>();
     // The amount of opened braces, brackets and parenthesis.
@@ -145,7 +146,7 @@ abstract class Python3LexerBase extends Lexer {
     @Override
     public void reset()
     {
-        tokens = new java.util.LinkedList<>();
+        tokens = new LinkedList<>();
         indents = new ArrayDeque<>();
         opened = 0;
         lastToken = null;

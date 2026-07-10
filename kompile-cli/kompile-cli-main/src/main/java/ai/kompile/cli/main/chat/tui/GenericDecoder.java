@@ -50,61 +50,14 @@ public class GenericDecoder implements AgentTuiDecoder {
         return sb.toString();
     }
 
+    /** Conservative: DSR/DA/window/OSC only — no Kitty keyboard, no XTVERSION (safe for any agent). */
+    @Override
+    public QueryPolicy queryPolicy() {
+        return QueryPolicy.CONSERVATIVE;
+    }
+
     @Override
     public String buildResponses(String rawChunk, VirtualTerminal vt) {
-        if (rawChunk == null || rawChunk.isEmpty()) return "";
-        StringBuilder response = new StringBuilder();
-
-        // DSR: cursor position report — almost every TUI needs this
-        if (rawChunk.contains("\033[6n")) {
-            response.append("\033[")
-                    .append(clamp(vt.getCursorRow() + 1, 1, vt.getRows()))
-                    .append(';')
-                    .append(clamp(vt.getCursorCol() + 1, 1, vt.getCols()))
-                    .append('R');
-        }
-        // DSR: terminal status OK
-        if (rawChunk.contains("\033[5n")) {
-            response.append("\033[0n");
-        }
-        // Primary device attributes — report as VT220
-        if (rawChunk.contains("\033[c") || rawChunk.contains("\033[0c")) {
-            response.append("\033[?62;22c");
-        }
-        // Secondary device attributes
-        if (rawChunk.contains("\033[>c") || rawChunk.contains("\033[>0c")) {
-            response.append("\033[>0;0;0c");
-        }
-        // Window size reports
-        if (rawChunk.contains("\033[18t")) {
-            response.append("\033[8;").append(vt.getRows()).append(';').append(vt.getCols()).append('t');
-        }
-        if (rawChunk.contains("\033[14t")) {
-            response.append("\033[4;").append(vt.getRows() * 16).append(';').append(vt.getCols() * 8).append('t');
-        }
-        if (rawChunk.contains("\033[16t")) {
-            response.append("\033[6;16;8t");
-        }
-        // OSC color queries. Keep Kitty keyboard unanswered for safety.
-        if (containsOsc(rawChunk, "10")) {
-            response.append("\033]10;rgb:eeee/eeee/eeee\033\\");
-        }
-        if (containsOsc(rawChunk, "11")) {
-            response.append("\033]11;rgb:0000/0000/0000\033\\");
-        }
-        if (containsOsc(rawChunk, "12")) {
-            response.append("\033]12;rgb:eeee/eeee/eeee\033\\");
-        }
-
-        return response.toString();
-    }
-
-    private boolean containsOsc(String data, String code) {
-        String prefix = "\033]" + code + ";?";
-        return data.contains(prefix + "\007") || data.contains(prefix + "\033\\");
-    }
-
-    private int clamp(int val, int min, int max) {
-        return Math.max(min, Math.min(max, val));
+        return TerminalQueryResponder.respond(rawChunk, vt, queryPolicy());
     }
 }

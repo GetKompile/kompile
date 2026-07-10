@@ -24,7 +24,9 @@ import java.lang.reflect.Method;
 import java.nio.file.Path;
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ResumeToolCommandTest {
@@ -38,7 +40,7 @@ class ResumeToolCommandTest {
                 "resume-session",
                 "codex",
                 tempDir.resolve("session.jsonl"),
-                "codex resume --all resume-session",
+                "codex resume resume-session",
                 tempDir);
 
         List<String> args = buildAgentResumeCommand("codex", exportResult);
@@ -46,6 +48,7 @@ class ResumeToolCommandTest {
         assertTrue(args.contains("--dangerously-bypass-approvals-and-sandbox"));
         assertTrue(args.indexOf("--dangerously-bypass-approvals-and-sandbox") < args.indexOf("resume"));
         assertFalse(args.contains("--full-auto"));
+        assertFalse(args.contains("--all"));
     }
 
     @Test
@@ -66,6 +69,18 @@ class ResumeToolCommandTest {
                 "OpenCode TUI resume does not support --dangerously-skip-permissions");
     }
 
+    @Test
+    void codexResumeUsesStdioMcpEvenWhenSseUrlExists() throws Exception {
+        assertNull(resolveResumeMcpSseUrl("codex"));
+        assertEquals("stdio", mcpModeForResume("codex", "http://localhost:8080/mcp/sse"));
+    }
+
+    @Test
+    void nonCodexResumeUsesSseMcpWhenUrlExists() throws Exception {
+        assertEquals("sse", mcpModeForResume("claude", "http://localhost:8080/mcp/sse"));
+        assertEquals("stdio", mcpModeForResume("claude", ""));
+    }
+
     private List<String> buildAgentResumeCommand(String agent,
                                                  ConversationExporter.ExportResult exportResult) throws Exception {
         ResumeTool tool = new ResumeTool(null, null, null, null, null, new ConversationReader());
@@ -78,5 +93,19 @@ class ResumeToolCommandTest {
         @SuppressWarnings("unchecked")
         List<String> args = (List<String>) method.invoke(tool, agent, exportResult);
         return args;
+    }
+
+    private String resolveResumeMcpSseUrl(String agent) throws Exception {
+        ResumeTool tool = new ResumeTool(null, null, null, null, null, new ConversationReader());
+        Method method = ResumeTool.class.getDeclaredMethod("resolveResumeMcpSseUrl", String.class);
+        method.setAccessible(true);
+        return (String) method.invoke(tool, agent);
+    }
+
+    private String mcpModeForResume(String agent, String sseUrl) throws Exception {
+        ResumeTool tool = new ResumeTool(null, null, null, null, null, new ConversationReader());
+        Method method = ResumeTool.class.getDeclaredMethod("mcpModeForResume", String.class, String.class);
+        method.setAccessible(true);
+        return (String) method.invoke(tool, agent, sseUrl);
     }
 }

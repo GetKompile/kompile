@@ -21,8 +21,9 @@
 // Node hierarchy levels
 export type NodeLevel = 'SOURCE' | 'DOCUMENT' | 'SNIPPET' | 'ENTITY' | 'CUSTOM' | 'ATTACHMENT' | 'TABLE' | 'IDENTIFIER' | 'ALIAS';
 
-// Edge relationship types
-export type EdgeType = 'HIERARCHICAL' | 'EMBEDDING_SIMILARITY' | 'SHARED_ENTITY' | 'USER_DEFINED' | 'CITATION' | 'TEMPORAL' | 'CROSS_SOURCE' | 'RESOLVES_TO' | 'ALIAS_OF';
+// Edge relationship types. The backend can emit schema/domain-specific keys
+// (for example CONTAINS, HEADER_OF, DEPENDS_ON), so keep this open-ended.
+export type EdgeType = string;
 
 /**
  * Graph node representing a source, document, snippet, or entity
@@ -190,12 +191,18 @@ export interface CreateCompositeEntityRequest {
 
 export interface D3Link {
   id: string;
-  source: string;
-  target: string;
+  source: string | D3Node | GraphNode;
+  target: string | D3Node | GraphNode;
   type: EdgeType;
   weight: number;
   label?: string;
+  description?: string;
+  bidirectional?: boolean;
+  confidence?: number;
+  provenance?: string;
   occurredAt?: string;
+  metadata?: Record<string, any>;
+  metadataJson?: string;
   /** Semantic relationship type (e.g. "CONTAINS"), distinct from the structural EdgeType. */
   relationType?: string;
   /** Epistemic provenance: EXTRACTED | INFERRED | AMBIGUOUS. */
@@ -205,11 +212,157 @@ export interface D3Link {
 }
 
 /**
+ * Typed reasoning overlays for graph visualization and MCP/tooling.
+ * Mirrors GraphFocalViewController.ReasoningLayersDto.
+ */
+export interface ReasoningLayers {
+  factSheetId: number;
+  nodes: NodeReasoningOverlay[];
+  edges: EdgeReasoningOverlay[];
+  statistics?: ReasoningLayerStatistics;
+}
+
+export interface ReasoningLayerStatistics {
+  nodeCount?: number;
+  edgeCount?: number;
+  ontologyCount?: number;
+  pslCount?: number;
+  mebnCount?: number;
+  provenanceCount?: number;
+  opinionCount?: number;
+  neuralScoreCount?: number;
+  typeCandidateCount?: number;
+  typeHierarchyCount?: number;
+  inferredRelationCount?: number;
+}
+
+export interface NodeReasoningOverlay {
+  nodeId: string;
+  nodeType?: NodeLevel;
+  label?: string;
+  ontology?: OntologyOverlay | null;
+  psl?: PslOverlay | null;
+  mebn?: MebnOverlay | null;
+  provenance?: ProvenanceOverlay | null;
+  opinion?: OpinionOverlay | null;
+  neuralScores?: NeuralScoreOverlay | null;
+}
+
+export interface EdgeReasoningOverlay {
+  edgeId: string;
+  sourceNodeId?: string;
+  targetNodeId?: string;
+  edgeType?: EdgeType;
+  relationType?: string;
+  weight?: number;
+  ontology?: OntologyOverlay | null;
+  psl?: PslOverlay | null;
+  mebn?: MebnOverlay | null;
+  provenance?: ProvenanceOverlay | null;
+  opinion?: OpinionOverlay | null;
+  neuralScores?: NeuralScoreOverlay | null;
+}
+
+export interface OntologyOverlay {
+  declaredType?: string;
+  inferredTypes?: string[];
+  typeCandidates?: TypeCandidateOverlay[];
+  typeHierarchy?: TypeHierarchyOverlay[];
+  inferredRelations?: InferredRelationOverlay[];
+  conformant?: boolean | null;
+  violations?: string[];
+}
+
+export interface TypeCandidateOverlay {
+  type: string;
+  confidence?: number;
+  source?: string;
+  basis?: string;
+  evidence?: string[];
+}
+
+export interface TypeHierarchyOverlay {
+  type: string;
+  parentType?: string;
+  depth?: number;
+  confidence?: number;
+  source?: string;
+  basis?: string;
+  evidence?: string[];
+}
+
+export interface InferredRelationOverlay {
+  relationType?: string;
+  sourceNodeId?: string;
+  targetNodeId?: string;
+  sourceType?: string;
+  targetType?: string;
+  confidence?: number;
+  inferenceSource?: string;
+  basis?: string;
+  evidence?: string[];
+}
+
+export interface PslOverlay {
+  groundingId?: string;
+  ruleId?: string;
+  ruleText?: string;
+  truthValue?: number;
+  incompatibility?: number;
+  bindings?: string[];
+}
+
+export interface MebnOverlay {
+  mfrag?: string;
+  residentVariable?: string;
+  state?: string;
+  prior?: number;
+  posterior?: number;
+  findings?: string[];
+}
+
+export interface ProvenanceOverlay {
+  details?: Record<string, any>;
+}
+
+export interface OpinionOverlay {
+  belief?: number;
+  disbelief?: number;
+  uncertainty?: number;
+  confidence?: number;
+  basis?: string;
+}
+
+export interface NeuralScoreOverlay {
+  scores?: Record<string, number>;
+  embeddingAlgorithm?: string;
+  embeddingVersion?: number;
+}
+
+export type ReasoningLayerKind = 'ontology' | 'psl' | 'mebn' | 'provenance' | 'opinion' | 'neural';
+
+export interface ReasoningLayerVisualOverlay {
+  activeLayers: ReasoningLayerKind[];
+  ontologyConformant?: boolean | null;
+  ontologyViolation?: boolean;
+  inferredRelationship?: boolean;
+  inferredRelationshipScore?: number;
+  hierarchyDepth?: number;
+  pslTruthValue?: number;
+  pslIncompatibility?: number;
+  mebnPosterior?: number;
+  mebnPrior?: number;
+  mebnFinding?: boolean;
+  provenance?: boolean;
+  opinionConfidence?: number;
+  neuralScore?: number;
+}
+
+/**
  * Graph filter configuration
  */
 export interface GraphFilter {
   nodeTypes: NodeLevel[];
-  edgeTypes: EdgeType[];
   searchQuery?: string;
   minWeight?: number;
   maxDepth?: number;
@@ -373,7 +526,9 @@ export const EDGE_COLORS: Record<EdgeType, string> = {
   TEMPORAL: '#795548',             // Brown
   CROSS_SOURCE: '#00BCD4',         // Cyan
   RESOLVES_TO: '#E91E63',          // Pink
-  ALIAS_OF: '#009688'              // Teal — member → alias hub
+  ALIAS_OF: '#009688',             // Teal — member → alias hub
+  HAS_OWNER: '#FF9800',            // Orange — entity → owner (forward)
+  OWNED_BY: '#FF6F00'              // Amber-dark — entity is owned by (inverse)
 };
 
 /**
@@ -388,7 +543,9 @@ export const EDGE_DASH_PATTERNS: Record<EdgeType, string> = {
   TEMPORAL: '5,2,2,2',
   CROSS_SOURCE: '8,4',
   RESOLVES_TO: '6,3',
-  ALIAS_OF: '4,3'
+  ALIAS_OF: '4,3',
+  HAS_OWNER: 'none',
+  OWNED_BY: 'none'
 };
 
 export interface ProvenanceCitation {

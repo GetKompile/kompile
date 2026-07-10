@@ -532,6 +532,10 @@ public class DocumentIngestService implements org.springframework.beans.factory.
                             .description("Ingest: " + fileName)
                             .resourceProfile(JobResourceProfiles.INGEST)
                             .executor(ctx -> {
+                                // Deliver the scheduler's device-agnostic placement before the spawn.
+                                if (subprocessIngestLauncher != null && ctx.placement() != null) {
+                                    subprocessIngestLauncher.applyPlacement(ctx.placement());
+                                }
                                 try {
                                     var resultFuture = subprocessIngestLauncher.launchIngest(
                                             taskId, filePath, fLoaderName, fChunkerName, subprocessOptions);

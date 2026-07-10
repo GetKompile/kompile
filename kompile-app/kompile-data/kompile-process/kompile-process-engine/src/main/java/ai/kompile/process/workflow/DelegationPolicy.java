@@ -21,6 +21,8 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.io.Serializable;
+
 /**
  * Defines automatic delegation behaviour when the primary approver is unavailable.
  */
@@ -28,7 +30,9 @@ import lombok.NoArgsConstructor;
 @Builder
 @AllArgsConstructor
 @NoArgsConstructor
-public class DelegationPolicy {
+public class DelegationPolicy implements Serializable {
+
+    private static final long serialVersionUID = 1L;
 
     /** Seconds to wait for the primary approver before auto-delegating. */
     private int timeoutSeconds;

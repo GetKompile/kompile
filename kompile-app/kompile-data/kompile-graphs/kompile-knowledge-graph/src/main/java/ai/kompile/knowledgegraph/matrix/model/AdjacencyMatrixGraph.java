@@ -252,6 +252,44 @@ public class AdjacencyMatrixGraph implements AutoCloseable {
         this.embeddingDimension = 0;
     }
 
+    // ── Shell marker (subprocess mode) ───────────────────────────────────────────
+
+    /** True when this instance is a metadata-only shell; the real matrix lives elsewhere. */
+    private volatile boolean shell = false;
+    /** Node count reported by the owning subprocess when this is a shell. */
+    private volatile int shellNodeCount = 0;
+    /** Edge count reported by the owning subprocess when this is a shell. */
+    private volatile int shellEdgeCount = 0;
+
+    /**
+     * Mark this instance as a metadata-only shell: the real adjacency data lives in a graph
+     * subprocess and only the reported counts are known locally. Graph algorithms should check
+     * {@link #isShell()} and warn instead of silently operating on an empty matrix.
+     *
+     * @param nodeCount node count reported by the subprocess
+     * @param edgeCount edge count reported by the subprocess
+     */
+    public void markAsShell(int nodeCount, int edgeCount) {
+        this.shell = true;
+        this.shellNodeCount = Math.max(0, nodeCount);
+        this.shellEdgeCount = Math.max(0, edgeCount);
+    }
+
+    /** Whether this instance is a metadata-only shell (subprocess-owned matrix). */
+    public boolean isShell() {
+        return shell;
+    }
+
+    /** Reported node count when {@link #isShell()}; 0 otherwise. */
+    public int getShellNodeCount() {
+        return shellNodeCount;
+    }
+
+    /** Reported edge count when {@link #isShell()}; 0 otherwise. */
+    public int getShellEdgeCount() {
+        return shellEdgeCount;
+    }
+
     /**
      * Adds a node to the graph.
      *

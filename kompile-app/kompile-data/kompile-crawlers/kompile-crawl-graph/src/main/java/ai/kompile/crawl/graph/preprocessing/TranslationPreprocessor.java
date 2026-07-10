@@ -18,6 +18,8 @@ package ai.kompile.crawl.graph.preprocessing;
 
 import ai.kompile.core.crawl.graph.DocumentPreprocessor;
 import ai.kompile.core.crawl.graph.PreprocessingConfig;
+import ai.kompile.core.language.LanguageMetadata;
+import ai.kompile.core.language.LanguageSupport;
 import ai.kompile.core.llm.chat.LLMChat;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -102,18 +104,18 @@ public class TranslationPreprocessor implements DocumentPreprocessor {
         if (Boolean.TRUE.equals(document.getMetadata().get(META_TRANSLATED))) return false;
 
         // Skip if already in target language
-        String targetLang = config.getTranslation().getTargetLanguage();
-        String detectedLang = (String) document.getMetadata().get(
-                LanguageDetectionPreprocessor.META_DETECTED_LANGUAGE);
-        if (targetLang != null && targetLang.equalsIgnoreCase(detectedLang)) return false;
+        String targetLang = LanguageSupport.normalizeLanguageCode(config.getTranslation().getTargetLanguage());
+        String detectedLang = LanguageMetadata.canonicalLanguage(document.getMetadata());
+        if (targetLang != null && targetLang.equals(detectedLang)) return false;
+
+        if (detectedLang == null || LanguageSupport.UNDETERMINED_LANGUAGE.equals(detectedLang)) {
+            return false;
+        }
 
         // Skip if detection confidence is too low (uncertain language)
-        Object confObj = document.getMetadata().get(
-                LanguageDetectionPreprocessor.META_DETECTED_LANGUAGE_CONFIDENCE);
-        if (confObj instanceof Number conf) {
-            if (conf.doubleValue() < config.getTranslation().getDetectionConfidenceThreshold()) {
-                return false;
-            }
+        double confidence = LanguageMetadata.languageConfidence(document.getMetadata()).orElse(0.0);
+        if (confidence < config.getTranslation().getDetectionConfidenceThreshold()) {
+            return false;
         }
 
         return true;
@@ -127,7 +129,7 @@ public class TranslationPreprocessor implements DocumentPreprocessor {
         }
 
         PreprocessingConfig.TranslationConfig transConfig = config.getTranslation();
-        String targetLang = transConfig.getTargetLanguage();
+        String targetLang = LanguageSupport.normalizeLanguageCode(transConfig.getTargetLanguage());
         boolean preserveOriginal = transConfig.isPreserveOriginal();
         boolean dualIndex = transConfig.isDualIndex();
         int maxCharsPerRequest = transConfig.getMaxCharsPerRequest();
@@ -139,14 +141,18 @@ public class TranslationPreprocessor implements DocumentPreprocessor {
             if (Thread.currentThread().isInterrupted()) break;
 
             String text = doc.getText();
-            String sourceLang = (String) doc.getMetadata().get(
-                    LanguageDetectionPreprocessor.META_DETECTED_LANGUAGE);
-            if (sourceLang == null) sourceLang = transConfig.getSourceLanguage();
+            String sourceLang = LanguageMetadata.canonicalLanguage(doc.getMetadata());
+            if (sourceLang == null) sourceLang = LanguageSupport.normalizeLanguageCode(transConfig.getSourceLanguage());
 
             // Dual-index: add original document first
             if (dualIndex) {
                 Document originalCopy = new Document(text);
                 originalCopy.getMetadata().putAll(doc.getMetadata());
+                if (sourceLang != null) {
+                    LanguageMetadata.putLanguage(originalCopy.getMetadata(), sourceLang,
+                            LanguageMetadata.languageConfidence(doc.getMetadata()).orElse(1.0),
+                            LanguageMetadata.SOURCE_DETECTED, null);
+                }
                 originalCopy.getMetadata().put(META_IS_TRANSLATION_COPY, false);
                 result.add(originalCopy);
             }
@@ -166,6 +172,7 @@ public class TranslationPreprocessor implements DocumentPreprocessor {
                 translatedDoc.getMetadata().put(META_TRANSLATED, true);
                 translatedDoc.getMetadata().put(META_TRANSLATION_SOURCE_LANG, sourceLang);
                 translatedDoc.getMetadata().put(META_TRANSLATION_TARGET_LANG, targetLang);
+                LanguageMetadata.putTranslatedLanguage(translatedDoc.getMetadata(), targetLang, sourceLang);
                 if (preserveOriginal) {
                     translatedDoc.getMetadata().put(META_ORIGINAL_TEXT, text);
                 }

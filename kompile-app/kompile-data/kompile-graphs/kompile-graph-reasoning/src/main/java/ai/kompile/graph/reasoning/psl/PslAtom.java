@@ -9,6 +9,7 @@
  */
 package ai.kompile.graph.reasoning.psl;
 
+import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -28,7 +29,7 @@ import java.util.Set;
  * @param args      ordered arguments
  * @param negated   whether this literal is negated ({@code ~}/{@code !}); truth = {@code 1 - value}
  */
-public record PslAtom(String predicate, List<Term> args, boolean negated) {
+public record PslAtom(String predicate, List<Term> args, boolean negated) implements Serializable {
 
     public PslAtom {
         args = List.copyOf(args);

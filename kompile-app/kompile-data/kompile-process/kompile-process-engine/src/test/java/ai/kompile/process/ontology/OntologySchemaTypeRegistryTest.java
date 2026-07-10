@@ -9,12 +9,17 @@
  */
 package ai.kompile.process.ontology;
 
+import ai.kompile.graph.reasoning.discovery.RelationNormalizer;
 import ai.kompile.graph.reasoning.mebn.type.TypeHierarchy;
+import ai.kompile.graph.reasoning.mebn.type.TypeConstraint;
+import ai.kompile.graph.reasoning.mebn.type.TypeNode;
 import ai.kompile.graph.reasoning.model.MutableReasoningGraph;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -75,5 +80,102 @@ class OntologySchemaTypeRegistryTest {
                 "An OWL-inferred member should belong to its inferred type even without explicit typing");
         assertTrue(hierarchy.entitiesOfType("OfficeSupply", false).contains("paper1"),
                 "Exact graph membership is preserved");
+    }
+
+    @Test
+    void ontologyRelationships_compileRelationNormalizationSchemas() {
+        OntologySchema schema = OntologySchema.builder()
+                .name("relation-normalization")
+                .entityTypes(List.of(
+                        EntityTypeDefinition.builder().name("ApprovalRole").build(),
+                        EntityTypeDefinition.builder().name("CloseStep").build()))
+                .relationshipTypes(List.of(
+                        RelationshipTypeDefinition.builder()
+                                .type("APPROVED_BY")
+                                .canonicalType("APPROVED_BY")
+                                .sourceEntityType("ApprovalRole")
+                                .targetEntityType("CloseStep")
+                                .observedTypes(List.of("APPROVES"))
+                                .inverseTypes(List.of("AUTHORIZED_BY"))
+                                .actionCategories(List.of("APPROVAL"))
+                                .controlSignatures(List.of("CLOSE_APPROVAL_GATE"))
+                                .policyMetadata(Map.of("approvalPolicy", "owner sign-off"))
+                                .metadata(Map.of(
+                                        "inverseTypes", "SIGNED_OFF_BY, OWNED_BY",
+                                        "domain", "Approver",
+                                        "range", "CloseActivity"))
+                                .build()))
+                .build();
+
+        RelationNormalizer.RelationSchema compiled = OntologyRelationSchemaCompiler
+                .toRelationSchemas(schema)
+                .get(0);
+
+        assertEquals("APPROVED_BY", compiled.canonicalType());
+        assertTrue(compiled.observedTypes().contains("APPROVES"));
+        assertTrue(compiled.observedTypes().contains("SIGNED_OFF_BY"));
+        assertTrue(compiled.observedTypes().contains("AUTHORIZED_BY"));
+        assertTrue(compiled.sourceTypes().contains("APPROVALROLE"));
+        assertTrue(compiled.sourceTypes().contains("APPROVER"));
+        assertTrue(compiled.targetTypes().contains("CLOSESTEP"));
+        assertTrue(compiled.targetTypes().contains("CLOSEACTIVITY"));
+        assertTrue(compiled.flipWhenSwapped());
+
+        OntologyRelationSchemaCompiler.ProcessSemanticProfile profile = OntologyRelationSchemaCompiler
+                .toProcessSemanticProfiles(schema)
+                .get(0);
+        assertTrue(profile.matchesRelationType("authorized by"));
+        assertTrue(profile.actionCategories().contains("APPROVAL"));
+        assertTrue(profile.controlSignatures().contains("CLOSE_APPROVAL_GATE"));
+        assertEquals("owner sign-off", profile.policyMetadata().get("approvalPolicy"));
+    }
+
+    @Test
+    void schemaFieldsAndRelationships_feedAttributeSchemasAndTypeConstraints() {
+        OntologySchema schema = OntologySchema.builder()
+                .name("schema-constraints")
+                .entityTypes(List.of(
+                        EntityTypeDefinition.builder()
+                                .name("Person")
+                                .build(),
+                        EntityTypeDefinition.builder()
+                                .name("Employee")
+                                .fields(List.of(
+                                        FieldDefinition.builder()
+                                                .name("employeeId")
+                                                .type(FieldType.STRING)
+                                                .required(true)
+                                                .build(),
+                                        FieldDefinition.builder()
+                                                .name("manager")
+                                                .type(FieldType.STRING)
+                                                .fkReference("Person.id")
+                                                .build()))
+                                .build()))
+                .relationshipTypes(List.of(
+                        RelationshipTypeDefinition.builder()
+                                .type("MANAGES")
+                                .sourceEntityType("Employee")
+                                .targetEntityType("Person")
+                                .cardinality(Cardinality.ONE_TO_MANY)
+                                .build()))
+                .build();
+
+        TypeHierarchy hierarchy = OntologySchemaTypeRegistry.toHierarchy(schema, new MutableReasoningGraph());
+        TypeNode employee = hierarchy.forType("Employee").orElseThrow();
+
+        assertTrue(employee.getAttributeSchema().requiredAttributes().stream()
+                        .anyMatch(attr -> attr.getName().equals("employeeId")),
+                "Required schema fields must reach the TypeAttributeSchema");
+        assertEquals("Person", employee.getAttributeSchema().attribute("manager").orElseThrow().getRefersToType(),
+                "FK references should preserve the referenced entity type");
+        assertTrue(employee.getConstraints().stream()
+                        .anyMatch(TypeConstraint.RelationConstraint.class::isInstance),
+                "Relationship source/target declarations must become relation constraints");
+        assertTrue(employee.getConstraints().stream()
+                        .filter(TypeConstraint.CardinalityConstraint.class::isInstance)
+                        .map(TypeConstraint.CardinalityConstraint.class::cast)
+                        .anyMatch(c -> c.cardinality() == TypeConstraint.Cardinality.ONE_TO_MANY),
+                "Relationship cardinality must be preserved on the type node");
     }
 }

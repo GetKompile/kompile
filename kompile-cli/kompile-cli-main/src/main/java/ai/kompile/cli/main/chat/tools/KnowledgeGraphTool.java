@@ -20,6 +20,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
+import java.net.ConnectException;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
@@ -27,6 +28,9 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -110,7 +114,6 @@ public class KnowledgeGraphTool implements CliTool {
                 // Config
                 "'get_config' (show extraction config), " +
                 "'set_config' (update extraction config), " +
-                "'toggle_extraction' (toggle extraction on/off), " +
                 "'list_providers' (list LLM providers), " +
                 "'list_presets' (list schema presets), " +
                 "'apply_preset' (apply a schema preset), " +
@@ -131,7 +134,41 @@ public class KnowledgeGraphTool implements CliTool {
                 // NEW: Provenance
                 "'node_provenance' (structural lineage + metadata provenance for a graph node), " +
                 // NEW: Channel pipelines
-                "'list_pipelines' (channel update pipeline configurations).";
+                "'list_pipelines' (channel update pipeline configurations), " +
+                // NEW: Unified reasoning overlays
+                "'reasoning_layers' (typed overlays for ontology, PSL, MEBN, provenance, opinions, and neural scores), " +
+                // Fact-sheet management — use these to discover factSheetId values for other operations
+                "'list_fact_sheets' (list all fact sheets with id/name/active status — start here to find factSheetId), " +
+                "'get_fact_sheet' (get details of one fact sheet by fact_sheet_id), " +
+                "'get_active_fact_sheet' (get the currently active fact sheet), " +
+                "'create_fact_sheet' (create a new fact sheet; requires title), " +
+                "'activate_fact_sheet' (switch the active fact sheet by fact_sheet_id), " +
+                // Graph snapshots (versioning / undo)
+                "'create_snapshot' (create a named .kgraph snapshot of the live graph; requires fact_sheet_id, optional label), " +
+                "'list_snapshots' (list all snapshots for a fact sheet newest-first; requires fact_sheet_id), " +
+                "'restore_snapshot' (restore a snapshot — REPLACES live graph, auto re-projects + re-reasons; requires fact_sheet_id + snapshot_id), " +
+                "'delete_snapshot' (delete a stored snapshot; requires fact_sheet_id + snapshot_id), " +
+                // Predicate discovery
+                "'list_predicates' (list all predicate names used in the knowledge base with fact counts; " +
+                "fact_sheet_id optional — use before ask_graph_verify or ask_graph_query to discover exact predicate names).";
+    }
+
+    @Override
+    public String compactHint() {
+        return "knowledge_graph: full KG ops + fact-sheet management + graph versioning/undo snapshots. " +
+                "Golden path: list_fact_sheets -> list_predicates -> ask_graph_verify 'predicate(a,b)'. " +
+                "ALWAYS call list_fact_sheets first to discover factSheetId values needed by other " +
+                "actions (start_job, build_graph, communities, graph_health, list_rules, etc.). " +
+                "Predicate discovery: list_predicates (fact_sheet_id optional) — shows predicate names + counts; " +
+                "use these names in ask_graph_verify or ask_graph_query. " +
+                "Fact-sheet actions: list_fact_sheets, get_fact_sheet, get_active_fact_sheet, " +
+                "create_fact_sheet (requires title param), activate_fact_sheet (requires fact_sheet_id). " +
+                "Graph snapshot (undo) actions: create_snapshot (requires fact_sheet_id), " +
+                "list_snapshots (requires fact_sheet_id), " +
+                "restore_snapshot (requires fact_sheet_id + snapshot_id; REPLACES live graph, " +
+                "auto re-projects FOL fact store + fires graph-build event), " +
+                "delete_snapshot (requires fact_sheet_id + snapshot_id). " +
+                "Required param for all actions: action=<action_name>.";
     }
 
     @Override
@@ -275,8 +312,6 @@ public class KnowledgeGraphTool implements CliTool {
                 "Schema enforcement mode: NONE, LENIENT, STRICT (for set_config)");
         addStringProp(props, "preset_id",
                 "Schema preset ID (for apply_preset)");
-        addBoolProp(props, "enabled",
-                "Enable/disable extraction (for set_config)");
 
         // ── NEW: Ontology binding ──
         addStringProp(props, "ontology_schema_id",
@@ -297,6 +332,16 @@ public class KnowledgeGraphTool implements CliTool {
         addStringProp(props, "basis_type",
                 "Basis type filter: STRUCTURAL, LLM_EXTRACTION, PSL_INFERENCE, MEBN_INFERENCE, " +
                 "CORROBORATION, ASSERTED (for opinions)");
+
+        // ── Fact sheet name (for create_fact_sheet) ──
+        addStringProp(props, "name",
+                "Fact sheet name (for create_fact_sheet; also accepted via 'title')");
+
+        // ── Graph snapshots ──
+        addStringProp(props, "snapshot_id",
+                "Snapshot file name (for restore_snapshot, delete_snapshot; get from list_snapshots)");
+        addStringProp(props, "label",
+                "Optional human-readable label for a new snapshot (for create_snapshot)");
 
         schema.putArray("required").add("action");
         return schema;
@@ -388,7 +433,6 @@ public class KnowledgeGraphTool implements CliTool {
                 // ── Config ──
                 case "get_config" -> getConfig();
                 case "set_config" -> setConfig(params);
-                case "toggle_extraction" -> toggleExtraction();
                 case "list_providers" -> listProviders();
                 case "list_presets" -> listPresets();
                 case "apply_preset" -> applyPreset(params);
@@ -418,6 +462,25 @@ public class KnowledgeGraphTool implements CliTool {
                 // ── NEW: Channel pipelines ──
                 case "list_pipelines" -> listPipelines();
 
+                // ── NEW: Unified reasoning overlays ──
+                case "reasoning_layers" -> reasoningLayers(params);
+
+                // ── Fact-sheet management ──
+                case "list_fact_sheets" -> listFactSheets();
+                case "get_fact_sheet" -> getFactSheet(params);
+                case "get_active_fact_sheet" -> getActiveFactSheet();
+                case "create_fact_sheet" -> createFactSheet(params);
+                case "activate_fact_sheet" -> activateFactSheet(params);
+
+                // ── Graph snapshots ──
+                case "create_snapshot" -> createSnapshot(params);
+                case "list_snapshots" -> listSnapshots(params);
+                case "restore_snapshot" -> restoreSnapshot(params);
+                case "delete_snapshot" -> deleteSnapshot(params);
+
+                // ── Predicate discovery ──
+                case "list_predicates" -> listPredicates(params);
+
                 default -> ToolResult.error("Unknown action: " + action +
                         ". Use one of: overview, stats, search_entity, search_nodes, find_by_topic, " +
                         "related_docs, source_context, entities_in_doc, find_connected, " +
@@ -429,12 +492,16 @@ public class KnowledgeGraphTool implements CliTool {
                         "extract, build_graph, report, cypher, " +
                         "list_builders, start_job, list_jobs, job_status, cancel_job, job_logs, " +
                         "list_proposals, accept_proposal, reject_proposal, manual_proposal, " +
-                        "get_config, set_config, toggle_extraction, list_providers, list_presets, apply_preset, " +
+                        "get_config, set_config, list_providers, list_presets, apply_preset, " +
                         "owl_reasoning, ontology_conformance, bind_ontology, unbind_ontology, " +
                         "opinions, facts_by_tier, graph_health, list_rules, reactive_rules, " +
-                        "node_provenance, list_pipelines");
+                        "node_provenance, list_pipelines, reasoning_layers, " +
+                        "list_fact_sheets, get_fact_sheet, get_active_fact_sheet, " +
+                        "create_fact_sheet, activate_fact_sheet, " +
+                        "create_snapshot, list_snapshots, restore_snapshot, delete_snapshot, " +
+                        "list_predicates");
             };
-        } catch (java.net.ConnectException e) {
+        } catch (ConnectException e) {
             return ToolResult.error("Cannot connect to kompile-app at " + baseUrl + ". Is it running?");
         } catch (Exception e) {
             return ToolResult.error("Knowledge graph error: " + e.getMessage());
@@ -884,7 +951,7 @@ public class KnowledgeGraphTool implements CliTool {
 
         if (response.isObject()) {
             // Score map: nodeId -> score, sort by score descending
-            java.util.List<Map.Entry<String, JsonNode>> entries = new java.util.ArrayList<>();
+            List<Map.Entry<String, JsonNode>> entries = new ArrayList<>();
             response.fields().forEachRemaining(entries::add);
             entries.sort((a, b) -> {
                 double av = a.getValue().isNumber() ? a.getValue().asDouble() : 0;
@@ -920,7 +987,7 @@ public class KnowledgeGraphTool implements CliTool {
             JsonNode response = post("/api/graph/algorithms/communities/louvain", body);
             StringBuilder sb = new StringBuilder("Communities (Louvain):\n\n");
             if (response.isObject()) {
-                java.util.Map<Integer, Integer> counts = new java.util.LinkedHashMap<>();
+                Map<Integer, Integer> counts = new LinkedHashMap<>();
                 response.fields().forEachRemaining(e -> {
                     int comm = e.getValue().asInt();
                     counts.merge(comm, 1, Integer::sum);
@@ -958,7 +1025,7 @@ public class KnowledgeGraphTool implements CliTool {
             sb.append("\n");
         } else if (response.isObject()) {
             // Fallback: nodeId -> communityId map
-            java.util.Map<Integer, Integer> counts = new java.util.LinkedHashMap<>();
+            Map<Integer, Integer> counts = new LinkedHashMap<>();
             response.fields().forEachRemaining(e -> {
                 int comm = e.getValue().asInt();
                 counts.merge(comm, 1, Integer::sum);
@@ -1506,7 +1573,7 @@ public class KnowledgeGraphTool implements CliTool {
     private ToolResult getConfig() throws Exception {
         JsonNode config = get("/api/graph-extraction/config");
         StringBuilder sb = new StringBuilder("Graph Extraction Config:\n\n");
-        sb.append("- Enabled: ").append(config.path("enabled").asBoolean()).append("\n");
+        sb.append("- Mode: mandatory\n");
         sb.append("- Schema Mode: ").append(config.path("schemaEnforcement").asText("NONE")).append("\n");
         sb.append("- Batch Size: ").append(config.path("batchSize").asInt(0)).append("\n");
         sb.append("- Provider: ").append(config.path("extractionModelProvider").asText("-")).append("\n");
@@ -1529,12 +1596,11 @@ public class KnowledgeGraphTool implements CliTool {
         }
 
         return ToolResult.success("get_config", sb.toString(),
-                Map.of("enabled", config.path("enabled").asBoolean()));
+                Map.of("mandatory", true));
     }
 
     private ToolResult setConfig(JsonNode params) throws Exception {
         ObjectNode body = objectMapper.createObjectNode();
-        if (params.has("enabled")) body.put("enabled", params.path("enabled").asBoolean());
         String schemaMode = params.path("schema_mode").asText("");
         if (!schemaMode.isEmpty()) body.put("schemaEnforcement", schemaMode);
         String mp = params.path("model_provider").asText("");
@@ -1557,18 +1623,10 @@ public class KnowledgeGraphTool implements CliTool {
 
         if (body.isEmpty()) return ToolResult.error("No config fields specified for set_config");
 
-        JsonNode response = post("/api/graph-extraction/config", body);
+        post("/api/graph-extraction/config", body);
         return ToolResult.success("set_config",
-                "Updated extraction config. Enabled: " + response.path("enabled").asBoolean(),
-                Map.of("enabled", response.path("enabled").asBoolean()));
-    }
-
-    private ToolResult toggleExtraction() throws Exception {
-        JsonNode response = post("/api/graph-extraction/config/toggle", null);
-        boolean enabled = response.path("enabled").asBoolean();
-        return ToolResult.success("toggle_extraction",
-                "Graph extraction " + (enabled ? "ENABLED" : "DISABLED"),
-                Map.of("enabled", enabled));
+                "Updated extraction config. Graph extraction is mandatory.",
+                Map.of("mandatory", true));
     }
 
     private ToolResult listProviders() throws Exception {
@@ -1988,6 +2046,56 @@ public class KnowledgeGraphTool implements CliTool {
     }
 
     // ══════════════════════════════════════════════════════════════════════════
+    //  NEW: Unified reasoning overlays
+    // ══════════════════════════════════════════════════════════════════════════
+
+    private ToolResult reasoningLayers(JsonNode params) throws Exception {
+        long factSheetId = params.path("fact_sheet_id").asLong(0);
+        if (factSheetId <= 0) {
+            return ToolResult.error("fact_sheet_id is required for reasoning_layers");
+        }
+
+        JsonNode response = get("/api/graph/" + factSheetId + "/reasoning-layers");
+        JsonNode statistics = response.path("statistics");
+        JsonNode nodes = response.path("nodes");
+        JsonNode edges = response.path("edges");
+
+        int nodeCount = statistics.path("nodeCount").asInt(nodes.isArray() ? nodes.size() : 0);
+        int edgeCount = statistics.path("edgeCount").asInt(edges.isArray() ? edges.size() : 0);
+        int ontologyCount = statistics.path("ontologyCount").asInt(0);
+        int pslCount = statistics.path("pslCount").asInt(0);
+        int mebnCount = statistics.path("mebnCount").asInt(0);
+        int provenanceCount = statistics.path("provenanceCount").asInt(0);
+        int opinionCount = statistics.path("opinionCount").asInt(0);
+        int neuralScoreCount = statistics.path("neuralScoreCount").asInt(0);
+
+        StringBuilder sb = new StringBuilder("Reasoning layers for fact sheet ")
+                .append(factSheetId).append(":\n\n");
+        sb.append("- Nodes: ").append(nodeCount).append("\n");
+        sb.append("- Edges: ").append(edgeCount).append("\n");
+        sb.append("- Ontology overlays: ").append(ontologyCount).append("\n");
+        sb.append("- PSL overlays: ").append(pslCount).append("\n");
+        sb.append("- MEBN overlays: ").append(mebnCount).append("\n");
+        sb.append("- Provenance overlays: ").append(provenanceCount).append("\n");
+        sb.append("- Opinion overlays: ").append(opinionCount).append("\n");
+        sb.append("- Neural score overlays: ").append(neuralScoreCount).append("\n");
+
+        appendReasoningLayerSamples(sb, "Ontology violations", nodes, "nodeId", "ontology", "violations");
+        appendReasoningLayerSamples(sb, "MEBN posteriors", nodes, "nodeId", "mebn", "posterior");
+        appendReasoningLayerSamples(sb, "PSL edge groundings", edges, "edgeId", "psl", "groundingId");
+        appendReasoningLayerSamples(sb, "Neural edge scores", edges, "edgeId", "neuralScores", "scores");
+
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("factSheetId", factSheetId);
+        metadata.put("nodeCount", nodeCount);
+        metadata.put("edgeCount", edgeCount);
+        metadata.put("statistics", objectMapper.convertValue(statistics, Map.class));
+        metadata.put("reasoningLayers", objectMapper.convertValue(response, Map.class));
+
+        return ToolResult.success("reasoning_layers: " + factSheetId, sb.toString(), metadata);
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
     //  Formatters
     // ══════════════════════════════════════════════════════════════════════════
 
@@ -2045,6 +2153,287 @@ public class KnowledgeGraphTool implements CliTool {
         if (!text.isEmpty()) {
             sb.append("- ").append(label).append(": ").append(text).append("\n");
         }
+    }
+
+    private static void appendReasoningLayerSamples(
+            StringBuilder sb,
+            String label,
+            JsonNode rows,
+            String idField,
+            String layerField,
+            String valueField) {
+        if (rows == null || !rows.isArray()) return;
+
+        StringBuilder samples = new StringBuilder();
+        int shown = 0;
+        for (JsonNode row : rows) {
+            JsonNode value = row.path(layerField).path(valueField);
+            if (value.isMissingNode() || value.isNull()) continue;
+            if (value.isContainerNode() && value.isEmpty()) continue;
+            if (value.isTextual() && value.asText().isBlank()) continue;
+
+            if (shown++ >= 3) {
+                samples.append("- ... and more\n");
+                break;
+            }
+            samples.append("- ").append(row.path(idField).asText("?")).append(": ");
+            if (value.isNumber()) {
+                samples.append(String.format("%.3f", value.asDouble()));
+            } else if (value.isObject() || value.isArray()) {
+                samples.append(value.toString());
+            } else {
+                samples.append(value.asText());
+            }
+            samples.append("\n");
+        }
+
+        if (samples.length() > 0) {
+            sb.append("\n### ").append(label).append("\n").append(samples);
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  Graph Snapshots (Versioning / Undo)
+    // ══════════════════════════════════════════════════════════════════════════
+
+    private ToolResult createSnapshot(JsonNode params) throws Exception {
+        long factSheetId = params.path("fact_sheet_id").asLong(0);
+        if (factSheetId <= 0) return ToolResult.error("fact_sheet_id is required for create_snapshot");
+        String label = params.path("label").asText("").trim();
+
+        ObjectNode body = objectMapper.createObjectNode();
+        body.put("factSheetId", factSheetId);
+        if (!label.isEmpty()) body.put("label", label);
+
+        JsonNode response = post("/api/graph/snapshots", body);
+        if (response.has("error")) {
+            return ToolResult.error(response.path("error").asText());
+        }
+        String snapshotId = response.path("snapshotId").asText("");
+        String createdAt = response.path("createdAt").asText("");
+        long size = response.path("sizeBytes").asLong(0);
+        String lbl = response.path("label").asText("");
+        return ToolResult.success("create_snapshot: " + factSheetId,
+                "Created snapshot for fact sheet " + factSheetId + ":\n"
+                        + "  snapshotId: " + snapshotId + "\n"
+                        + (lbl.isEmpty() ? "" : "  label: " + lbl + "\n")
+                        + "  createdAt: " + createdAt + "\n"
+                        + "  sizeBytes: " + size,
+                Map.of("factSheetId", factSheetId, "snapshotId", snapshotId));
+    }
+
+    private ToolResult listSnapshots(JsonNode params) throws Exception {
+        long factSheetId = params.path("fact_sheet_id").asLong(0);
+        if (factSheetId <= 0) return ToolResult.error("fact_sheet_id is required for list_snapshots");
+
+        JsonNode response = get("/api/graph/snapshots?factSheetId=" + factSheetId);
+        if (response.has("error")) {
+            return ToolResult.error(response.path("error").asText());
+        }
+        StringBuilder sb = new StringBuilder("Snapshots for fact sheet " + factSheetId + ":\n\n");
+        int count = 0;
+        if (response.isArray()) {
+            for (JsonNode snap : response) {
+                count++;
+                String snapshotId = snap.path("snapshotId").asText("");
+                String lbl = snap.path("label").asText("");
+                String createdAt = snap.path("createdAt").asText("");
+                long size = snap.path("sizeBytes").asLong(0);
+                sb.append("- ").append(snapshotId);
+                if (!lbl.isEmpty()) sb.append(" [").append(lbl).append("]");
+                sb.append("\n  created: ").append(createdAt)
+                        .append(" (").append(size / 1024).append(" KB)\n");
+            }
+        }
+        if (count == 0) sb.append("No snapshots found.\n");
+        return ToolResult.success("list_snapshots: " + factSheetId, sb.toString(),
+                Map.of("factSheetId", factSheetId, "count", count));
+    }
+
+    private ToolResult restoreSnapshot(JsonNode params) throws Exception {
+        long factSheetId = params.path("fact_sheet_id").asLong(0);
+        if (factSheetId <= 0) return ToolResult.error("fact_sheet_id is required for restore_snapshot");
+        String snapshotId = params.path("snapshot_id").asText("").trim();
+        if (snapshotId.isEmpty()) return ToolResult.error("snapshot_id is required for restore_snapshot");
+
+        ObjectNode body = objectMapper.createObjectNode();
+        body.put("factSheetId", factSheetId);
+
+        JsonNode response = post("/api/graph/snapshots/" + enc(snapshotId) + "/restore", body);
+        if (response.has("error")) {
+            return ToolResult.error(response.path("error").asText());
+        }
+        int nodes = response.path("importSummary").path("nodes").asInt(
+                response.path("nodes").asInt(0));
+        int edges = response.path("importSummary").path("edges").asInt(
+                response.path("edges").asInt(0));
+        int atoms = response.path("importSummary").path("atoms").asInt(
+                response.path("atoms").asInt(0));
+        String preRestoreId = response.path("preRestoreSnapshotId").asText("");
+        StringBuilder sb = new StringBuilder("Restored snapshot ").append(snapshotId)
+                .append(" into fact sheet ").append(factSheetId).append(":\n")
+                .append("  nodes restored: ").append(nodes).append("\n")
+                .append("  edges restored: ").append(edges).append("\n")
+                .append("  FOL atoms projected: ").append(atoms).append("\n");
+        if (!preRestoreId.isEmpty()) {
+            sb.append("  pre-restore safety snapshot: ").append(preRestoreId).append("\n");
+        }
+        sb.append("Graph is immediately reasoning-ready (fact store re-projected, graph-build event fired).\n");
+        return ToolResult.success("restore_snapshot: " + snapshotId, sb.toString(),
+                Map.of("factSheetId", factSheetId, "snapshotId", snapshotId,
+                        "nodes", nodes, "edges", edges, "atoms", atoms));
+    }
+
+    private ToolResult deleteSnapshot(JsonNode params) throws Exception {
+        long factSheetId = params.path("fact_sheet_id").asLong(0);
+        if (factSheetId <= 0) return ToolResult.error("fact_sheet_id is required for delete_snapshot");
+        String snapshotId = params.path("snapshot_id").asText("").trim();
+        if (snapshotId.isEmpty()) return ToolResult.error("snapshot_id is required for delete_snapshot");
+
+        delete("/api/graph/snapshots/" + enc(snapshotId) + "?factSheetId=" + factSheetId);
+        return ToolResult.success("delete_snapshot: " + snapshotId,
+                "Deleted snapshot " + snapshotId + " from fact sheet " + factSheetId,
+                Map.of("factSheetId", factSheetId, "snapshotId", snapshotId, "deleted", true));
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  Fact-Sheet Management
+    // ══════════════════════════════════════════════════════════════════════════
+
+    private ToolResult listFactSheets() throws Exception {
+        JsonNode response = get("/api/fact-sheets");
+        StringBuilder sb = new StringBuilder("Fact Sheets:\n\n");
+        if (response.isArray()) {
+            for (JsonNode sheet : response) {
+                long id = sheet.path("id").asLong(0);
+                String name = sheet.path("name").asText("Unnamed");
+                boolean active = sheet.path("active").asBoolean(
+                        sheet.path("isActive").asBoolean(false));
+                long factCount = sheet.path("factCount").asLong(0);
+                sb.append("- **").append(name).append("** id=").append(id);
+                if (active) sb.append(" [ACTIVE]");
+                sb.append(" (").append(factCount).append(" facts)\n");
+                appendIfPresent(sb, "  Description", sheet.path("description"));
+            }
+            return ToolResult.success("list_fact_sheets", sb.toString(),
+                    Map.of("count", response.size()));
+        }
+        return ToolResult.success("list_fact_sheets",
+                sb.append(response.toPrettyString()).toString(), Map.of());
+    }
+
+    private ToolResult getFactSheet(JsonNode params) throws Exception {
+        long id = params.path("fact_sheet_id").asLong(0);
+        if (id <= 0) return ToolResult.error("fact_sheet_id is required for get_fact_sheet");
+        JsonNode sheet = get("/api/fact-sheets/" + id);
+        return ToolResult.success("get_fact_sheet: " + id,
+                formatFactSheet(sheet),
+                Map.of("id", id, "name", sheet.path("name").asText("")));
+    }
+
+    private ToolResult getActiveFactSheet() throws Exception {
+        JsonNode sheet = get("/api/fact-sheets/active");
+        long id = sheet.path("id").asLong(0);
+        return ToolResult.success("get_active_fact_sheet",
+                "Active fact sheet:\n" + formatFactSheet(sheet),
+                Map.of("id", id, "name", sheet.path("name").asText("")));
+    }
+
+    private ToolResult createFactSheet(JsonNode params) throws Exception {
+        String name = params.path("name").asText(params.path("title").asText(""));
+        if (name.isBlank()) return ToolResult.error("name (or title) is required for create_fact_sheet");
+
+        ObjectNode body = objectMapper.createObjectNode();
+        body.put("name", name);
+        String desc = params.path("item_description").asText("");
+        if (!desc.isEmpty()) body.put("description", desc);
+
+        JsonNode response = post("/api/fact-sheets", body);
+        long id = response.path("id").asLong(0);
+        return ToolResult.success("create_fact_sheet: " + name,
+                "Created fact sheet: " + name + " id=" + id,
+                Map.of("id", id, "name", name));
+    }
+
+    private ToolResult activateFactSheet(JsonNode params) throws Exception {
+        long id = params.path("fact_sheet_id").asLong(0);
+        if (id <= 0) return ToolResult.error("fact_sheet_id is required for activate_fact_sheet");
+        JsonNode response = post("/api/fact-sheets/" + id + "/activate", null);
+        String name = response.path("name").asText("");
+        return ToolResult.success("activate_fact_sheet: " + id,
+                "Activated fact sheet: " + name + " (id=" + id + ")",
+                Map.of("id", id, "name", name));
+    }
+
+    /** Format a single fact sheet JSON node into human-readable text. */
+    private String formatFactSheet(JsonNode sheet) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("- ID: ").append(sheet.path("id").asLong(0)).append("\n");
+        sb.append("- Name: ").append(sheet.path("name").asText("")).append("\n");
+        boolean active = sheet.path("active").asBoolean(
+                sheet.path("isActive").asBoolean(false));
+        sb.append("- Active: ").append(active).append("\n");
+        appendIfPresent(sb, "Description", sheet.path("description"));
+        sb.append("- Facts: ").append(sheet.path("factCount").asLong(0))
+                .append(" (indexed: ").append(sheet.path("indexedCount").asLong(0)).append(")\n");
+        appendIfPresent(sb, "Embedding model", sheet.path("embeddingModel"));
+        appendIfPresent(sb, "Created", sheet.path("createdAt"));
+        appendIfPresent(sb, "Updated", sheet.path("updatedAt"));
+        return sb.toString();
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  Predicate Discovery
+    // ══════════════════════════════════════════════════════════════════════════
+
+    private ToolResult listPredicates(JsonNode params) throws Exception {
+        long factSheetId = params.path("fact_sheet_id").asLong(0);
+        String url = "/api/kb-grounding/predicates";
+        if (factSheetId > 0) url += "?factSheetId=" + factSheetId;
+
+        JsonNode response;
+        try {
+            response = get(url);
+        } catch (ToolExecutionException e) {
+            if (e.getMessage() != null && e.getMessage().contains("404")) {
+                return ToolResult.error("list_predicates: backend predates list_predicates. " +
+                        "Upgrade kompile-app to use this action.");
+            }
+            throw e;
+        }
+
+        JsonNode predicates = response.path("predicates");
+        if (!predicates.isArray()) {
+            // Defensive: some backends may return the array directly
+            if (response.isArray()) predicates = response;
+            else {
+                return ToolResult.success("list_predicates",
+                        "No predicates found (empty knowledge base or reasoning not yet run).",
+                        Map.of("count", 0));
+            }
+        }
+
+        StringBuilder sb = new StringBuilder("Predicates in knowledge base");
+        if (factSheetId > 0) sb.append(" (fact sheet ").append(factSheetId).append(")");
+        sb.append(":\n\n");
+
+        int shown = 0;
+        for (JsonNode pred : predicates) {
+            String name = pred.path("name").asText(pred.asText(""));
+            int count = pred.path("count").asInt(0);
+            boolean inferred = pred.path("inferred").asBoolean(false);
+            sb.append("  ").append(name).append(" (").append(count).append(")");
+            if (inferred) sb.append(" [inferred]");
+            sb.append("\n");
+            shown++;
+        }
+        if (shown == 0) {
+            sb.append("No predicates found. Run a crawl or assert some facts first.\n");
+        }
+        sb.append("\nUse these names in ask_graph_verify atom='predicate(arg1, arg2)' or ask_graph_query conjuncts.");
+
+        return ToolResult.success("list_predicates", sb.toString(),
+                Map.of("count", shown, "factSheetId", factSheetId));
     }
 
     // ══════════════════════════════════════════════════════════════════════════

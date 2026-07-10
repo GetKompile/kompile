@@ -25,6 +25,7 @@ import java.io.*;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
 import java.util.Map;
 
@@ -47,6 +48,12 @@ public class ApplicationPropertiesGenerator {
 
     /**
      * Generate application.properties file in the project's src/main/resources directory.
+     *
+     * <p>Generated projects depend on app-main, which ships a
+     * {@code KompileBootstrapEnvironmentPostProcessor} that supplies all framework defaults at
+     * startup. No active properties are needed here; all kompile config is managed JSON under
+     * {@code config/*.json}. The file is written as a comment-only stub so the path exists and
+     * tooling does not complain about a missing resource.
      */
     public void generate(File projectDir) throws IOException {
         File resourcesDir = new File(projectDir, "src/main/resources");
@@ -54,22 +61,11 @@ public class ApplicationPropertiesGenerator {
             throw new IOException("Could not create resources directory: " + resourcesDir.getAbsolutePath());
         }
         File appPropsFile = new File(resourcesDir, "application.properties");
-        ModuleSelection modules = config.getModules();
 
         try (FileWriter writer = new FileWriter(appPropsFile)) {
-            writeHeader(writer);
-
-            if (modules.has("vectorstore-pgvector")) {
-                writeDatabaseConfiguration(writer);
-                writeSchemaManagementConfiguration(writer);
-            }
-
-            writeAutoConfigurationExclusions(writer);
-            writeProviderEnablementFlags(writer);
-            writeFeatureEnablementFlags(writer);
-            writeStructuralConfiguration(writer);
-            writeModelCacheConfiguration(writer);
-            writeConfigurationTemplate(writer);
+            writer.write("# Intentionally empty.\n");
+            writer.write("# Framework bootstrap is supplied by app-main's KompileBootstrapEnvironmentPostProcessor;\n");
+            writer.write("# all kompile config is managed JSON under config/*.json.\n");
         }
         System.out.println("Generated application.properties: " + appPropsFile.getAbsolutePath());
     }
@@ -77,7 +73,7 @@ public class ApplicationPropertiesGenerator {
     private void writeHeader(FileWriter writer) throws IOException {
         writer.write("# Generated application.properties\n");
         writer.write("# Project: " + config.getConfigName() + "\n");
-        writer.write("# Generated on: " + new java.util.Date() + "\n");
+        writer.write("# Generated on: " + new Date() + "\n");
         writer.write("# Configured providers: " + getProviderSummary() + "\n\n");
 
         writer.write("# Logging\n");

@@ -116,6 +116,27 @@ class TuiHistoryTest {
     }
 
     @Test
+    void codexBulletPrefixedRewrapReplacesLiveTailInsteadOfDuplicating() {
+        CodexDecoder d = new CodexDecoder();
+        d.resetHistory();
+
+        VirtualTerminal s1 = new VirtualTerminal(30, 100);
+        s1.feed("\033[1;1H• The answer is forty two and");
+        s1.feed("\033[2;1H• that is the final result here");
+        d.observe(s1);
+
+        VirtualTerminal s2 = new VirtualTerminal(30, 100);
+        s2.feed("\033[1;1H• The answer is forty two");
+        s2.feed("\033[2;1H• and that is the final result here");
+        d.observe(s2);
+
+        String h = d.renderHistory();
+        assertEquals(2, d.history().size(), d.history().toString());
+        assertEquals(1, count(h, "The answer is forty two"), h);
+        assertEquals(1, count(h, "and that is the final result here"), h);
+    }
+
+    @Test
     void retainsLinesThatScrollOffAgentViewport() {
         CodexDecoder d = new CodexDecoder();
         d.resetHistory();
@@ -212,5 +233,99 @@ class TuiHistoryTest {
         d.resetHistory();
         assertTrue(d.history().isEmpty());
         assertEquals("", d.renderHistory());
+    }
+
+    // -----------------------------------------------------------------------
+    // BUG 2 — GFM table separator row must survive into history / renderHistory
+    // -----------------------------------------------------------------------
+
+    @Test
+    void gfmTableSeparatorRowSurvivesHistory() {
+        // "| --- | --- |" has no letters/digits so containsContentCharacter drops it,
+        // and isSeparatorOrBorder / containsMostlyDecorative both fire on the dashes.
+        // The fix: isGfmTableRow (≥2 pipes) bypasses those checks so the separator
+        // row survives — without it the markdown renderer never sees the table structure
+        // and renders the header/cells as raw pipe-delimited prose instead of a box.
+        OpenCodeDecoder d = new OpenCodeDecoder();
+        d.resetHistory();
+
+        VirtualTerminal s = new VirtualTerminal(20, 60);
+        s.feed("\033[2;1H| Name | Role |");
+        s.feed("\033[3;1H| --- | --- |");
+        s.feed("\033[4;1H| Alice | Engineer |");
+        d.observe(s);
+
+        // All three rows must be in history (header, separator, data).
+        String histPlain = d.history().stream()
+                .map(AgentTuiDecoder.HistoryEntry::text)
+                .reduce("", (a, b) -> a + "\n" + b);
+        assertTrue(histPlain.contains("Name"), "header row lost from history: " + histPlain);
+        assertTrue(histPlain.contains("---"), "separator row lost from history: " + histPlain);
+        assertTrue(histPlain.contains("Alice"), "data row lost from history: " + histPlain);
+
+        String h = d.renderHistory();
+        assertTrue(h.contains("Name"), "header row lost from renderHistory: " + h);
+        assertTrue(h.contains("---"), "separator row lost from renderHistory: " + h);
+        assertTrue(h.contains("Alice"), "data row lost from renderHistory: " + h);
+    }
+
+    // -----------------------------------------------------------------------
+    // BUG 8 — content after a tool call must not be duplicated via appendNovelTail
+    // -----------------------------------------------------------------------
+
+    @Test
+    void contentAfterToolIsNotDuplicatedOnReflow() {
+        // findReflowAnchor used allContent(tail) which aborted the whole window when
+        // any TOOL entry was present.  Result: content reflowed across viewport widths
+        // after a tool call was never reflow-anchored and got appended a second time
+        // via appendNovelTail.  Fix: skip (not abort) TOOL entries in both the history
+        // tail and the visible prefix when building the reflow text comparison.
+        CodexDecoder d = new CodexDecoder();
+        d.resetHistory();
+
+        // First frame: a tool call followed by prose content long enough for the
+        // tailFlow ≥ 20 char guard (the reflow anchor ignores short strings).
+        VirtualTerminal s1 = new VirtualTerminal(30, 100);
+        s1.feed("\033[1;1H• Explored the repository structure");
+        s1.feed("\033[2;1HThe answer spans multiple words here now");
+        d.observe(s1);
+
+        // Second frame: the same content reflowed across a narrower viewport.
+        // The TOOL line is still visible; the prose was wrapped onto two rows.
+        VirtualTerminal s2 = new VirtualTerminal(30, 80);
+        s2.feed("\033[1;1H• Explored the repository structure");
+        s2.feed("\033[2;1HThe answer spans multiple words");
+        s2.feed("\033[3;1Hhere now");
+        d.observe(s2);
+
+        String h = d.renderHistory();
+        // The prose content must appear exactly once — the reflow anchor must fire
+        // and dedup the two wrapped rows against the original single-row entry.
+        assertEquals(1, count(h, "The answer spans"),
+                "content after tool duplicated on reflow:\n" + h);
+    }
+
+    @Test
+    void gfmPipeRowAndBoxRerenderDeduplicate() {
+        // opencode streams a raw GFM row, then repaints the same row box-drawn. The two must
+        // collapse to one transcript entry (dedupKey unifies │ with |), not appear twice.
+        OpenCodeDecoder d = new OpenCodeDecoder();
+        d.resetHistory();
+
+        VirtualTerminal s1 = new VirtualTerminal(20, 60);
+        s1.feed("\033[3;1HHere is the summary table below:");
+        s1.feed("\033[4;1H| Alice | Engineer |");
+        d.observe(s1);
+
+        VirtualTerminal s2 = new VirtualTerminal(20, 60);
+        s2.feed("\033[3;1HHere is the summary table below:");
+        s2.feed("\033[4;1H│ Alice │ Engineer │");
+        d.observe(s2);
+
+        String h = d.renderHistory();
+        assertTrue(h.contains("Alice"), h);
+        // The row's data must appear exactly once, not as both "| Alice | Engineer |" and "Alice │ Engineer".
+        assertEquals(1, count(h, "Alice"),
+                "GFM row + its box re-render must dedup to one entry:\n" + h);
     }
 }

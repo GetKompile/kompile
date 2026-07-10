@@ -38,6 +38,7 @@ import { MatSlideToggleModule } from '@angular/material/slide-toggle';
 import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 import { Subscription, interval } from 'rxjs';
 import { takeWhile } from 'rxjs/operators';
+import { pauseWhenHidden } from '../../../services/visibility.util';
 import {
   UnifiedCrawlService,
   StartJobWithFilesConfig,
@@ -47,6 +48,7 @@ import {
   PipelineStepProgress,
   DocumentGraphProgress,
   CrawlStageEvent,
+  LlmCallRecord,
   GraphExtractionConfig,
   VectorIndexConfig
 } from '../../../services/unified-crawl.service';
@@ -173,11 +175,18 @@ type DialogPhase = 'upload' | 'running' | 'completed' | 'failed';
               <mat-icon [class.spinning-icon]="phase === 'running'">
                 {{ phase === 'running' ? 'sync' : phase === 'completed' ? 'check_circle' : 'error' }}
               </mat-icon>
-              {{ jobDetail?.currentPhase || 'Starting...' }}
+              {{ getPhaseLabel(jobDetail?.currentPhase) }}
             </span>
             <span class="progress-pct" *ngIf="jobDetail">
               {{ jobDetail.progressPercent }}%
             </span>
+          </div>
+          <div class="phase-detail" *ngIf="getPhaseDetail() as detail">
+            {{ detail }}
+          </div>
+          <div class="poll-warning" *ngIf="pollErrorCount > 0 && phase === 'running'">
+            <mat-icon inline>sync_problem</mat-icon>
+            Status refresh delayed; keeping the last known crawl state.
           </div>
           <mat-progress-bar
             [mode]="getProgressMode()"
@@ -217,13 +226,21 @@ type DialogPhase = 'upload' | 'running' | 'completed' | 'failed';
             <div class="stat-value">{{ jobDetail.relationshipsExtracted }}</div>
             <div class="stat-label">Relations</div>
           </div>
+          <div class="stat-card stat-card-wide" *ngIf="graphEnabled && jobDetail.graphChunksTotal">
+            <div class="stat-value">{{ jobDetail.graphChunksProcessed || 0 }}/{{ jobDetail.graphChunksTotal }}</div>
+            <div class="stat-label">LLM graph batches</div>
+          </div>
           <div class="stat-card" *ngIf="vectorEnabled">
-            <div class="stat-value">{{ jobDetail.chunksEmbedded }}</div>
-            <div class="stat-label">Embedded</div>
+            <div class="stat-value">{{ jobDetail.chunksEmbedded || 0 }}</div>
+            <div class="stat-label">Embedding precompute</div>
           </div>
           <div class="stat-card" *ngIf="vectorEnabled">
             <div class="stat-value">{{ jobDetail.documentsIndexed }}</div>
             <div class="stat-label">Indexed</div>
+          </div>
+          <div class="stat-card" *ngIf="vectorEnabled && jobDetail.embeddingDspPlanBatchSize">
+            <div class="stat-value">{{ jobDetail.embeddingDspPlanBatchSize }}</div>
+            <div class="stat-label">Embedding DSP batch</div>
           </div>
           <div class="stat-card" *ngIf="jobDetail.errorCount > 0">
             <div class="stat-value error-text">{{ jobDetail.errorCount }}</div>
@@ -239,9 +256,13 @@ type DialogPhase = 'upload' | 'running' | 'completed' | 'failed';
               <mat-icon class="step-icon" [ngClass]="getStepStatusClass(step.status)">
                 {{ getStepIcon(step.status) }}
               </mat-icon>
-              <span class="step-name">{{ step.displayName }}</span>
-              <span class="step-counts" *ngIf="step.totalItems > 0">
-                {{ step.completedItems }}/{{ step.totalItems }}
+              <span class="step-name">
+                {{ getStepDisplayName(step) }}
+                <small *ngIf="getStepActivity(step) as activity">{{ activity }}</small>
+              </span>
+              <span class="step-status">{{ getStatusLabel(step.status) }}</span>
+              <span class="step-counts" *ngIf="getStepCounts(step)">
+                {{ getStepCounts(step) }}
               </span>
               <span class="step-throughput" *ngIf="getStepThroughput(step)">
                 {{ getStepThroughput(step) }}
@@ -272,7 +293,7 @@ type DialogPhase = 'upload' | 'running' | 'completed' | 'failed';
                 {{ doc.fileName || doc.documentKey }}
               </span>
               <mat-chip class="doc-phase-chip" *ngIf="doc.phase">
-                {{ doc.phase }}
+                {{ getPhaseLabel(doc.phase) }}
               </mat-chip>
             </div>
             <div class="doc-stats">
@@ -287,13 +308,26 @@ type DialogPhase = 'upload' | 'running' | 'completed' | 'failed';
           </div>
         </div>
 
+        <!-- Recent LLM Calls -->
+        <div class="recent-events" *ngIf="getRecentLlmCalls(5).length">
+          <h4>LLM calls</h4>
+          <div *ngFor="let call of getRecentLlmCalls(5)" class="event-item"
+               [ngClass]="call.success ? 'event-info' : 'event-error'">
+            <span class="event-time">{{ formatEventTime(call.timestamp) }}</span>
+            <mat-chip class="event-phase-chip">{{ call.backendId || call.taskType }}</mat-chip>
+            <span class="event-message">
+              {{ call.success ? 'completed' : getLlmCallFailure(call) }} · {{ formatElapsed(call.latencyMs) }} · {{ call.inputTokens || 0 }} in / {{ call.outputTokens || 0 }} out
+            </span>
+          </div>
+        </div>
+
         <!-- Recent Events -->
         <div class="recent-events" *ngIf="jobDetail?.recentEvents?.length">
           <h4>Activity</h4>
           <div *ngFor="let event of getLastEvents(8)" class="event-item"
                [ngClass]="'event-' + (event.level || 'INFO').toLowerCase()">
             <span *ngIf="event.timestamp" class="event-time">{{ formatEventTime(event.timestamp) }}</span>
-            <mat-chip class="event-phase-chip">{{ event.phase }}</mat-chip>
+            <mat-chip class="event-phase-chip">{{ getPhaseLabel(event.phase) }}</mat-chip>
             <span class="event-message">{{ event.message }}</span>
           </div>
         </div>
@@ -414,6 +448,24 @@ type DialogPhase = 'upload' | 'running' | 'completed' | 'failed';
       font-size: 14px;
     }
     .progress-pct { font-weight: 600; font-size: 14px; color: #1976d2; }
+    .phase-detail {
+      font-size: 12px;
+      color: #555;
+      margin: -2px 0 8px 26px;
+      line-height: 1.35;
+    }
+    .poll-warning {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 8px;
+      margin: 0 0 8px 0;
+      border-radius: 6px;
+      background: #fff8e1;
+      color: #8a5a00;
+      font-size: 12px;
+    }
+    .poll-warning mat-icon { font-size: 16px; width: 16px; height: 16px; }
     .elapsed-time { font-size: 12px; color: #999; margin-top: 4px; text-align: right; }
 
     .current-file {
@@ -442,6 +494,7 @@ type DialogPhase = 'upload' | 'running' | 'completed' | 'failed';
       border-radius: 8px;
       border: 1px solid #eee;
     }
+    .stat-card-wide { grid-column: span 2; }
     .stat-value { font-size: 20px; font-weight: 700; color: #333; }
     .stat-label { font-size: 11px; color: #888; margin-top: 2px; }
     .error-text { color: #d32f2f !important; }
@@ -468,9 +521,18 @@ type DialogPhase = 'upload' | 'running' | 'completed' | 'failed';
     .step-completed { color: #4caf50; }
     .step-failed { color: #d32f2f; }
     .step-pending { color: #bbb; }
-    .step-name { flex: 1; font-weight: 500; }
-    .step-counts { font-size: 12px; color: #666; }
-    .step-elapsed { font-size: 11px; color: #999; }
+    .step-name { flex: 1; font-weight: 500; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+    .step-name small { font-weight: 400; color: #666; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .step-status {
+      font-size: 10px;
+      color: #555;
+      background: #eef3fb;
+      border-radius: 999px;
+      padding: 2px 6px;
+      white-space: nowrap;
+    }
+    .step-counts { font-size: 12px; color: #666; white-space: nowrap; }
+    .step-elapsed { font-size: 11px; color: #999; white-space: nowrap; }
     .step-progress { margin-top: 6px; }
     .step-message { font-size: 12px; color: #888; margin-top: 4px; }
 
@@ -562,6 +624,7 @@ export class DocumentCrawlDialogComponent implements OnInit, OnDestroy {
 
   jobId: string | null = null;
   jobDetail: JobDetail | null = null;
+  pollErrorCount = 0;
 
   private pollSub: Subscription | null = null;
   private alive = true;
@@ -694,7 +757,10 @@ export class DocumentCrawlDialogComponent implements OnInit, OnDestroy {
 
   private startPolling(): void {
     this.pollSub = interval(3000)
-      .pipe(takeWhile(() => this.alive && this.phase === 'running'))
+      .pipe(
+        takeWhile(() => this.alive && this.phase === 'running'),
+        pauseWhenHidden()
+      )
       .subscribe(() => this.refreshJob());
     // Immediate first poll
     this.refreshJob();
@@ -705,6 +771,7 @@ export class DocumentCrawlDialogComponent implements OnInit, OnDestroy {
     this.crawlService.getJob(this.jobId).subscribe({
       next: (detail: JobDetail) => {
         this.jobDetail = detail;
+        this.pollErrorCount = 0;
         const status = detail.status;
         if (status === 'COMPLETED' || status === 'COMPLETED_PENDING_EMBEDDING') {
           this.phase = 'completed';
@@ -716,7 +783,8 @@ export class DocumentCrawlDialogComponent implements OnInit, OnDestroy {
         this.cdr.markForCheck();
       },
       error: () => {
-        // Transient error — keep polling
+        this.pollErrorCount++;
+        this.cdr.markForCheck();
       }
     });
   }
@@ -804,6 +872,125 @@ export class DocumentCrawlDialogComponent implements OnInit, OnDestroy {
   getProgressMode(): 'determinate' | 'indeterminate' | 'query' | 'buffer' {
     const pct = this.jobDetail?.progressPercent;
     return pct != null && pct > 0 ? 'determinate' : 'indeterminate';
+  }
+
+  getPhaseLabel(phase: string | undefined | null): string {
+    const key = (phase || '').toUpperCase();
+    const labels: { [key: string]: string } = {
+      DISCOVERING: 'Discovering sources',
+      LOADING: 'Loading documents',
+      CONVERTING: 'Converting documents',
+      ROUTING: 'Routing content',
+      CHUNKING: 'Chunking documents',
+      GRAPH_PREP: 'Preparing graph context',
+      GRAPH_EXTRACTION: 'LLM graph extraction',
+      MODEL_ROUTING: 'Selecting model backend',
+      RESOURCE_GATE: 'Waiting for memory slot',
+      ENTITY_RESOLUTION: 'Resolving graph entities',
+      EDGE_COMPUTATION: 'Computing graph edges',
+      EMBEDDING: 'Embedding precompute',
+      VECTOR_INDEXING: 'Vector indexing',
+      INDEXING: 'Vector indexing',
+      ENRICHMENT: 'Graph enrichment',
+      CRAWL_SURFACE: 'Publishing crawl results'
+    };
+    return labels[key] || (phase ? phase.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, c => c.toUpperCase()) : 'Starting crawl');
+  }
+
+  getPhaseDetail(): string {
+    const detail = this.jobDetail;
+    if (!detail) return '';
+    const phase = (detail.currentPhase || '').toUpperCase();
+    if (phase === 'GRAPH_EXTRACTION') {
+      const batches = detail.graphChunksTotal ? `batch ${detail.graphChunksProcessed || 0}/${detail.graphChunksTotal}` : 'batching active';
+      const model = detail.llmModel ? ` · ${detail.llmModel}` : '';
+      return `${batches} · ${detail.entitiesExtracted || 0} entities · ${detail.relationshipsExtracted || 0} relations${model}`;
+    }
+    if (phase === 'EMBEDDING' || phase === 'VECTOR_INDEXING' || phase === 'INDEXING') {
+      const batch = detail.embeddingDspPlanBatchSize ? ` · fixed DSP batch ${detail.embeddingDspPlanBatchSize}` : '';
+      return `${detail.chunksEmbedded || 0}/${detail.chunksQueuedForEmbedding || detail.chunksCreated || 0} chunks embedded${batch}`;
+    }
+    if (phase === 'ENTITY_RESOLUTION') {
+      return `Graph extraction produced ${detail.entitiesExtracted || 0} entities; resolution may compute embeddings before enrichment continues.`;
+    }
+    const latest = this.getLatestEvent();
+    return latest ? latest.message : '';
+  }
+
+  getStepDisplayName(step: PipelineStepProgress): string {
+    return step.displayName || this.getPhaseLabel(step.stepId);
+  }
+
+  getStatusLabel(status: string | undefined | null): string {
+    const key = (status || '').toUpperCase();
+    const labels: { [key: string]: string } = {
+      RUNNING: 'running',
+      BACKPRESSURE: 'waiting',
+      COMPLETED: 'done',
+      FAILED: 'failed',
+      SKIPPED: 'skipped',
+      DEFERRED: 'deferred',
+      CANCELLED: 'cancelled',
+      PENDING: 'pending'
+    };
+    return labels[key] || (status || 'pending').toLowerCase();
+  }
+
+  getStepCounts(step: PipelineStepProgress): string {
+    const id = (step.stepId || '').toUpperCase();
+    if (id.includes('GRAPH') && this.jobDetail?.graphChunksTotal) {
+      return `${this.jobDetail.graphChunksProcessed || 0}/${this.jobDetail.graphChunksTotal} graph batches`;
+    }
+    if (id.includes('EMBED') && this.jobDetail) {
+      const total = this.jobDetail.chunksQueuedForEmbedding || this.jobDetail.chunksCreated || step.totalItems || 0;
+      return `${this.jobDetail.chunksEmbedded || step.completedItems || 0}/${total} chunks`;
+    }
+    if (step.totalItems > 0) return `${step.completedItems}/${step.totalItems}`;
+    if (step.totalBatches > 0) return `${step.completedBatches}/${step.totalBatches} batches`;
+    return '';
+  }
+
+  getStepActivity(step: PipelineStepProgress): string {
+    const msg = step.message || step.currentItem || '';
+    const id = (step.stepId || '').toUpperCase();
+    if (id.includes('GRAPH') && this.jobDetail?.graphChunksTotal) {
+      return `LLM batches ${this.jobDetail.graphChunksProcessed || 0}/${this.jobDetail.graphChunksTotal}`;
+    }
+    if (id.includes('EMBED') && this.jobDetail?.embeddingDspPlanBatchSize) {
+      return `Embedding fixed-shape DSP plan ${this.jobDetail.embeddingDspPlanBatchSize} x 512`;
+    }
+    if (msg) return msg;
+    const latest = this.getLatestEventForStep(step);
+    return latest?.message || '';
+  }
+
+  getRecentLlmCalls(n: number): LlmCallRecord[] {
+    if (!this.jobDetail?.recentLlmCalls) return [];
+    return this.jobDetail.recentLlmCalls.slice(-n);
+  }
+
+  getLlmCallFailure(call: LlmCallRecord): string {
+    if (call.timedOut) return 'timed out';
+    if (call.rateLimited) return 'rate limited';
+    if (call.circuitBroken) return 'circuit open';
+    return call.errorCategory || call.errorMessage || 'failed';
+  }
+
+  private getLatestEvent(): CrawlStageEvent | null {
+    const events = this.jobDetail?.recentEvents;
+    return events && events.length ? events[events.length - 1] : null;
+  }
+
+  private getLatestEventForStep(step: PipelineStepProgress): CrawlStageEvent | null {
+    const events = this.jobDetail?.recentEvents;
+    if (!events?.length) return null;
+    const id = (step.stepId || step.stepType || '').toUpperCase();
+    const candidates = events.filter(event => {
+      const phase = (event.phase || '').toUpperCase();
+      return id.includes(phase) || phase.includes(id) || (id.includes('GRAPH') && phase.includes('GRAPH')) ||
+             (id.includes('EMBED') && (phase.includes('EMBED') || phase.includes('INDEX')));
+    });
+    return candidates.length ? candidates[candidates.length - 1] : null;
   }
 
   getLastEvents(n: number): CrawlStageEvent[] {

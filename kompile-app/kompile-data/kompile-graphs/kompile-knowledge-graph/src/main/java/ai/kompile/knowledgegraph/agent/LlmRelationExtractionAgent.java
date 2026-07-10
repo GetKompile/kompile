@@ -27,7 +27,11 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import java.util.*;
+import java.util.LinkedHashMap;
 
 /**
  * A {@link RelationExtractionAgent} that delegates to the active language model (if one is
@@ -419,7 +423,7 @@ public class LlmRelationExtractionAgent implements RelationExtractionAgent {
      */
     private GraphExtractionSchema.ExtractionResult parseLenient(String json) {
         try {
-            com.fasterxml.jackson.databind.ObjectMapper om = new com.fasterxml.jackson.databind.ObjectMapper();
+            ObjectMapper om = new ObjectMapper();
             List<GraphExtractionSchema.ExtractedEntity> entities = new ArrayList<>();
             List<GraphExtractionSchema.ExtractedRelation> relations = new ArrayList<>();
 
@@ -442,7 +446,7 @@ public class LlmRelationExtractionAgent implements RelationExtractionAgent {
                     if (depth == 0 && objStart >= 0) {
                         String objStr = json.substring(objStart, i + 1);
                         try {
-                            com.fasterxml.jackson.databind.JsonNode node = om.readTree(objStr);
+                            JsonNode node = om.readTree(objStr);
                             entityCounter++;
                             String id = node.has("id") ? node.get("id").asText()
                                     : "e" + entityCounter;
@@ -479,7 +483,7 @@ public class LlmRelationExtractionAgent implements RelationExtractionAgent {
                             if (depth == 0 && objStart >= 0) {
                                 String objStr = json.substring(objStart, i + 1);
                                 try {
-                                    com.fasterxml.jackson.databind.JsonNode node = om.readTree(objStr);
+                                    JsonNode node = om.readTree(objStr);
                                     String src = node.has("source") ? node.get("source").asText() : null;
                                     String tgt = node.has("target") ? node.get("target").asText() : null;
                                     String type = node.has("type") ? node.get("type").asText() : "RELATED_TO";
@@ -513,7 +517,7 @@ public class LlmRelationExtractionAgent implements RelationExtractionAgent {
 
     private List<GraphExtractionSchema.ExtractedEntity> deduplicateEntities(
             List<GraphExtractionSchema.ExtractedEntity> entities) {
-        Map<String, GraphExtractionSchema.ExtractedEntity> seen = new java.util.LinkedHashMap<>();
+        Map<String, GraphExtractionSchema.ExtractedEntity> seen = new LinkedHashMap<>();
         for (GraphExtractionSchema.ExtractedEntity e : entities) {
             seen.putIfAbsent(e.id(), e);
         }
@@ -522,7 +526,7 @@ public class LlmRelationExtractionAgent implements RelationExtractionAgent {
 
     private List<GraphExtractionSchema.ExtractedRelation> deduplicateRelations(
             List<GraphExtractionSchema.ExtractedRelation> relations) {
-        Map<String, GraphExtractionSchema.ExtractedRelation> seen = new java.util.LinkedHashMap<>();
+        Map<String, GraphExtractionSchema.ExtractedRelation> seen = new LinkedHashMap<>();
         for (GraphExtractionSchema.ExtractedRelation r : relations) {
             String key = r.source() + "|" + r.target() + "|" + r.type();
             seen.putIfAbsent(key, r);

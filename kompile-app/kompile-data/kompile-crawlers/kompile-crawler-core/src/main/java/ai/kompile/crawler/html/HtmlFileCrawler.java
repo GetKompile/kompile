@@ -22,6 +22,7 @@ import ai.kompile.core.loaders.DocumentSourceDescriptor;
 import ai.kompile.core.loaders.DocumentSourceDescriptor.SourceType;
 import ai.kompile.crawler.AbstractCrawlJob;
 import ai.kompile.crawler.AbstractCrawler;
+import ai.kompile.utils.HashUtils;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
@@ -33,8 +34,6 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.*;
 import java.util.regex.Pattern;
@@ -505,16 +504,6 @@ public class HtmlFileCrawler extends AbstractCrawler {
     }
 
     private String sha256(String content) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] hash = digest.digest(content.getBytes(StandardCharsets.UTF_8));
-            StringBuilder hex = new StringBuilder();
-            for (byte b : hash) {
-                hex.append(String.format("%02x", b));
-            }
-            return hex.toString();
-        } catch (NoSuchAlgorithmException e) {
-            throw new RuntimeException("SHA-256 not available", e);
-        }
+        return HashUtils.sha256Hex(content);
     }
 }

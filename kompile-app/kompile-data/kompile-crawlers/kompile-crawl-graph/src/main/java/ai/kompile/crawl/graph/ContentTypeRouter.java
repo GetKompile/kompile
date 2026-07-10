@@ -19,6 +19,8 @@ package ai.kompile.crawl.graph;
 import ai.kompile.core.crawl.graph.ProcessingRouteConfig;
 import ai.kompile.core.crawl.graph.UnifiedCrawlJob;
 import ai.kompile.core.graphrag.GraphConstants;
+import ai.kompile.core.loaders.PdfClassificationResult;
+import ai.kompile.core.loaders.PdfContentClassifier;
 import ai.kompile.knowledgegraph.domain.EdgeProvenance;
 import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.GraphNode;
@@ -30,6 +32,7 @@ import org.springframework.ai.document.Document;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import java.io.File;
 import java.time.Instant;
 import java.util.*;
 
@@ -58,7 +61,7 @@ class ContentTypeRouter {
     private CrawlIndexTrackingCallback crawlIndexTrackingCallback;
 
     @Autowired(required = false)
-    private ai.kompile.core.loaders.PdfContentClassifier pdfContentClassifier;
+    private PdfContentClassifier pdfContentClassifier;
 
     @Autowired
     private GraphPersistenceHelper graphPersistenceHelper;
@@ -381,7 +384,7 @@ class ContentTypeRouter {
             }
 
             // AUTO mode: classify by inspecting page resources
-            java.io.File pdfFile = new java.io.File(filePath);
+            File pdfFile = new File(filePath);
             if (!pdfFile.exists()) {
                 log.debug("[Job {}] PDF file not found for classification: {}", job.getJobId(), filePath);
                 nonPdfCount++;
@@ -389,7 +392,7 @@ class ContentTypeRouter {
             }
 
             try {
-                ai.kompile.core.loaders.PdfClassificationResult result = pdfContentClassifier.classify(pdfFile);
+                PdfClassificationResult result = pdfContentClassifier.classify(pdfFile);
                 classifiedCount++;
 
                 meta.put("pdf_classification", result.contentType().name());
@@ -463,11 +466,9 @@ class ContentTypeRouter {
         if (knowledgeGraphService == null) return;
 
         String jobId = job != null ? job.getJobId() : null;
-        documentTracker.recordEvent(job, "ROUTING", "INFO",
-                "Registering " + documents.size() + " unique source paths as DOCUMENT graph nodes", null);
 
         // Phase 1: Pre-collect unique source paths with their first-seen document.
-        // This avoids iterating all documents when only unique source paths need DB writes.
+        // This avoids iterating all documents when only unique source paths need graph writes.
         Map<String, Document> uniqueBySourcePath = new LinkedHashMap<>();
         for (Document doc : documents) {
             Map<String, Object> meta = doc.getMetadata();
@@ -487,47 +488,74 @@ class ContentTypeRouter {
             }
         }
 
-        // Phase 2: Register only unique source paths
+        documentTracker.recordEvent(job, "ROUTING", "INFO",
+                "Registering " + uniqueBySourcePath.size() + " unique source paths as DOCUMENT graph nodes", null);
+
+        // Phase 2: Register the SOURCE, DOCUMENT nodes, and SOURCE -> DOCUMENT edges in bulk.
         Long factSheetId = jobFactSheetId(job);
         String crawlSource = "crawl:" + jobId;
+        String sourceNodeId = NodeLevel.SOURCE.name().toLowerCase() + "_" + crawlSource;
+        List<KnowledgeGraphService.NodeSpec> nodeSpecs = new ArrayList<>(uniqueBySourcePath.size() + 1);
+        List<KnowledgeGraphService.EdgeSpec> edgeSpecs = new ArrayList<>(uniqueBySourcePath.size());
         Set<String> registeredSources = new HashSet<>(uniqueBySourcePath.size());
+
+        Map<String, Object> sourceMeta = new LinkedHashMap<>();
+        sourceMeta.put("sourceType", "CRAWL");
+        sourceMeta.put("pathOrUrl", crawlSource);
+        sourceMeta.put("taskId", jobId);
+        nodeSpecs.add(new KnowledgeGraphService.NodeSpec(NodeLevel.SOURCE, crawlSource, jobId, null, sourceMeta));
+
         for (Map.Entry<String, Document> entry : uniqueBySourcePath.entrySet()) {
             String sourcePath = entry.getKey();
             Document doc = entry.getValue();
             Map<String, Object> meta = doc.getMetadata();
 
-            try {
-                String fileName = meta.get("source_filename") instanceof String
-                        ? (String) meta.get("source_filename")
-                        : meta.get(GraphConstants.META_FILE_NAME) instanceof String ? (String) meta.get(GraphConstants.META_FILE_NAME) : sourcePath;
-                String sourceType = meta.get(GraphConstants.META_SOURCE_TYPE) instanceof String
-                        ? (String) meta.get(GraphConstants.META_SOURCE_TYPE) : "FILE";
-                String loaderName = meta.get("loader_name") instanceof String
-                        ? (String) meta.get("loader_name")
-                        : meta.get(GraphConstants.META_LOADER) instanceof String ? (String) meta.get(GraphConstants.META_LOADER) : "unknown";
-                String contentPreview = doc.getText() != null && doc.getText().length() > 200
-                        ? doc.getText().substring(0, 200) + "..." : doc.getText();
+            String fileName = meta.get("source_filename") instanceof String
+                    ? (String) meta.get("source_filename")
+                    : meta.get(GraphConstants.META_FILE_NAME) instanceof String ? (String) meta.get(GraphConstants.META_FILE_NAME) : sourcePath;
+            String loaderName = meta.get("loader_name") instanceof String
+                    ? (String) meta.get("loader_name")
+                    : meta.get(GraphConstants.META_LOADER) instanceof String ? (String) meta.get(GraphConstants.META_LOADER) : "unknown";
+            String contentPreview = doc.getText() != null && doc.getText().length() > 200
+                    ? doc.getText().substring(0, 200) + "..." : doc.getText();
 
-                Map<String, Object> docMeta = new LinkedHashMap<>(meta);
-                docMeta.put(GraphConstants.META_LOADER, loaderName);
-                docMeta.put("taskId", jobId);
-                if (meta.get("file_extension") instanceof String) {
-                    docMeta.put("fileExtension", meta.get("file_extension"));
-                }
-
-                knowledgeGraphService.addDocument(
-                        crawlSource, jobId, sourceType,
-                        sourcePath, fileName, contentPreview, docMeta, factSheetId);
-                registeredSources.add(sourcePath);
-            } catch (Exception e) {
-                log.debug("Failed to register DOCUMENT node for '{}': {}", sourcePath, e.getMessage());
+            Map<String, Object> docMeta = new LinkedHashMap<>(meta);
+            docMeta.put(GraphConstants.META_LOADER, loaderName);
+            docMeta.put("taskId", jobId);
+            docMeta.put("parentNodeId", sourceNodeId);
+            if (contentPreview != null) {
+                docMeta.put("contentPreview", contentPreview);
             }
+            if (meta.get("file_extension") instanceof String) {
+                docMeta.put("fileExtension", meta.get("file_extension"));
+            }
+
+            String documentNodeId = NodeLevel.DOCUMENT.name().toLowerCase() + "_" + sourcePath;
+            nodeSpecs.add(new KnowledgeGraphService.NodeSpec(
+                    NodeLevel.DOCUMENT, sourcePath, fileName, contentPreview, docMeta));
+            edgeSpecs.add(new KnowledgeGraphService.EdgeSpec(
+                    sourceNodeId, documentNodeId, EdgeType.HIERARCHICAL, 1.0,
+                    "Source contains document", null, null, EdgeProvenance.EXTRACTED, factSheetId));
+            registeredSources.add(sourcePath);
         }
-        if (!registeredSources.isEmpty()) {
-            log.info("[Job {}] Registered {} DOCUMENT graph nodes", jobId, registeredSources.size());
-            documentTracker.recordEvent(job, "ROUTING", "INFO",
-                    "Registered " + registeredSources.size() + " DOCUMENT graph node(s)", null);
+
+        if (registeredSources.isEmpty()) {
+            return;
         }
+
+        try {
+            knowledgeGraphService.createNodesBatch(nodeSpecs, factSheetId);
+            knowledgeGraphService.createEdgesBatch(edgeSpecs);
+        } catch (Exception e) {
+            String message = "Failed to register DOCUMENT graph nodes: " + e.getMessage();
+            log.warn("[Job {}] {}", jobId, message, e);
+            documentTracker.recordEvent(job, "ROUTING", "ERROR", message, null);
+            throw new IllegalStateException(message, e);
+        }
+
+        log.info("[Job {}] Registered {} DOCUMENT graph nodes", jobId, registeredSources.size());
+        documentTracker.recordEvent(job, "ROUTING", "INFO",
+                "Registered " + registeredSources.size() + " DOCUMENT graph node(s)", null);
     }
 
     /** Maximum number of SnippetSpecs per createSnippetNodesBatch RPC to bound payload size. */

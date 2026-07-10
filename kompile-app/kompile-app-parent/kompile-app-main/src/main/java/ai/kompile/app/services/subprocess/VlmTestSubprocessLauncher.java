@@ -22,8 +22,13 @@ import ai.kompile.app.services.GpuResourceManager;
 import ai.kompile.app.services.ModelLifecycleManager;
 import ai.kompile.app.services.Nd4jEnvironmentConfigService;
 import ai.kompile.app.services.ServerPortService;
+import ai.kompile.app.services.SubprocessHeartbeatBroadcaster;
+import ai.kompile.app.subprocess.BackendConfigurable;
+import ai.kompile.app.subprocess.ManagedSubprocessLauncher.BackendPreference;
+import ai.kompile.app.subprocess.SubprocessBackendFlags;
 import ai.kompile.app.subprocess.SubprocessEnvironmentPropagator;
 import ai.kompile.app.subprocess.SubprocessMessage;
+import ai.kompile.app.subprocess.SubprocessPlacement;
 import ai.kompile.app.subprocess.SubprocessRegistry;
 import ai.kompile.app.subprocess.VlmTestSubprocessArgs;
 import ai.kompile.cli.common.logs.AgentLogRecord;
@@ -45,6 +50,8 @@ import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.jar.JarEntry;
+import java.util.jar.JarFile;
 
 /**
  * Service for launching and managing VLM test subprocesses.
@@ -53,10 +60,43 @@ import java.util.concurrent.atomic.AtomicLong;
  * Parses INGEST_MSG: JSON messages from subprocess stdout and forwards to WebSocket.
  */
 @Service
-public class VlmTestSubprocessLauncher {
+public class VlmTestSubprocessLauncher implements BackendConfigurable {
 
     private static final Logger logger = LoggerFactory.getLogger(VlmTestSubprocessLauncher.class);
     private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
+
+    /** Scheduler-assigned device-agnostic placement for the next spawn (never CUDA_VISIBLE_DEVICES). */
+    private volatile SubprocessPlacement schedulerPlacement;
+
+    @Override
+    public void applyPlacement(SubprocessPlacement placement) {
+        this.schedulerPlacement = placement;
+    }
+
+    /**
+     * Resolve a device-agnostic placement for a spawn: scheduler placement wins; else a legacy
+     * single-device {@code cudaDevices}/{@code cudaVisibleDevices} value is honored by pinning ND4J's
+     * placement default (NOT CUDA_VISIBLE_DEVICES). A blank or multi-device value → {@code null} (see
+     * all GPUs, the multi-device default).
+     */
+    private SubprocessPlacement resolveVlmPlacement(Map<String, String> options) {
+        if (schedulerPlacement != null) {
+            return schedulerPlacement;
+        }
+        String legacy = (options != null && options.containsKey("cudaDevices"))
+                ? options.get("cudaDevices") : cudaVisibleDevices;
+        if (legacy != null && !legacy.isBlank() && legacy.indexOf(',') < 0) {
+            try {
+                int dev = Integer.parseInt(legacy.trim());
+                if (dev >= 0) {
+                    return SubprocessPlacement.gpu(dev, 0L);
+                }
+            } catch (NumberFormatException ignore) {
+                // not a bare device index — fall through to see-all
+            }
+        }
+        return null;
+    }
 
     // Fallback values if SubprocessConfigService is not available
     @Value("${kompile.vlm-test.subprocess.java-path:java}")
@@ -90,15 +130,15 @@ public class VlmTestSubprocessLauncher {
     private SubprocessRegistry subprocessRegistry;
 
     @Autowired(required = false)
-    private ai.kompile.app.services.SubprocessHeartbeatBroadcaster heartbeatBroadcaster;
+    private SubprocessHeartbeatBroadcaster heartbeatBroadcaster;
 
     private final Map<String, VlmTestHandle> activeTests = new ConcurrentHashMap<>();
     private final Map<String, AtomicLong> logSequenceCounters = new ConcurrentHashMap<>();
-    private final ExecutorService executor = new java.util.concurrent.ThreadPoolExecutor(
-            2, 8, 60L, java.util.concurrent.TimeUnit.SECONDS,
-            new java.util.concurrent.LinkedBlockingQueue<>(32),
+    private final ExecutorService executor = new ThreadPoolExecutor(
+            2, 8, 60L, TimeUnit.SECONDS,
+            new LinkedBlockingQueue<>(32),
             r -> { Thread t = new Thread(r, "vlm-test-launcher"); t.setDaemon(true); return t; },
-            new java.util.concurrent.ThreadPoolExecutor.CallerRunsPolicy());
+            new ThreadPoolExecutor.CallerRunsPolicy());
 
     public VlmTestSubprocessLauncher(SubprocessExecutableConfig execConfig,
                                       ServerPortService serverPortService,
@@ -336,6 +376,15 @@ public class VlmTestSubprocessLauncher {
             // Build subprocess command
             String classpath = getClasspath();
             List<String> command = execConfig.buildVlmTestCommand(argsFile, getEffectiveHeapSize(), getEffectiveJavaPath(), classpath, getEffectiveOffHeapMultiplier());
+            // Device-agnostic backend/device selection — the SAME shared delivery every launcher uses,
+            // never CUDA_VISIBLE_DEVICES. Scheduler placement wins; else a legacy single-device value
+            // pins ND4J's placement default. GPU device pin rides as a -D flag on the command.
+            SubprocessPlacement vlmPlacement = resolveVlmPlacement(options);
+            List<String> deviceFlags = SubprocessBackendFlags.jvmFlags(vlmPlacement, BackendPreference.INHERIT);
+            if (!deviceFlags.isEmpty()) {
+                command = new ArrayList<>(command);
+                command.addAll(1, deviceFlags); // after the java executable, before the main class
+            }
 
             logger.info("Launching VLM test subprocess for task {}: {}", taskId, String.join(" ", command));
 
@@ -370,18 +419,17 @@ public class VlmTestSubprocessLauncher {
             // Propagate CUDA graph capture OOM retry / memory management settings
             propagateDspCaptureConfig(pb.environment(), args);
 
-            // Allow explicit GPU restriction via runtime option or config property.
-            // Do NOT auto-restrict: the multi-device framework (DeviceMemoryManager,
-            // DynamicShapePlan.assignDevices()) needs visibility of all GPUs to distribute
-            // decoder ops across devices and avoid OOM on a single GPU. CUDA context
-            // overhead on secondary devices is minimal (~300MB) compared to the benefit
-            // of multi-GPU execution for large models.
-            String effectiveCudaDevices = (options != null && options.containsKey("cudaDevices"))
-                    ? options.get("cudaDevices") : cudaVisibleDevices;
-            if (effectiveCudaDevices != null && !effectiveCudaDevices.isBlank()) {
-                pb.environment().put("CUDA_DEVICE_ORDER", "PCI_BUS_ID");
-                pb.environment().put("CUDA_VISIBLE_DEVICES", effectiveCudaDevices);
-                logger.info("Set CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES={} for VLM subprocess {}", effectiveCudaDevices, taskId);
+            // Device selection is delivered device-agnostically via the command's ND4J placement flag
+            // (above) — NEVER CUDA_VISIBLE_DEVICES. Here we apply only the per-device memory bound
+            // (SD_MAX_DEVICE_BYTES), the one knob ND4J's CudaMemoryPool enforces. With no placement the
+            // subprocess sees all GPUs, which the multi-device framework (DeviceMemoryManager,
+            // DynamicShapePlan.assignDevices()) needs to distribute decoder ops and avoid single-GPU OOM.
+            SubprocessBackendFlags.applyEnv(pb.environment(), vlmPlacement);
+            if (vlmPlacement != null && vlmPlacement.isGpu()) {
+                logger.info("VLM subprocess {} pinned to device {} (nd4j.placement.defaultDevice){}", taskId,
+                        vlmPlacement.deviceId(),
+                        vlmPlacement.maxDeviceMemoryBytes() > 0
+                                ? ", bound " + (vlmPlacement.maxDeviceMemoryBytes() / (1024 * 1024)) + " MB" : "");
             } else {
                 logger.info("VLM subprocess {} will see all GPUs (multi-device framework enabled)", taskId);
             }
@@ -414,10 +462,13 @@ public class VlmTestSubprocessLauncher {
 
             // --- Phase-2 log aggregation: central JSON-lines store ---
             try {
-                SubprocessLogWriter slw = new SubprocessLogWriter("vlm-test", taskId);
+                String workingDir = pb.directory() != null
+                        ? pb.directory().getAbsolutePath()
+                        : System.getProperty("user.dir");
+                SubprocessLogWriter slw = new SubprocessLogWriter("vlm-test", taskId, workingDir);
                 handle.subprocessLogWriter = slw;
                 slw.writeStart(new SubprocessLogWriter.SubprocessRunContext(
-                        taskId, command, null, process.pid(), getEffectiveHeapSize()));
+                        taskId, command, workingDir, process.pid(), getEffectiveHeapSize()));
                 logger.debug("[vlm-test-{}] SubprocessLogWriter opened: {}", taskId, slw.getLogFile());
             } catch (Exception _logEx) {
                 logger.debug("[vlm-test-{}] SubprocessLogWriter init failed (non-fatal): {}", taskId, _logEx.getMessage());
@@ -865,7 +916,7 @@ public class VlmTestSubprocessLauncher {
      * Check if a JAR file is a Spring Boot fat JAR by looking for BOOT-INF/lib/ entries.
      */
     private boolean isSpringBootFatJar(String jarPath) {
-        try (java.util.jar.JarFile jarFile = new java.util.jar.JarFile(jarPath)) {
+        try (JarFile jarFile = new JarFile(jarPath)) {
             return jarFile.getEntry("BOOT-INF/lib/") != null || jarFile.getEntry("BOOT-INF/classes/") != null;
         } catch (Exception e) {
             return false;
@@ -883,13 +934,13 @@ public class VlmTestSubprocessLauncher {
         Path libDir = extractDir.resolve("lib");
         Path classesDir = extractDir.resolve("classes");
 
-        try (java.util.jar.JarFile jarFile = new java.util.jar.JarFile(fatJarPath)) {
+        try (JarFile jarFile = new JarFile(fatJarPath)) {
             // Extract BOOT-INF/classes/ if present
             if (jarFile.getEntry("BOOT-INF/classes/") != null) {
                 Files.createDirectories(classesDir);
-                java.util.Enumeration<java.util.jar.JarEntry> entries = jarFile.entries();
+                Enumeration<JarEntry> entries = jarFile.entries();
                 while (entries.hasMoreElements()) {
-                    java.util.jar.JarEntry entry = entries.nextElement();
+                    JarEntry entry = entries.nextElement();
                     if (entry.getName().startsWith("BOOT-INF/classes/") && !entry.isDirectory()) {
                         String relativePath = entry.getName().substring("BOOT-INF/classes/".length());
                         Path targetFile = classesDir.resolve(relativePath);
@@ -907,9 +958,9 @@ public class VlmTestSubprocessLauncher {
             // Extract BOOT-INF/lib/*.jar
             if (jarFile.getEntry("BOOT-INF/lib/") != null) {
                 Files.createDirectories(libDir);
-                java.util.Enumeration<java.util.jar.JarEntry> entries = jarFile.entries();
+                Enumeration<JarEntry> entries = jarFile.entries();
                 while (entries.hasMoreElements()) {
-                    java.util.jar.JarEntry entry = entries.nextElement();
+                    JarEntry entry = entries.nextElement();
                     if (entry.getName().startsWith("BOOT-INF/lib/") && entry.getName().endsWith(".jar")) {
                         String jarName = entry.getName().substring("BOOT-INF/lib/".length());
                         Path targetJar = libDir.resolve(jarName);

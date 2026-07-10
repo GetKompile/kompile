@@ -102,7 +102,7 @@ public class McpServerConfig {
      * Whether completions (autocomplete) are enabled
      */
     @Builder.Default
-    private boolean completionsEnabled = false;
+    private boolean completionsEnabled = true;
 
     /**
      * Server status

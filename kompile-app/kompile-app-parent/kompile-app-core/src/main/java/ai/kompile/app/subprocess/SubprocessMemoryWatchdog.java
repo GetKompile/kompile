@@ -196,8 +196,8 @@ public class SubprocessMemoryWatchdog implements AutoCloseable {
         int deviceId = 0;
         int deviceCount = 1;
         try {
-            String backend = Nd4j.getBackend().getClass().getSimpleName().toLowerCase();
-            gpuEnabled = backend.contains("cuda") || backend.contains("aurora") || backend.contains("gpu");
+            String backend = Nd4j.getBackend().getClass().getSimpleName();
+            gpuEnabled = isGpuBackendName(backend);
             if (gpuEnabled) {
                 deviceId = Nd4j.getAffinityManager().getDeviceForCurrentThread();
                 deviceCount = Nd4j.getAffinityManager().getNumberOfDevices();
@@ -251,6 +251,18 @@ public class SubprocessMemoryWatchdog implements AutoCloseable {
         });
 
         this.lastSnapshot = captureSnapshot();
+    }
+
+    static boolean isGpuBackendName(String backendClassName) {
+        if (backendClassName == null || backendClassName.isBlank()) {
+            return false;
+        }
+        String backend = backendClassName.toLowerCase();
+        return backend.contains("cuda")
+                || backend.contains("cublas")
+                || backend.contains("rocm")
+                || backend.contains("aurora")
+                || backend.contains("gpu");
     }
 
     /**

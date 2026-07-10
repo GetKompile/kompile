@@ -40,13 +40,19 @@ public interface ProcessingCapacityTracker {
             String taskType, ProcessingRouteConfig config);
 
     /**
-     * Check if a specific backend can accept work right now.
+     * Check if a specific backend can accept work right now, evaluating its
+     * configured concurrency limit, per-minute rate limit, and (for
+     * {@code LOCAL_MODEL} backends) available GPU memory against live counters.
      *
-     * @param backendId the backend identifier
-     * @param taskType  the type of processing task
-     * @return true if the backend has capacity
+     * <p>The full {@link ProcessingRouteConfig.ProcessingBackend} is required
+     * because the limits (maxConcurrent / requestsPerMinute / maxMemoryBytes)
+     * live on the backend config, not in the tracker's per-id state.</p>
+     *
+     * @param backend  the backend config to evaluate
+     * @param taskType the type of processing task
+     * @return true if the backend has capacity for another request
      */
-    boolean canAccept(String backendId, String taskType);
+    boolean canAccept(ProcessingRouteConfig.ProcessingBackend backend, String taskType);
 
     /**
      * Record that a request was dispatched to a backend (increments active count).

@@ -286,7 +286,7 @@ public class EntityResolutionController {
             if (visited.contains(nodeId)) continue;
             // BFS to find cluster
             Set<String> cluster = new LinkedHashSet<>();
-            java.util.Queue<String> queue = new java.util.LinkedList<>();
+            Queue<String> queue = new LinkedList<>();
             queue.add(nodeId);
             visited.add(nodeId);
             while (!queue.isEmpty()) {

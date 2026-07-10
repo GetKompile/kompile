@@ -29,7 +29,6 @@ import {
   SourceInfo,
   DeduplicationStrategy,
   KeepPolicy,
-  DuplicateAnalysisResponse,
   IndexStats,
   ChunkEditDetail,
   ChunkUpdateRequest,
@@ -38,6 +37,7 @@ import {
   ENTITY_TYPES
 } from '../../models/chunk-manager.models';
 import { ConfirmDialogComponent, ConfirmDialogData } from '../confirm-dialog/confirm-dialog.component';
+import { DedupDialogComponent, DedupDialogResult } from './dedup-dialog.component';
 
 @Component({
   standalone: false,
@@ -77,13 +77,6 @@ export class ChunkManagerComponent implements OnInit, OnDestroy {
   // Detail view
   selectedChunk: ChunkDetail | null = null;
   showRenderedMarkdown = false;
-
-  // Deduplication
-  showDedupDialog = false;
-  dedupStrategy: DeduplicationStrategy = 'content_hash';
-  dedupKeepPolicy: KeepPolicy = 'first';
-  dedupDryRun = true;
-  duplicateAnalysis: DuplicateAnalysisResponse | null = null;
 
   // Clear all
   clearToken: string | null = null;
@@ -529,51 +522,26 @@ export class ChunkManagerComponent implements OnInit, OnDestroy {
   // ═══════════════════════════════════════════════════════════════════════════
 
   openDedupDialog(): void {
-    this.showDedupDialog = true;
-    this.duplicateAnalysis = null;
-    this.dedupDryRun = true;
-  }
-
-  closeDedupDialog(): void {
-    this.showDedupDialog = false;
-    this.duplicateAnalysis = null;
-  }
-
-  analyzeDuplicates(): void {
-    this.isDeduplicating = true;
-    this.chunkManagerService.analyzeDuplicates(this.dedupStrategy)
-      .pipe(takeUntil(this.destroy$))
-      .subscribe({
-        next: (response) => {
-          this.duplicateAnalysis = response;
-          this.isDeduplicating = false;
-          this.cdr.detectChanges();
-        },
-        error: (error) => {
-          console.error('Error analyzing duplicates:', error);
-          this.showError('Failed to analyze duplicates');
-          this.isDeduplicating = false;
-          this.cdr.detectChanges();
+    this.dialog.open(DedupDialogComponent, { width: '520px' })
+      .afterClosed()
+      .subscribe((result: DedupDialogResult) => {
+        if (result) {
+          this.runDeduplication(result.strategy, result.keepPolicy, result.dryRun);
         }
       });
   }
 
-  runDeduplication(): void {
+  runDeduplication(strategy: DeduplicationStrategy, keepPolicy: KeepPolicy, dryRun: boolean): void {
     this.isDeduplicating = true;
-    this.chunkManagerService.deduplicate({
-      strategy: this.dedupStrategy,
-      keepPolicy: this.dedupKeepPolicy,
-      dryRun: this.dedupDryRun
-    })
+    this.chunkManagerService.deduplicate({ strategy, keepPolicy, dryRun })
       .pipe(takeUntil(this.destroy$))
       .subscribe({
         next: (result) => {
           this.isDeduplicating = false;
           if (result.success) {
             this.showSuccess(result.message);
-            if (!this.dedupDryRun) {
+            if (!dryRun) {
               this.refresh();
-              this.closeDedupDialog();
             }
           } else {
             this.showError(result.message);

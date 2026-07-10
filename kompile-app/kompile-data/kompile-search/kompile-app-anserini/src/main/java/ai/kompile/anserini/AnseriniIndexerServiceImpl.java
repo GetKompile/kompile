@@ -74,12 +74,17 @@ import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -123,8 +128,7 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
     // PERFORMANCE: Track documents added since last commit for delayed commits
     // Committing every batch is expensive (disk I/O). We batch commits to reduce
     // overhead.
-    private final java.util.concurrent.atomic.AtomicInteger docsSinceLastCommit = new java.util.concurrent.atomic.AtomicInteger(
-            0);
+    private final AtomicInteger docsSinceLastCommit = new AtomicInteger(0);
     // Commit threshold: commit keyword index after this many documents (or on
     // shutdown)
     private static final int KEYWORD_INDEX_COMMIT_THRESHOLD = 500;
@@ -148,11 +152,8 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
                 break;
             }
         }
-        // Fallback to first if all are NoOp (shouldn't happen in prod)
-        if (this.vectorStore == null && !vectorStore.isEmpty()) {
-            this.vectorStore = vectorStore.get(0);
-            logger.warn(
-                    "No functional VectorStore found, using NoOp implementation. Vector indexing will be disabled.");
+        if (this.vectorStore == null) {
+            logger.warn("No functional VectorStore found. Vector indexing calls will fail.");
         }
 
         // Select the best embedding model (prefer non-NoOp)
@@ -164,7 +165,7 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
                 }
             }
             if (this.embeddingModel == null) {
-                this.embeddingModel = embeddingModels.get(0);
+                logger.warn("No functional EmbeddingModel found. Embedding-dependent indexing calls will fail.");
             }
         }
 
@@ -314,15 +315,15 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
 
         logger.info("Indexing {} documents with pre-computed embeddings to Vector Store", documents.size());
 
-        // Use vectorStore.add with pre-computed embeddings
-        if (vectorStore != null && !(vectorStore instanceof NoOpVectorStoreImpl)) {
-            try {
-                vectorStore.add(documents, embeddings);
-                logger.info("Successfully indexed {} documents with embeddings to Vector Store", documents.size());
-            } catch (Exception e) {
-                logger.error("Failed to index with embeddings: {}. Keyword indexing will still proceed.",
-                        e.getMessage(), e);
-            }
+        if (vectorStore == null || vectorStore instanceof NoOpVectorStoreImpl) {
+            throw new IOException("No functional VectorStore available for embedded document indexing");
+        }
+        try {
+            vectorStore.add(documents, embeddings);
+            logger.info("Successfully indexed {} documents with embeddings to Vector Store", documents.size());
+        } catch (Exception e) {
+            logger.error("Failed to index with embeddings: {}", e.getMessage(), e);
+            throw new IOException("Vector store indexing with embeddings failed", e);
         }
 
         // Also add to keyword index
@@ -330,8 +331,8 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
                 .map(doc -> new RetrievedDoc(
                         doc.getId(),
                         doc.getText(),
-                        doc.getMetadata() != null ? new java.util.HashMap<>(doc.getMetadata())
-                                : new java.util.HashMap<>()))
+                        doc.getMetadata() != null ? new HashMap<>(doc.getMetadata())
+                                : new HashMap<>()))
                 .toList();
         addToKeywordIndex(retrievedDocs);
     }
@@ -370,48 +371,48 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
                 documents.size(), hasEmbeddings ? embeddings.size() : "no");
 
         // Convert RetrievedDoc to Spring AI Document for vector store
-        List<Document> springDocs = new java.util.ArrayList<>(documents.size());
+        List<Document> springDocs = new ArrayList<>(documents.size());
         for (RetrievedDoc doc : documents) {
             springDocs.add(new Document(
                     doc.getId(),
                     doc.getText(),
-                    doc.getMetadata() != null ? new java.util.HashMap<>(doc.getMetadata())
-                            : new java.util.HashMap<>()));
+                    doc.getMetadata() != null ? new HashMap<>(doc.getMetadata())
+                            : new HashMap<>()));
         }
 
-        // Index to vector store with pre-computed embeddings
-        if (vectorStore != null && !(vectorStore instanceof NoOpVectorStoreImpl)) {
-            try {
-                if (hasEmbeddings) {
-                    // Convert float[] to List<Float> for VectorStore interface
-                    // This is minimal overhead since we're just boxing, not recomputing embeddings
-                    List<List<Float>> boxedEmbeddings = new java.util.ArrayList<>(embeddings.size());
-                    for (float[] emb : embeddings) {
-                        if (emb != null) {
-                            List<Float> floatList = new java.util.ArrayList<>(emb.length);
-                            for (float f : emb) {
-                                floatList.add(f);
-                            }
-                            boxedEmbeddings.add(floatList);
-                        } else {
-                            boxedEmbeddings.add(null);
+        if (vectorStore == null || vectorStore instanceof NoOpVectorStoreImpl) {
+            throw new IOException("No functional VectorStore available for float-embedding indexing");
+        }
+        try {
+            if (hasEmbeddings) {
+                // Convert float[] to List<Float> for VectorStore interface
+                // This is minimal overhead since we're just boxing, not recomputing embeddings
+                List<List<Float>> boxedEmbeddings = new ArrayList<>(embeddings.size());
+                for (float[] emb : embeddings) {
+                    if (emb != null) {
+                        List<Float> floatList = new ArrayList<>(emb.length);
+                        for (float f : emb) {
+                            floatList.add(f);
                         }
+                        boxedEmbeddings.add(floatList);
+                    } else {
+                        boxedEmbeddings.add(null);
                     }
-                    vectorStore.add(springDocs, boxedEmbeddings);
-                    logger.debug("Indexed {} documents with pre-computed embeddings to Vector Store", documents.size());
-                } else {
-                    // No embeddings provided - vector store will compute them
-                    vectorStore.add(springDocs);
-                    logger.debug("Indexed {} documents to Vector Store (embeddings computed by store)",
-                            documents.size());
                 }
-            } catch (Exception e) {
-                logger.error("Failed to index to Vector Store: {}. Keyword indexing will still proceed.",
-                        e.getMessage(), e);
+                vectorStore.add(springDocs, boxedEmbeddings);
+                logger.debug("Indexed {} documents with pre-computed embeddings to Vector Store", documents.size());
+            } else {
+                // No embeddings provided - vector store will compute them
+                vectorStore.add(springDocs);
+                logger.debug("Indexed {} documents to Vector Store (embeddings computed by store)",
+                        documents.size());
             }
+        } catch (Exception e) {
+            logger.error("Failed to index to Vector Store: {}", e.getMessage(), e);
+            throw new IOException("Vector store indexing failed", e);
         }
 
-        // Add to keyword index (runs in parallel with vector store indexing)
+        // Add to keyword index after vector store persistence succeeds
         addToKeywordIndex(documents);
     }
 
@@ -484,13 +485,13 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
                 documents.size(), hasEmbeddings ? embeddings.size() : "none");
 
         // Convert RetrievedDoc to Spring AI Document for vector store
-        List<Document> springDocs = new java.util.ArrayList<>(documents.size());
+        List<Document> springDocs = new ArrayList<>(documents.size());
         for (RetrievedDoc doc : documents) {
             springDocs.add(new Document(
                     doc.getId(),
                     doc.getText(),
-                    doc.getMetadata() != null ? new java.util.HashMap<>(doc.getMetadata())
-                            : new java.util.HashMap<>()));
+                    doc.getMetadata() != null ? new HashMap<>(doc.getMetadata())
+                            : new HashMap<>()));
         }
 
         // Index to vector store with pre-computed embeddings
@@ -499,28 +500,30 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
                 vectorStore != null ? vectorStore.getClass().getSimpleName() : "NULL",
                 vectorStore instanceof NoOpVectorStoreImpl,
                 documents.size(), hasEmbeddings);
-        if (vectorStore != null && !(vectorStore instanceof NoOpVectorStoreImpl)) {
-            try {
-                if (hasEmbeddings) {
-                    // OPTIMIZED: Use addWithFloatArrayEmbeddings to avoid boxing overhead
-                    // Before: N docs × D dims = N×D Float objects + N ArrayList allocations
-                    // After: Zero boxing - float[][] used directly
-                    float[][] embeddingsArray = embeddings.toArray(new float[0][]);
-                    actualIndexed = vectorStore.addWithFloatArrayEmbeddings(springDocs, embeddingsArray);
-                } else {
-                    // No embeddings provided - vector store will compute them
-                    actualIndexed = vectorStore.add(springDocs);
-                }
-                logger.debug("Indexed {} documents to vector store (actual persisted: {})",
-                        documents.size(), actualIndexed);
-            } catch (Exception e) {
-                logger.error("Failed to index to Vector Store: {}", e.getMessage(), e);
-                throw new IOException("Vector store indexing failed", e);
+        if (vectorStore == null || vectorStore instanceof NoOpVectorStoreImpl) {
+            throw new IOException("No functional VectorStore available for vector-only indexing");
+        }
+        try {
+            if (hasEmbeddings) {
+                // OPTIMIZED: Use addWithFloatArrayEmbeddings to avoid boxing overhead
+                // Before: N docs × D dims = N×D Float objects + N ArrayList allocations
+                // After: Zero boxing - float[][] used directly
+                float[][] embeddingsArray = embeddings.toArray(new float[0][]);
+                actualIndexed = vectorStore.addWithFloatArrayEmbeddings(springDocs, embeddingsArray);
+            } else {
+                // No embeddings provided - vector store will compute them
+                actualIndexed = vectorStore.add(springDocs);
             }
-        } else {
-            logger.warn("SKIPPING vector store write: vectorStore={}, isNoOp={}. Vectors will NOT be persisted!",
-                    vectorStore != null ? vectorStore.getClass().getSimpleName() : "NULL",
-                    vectorStore instanceof NoOpVectorStoreImpl);
+            if (actualIndexed <= 0) {
+                throw new IOException("Vector store persisted zero documents out of " + documents.size());
+            }
+            logger.debug("Indexed {} documents to vector store (actual persisted: {})",
+                    documents.size(), actualIndexed);
+        } catch (IOException e) {
+            throw e;
+        } catch (Exception e) {
+            logger.error("Failed to index to Vector Store: {}", e.getMessage(), e);
+            throw new IOException("Vector store indexing failed", e);
         }
         return actualIndexed;
     }
@@ -535,16 +538,16 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
      *         documents indexed
      */
     @Override
-    public java.util.concurrent.CompletableFuture<IndexingResult> indexDocumentsParallel(
+    public CompletableFuture<IndexingResult> indexDocumentsParallel(
             List<RetrievedDoc> documents, List<float[]> embeddings) {
         if (documents == null || documents.isEmpty()) {
-            return java.util.concurrent.CompletableFuture.completedFuture(new IndexingResult(0, 0));
+            return CompletableFuture.completedFuture(new IndexingResult(0, 0));
         }
 
         // Check for shutdown
         if (shutdownRequested || Thread.currentThread().isInterrupted()) {
             logger.warn("Parallel indexing aborted: shutdown requested");
-            return java.util.concurrent.CompletableFuture.completedFuture(new IndexingResult(0, 0));
+            return CompletableFuture.completedFuture(new IndexingResult(0, 0));
         }
 
         long startTime = System.currentTimeMillis();
@@ -552,12 +555,12 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
                 documents.size(), embeddings != null ? embeddings.size() : 0, Thread.currentThread().getName());
 
         // Track actual counts from each indexing operation
-        java.util.concurrent.atomic.AtomicInteger keywordCount = new java.util.concurrent.atomic.AtomicInteger(0);
-        java.util.concurrent.atomic.AtomicInteger vectorCount = new java.util.concurrent.atomic.AtomicInteger(0);
+        AtomicInteger keywordCount = new AtomicInteger(0);
+        AtomicInteger vectorCount = new AtomicInteger(0);
 
         // Run keyword and vector indexing in parallel
         // Each task checks for interruption to support cancellation from timeout
-        java.util.concurrent.CompletableFuture<Void> keywordFuture = java.util.concurrent.CompletableFuture
+        CompletableFuture<Void> keywordFuture = CompletableFuture
                 .runAsync(() -> {
                     long kwStart = System.currentTimeMillis();
                     logger.info("  [KEYWORD INDEX] Starting on thread {}", Thread.currentThread().getName());
@@ -576,11 +579,11 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
                     } catch (IOException e) {
                         logger.error("  [KEYWORD INDEX] Failed after {}ms: {}",
                                 System.currentTimeMillis() - kwStart, e.getMessage());
-                        throw new java.util.concurrent.CompletionException("Keyword indexing failed", e);
+                        throw new CompletionException("Keyword indexing failed", e);
                     }
                 });
 
-        java.util.concurrent.CompletableFuture<Void> vectorFuture = java.util.concurrent.CompletableFuture
+        CompletableFuture<Void> vectorFuture = CompletableFuture
                 .runAsync(() -> {
                     long vecStart = System.currentTimeMillis();
                     logger.info("  [VECTOR INDEX] Starting on thread {}", Thread.currentThread().getName());
@@ -598,22 +601,25 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
                     } catch (IOException e) {
                         logger.error("  [VECTOR INDEX] Failed after {}ms: {}",
                                 System.currentTimeMillis() - vecStart, e.getMessage());
-                        throw new java.util.concurrent.CompletionException("Vector indexing failed", e);
+                        throw new CompletionException("Vector indexing failed", e);
                     }
                 });
 
-        return java.util.concurrent.CompletableFuture.allOf(keywordFuture, vectorFuture)
+        return CompletableFuture.allOf(keywordFuture, vectorFuture)
                 .handle((result, ex) -> {
                     long totalTime = System.currentTimeMillis() - startTime;
                     if (ex != null) {
                         logger.error("PARALLEL INDEXING FAILED after {}ms: {}", totalTime, ex.getMessage());
-                        return new IndexingResult(keywordCount.get(), vectorCount.get());
-                    } else {
-                        logger.info(
-                                "PARALLEL INDEXING COMPLETE: {} docs requested, keyword={} vector={} in {}ms",
-                                documents.size(), keywordCount.get(), vectorCount.get(), totalTime);
-                        return new IndexingResult(keywordCount.get(), vectorCount.get());
+                        throw new CompletionException(ex);
                     }
+                    logger.info(
+                            "PARALLEL INDEXING COMPLETE: {} docs requested, keyword={} vector={} in {}ms",
+                            documents.size(), keywordCount.get(), vectorCount.get(), totalTime);
+                    if (vectorCount.get() <= 0) {
+                        throw new CompletionException(
+                                new IOException("Parallel indexing persisted zero vector documents out of " + documents.size()));
+                    }
+                    return new IndexingResult(keywordCount.get(), vectorCount.get());
                 });
     }
 
@@ -633,7 +639,7 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
                 anseriniConfig.getIndexPath(),
                 logContextCollectionName);
 
-        if (vectorStore != null) {
+        if (vectorStore != null && !(vectorStore instanceof NoOpVectorStoreImpl)) {
             if (!CollectionUtils.isEmpty(documents)) {
                 // Check for shutdown before vector store operation
                 if (shutdownRequested || Thread.currentThread().isInterrupted()) {
@@ -655,16 +661,16 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
                             documents.size(), logContextCollectionName);
                 } catch (Exception e) {
                     logger.error(
-                            "Failed to populate Vector Store (logging context: {}): {}. Anserini keyword indexing will still proceed.",
+                            "Failed to populate Vector Store (logging context: {}): {}",
                             logContextCollectionName, e.getMessage(), e);
+                    throw new IOException("Vector store population failed", e);
                 }
             } else {
                 logger.info("No documents provided to populate VectorStore (logging context: {}).",
                         logContextCollectionName);
             }
         } else {
-            logger.warn("VectorStore bean is not available. Skipping vector store population (logging context: {}).",
-                    logContextCollectionName);
+            throw new IOException("VectorStore bean is not available for indexing context: " + logContextCollectionName);
         }
 
         // Check for shutdown before Anserini indexing
@@ -980,7 +986,7 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
             if (Files.exists(indexPath)) {
                 logger.info("Deleting Anserini index directory: {}", indexPath);
                 try (Stream<Path> walk = Files.walk(indexPath)) {
-                    walk.sorted(java.util.Comparator.reverseOrder()).map(Path::toFile).forEach(File::delete);
+                    walk.sorted(Comparator.reverseOrder()).map(Path::toFile).forEach(File::delete);
                 }
             }
             Files.createDirectories(indexPath);
@@ -1007,13 +1013,13 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
     public long getApproxTotalDocCount(String collectionNameParam) {
         String loggedCollectionName = getEffectiveLogCollectionName(collectionNameParam);
         if (!StringUtils.hasText(anseriniConfig.getIndexPath())) {
-            logger.warn("Cannot get document count: Anserini index path is not configured. Logging collection: {}",
+            logger.debug("Cannot get document count: Anserini index path is not configured. Logging collection: {}",
                     loggedCollectionName);
             return 0;
         }
         Path indexPath = Paths.get(anseriniConfig.getIndexPath());
         if (!isIndexAvailable()) {
-            logger.warn(
+            logger.debug(
                     "Cannot get document count: Anserini keyword index at {} is not available or invalid. Logging collection: {}",
                     indexPath, loggedCollectionName);
             return 0;
@@ -1056,7 +1062,7 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
                 return false;
             }
         }
-        logger.info("isIndexAvailable: Anserini keyword index path {} does not exist or is not a directory.",
+        logger.debug("isIndexAvailable: Anserini keyword index path {} does not exist or is not a directory.",
                 indexPath);
         return false;
     }
@@ -1307,7 +1313,7 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
      * @return List of unique source IDs
      */
     public List<String> getKeywordUniqueSourceIds() {
-        java.util.Set<String> sourceIds = new java.util.TreeSet<>();
+        Set<String> sourceIds = new TreeSet<>();
         if (!isIndexAvailable()) {
             return new ArrayList<>();
         }
@@ -1426,7 +1432,7 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
 
         if (Files.exists(stagingPath)) {
             try (Stream<Path> walk = Files.walk(stagingPath)) {
-                walk.sorted(java.util.Comparator.reverseOrder()).map(Path::toFile).forEach(File::delete);
+                walk.sorted(Comparator.reverseOrder()).map(Path::toFile).forEach(File::delete);
             }
         }
         Files.createDirectories(stagingPath);
@@ -1501,7 +1507,7 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
 
         if (Files.exists(indexPath)) {
             try (Stream<Path> walk = Files.walk(indexPath)) {
-                walk.sorted(java.util.Comparator.reverseOrder()).map(Path::toFile).forEach(File::delete);
+                walk.sorted(Comparator.reverseOrder()).map(Path::toFile).forEach(File::delete);
             }
         }
         Files.createDirectories(indexPath);
@@ -1845,7 +1851,7 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
     // --- Async Job Management ---
     private volatile boolean vectorIndexJobCancelled = false;
     private volatile JobStatus currentJobStatus = JobStatus.idle();
-    private java.util.concurrent.CompletableFuture<Void> currentJobFuture;
+    private CompletableFuture<Void> currentJobFuture;
 
     @Override
     // Force recompilation
@@ -1858,7 +1864,7 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
         vectorIndexJobCancelled = false;
         currentJobStatus = new JobStatus(JobState.RUNNING, "Starting vector index creation...", 0, 0);
 
-        currentJobFuture = java.util.concurrent.CompletableFuture.runAsync(() -> {
+        currentJobFuture = CompletableFuture.runAsync(() -> {
             try {
                 indexFromLucene();
                 if (!vectorIndexJobCancelled) {
@@ -1951,7 +1957,7 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
         if (luceneLoader instanceof ai.kompile.core.loaders.StreamingDocumentLoader) {
             ai.kompile.core.loaders.StreamingDocumentLoader streamingLoader = (ai.kompile.core.loaders.StreamingDocumentLoader) luceneLoader;
             try {
-                java.util.Iterator<Document> docIterator = streamingLoader.streamPages(descriptor, null);
+                Iterator<Document> docIterator = streamingLoader.streamPages(descriptor, null);
 
                 // Collect batches and process with parallel embedding
                 List<RetrievedDoc> currentBatch = new ArrayList<>(embeddingBatchSize);

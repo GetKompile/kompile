@@ -45,7 +45,7 @@ class LeakReportCleanupServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new LeakReportCleanupService();
+        service = new LeakReportCleanupService(null);
         ReflectionTestUtils.setField(service, "cleanupDirectory", tempDir.toString());
         ReflectionTestUtils.setField(service, "maxAgeDays", 7);
         ReflectionTestUtils.setField(service, "maxFiles", 100);

@@ -38,12 +38,15 @@ import org.apache.lucene.document.StoredField;
 import org.apache.lucene.document.StringField;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexOptions;
+import org.apache.lucene.index.IndexNotFoundException;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.index.VectorSimilarityFunction;
+import org.apache.lucene.search.IndexSearcher;
+import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.util.Bits;
 import ai.kompile.vectorstore.anserini.util.NativeCompatibleDirectoryFactory;
 import org.apache.lucene.store.Directory;
@@ -55,6 +58,7 @@ import ai.kompile.core.embeddings.EmbeddingModel;
 import org.springframework.beans.factory.DisposableBean;
 
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.utils.StringUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.Closeable;
@@ -66,10 +70,13 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -105,6 +112,45 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
     // allocation overhead
     private static final ObjectMapper OBJECT_MAPPER = JsonUtils.standardMapper();
 
+    private static float[] toHostFloatVector(INDArray array) {
+        if (array == null || array.isEmpty()) {
+            return new float[0];
+        }
+        long length = array.length();
+        if (length > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException("INDArray too large to materialize as float[]: " + length);
+        }
+        if (array.elementWiseStride() == 1) {
+            return array.data().getFloatsAt(array.offset(), (int) length);
+        }
+        INDArray copy = null;
+        try {
+            copy = array.dup('c');
+            return copy.data().getFloatsAt(copy.offset(), (int) length);
+        } finally {
+            if (copy != null && !copy.wasClosed()) {
+                copy.close();
+            }
+        }
+    }
+
+    private static float[] toHostFloatMatrix(INDArray array, int rows, int cols) {
+        int length = Math.multiplyExact(rows, cols);
+        if (array.ordering() == 'c' && !array.isView()
+                && array.stride(0) == cols && array.stride(1) == 1) {
+            return array.data().getFloatsAt(array.offset(), length);
+        }
+        INDArray copy = null;
+        try {
+            copy = array.dup('c');
+            return copy.data().getFloatsAt(copy.offset(), length);
+        } finally {
+            if (copy != null && !copy.wasClosed()) {
+                copy.close();
+            }
+        }
+    }
+
     /**
      * JVM-unique suffix to prevent lock conflicts between concurrent instances.
      * Uses PID and startup timestamp to guarantee uniqueness even if random values
@@ -129,6 +175,29 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
     private Thread shutdownHook;
 
     // ═══════════════════════════════════════════════════════════════════════════════
+    // NO-OP EMBEDDING GUARD
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // When the graph-matrix subprocess (WS7) is wired with NoOpEmbeddingModelImpl
+    // (because it intentionally has no real embedding model — it only reads stored
+    // vectors and receives query vectors), every async embed task returns an empty
+    // INDArray.  That triggers the "consecutive empty results — appears down" heuristic
+    // hundreds of times per crawl, spamming the log and wasting thread cycles.
+    //
+    // Fix: detect the no-op model at construction time, set this flag, and skip the
+    // async embed path entirely on writes.  The store operates in "read/stored-vector
+    // mode": documents are persisted to the Lucene index without computed embeddings,
+    // which is correct for the graph subprocess (it only needs document storage and
+    // BM25-style retrieval, never vector similarity on freshly indexed nodes).
+    //
+    // The "appears down" heuristic is NOT removed — it remains a valid safety net for
+    // a genuinely dead real embedding subprocess.  It is simply never triggered here.
+    //
+    // The main app (with AnseriniEmbeddingModelImpl) is unaffected: that bean is NOT a
+    // NoOpEmbeddingModelImpl, so this flag stays false and the normal async-embed path
+    // runs unchanged.
+    private volatile boolean embeddingDisabled = false;
+
+    // ═══════════════════════════════════════════════════════════════════════════════
     // ASYNC EMBEDDING POOL
     // ═══════════════════════════════════════════════════════════════════════════════
     // Background pool for async embedding dispatch. Size configurable via
@@ -145,6 +214,9 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
     // Tracks in-flight futures for barrier + backpressure.
     private final CopyOnWriteArrayList<CompletableFuture<Void>> pendingFutures = new CopyOnWriteArrayList<>();
     private final AtomicInteger pendingCount = new AtomicInteger(0);
+    // Document ids reserved for async embedding but not yet committed. Prevents concurrent re-embedding
+    // of the same stable chunk id while the first task is still queued or running.
+    private final Set<String> pendingEmbedIds = ConcurrentHashMap.newKeySet();
     // Approximate heap bytes of buffered documents awaiting async embed+write (UTF-16 text estimate).
     private final AtomicLong pendingBytes = new AtomicLong(0L);
 
@@ -206,11 +278,14 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
     // Tracks consecutive embed-empty results inside embedAndWriteToLucene.  When the
     // embedding subprocess is dead, every batch returns an empty matrix; without a
     // circuit-breaker the async tasks hold their doc references until each one times out,
-    // pinning potentially hundreds of MB in 8094's heap.  After MAX_CONSECUTIVE_EMBED_EMPTY
-    // consecutive empties the task aborts early so pendingCount/pendingBytes drain fast.
+    // pinning potentially hundreds of MB in 8094's heap.  The default is deliberately 1:
+    // an empty embedding matrix is not a valid partial result, and callers that want a
+    // softer policy can raise kompile.vectorstore.async.maxConsecutiveEmbedEmpty.
     private final AtomicInteger consecutiveEmbedEmpty = new AtomicInteger(0);
     private static final int MAX_CONSECUTIVE_EMBED_EMPTY =
-            Integer.getInteger("kompile.vectorstore.async.maxConsecutiveEmbedEmpty", 5);
+            Integer.getInteger("kompile.vectorstore.async.maxConsecutiveEmbedEmpty", 1);
+    private static final int MAX_SINGLE_ITEM_EMBED_RECOVERY =
+            Integer.getInteger("kompile.vectorstore.async.maxSingleItemRecovery", 16);
 
     // PERFORMANCE: Track if searcher needs refresh (lazy refresh pattern)
     // Instead of refreshing searcher after every commit (expensive: 5-50ms each),
@@ -250,6 +325,16 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
         this.properties = properties;
         this.embeddingModel = embeddingModel;
         this.rerankerService = rerankerService;
+        // Detect a model that cannot embed (e.g. the NoOp fallback wired in the graph-matrix
+        // subprocess) at construction time so the async-embed path is bypassed permanently.
+        // Uses the EmbeddingModel.canEmbed() contract rather than `instanceof NoOpEmbeddingModelImpl`
+        // because the injected bean can be a Spring AOP/CGLIB proxy — instanceof against the concrete
+        // class fails through a proxy, whereas canEmbed() is delegated to the target. See field comment.
+        if (embeddingModel == null || !embeddingModel.canEmbed()) {
+            this.embeddingDisabled = true;
+            log.info("Embedding model is no-op — vector store operating in read/stored-vector mode; "
+                    + "documents will be stored without computed embeddings (graph subprocess mode)");
+        }
         int asyncThreads = Integer.getInteger("kompile.vectorstore.async.threads", DEFAULT_ASYNC_THREADS);
         this.asyncEmbedPool = Executors.newFixedThreadPool(asyncThreads, r -> {
             Thread t = new Thread(r, "anserini-async-embed-" + System.nanoTime() % 1000);
@@ -380,7 +465,7 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
                 this.directory = NativeCompatibleDirectoryFactory.open(path, NoLockFactory.INSTANCE);
                 initializeIndexWriter();
                 log.info("Successfully opened index on attempt {}", attempt);
-                return; // Success!
+                return;
             } catch (IOException e) {
                 // Catch all IOExceptions (including LockObtainFailedException) to ensure
                 // fallback triggers
@@ -680,9 +765,14 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
                         skippedCount++;
                         continue;
                     }
-                    Document luceneDoc = createLuceneDocument(springAiDoc, embedding);
-                    indexWriter.addDocument(luceneDoc);
-                    addedCount++;
+                    try {
+                        writeLuceneDocument(springAiDoc, embedding);
+                        addedCount++;
+                    } catch (IllegalArgumentException e) {
+                        skippedCount++;
+                        log.warn("Skipping document {} with invalid precomputed embedding: {}",
+                                springAiDoc.getId(), e.getMessage());
+                    }
                 }
 
                 if (!interrupted && !shuttingDown && !Thread.currentThread().isInterrupted()) {
@@ -719,6 +809,19 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
      */
     private int dispatchAsyncEmbed(List<org.springframework.ai.document.Document> documents) {
         if (shuttingDown) return 0;
+        // No-op model: skip the async embed pipeline entirely so the "consecutive empty
+        // results — appears down" heuristic is never triggered.  Documents are already
+        // written without embeddings when pre-computed embeddings are absent; that is the
+        // correct and intentional state for graph-subprocess read-only-vector mode.
+        if (embeddingDisabled) {
+            log.debug("Async embed skipped for {} document(s) — embedding is disabled (no-op model)", documents.size());
+            return 0;
+        }
+
+        documents = filterDocumentsNeedingEmbedding(documents);
+        if (documents.isEmpty()) {
+            return 0;
+        }
 
         int maxPending = Integer.getInteger("kompile.vectorstore.async.maxPending", DEFAULT_ASYNC_MAX_PENDING);
         long maxPendingBytes = Long.getLong("kompile.vectorstore.async.maxPendingBytes", DEFAULT_ASYNC_MAX_PENDING_BYTES);
@@ -771,8 +874,96 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
         }
 
         // FAST PATH: large batch — submit directly without coalescer delay.
+        pendingBytes.addAndGet(batchBytes);
         submitEmbedTask(new ArrayList<>(documents), batchBytes, maxPending);
         return documents.size();
+    }
+
+    private List<org.springframework.ai.document.Document> filterDocumentsNeedingEmbedding(
+            List<org.springframework.ai.document.Document> documents) {
+        if (!Boolean.getBoolean("kompile.vectorstore.disableSkipExistingIds") && !documents.isEmpty()) {
+            List<org.springframework.ai.document.Document> reserved = new ArrayList<>(documents.size());
+            Set<String> idsToCheck = new HashSet<>();
+            int pendingSkipped = 0;
+            for (org.springframework.ai.document.Document doc : documents) {
+                String id = normalizeDocumentId(doc);
+                if (id == null) {
+                    reserved.add(doc);
+                    continue;
+                }
+                if (!pendingEmbedIds.add(id)) {
+                    pendingSkipped++;
+                    continue;
+                }
+                idsToCheck.add(id);
+                reserved.add(doc);
+            }
+
+            Set<String> existingIds = findExistingDocumentIds(idsToCheck);
+            if (!existingIds.isEmpty()) {
+                reserved.removeIf(doc -> {
+                    String id = normalizeDocumentId(doc);
+                    if (id != null && existingIds.contains(id)) {
+                        pendingEmbedIds.remove(id);
+                        return true;
+                    }
+                    return false;
+                });
+            }
+
+            int skipped = documents.size() - reserved.size();
+            if (skipped > 0) {
+                log.info("Async embed: skipped {} already indexed or pending document(s); queued {} for embedding",
+                        skipped, reserved.size());
+            } else if (pendingSkipped > 0) {
+                log.debug("Async embed: skipped {} pending duplicate document(s)", pendingSkipped);
+            }
+            return reserved;
+        }
+        return documents;
+    }
+
+    private Set<String> findExistingDocumentIds(Set<String> candidateIds) {
+        if (candidateIds == null || candidateIds.isEmpty() || !isIndexPopulated()) {
+            return Collections.emptySet();
+        }
+        Set<String> existing = new HashSet<>();
+        synchronized (readerLock) {
+            try {
+                IndexReader reader = getCachedReader();
+                IndexSearcher idSearcher = new IndexSearcher(reader);
+                for (String id : candidateIds) {
+                    if (idSearcher.search(new TermQuery(new Term("id", id)), 1).scoreDocs.length > 0) {
+                        existing.add(id);
+                    }
+                }
+            } catch (IndexNotFoundException e) {
+                return Collections.emptySet();
+            } catch (IOException e) {
+                log.warn("Async embed: failed checking existing document ids: {}", e.getMessage());
+                return Collections.emptySet();
+            }
+        }
+        return existing;
+    }
+
+    private void releasePendingEmbedIds(List<org.springframework.ai.document.Document> documents) {
+        if (documents == null || documents.isEmpty()) {
+            return;
+        }
+        for (org.springframework.ai.document.Document doc : documents) {
+            String id = normalizeDocumentId(doc);
+            if (id != null) {
+                pendingEmbedIds.remove(id);
+            }
+        }
+    }
+
+    private static String normalizeDocumentId(org.springframework.ai.document.Document doc) {
+        if (doc == null || doc.getId() == null || doc.getId().isBlank()) {
+            return null;
+        }
+        return doc.getId();
     }
 
     /**
@@ -871,6 +1062,7 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
                 log.error("Async embedding task failed for {} documents: {}", docs.size(), e.getMessage(), e);
                 throw new RuntimeException("Async embed failed", e);
             } finally {
+                releasePendingEmbedIds(docs);
                 pendingCount.decrementAndGet();
                 pendingBytes.addAndGet(-batchBytesFinal);
             }
@@ -931,18 +1123,25 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
             try {
                 embeddingMatrix = embeddingModel.embed(batchTexts);
                 if (embeddingMatrix == null || embeddingMatrix.isEmpty()) {
+                    int recovered = recoverSmallBatchWithSingleEmbeddings(batchDocs, batchTexts);
+                    if (recovered > 0) {
+                        consecutiveEmbedEmpty.set(0);
+                        log.warn("Async embed: recovered {} of {} document(s) after empty batch response",
+                                recovered, batchDocs.size());
+                        continue;
+                    }
+
                     int empties = consecutiveEmbedEmpty.incrementAndGet();
                     log.warn("Async embed: null/empty matrix for batch of {} documents (consecutive={})",
                             batchDocs.size(), empties);
-                    // FIX 3 — fail-fast when embedding subprocess appears persistently dead.
-                    // After MAX_CONSECUTIVE_EMBED_EMPTY empties in a row the task aborts early
-                    // so pendingCount/pendingBytes drain quickly and 8094 releases doc references
-                    // instead of holding them until the subprocess eventually recovers.
+                    // Fail fast when embedding subprocess appears persistently dead. Once the bounded
+                    // per-row recovery path cannot salvage any vector, continuing only keeps crawl
+                    // references pinned until more full request timeouts elapse.
                     if (empties >= MAX_CONSECUTIVE_EMBED_EMPTY) {
-                        log.error("Async embed: {} consecutive empty results — embedding subprocess " +
-                                "appears down; aborting remaining batches in this task to release memory",
-                                empties);
-                        return;
+                        String message = "Async embed: " + empties + " consecutive empty results — embedding subprocess "
+                                + "appears down; aborting remaining batches in this task to release memory";
+                        log.error(message);
+                        throw new IllegalStateException(message);
                     }
                     continue;
                 }
@@ -951,13 +1150,7 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
 
                 int numRows = (int) embeddingMatrix.rows();
                 int numCols = (int) embeddingMatrix.columns();
-                float[] flatData;
-                if (embeddingMatrix.ordering() == 'c' && !embeddingMatrix.isView()
-                        && embeddingMatrix.stride(0) == numCols && embeddingMatrix.stride(1) == 1) {
-                    flatData = embeddingMatrix.data().getFloatsAt(embeddingMatrix.offset(), numRows * numCols);
-                } else {
-                    flatData = embeddingMatrix.data().asFloat();
-                }
+                float[] flatData = toHostFloatMatrix(embeddingMatrix, numRows, numCols);
 
                 // Write to Lucene — lock hold is now short (just Lucene addDocument calls).
                 synchronized (writerLock) {
@@ -968,8 +1161,7 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
                         System.arraycopy(flatData, i * numCols, embedding, 0, numCols);
                         if (embedding.length == 0) continue;
                         try {
-                            Document luceneDoc = createLuceneDocument(batchDocs.get(i), embedding);
-                            indexWriter.addDocument(luceneDoc);
+                            writeLuceneDocument(batchDocs.get(i), embedding);
                             written++;
                             documentsAddedSinceCommit++;
                         } catch (Exception e) {
@@ -1002,6 +1194,93 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
         }
     }
 
+    private int recoverSmallBatchWithSingleEmbeddings(
+            List<org.springframework.ai.document.Document> batchDocs,
+            List<String> batchTexts) {
+        if (batchDocs == null || batchTexts == null || batchDocs.size() <= 1
+                || batchDocs.size() != batchTexts.size()) {
+            return 0;
+        }
+        if (batchDocs.size() > MAX_SINGLE_ITEM_EMBED_RECOVERY) {
+            log.warn("Async embed: empty batch response for {} documents exceeds single-item recovery cap {}",
+                    batchDocs.size(), MAX_SINGLE_ITEM_EMBED_RECOVERY);
+            return 0;
+        }
+
+        int recovered = 0;
+        for (int i = 0; i < batchDocs.size(); i++) {
+            if (shuttingDown || Thread.currentThread().isInterrupted()) break;
+            INDArray singleMatrix = null;
+            try {
+                singleMatrix = embeddingModel.embed(List.of(batchTexts.get(i)));
+                if (singleMatrix == null || singleMatrix.isEmpty() || singleMatrix.rows() < 1
+                        || singleMatrix.columns() <= 0) {
+                    log.warn("Async embed: single-item recovery returned empty matrix for document {}",
+                            batchDocs.get(i).getId());
+                    continue;
+                }
+
+                int cols = (int) singleMatrix.columns();
+                float[] flat = toHostFloatMatrix(singleMatrix, (int) singleMatrix.rows(), cols);
+                if (!isUsableEmbeddingVector(flat, cols)) {
+                    log.warn("Async embed: single-item recovery produced invalid vector for document {}",
+                            batchDocs.get(i).getId());
+                    continue;
+                }
+
+                float[] embedding = Arrays.copyOf(flat, cols);
+                synchronized (writerLock) {
+                    if (shuttingDown) break;
+                    writeLuceneDocument(batchDocs.get(i), embedding);
+                    documentsAddedSinceCommit++;
+                    recovered++;
+                }
+            } catch (Exception e) {
+                log.warn("Async embed: single-item recovery failed for document {}: {}",
+                        batchDocs.get(i).getId(), e.getMessage());
+            } finally {
+                if (singleMatrix != null && !singleMatrix.wasClosed()) {
+                    try {
+                        singleMatrix.close();
+                    } catch (Exception e) {
+                        log.trace("Async embed: error closing recovery matrix: {}", e.getMessage());
+                    }
+                }
+            }
+        }
+
+        if (recovered > 0) {
+            synchronized (writerLock) {
+                batchesSinceCommit++;
+                if (shouldCommitNow(false)) {
+                    try {
+                        indexWriter.commit();
+                        resetCommitTracking();
+                    } catch (IOException e) {
+                        log.warn("Async embed: recovery commit failed: {}", e.getMessage());
+                    }
+                }
+                searcherNeedsRefresh = true;
+            }
+        }
+        return recovered;
+    }
+
+    private boolean isUsableEmbeddingVector(float[] embedding, int dims) {
+        if (embedding == null || dims <= 0 || embedding.length < dims) {
+            return false;
+        }
+        double magnitude = 0.0;
+        for (int i = 0; i < dims; i++) {
+            float value = embedding[i];
+            if (!Float.isFinite(value)) {
+                return false;
+            }
+            magnitude += (double) value * value;
+        }
+        return Double.isFinite(magnitude) && magnitude >= 1e-18;
+    }
+
     /**
      * Blocks until all pending async embedding futures complete, then flushes any buffered documents.
      *
@@ -1032,6 +1311,7 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
         try {
             CompletableFuture.allOf(snapshot.toArray(new CompletableFuture[0])).join();
         } catch (Exception e) {
+            pendingFutures.removeIf(CompletableFuture::isDone);
             throw new RuntimeException("One or more async embedding tasks failed during barrier wait", e);
         }
         // Commit any buffered documents not yet committed by the batch commit threshold.
@@ -1120,20 +1400,9 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
                             int numCols = (int) embeddingMatrix.columns();
                             bulkEmbeddings = new float[numRows][numCols];
 
-                            // Fast path: contiguous row-major data - single bulk read + arraycopy
-                            if (embeddingMatrix.ordering() == 'c' && !embeddingMatrix.isView()
-                                    && embeddingMatrix.stride(0) == numCols && embeddingMatrix.stride(1) == 1) {
-                                float[] flat = embeddingMatrix.data().getFloatsAt(embeddingMatrix.offset(), numRows * numCols);
-                                for (int i = 0; i < numRows; i++) {
-                                    System.arraycopy(flat, i * numCols, bulkEmbeddings[i], 0, numCols);
-                                }
-                            } else {
-                                // General path: direct element access for views/non-contiguous
-                                for (int i = 0; i < numRows; i++) {
-                                    for (int j = 0; j < numCols; j++) {
-                                        bulkEmbeddings[i][j] = embeddingMatrix.getFloat(i, j);
-                                    }
-                                }
+                            float[] flat = toHostFloatMatrix(embeddingMatrix, numRows, numCols);
+                            for (int i = 0; i < numRows; i++) {
+                                System.arraycopy(flat, i * numCols, bulkEmbeddings[i], 0, numCols);
                             }
                             log.debug("Generated {} bulk embeddings (optimized extraction)", bulkEmbeddings.length);
                         }
@@ -1169,7 +1438,7 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
                     } else {
                         // Fallback to per-document embedding
                         try {
-                            embedding = embeddingModel.embed(springAiDoc.getText()).toFloatVector();
+                            embedding = toHostFloatVector(embeddingModel.embed(springAiDoc.getText()));
                         } catch (NullPointerException e) {
                             log.warn("Native pointer error during embedding generation for document {}, skipping: {}",
                                     springAiDoc.getId(), e.getMessage());
@@ -1198,8 +1467,7 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
                         continue;
                     }
 
-                    Document luceneDoc = createLuceneDocument(springAiDoc, embedding);
-                    indexWriter.addDocument(luceneDoc);
+                    writeLuceneDocument(springAiDoc, embedding);
                     addedCount++;
                     documentsAddedSinceCommit++;
                 }
@@ -1383,7 +1651,7 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
         // Wrap in try-catch to handle native pointer errors from ND4J
         float[] queryVector;
         try {
-            queryVector = embeddingModel.embed(query).toFloatVector();
+            queryVector = toHostFloatVector(embeddingModel.embed(query));
         } catch (NullPointerException e) {
             // This catches JavaCPP "Pointer address of argument X is NULL" errors
             log.warn("Native pointer error during query embedding generation: {}", e.getMessage());
@@ -1569,7 +1837,7 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
                             skippedCount++;
                             continue;
                         }
-                        embedding = row.toFloatVector();
+                        embedding = toHostFloatVector(row);
                     } catch (Exception e) {
                         log.warn("Error extracting embedding for document {}: {}", springAiDoc.getId(), e.getMessage());
                         skippedCount++;
@@ -1592,9 +1860,14 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
                         continue;
                     }
 
-                    Document luceneDoc = createLuceneDocument(springAiDoc, embedding);
-                    indexWriter.addDocument(luceneDoc);
-                    addedCount++;
+                    try {
+                        writeLuceneDocument(springAiDoc, embedding);
+                        addedCount++;
+                    } catch (IllegalArgumentException e) {
+                        skippedCount++;
+                        log.warn("Skipping document {} with invalid bulk embedding: {}",
+                                springAiDoc.getId(), e.getMessage());
+                    }
                 }
 
                 if (!interrupted && !shuttingDown && !Thread.currentThread().isInterrupted()) {
@@ -1616,19 +1889,126 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
         }
     }
 
+    /**
+     * Writes each document to Lucene as a stored-field-only record (id + content + metadata)
+     * WITHOUT a KNN vector field.  Used by graph metadata, adjacency-matrix blobs, and the
+     * node-embedding snapshot document — none of which should be returned by similarity search
+     * and none of which can afford the async-embed pipeline (which is disabled in the
+     * graph-matrix subprocess).
+     *
+     * <p>Overrides the {@code VectorStore} default so that the implementation works in both
+     * the main process (embedding model present) and the graph subprocess
+     * ({@code embeddingDisabled=true}), where the default {@link #add(List)} silently returns
+     * 0 without writing anything to the index.</p>
+     */
+    @Override
+    public int addStoredOnlyDocuments(List<org.springframework.ai.document.Document> documents) {
+        if (documents == null || documents.isEmpty()) {
+            return 0;
+        }
+        synchronized (writerLock) {
+            if (shuttingDown) {
+                return 0;
+            }
+            int addedCount = 0;
+            try {
+                for (org.springframework.ai.document.Document springDoc : documents) {
+                    if (springDoc == null) continue;
+                    // Build a Lucene document with id + content + metadata but NO KNN vector field.
+                    Document luceneDoc = createStoredOnlyLuceneDocument(springDoc);
+                    String id = normalizeDocumentId(springDoc);
+                    if (id != null) {
+                        indexWriter.updateDocument(new Term("id", id), luceneDoc);
+                    } else {
+                        indexWriter.addDocument(luceneDoc);
+                    }
+                    addedCount++;
+                }
+                if (addedCount > 0) {
+                    indexWriter.commit();
+                    searcherNeedsRefresh = true;
+                    log.debug("addStoredOnlyDocuments: wrote {} docs to Lucene (no KNN vector)", addedCount);
+                }
+            } catch (IOException e) {
+                if (!shuttingDown) {
+                    log.error("addStoredOnlyDocuments: failed to write to Lucene", e);
+                    throw new RuntimeException("addStoredOnlyDocuments failed", e);
+                }
+            }
+            return addedCount;
+        }
+    }
+
+    /**
+     * Creates a Lucene {@link Document} that stores id, content, and metadata fields but
+     * intentionally omits the {@link KnnFloatVectorField}.  Used by
+     * {@link #addStoredOnlyDocuments} for metadata/snapshot blobs that must not be returned
+     * by KNN search and must not require an embedding model.
+     */
+    private Document createStoredOnlyLuceneDocument(org.springframework.ai.document.Document springDoc) throws IOException {
+        Document doc = new Document();
+
+        // id field — StringField for exact lookup, BinaryDocValuesField for segment-level lookup
+        String id = springDoc.getId();
+        if (id != null && !id.isBlank()) {
+            doc.add(new StringField("id", id, Field.Store.YES));
+            doc.add(new BinaryDocValuesField("id", new BytesRef(id)));
+        }
+
+        // content field — same FieldType as createLuceneDocument so both doc types coexist in
+        // the same index without "cannot change field options" errors
+        String content = springDoc.getText();
+        if (content != null && !content.isBlank()) {
+            FieldType contentsFieldType = new FieldType();
+            contentsFieldType.setStored(true);
+            contentsFieldType.setStoreTermVectors(true);
+            contentsFieldType.setStoreTermVectorPositions(true);
+            contentsFieldType.setIndexOptions(IndexOptions.DOCS_AND_FREQS_AND_POSITIONS);
+            doc.add(new Field(io.anserini.index.Constants.CONTENTS, content, contentsFieldType));
+        }
+
+        // metadata field — serialised as JSON, same as createLuceneDocument
+        if (springDoc.getMetadata() != null && !springDoc.getMetadata().isEmpty()) {
+            try {
+                String metadataJson = OBJECT_MAPPER.writeValueAsString(springDoc.getMetadata());
+                doc.add(new StoredField("metadata", metadataJson));
+            } catch (Exception e) {
+                log.warn("addStoredOnlyDocuments: failed to serialise metadata for doc {}: {}",
+                        id, e.getMessage());
+            }
+        }
+
+        return doc;
+    }
+
+    private void writeLuceneDocument(org.springframework.ai.document.Document springDoc, float[] embedding) throws IOException {
+        Document luceneDoc = createLuceneDocument(springDoc, embedding);
+        String id = normalizeDocumentId(springDoc);
+        if (id != null) {
+            indexWriter.updateDocument(new Term("id", id), luceneDoc);
+        } else {
+            indexWriter.addDocument(luceneDoc);
+        }
+    }
+
     private Document createLuceneDocument(org.springframework.ai.document.Document springDoc, float[] embedding) {
         Document doc = new Document();
         doc.add(new StringField("id", springDoc.getId(), Field.Store.YES));
         doc.add(new BinaryDocValuesField("id", new BytesRef(springDoc.getId())));
 
-        // Validate embedding magnitude - zero vectors are garbage and will cause NaN in
-        // cosine similarity
+        // Validate embedding values and magnitude. Non-finite or zero vectors are garbage
+        // and will produce unusable cosine scores in Lucene.
         double magnitude = 0.0;
         for (float v : embedding) {
+            if (!Float.isFinite(v)) {
+                throw new IllegalArgumentException(String.format(
+                        "Document '%s' has non-finite embedding value. Check model configuration.",
+                        springDoc.getId()));
+            }
             magnitude += v * v;
         }
         magnitude = Math.sqrt(magnitude);
-        if (magnitude < 1e-9) {
+        if (!Double.isFinite(magnitude) || magnitude < 1e-9) {
             throw new IllegalArgumentException(String.format(
                     "Document '%s' has zero-magnitude embedding (magnitude=%.2e). " +
                             "This is garbage output from the embedding model. Check model configuration.",
@@ -1775,6 +2155,12 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
      * @return true if the index has documents, false otherwise
      */
     private boolean isIndexPopulated() {
+        // No configured index path ⇒ definitionally not populated. Without this guard the
+        // async-embed dedup path NPEs on Paths.get(null) inside the graph-matrix subprocess
+        // (2026-07-05: every new-graphId saveGraphMetadata → tableGraph persist failure).
+        if (indexPath == null || indexPath.isBlank()) {
+            return false;
+        }
         try {
             Path path = Paths.get(indexPath);
             if (!Files.exists(path)) {
@@ -2082,6 +2468,9 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
                 log.debug("No changes detected in vector store index at {}", indexPath);
                 return false;
 
+            } catch (IndexNotFoundException e) {
+                log.debug("Vector store reader not opened because index is empty at {}: {}", indexPath, e.getMessage());
+                return false;
             } catch (Exception e) {
                 log.warn("Error refreshing vector store reader: {}", e.getMessage());
                 return false;
@@ -2125,6 +2514,9 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
                     try {
                         reader = DirectoryReader.open(directory);
                         cachedReader = reader;
+                    } catch (IndexNotFoundException e) {
+                        log.debug("Could not list vector documents because index is empty at {}: {}", indexPath, e.getMessage());
+                        return Collections.emptyList();
                     } catch (IOException e) {
                         log.warn("Could not open reader for listing documents: {}", e.getMessage());
                         return Collections.emptyList();
@@ -2245,10 +2637,10 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
         INDArray rowView = null;
         try {
             if (queryEmbedding.isVector()) {
-                queryVector = queryEmbedding.toFloatVector();
+                queryVector = toHostFloatVector(queryEmbedding);
             } else {
                 rowView = queryEmbedding.getRow(0);
-                queryVector = rowView.toFloatVector();
+                queryVector = toHostFloatVector(rowView);
             }
         } catch (Exception e) {
             log.warn("Error converting INDArray to float[]: {}", e.getMessage());
@@ -2282,7 +2674,7 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
         // Generate embedding for the query string
         float[] queryVector;
         try {
-            queryVector = embeddingModel.embed(query).toFloatVector();
+            queryVector = toHostFloatVector(embeddingModel.embed(query));
         } catch (NullPointerException e) {
             log.warn("Native pointer error during query embedding: {}", e.getMessage());
             return Collections.emptyList();
@@ -2457,7 +2849,7 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
 
         try {
             log.debug("Applying {} reranking to {} results for query: '{}'",
-                    rerankerConfig.getType(), results.size(), truncateQuery(query));
+                    rerankerConfig.getType(), results.size(), StringUtils.truncate(query, 50));
 
             List<ScoredDocument> rerankedResults = rerankerService.rerank(results, query, rerankerConfig);
 
@@ -2468,16 +2860,6 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
             log.warn("Error during reranking, returning original results: {}", e.getMessage());
             return results;
         }
-    }
-
-    /**
-     * Truncate query for logging.
-     */
-    private String truncateQuery(String query) {
-        if (query == null) {
-            return "";
-        }
-        return query.length() > 50 ? query.substring(0, 50) + "..." : query;
     }
 
     /**

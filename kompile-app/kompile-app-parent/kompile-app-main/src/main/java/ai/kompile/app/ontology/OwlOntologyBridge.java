@@ -29,6 +29,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * Bridges a {@link OntologySchema} (the process-engine schema model) to an {@link OwlOntology}
@@ -120,6 +121,27 @@ public class OwlOntologyBridge {
                 if (rt.isTransitive()) {
                     propBuilder.transitive(true);
                 }
+                // Induced relation semantics — RelationSchemaResolutionService records per-label
+                // statistics on the definition's relationResolution metadata:
+                //  • symmetric (reverse-edge share ≥ SYMMETRIC_SHARE) → owl:SymmetricProperty, the
+                //    OWL-RL prp-symp rule materializes missing reverse edges;
+                //  • functional / inverse-functional ONLY on the strict observed signal (mean
+                //    fan-out / fan-in of exactly 1 — every source/target seen exactly once). The
+                //    thresholded Cardinality field (MANY_THRESHOLD tolerates avg 1.25) is NOT used
+                //    here: prp-fp/prp-ifp are sameAs hints, and a lax axiom would merge distinct
+                //    individuals once full sameAs materialization lands.
+                Map<String, Object> resolution = relationResolution(rt);
+                if (resolution != null) {
+                    if (Boolean.TRUE.equals(resolution.get("symmetric"))) {
+                        propBuilder.symmetric(true);
+                    }
+                    if (degreeExactlyOne(resolution.get("avgOutDegree"))) {
+                        propBuilder.functional(true);
+                    }
+                    if (degreeExactlyOne(resolution.get("avgInDegree"))) {
+                        propBuilder.inverseFunctional(true);
+                    }
+                }
 
                 builder.addObjectProperty(propBuilder.build());
             }
@@ -150,5 +172,26 @@ public class OwlOntologyBridge {
             // STRING, ENUM, ENUM_ARRAY, MAP → xsd:string (all text-like)
             default       -> OwlIri.XSD_STRING;
         };
+    }
+
+    /** The relationResolution statistics map recorded by RelationSchemaResolutionService, or null. */
+    private static Map<String, Object> relationResolution(RelationshipTypeDefinition rt) {
+        if (rt.getMetadata() != null && rt.getMetadata().get("relationResolution") instanceof Map<?, ?> m) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> resolution = (Map<String, Object>) m;
+            return resolution;
+        }
+        return null;
+    }
+
+    /**
+     * True when a mean degree equals exactly 1 — every source (or target) was observed exactly
+     * once, the strict signal for functional axioms. Positive-guard excludes the 0.0 default of
+     * an empty endpoint set.
+     */
+    private static boolean degreeExactlyOne(Object avgDegree) {
+        return avgDegree instanceof Number n
+                && n.doubleValue() > 0.0
+                && n.doubleValue() <= 1.0 + 1e-9;
     }
 }

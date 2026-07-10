@@ -24,10 +24,9 @@ import static org.junit.jupiter.api.Assertions.*;
  * builder defaults, and helper methods.
  *
  * Notes on removed features:
- * - NodeLevel.ATTACHMENT was removed; TABLE is the structured-data node type.
- * - EdgeType.AUTHORED_BY, ADDRESSED_TO, EXTRACTED_FROM were removed.
  * - GraphNode composite/subGraphId fields were removed.
- * - Tests are updated to reflect the current 8-value NodeLevel and 12-value EdgeType.
+ * - Tests reflect the current 9-value NodeLevel and 13-value EdgeType, including the
+ *   cross-document alias hub additions (NodeLevel.ALIAS, EdgeType.ALIAS_OF).
  */
 class GraphNodeTest {
 
@@ -38,7 +37,7 @@ class GraphNodeTest {
     @Test
     void nodeLevelContainsAllExpectedValues() {
         NodeLevel[] values = NodeLevel.values();
-        assertEquals(8, values.length);
+        assertEquals(9, values.length);
         assertNotNull(NodeLevel.valueOf("SOURCE"));
         assertNotNull(NodeLevel.valueOf("DOCUMENT"));
         assertNotNull(NodeLevel.valueOf("SNIPPET"));
@@ -47,6 +46,7 @@ class GraphNodeTest {
         assertNotNull(NodeLevel.valueOf("CUSTOM"));
         assertNotNull(NodeLevel.valueOf("ATTACHMENT"));
         assertNotNull(NodeLevel.valueOf("IDENTIFIER"));
+        assertNotNull(NodeLevel.valueOf("ALIAS"));
     }
 
     @Test
@@ -61,7 +61,7 @@ class GraphNodeTest {
     @Test
     void edgeTypeContainsAllExpectedValues() {
         EdgeType[] values = EdgeType.values();
-        assertEquals(12, values.length);
+        assertEquals(13, values.length);
         assertNotNull(EdgeType.valueOf("HIERARCHICAL"));
         assertNotNull(EdgeType.valueOf("CONTAINS"));
         assertNotNull(EdgeType.valueOf("EMBEDDING_SIMILARITY"));
@@ -74,6 +74,7 @@ class GraphNodeTest {
         assertNotNull(EdgeType.valueOf("AUTHORED_BY"));
         assertNotNull(EdgeType.valueOf("ADDRESSED_TO"));
         assertNotNull(EdgeType.valueOf("RESOLVES_TO"));
+        assertNotNull(EdgeType.valueOf("ALIAS_OF"));
     }
 
     @Test

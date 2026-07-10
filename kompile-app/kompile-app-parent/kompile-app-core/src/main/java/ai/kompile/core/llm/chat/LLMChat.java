@@ -16,6 +16,7 @@
 
 package ai.kompile.core.llm.chat;
 
+import ai.kompile.core.language.LanguageSupport;
 import org.springframework.ai.chat.client.ChatClientResponse;
 import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.chat.messages.Message;
@@ -53,7 +54,7 @@ import java.util.function.Consumer;
  * @author Kompile Inc.
  * @since 1.0.0
  */
-public interface LLMChat {
+public interface LLMChat extends LanguageSupport {
 
     /**
      * Starts building a prompt request using a fluent API.

@@ -319,7 +319,7 @@ class VirtualTerminalAgentConsistencyTest {
         assertEquals(cols - 1, vt.getCursorCol(), agent + ": col");
 
         // CPR should report the 1-indexed position
-        String response = vt.terminalResponsesFor("\033[6n");
+        String response = TerminalQueryResponder.respond("\033[6n", vt, QueryPolicy.DEFAULT);
         assertEquals("\033[" + rows + ";" + cols + "R", response,
                 agent + ": CPR should match dimensions");
     }
@@ -328,7 +328,7 @@ class VirtualTerminalAgentConsistencyTest {
     @MethodSource("agentConfigs")
     void windowSizeReportMatchesDimensions(String agent, int rows, int cols) {
         VirtualTerminal vt = new VirtualTerminal(rows, cols);
-        String response = vt.terminalResponsesFor("\033[18t");
+        String response = TerminalQueryResponder.respond("\033[18t", vt, QueryPolicy.DEFAULT);
         String expected = "\033[8;" + rows + ";" + cols + "t";
         assertEquals(expected, response, agent + ": window size should match");
     }

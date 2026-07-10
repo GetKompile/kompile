@@ -22,6 +22,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeParseException;
 import java.util.*;
 import java.util.stream.Collectors;
@@ -217,7 +218,7 @@ public class TemporalChainExtractor {
     static Instant extractTimestamp(GraphNode node) {
         // Try createdAt field first
         if (node.getCreatedAt() != null) {
-            return node.getCreatedAt().atZone(java.time.ZoneOffset.UTC).toInstant();
+            return node.getCreatedAt().atZone(ZoneOffset.UTC).toInstant();
         }
 
         // Try metadata JSON

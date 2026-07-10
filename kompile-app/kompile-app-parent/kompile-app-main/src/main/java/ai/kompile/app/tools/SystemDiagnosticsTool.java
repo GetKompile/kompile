@@ -16,6 +16,7 @@
 
 package ai.kompile.app.tools;
 
+import ai.kompile.utils.FormatUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
@@ -73,19 +74,19 @@ public class SystemDiagnosticsTool {
             // Memory info
             Map<String, Object> memory = new LinkedHashMap<>();
             MemoryUsage heapUsage = memoryMXBean.getHeapMemoryUsage();
-            memory.put("heapUsed", formatBytes(heapUsage.getUsed()));
-            memory.put("heapMax", formatBytes(heapUsage.getMax()));
+            memory.put("heapUsed", FormatUtils.formatBytes(heapUsage.getUsed()));
+            memory.put("heapMax", FormatUtils.formatBytes(heapUsage.getMax()));
             memory.put("heapUsedBytes", heapUsage.getUsed());
             memory.put("heapMaxBytes", heapUsage.getMax());
             memory.put("heapUsagePercent", Math.round((double) heapUsage.getUsed() / heapUsage.getMax() * 100));
 
             MemoryUsage nonHeapUsage = memoryMXBean.getNonHeapMemoryUsage();
-            memory.put("nonHeapUsed", formatBytes(nonHeapUsage.getUsed()));
+            memory.put("nonHeapUsed", FormatUtils.formatBytes(nonHeapUsage.getUsed()));
             memory.put("nonHeapUsedBytes", nonHeapUsage.getUsed());
 
-            memory.put("freeMemory", formatBytes(runtime.freeMemory()));
-            memory.put("totalMemory", formatBytes(runtime.totalMemory()));
-            memory.put("maxMemory", formatBytes(runtime.maxMemory()));
+            memory.put("freeMemory", FormatUtils.formatBytes(runtime.freeMemory()));
+            memory.put("totalMemory", FormatUtils.formatBytes(runtime.totalMemory()));
+            memory.put("maxMemory", FormatUtils.formatBytes(runtime.maxMemory()));
             result.put("memory", memory);
 
             // Thread info
@@ -101,9 +102,9 @@ public class SystemDiagnosticsTool {
             File cwd = new File(".");
             Map<String, Object> disk = new LinkedHashMap<>();
             disk.put("path", cwd.getAbsolutePath());
-            disk.put("totalSpace", formatBytes(cwd.getTotalSpace()));
-            disk.put("freeSpace", formatBytes(cwd.getFreeSpace()));
-            disk.put("usableSpace", formatBytes(cwd.getUsableSpace()));
+            disk.put("totalSpace", FormatUtils.formatBytes(cwd.getTotalSpace()));
+            disk.put("freeSpace", FormatUtils.formatBytes(cwd.getFreeSpace()));
+            disk.put("usableSpace", FormatUtils.formatBytes(cwd.getUsableSpace()));
             disk.put("usagePercent", Math.round((double) (cwd.getTotalSpace() - cwd.getFreeSpace()) / cwd.getTotalSpace() * 100));
             result.put("disk", disk);
 
@@ -153,10 +154,10 @@ public class SystemDiagnosticsTool {
             // Heap memory
             MemoryUsage heapUsage = memoryMXBean.getHeapMemoryUsage();
             Map<String, Object> heap = new LinkedHashMap<>();
-            heap.put("init", formatBytes(heapUsage.getInit()));
-            heap.put("used", formatBytes(heapUsage.getUsed()));
-            heap.put("committed", formatBytes(heapUsage.getCommitted()));
-            heap.put("max", formatBytes(heapUsage.getMax()));
+            heap.put("init", FormatUtils.formatBytes(heapUsage.getInit()));
+            heap.put("used", FormatUtils.formatBytes(heapUsage.getUsed()));
+            heap.put("committed", FormatUtils.formatBytes(heapUsage.getCommitted()));
+            heap.put("max", FormatUtils.formatBytes(heapUsage.getMax()));
             heap.put("usedBytes", heapUsage.getUsed());
             heap.put("maxBytes", heapUsage.getMax());
             heap.put("usagePercent", heapUsage.getMax() > 0 ?
@@ -166,9 +167,9 @@ public class SystemDiagnosticsTool {
             // Non-heap memory
             MemoryUsage nonHeapUsage = memoryMXBean.getNonHeapMemoryUsage();
             Map<String, Object> nonHeap = new LinkedHashMap<>();
-            nonHeap.put("init", formatBytes(nonHeapUsage.getInit()));
-            nonHeap.put("used", formatBytes(nonHeapUsage.getUsed()));
-            nonHeap.put("committed", formatBytes(nonHeapUsage.getCommitted()));
+            nonHeap.put("init", FormatUtils.formatBytes(nonHeapUsage.getInit()));
+            nonHeap.put("used", FormatUtils.formatBytes(nonHeapUsage.getUsed()));
+            nonHeap.put("committed", FormatUtils.formatBytes(nonHeapUsage.getCommitted()));
             nonHeap.put("usedBytes", nonHeapUsage.getUsed());
             result.put("nonHeap", nonHeap);
 
@@ -182,8 +183,8 @@ public class SystemDiagnosticsTool {
 
                     MemoryUsage usage = pool.getUsage();
                     if (usage != null) {
-                        poolInfo.put("used", formatBytes(usage.getUsed()));
-                        poolInfo.put("max", usage.getMax() > 0 ? formatBytes(usage.getMax()) : "unlimited");
+                        poolInfo.put("used", FormatUtils.formatBytes(usage.getUsed()));
+                        poolInfo.put("max", usage.getMax() > 0 ? FormatUtils.formatBytes(usage.getMax()) : "unlimited");
                         poolInfo.put("usedBytes", usage.getUsed());
                     }
                     pools.add(poolInfo);
@@ -283,15 +284,15 @@ public class SystemDiagnosticsTool {
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("status", "success");
             result.put("path", file.getAbsolutePath());
-            result.put("totalSpace", formatBytes(file.getTotalSpace()));
-            result.put("freeSpace", formatBytes(file.getFreeSpace()));
-            result.put("usableSpace", formatBytes(file.getUsableSpace()));
+            result.put("totalSpace", FormatUtils.formatBytes(file.getTotalSpace()));
+            result.put("freeSpace", FormatUtils.formatBytes(file.getFreeSpace()));
+            result.put("usableSpace", FormatUtils.formatBytes(file.getUsableSpace()));
             result.put("totalSpaceBytes", file.getTotalSpace());
             result.put("freeSpaceBytes", file.getFreeSpace());
             result.put("usableSpaceBytes", file.getUsableSpace());
 
             long used = file.getTotalSpace() - file.getFreeSpace();
-            result.put("usedSpace", formatBytes(used));
+            result.put("usedSpace", FormatUtils.formatBytes(used));
             result.put("usedSpaceBytes", used);
 
             if (file.getTotalSpace() > 0) {
@@ -420,9 +421,9 @@ public class SystemDiagnosticsTool {
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("status", "success");
             result.put("message", "Garbage collection suggested to JVM");
-            result.put("heapUsedBefore", formatBytes(usedBefore));
-            result.put("heapUsedAfter", formatBytes(usedAfter));
-            result.put("approximateFreed", formatBytes(Math.max(0, freed)));
+            result.put("heapUsedBefore", FormatUtils.formatBytes(usedBefore));
+            result.put("heapUsedAfter", FormatUtils.formatBytes(usedAfter));
+            result.put("approximateFreed", FormatUtils.formatBytes(Math.max(0, freed)));
             result.put("heapUsedBeforeBytes", usedBefore);
             result.put("heapUsedAfterBytes", usedAfter);
             result.put("freedBytes", Math.max(0, freed));
@@ -483,14 +484,6 @@ public class SystemDiagnosticsTool {
     }
 
     // Helper methods
-    private String formatBytes(long bytes) {
-        if (bytes < 0) return "N/A";
-        if (bytes < 1024) return bytes + " B";
-        if (bytes < 1024 * 1024) return String.format("%.1f KB", bytes / 1024.0);
-        if (bytes < 1024 * 1024 * 1024) return String.format("%.1f MB", bytes / (1024.0 * 1024));
-        return String.format("%.2f GB", bytes / (1024.0 * 1024 * 1024));
-    }
-
     private String formatDuration(long millis) {
         long seconds = millis / 1000;
         long minutes = seconds / 60;

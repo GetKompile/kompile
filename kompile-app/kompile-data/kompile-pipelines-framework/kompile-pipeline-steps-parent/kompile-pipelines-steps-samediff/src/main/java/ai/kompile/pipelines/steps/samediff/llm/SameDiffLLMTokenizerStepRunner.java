@@ -26,6 +26,7 @@ import ai.kompile.pipelines.steps.samediff.nlp.SameDiffWordPieceTokenizer;
 import lombok.extern.slf4j.Slf4j;
 import org.nd4j.linalg.api.ndarray.INDArray;
 
+import java.util.Collections;
 import java.util.Map;
 
 /**
@@ -88,7 +89,7 @@ class SameDiffLLMTokenizerStepRunner implements PipelineStepRunner {
             prompt = "";
         }
 
-        Map<String, INDArray> encoded = tokenizer.batchEncode(java.util.Collections.singletonList(prompt), true);
+        Map<String, INDArray> encoded = tokenizer.batchEncode(Collections.singletonList(prompt), true);
 
         Data result = Data.empty();
         result.put(SameDiffLLMConstants.KEY_INPUT_IDS, encoded.get("input_ids"));

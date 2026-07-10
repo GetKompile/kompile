@@ -1,9 +1,7 @@
 name: "Publish Release"
 
 on:
-  push:
-    tags:
-      - 'v*'
+  # release.yml owns the v* tag trigger; this workflow is manual-only to avoid racing on the same GitHub Release.
   workflow_dispatch:
     inputs:
       releaseVersion:

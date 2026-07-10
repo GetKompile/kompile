@@ -36,7 +36,6 @@ import ai.kompile.core.retrievers.RetrievedDoc;
 import ai.kompile.core.crawler.*;
 import ai.kompile.crawler.CrawlerService;
 import ai.kompile.knowledgegraph.domain.*;
-import ai.kompile.knowledgegraph.repository.EntityMentionRepository;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.junit.jupiter.api.*;
 import org.mockito.*;
@@ -108,9 +107,9 @@ class UnifiedCrawlGraphServiceImplTest {
     @MockBean private EmbeddingModel embeddingModel;
     @MockBean private LLMChat llmChat;
     @MockBean private KnowledgeGraphService knowledgeGraphService;
-    @MockBean private EntityMentionRepository entityMentionRepository;
     @MockBean private CrossDocumentRelationCallback crossDocumentRelationCallback;
     @MockBean private CrawlStepArchiveService crawlStepArchiveService;
+    @MockBean private GraphExtractionCheckpointStore graphExtractionCheckpointStore;
     @Autowired private CrawlProgressEventCollector crawlProgressEventCollector;
     @Autowired private DocumentLoader fileLoader;
     @Autowired private DocumentLoader emailLoader;
@@ -138,18 +137,25 @@ class UnifiedCrawlGraphServiceImplTest {
         cfg.graphExtractionBatchSize = 10;
         cfg.graphExtractionParallelism = 1;
         cfg.backgroundGraphThreads = 1;
+        // Keep baseline at 1 chunk-per-prompt so all per-doc behavioral tests remain deterministic;
+        // regression tests that specifically test chunksPerPrompt>1 override this value themselves.
+        cfg.graphExtractionChunksPerPrompt = 1;
         doReturn(cfg).when(runtimeConfigManager).refreshRuntimeConfig();
 
         // Reset all mocks so stubs from prior tests don't bleed through
         reset(crawlerService, vectorStore, embeddingModel, llmChat, knowledgeGraphService,
-              entityMentionRepository, fileLoader, emailLoader, tableAwareChunker, htmlChunker,
-              crossDocumentRelationCallback);
+              fileLoader, emailLoader, tableAwareChunker, htmlChunker,
+              crossDocumentRelationCallback, graphExtractionCheckpointStore);
+        when(graphExtractionCheckpointStore.completedChunkKeys(any(), any())).thenReturn(Set.of());
 
         // Re-create LLM chain mocks
         requestSpec = mock(LLMChat.ChatClientRequestSpec.class);
         callResponseSpec = mock(LLMChat.CallResponseSpec.class);
         when(llmChat.prompt(anyString())).thenReturn(requestSpec);
         when(requestSpec.call()).thenReturn(callResponseSpec);
+        when(callResponseSpec.content()).thenReturn(buildExtractionJson(
+                List.of(entity("default-entity", "Default Entity", "CONCEPT", "Default graph extraction", 0.9)),
+                List.of()));
 
         // Stub crawlerService to advertise support for WEB_CRAWL and similar source types
         when(crawlerService.hasCrawlerForSourceType(DocumentSourceDescriptor.SourceType.WEB_CRAWL)).thenReturn(true);
@@ -235,9 +241,6 @@ class UnifiedCrawlGraphServiceImplTest {
         // honour them, so existing verify(createNode(...)) assertions remain valid.
         doCallRealMethod().when(knowledgeGraphService).createNodesBatch(anyList(), any());
         doCallRealMethod().when(knowledgeGraphService).createSnippetNodesBatch(anyList());
-        when(entityMentionRepository.findByNodeAndEntityNameAndFactSheet(
-                any(GraphNode.class), anyString(), nullable(Long.class))).thenReturn(Optional.empty());
-        when(entityMentionRepository.save(any(EntityMention.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         // CrossDocumentRelationCallback — reset to default neutral stub
         when(crossDocumentRelationCallback.extractRelationsFromGraphNodes(any())).thenReturn(0);
@@ -320,7 +323,6 @@ class UnifiedCrawlGraphServiceImplTest {
                 .name("person-org test")
                 .sources(List.of(fileSource("docs", "/data/docs")))
                 .graphExtraction(GraphExtractionConfig.builder()
-                        .enabled(true)
                         .entityTypes(List.of("PERSON", "ORGANIZATION"))
                         .build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
@@ -364,7 +366,6 @@ class UnifiedCrawlGraphServiceImplTest {
                 .name("tech test")
                 .sources(List.of(fileSource("tech-docs", "/data/tech")))
                 .graphExtraction(GraphExtractionConfig.builder()
-                        .enabled(true)
                         .entityTypes(List.of("TECHNOLOGY", "CONCEPT"))
                         .relationshipTypes(List.of("ORCHESTRATES", "ENABLES", "DEPENDS_ON"))
                         .build())
@@ -399,7 +400,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("mixed types test")
                 .sources(List.of(fileSource("research", "/data/research")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(true).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -446,7 +447,6 @@ class UnifiedCrawlGraphServiceImplTest {
                         emailSource("emails", "imap://mail.example.com")
                 ))
                 .graphExtraction(GraphExtractionConfig.builder()
-                        .enabled(true)
                         .entityResolution(true)
                         .build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
@@ -486,7 +486,6 @@ class UnifiedCrawlGraphServiceImplTest {
                         emailSource("emails", "imap://mail.example.com")
                 ))
                 .graphExtraction(GraphExtractionConfig.builder()
-                        .enabled(true)
                         .entityResolution(false)
                         .build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
@@ -520,7 +519,6 @@ class UnifiedCrawlGraphServiceImplTest {
                 .name("confidence filter test")
                 .sources(List.of(fileSource("docs", "/data/docs")))
                 .graphExtraction(GraphExtractionConfig.builder()
-                        .enabled(true)
                         .minConfidence(0.8)
                         .build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
@@ -553,7 +551,6 @@ class UnifiedCrawlGraphServiceImplTest {
                 .name("zero threshold")
                 .sources(List.of(fileSource("docs", "/data/docs")))
                 .graphExtraction(GraphExtractionConfig.builder()
-                        .enabled(true)
                         .minConfidence(0.0)
                         .build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
@@ -582,7 +579,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("both enabled")
                 .sources(List.of(fileSource("docs", "/data/docs")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(true).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder()
                         .enabled(true)
                         .collectionName("test-collection")
@@ -613,7 +610,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("surface before vector")
                 .sources(List.of(fileSource("docs", "/data/docs")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(true).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(true).build())
                 .build());
 
@@ -642,7 +639,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("pending bge-m3 embedding")
                 .sources(List.of(fileSource("docs", "/data/docs")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(false).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(true).build())
                 .build());
 
@@ -658,8 +655,8 @@ class UnifiedCrawlGraphServiceImplTest {
     }
 
     @Test
-    @DisplayName("Graph extraction disabled, vector indexing enabled (crawl + index only)")
-    void graphDisabled_vectorEnabled() throws Exception {
+    @DisplayName("Graph extraction remains mandatory when vector indexing is enabled")
+    void graphMandatory_vectorEnabled() throws Exception {
         when(fileLoader.load(any(DocumentSourceDescriptor.class), any())).thenReturn(List.of(
                 new Document("Some doc content", Map.of()),
                 new Document("Another doc", Map.of())
@@ -668,7 +665,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("index only")
                 .sources(List.of(fileSource("docs", "/data/docs")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(false).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(true).build())
                 .build());
 
@@ -677,14 +674,13 @@ class UnifiedCrawlGraphServiceImplTest {
         assertEquals(UnifiedCrawlJob.Status.COMPLETED, job.getStatus().get());
         assertEquals(2, job.getDocumentsLoaded().get());
         assertEquals(2, job.getDocumentsIndexed().get());
-        assertEquals(0, job.getEntitiesExtracted().get());
-        // LLM should NOT have been called
-        verify(llmChat, never()).prompt(anyString());
+        assertTrue(job.getEntitiesExtracted().get() > 0);
+        verify(llmChat, atLeastOnce()).prompt(anyString());
     }
 
     @Test
-    @DisplayName("Both graph and vector disabled (crawl/load only)")
-    void graphDisabled_vectorDisabled() throws Exception {
+    @DisplayName("Graph extraction remains mandatory when vector indexing is disabled")
+    void graphMandatory_vectorDisabled() throws Exception {
         when(fileLoader.load(any(DocumentSourceDescriptor.class), any())).thenReturn(List.of(
                 new Document("Content", Map.of())
         ));
@@ -692,7 +688,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("crawl only")
                 .sources(List.of(fileSource("docs", "/data/docs")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(false).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -700,10 +696,43 @@ class UnifiedCrawlGraphServiceImplTest {
 
         assertEquals(UnifiedCrawlJob.Status.COMPLETED, job.getStatus().get());
         assertEquals(1, job.getDocumentsLoaded().get());
-        assertEquals(0, job.getEntitiesExtracted().get());
+        assertTrue(job.getEntitiesExtracted().get() > 0);
         assertEquals(0, job.getDocumentsIndexed().get());
-        verify(llmChat, never()).prompt(anyString());
+        verify(llmChat, atLeastOnce()).prompt(anyString());
         verify(vectorStore, never()).add(anyList());
+    }
+
+    @Test
+    @DisplayName("Clear graph before run clears durable graph extraction checkpoints")
+    void clearGraphBeforeRunClearsGraphExtractionCheckpoints() throws Exception {
+        CrawlRuntimeConfigManager.CrawlRuntimeConfig cfg = CrawlRuntimeConfigManager.CrawlRuntimeConfig.defaults();
+        cfg.retainResultGraph = true;
+        cfg.graphExtractionBatchSize = 10;
+        cfg.graphExtractionParallelism = 1;
+        cfg.backgroundGraphThreads = 1;
+        cfg.graphExtractionChunksPerPrompt = 1;
+        cfg.crawlClearGraphBeforeRun = true;
+        doReturn(cfg).when(runtimeConfigManager).refreshRuntimeConfig();
+
+        when(fileLoader.load(any(DocumentSourceDescriptor.class), any())).thenReturn(List.of(
+                new Document("Content", Map.of("source_path", "/data/docs"))
+        ));
+
+        UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
+                .name("clear checkpoint crawl")
+                .factSheetId(42L)
+                .sources(List.of(fileSource("docs", "/data/docs")))
+                .graphExtraction(GraphExtractionConfig.builder().build())
+                .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
+                .build());
+
+        awaitCompletion(job);
+
+        assertEquals(UnifiedCrawlJob.Status.COMPLETED, job.getStatus().get());
+        InOrder clearOrder = inOrder(graphExtractionCheckpointStore, knowledgeGraphService);
+        clearOrder.verify(graphExtractionCheckpointStore).clearFactSheet(42L);
+        clearOrder.verify(knowledgeGraphService).deleteByFactSheetId(42L);
+        verify(llmChat, atLeastOnce()).prompt(anyString());
     }
 
     // ──────────────────────────────────────────────────────────────────
@@ -727,7 +756,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("markdown fence test")
                 .sources(List.of(fileSource("docs", "/data/docs")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(true).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -752,7 +781,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("raw json test")
                 .sources(List.of(fileSource("docs", "/data/docs")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(true).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -776,7 +805,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("invalid json test")
                 .sources(List.of(fileSource("docs", "/data/docs")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(true).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -802,7 +831,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("null response test")
                 .sources(List.of(fileSource("docs", "/data/docs")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(true).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -826,7 +855,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("failure checkpoint test")
                 .sources(List.of(fileSource("docs", "/data/docs")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(true).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -862,7 +891,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("sse events test")
                 .sources(List.of(fileSource("docs", "/data/docs")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(true).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -907,7 +936,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("cancel test")
                 .sources(List.of(fileSource("docs", "/data/docs")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(false).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -929,7 +958,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("cleanup test")
                 .sources(List.of(fileSource("docs", "/data/docs")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(false).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -960,7 +989,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("active test")
                 .sources(List.of(fileSource("docs", "/data/docs")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(false).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -998,7 +1027,7 @@ class UnifiedCrawlGraphServiceImplTest {
                         fileSource("good", "/data/good"),
                         fileSource("bad", "/data/bad")
                 ))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(true).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -1038,7 +1067,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("llm error test")
                 .sources(List.of(fileSource("docs", "/data/docs")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(true).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -1070,7 +1099,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("blank docs test")
                 .sources(List.of(fileSource("docs", "/data/docs")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(true).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -1121,7 +1150,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("snapshot test")
                 .sources(List.of(fileSource("docs", "/data/docs")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(true).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(true).build())
                 .build());
 
@@ -1184,7 +1213,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("constructor delegation test")
                 .sources(List.of(fileSource("docs", "/data/docs")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(true).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -1219,7 +1248,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("llm fallback test")
                 .sources(List.of(fileSource("docs", "/data/docs")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(true).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -1240,23 +1269,26 @@ class UnifiedCrawlGraphServiceImplTest {
                 new Document("id-2", "Second document text", Map.of("source", "test"))
         ));
 
-        Graph emptyGraph = new Graph();
-        emptyGraph.setEntities(new ArrayList<>());
-        emptyGraph.setRelationships(new ArrayList<>());
-        emptyGraph.setCommunities(new ArrayList<>());
-
         // Capture a snapshot copy of the docs list before it is cleared by the pipeline
         List<List<RetrievedDoc>> capturedBatches = new ArrayList<>();
         doAnswer(inv -> {
             List<RetrievedDoc> docs = inv.getArgument(0);
             capturedBatches.add(new ArrayList<>(docs)); // snapshot before clear
-            return emptyGraph;
+            Graph graph = new Graph();
+            Entity entity = new Entity();
+            entity.setId("conversion-entity");
+            entity.setTitle("Converted Entity");
+            entity.setType("CONCEPT");
+            graph.setEntities(new ArrayList<>(List.of(entity)));
+            graph.setRelationships(new ArrayList<>());
+            graph.setCommunities(new ArrayList<>());
+            return graph;
         }).when(graphConstructor).constructGraphFromDocs(anyList(), any(), any(), anyBoolean(), anyBoolean(), any());
 
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("conversion test")
                 .sources(List.of(fileSource("docs", "/data/docs")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(true).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -1283,15 +1315,20 @@ class UnifiedCrawlGraphServiceImplTest {
                 new Document("Some text about people and orgs.", Map.of())
         ));
 
-        Graph emptyGraph = new Graph();
-        emptyGraph.setEntities(new ArrayList<>());
-        emptyGraph.setRelationships(new ArrayList<>());
-        emptyGraph.setCommunities(new ArrayList<>());
-
         // Stub the persistence-aware overload and capture schema/mode from it
         ArgumentCaptor<GraphSchema> schemaCaptor = ArgumentCaptor.forClass(GraphSchema.class);
         ArgumentCaptor<SchemaEnforcementMode> modeCaptor = ArgumentCaptor.forClass(SchemaEnforcementMode.class);
-        doAnswer(inv -> emptyGraph)
+        doAnswer(inv -> {
+            Graph graph = new Graph();
+            Entity entity = new Entity();
+            entity.setId("schema-entity");
+            entity.setTitle("Schema Entity");
+            entity.setType("CONCEPT");
+            graph.setEntities(new ArrayList<>(List.of(entity)));
+            graph.setRelationships(new ArrayList<>());
+            graph.setCommunities(new ArrayList<>());
+            return graph;
+        })
                 .when(graphConstructor).constructGraphFromDocs(anyList(), schemaCaptor.capture(), modeCaptor.capture(),
                         anyBoolean(), anyBoolean(), any());
 
@@ -1299,7 +1336,6 @@ class UnifiedCrawlGraphServiceImplTest {
                 .name("schema test")
                 .sources(List.of(fileSource("docs", "/data/docs")))
                 .graphExtraction(GraphExtractionConfig.builder()
-                        .enabled(true)
                         .entityTypes(List.of("PERSON", "ORGANIZATION"))
                         .relationshipTypes(List.of("WORKS_AT", "MANAGES"))
                         .schemaMode(SchemaEnforcementMode.STRICT)
@@ -1353,7 +1389,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("batching test")
                 .sources(List.of(fileSource("docs", "/data/docs")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(true).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -1397,7 +1433,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("blank skip test")
                 .sources(List.of(fileSource("docs", "/data/docs")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(true).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -1417,19 +1453,22 @@ class UnifiedCrawlGraphServiceImplTest {
                 new Document("Some content", Map.of())
         ));
 
-        Graph emptyGraph = new Graph();
-        emptyGraph.setEntities(new ArrayList<>());
-        emptyGraph.setRelationships(new ArrayList<>());
-        emptyGraph.setCommunities(new ArrayList<>());
+        Graph graph = new Graph();
+        Entity entity = new Entity();
+        entity.setId("configured-before-use-entity");
+        entity.setTitle("Configured Entity");
+        entity.setType("CONCEPT");
+        graph.setEntities(new ArrayList<>(List.of(entity)));
+        graph.setRelationships(new ArrayList<>());
+        graph.setCommunities(new ArrayList<>());
         // Use the persistence-aware overload that production calls
-        doReturn(emptyGraph).when(graphConstructor).constructGraphFromDocs(
+        doReturn(graph).when(graphConstructor).constructGraphFromDocs(
                 anyList(), any(), any(), anyBoolean(), anyBoolean(), any());
 
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("config test")
                 .sources(List.of(fileSource("docs", "/data/docs")))
                 .graphExtraction(GraphExtractionConfig.builder()
-                        .enabled(true)
                         .llmProvider("openai")
                         .modelName("gpt-4o")
                         .temperature(0.2)
@@ -1489,7 +1528,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("batch failure test")
                 .sources(List.of(fileSource("docs", "/data/docs")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(true).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -1508,17 +1547,22 @@ class UnifiedCrawlGraphServiceImplTest {
     void graphConstructor_nullSchemaWhenNoTypes() throws Exception {
         enableGraphConstructor();
         when(fileLoader.load(any(DocumentSourceDescriptor.class), any())).thenReturn(List.of(
-                new Document("Some text", Map.of())
+                new Document("Schema null check document", Map.of())
         ));
-
-        Graph emptyGraph = new Graph();
-        emptyGraph.setEntities(new ArrayList<>());
-        emptyGraph.setRelationships(new ArrayList<>());
-        emptyGraph.setCommunities(new ArrayList<>());
 
         // Stub the persistence-aware overload and capture schema from it
         ArgumentCaptor<GraphSchema> schemaCaptor = ArgumentCaptor.forClass(GraphSchema.class);
-        doAnswer(inv -> emptyGraph)
+        doAnswer(inv -> {
+            Graph graph = new Graph();
+            Entity entity = new Entity();
+            entity.setId("null-schema-entity");
+            entity.setTitle("Null Schema Entity");
+            entity.setType("CONCEPT");
+            graph.setEntities(new ArrayList<>(List.of(entity)));
+            graph.setRelationships(new ArrayList<>());
+            graph.setCommunities(new ArrayList<>());
+            return graph;
+        })
                 .when(graphConstructor).constructGraphFromDocs(anyList(), schemaCaptor.capture(), any(),
                         anyBoolean(), anyBoolean(), any());
 
@@ -1526,7 +1570,6 @@ class UnifiedCrawlGraphServiceImplTest {
                 .name("null schema test")
                 .sources(List.of(fileSource("docs", "/data/docs")))
                 .graphExtraction(GraphExtractionConfig.builder()
-                        .enabled(true)
                         // No entityTypes or relationshipTypes
                         .build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
@@ -1546,14 +1589,19 @@ class UnifiedCrawlGraphServiceImplTest {
                 new Document("Some text", Map.of())
         ));
 
-        Graph emptyGraph = new Graph();
-        emptyGraph.setEntities(new ArrayList<>());
-        emptyGraph.setRelationships(new ArrayList<>());
-        emptyGraph.setCommunities(new ArrayList<>());
-
         // Stub the persistence-aware overload and capture mode from it
         ArgumentCaptor<SchemaEnforcementMode> modeCaptor = ArgumentCaptor.forClass(SchemaEnforcementMode.class);
-        doAnswer(inv -> emptyGraph)
+        doAnswer(inv -> {
+            Graph graph = new Graph();
+            Entity entity = new Entity();
+            entity.setId("default-mode-entity");
+            entity.setTitle("Default Mode Entity");
+            entity.setType("CONCEPT");
+            graph.setEntities(new ArrayList<>(List.of(entity)));
+            graph.setRelationships(new ArrayList<>());
+            graph.setCommunities(new ArrayList<>());
+            return graph;
+        })
                 .when(graphConstructor).constructGraphFromDocs(anyList(), any(), modeCaptor.capture(),
                         anyBoolean(), anyBoolean(), any());
 
@@ -1561,7 +1609,6 @@ class UnifiedCrawlGraphServiceImplTest {
                 .name("default mode test")
                 .sources(List.of(fileSource("docs", "/data/docs")))
                 .graphExtraction(GraphExtractionConfig.builder()
-                        .enabled(true)
                         // schemaMode not set → defaults to LENIENT
                         .build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
@@ -1594,7 +1641,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("control chars test")
                 .sources(List.of(fileSource("docs", "/data/docs")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(true).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -1628,7 +1675,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("vlm structure test")
                 .sources(List.of(fileSource("docs", "/data/docs")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(true).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -1661,7 +1708,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("page header test")
                 .sources(List.of(fileSource("docs", "/data/docs")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(true).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -1695,7 +1742,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("blank after conversion test")
                 .sources(List.of(fileSource("docs", "/data/docs")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(true).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -1728,7 +1775,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("image chart filter test")
                 .sources(List.of(fileSource("docs", "/data/docs")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(true).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -1762,7 +1809,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("table full content test")
                 .sources(List.of(fileSource("docs", "/data/docs")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(false).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(true).build())
                 .build());
 
@@ -1796,7 +1843,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("vlm passthrough test")
                 .sources(List.of(fileSource("docs", "/data/docs")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(true).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -1826,17 +1873,16 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("register docs test")
                 .sources(List.of(fileSource("docs", "/data/docs")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(false).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
         awaitCompletion(job);
 
         assertEquals(UnifiedCrawlJob.Status.COMPLETED, job.getStatus().get());
-        // addDocument called once per unique source_path
-        verify(knowledgeGraphService, times(2)).addDocument(
-                anyString(), anyString(), anyString(),
-                anyString(), anyString(), anyString(), any(), any());
+        // DOCUMENT nodes are registered once per unique source_path through the batched node path.
+        verify(knowledgeGraphService, times(2)).createNode(
+                eq(NodeLevel.DOCUMENT), anyString(), anyString(), anyString(), anyMap(), any());
     }
 
     // ──────────────────────────────────────────────────────────────────
@@ -1863,7 +1909,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("email extraction test")
                 .sources(List.of(fileSource("emails", "/data/emails")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(false).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -1876,10 +1922,10 @@ class UnifiedCrawlGraphServiceImplTest {
                 nodeLevelCaptor.capture(), nodeExternalIdCaptor.capture(),
                 anyString(), anyString(), anyMap(), any());
 
-        // All created nodes should be ENTITY level
+        // Routing creates SOURCE/DOCUMENT nodes first; email extraction must still create ENTITY nodes.
         assertTrue(nodeLevelCaptor.getAllValues().stream()
-                        .allMatch(nl -> nl == NodeLevel.ENTITY),
-                "Email extraction should only create ENTITY-level nodes");
+                        .anyMatch(nl -> nl == NodeLevel.ENTITY),
+                "Email extraction should create ENTITY-level nodes");
 
         // Edges created for SENT_BY and SENT_TO (via createEdgeWithMetadata)
         verify(knowledgeGraphService, atLeast(2)).createEdgeWithMetadata(
@@ -1903,7 +1949,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("gmail namespace test")
                 .sources(List.of(fileSource("emails", "/data/emails")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(false).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -1940,7 +1986,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("attachment nodes test")
                 .sources(List.of(fileSource("emails", "/data/emails")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(false).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -1978,21 +2024,23 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("no email metadata test")
                 .sources(List.of(fileSource("docs", "/data/docs")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(false).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
         awaitCompletion(job);
 
         assertEquals(UnifiedCrawlJob.Status.COMPLETED, job.getStatus().get());
-        // No email-related createNode or createEdgeWithMetadata calls (only addDocument from routing)
-        // Verify both 5-arg and 6-arg overloads since production code calls the 6-arg
-        verify(knowledgeGraphService, never()).createNode(
-                eq(NodeLevel.ENTITY), anyString(), anyString(), anyString(), anyMap());
-        verify(knowledgeGraphService, never()).createNode(
-                eq(NodeLevel.ENTITY), anyString(), anyString(), anyString(), anyMap(), any());
+        // Mandatory LLM graph extraction may create ordinary entity nodes. This test only
+        // verifies that email-specific extraction does not run without email metadata.
         verify(knowledgeGraphService, never()).createEdgeWithMetadata(
-                anyString(), anyString(), any(EdgeType.class), anyDouble(), anyString(),
+                anyString(), anyString(), any(EdgeType.class), anyDouble(), eq("SENT_BY"),
+                anyString(), any(), any(EdgeProvenance.class), any());
+        verify(knowledgeGraphService, never()).createEdgeWithMetadata(
+                anyString(), anyString(), any(EdgeType.class), anyDouble(), eq("SENT_TO"),
+                anyString(), any(), any(EdgeProvenance.class), any());
+        verify(knowledgeGraphService, never()).createEdgeWithMetadata(
+                anyString(), anyString(), any(EdgeType.class), anyDouble(), eq("HAS_ATTACHMENT"),
                 anyString(), any(), any(EdgeProvenance.class), any());
     }
 
@@ -2014,7 +2062,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("vlm chunker test")
                 .sources(List.of(fileSource("docs", "/data/docs")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(false).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -2039,7 +2087,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("html chunker test")
                 .sources(List.of(fileSource("docs", "/data/docs")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(false).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -2084,7 +2132,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("chunker splits test")
                 .sources(List.of(fileSource("docs", "/data/docs")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(false).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(true).build())
                 .build());
 
@@ -2153,7 +2201,6 @@ class UnifiedCrawlGraphServiceImplTest {
                 .name("full pipeline email test")
                 .sources(List.of(fileSource("emails", "/data/emails")))
                 .graphExtraction(GraphExtractionConfig.builder()
-                        .enabled(true)
                         .entityTypes(List.of("PERSON", "DOCUMENT"))
                         .build())
                 .vectorIndex(VectorIndexConfig.builder()
@@ -2173,11 +2220,8 @@ class UnifiedCrawlGraphServiceImplTest {
         verify(llmChat).prompt(anyString());
 
         // ── Phase 3: Document node registered (source_path present) ──
-        // addDocument may be called twice: once in registerDocumentNodes and once in
-        // applyEmailGraphExtraction when the mock returns empty for getNodeByExternalId
-        verify(knowledgeGraphService, atLeast(1)).addDocument(
-                anyString(), anyString(), anyString(),
-                anyString(), anyString(), anyString(), any(), any());
+        verify(knowledgeGraphService, atLeast(1)).createNode(
+                eq(NodeLevel.DOCUMENT), anyString(), anyString(), anyString(), anyMap(), any());
 
         // ── Phase 4: LLM + email graph extraction created entity nodes ──
         // LLM extraction creates entity nodes (Q3 Report + Alice); EmailGraphExtractor adds the
@@ -2283,7 +2327,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("formula-graph-test")
                 .sources(List.of(fileSource("excel", "/data/budget.xlsx")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(false).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -2351,7 +2395,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("formula-skip-test")
                 .sources(List.of(fileSource("excel", "/data/empty.xlsx")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(false).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -2415,7 +2459,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("cross-sheet-test")
                 .sources(List.of(fileSource("excel", "/data/finance.xlsx")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(false).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -2426,10 +2470,11 @@ class UnifiedCrawlGraphServiceImplTest {
                 eq(EdgeType.USER_DEFINED), eq(1.0), eq("CROSS_SHEET_DEPENDS_ON"), anyString(),
                 any(), eq(EdgeProvenance.EXTRACTED), any());
 
-        // Verify two SHEET nodes and two CELL nodes (6-param overload)
+        // Verify formula graph created the expected SHEET and CELL nodes; mandatory
+        // LLM graph extraction may add additional ENTITY nodes.
         verify(knowledgeGraphService, times(2)).createNode(eq(NodeLevel.TABLE), anyString(),
                 anyString(), anyString(), anyMap(), any());
-        verify(knowledgeGraphService, times(2)).createNode(eq(NodeLevel.ENTITY), anyString(),
+        verify(knowledgeGraphService, atLeast(2)).createNode(eq(NodeLevel.ENTITY), anyString(),
                 anyString(), anyString(), anyMap(), any());
     }
 
@@ -2456,7 +2501,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("cross-doc-callback test")
                 .sources(List.of(fileSource("docs", "/data/docs")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(true).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -2483,7 +2528,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("no-callback test")
                 .sources(List.of(fileSource("docs", "/data/docs")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(true).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -2513,7 +2558,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("callback-failure test")
                 .sources(List.of(fileSource("docs", "/data/docs")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(true).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -2562,7 +2607,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("vlm-tableGraph-test")
                 .sources(List.of(fileSource("docs", "/data/scan.pdf")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(false).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -2602,7 +2647,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("vlm-formulaGraph-test")
                 .sources(List.of(fileSource("docs", "/data/vlm-excel.xlsx")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(false).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -2647,7 +2692,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("slide-tableGraph-test")
                 .sources(List.of(fileSource("docs", "/data/deck.pptx")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(false).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -2689,7 +2734,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("slide-formulaGraph-test")
                 .sources(List.of(fileSource("docs", "/data/charts.pptx")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(false).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -2743,7 +2788,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("spreadsheet-full-test")
                 .sources(List.of(fileSource("excel", "/data/revenue.xlsx")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(false).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -2786,7 +2831,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("snippet-test")
                 .sources(List.of(fileSource("docs", "/data/report.pdf")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(false).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -2810,7 +2855,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("snippet-no-source-test")
                 .sources(List.of(fileSource("docs", "/data/docs")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(false).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -2836,7 +2881,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("snippet-orphan-test")
                 .sources(List.of(fileSource("docs", "/data/orphan.txt")))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(false).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -3057,7 +3102,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
             .name("transient-retry-test")
             .sources(List.of(fileSource("docs", "/data/docs")))
-            .graphExtraction(GraphExtractionConfig.builder().enabled(true).build())
+            .graphExtraction(GraphExtractionConfig.builder().build())
             .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
             .build());
         awaitCompletion(job);
@@ -3084,7 +3129,7 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
             .name("persistent-failure-test")
             .sources(List.of(fileSource("docs", "/data/docs")))
-            .graphExtraction(GraphExtractionConfig.builder().enabled(true).build())
+            .graphExtraction(GraphExtractionConfig.builder().build())
             .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
             .build());
         awaitCompletion(job);

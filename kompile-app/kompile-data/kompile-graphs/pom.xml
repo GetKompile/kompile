@@ -20,5 +20,6 @@
         <module>kompile-graph-neo4j</module>
         <module>kompile-graph-change-tracking</module>
         <module>kompile-reasoning-owl-bridge</module>
+        <module>kompile-graph-service</module>
     </modules>
 </project>

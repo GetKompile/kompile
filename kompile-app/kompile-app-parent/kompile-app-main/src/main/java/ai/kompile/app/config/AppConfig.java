@@ -163,6 +163,14 @@ public class AppConfig {
                     "ai.kompile.core.crawl.graph.UnifiedCrawlJob$PipelineStepSnapshot",
                     "ai.kompile.core.crawl.graph.UnifiedCrawlJob$Status",
                     "ai.kompile.core.crawl.graph.UnifiedCrawlJob$PipelineStepStatus",
+                    // Flexible single-source crawl wire types (POST /api/unified-crawl/single-source):
+                    // the response embeds preview records from another module, so register explicitly.
+                    "ai.kompile.app.services.SingleSourceCrawlStarter$SingleSourceRunRequest",
+                    "ai.kompile.app.services.SingleSourceCrawlStarter$SingleSourceRunResponse",
+                    "ai.kompile.app.services.SingleSourceCrawlStarter$SingleSourceCrawlResult",
+                    "ai.kompile.crawl.graph.GraphExtractionPreviewService$PreviewResponse",
+                    "ai.kompile.crawl.graph.GraphExtractionPreviewService$EntityPreview",
+                    "ai.kompile.crawl.graph.GraphExtractionPreviewService$RelationPreview",
                     // Phase 1: durable distributed-crawl session manifests written to disk by the session store.
                     "ai.kompile.app.services.crawl.DistributedCrawlSession$Manifest",
                     "ai.kompile.app.services.crawl.DistributedCrawlSession$WorkerManifest",

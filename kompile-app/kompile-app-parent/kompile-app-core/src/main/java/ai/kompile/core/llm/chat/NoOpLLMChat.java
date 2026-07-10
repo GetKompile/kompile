@@ -21,9 +21,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClientResponse;
 import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.model.ChatResponse;
-import org.springframework.ai.chat.model.Generation;
-import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.content.Media;
@@ -40,15 +37,13 @@ import reactor.core.publisher.Flux;
 
 import java.net.URL;
 import java.nio.charset.Charset;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
 
 /**
- * No-operation implementation of LLMChat that provides placeholder functionality
- * when no actual chat client is configured. This implementation logs warnings and
- * returns error messages for all operations.
+ * No-operation implementation of LLMChat used only as a missing-bean marker
+ * when no actual chat client is configured. Invocation fails loudly.
  * 
  * @author Kompile Inc.
  * @since 1.0.0
@@ -59,6 +54,10 @@ public class NoOpLLMChat implements LLMChat {
     
     private static final Logger logger = LoggerFactory.getLogger(NoOpLLMChat.class);
     private static final String ERROR_MESSAGE = "LLMChat is not configured. Cannot perform chat operations.";
+
+    private static IllegalStateException notConfigured() {
+        return new IllegalStateException(ERROR_MESSAGE);
+    }
 
     public NoOpLLMChat() {
         logger.warn("No specific LLMChat implementation found. " +
@@ -222,38 +221,32 @@ public class NoOpLLMChat implements LLMChat {
         
         @Override
         public <T> T entity(ParameterizedTypeReference<T> type) {
-            logger.warn("Cannot convert to entity type: {}", type.getType());
-            return null;
+            throw notConfigured();
         }
 
         @Override
         public <T> T entity(StructuredOutputConverter<T> structuredOutputConverter) {
-            logger.warn("Cannot convert using structured output converter");
-            return null;
+            throw notConfigured();
         }
 
         @Override
         public <T> T entity(Class<T> type) {
-            logger.warn("Cannot convert to entity class: {}", type.getName());
-            return null;
+            throw notConfigured();
         }
 
         @Override
         public ChatClientResponse chatClientResponse() {
-            // Return a basic ChatClientResponse with error message
-            ChatResponse chatResponse = createErrorChatResponse();
-            return ChatClientResponse.builder()
-                    .chatResponse(chatResponse).build();
+            throw notConfigured();
         }
 
         @Override
-        public ChatResponse chatResponse() {
-            return createErrorChatResponse();
+        public org.springframework.ai.chat.model.ChatResponse chatResponse() {
+            throw notConfigured();
         }
 
         @Override
         public String content() {
-            return "Error: " + ERROR_MESSAGE;
+            throw notConfigured();
         }
     }
 
@@ -264,20 +257,17 @@ public class NoOpLLMChat implements LLMChat {
         
         @Override
         public Flux<ChatClientResponse> chatClientResponse() {
-            ChatResponse chatResponse = createErrorChatResponse();
-            ChatClientResponse clientResponse = ChatClientResponse.builder()
-                    .chatResponse(chatResponse).build();
-            return Flux.just(clientResponse);
+            return Flux.error(notConfigured());
         }
 
         @Override
-        public Flux<ChatResponse> chatResponse() {
-            return Flux.just(createErrorChatResponse());
+        public Flux<org.springframework.ai.chat.model.ChatResponse> chatResponse() {
+            return Flux.error(notConfigured());
         }
 
         @Override
         public Flux<String> content() {
-            return Flux.just("Error: " + ERROR_MESSAGE);
+            return Flux.error(notConfigured());
         }
     }
 
@@ -388,19 +378,8 @@ public class NoOpLLMChat implements LLMChat {
 
         @Override
         public LLMChat build() {
-            logger.warn("Building NoOpLLMChat - functionality will be limited");
+            logger.warn("Building NoOpLLMChat - chat invocations will fail until a real LLMChat is configured");
             return new NoOpLLMChat();
         }
-    }
-
-    /**
-     * Creates an error ChatResponse for use in no-op implementations.
-     */
-    private static ChatResponse createErrorChatResponse() {
-        Generation generation = new Generation(
-                new AssistantMessage("Error: " + ERROR_MESSAGE), 
-                null
-        );
-        return new ChatResponse(Collections.singletonList(generation));
     }
 }

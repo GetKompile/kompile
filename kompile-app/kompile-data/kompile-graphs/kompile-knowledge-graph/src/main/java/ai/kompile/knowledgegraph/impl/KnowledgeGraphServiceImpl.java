@@ -29,6 +29,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -767,8 +768,8 @@ public class KnowledgeGraphServiceImpl implements KnowledgeGraphService {
 
     @Override
     @Transactional(readOnly = true)
-    public Map<String, Object> getVisualizationDataInTimeRange(java.time.LocalDateTime from,
-                                                                java.time.LocalDateTime to,
+    public Map<String, Object> getVisualizationDataInTimeRange(LocalDateTime from,
+                                                                LocalDateTime to,
                                                                 int maxNodes) {
         // Get edges in the time range
         List<GraphEdge> edges = edgeRepository.findByOccurredAtBetween(from, to,
@@ -818,8 +819,8 @@ public class KnowledgeGraphServiceImpl implements KnowledgeGraphService {
 
     @Override
     @Transactional(readOnly = true)
-    public List<GraphEdge> searchEdgesByTimeRange(java.time.LocalDateTime from,
-                                                   java.time.LocalDateTime to,
+    public List<GraphEdge> searchEdgesByTimeRange(LocalDateTime from,
+                                                   LocalDateTime to,
                                                    int limit) {
         return edgeRepository.findByOccurredAtBetween(from, to, PageRequest.of(0, limit));
     }
@@ -939,8 +940,8 @@ public class KnowledgeGraphServiceImpl implements KnowledgeGraphService {
 
     @Override
     @Transactional(readOnly = true)
-    public List<String> findOrphanNodeIds(Long factSheetId, java.util.Set<NodeLevel> levels) {
-        java.util.Set<NodeLevel> wanted =
+    public List<String> findOrphanNodeIds(Long factSheetId, Set<NodeLevel> levels) {
+        Set<NodeLevel> wanted =
                 (levels == null || levels.isEmpty()) ? DEFAULT_ORPHAN_LEVELS : levels;
         return nodeRepository.findGraphOrphanNodes(factSheetId, wanted).stream()
                 .map(GraphNode::getNodeId)
@@ -986,7 +987,7 @@ public class KnowledgeGraphServiceImpl implements KnowledgeGraphService {
      */
     @Override
     @Transactional
-    public GraphPruneResult pruneNodes(java.util.Collection<String> nodeIds,
+    public GraphPruneResult pruneNodes(Collection<String> nodeIds,
                                        boolean softDelete,
                                        Duration grace,
                                        boolean dryRun) {
@@ -1001,10 +1002,10 @@ public class KnowledgeGraphServiceImpl implements KnowledgeGraphService {
             // Resolve nodeId (UUID string) → database id (Long) for the bulk op
             List<Long> dbIds = ids.stream()
                     .map(nid -> nodeRepository.findByNodeId(nid).map(GraphNode::getId).orElse(null))
-                    .filter(java.util.Objects::nonNull)
+                    .filter(Objects::nonNull)
                     .collect(Collectors.toList());
             if (!dbIds.isEmpty()) {
-                nodeRepository.bulkMarkStale(dbIds, java.time.LocalDateTime.now());
+                nodeRepository.bulkMarkStale(dbIds, LocalDateTime.now());
             }
             return GraphPruneResult.ofSoftDelete(ids, false);
         } else {
@@ -1030,7 +1031,7 @@ public class KnowledgeGraphServiceImpl implements KnowledgeGraphService {
      */
     @Override
     @Transactional
-    public GraphPruneResult pruneEdges(java.util.Collection<String> edgeIds,
+    public GraphPruneResult pruneEdges(Collection<String> edgeIds,
                                        boolean softDelete,
                                        boolean dryRun) {
         if (edgeIds == null || edgeIds.isEmpty()) {
@@ -1043,10 +1044,10 @@ public class KnowledgeGraphServiceImpl implements KnowledgeGraphService {
         if (softDelete) {
             List<Long> dbIds = ids.stream()
                     .map(eid -> edgeRepository.findByEdgeId(eid).map(GraphEdge::getId).orElse(null))
-                    .filter(java.util.Objects::nonNull)
+                    .filter(Objects::nonNull)
                     .collect(Collectors.toList());
             if (!dbIds.isEmpty()) {
-                edgeRepository.bulkMarkStale(dbIds, java.time.LocalDateTime.now());
+                edgeRepository.bulkMarkStale(dbIds, LocalDateTime.now());
             }
             return GraphPruneResult.ofSoftDelete(ids, false);
         } else {
@@ -1073,7 +1074,7 @@ public class KnowledgeGraphServiceImpl implements KnowledgeGraphService {
     @Transactional
     public GraphPruneResult hardDeleteStaleNodes(Long factSheetId, Duration grace) {
         int graceDays = (int) (grace != null ? grace.toDays() : 7);
-        java.time.LocalDateTime graceCutoff = java.time.LocalDateTime.now().minusDays(graceDays);
+        LocalDateTime graceCutoff = LocalDateTime.now().minusDays(graceDays);
         int hardDeleted = nodeRepository.hardDeleteStaleNodes(factSheetId, graceCutoff);
         if (hardDeleted > 0) {
             log.info("hardDeleteStaleNodes: permanently removed {} stale nodes for factSheetId={}", hardDeleted, factSheetId);

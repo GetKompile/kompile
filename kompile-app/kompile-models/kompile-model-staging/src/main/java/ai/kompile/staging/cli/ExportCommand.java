@@ -18,6 +18,7 @@ package ai.kompile.staging.cli;
 
 import ai.kompile.staging.export.ExportService;
 import ai.kompile.staging.export.ExportService.ExportResult;
+import ai.kompile.utils.FormatUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import picocli.CommandLine.Command;
@@ -87,7 +88,7 @@ public class ExportCommand implements Callable<Integer> {
             System.out.println("Export completed successfully!");
             System.out.println("Bundle: " + result.getBundlePath());
             System.out.println("Models: " + result.getModelCount());
-            System.out.println("Size: " + formatSize(result.getBundleSize()));
+            System.out.println("Size: " + FormatUtils.formatBytes(result.getBundleSize()));
             return 0;
         } else {
             System.err.println("Export failed: " + result.getErrorMessage());
@@ -95,10 +96,4 @@ public class ExportCommand implements Callable<Integer> {
         }
     }
 
-    private String formatSize(long bytes) {
-        if (bytes < 1024) return bytes + " B";
-        if (bytes < 1024 * 1024) return String.format("%.1f KB", bytes / 1024.0);
-        if (bytes < 1024 * 1024 * 1024) return String.format("%.1f MB", bytes / (1024.0 * 1024));
-        return String.format("%.2f GB", bytes / (1024.0 * 1024 * 1024));
-    }
 }

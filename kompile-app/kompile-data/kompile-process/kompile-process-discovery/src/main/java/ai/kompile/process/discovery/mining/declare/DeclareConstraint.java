@@ -16,6 +16,7 @@
 
 package ai.kompile.process.discovery.mining.declare;
 
+import java.io.Serializable;
 import java.util.Locale;
 import java.util.Optional;
 
@@ -33,7 +34,9 @@ public record DeclareConstraint(
         String activityA,
         String activityB,
         double support,
-        double confidence) {
+        double confidence) implements Serializable {
+
+    private static final long serialVersionUID = 1L;
 
     public boolean isUnary() {
         return activityB == null;
@@ -68,6 +71,8 @@ public record DeclareConstraint(
     }
 
     private static String sanitize(String s) {
-        return s == null ? "" : s.replace('"', ' ').trim();
+        // Shared definition (quotes AND commas → space): rule constants must stay parseable by
+        // PslRule.parse and byte-identical to the promoted Occurs(...) fact keys.
+        return ai.kompile.process.discovery.mining.entail.ProcessAtoms.sanitize(s);
     }
 }

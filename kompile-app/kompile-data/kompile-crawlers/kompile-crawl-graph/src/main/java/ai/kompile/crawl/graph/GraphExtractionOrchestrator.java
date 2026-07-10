@@ -32,6 +32,7 @@ import ai.kompile.core.graphrag.GraphConstants;
 import ai.kompile.core.graphrag.GraphConstructor;
 import ai.kompile.core.graphrag.format.GraphExtractionSchema;
 import ai.kompile.core.graphrag.format.GraphExtractionValidator;
+import ai.kompile.core.graphrag.format.LlmJsonExtractor;
 import ai.kompile.core.graphrag.model.Entity;
 import ai.kompile.core.graphrag.model.Graph;
 import ai.kompile.core.graphrag.model.Relationship;
@@ -48,7 +49,6 @@ import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.GraphProvenanceKeys;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
-import ai.kompile.knowledgegraph.repository.EntityMentionRepository;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -118,7 +118,7 @@ class GraphExtractionOrchestrator {
     volatile int graphExtractionParallelism = 4;
     /** Remote (CLI/API) concurrent in-flight calls; local models use {@link #graphExtractionParallelism}.
      *  Synced from crawlGraphExtractionRemoteParallelism (project/global config) + per-job overrides. */
-    volatile int graphExtractionRemoteParallelism = 2;
+    volatile int graphExtractionRemoteParallelism = 4;
     /** Safety cap on chunks per batch (the model-derived char budget is the primary control). Synced
      *  from crawlGraphExtractionMaxItemsPerBatch (project/global config) + per-job overrides. */
     volatile int graphExtractionMaxItemsPerBatch = 64;
@@ -141,9 +141,8 @@ class GraphExtractionOrchestrator {
     // so projects targeting small/local models can override back to 12 000 in their .kompile config.
     volatile int maxCharsPerChunk = 50_000;
     volatile int maxCharsPerChunkVlm = 60_000;
-    // Number of document chunks to group into a single LLM prompt call.
-    // 1 (default) = one call per chunk — byte-for-byte identical to the prior behaviour.
-    volatile int graphExtractionChunksPerPrompt = 1;
+    // Number of document chunks to group into a single LLM prompt call in the inline fallback path.
+    volatile int graphExtractionChunksPerPrompt = 4;
     /**
      * Maximum split depth for rebatch-on-failure in the inline-LLM multi-chunk path.
      * When a group of N chunks fails (timeout / empty / parse-error), the group is halved and each
@@ -169,9 +168,6 @@ class GraphExtractionOrchestrator {
 
     @Autowired(required = false)
     GraphConstructor graphConstructor;
-
-    @Autowired(required = false)
-    EntityMentionRepository entityMentionRepository;
 
     @Autowired
     GraphPersistenceHelper graphPersistenceHelper;
@@ -212,6 +208,10 @@ class GraphExtractionOrchestrator {
     @Autowired(required = false)
     CrawlStepArchiveService crawlStepArchiveService;
 
+    /** Durable completed-chunk checkpoint store used to skip graph chunks after a restart. */
+    @Autowired(required = false)
+    GraphExtractionCheckpointStore graphExtractionCheckpointStore;
+
     /**
      * Belt-and-suspenders transcript logger for inline LLM extraction calls.
      *
@@ -226,6 +226,10 @@ class GraphExtractionOrchestrator {
      */
     @Autowired(required = false)
     LlmTranscriptLogger transcriptLogger;
+
+    boolean hasGraphConstructor() {
+        return graphConstructor != null;
+    }
 
     /**
      * Builds a fallback-backend selector backed by the live capacity tracker, so the retry policy can
@@ -385,6 +389,12 @@ class GraphExtractionOrchestrator {
      */
     private boolean extractSingleChunkViaConstructor(Document doc, GraphExtractionConfig config,
                                                      Graph targetGraph, UnifiedCrawlJob job) {
+        // Guard: a blank chunk cannot yield entities and would throw in toRetrievedDoc.
+        if (!hasExtractableText(doc)) {
+            log.debug("[Job {}] Per-chunk constructor: skipping blank/empty chunk id={}",
+                    job.getJobId(), doc != null ? doc.getId() : "(null)");
+            return false;
+        }
         GraphSchema schema = buildGraphSchema(config);
         SchemaEnforcementMode mode = config.getSchemaMode() != null
                 ? config.getSchemaMode() : SchemaEnforcementMode.LENIENT;
@@ -394,11 +404,19 @@ class GraphExtractionOrchestrator {
             Graph graph = graphConstructor.constructGraphFromDocs(single, schema, mode,
                     graphConstructorSkipEmbedding, !graphConstructorPersistMatrixGraph, null);
             if (graph == null) {
+                recordEmptyConstructorChunk(job, doc, "GraphConstructor returned null graph");
                 return false;
             }
-            graphPersistenceHelper.persistConstructedGraphBatch(job, graph, single, config);
-            int entities = graph.getEntities() != null ? graph.getEntities().size() : 0;
-            int rels = graph.getRelationships() != null ? graph.getRelationships().size() : 0;
+            int entities = graphEntityCount(graph);
+            int rels = graphRelationshipCount(graph);
+            if (!hasSemanticGraphOutput(graph)) {
+                releaseInMemoryGraph(graph);
+                recordEmptyConstructorChunk(job, doc, "GraphConstructor returned empty graph");
+                return false;
+            }
+            GraphPersistenceHelper.GraphPersistResult persisted =
+                    graphPersistenceHelper.persistConstructedGraphBatch(job, graph, single, config);
+            recordGraphExtractionCheckpoint(job, config, single, persisted);
             if (retainResultGraph) {
                 synchronized (targetGraph) {
                     mergeGraphInto(graph, targetGraph, config);
@@ -417,6 +435,53 @@ class GraphExtractionOrchestrator {
             return false;
         } finally {
             AgentCallContext.setJobId(null);
+        }
+    }
+
+    private static int graphEntityCount(Graph graph) {
+        return graph != null && graph.getEntities() != null ? graph.getEntities().size() : 0;
+    }
+
+    private static int graphRelationshipCount(Graph graph) {
+        return graph != null && graph.getRelationships() != null ? graph.getRelationships().size() : 0;
+    }
+
+    static boolean hasSemanticGraphOutput(Graph graph) {
+        return graphEntityCount(graph) + graphRelationshipCount(graph) > 0;
+    }
+
+    static boolean isUsableLlmResponse(String response) {
+        if (response == null || response.isBlank()) {
+            return false;
+        }
+        return !response.stripLeading().startsWith("Error:");
+    }
+
+    private static String badLlmResponseMessage(String label, String response) {
+        if (response == null) {
+            return label + " returned null";
+        }
+        if (response.isBlank()) {
+            return label + " returned empty response";
+        }
+        String trimmed = response.stripLeading();
+        if (trimmed.startsWith("Error:")) {
+            return label + " returned error payload: "
+                    + (trimmed.length() > 180 ? trimmed.substring(0, 180) : trimmed);
+        }
+        return label + " returned unusable response";
+    }
+
+    private void recordEmptyConstructorChunk(UnifiedCrawlJob job, Document doc, String reason) {
+        if (job != null) {
+            job.getErrorCount().incrementAndGet();
+        }
+        log.warn("[Job {}] Per-chunk GraphConstructor extraction produced no semantic output for chunk {}: {}",
+                job != null ? job.getJobId() : "?", doc != null ? doc.getId() : "(null)", reason);
+        if (job != null && doc != null) {
+            documentTracker.recordDocumentProgress(job, doc, "GRAPH_EXTRACTION", "FAILED", 0, 0, 0,
+                    "GraphConstructor returned no semantic output", reason,
+                    EXTRACTORS_GRAPH_CONSTRUCTOR, true);
         }
     }
 
@@ -446,17 +511,62 @@ class GraphExtractionOrchestrator {
         // The MatrixGraphConstructor handles parallelism internally (now 8 concurrent LLM threads).
         // BulkGraphSyncService handles JPA sync in <50ms even for 500+ entities, so batching for
         // DB performance is no longer needed.
-        List<RetrievedDoc> allRetrievedDocs = new ArrayList<>(documents.size());
+        //
+        // IMPORTANT: blank/empty chunks are filtered out here via filterAndConvertDocs before being
+        // wrapped in RetrievedDoc or sent over the graph-subprocess RPC. A single null-text doc in
+        // a batch causes the entire RPC call to fail (Jackson's convertValue on the subprocess aborts
+        // the whole list deserialization), so filtering here protects all batch-mates. A WARN is
+        // logged with the count and chunk ids so operators know real content was skipped.
+        List<RetrievedDoc> allRetrievedDocs = filterAndConvertDocs(documents, job.getJobId());
         for (Document doc : documents) {
-            String text = doc.getText();
-            if (text == null || text.isBlank()) continue;
-            allRetrievedDocs.add(toRetrievedDoc(doc));
-            if (doc.getId() != null) docById.put(doc.getId(), doc);
+            if (hasExtractableText(doc) && doc.getId() != null) {
+                docById.put(doc.getId(), doc);
+            }
         }
 
         if (allRetrievedDocs.isEmpty()) return failed;
 
         int totalDocs = allRetrievedDocs.size();
+        int checkpointSkipped = 0;
+        List<RetrievedDoc> pendingRetrievedDocs = allRetrievedDocs;
+        if (graphExtractionCheckpointStore != null) {
+            Set<String> completedKeys = graphExtractionCheckpointStore.completedChunkKeys(jobFactSheetId(job), config);
+            if (!completedKeys.isEmpty()) {
+                pendingRetrievedDocs = new ArrayList<>(allRetrievedDocs.size());
+                for (RetrievedDoc doc : allRetrievedDocs) {
+                    String key = graphExtractionCheckpointStore.chunkKey(doc);
+                    if (key != null && completedKeys.contains(key)) {
+                        checkpointSkipped++;
+                        documentTracker.recordDocumentProgress(job, doc, "GRAPH_EXTRACTION", "SKIPPED",
+                                0, 0, 0, "Skipped completed graph extraction checkpoint", null,
+                                EXTRACTORS_GRAPH_CONSTRUCTOR, true);
+                    } else {
+                        pendingRetrievedDocs.add(doc);
+                    }
+                }
+                if (checkpointSkipped > 0) {
+                    documentTracker.recordEvent(job, "GRAPH_EXTRACTION", "INFO",
+                            "Skipped completed graph extraction checkpoints",
+                            checkpointSkipped + "/" + totalDocs + " chunk(s) already persisted for this extraction config");
+                    log.info("[Job {}] Skipping {} of {} graph extraction chunk(s) from durable checkpoint",
+                            job.getJobId(), checkpointSkipped, totalDocs);
+                }
+            }
+        }
+
+        if (pendingRetrievedDocs.isEmpty()) {
+            resetGraphExtractionProgress(job, totalDocs);
+            completeGraphExtractionProgress(job);
+            pipelineStepTracker.updatePipelineStep(job, "GRAPH_EXTRACTION", UnifiedCrawlJob.PipelineStepStatus.COMPLETED,
+                    totalDocs, totalDocs, 0, 0, 0, 0, null,
+                    "Graph extraction already complete from checkpoint");
+            documentTracker.recordEvent(job, "GRAPH_EXTRACTION", "INFO",
+                    "Graph extraction already complete from checkpoint",
+                    totalDocs + " chunk(s) skipped");
+            return failed;
+        }
+
+        int plannedDocs = pendingRetrievedDocs.size();
 
         // ── Provider-aware, output-token-safe adaptive batching ──────────────────────────────────
         // Each remote CLI/API LLM call carries a large *fixed* per-call cost (a 1.3k-char prompt was
@@ -499,7 +609,7 @@ class GraphExtractionOrchestrator {
                 .build();
 
         // Sort chunks heaviest-first so the greedy wave packer keeps each batch near the char budget.
-        List<RetrievedDoc> sorted = allRetrievedDocs;
+        List<RetrievedDoc> sorted = pendingRetrievedDocs;
         if (costSortChunks) {
             sorted.sort((a, b) -> Long.compare(
                     estimateTextCost(b.getText(), b.getMetadata()),
@@ -509,8 +619,12 @@ class GraphExtractionOrchestrator {
         for (RetrievedDoc d : sorted) {
             totalCharsEst += Math.max(1L, estimateTextCost(d.getText(), d.getMetadata()));
         }
-        // Display-only estimate; the actual wave count is fewer as the budget ramps up.
-        final int totalBatches = (int) Math.max(1, (totalCharsEst + initChars - 1) / initChars);
+        // Display-only estimate. Large-context models can collapse the char-budget estimate to one
+        // wave, so keep an item-count lower bound; otherwise the UI shows impossible labels like
+        // GRAPH_BATCHES 8/1 even while chunks continue progressing.
+        int itemBatchFloor = (plannedDocs + Math.max(1, maxItems) - 1) / Math.max(1, maxItems);
+        int charBatchEstimate = (int) Math.max(1, (totalCharsEst + initChars - 1) / initChars);
+        final int totalBatches = Math.max(itemBatchFloor, charBatchEstimate);
         AtomicInteger cursor = new AtomicInteger(0);
         AtomicInteger globalBatchIndex = new AtomicInteger(0);
         // Remote: cap at the configured remote parallelism (few fat calls — each remote call is costly).
@@ -519,26 +633,41 @@ class GraphExtractionOrchestrator {
         // Pass totalDocs as the third argument so the item-count lower bound can correct the
         // char-budget wave estimate for small-document corpora on large-context models (where
         // the char estimate collapses to 1 and would incorrectly cap parallelism to 1).
-        int resolvedParallelism = resolveGraphExtractionParallelism(job, totalBatches, totalDocs);
+        int resolvedParallelism = resolveGraphExtractionParallelism(job, totalBatches, plannedDocs);
+        int remoteCap = Math.max(1, graphExtractionRemoteParallelism);
+        if (remoteBackend && isLargeContextModel(modelCap)) {
+            // Large-context remote models are selected specifically to amortize extraction over fat
+            // prompts. Do not keep them behind the legacy two-call remote cap; let the configured graph
+            // extraction parallelism drive wave width while still respecting any higher remote cap.
+            remoteCap = Math.max(remoteCap, Math.max(1, graphExtractionParallelism));
+        }
         int parallelism = remoteBackend
-                ? Math.min(resolvedParallelism, Math.max(1, graphExtractionRemoteParallelism))
+                ? Math.min(resolvedParallelism, remoteCap)
                 : resolvedParallelism;
         final int waveWidth = Math.max(1, parallelism);
         OuterParallelismAdvisor outerAdvisor = new OuterParallelismAdvisor(parallelism);
         DynamicBatchSizer graphBatchSizer = DynamicBatchSizer.forGraphExtraction(maxItems);
         resetGraphExtractionProgress(job, totalDocs);
+        if (checkpointSkipped > 0) {
+            incrementGraphChunksProcessed(job, checkpointSkipped);
+        }
         pipelineStepTracker.updatePipelineStep(job, "GRAPH_EXTRACTION", UnifiedCrawlJob.PipelineStepStatus.RUNNING,
-                0, totalDocs, 0, 0, totalBatches, 0, null,
+                checkpointSkipped, totalDocs, 0, 0, totalBatches, 0, null,
                 "Planned graph extraction batches");
-        job.getCurrentFile().set("(graph extraction: " + totalDocs + " chunks, "
+        job.getCurrentFile().set("(graph extraction: " + plannedDocs + "/" + totalDocs + " chunks, "
                 + (remoteBackend ? "remote" : "local") + " adaptive batching from ~" + initChars + " chars/call)");
         documentTracker.recordEvent(job, "GRAPH_EXTRACTION", "INFO",
                 "Planned graph extraction batches",
-                "chunks=" + totalDocs + ", backend=" + (remoteBackend ? "remote" : "local")
+                "chunks=" + plannedDocs + "/" + totalDocs + ", skipped=" + checkpointSkipped
+                        + ", backend=" + (remoteBackend ? "remote" : "local")
+                        + ", model=" + modelCap.modelId()
+                        + ", contextTokens=" + modelCap.contextTokens()
+                        + ", maxOutputTokens=" + modelCap.maxOutputTokens()
                         + ", startChars=" + initChars + ", maxChars=" + maxChars
                         + ", maxItems=" + maxItems + ", parallelism=" + parallelism);
-        log.info("[Job {}] Starting graph extraction for {} chunks, backend={}, adaptive char budget {}..{} (start {}), maxItems={}, parallelism={}",
-                job.getJobId(), totalDocs, remoteBackend ? "remote" : "local",
+        log.info("[Job {}] Starting graph extraction for {}/{} chunks (checkpoint skipped {}), backend={}, model={}, contextTokens={}, maxOutputTokens={}, adaptive char budget {}..{} (start {}), maxItems={}, parallelism={}",
+                job.getJobId(), plannedDocs, totalDocs, checkpointSkipped, remoteBackend ? "remote" : "local",
+                modelCap.modelId(), modelCap.contextTokens(), modelCap.maxOutputTokens(),
                 minChars, maxChars, initChars, maxItems, parallelism);
         memoryMonitor.trimNativeMemory(job, "GRAPH_EXTRACTION", "after planning graph batches");
 
@@ -548,7 +677,7 @@ class GraphExtractionOrchestrator {
                 // Adaptive wave loop: each wave pulls the next `waveWidth` cost-balanced batches sized
                 // at the AIMD char budget, runs them through the (unchanged) submit/retry body below,
                 // then feeds the wave's yield back to the sizer so the next wave grows or shrinks.
-                while (cursor.get() < totalDocs && !isCancelled(job)
+                while (cursor.get() < plannedDocs && !isCancelled(job)
                         && !Thread.currentThread().isInterrupted()) {
                     int charTarget = charSizer.currentBatchSize();
                     List<CostBatch<RetrievedDoc>> batches =
@@ -621,37 +750,49 @@ class GraphExtractionOrchestrator {
                                 return new GraphBatchResult(batch, null, null);
                             }
 
-                            if (graph != null) {
-                                GraphPersistenceHelper.GraphPersistResult persisted = graphPersistenceHelper.persistConstructedGraphBatch(job, graph, batch.items(), config);
-                                if (isCancelled(job) || Thread.currentThread().isInterrupted()) {
-                                    recordCancelledGraphBatch(job, batch, "Graph extraction cancelled after graph persistence");
-                                    releaseInMemoryGraph(graph);
-                                    return new GraphBatchResult(batch, null, null);
+                            if (graph == null) {
+                                throw new IllegalStateException("GraphConstructor returned null graph for batch " + batchLabel);
+                            }
+                            int entities = graphEntityCount(graph);
+                            int rels = graphRelationshipCount(graph);
+                            if (!hasSemanticGraphOutput(graph)) {
+                                releaseInMemoryGraph(graph);
+                                throw new IllegalStateException("GraphConstructor returned empty graph for batch " + batchLabel
+                                        + " (" + batch.items().size() + " chunk(s), cost=" + batch.cost() + ")");
+                            }
+
+                            GraphPersistenceHelper.GraphPersistResult persisted = graphPersistenceHelper.persistConstructedGraphBatch(job, graph, batch.items(), config);
+                            recordGraphExtractionCheckpoint(job, config, batch.items(), persisted);
+                            if (isCancelled(job) || Thread.currentThread().isInterrupted()) {
+                                recordCancelledGraphBatch(job, batch, "Graph extraction cancelled after graph persistence");
+                                releaseInMemoryGraph(graph);
+                                return new GraphBatchResult(batch, null, null);
+                            }
+                            if (terminalDocIds.isEmpty()) {
+                                recordGraphExtractionDiagnostics(job, graph, batch, totalBatches);
+                                recordGraphExtractionBatchPerDocument(job, graph, batch, totalBatches);
+                            }
+                            if (retainResultGraph) {
+                                synchronized (targetGraph) {
+                                    mergeGraphInto(graph, targetGraph, config);
                                 }
-                                if (terminalDocIds.isEmpty()) {
-                                    recordGraphExtractionDiagnostics(job, graph, batch, totalBatches);
-                                    recordGraphExtractionBatchPerDocument(job, graph, batch, totalBatches);
-                                }
-                                if (retainResultGraph) {
-                                    synchronized (targetGraph) {
-                                        mergeGraphInto(graph, targetGraph, config);
-                                    }
-                                }
-                                int entities = graph.getEntities() != null ? graph.getEntities().size() : 0;
-                                int rels = graph.getRelationships() != null ? graph.getRelationships().size() : 0;
-                                if (terminalDocIds.isEmpty()) {
-                                    job.getEntitiesExtracted().addAndGet(entities);
-                                    job.getRelationshipsExtracted().addAndGet(rels);
-                                }
-                                log.info("[Job {}] Graph extraction batch {} complete: {} entities, {} rels (totals: {}/{})",
-                                        job.getJobId(), batchLabel, entities, rels,
-                                        job.getEntitiesExtracted().get(), job.getRelationshipsExtracted().get());
-                                if (persisted.entities() > 0 || persisted.relationships() > 0) {
-                                    documentTracker.recordEvent(job, "GRAPH_EXTRACTION", "INFO",
-                                            "Persisted semantic graph batch " + batchLabel,
-                                            persisted.entities() + " entities, " + persisted.relationships()
-                                                    + " relationships written to fact-sheet graph");
-                                }
+                            }
+                            if (terminalDocIds.isEmpty()) {
+                                job.getEntitiesExtracted().addAndGet(entities);
+                                job.getRelationshipsExtracted().addAndGet(rels);
+                            }
+                            log.info("[Job {}] Graph extraction batch {} complete: {} entities, {} rels (totals: {}/{})",
+                                    job.getJobId(), batchLabel, entities, rels,
+                                    job.getEntitiesExtracted().get(), job.getRelationshipsExtracted().get());
+                            if (persisted.entities() > 0 || persisted.relationships() > 0) {
+                                documentTracker.recordEvent(job, "GRAPH_EXTRACTION", "INFO",
+                                        "Persisted semantic graph batch " + batchLabel,
+                                        persisted.entities() + " entities, " + persisted.relationships()
+                                                + " relationships written to fact-sheet graph");
+                            } else {
+                                documentTracker.recordEvent(job, "GRAPH_EXTRACTION", "WARN",
+                                        "Semantic graph batch persisted zero records " + batchLabel,
+                                        entities + " extracted entities, " + rels + " extracted relationships");
                             }
 
                             int missingTerminalUpdates = Math.max(0, batch.items().size() - terminalDocIds.size());
@@ -672,46 +813,6 @@ class GraphExtractionOrchestrator {
                             memoryMonitor.updateMemorySnapshot(job);
                             double heapPct = job.getMemoryUsagePercent().get() / 100.0;
                             long batchElapsed = System.currentTimeMillis() - batchStartTime;
-                            // ── Fix llmCallsTotal=0: MatrixGraphConstructor makes LLM calls internally
-                            // and never flows through CrawlLlmDispatcher.recordLlmCall. Record a
-                            // per-batch synthetic call so llmCallsTotal/llmCallsSucceeded and
-                            // recentLlmCalls are populated. backendId comes from the config's extraction
-                            // model provider (opencode-cli, etc.); model name from config if set.
-                            {
-                                int batchEntities = graph != null && graph.getEntities() != null
-                                        ? graph.getEntities().size() : 0;
-                                int batchRels = graph != null && graph.getRelationships() != null
-                                        ? graph.getRelationships().size() : 0;
-                                String gcBackendId = config != null && config.getLlmProvider() != null
-                                        && !config.getLlmProvider().isBlank()
-                                        ? config.getLlmProvider() : "graph-constructor";
-                                String gcModel = config != null && config.getModelName() != null
-                                        ? config.getModelName() : null;
-                                String gcBackendLabel = gcModel != null
-                                        ? gcBackendId + "/" + gcModel : gcBackendId;
-                                int promptChars = (int) Math.min(Integer.MAX_VALUE, batch.cost());
-                                // Response size: rough estimate based on extracted output
-                                int responseChars = (batchEntities + batchRels) * 80;
-                                boolean batchSuccess = graph != null;
-                                UnifiedCrawlJob.LlmCallRecord constructorRecord =
-                                        UnifiedCrawlJob.LlmCallRecord.builder()
-                                        .timestamp(Instant.now())
-                                        .backendId(gcBackendLabel)
-                                        .taskType("graph-extraction")
-                                        .latencyMs(batchElapsed)
-                                        .inputTokens(Math.max(0L, promptChars / 4L))
-                                        .outputTokens(Math.max(0L, responseChars / 4L))
-                                        .success(batchSuccess)
-                                        .timedOut(false)
-                                        .rateLimited(false)
-                                        .circuitBroken(false)
-                                        .errorCategory(batchSuccess ? null : "BAD_RESPONSE")
-                                        .errorMessage(batchSuccess ? null : "GraphConstructor returned null graph")
-                                        .promptChars(promptChars)
-                                        .responseChars(responseChars)
-                                        .build();
-                                job.recordLlmCall(constructorRecord);
-                            }
                             UnifiedCrawlJob.TuningDecision parallelismDecision =
                                     outerAdvisor.afterBatchComplete(batchElapsed, heapPct);
                             if (parallelismDecision != null) {
@@ -836,19 +937,28 @@ class GraphExtractionOrchestrator {
                                         } finally {
                                             AgentCallContext.setJobId(null);
                                         }
-                                        if (graph != null) {
-                                            GraphPersistenceHelper.GraphPersistResult persisted = graphPersistenceHelper.persistConstructedGraphBatch(job, graph, retryBatch.items(), config);
-                                            if (retainResultGraph) {
-                                                synchronized (targetGraph) {
-                                                    mergeGraphInto(graph, targetGraph, config);
-                                                }
-                                            }
-                                            int entities = graph.getEntities() != null ? graph.getEntities().size() : 0;
-                                            int rels = graph.getRelationships() != null ? graph.getRelationships().size() : 0;
-                                            job.getEntitiesExtracted().addAndGet(entities);
-                                            job.getRelationshipsExtracted().addAndGet(rels);
-                                            releaseInMemoryGraph(graph);
+                                        if (graph == null) {
+                                            throw new IllegalStateException("GraphConstructor returned null graph for retry batch "
+                                                    + retryBatch.index() + "/" + totalBatches);
                                         }
+                                        int entities = graphEntityCount(graph);
+                                        int rels = graphRelationshipCount(graph);
+                                        if (!hasSemanticGraphOutput(graph)) {
+                                            releaseInMemoryGraph(graph);
+                                            throw new IllegalStateException("GraphConstructor returned empty graph for retry batch "
+                                                    + retryBatch.index() + "/" + totalBatches
+                                                    + " (" + retryBatch.items().size() + " chunk(s), cost=" + retryBatch.cost() + ")");
+                                        }
+                                        GraphPersistenceHelper.GraphPersistResult persisted = graphPersistenceHelper.persistConstructedGraphBatch(job, graph, retryBatch.items(), config);
+                                        recordGraphExtractionCheckpoint(job, config, retryBatch.items(), persisted);
+                                        if (retainResultGraph) {
+                                            synchronized (targetGraph) {
+                                                mergeGraphInto(graph, targetGraph, config);
+                                            }
+                                        }
+                                        job.getEntitiesExtracted().addAndGet(entities);
+                                        job.getRelationshipsExtracted().addAndGet(rels);
+                                        releaseInMemoryGraph(graph);
                                         int done2 = completedBatches.incrementAndGet();
                                         incrementGraphChunksProcessed(job, retryBatch.items().size());
                                         long batchElapsed = System.currentTimeMillis() - batchStartTime;
@@ -1022,8 +1132,12 @@ class GraphExtractionOrchestrator {
                 charBudget,
                 costSortChunks);
         int resolvedParallelism = resolveGraphExtractionParallelism(job, batches.size());
+        int remoteCap = Math.max(1, graphExtractionRemoteParallelism);
+        if (remoteBackend && isLargeContextModel(modelCap)) {
+            remoteCap = Math.max(remoteCap, Math.max(1, graphExtractionParallelism));
+        }
         int parallelism = remoteBackend
-                ? Math.min(resolvedParallelism, Math.max(1, graphExtractionRemoteParallelism))
+                ? Math.min(resolvedParallelism, remoteCap)
                 : resolvedParallelism;
         pipelineStepTracker.updatePipelineStep(job, "GRAPH_EXTRACTION", UnifiedCrawlJob.PipelineStepStatus.RUNNING,
                 0, documents.size(), 0, 0, batches.size(), 0, null,
@@ -1070,7 +1184,10 @@ class GraphExtractionOrchestrator {
                         int tLen = t != null ? t.length() : 0;
                         if (!group.isEmpty() && charBudget > 0
                                 && combinedChars + tLen > charBudget) {
-                            break;
+                            break; // char budget exceeded — flush group now
+                        }
+                        if (!group.isEmpty() && !sameSourceDocument(group.get(0), d)) {
+                            break; // cross-document boundary — flush group now; never mix source documents
                         }
                         group.add(d);
                         combinedChars += tLen;
@@ -1134,6 +1251,9 @@ class GraphExtractionOrchestrator {
                                 if (!group.isEmpty() && charBudget > 0
                                         && combinedChars + tLen > charBudget) {
                                     break; // this chunk would overflow the budget — flush group now
+                                }
+                                if (!group.isEmpty() && !sameSourceDocument(group.get(0), d)) {
+                                    break; // cross-document boundary — flush group now; never mix source documents
                                 }
                                 group.add(d);
                                 combinedChars += tLen;
@@ -1275,12 +1395,13 @@ class GraphExtractionOrchestrator {
                 long llmCallLatencyMs = System.currentTimeMillis() - llmCallStart;
                 // Belt-and-suspenders: record a transcript here when the dispatcher's own logger is
                 // absent (e.g. subprocess context) so the call is never silently dropped.
+                boolean responseOk = isUsableLlmResponse(response);
                 recordInlineTranscriptIfNeeded(jobId, promptToSend, response,
                         llmCallLatencyMs,
-                        response != null && !response.isBlank(),
-                        response == null ? "LLM returned null" : null);
+                        responseOk,
+                        responseOk ? null : badLlmResponseMessage("LLM", response));
 
-            if (response != null && !response.isBlank()) {
+            if (responseOk) {
                 String json = extractJsonFromResponse(response);
                 if (json != null) {
                     GraphExtractionSchema.ExtractionResult result = GraphExtractionValidator.fromJson(json);
@@ -1330,6 +1451,8 @@ class GraphExtractionOrchestrator {
 
                             Map<String, String> externalToNodeId = new HashMap<>();
                             String inlineContainsLabel = graphPersistenceHelper.semanticRelationLabel(GraphConstants.REL_CONTAINS);
+                            // doc→entity CONTAINS edges are batched into one createEdgesBatch after all nodes exist.
+                            List<KnowledgeGraphService.EdgeSpec> containsEdgeSpecs = new ArrayList<>();
                             for (var entity : result.entities()) {
                                 try {
                                     String entityType = graphPersistenceHelper.safeEntityType(entity.type());
@@ -1387,16 +1510,23 @@ class GraphExtractionOrchestrator {
                                         String metaJson = graphPersistenceHelper.semanticRelationMetadataJson(jobId, sourcePath,
                                                 "inline_llm", sourcePath, entity.id(), inlineContainsLabel, description,
                                                 containsWeight, containsMeta);
-                                        knowledgeGraphService.createEdgeWithMetadata(parentNodeId, node.getNodeId(),
-                                                EdgeType.CONTAINS, containsWeight, inlineContainsLabel, description, metaJson,
-                                                EdgeProvenance.EXTRACTED, factSheetId);
+                                        containsEdgeSpecs.add(new KnowledgeGraphService.EdgeSpec(parentNodeId, node.getNodeId(),
+                                                EdgeType.CONTAINS, containsWeight, description, inlineContainsLabel, metaJson,
+                                                EdgeProvenance.EXTRACTED, factSheetId));
                                     }
                                 } catch (Exception e) {
                                     log.debug("[Job {}] Failed to persist LLM entity '{}': {}", jobId, entity.name(), e.getMessage());
                                 }
                             }
+                            if (!containsEdgeSpecs.isEmpty()) {
+                                knowledgeGraphService.createEdgesBatch(containsEdgeSpecs);
+                            }
 
                             if (result.relations() != null) {
+                                // Accumulate the extracted relation edges and persist them in ONE createEdgesBatch
+                                // call (a single subprocess /invoke) instead of one RPC per edge — the per-edge
+                                // path otherwise dominated extraction (~one RPC per relation × thousands).
+                                List<KnowledgeGraphService.EdgeSpec> relEdgeSpecs = new ArrayList<>();
                                 for (var rel : result.relations()) {
                                     try {
                                         String srcNodeId = externalToNodeId.get(rel.source());
@@ -1421,13 +1551,16 @@ class GraphExtractionOrchestrator {
                                         String metaJson = graphPersistenceHelper.semanticRelationMetadataJson(jobId, sourcePath,
                                                 "inline_llm", rel.source(), rel.target(), label, description,
                                                 relWeight, relPropertiesMeta);
-                                        knowledgeGraphService.createEdgeWithMetadata(srcNodeId, tgtNodeId,
-                                                EdgeType.USER_DEFINED, relWeight, label, description, metaJson,
-                                                EdgeProvenance.EXTRACTED, factSheetId);
+                                        relEdgeSpecs.add(new KnowledgeGraphService.EdgeSpec(srcNodeId, tgtNodeId,
+                                                EdgeType.USER_DEFINED, relWeight, description, label, metaJson,
+                                                EdgeProvenance.EXTRACTED, factSheetId));
                                         job.incrementRelationshipType(label);
                                     } catch (Exception e) {
                                         log.debug("[Job {}] Failed to persist LLM relation '{}': {}", jobId, rel.type(), e.getMessage());
                                     }
+                                }
+                                if (!relEdgeSpecs.isEmpty()) {
+                                    knowledgeGraphService.createEdgesBatch(relEdgeSpecs);
                                 }
                             }
                         }
@@ -1628,11 +1761,12 @@ class GraphExtractionOrchestrator {
                 long llmCallLatencyMs = System.currentTimeMillis() - llmCallStart;
                 // Belt-and-suspenders: record a transcript here when the dispatcher's own logger is
                 // absent (e.g. subprocess context) so the call is never silently dropped.
+                boolean responseOk = isUsableLlmResponse(response);
                 recordInlineTranscriptIfNeeded(jobId, promptToSend, response,
                         llmCallLatencyMs,
-                        response != null && !response.isBlank(),
-                        response == null ? "LLM returned null (multi-chunk group)" : null);
-                if (response == null || response.isBlank()) {
+                        responseOk,
+                        responseOk ? null : badLlmResponseMessage("LLM", response));
+                if (!responseOk) {
                     continue;
                 }
 
@@ -1731,6 +1865,8 @@ class GraphExtractionOrchestrator {
 
                         Map<String, String> externalToNodeId = new HashMap<>();
                         String inlineContainsLabel = graphPersistenceHelper.semanticRelationLabel(GraphConstants.REL_CONTAINS);
+                        // doc→entity CONTAINS edges are batched into one createEdgesBatch after all nodes exist.
+                        List<KnowledgeGraphService.EdgeSpec> multiContainsEdgeSpecs = new ArrayList<>();
                         for (GraphExtractionSchema.ExtractedEntity entity : docEntities) {
                             try {
                                 String entityType = graphPersistenceHelper.safeEntityType(entity.type());
@@ -1777,15 +1913,20 @@ class GraphExtractionOrchestrator {
                                     String metaJson = graphPersistenceHelper.semanticRelationMetadataJson(jobId, sourcePath,
                                             "inline_llm_multi", sourcePath, entity.id(), inlineContainsLabel, description,
                                             multiContainsWeight, multiContainsMeta);
-                                    knowledgeGraphService.createEdgeWithMetadata(parentNodeId, node.getNodeId(),
-                                            EdgeType.CONTAINS, multiContainsWeight, inlineContainsLabel, description, metaJson,
-                                            EdgeProvenance.EXTRACTED, factSheetId);
+                                    multiContainsEdgeSpecs.add(new KnowledgeGraphService.EdgeSpec(parentNodeId, node.getNodeId(),
+                                            EdgeType.CONTAINS, multiContainsWeight, description, inlineContainsLabel, metaJson,
+                                            EdgeProvenance.EXTRACTED, factSheetId));
                                 }
                             } catch (Exception ex) {
                                 log.debug("[Job {}] Failed to persist multi-chunk entity '{}': {}", jobId, entity.name(), ex.getMessage());
                             }
                         }
+                        if (!multiContainsEdgeSpecs.isEmpty()) {
+                            knowledgeGraphService.createEdgesBatch(multiContainsEdgeSpecs);
+                        }
 
+                        // Accumulate + single createEdgesBatch (one RPC) instead of one RPC per relation.
+                        List<KnowledgeGraphService.EdgeSpec> multiRelEdgeSpecs = new ArrayList<>();
                         for (GraphExtractionSchema.ExtractedRelation rel : docRelations) {
                             try {
                                 String srcNodeId = externalToNodeId.get(rel.source());
@@ -1807,13 +1948,16 @@ class GraphExtractionOrchestrator {
                                 String metaJson = graphPersistenceHelper.semanticRelationMetadataJson(jobId, sourcePath,
                                         "inline_llm_multi", rel.source(), rel.target(), label, description,
                                         multiRelWeight, multiRelMeta);
-                                knowledgeGraphService.createEdgeWithMetadata(srcNodeId, tgtNodeId,
-                                        EdgeType.USER_DEFINED, multiRelWeight, label, description,
-                                        metaJson, EdgeProvenance.EXTRACTED, factSheetId);
+                                multiRelEdgeSpecs.add(new KnowledgeGraphService.EdgeSpec(srcNodeId, tgtNodeId,
+                                        EdgeType.USER_DEFINED, multiRelWeight, description, label,
+                                        metaJson, EdgeProvenance.EXTRACTED, factSheetId));
                                 job.incrementRelationshipType(label);
                             } catch (Exception ex) {
                                 log.debug("[Job {}] Failed to persist multi-chunk relation '{}': {}", jobId, rel.type(), ex.getMessage());
                             }
+                        }
+                        if (!multiRelEdgeSpecs.isEmpty()) {
+                            knowledgeGraphService.createEdgesBatch(multiRelEdgeSpecs);
                         }
                     }
                 }
@@ -1924,6 +2068,30 @@ class GraphExtractionOrchestrator {
             if (known.startsWith(cid) || cid.startsWith(known)) return known;
         }
         return fallback;
+    }
+
+    /**
+     * Returns the source-document path from a Spring AI Document's metadata.
+     * Checks META_SOURCE_PATH first, then META_SOURCE. Returns null when absent or blank.
+     */
+    private static String docSourcePath(Document d) {
+        if (d == null || d.getMetadata() == null) return null;
+        Object sp = d.getMetadata().get(GraphConstants.META_SOURCE_PATH);
+        if (sp instanceof String s && !s.isBlank()) return s;
+        sp = d.getMetadata().get(GraphConstants.META_SOURCE);
+        if (sp instanceof String s && !s.isBlank()) return s;
+        return null;
+    }
+
+    /**
+     * Returns true only when both documents have the same known (non-null, non-blank) source path.
+     * When either path is absent the provenance is unknown — the safe choice is NOT to group.
+     */
+    private static boolean sameSourceDocument(Document a, Document b) {
+        if (a == null || b == null) return false;
+        String spA = docSourcePath(a);
+        String spB = docSourcePath(b);
+        return spA != null && spA.equals(spB);
     }
 
     // -------------------------------------------------------------------------
@@ -2202,6 +2370,10 @@ class GraphExtractionOrchestrator {
         return Math.max(1, Math.min(configured, Math.max(1, effectiveBatchCount)));
     }
 
+    private boolean isLargeContextModel(ModelCapability modelCap) {
+        return modelCap != null && modelCap.contextTokens() > 200_000;
+    }
+
     // -------------------------------------------------------------------------
     // Provider-aware adaptive batching
     // -------------------------------------------------------------------------
@@ -2330,24 +2502,9 @@ class GraphExtractionOrchestrator {
     }
 
     private String extractJsonFromResponse(String response) {
-        // Find JSON block — may be wrapped in ```json ... ```
-        int jsonStart = response.indexOf("```json");
-        if (jsonStart >= 0) {
-            int contentStart = response.indexOf('\n', jsonStart) + 1;
-            int jsonEnd = response.indexOf("```", contentStart);
-            if (jsonEnd > contentStart) {
-                return response.substring(contentStart, jsonEnd).trim();
-            }
-        }
-
-        // Try to find raw JSON object
-        int braceStart = response.indexOf('{');
-        int braceEnd = response.lastIndexOf('}');
-        if (braceStart >= 0 && braceEnd > braceStart) {
-            return response.substring(braceStart, braceEnd + 1);
-        }
-
-        return null;
+        // Delegates to the shared isolator so tool-call-prefix handling stays in lockstep
+        // with MatrixGraphConstructor and cannot silently regress (see LlmJsonExtractor).
+        return LlmJsonExtractor.extractJsonObject(response);
     }
 
     // -------------------------------------------------------------------------
@@ -2434,17 +2591,88 @@ class GraphExtractionOrchestrator {
     }
 
     // -------------------------------------------------------------------------
-    // Document conversion helper
+    // Graph extraction checkpoint helper
+    // -------------------------------------------------------------------------
+
+    private void recordGraphExtractionCheckpoint(UnifiedCrawlJob job,
+                                                 GraphExtractionConfig config,
+                                                 Collection<RetrievedDoc> docs,
+                                                 GraphPersistenceHelper.GraphPersistResult persisted) {
+        if (graphExtractionCheckpointStore == null || job == null || docs == null || docs.isEmpty()) {
+            return;
+        }
+        int entities = persisted != null ? persisted.entities() : 0;
+        int relationships = persisted != null ? persisted.relationships() : 0;
+        if (entities + relationships <= 0) {
+            log.warn("[Job {}] Not checkpointing graph extraction batch with zero persisted semantic output ({} docs)",
+                    job.getJobId(), docs.size());
+            return;
+        }
+        graphExtractionCheckpointStore.recordCompletedBatch(jobFactSheetId(job), config, docs,
+                job.getJobId(), entities, relationships);
+    }
+
+    // -------------------------------------------------------------------------
+    // Document conversion helpers
     // -------------------------------------------------------------------------
 
     /**
      * Converts a Spring AI Document to a RetrievedDoc for use with GraphConstructor.
+     *
+     * <p><strong>Precondition:</strong> {@code doc.getText()} must be non-null and non-blank.
+     * {@link RetrievedDoc} enforces "exactly one of text or media must be specified", so passing
+     * a null-text document causes an {@link IllegalArgumentException} at construction time which
+     * propagates as an {@link java.util.concurrent.ExecutionException} that fails the entire RPC
+     * batch (not just the offending chunk). Callers must guard with
+     * {@link #hasExtractableText(Document)} before calling this method.</p>
      */
     private static RetrievedDoc toRetrievedDoc(Document doc) {
         Map<String, Object> metadata = doc.getMetadata() != null
                 ? new HashMap<>(doc.getMetadata())
                 : new HashMap<>();
         return new RetrievedDoc(doc.getId(), doc.getText(), metadata);
+    }
+
+    /**
+     * Returns {@code true} when the document has non-null, non-blank text content that can be
+     * wrapped in a {@link RetrievedDoc} without triggering the "exactly one of text or media"
+     * invariant check.
+     */
+    static boolean hasExtractableText(Document doc) {
+        return doc != null && doc.getText() != null && !doc.getText().isBlank();
+    }
+
+    /**
+     * Filters a list of Spring AI {@link Document}s, keeping only those with non-blank text,
+     * and converts them to {@link RetrievedDoc}s ready for graph-extraction RPC calls.
+     *
+     * <p>Empty or whitespace-only documents cannot yield any entities or relationships and would
+     * cause the entire RPC batch to fail (a single un-constructable {@link RetrievedDoc} aborts
+     * Jackson's {@code convertValue} for the whole list). Filtering them here at the graph-
+     * extraction boundary is safe: the chunks have already been recorded as crawled documents.
+     * A WARN is emitted so operators know real content was skipped, not silently lost.</p>
+     *
+     * @param docs  raw documents from the chunker output
+     * @param jobId job identifier for the log message (may be null)
+     * @return list of {@link RetrievedDoc}s, never containing a null-text entry
+     */
+    static List<RetrievedDoc> filterAndConvertDocs(List<Document> docs, String jobId) {
+        if (docs == null || docs.isEmpty()) return List.of();
+        List<RetrievedDoc> result = new ArrayList<>(docs.size());
+        List<String> skippedIds = null;
+        for (Document doc : docs) {
+            if (!hasExtractableText(doc)) {
+                if (skippedIds == null) skippedIds = new ArrayList<>();
+                skippedIds.add(doc != null && doc.getId() != null ? doc.getId() : "(null)");
+            } else {
+                result.add(toRetrievedDoc(doc));
+            }
+        }
+        if (skippedIds != null) {
+            log.warn("[Job {}] Skipping {} blank/empty chunk(s) before graph extraction (no text, no media — cannot yield entities): ids={}",
+                    jobId != null ? jobId : "?", skippedIds.size(), skippedIds);
+        }
+        return result;
     }
 
     // -------------------------------------------------------------------------
@@ -2483,7 +2711,7 @@ class GraphExtractionOrchestrator {
         }
         Object contentType = metadata.get(GraphConstants.META_CONTENT_TYPE);
         if (contentType instanceof String type) {
-            String normalized = type.toLowerCase(java.util.Locale.ROOT);
+            String normalized = type.toLowerCase(Locale.ROOT);
             if (normalized.contains("table") || normalized.contains("vlm")) {
                 cost = Math.round(cost * 1.3);
             } else if (normalized.contains("html")) {
@@ -2729,7 +2957,7 @@ class GraphExtractionOrchestrator {
         while (current != null) {
             String message = current.getMessage();
             if (message != null) {
-                String lower = message.toLowerCase(java.util.Locale.ROOT);
+                String lower = message.toLowerCase(Locale.ROOT);
                 if (lower.contains("all cli agents failed")
                         || lower.contains("terminalquotaerror")
                         || lower.contains("insufficient_quota")

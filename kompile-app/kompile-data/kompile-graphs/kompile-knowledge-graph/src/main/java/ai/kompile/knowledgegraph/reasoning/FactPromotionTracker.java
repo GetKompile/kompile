@@ -33,7 +33,10 @@ import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
 
 import java.nio.file.Path;
+import java.util.Collections;
+import java.util.EnumMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -423,8 +426,8 @@ public class FactPromotionTracker {
      * @param factSheetId the fact sheet to aggregate
      * @return immutable map of band → atom count; all five {@link StrengthBand} values present
      */
-    public java.util.Map<StrengthBand, Integer> bandCounts(long factSheetId) {
-        java.util.Map<StrengthBand, Integer> counts = new java.util.EnumMap<>(StrengthBand.class);
+    public Map<StrengthBand, Integer> bandCounts(long factSheetId) {
+        Map<StrengthBand, Integer> counts = new EnumMap<>(StrengthBand.class);
         for (StrengthBand b : StrengthBand.values()) counts.put(b, 0);
         ConcurrentHashMap<String, PromotionState> sheetMap = stateMap.get(factSheetId);
         if (sheetMap != null) {
@@ -432,7 +435,7 @@ public class FactPromotionTracker {
                 counts.merge(state.lastBand, 1, Integer::sum);
             }
         }
-        return java.util.Collections.unmodifiableMap(counts);
+        return Collections.unmodifiableMap(counts);
     }
 
     /**

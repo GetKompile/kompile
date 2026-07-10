@@ -16,6 +16,7 @@
 
 package ai.kompile.core.embeddings;
 
+import ai.kompile.core.language.LanguageSupport;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -27,9 +28,26 @@ import java.util.List;
  * Interface for a component that generates vector embeddings for given texts.
  * Implements AutoCloseable to ensure native resources can be properly released.
  */
-public interface EmbeddingModel extends AutoCloseable {
+public interface EmbeddingModel extends AutoCloseable, LanguageSupport {
 
     Logger EMBEDDING_MODEL_LOG = LoggerFactory.getLogger(EmbeddingModel.class);
+
+    private static float[] toHostFloatMatrix(INDArray array, int rows, int cols) {
+        int length = Math.multiplyExact(rows, cols);
+        if (array.ordering() == 'c' && !array.isView()
+                && array.stride(0) == cols && array.stride(1) == 1) {
+            return array.data().getFloatsAt(array.offset(), length);
+        }
+        INDArray copy = null;
+        try {
+            copy = array.dup('c');
+            return copy.data().getFloatsAt(copy.offset(), length);
+        } finally {
+            if (copy != null && !copy.wasClosed()) {
+                copy.close();
+            }
+        }
+    }
 
     /**
      * Generates a single vector embedding for a given text.
@@ -46,6 +64,21 @@ public interface EmbeddingModel extends AutoCloseable {
      * @return A list of vector embeddings, where each embedding is a list of floats.
      */
     INDArray embed(List<String> texts);
+
+    /**
+     * Whether this model can actually produce embeddings. Real models return {@code true};
+     * the no-op fallback (wired when no real model is available, e.g. in the vector-only
+     * graph-matrix subprocess) returns {@code false}. Callers use this to skip the embedding
+     * path entirely instead of submitting doomed work that returns empty vectors.
+     *
+     * <p>Prefer this over {@code instanceof} checks: it is delegated through Spring AOP/CGLIB
+     * proxies, whereas {@code instanceof} against a concrete impl class fails through a proxy.</p>
+     *
+     * @return {@code true} if embeddings are functional, {@code false} for a no-op model.
+     */
+    default boolean canEmbed() {
+        return true;
+    }
 
     /**
      * Generates embeddings for a list of Spring AI Document objects.
@@ -87,24 +120,11 @@ public interface EmbeddingModel extends AutoCloseable {
         List<float[]> results = new java.util.ArrayList<>(numRows);
 
         try {
-            // Fast path: contiguous row-major data - single bulk read + arraycopy
-            if (matrix.ordering() == 'c' && !matrix.isView()
-                    && matrix.stride(0) == numCols && matrix.stride(1) == 1) {
-                float[] flat = matrix.data().getFloatsAt(matrix.offset(), numRows * numCols);
-                for (int i = 0; i < numRows; i++) {
-                    float[] embedding = new float[numCols];
-                    System.arraycopy(flat, i * numCols, embedding, 0, numCols);
-                    results.add(embedding);
-                }
-            } else {
-                // General path: direct element access avoids intermediate INDArray allocations
-                for (int i = 0; i < numRows; i++) {
-                    float[] embedding = new float[numCols];
-                    for (int j = 0; j < numCols; j++) {
-                        embedding[j] = matrix.getFloat(i, j);
-                    }
-                    results.add(embedding);
-                }
+            float[] flat = toHostFloatMatrix(matrix, numRows, numCols);
+            for (int i = 0; i < numRows; i++) {
+                float[] embedding = new float[numCols];
+                System.arraycopy(flat, i * numCols, embedding, 0, numCols);
+                results.add(embedding);
             }
         } finally {
             // Clean up original matrix
@@ -161,6 +181,7 @@ public interface EmbeddingModel extends AutoCloseable {
     default String getModelIdentifier() {
         return getModelName();
     }
+
 
     /**
      * Information about the current batch being processed.

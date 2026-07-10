@@ -230,16 +230,17 @@ class AdmmHlMrfInferenceTest {
     class RouterTests {
 
         @Test
-        @DisplayName("Very small programs use ScalarHlMrfInference (< 50 rules)")
+        @DisplayName("Very small programs use ScalarHlMrfInference (< scalar threshold)")
         void smallProgramsUseScalar() {
             HlMrfSolver solver = HlMrfMapInference.chooseSolver(10, 20);
             assertInstanceOf(ScalarHlMrfInference.class, solver);
         }
 
         @Test
-        @DisplayName("Mid-scale programs use AdmmHlMrfInference (50–4000 rules)")
+        @DisplayName("Mid-scale programs use AdmmHlMrfInference (scalar threshold–4000 rules)")
         void midScaleUsesAdmm() {
-            HlMrfSolver solver = HlMrfMapInference.chooseSolver(200, 100);
+            HlMrfSolver solver = HlMrfMapInference.chooseSolver(
+                    HlMrfMapInference.DEFAULT_SCALAR_THRESHOLD + 100, 100);
             assertInstanceOf(AdmmHlMrfInference.class, solver);
         }
     }

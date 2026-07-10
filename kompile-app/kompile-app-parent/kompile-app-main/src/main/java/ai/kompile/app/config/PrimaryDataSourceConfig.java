@@ -97,7 +97,8 @@ import java.util.Properties;
 public class PrimaryDataSourceConfig {
 
     /** Constant for the transaction manager bean name shared by all ingest-related services. */
-    public static final String INGEST_EVENT_TRANSACTION_MANAGER = "ingestEventTransactionManager";
+    public static final String INGEST_EVENT_TRANSACTION_MANAGER =
+            ai.kompile.app.ingest.service.IngestTransactionManagers.INGEST_EVENT_TRANSACTION_MANAGER;
 
     // DB_CLOSE_DELAY=-1: keep the file-backed H2 database open for the JVM lifetime.
     // Without it, H2 closes the ENTIRE database when HikariCP releases its last physical

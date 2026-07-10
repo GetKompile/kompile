@@ -22,13 +22,19 @@ import ai.kompile.app.facts.service.FactSheetService;
 import ai.kompile.app.services.DocumentIngestService;
 import ai.kompile.app.services.IngestProgressTracker;
 import ai.kompile.app.services.SourceMarkdownConversionService;
+import ai.kompile.app.services.SingleSourceCrawlPreviewService;
+import ai.kompile.app.services.SingleSourceCrawlStarter;
 import ai.kompile.app.services.YouTubeTranscriptService;
 import ai.kompile.app.web.dto.IngestProgressUpdate;
+import ai.kompile.core.crawl.graph.ProcessingRouteConfig;
+import ai.kompile.core.crawl.graph.UnifiedCrawlSource;
 import ai.kompile.core.indexers.IndexerService;
 import ai.kompile.core.indexers.NoOpIndexerService;
 import ai.kompile.core.loaders.DocumentLoader;
 import ai.kompile.core.loaders.DocumentLoadingService;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
+import ai.kompile.core.loaders.PdfClassificationResult;
+import ai.kompile.core.loaders.PdfContentClassifier;
 import ai.kompile.core.retrievers.RetrievedDoc;
 import ai.kompile.core.source.SourceDocumentStorageService;
 import ai.kompile.loaders.orchestrator.config.AppDocumentSourceProperties;
@@ -38,13 +44,17 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.file.*;
@@ -87,6 +97,26 @@ public class ExternalSourceIngestController {
             String processingMode) {
     }
 
+    public record AddDiscordRequest(
+            String serverId,
+            String channelId,
+            String botToken,
+            Integer messageLimit,
+            Boolean includeThreads,
+            String chunkerName,
+            Boolean saveMessagesFile) {
+    }
+
+    public record AddConfluenceRequest(
+            String baseUrl,
+            String email,
+            String apiToken,
+            String spaceKey,
+            Boolean includeChildren,
+            Boolean includeAttachments,
+            String chunkerName) {
+    }
+
     public record AddSlackRequest(
             String channelId,
             String token,
@@ -124,6 +154,9 @@ public class ExternalSourceIngestController {
     private final SourceDocumentStorageService sourceDocumentStorageService;
     private final SourceMarkdownConversionService sourceMarkdownConversionService;
     private final FactSheetService factSheetService;
+    private final SingleSourceCrawlPreviewService singleSourceCrawlPreviewService;
+    private final SingleSourceCrawlStarter singleSourceCrawlStarter;
+    private final PdfContentClassifier pdfContentClassifier;
 
     /**
      * Mapping of UI chunker strategy IDs to backend chunker names.
@@ -157,7 +190,10 @@ public class ExternalSourceIngestController {
             @Autowired(required = false) YouTubeTranscriptService youTubeTranscriptService,
             @Autowired(required = false) SourceDocumentStorageService sourceDocumentStorageService,
             @Autowired(required = false) SourceMarkdownConversionService sourceMarkdownConversionService,
-            @Autowired(required = false) FactSheetService factSheetService) {
+            @Autowired(required = false) FactSheetService factSheetService,
+            @Autowired(required = false) SingleSourceCrawlPreviewService singleSourceCrawlPreviewService,
+            @Autowired(required = false) SingleSourceCrawlStarter singleSourceCrawlStarter,
+            @Autowired(required = false) PdfContentClassifier pdfContentClassifier) {
 
         this.sourceProperties = appDocumentSourceProperties;
         this.youTubeTranscriptService = youTubeTranscriptService;
@@ -173,6 +209,9 @@ public class ExternalSourceIngestController {
                 ? sourceMarkdownConversionService
                 : new SourceMarkdownConversionService(this.sourceDocumentStorageService, appDocumentSourceProperties);
         this.factSheetService = factSheetService;
+        this.singleSourceCrawlPreviewService = singleSourceCrawlPreviewService;
+        this.singleSourceCrawlStarter = singleSourceCrawlStarter;
+        this.pdfContentClassifier = pdfContentClassifier;
 
         if (documentIngestService == null) {
             logger.warn("ExternalSourceIngestController: DocumentIngestService is not available");
@@ -216,9 +255,542 @@ public class ExternalSourceIngestController {
         }
     }
 
+    private boolean unifiedCrawlAvailable() {
+        return singleSourceCrawlStarter != null && singleSourceCrawlStarter.isAvailable();
+    }
+
+    private SingleSourceCrawlStarter.SingleSourceCrawlResult startUnifiedCrawlForFile(
+            String jobName,
+            String label,
+            Path filePath,
+            String loaderName,
+            String chunkerName,
+            Map<String, Object> properties) {
+        return startUnifiedCrawlForFile(jobName, label, filePath, loaderName, chunkerName, properties, null);
+    }
+
+    private SingleSourceCrawlStarter.SingleSourceCrawlResult startUnifiedCrawlForFile(
+            String jobName,
+            String label,
+            Path filePath,
+            String loaderName,
+            String chunkerName,
+            Map<String, Object> properties,
+            ProcessingRouteConfig processingRoute) {
+        UnifiedCrawlSource source = UnifiedCrawlSource.builder()
+                .label(label)
+                .sourceType(Files.isDirectory(filePath)
+                        ? DocumentSourceDescriptor.SourceType.DIRECTORY
+                        : DocumentSourceDescriptor.SourceType.FILE)
+                .pathOrUrl(filePath.toString())
+                .maxDepth(Files.isDirectory(filePath) ? 3 : 0)
+                .maxDocuments(Files.isDirectory(filePath) ? 0 : 1)
+                .loaderName(loaderName)
+                .chunkerName(chunkerName)
+                .properties(properties != null ? properties : new LinkedHashMap<>())
+                .build();
+        return singleSourceCrawlStarter.start(jobName, source, processingRoute);
+    }
+
+    private void addCrawlResponse(Map<String, Object> response,
+                                  SingleSourceCrawlStarter.SingleSourceCrawlResult crawl) {
+        response.put("jobId", crawl.jobId());
+        response.put("crawlJobId", crawl.jobId());
+        response.put("taskId", crawl.jobId());
+        response.put("status", crawl.status());
+        response.put("processingStarted", true);
+        response.put("crawlStarted", true);
+        response.put("processingMode", "unified_crawl");
+        response.put("sourceCount", crawl.sourceCount());
+        response.put("graphExtractionEnabled", crawl.graphExtractionEnabled());
+        response.put("vectorIndexEnabled", crawl.vectorIndexEnabled());
+        if (crawl.factSheetId() != null) {
+            response.put("factSheetId", crawl.factSheetId());
+        }
+        response.put("crawlEndpoints", Map.of(
+                "job", "/api/unified-crawl/jobs/" + crawl.jobId(),
+                "active", "/api/unified-crawl/jobs/active"));
+        response.put("crawlProgressTopic", "/topic/unified-crawl/progress");
+    }
+
+    private ProcessingRouteConfig buildPdfProcessingRoute(
+            String pdfProcessingMode,
+            String vlmModelId,
+            Boolean extractTables,
+            Integer autoModeMinCharacters) {
+        boolean hasRouteOverride = (pdfProcessingMode != null && !pdfProcessingMode.isBlank())
+                || (vlmModelId != null && !vlmModelId.isBlank())
+                || extractTables != null
+                || (autoModeMinCharacters != null && autoModeMinCharacters > 0);
+        if (!hasRouteOverride) {
+            return null;
+        }
+
+        int threshold = autoModeMinCharacters != null && autoModeMinCharacters > 0
+                ? autoModeMinCharacters
+                : 50;
+        return ProcessingRouteConfig.builder()
+                .pdfRoutingMode(resolvePdfRoutingMode(pdfProcessingMode))
+                .vlmModelId(blankToNull(vlmModelId))
+                .extractTablesFromTextPdfs(extractTables == null || extractTables)
+                .textThresholdCharsPerPage(threshold)
+                .build();
+    }
+
+    private ProcessingRouteConfig.PdfRoutingMode resolvePdfRoutingMode(String pdfProcessingMode) {
+        if (pdfProcessingMode == null || pdfProcessingMode.isBlank()) {
+            return ProcessingRouteConfig.PdfRoutingMode.AUTO;
+        }
+        return switch (pdfProcessingMode.trim().toUpperCase(Locale.ROOT)) {
+            case "VLM" -> ProcessingRouteConfig.PdfRoutingMode.FORCE_VLM;
+            case "TEXT_EXTRACTION" -> ProcessingRouteConfig.PdfRoutingMode.FORCE_TEXT;
+            case "TRADITIONAL_OCR" -> ProcessingRouteConfig.PdfRoutingMode.FORCE_TEXT;
+            case "DISABLED" -> ProcessingRouteConfig.PdfRoutingMode.DISABLED;
+            default -> ProcessingRouteConfig.PdfRoutingMode.AUTO;
+        };
+    }
+
+    private void addPdfRoutingProperties(Map<String, Object> properties,
+                                         ProcessingRouteConfig pdfRoute,
+                                         Boolean useCompositePdfLoader,
+                                         String pdfProcessingMode,
+                                         String tableExtractionMethod,
+                                         String tableStorageMode) {
+        if (properties == null) {
+            return;
+        }
+        if (Boolean.TRUE.equals(useCompositePdfLoader)) {
+            properties.put("useCompositePdfLoader", true);
+            properties.put("pdfUseCompositeLoader", true);
+        }
+        if (pdfRoute == null) {
+            return;
+        }
+        properties.put("pdfRoutingMode", pdfRoute.getPdfRoutingMode().name());
+        properties.put("pdfProcessingMode", firstNonBlank(pdfProcessingMode, pdfRoute.getPdfRoutingMode().name()));
+        properties.put("extractTablesFromTextPdfs", pdfRoute.isExtractTablesFromTextPdfs());
+        properties.put("textThresholdCharsPerPage", pdfRoute.getTextThresholdCharsPerPage());
+        if (blankToNull(pdfRoute.getVlmModelId()) != null) {
+            properties.put("vlmModelId", pdfRoute.getVlmModelId());
+        }
+        if (blankToNull(tableExtractionMethod) != null) {
+            properties.put("tableExtractionMethod", tableExtractionMethod);
+        }
+        if (blankToNull(tableStorageMode) != null) {
+            properties.put("tableStorageMode", tableStorageMode);
+        }
+    }
+
+    private void assessPdfRoutingForFiles(List<Map<String, Object>> files,
+                                          Map<String, Object> sourceProps,
+                                          ProcessingRouteConfig routeConfig) {
+        if (files == null || files.isEmpty() || sourceProps == null) {
+            return;
+        }
+        ProcessingRouteConfig effectiveRoute = routeConfig != null
+                ? routeConfig
+                : ProcessingRouteConfig.builder().pdfRoutingMode(ProcessingRouteConfig.PdfRoutingMode.AUTO).build();
+        List<Map<String, Object>> pdfRoutes = new ArrayList<>();
+        int pdfCount = 0;
+        int requiresVlmCount = 0;
+        int textOnlyCount = 0;
+        int unknownCount = 0;
+
+        for (Map<String, Object> fileInfo : files) {
+            if (!isPdfFile(fileInfo)) {
+                continue;
+            }
+            pdfCount++;
+            Map<String, Object> route = new LinkedHashMap<>();
+            route.put("fileName", firstNonBlank(asString(fileInfo.get("fileName")), asString(fileInfo.get("originalFileName")), "PDF"));
+            route.put("pdfRoutingMode", effectiveRoute.getPdfRoutingMode().name());
+            route.put("assessed", false);
+
+            PdfClassificationResult classification = null;
+            String filePath = firstNonBlank(asString(fileInfo.get("filePath")), asString(fileInfo.get("path")));
+            if (pdfContentClassifier != null && filePath != null) {
+                try {
+                    File pdfFile = new File(filePath);
+                    if (pdfFile.exists()) {
+                        classification = pdfContentClassifier.classify(pdfFile);
+                        putPdfClassification(route, classification);
+                        putPdfClassification(fileInfo, classification);
+                    } else {
+                        route.put("warning", "PDF file was not found for routing assessment");
+                    }
+                } catch (Exception e) {
+                    route.put("warning", "PDF routing assessment failed: " + e.getMessage());
+                }
+            } else if (pdfContentClassifier == null) {
+                route.put("warning", "PDF classifier is not available in this runtime");
+            }
+
+            boolean requiresVlm = requiresVlm(effectiveRoute, classification);
+            String effectiveRouteName = effectivePdfRoute(effectiveRoute, classification);
+            route.put("assessed", classification != null);
+            route.put("requiresVlm", requiresVlm);
+            route.put("effectiveRoute", effectiveRouteName);
+            fileInfo.put("pdfRequiresVlm", requiresVlm);
+            fileInfo.put("pdfEffectiveRoute", effectiveRouteName);
+            fileInfo.put("pdfRoutingMode", effectiveRoute.getPdfRoutingMode().name());
+            pdfRoutes.add(route);
+
+            if (requiresVlm) {
+                requiresVlmCount++;
+            } else if (classification != null && classification.isTextOnly()) {
+                textOnlyCount++;
+            } else {
+                unknownCount++;
+            }
+        }
+
+        if (pdfCount == 0) {
+            return;
+        }
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("pdfCount", pdfCount);
+        summary.put("requiresVlmCount", requiresVlmCount);
+        summary.put("textOnlyCount", textOnlyCount);
+        summary.put("unknownCount", unknownCount);
+        summary.put("requiresVlm", requiresVlmCount > 0);
+        summary.put("routes", pdfRoutes);
+        sourceProps.put("pdfRouting", summary);
+        sourceProps.put("pdfFileCount", pdfCount);
+        sourceProps.put("pdfRequiresVlm", requiresVlmCount > 0);
+    }
+
+    private void putPdfClassification(Map<String, Object> target, PdfClassificationResult classification) {
+        if (target == null || classification == null) {
+            return;
+        }
+        target.put("pdfContentType", classification.contentType().name());
+        target.put("pdfPageCount", classification.pageCount());
+        target.put("pdfImagePagesCount", classification.imagePagesCount());
+        target.put("pdfImagePageIndices", classification.imagePageIndices());
+        target.put("pdfTextCharCount", classification.textCharCount());
+        target.put("pdfHasImages", classification.hasImages());
+        target.put("pdfHasScannedPages", classification.hasScannedPages());
+        target.put("pdfClassificationTimeMs", classification.classificationTimeMs());
+    }
+
+    private boolean requiresVlm(ProcessingRouteConfig routeConfig, PdfClassificationResult classification) {
+        ProcessingRouteConfig.PdfRoutingMode mode = routeConfig != null && routeConfig.getPdfRoutingMode() != null
+                ? routeConfig.getPdfRoutingMode()
+                : ProcessingRouteConfig.PdfRoutingMode.AUTO;
+        return switch (mode) {
+            case FORCE_VLM -> true;
+            case FORCE_TEXT, DISABLED -> false;
+            case AUTO -> classification != null && classification.requiresVlm();
+        };
+    }
+
+    private String effectivePdfRoute(ProcessingRouteConfig routeConfig, PdfClassificationResult classification) {
+        ProcessingRouteConfig.PdfRoutingMode mode = routeConfig != null && routeConfig.getPdfRoutingMode() != null
+                ? routeConfig.getPdfRoutingMode()
+                : ProcessingRouteConfig.PdfRoutingMode.AUTO;
+        if (mode == ProcessingRouteConfig.PdfRoutingMode.FORCE_VLM) {
+            return "force_vlm";
+        }
+        if (mode == ProcessingRouteConfig.PdfRoutingMode.FORCE_TEXT) {
+            return "force_text";
+        }
+        if (mode == ProcessingRouteConfig.PdfRoutingMode.DISABLED) {
+            return "disabled";
+        }
+        if (classification == null) {
+            return "unknown_fallback";
+        }
+        return switch (classification.contentType()) {
+            case IMAGE_BASED -> "vlm";
+            case MIXED -> "vlm_mixed";
+            case TEXT_ONLY -> "text_extraction";
+            default -> "unknown_fallback";
+        };
+    }
+
+    private boolean isPdfFile(Map<String, Object> fileInfo) {
+        if (fileInfo == null) {
+            return false;
+        }
+        String contentType = asString(fileInfo.get("contentType"));
+        if (contentType != null && contentType.toLowerCase(Locale.ROOT).contains("pdf")) {
+            return true;
+        }
+        String path = firstNonBlank(asString(fileInfo.get("filePath")), asString(fileInfo.get("path")),
+                asString(fileInfo.get("fileName")), asString(fileInfo.get("originalFileName")));
+        return path != null && path.toLowerCase(Locale.ROOT).endsWith(".pdf");
+    }
+
+    private String firstNonBlank(String... values) {
+        if (values == null) {
+            return null;
+        }
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private String blankToNull(String value) {
+        return value != null && !value.isBlank() ? value : null;
+    }
+
+    private String asString(Object value) {
+        return value instanceof String string ? string : null;
+    }
+
     // -------------------------------------------------------------------------
     // Endpoints
     // -------------------------------------------------------------------------
+
+    /**
+     * Runs a bounded dry-run crawl/loader preview for an individual add-source request.
+     * The preview reports candidate sources and estimated chunks without writing graph,
+     * index, source-storage, or crawl-state data.
+     */
+    @PostMapping("/preview-source-crawl")
+    public ResponseEntity<?> handlePreviewSourceCrawl(
+            @RequestBody SingleSourceCrawlPreviewService.SingleSourcePreviewRequest request) {
+        if (singleSourceCrawlPreviewService == null) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .body(Map.of("error", "Single-source crawl preview service is not available"));
+        }
+        try {
+            return ResponseEntity.ok(singleSourceCrawlPreviewService.preview(request));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        } catch (Exception e) {
+            logger.error("Single-source crawl preview failed: {}", e.getMessage(), e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("error", "Failed to preview source crawl", "details", e.getMessage()));
+        }
+    }
+
+    /**
+     * Runs the same bounded dry-run preview for browser-uploaded files without
+     * persisting them to the normal uploads directory.
+     */
+    @PostMapping(value = "/preview-source-crawl-files", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<?> handlePreviewSourceCrawlFiles(
+            @RequestParam("files") MultipartFile[] files,
+            @RequestParam(name = "loader", required = false) String loaderName,
+            @RequestParam(name = "chunkerName", required = false) String chunkerName,
+            @RequestParam(name = "maxDocuments", required = false, defaultValue = "25") Integer maxDocuments,
+            @RequestParam(name = "useCompositePdfLoader", required = false, defaultValue = "false") Boolean useCompositePdfLoader,
+            @RequestParam(name = "pdfProcessingMode", required = false) String pdfProcessingMode,
+            @RequestParam(name = "vlmModelId", required = false) String vlmModelId,
+            @RequestParam(name = "extractTables", required = false) Boolean extractTables,
+            @RequestParam(name = "tableExtractionMethod", required = false) String tableExtractionMethod,
+            @RequestParam(name = "tableStorageMode", required = false) String tableStorageMode,
+            @RequestParam(name = "autoModeMinCharacters", required = false) Integer autoModeMinCharacters) {
+        if (singleSourceCrawlPreviewService == null) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .body(Map.of("error", "Single-source crawl preview service is not available"));
+        }
+        if (files == null || files.length == 0) {
+            return ResponseEntity.badRequest().body(Map.of("error", "At least one file is required for preview"));
+        }
+
+        Path previewDir = null;
+        try {
+            previewDir = Files.createTempDirectory("kompile-source-preview-");
+            List<Map<String, Object>> previewFiles = new ArrayList<>();
+            for (MultipartFile file : files) {
+                if (file == null || file.isEmpty()) {
+                    return ResponseEntity.badRequest().body(Map.of("error", "File cannot be empty"));
+                }
+                Path storedFile = saveMultipartFile(file, previewDir);
+                Map<String, Object> fileInfo = new LinkedHashMap<>();
+                fileInfo.put("fileName", storedFile.getFileName().toString());
+                fileInfo.put("path", storedFile.toString());
+                fileInfo.put("sizeBytes", file.getSize());
+                if (file.getContentType() != null) {
+                    fileInfo.put("contentType", file.getContentType());
+                }
+                previewFiles.add(fileInfo);
+            }
+
+            Path previewPath = previewFiles.size() == 1
+                    ? Paths.get(String.valueOf(previewFiles.get(0).get("path")))
+                    : previewDir;
+            Map<String, Object> properties = new LinkedHashMap<>();
+            properties.put("source_kind", "file_preview");
+            properties.put("uploadedFileCount", previewFiles.size());
+            properties.put("uploadedFiles", previewFiles.stream()
+                    .map(file -> file.get("fileName"))
+                    .collect(Collectors.toList()));
+            ProcessingRouteConfig pdfRoute = buildPdfProcessingRoute(
+                    pdfProcessingMode, vlmModelId, extractTables, autoModeMinCharacters);
+            addPdfRoutingProperties(properties, pdfRoute, useCompositePdfLoader, pdfProcessingMode,
+                    tableExtractionMethod, tableStorageMode);
+
+            SingleSourceCrawlPreviewService.SingleSourcePreviewRequest previewRequest =
+                    new SingleSourceCrawlPreviewService.SingleSourcePreviewRequest(
+                            previewFiles.size() == 1 ? "file" : "path",
+                            previewFiles.size() == 1
+                                    ? String.valueOf(previewFiles.get(0).get("fileName"))
+                                    : previewFiles.size() + " uploaded files",
+                            previewPath.toString(),
+                            null,
+                            loaderName,
+                            chunkerName,
+                            previewFiles.size() == 1 ? 0 : 1,
+                            maxDocuments != null ? maxDocuments : 25,
+                            null,
+                            properties);
+
+            return ResponseEntity.ok(singleSourceCrawlPreviewService.preview(previewRequest));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        } catch (Exception e) {
+            logger.error("Uploaded file crawl preview failed: {}", e.getMessage(), e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("error", "Failed to preview uploaded file crawl", "details", e.getMessage()));
+        } finally {
+            deleteRecursively(previewDir);
+        }
+    }
+
+    /**
+     * Uploads one or more browser-selected files and starts an observable unified
+     * crawl so graph extraction, incremental updates, and vector indexing run.
+     */
+    @PostMapping(value = "/add-files", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<?> handleAddFiles(
+            @RequestParam("files") MultipartFile[] files,
+            @RequestParam(name = "loader", required = false) String loaderName,
+            @RequestParam(name = "chunkerName", required = false) String chunkerName,
+            @RequestParam(name = "processingMode", required = false, defaultValue = "auto") String processingMode,
+            @RequestParam(name = "useCompositePdfLoader", required = false, defaultValue = "false") Boolean useCompositePdfLoader,
+            @RequestParam(name = "pdfProcessingMode", required = false) String pdfProcessingMode,
+            @RequestParam(name = "vlmModelId", required = false) String vlmModelId,
+            @RequestParam(name = "extractTables", required = false) Boolean extractTables,
+            @RequestParam(name = "tableExtractionMethod", required = false) String tableExtractionMethod,
+            @RequestParam(name = "tableStorageMode", required = false) String tableStorageMode,
+            @RequestParam(name = "autoModeMinCharacters", required = false) Integer autoModeMinCharacters) {
+        if (!unifiedCrawlAvailable()) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .body(Map.of("error", "Unified crawl service is not available for file add-source requests"));
+        }
+        if (this.uploadsPath == null
+                || "error_uploads_path_not_configured".equals(this.uploadsPath.getFileName().toString())) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("error", "Uploads directory is not configured correctly on the server."));
+        }
+        if (files == null || files.length == 0) {
+            return ResponseEntity.badRequest().body(Map.of("error", "No files provided for upload."));
+        }
+
+        List<Map<String, Object>> uploadedFiles = new ArrayList<>();
+        int rejectedCount = 0;
+        Path batchDir = null;
+        try {
+            Files.createDirectories(this.uploadsPath);
+            Path targetDir = this.uploadsPath;
+            if (files.length > 1) {
+                batchDir = this.uploadsPath.resolve("single-source-crawl-"
+                        + System.currentTimeMillis() + "-" + UUID.randomUUID().toString().substring(0, 8)).normalize();
+                if (!batchDir.startsWith(this.uploadsPath.normalize())) {
+                    return ResponseEntity.badRequest().body(Map.of("error", "Invalid upload batch path."));
+                }
+                Files.createDirectories(batchDir);
+                targetDir = batchDir;
+            }
+
+            for (MultipartFile file : files) {
+                String originalFileName = file != null ? file.getOriginalFilename() : null;
+                Map<String, Object> fileInfo = new LinkedHashMap<>();
+                fileInfo.put("originalFileName", originalFileName != null ? originalFileName : "unknown");
+
+                if (file == null || file.isEmpty()) {
+                    fileInfo.put("accepted", false);
+                    fileInfo.put("error", "File is empty");
+                    uploadedFiles.add(fileInfo);
+                    rejectedCount++;
+                    continue;
+                }
+
+                try {
+                    Path storedFile = saveMultipartFile(file, targetDir);
+                    fileInfo.put("accepted", true);
+                    fileInfo.put("fileName", storedFile.getFileName().toString());
+                    fileInfo.put("filePath", storedFile.toString());
+                    fileInfo.put("sizeBytes", file.getSize());
+                    if (file.getContentType() != null) {
+                        fileInfo.put("contentType", file.getContentType());
+                    }
+                    uploadedFiles.add(fileInfo);
+                } catch (Exception e) {
+                    logger.warn("Failed to store uploaded source file {}: {}", originalFileName, e.getMessage());
+                    fileInfo.put("accepted", false);
+                    fileInfo.put("error", e.getMessage());
+                    uploadedFiles.add(fileInfo);
+                    rejectedCount++;
+                }
+            }
+
+            List<Map<String, Object>> acceptedFiles = uploadedFiles.stream()
+                    .filter(file -> Boolean.TRUE.equals(file.get("accepted")))
+                    .collect(Collectors.toList());
+            if (acceptedFiles.isEmpty()) {
+                return ResponseEntity.badRequest().body(Map.of(
+                        "error", "No files could be stored for crawl",
+                        "files", uploadedFiles));
+            }
+
+            Path crawlPath = acceptedFiles.size() == 1
+                    ? Paths.get(String.valueOf(acceptedFiles.get(0).get("filePath")))
+                    : targetDir;
+            String crawlLabel = acceptedFiles.size() == 1
+                    ? String.valueOf(acceptedFiles.get(0).get("fileName"))
+                    : acceptedFiles.size() + " uploaded files";
+
+            ProcessingRouteConfig pdfRoute = buildPdfProcessingRoute(
+                    pdfProcessingMode, vlmModelId, extractTables, autoModeMinCharacters);
+            Map<String, Object> sourceProps = new LinkedHashMap<>();
+            sourceProps.put("source_kind", "file_add");
+            sourceProps.put("processing_mode", processingMode);
+            sourceProps.put("uploaded_file_count", acceptedFiles.size());
+            sourceProps.put("uploaded_files", acceptedFiles.stream()
+                    .map(file -> file.get("fileName"))
+                    .collect(Collectors.toList()));
+            addPdfRoutingProperties(sourceProps, pdfRoute, useCompositePdfLoader, pdfProcessingMode,
+                    tableExtractionMethod, tableStorageMode);
+            assessPdfRoutingForFiles(acceptedFiles, sourceProps, pdfRoute);
+
+            SingleSourceCrawlStarter.SingleSourceCrawlResult crawl = startUnifiedCrawlForFile(
+                    acceptedFiles.size() == 1 ? "Add file source: " + crawlLabel : "Add file sources: " + crawlLabel,
+                    crawlLabel,
+                    crawlPath,
+                    loaderName,
+                    chunkerName,
+                    sourceProps,
+                    pdfRoute);
+
+            Map<String, Object> response = new LinkedHashMap<>();
+            response.put("message", rejectedCount > 0
+                    ? "Unified crawl started for uploaded files; " + rejectedCount + " file(s) rejected."
+                    : "Unified crawl started for uploaded file source.");
+            response.put("sourceType", Files.isDirectory(crawlPath) ? "DIRECTORY" : "FILE");
+            response.put("acceptedCount", acceptedFiles.size());
+            response.put("rejectedCount", rejectedCount);
+            response.put("files", uploadedFiles);
+            if (batchDir != null) {
+                response.put("batchDirectory", batchDir.toString());
+            }
+            if (sourceProps.containsKey("pdfRouting")) {
+                response.put("pdfRouting", sourceProps.get("pdfRouting"));
+            }
+            addCrawlResponse(response, crawl);
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            logger.error("Failed to start uploaded file source crawl: {}", e.getMessage(), e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("error", "Failed to start uploaded file source crawl", "details", e.getMessage()));
+        }
+    }
 
     /**
      * Endpoint to trigger ingestion from a server-side path.
@@ -248,7 +820,26 @@ public class ExternalSourceIngestController {
         logger.info("Received request to ingest path: {} (Task ID: {})", safePathStr, taskId);
 
         try {
-            // Trigger async processing
+            if (unifiedCrawlAvailable()) {
+                Map<String, Object> response = new LinkedHashMap<>();
+                response.put("message", "Unified crawl started for path: " + pathStr);
+                response.put("path", path.toString());
+                response.put("sourceType", Files.isDirectory(path) ? "DIRECTORY" : "FILE");
+                SingleSourceCrawlStarter.SingleSourceCrawlResult crawl = startUnifiedCrawlForFile(
+                        "Add source: " + path.getFileName(),
+                        path.getFileName() != null ? path.getFileName().toString() : pathStr,
+                        path,
+                        request.loader(),
+                        request.chunkerName(),
+                        Map.of("source_kind", "path_add"));
+                addCrawlResponse(response, crawl);
+                return ResponseEntity.ok(response);
+            }
+
+            if (documentIngestService == null) {
+                return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                        .body(Map.of("error", "Unified crawl and DocumentIngestService are not available"));
+            }
             documentIngestService.processDocumentAsync(
                     taskId,
                     path,
@@ -385,7 +976,28 @@ public class ExternalSourceIngestController {
                         + markdownConversion.fileName() + "'.");
             }
 
-            // Process the downloaded content immediately
+            if (unifiedCrawlAvailable()) {
+                logger.info("Starting unified crawl for downloaded URL content: {} (source URL: {})",
+                        finalOutputFileName, urlString);
+                Map<String, Object> sourceProps = new LinkedHashMap<>();
+                sourceProps.put("source_kind", "url_add");
+                sourceProps.put(ai.kompile.core.source.SourceMetadataConstants.SOURCE_URL, urlString);
+                sourceProps.put("original_url", urlString);
+                sourceProps.put("downloaded_file_name", finalOutputFileName);
+                SingleSourceCrawlStarter.SingleSourceCrawlResult crawl = startUnifiedCrawlForFile(
+                        "Add URL source: " + finalOutputFileName,
+                        finalOutputFileName,
+                        destinationFile,
+                        loaderName,
+                        chunkerName,
+                        sourceProps);
+                response.put("processingCompleted", false);
+                response.put("message", response.get("message") + " Unified crawl started for processing, graph extraction, and indexing.");
+                addCrawlResponse(response, crawl);
+                return ResponseEntity.ok(response);
+            }
+
+            // Legacy fallback when the unified crawl service is not wired.
             try {
                 logger.info("Processing URL content immediately: {} (source URL: {})", finalOutputFileName, urlString);
                 DocumentManagementController.DocumentProcessingResult processingResult =
@@ -502,16 +1114,25 @@ public class ExternalSourceIngestController {
                 logger.info("Saved transcript to file: {}", transcriptFile);
             }
 
-            // Process for indexing if DocumentIngestService is available
-            if (documentIngestService != null) {
+            if (transcriptFile != null && Files.exists(transcriptFile) && unifiedCrawlAvailable()) {
+                logger.info("Starting unified crawl for YouTube transcript: {}", transcriptFile);
+                Map<String, Object> sourceProps = new LinkedHashMap<>();
+                sourceProps.put("source_kind", "youtube_transcript");
+                sourceProps.put("videoId", videoId);
+                sourceProps.put("videoTitle", title);
+                sourceProps.put("youtubeUrl", urlString);
+                SingleSourceCrawlStarter.SingleSourceCrawlResult crawl = startUnifiedCrawlForFile(
+                        "Add YouTube source: " + title,
+                        title,
+                        transcriptFile,
+                        null,
+                        chunkerName,
+                        sourceProps);
+                addCrawlResponse(response, crawl);
+            } else if (documentIngestService != null) {
                 String taskId = UUID.randomUUID().toString();
                 logger.info("Starting async processing for YouTube transcript, taskId: {}", taskId);
 
-                // Convert to Spring AI Document
-                org.springframework.ai.document.Document document =
-                        youTubeTranscriptService.toDocument(transcriptResult);
-
-                // If we saved to file, process that file
                 if (transcriptFile != null && Files.exists(transcriptFile)) {
                     documentIngestService.processDocumentAsync(
                             taskId,
@@ -523,7 +1144,6 @@ public class ExternalSourceIngestController {
                     response.put("taskId", taskId);
                     response.put("processingStarted", true);
                 } else {
-                    // Direct document processing without file
                     response.put("processingStarted", false);
                     response.put("processingNote",
                             "Transcript fetched but direct document ingestion not available. "
@@ -532,7 +1152,7 @@ public class ExternalSourceIngestController {
             } else {
                 response.put("processingStarted", false);
                 response.put("processingNote",
-                        "DocumentIngestService not available. Transcript was fetched but not indexed.");
+                        "No crawl or ingest service available. Transcript was fetched but not indexed.");
             }
 
             return ResponseEntity.ok(response);
@@ -607,8 +1227,21 @@ public class ExternalSourceIngestController {
                 logger.info("Saved text content to file: {}", textFile);
             }
 
-            // Process for indexing if DocumentIngestService is available
-            if (documentIngestService != null && textFile != null && Files.exists(textFile)) {
+            if (unifiedCrawlAvailable() && textFile != null && Files.exists(textFile)) {
+                logger.info("Starting unified crawl for text content: {}", textFile);
+                Map<String, Object> sourceProps = new LinkedHashMap<>();
+                sourceProps.put("source_kind", "text_add");
+                sourceProps.put("source_name", sourceName);
+                sourceProps.put("content_length", content.length());
+                SingleSourceCrawlStarter.SingleSourceCrawlResult crawl = startUnifiedCrawlForFile(
+                        "Add text source: " + sourceName,
+                        sourceName,
+                        textFile,
+                        null,
+                        chunkerName,
+                        sourceProps);
+                addCrawlResponse(response, crawl);
+            } else if (documentIngestService != null && textFile != null && Files.exists(textFile)) {
                 String taskId = UUID.randomUUID().toString();
                 logger.info("Starting async processing for text content, taskId: {}", taskId);
 
@@ -623,7 +1256,7 @@ public class ExternalSourceIngestController {
             } else if (documentIngestService == null) {
                 response.put("processingStarted", false);
                 response.put("processingNote",
-                        "DocumentIngestService not available. Text was saved but not indexed.");
+                        "No crawl or ingest service available. Text was saved but not indexed.");
             } else {
                 response.put("processingStarted", false);
                 response.put("processingNote", "Text content saved but could not be processed.");
@@ -641,6 +1274,127 @@ public class ExternalSourceIngestController {
         }
     }
 
+    @PostMapping("/add-discord")
+    public ResponseEntity<?> handleAddDiscord(@RequestBody AddDiscordRequest request) {
+        if (!unifiedCrawlAvailable()) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .body(Map.of("error", "Unified crawl service is not available for Discord add-source requests"));
+        }
+        if (request == null || request.serverId() == null || request.serverId().trim().isEmpty()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Discord server ID cannot be empty."));
+        }
+        if (request.botToken() == null || request.botToken().trim().isEmpty()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Discord bot token cannot be empty."));
+        }
+
+        try {
+            String serverId = request.serverId().trim();
+            String channelId = request.channelId() != null ? request.channelId().trim() : null;
+            Map<String, Object> metadata = new LinkedHashMap<>();
+            metadata.put("source_kind", "discord_add");
+            metadata.put("botToken", request.botToken().trim());
+            if (channelId != null && !channelId.isBlank()) {
+                metadata.put("channelId", channelId);
+            }
+            if (request.messageLimit() != null) {
+                metadata.put("messageLimit", request.messageLimit());
+            }
+            if (request.includeThreads() != null) {
+                metadata.put("includeThreads", request.includeThreads());
+            }
+            if (request.saveMessagesFile() != null) {
+                metadata.put("saveMessagesFile", request.saveMessagesFile());
+            }
+
+            UnifiedCrawlSource source = UnifiedCrawlSource.builder()
+                    .label(channelId != null && !channelId.isBlank()
+                            ? "Discord: " + channelId
+                            : "Discord: " + serverId)
+                    .sourceType(DocumentSourceDescriptor.SourceType.DISCORD)
+                    .pathOrUrl(serverId)
+                    .maxDepth(0)
+                    .maxDocuments(request.messageLimit() != null ? request.messageLimit() : 1000)
+                    .chunkerName(request.chunkerName())
+                    .properties(metadata)
+                    .build();
+            SingleSourceCrawlStarter.SingleSourceCrawlResult crawl = singleSourceCrawlStarter.start(
+                    "Add Discord source: " + (channelId != null && !channelId.isBlank() ? channelId : serverId),
+                    source);
+            Map<String, Object> response = new LinkedHashMap<>();
+            response.put("message", "Unified crawl started for Discord source");
+            response.put("serverId", serverId);
+            if (channelId != null && !channelId.isBlank()) {
+                response.put("channelId", channelId);
+            }
+            addCrawlResponse(response, crawl);
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            logger.error("Error starting Discord source crawl for {}: {}", request.serverId(), e.getMessage(), e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("error", "Failed to start Discord source crawl", "details", e.getMessage()));
+        }
+    }
+
+    @PostMapping("/add-confluence")
+    public ResponseEntity<?> handleAddConfluence(@RequestBody AddConfluenceRequest request) {
+        if (!unifiedCrawlAvailable()) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .body(Map.of("error", "Unified crawl service is not available for Confluence add-source requests"));
+        }
+        if (request == null || request.baseUrl() == null || request.baseUrl().trim().isEmpty()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Confluence base URL cannot be empty."));
+        }
+        if (request.email() == null || request.email().trim().isEmpty()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Confluence email cannot be empty."));
+        }
+        if (request.apiToken() == null || request.apiToken().trim().isEmpty()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Confluence API token cannot be empty."));
+        }
+        if (request.spaceKey() == null || request.spaceKey().trim().isEmpty()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Confluence space key cannot be empty."));
+        }
+
+        try {
+            String baseUrl = request.baseUrl().trim();
+            String spaceKey = request.spaceKey().trim();
+            boolean includeChildren = request.includeChildren() == null || request.includeChildren();
+            boolean includeAttachments = Boolean.TRUE.equals(request.includeAttachments());
+
+            Map<String, Object> metadata = new LinkedHashMap<>();
+            metadata.put("source_kind", "confluence_add");
+            metadata.put("email", request.email().trim());
+            metadata.put("apiToken", request.apiToken().trim());
+            metadata.put("spaceKey", spaceKey);
+            metadata.put("includeChildren", includeChildren);
+            metadata.put("includeAttachments", includeAttachments);
+
+            UnifiedCrawlSource source = UnifiedCrawlSource.builder()
+                    .label("Confluence: " + spaceKey)
+                    .sourceType(DocumentSourceDescriptor.SourceType.CONFLUENCE)
+                    .pathOrUrl(baseUrl)
+                    .maxDepth(includeChildren ? 3 : 0)
+                    .maxDocuments(0)
+                    .chunkerName(request.chunkerName())
+                    .properties(metadata)
+                    .build();
+            SingleSourceCrawlStarter.SingleSourceCrawlResult crawl = singleSourceCrawlStarter.start(
+                    "Add Confluence source: " + spaceKey,
+                    source);
+            Map<String, Object> response = new LinkedHashMap<>();
+            response.put("message", "Unified crawl started for Confluence space");
+            response.put("baseUrl", baseUrl);
+            response.put("spaceKey", spaceKey);
+            response.put("includeChildren", includeChildren);
+            response.put("includeAttachments", includeAttachments);
+            addCrawlResponse(response, crawl);
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            logger.error("Error starting Confluence source crawl for {}: {}", request.spaceKey(), e.getMessage(), e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("error", "Failed to start Confluence source crawl", "details", e.getMessage()));
+        }
+    }
+
     /**
      * Endpoint to add Slack channel messages as a document source.
      * Fetches messages from a Slack channel for indexing.
@@ -650,9 +1404,9 @@ public class ExternalSourceIngestController {
      */
     @PostMapping("/add-slack")
     public ResponseEntity<?> handleAddSlack(@RequestBody AddSlackRequest request) {
-        if (documentLoadingService == null) {
+        if (!unifiedCrawlAvailable() && documentLoadingService == null) {
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
-                    .body(Map.of("error", "Document loading service is not available"));
+                    .body(Map.of("error", "Unified crawl and document loading services are not available"));
         }
 
         if (request.channelId() == null || request.channelId().trim().isEmpty()) {
@@ -673,6 +1427,27 @@ public class ExternalSourceIngestController {
             }
             if (request.includeThreads() != null) {
                 metadata.put("includeThreads", request.includeThreads());
+            }
+
+            if (unifiedCrawlAvailable()) {
+                metadata.put("source_kind", "slack_add");
+                UnifiedCrawlSource source = UnifiedCrawlSource.builder()
+                        .label("Slack: " + channelId)
+                        .sourceType(DocumentSourceDescriptor.SourceType.SLACK)
+                        .pathOrUrl(channelId)
+                        .maxDepth(0)
+                        .maxDocuments(request.messageLimit() != null ? request.messageLimit() : 100)
+                        .chunkerName(request.chunkerName())
+                        .properties(metadata)
+                        .build();
+                SingleSourceCrawlStarter.SingleSourceCrawlResult crawl = singleSourceCrawlStarter.start(
+                        "Add Slack source: " + channelId,
+                        source);
+                Map<String, Object> response = new LinkedHashMap<>();
+                response.put("message", "Unified crawl started for Slack channel");
+                response.put("channelId", channelId);
+                addCrawlResponse(response, crawl);
+                return ResponseEntity.ok(response);
             }
 
             // Create source descriptor for Slack
@@ -733,9 +1508,9 @@ public class ExternalSourceIngestController {
      */
     @PostMapping("/add-slack-history")
     public ResponseEntity<?> handleAddSlackHistory(@RequestBody AddSlackHistoryRequest request) {
-        if (documentLoadingService == null) {
+        if (!unifiedCrawlAvailable() && documentLoadingService == null) {
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
-                    .body(Map.of("error", "Document loading service is not available"));
+                    .body(Map.of("error", "Unified crawl and document loading services are not available"));
         }
 
         if ((request.channelId() == null || request.channelId().trim().isEmpty())
@@ -773,6 +1548,39 @@ public class ExternalSourceIngestController {
                 metadata.put("loadAllChannels", true);
             }
 
+            if (unifiedCrawlAvailable()) {
+                String label = channelId.isEmpty() ? "all accessible channels" : channelId;
+                metadata.put("source_kind", "slack_history_add");
+                UnifiedCrawlSource source = UnifiedCrawlSource.builder()
+                        .label("Slack history: " + label)
+                        .sourceType(DocumentSourceDescriptor.SourceType.SLACK_HISTORY)
+                        .pathOrUrl(channelId.isEmpty() ? "all" : channelId)
+                        .maxDepth(0)
+                        .maxDocuments(request.maxMessages() != null ? request.maxMessages() : 1000)
+                        .chunkerName(request.chunkerName())
+                        .properties(metadata)
+                        .build();
+
+                SingleSourceCrawlStarter.SingleSourceCrawlResult crawl = singleSourceCrawlStarter.start(
+                        "Add Slack history source: " + label,
+                        source);
+                Map<String, Object> response = new LinkedHashMap<>();
+                response.put("message", "Unified crawl started for Slack history");
+                response.put("channelId", label);
+                if (request.startDate() != null) {
+                    response.put("startDate", request.startDate());
+                }
+                if (request.endDate() != null) {
+                    response.put("endDate", request.endDate());
+                }
+                if (request.daysBack() != null) {
+                    response.put("daysBack", request.daysBack());
+                }
+                addCrawlResponse(response, crawl);
+                return ResponseEntity.ok(response);
+            }
+
+            // Legacy fallback when the unified crawl service is not wired.
             // Create source descriptor for Slack History
             DocumentSourceDescriptor sourceDescriptor = DocumentSourceDescriptor.builder()
                     .type(DocumentSourceDescriptor.SourceType.SLACK_HISTORY)
@@ -835,6 +1643,76 @@ public class ExternalSourceIngestController {
     // -------------------------------------------------------------------------
     // Private utility methods
     // -------------------------------------------------------------------------
+
+    private Path saveMultipartFile(MultipartFile file, Path targetDir) throws IOException {
+        Files.createDirectories(targetDir);
+        String originalFileName = Objects.requireNonNullElse(file.getOriginalFilename(),
+                "uploaded_file_" + UUID.randomUUID());
+        String sanitizedFileName = sanitizeUploadedFileName(originalFileName);
+        Path destinationFile = uniqueDestination(targetDir, sanitizedFileName);
+        if (!destinationFile.startsWith(targetDir.normalize())) {
+            throw new IOException("Invalid file path (directory traversal attempt)");
+        }
+        if (Files.exists(destinationFile) && Files.isDirectory(destinationFile)) {
+            deleteRecursively(destinationFile);
+        }
+        try (InputStream inputStream = file.getInputStream();
+                OutputStream outputStream = Files.newOutputStream(destinationFile,
+                        StandardOpenOption.CREATE_NEW,
+                        StandardOpenOption.WRITE)) {
+            inputStream.transferTo(outputStream);
+        }
+        return destinationFile;
+    }
+
+    private String sanitizeUploadedFileName(String fileName) {
+        String sanitized = fileName != null ? fileName.replaceAll("[^a-zA-Z0-9._-]", "_") : "";
+        if (sanitized.isBlank()) {
+            return "upload_" + UUID.randomUUID().toString().substring(0, 8);
+        }
+        return sanitized;
+    }
+
+    private Path uniqueDestination(Path targetDir, String sanitizedFileName) throws IOException {
+        Path destination = targetDir.resolve(sanitizedFileName).normalize();
+        if (!destination.startsWith(targetDir.normalize())) {
+            throw new IOException("Invalid file path (directory traversal attempt)");
+        }
+        if (!Files.exists(destination)) {
+            return destination;
+        }
+
+        String baseName = sanitizedFileName;
+        String extension = "";
+        int dotIndex = sanitizedFileName.lastIndexOf('.');
+        if (dotIndex > 0 && dotIndex < sanitizedFileName.length() - 1) {
+            baseName = sanitizedFileName.substring(0, dotIndex);
+            extension = sanitizedFileName.substring(dotIndex);
+        }
+        for (int i = 1; i < 10_000; i++) {
+            Path candidate = targetDir.resolve(baseName + "_" + i + extension).normalize();
+            if (!candidate.startsWith(targetDir.normalize())) {
+                throw new IOException("Invalid file path (directory traversal attempt)");
+            }
+            if (!Files.exists(candidate)) {
+                return candidate;
+            }
+        }
+        throw new IOException("Could not allocate a unique upload file name for " + sanitizedFileName);
+    }
+
+    private void deleteRecursively(Path path) {
+        if (path == null || !Files.exists(path)) {
+            return;
+        }
+        try (Stream<Path> walk = Files.walk(path)) {
+            walk.sorted(Comparator.reverseOrder())
+                    .map(Path::toFile)
+                    .forEach(File::delete);
+        } catch (Exception e) {
+            logger.warn("Failed to delete temporary preview path {}: {}", path, e.getMessage());
+        }
+    }
 
     /**
      * Parse a processing mode string into a ProcessingMode enum.

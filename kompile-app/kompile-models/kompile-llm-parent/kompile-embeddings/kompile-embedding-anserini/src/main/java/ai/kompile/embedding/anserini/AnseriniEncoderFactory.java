@@ -7,13 +7,17 @@ import io.anserini.encoder.samediff.GenericDenseSameDiffEncoder;
 import io.anserini.encoder.samediff.SameDiffEncoder;
 import io.anserini.encoder.samediff.VlmImageEncoder;
 import ai.kompile.modelmanager.KompileModelManager;
+import ai.kompile.modelmanager.ModelConstants;
+import ai.kompile.modelmanager.ModelDescriptor;
 import ai.kompile.modelmanager.RegistryBasedModelManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -246,10 +250,13 @@ public class AnseriniEncoderFactory {
             String modelIdentifier,
             RegistryBasedModelManager.ModelEntry entry) throws IOException {
 
-        // Get encoder type from registry metadata, or fall back to pattern matching
+        // Get encoder type from registry metadata, or fall back to pattern matching.
+        // Registry JSON often carries encoder_type:null; Jackson's tree conversion can
+        // surface that as a nullish string, which must not override model-id detection.
         EncoderType encoderType;
-        if (entry.metadata != null && entry.metadata.encoderType != null) {
-            encoderType = parseEncoderType(entry.metadata.encoderType);
+        String metadataEncoderType = entry.metadata != null ? normalizeEncoderType(entry.metadata.encoderType) : null;
+        if (metadataEncoderType != null) {
+            encoderType = parseEncoderType(metadataEncoderType);
             logger.debug("Using encoder type from registry: {}", encoderType);
         } else {
             encoderType = getEncoderTypeFromModelId(modelIdentifier);
@@ -313,6 +320,17 @@ public class AnseriniEncoderFactory {
                 return new GenericDenseSameDiffEncoder(modelIdentifier, modelPath, vocabPath,
                         null, null, doLowerCase, maxSequenceLength, addSpecialTokens, true);
         }
+    }
+
+    static String normalizeEncoderType(String encoderTypeStr) {
+        if (encoderTypeStr == null) {
+            return null;
+        }
+        String normalized = encoderTypeStr.trim();
+        if (normalized.isEmpty() || normalized.equalsIgnoreCase("null")) {
+            return null;
+        }
+        return normalized;
     }
 
     /**
@@ -568,6 +586,51 @@ public class AnseriniEncoderFactory {
     }
 
     /**
+     * Get supported language tags for an encoder without starting the subprocess.
+     */
+    public static List<String> getSupportedLanguages(String modelIdentifier) {
+        Optional<RegistryBasedModelManager.ModelEntry> entry = getRegistryManager().getModelEntry(modelIdentifier);
+        if (entry.isPresent() && entry.get().metadata != null
+                && entry.get().metadata.supportedLanguages != null
+                && !entry.get().metadata.supportedLanguages.isEmpty()) {
+            return List.copyOf(entry.get().metadata.supportedLanguages);
+        }
+
+        ModelDescriptor descriptor = ModelConstants.getAnseriniEncoderModelDescriptor(modelIdentifier);
+        if (descriptor != null) {
+            return readSupportedLanguages(descriptor.getMetadata().get("supported_languages"));
+        }
+        return List.of();
+    }
+
+    private static List<String> readSupportedLanguages(Object raw) {
+        if (raw == null) {
+            return List.of();
+        }
+        if (raw instanceof List<?> list) {
+            List<String> values = new ArrayList<>();
+            for (Object value : list) {
+                if (value != null && !value.toString().isBlank()) {
+                    values.add(value.toString().trim());
+                }
+            }
+            return List.copyOf(values);
+        }
+        String value = raw.toString();
+        if (value.isBlank()) {
+            return List.of();
+        }
+        List<String> values = new ArrayList<>();
+        for (String part : value.split(",")) {
+            String trimmed = part.trim();
+            if (!trimmed.isEmpty()) {
+                values.add(trimmed);
+            }
+        }
+        return List.copyOf(values);
+    }
+
+    /**
      * Check if a model is available in the registry.
      */
     public static boolean isModelAvailable(String modelIdentifier) {
@@ -778,6 +841,9 @@ public class AnseriniEncoderFactory {
                     modelInfo.put("optimizedAt", entry.metadata.optimizedAt);
                     modelInfo.put("optimizationTimeMs", entry.metadata.optimizationTimeMs);
                     modelInfo.put("unoptimizedBackupFile", entry.metadata.unoptimizedBackupFile);
+                    if (entry.metadata.supportedLanguages != null && !entry.metadata.supportedLanguages.isEmpty()) {
+                        modelInfo.put("supportedLanguages", List.copyOf(entry.metadata.supportedLanguages));
+                    }
                 }
 
                 result.put(modelId, modelInfo);
@@ -816,6 +882,9 @@ public class AnseriniEncoderFactory {
             modelInfo.put("optimizedAt", entry.metadata.optimizedAt);
             modelInfo.put("optimizationTimeMs", entry.metadata.optimizationTimeMs);
             modelInfo.put("unoptimizedBackupFile", entry.metadata.unoptimizedBackupFile);
+            if (entry.metadata.supportedLanguages != null && !entry.metadata.supportedLanguages.isEmpty()) {
+                modelInfo.put("supportedLanguages", List.copyOf(entry.metadata.supportedLanguages));
+            }
         }
 
         return modelInfo;

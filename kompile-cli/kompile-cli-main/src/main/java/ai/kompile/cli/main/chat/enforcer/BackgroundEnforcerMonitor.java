@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.chat.enforcer;
 
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.utils.AnsiConstants;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
@@ -66,23 +67,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * </ol>
  */
 public class BackgroundEnforcerMonitor {
-
-    // ── ANSI escape sequence stripping ────────────────────────────────────────
-
-    /**
-     * Regex that strips ALL ANSI/VT escape sequences, including:
-     * - CSI sequences: ESC [ ... final-byte
-     * - OSC sequences: ESC ] ... ST|BEL
-     * - Charset designators: ESC ( 0
-     * - Single-char intermediates: ESC > = <
-     * - String terminator: ESC \
-     */
-    private static final String ANSI_REGEX =
-            "\033\\[[0-9;?]*[a-zA-Z]"
-            + "|\033\\].*?(?:\033\\\\|\007)"
-            + "|\033[()][0-9A-B]"
-            + "|\033[>=<]"
-            + "|\033\\\\";
 
     // ── Constants ─────────────────────────────────────────────────────────────
 
@@ -444,7 +428,6 @@ public class BackgroundEnforcerMonitor {
      * @return clean text with all escape sequences removed
      */
     static String stripAnsi(String s) {
-        if (s == null) return "";
-        return s.replaceAll(ANSI_REGEX, "");
+        return AnsiConstants.stripAnsi(s);
     }
 }

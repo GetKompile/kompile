@@ -16,7 +16,10 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.regex.Matcher;
@@ -80,6 +83,40 @@ public class TraceHumanizer {
     }
 
     // ── Public API ───────────────────────────────────────────────────────────────
+
+    /** Matches a canonical 8-4-4-4-12 UUID. */
+    private static final Pattern UUID_PAT = Pattern.compile(
+            "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$");
+
+    /**
+     * Static, graph-free label cleaner — the final display fallback when no graph lookup is
+     * available. Strips path/namespace prefixes, replaces underscores with spaces, and never
+     * returns a raw UUID (UUIDs are shortened to their first block with an ellipsis).
+     *
+     * @param raw a node id, external id, or atom argument; null/blank returns ""
+     * @return a display-safe label (never null)
+     */
+    public static String cleanLabel(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return "";
+        }
+        String label = raw.trim();
+        if (UUID_PAT.matcher(label).matches()) {
+            return label.substring(0, 8) + "…";
+        }
+        int slash = Math.max(label.lastIndexOf('/'), label.lastIndexOf('\\'));
+        if (slash >= 0 && slash < label.length() - 1) {
+            label = label.substring(slash + 1);
+        }
+        int colon = label.lastIndexOf(':');
+        if (colon >= 0 && colon < label.length() - 1) {
+            label = label.substring(colon + 1);
+        }
+        if (UUID_PAT.matcher(label).matches()) {
+            return label.substring(0, 8) + "…";
+        }
+        return label.replace('_', ' ').trim();
+    }
 
     /**
      * Produce a human-readable label for a single PSL atom key.
@@ -238,8 +275,8 @@ public class TraceHumanizer {
      * @param evidenceAtoms list of atom-key evidence strings
      * @return new list with humanized labels
      */
-    public java.util.List<String> humanizeEvidenceAtoms(java.util.List<String> evidenceAtoms) {
-        java.util.List<String> result = new java.util.ArrayList<>(evidenceAtoms.size());
+    public List<String> humanizeEvidenceAtoms(List<String> evidenceAtoms) {
+        List<String> result = new ArrayList<>(evidenceAtoms.size());
         for (String ev : evidenceAtoms) {
             result.add(humanizeAtom(ev));
         }
@@ -253,8 +290,8 @@ public class TraceHumanizer {
      * @param rules raw rule strings
      * @return new list with humanized labels
      */
-    public java.util.List<String> humanizeRules(java.util.List<String> rules) {
-        java.util.List<String> result = new java.util.ArrayList<>(rules.size());
+    public List<String> humanizeRules(List<String> rules) {
+        List<String> result = new ArrayList<>(rules.size());
         for (String r : rules) {
             result.add(humanizeRule(r));
         }
@@ -270,7 +307,7 @@ public class TraceHumanizer {
     private NodeLevel nodeLevelForPredicate(String predicate) {
         if (predicate == null) return null;
         try {
-            return NodeLevel.valueOf(predicate.toUpperCase(java.util.Locale.ROOT));
+            return NodeLevel.valueOf(predicate.toUpperCase(Locale.ROOT));
         } catch (IllegalArgumentException e) {
             return null; // edge-type or unknown predicate
         }

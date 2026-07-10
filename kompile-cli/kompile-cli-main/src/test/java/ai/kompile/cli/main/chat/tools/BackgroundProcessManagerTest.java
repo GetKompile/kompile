@@ -17,11 +17,14 @@
 package ai.kompile.cli.main.chat.tools;
 
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager.*;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.condition.DisabledOnOs;
 import org.junit.jupiter.api.condition.OS;
 
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
@@ -478,6 +481,69 @@ class BackgroundProcessManagerTest {
         }
 
         @Test
+        void launchShouldExposeManagedTerminalEnv() throws Exception {
+            ProcessEntry entry = manager.launch(
+                    "printf '%s' \"$GEMINI_CLI_TRUST_WORKSPACE\"",
+                    "Managed env", Path.of(System.getProperty("user.dir")));
+
+            int attempts = 0;
+            while (entry.isRunning() && attempts < 50) {
+                Thread.sleep(100);
+                attempts++;
+            }
+
+            assertEquals(ProcessState.COMPLETED, entry.getState());
+            assertEquals(0, entry.getExitCode());
+            assertTrue(manager.readOutput(entry.getId(), 10).contains("true"),
+                    "process launch should inherit managed terminal workspace trust env");
+        }
+
+        @Test
+        void readOutputShouldExposeRunningProcessTail() throws Exception {
+            ProcessEntry entry = manager.launch(
+                    "printf 'live-ready\\n'; sleep 10",
+                    "Live tail", Path.of(System.getProperty("user.dir")));
+
+            String output = "";
+            int attempts = 0;
+            while (attempts < 50) {
+                output = manager.readOutput(entry.getId(), 10);
+                if (output.contains("live-ready")) {
+                    break;
+                }
+                Thread.sleep(100);
+                attempts++;
+            }
+
+            assertTrue(output.contains("live-ready"),
+                    "running process output should be readable before exit");
+            assertTrue(entry.isRunning(), "process should still be running while output is tailed");
+            assertTrue(BackgroundProcessManager.readOutputFile(entry.getOutputFile(), 10).contains("live-ready"));
+            assertTrue(manager.kill(entry.getId()));
+        }
+
+        @Test
+        void processToolStreamShouldExposeRunningProcessOutput() throws Exception {
+            ProcessEntry entry = manager.launch(
+                    "printf 'tool-stream-ready\\n'; sleep 10",
+                    "Tool stream", Path.of(System.getProperty("user.dir")));
+            ProcessManagementTool tool = new ProcessManagementTool(manager);
+            ObjectNode params = new ObjectMapper().createObjectNode();
+            params.put("action", "stream");
+            params.put("process_id", entry.getId());
+            params.put("tail_lines", 10);
+            params.put("follow_seconds", 1);
+
+            ToolResult result = tool.execute(params, null);
+
+            assertFalse(result.isError());
+            assertTrue(result.getOutput().contains("tool-stream-ready"),
+                    "process stream should include output from a still-running process");
+            assertTrue(result.getOutput().contains("stream status:"));
+            assertTrue(manager.kill(entry.getId()));
+        }
+
+        @Test
         void launchFailingCommand_shouldSetFailed() throws Exception {
             ProcessEntry entry = manager.launch(
                     "exit 7", "Failing cmd", Path.of(System.getProperty("user.dir")));
@@ -592,6 +658,33 @@ class BackgroundProcessManagerTest {
         @Test
         void outputDir_shouldContainSessionId() {
             assertTrue(manager.getOutputDir().toString().contains("test-session"));
+        }
+
+        @Test
+        void outputDir_shouldUseProjectKompileHomeWhenAvailable() throws Exception {
+            Path tempRoot = Files.createTempDirectory("kompile-process-manager-test");
+            try {
+                Path nestedWorkDir = tempRoot.resolve("module").resolve("subdir");
+                Files.createDirectories(nestedWorkDir);
+                Path projectKompile = tempRoot.resolve(".kompile");
+                Files.createDirectories(projectKompile);
+
+                String sid = "project-session-123";
+                try (BackgroundProcessManager projectManager =
+                             new BackgroundProcessManager(sid, nestedWorkDir)) {
+                    assertEquals(projectKompile.resolve("process-output").resolve(sid),
+                            projectManager.getOutputDir());
+                }
+            } finally {
+                try (var walk = Files.walk(tempRoot)) {
+                    walk.sorted((a, b) -> b.compareTo(a))
+                            .forEach(path -> {
+                                try {
+                                    Files.deleteIfExists(path);
+                                } catch (Exception ignored) {}
+                            });
+                }
+            }
         }
     }
 }

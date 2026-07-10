@@ -16,6 +16,8 @@
 
 package ai.kompile.cli.model;
 
+import ai.kompile.cli.common.util.GitRunner;
+
 import picocli.CommandLine;
 
 import java.io.File;
@@ -71,7 +73,7 @@ public class ModelCloneCommand implements Callable<Integer> {
 
         // Install git-xet if requested and available
         if (useXet) {
-            if (!ai.kompile.cli.common.util.GitRunner.isGitXetAvailable()) {
+            if (!GitRunner.isGitXetAvailable()) {
                 System.err.println("Warning: git-xet is not installed. Falling back to standard git clone.");
                 System.err.println("  Install with: kompile install git-xet");
                 useXet = false;
@@ -97,7 +99,7 @@ public class ModelCloneCommand implements Callable<Integer> {
 
         Files.createDirectories(targetDir.getParent());
 
-        int exitCode = ai.kompile.cli.common.util.GitRunner.runInherited(
+        int exitCode = GitRunner.runInherited(
                 targetDir.getParent(), args.toArray(new String[0]));
 
         if (exitCode != 0) {
@@ -108,7 +110,7 @@ public class ModelCloneCommand implements Callable<Integer> {
         // Install git-xet in the cloned repo
         if (useXet) {
             System.out.println("Installing git-xet in cloned repository...");
-            if (!ai.kompile.cli.common.util.GitRunner.installXetInRepo(targetDir)) {
+            if (!GitRunner.installXetInRepo(targetDir)) {
                 System.err.println("Warning: git xet install failed (non-fatal)");
             }
         }

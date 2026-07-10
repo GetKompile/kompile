@@ -33,6 +33,7 @@ public interface GraphMaintenanceService {
     // ── Quality ──
     List<Contradiction> detectContradictions(Long factSheetId);
     MaintenanceReport resolveContradictions(Long factSheetId, ContradictionResolutionStrategy strategy, boolean dryRun);
+    MaintenanceReport resolveContradictionsByEdgeSelection(Long factSheetId, List<String> staleEdgeIds, boolean dryRun);
     MaintenanceReport reResolveEntities(Long factSheetId, ReResolutionConfig config, boolean dryRun);
     List<ProvenanceCheck> validateProvenance(Long factSheetId);
 

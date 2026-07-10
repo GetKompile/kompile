@@ -11,6 +11,7 @@ package ai.kompile.graph.reasoning.explain;
 
 import ai.kompile.graph.reasoning.confidence.Opinion;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
@@ -66,7 +67,7 @@ public record ModalityEvidence(
      */
     public static ModalityEvidence fromTrail(ModalityKind kind, ReasoningTrail trail) {
         Objects.requireNonNull(trail, "trail");
-        List<String> details = new java.util.ArrayList<>();
+        List<String> details = new ArrayList<>();
         details.addAll(trail.evidence());
         details.addAll(trail.activatedRules());
         double conf = trail.confidence();
@@ -89,7 +90,7 @@ public record ModalityEvidence(
                                                          Opinion opinion) {
         Objects.requireNonNull(trail, "trail");
         Objects.requireNonNull(opinion, "opinion");
-        List<String> details = new java.util.ArrayList<>();
+        List<String> details = new ArrayList<>();
         details.addAll(trail.evidence());
         details.addAll(trail.activatedRules());
         return new ModalityEvidence(

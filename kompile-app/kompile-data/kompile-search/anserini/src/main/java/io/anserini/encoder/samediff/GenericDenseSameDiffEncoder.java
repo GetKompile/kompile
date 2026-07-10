@@ -25,7 +25,9 @@ import org.apache.logging.log4j.Logger;
 import org.jetbrains.annotations.NotNull;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
+import org.nd4j.linalg.indexing.BooleanIndexing;
 import org.nd4j.linalg.indexing.NDArrayIndex;
+import org.nd4j.linalg.indexing.conditions.Conditions;
 import org.nd4j.linalg.ops.transforms.Transforms;
 
 import org.bytedeco.javacpp.Pointer;
@@ -37,6 +39,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
     private static final Logger LOG = LogManager.getLogger(GenericDenseSameDiffEncoder.class);
@@ -77,14 +81,14 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
 
     // ========== INFERENCE BENCHMARKING STATS ==========
     // These track cumulative timing to identify bottlenecks
-    private final java.util.concurrent.atomic.AtomicLong totalTokenizeTimeNanos = new java.util.concurrent.atomic.AtomicLong(0);
-    private final java.util.concurrent.atomic.AtomicLong totalInferenceTimeNanos = new java.util.concurrent.atomic.AtomicLong(0);
-    private final java.util.concurrent.atomic.AtomicLong totalPostProcessTimeNanos = new java.util.concurrent.atomic.AtomicLong(0);
-    private final java.util.concurrent.atomic.AtomicLong totalArrayCreationTimeNanos = new java.util.concurrent.atomic.AtomicLong(0);
-    private final java.util.concurrent.atomic.AtomicLong totalEncodeCalls = new java.util.concurrent.atomic.AtomicLong(0);
-    private final java.util.concurrent.atomic.AtomicLong totalTokensProcessed = new java.util.concurrent.atomic.AtomicLong(0);
-    private final java.util.concurrent.atomic.AtomicLong slowestInferenceNanos = new java.util.concurrent.atomic.AtomicLong(0);
-    private final java.util.concurrent.atomic.AtomicInteger slowestInferenceTokens = new java.util.concurrent.atomic.AtomicInteger(0);
+    private final AtomicLong totalTokenizeTimeNanos = new AtomicLong(0);
+    private final AtomicLong totalInferenceTimeNanos = new AtomicLong(0);
+    private final AtomicLong totalPostProcessTimeNanos = new AtomicLong(0);
+    private final AtomicLong totalArrayCreationTimeNanos = new AtomicLong(0);
+    private final AtomicLong totalEncodeCalls = new AtomicLong(0);
+    private final AtomicLong totalTokensProcessed = new AtomicLong(0);
+    private final AtomicLong slowestInferenceNanos = new AtomicLong(0);
+    private final AtomicInteger slowestInferenceTokens = new AtomicInteger(0);
 
     // Stats reporting interval
     private static final int STATS_REPORT_INTERVAL = 10;
@@ -615,6 +619,15 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
             }
 
             if (this.normalizeOutput) {
+                // SANITIZE: Replace NaN and ±Inf with 0 BEFORE normalization (two vectorized in-place ops:
+                // isNan() pass + isInfinite() pass).  FP16 forward passes occasionally produce non-finite
+                // values; the DENOMINATOR-only epsilon band-aid (sumVal=0 → normVal=1e-6) leaves NaN in
+                // the numerator, which propagates through div() → NaN output → non-indexable dead-letter.
+                // Correcting the numerator first makes finite components survive as a valid unit vector.
+                // A fully-NaN row becomes all-zeros here; the subsequent sumVal==0 path logs a warning
+                // and uses the epsilon floor — the caller's isIndexableEmbedding() will still reject it,
+                // which is the correct behaviour for a completely-broken forward pass.
+                sanitizeNonFinite(reshapedEmbedding);
                 // Compute L2 norm manually: L2 norm = sqrt(sum(x^2))
                 // Using manual computation as reduce_norm2 has had issues with native ops
                 INDArray squared = null;
@@ -683,6 +696,32 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
     }
 
     /**
+     * Replace every non-finite element (NaN, +Inf, -Inf) with 0.0 IN PLACE using vectorized ND4J ops.
+     *
+     * <p>Two {@link BooleanIndexing#replaceWhere} calls are used — one for NaN ({@link Conditions#isNan()})
+     * and one for ±Inf ({@link Conditions#isInfinite()}).  Each issues a single {@code CompareAndSet}
+     * native kernel call, so the total cost is 2 vectorized passes over the buffer rather than
+     * O(n) scalar JNI round-trips.  The array is modified in place.
+     *
+     * <p>Note: {@link Conditions#notFinite()} has condition-mode 15 on the native side but its Java
+     * {@code apply()} method only checks {@code isInfinite}, not NaN — so it cannot be relied upon
+     * to replace NaN.  Using explicit {@code isNan()} + {@code isInfinite()} is correct and sufficient.
+     *
+     * <p>After sanitization a partially-non-finite row retains all its finite components and can be
+     * L2-normalized to a valid unit vector.  A row that was <em>entirely</em> non-finite becomes
+     * all-zero; the downstream epsilon clamp keeps it numerically stable, but its magnitude will
+     * remain near zero and {@code isIndexableEmbedding()} will correctly reject it.
+     *
+     * @param arr the array to sanitize; modified in place
+     */
+    static void sanitizeNonFinite(INDArray arr) {
+        // Pass 1: replace NaN with 0.  Conditions.isNan() → condition mode IS_NAN (9) → CompareAndSet.
+        BooleanIndexing.replaceWhere(arr, 0.0, Conditions.isNan());
+        // Pass 2: replace ±Inf with 0.  Conditions.isInfinite() → IS_INFINITE (8) → CompareAndSet.
+        BooleanIndexing.replaceWhere(arr, 0.0, Conditions.isInfinite());
+    }
+
+    /**
      * Safely close an INDArray, checking for null.
      */
     private void closeArraySafely(INDArray arr) {
@@ -704,30 +743,59 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
     }
 
     /**
-     * Safely converts an INDArray to a float[] vector, catching any native pointer exceptions.
-     * This handles cases where the data buffer exists but the underlying native pointer is null.
+     * Bulk-extract an INDArray to a heap {@code float[]} with a SINGLE device→host copy,
+     * catching native-pointer exceptions.
+     *
+     * <p><b>Why not {@code INDArray.toFloatVector()}:</b> toFloatVector loops {@code getFloat(i)},
+     * and on a CUDA {@code DataBuffer} every {@code getFloat} triggers
+     * {@code AtomicAllocator.synchronizeHostData → CudaExecutioner.commit} — i.e. O(n) GPU→host
+     * syncs (~24k per [32×768] batch). Thread dumps showed this per-element commit loop, not the
+     * forward pass, dominated embedding wall-clock (~28s of host-side dispatch between batches).
+     *
+     * <p>{@code DataBuffer.asFloat()} instead does ONE {@code synchronizeHostData()} for the whole
+     * buffer, then a sync-free host read ({@code getFloatUnsynced}) — the established kompile bulk
+     * idiom (AnseriniVectorStoreImpl, VlmExecutionService, TransEModel, INDArrayConverter, …).
+     * Because {@code data()} exposes the raw backing buffer, a view / Fortran-order array is first
+     * compacted with {@code dup('c')} so the buffer holds exactly the array's elements in row-major
+     * order; contiguous c-order arrays skip the copy. (dl4j's toFloatVector should itself delegate
+     * to asFloat — noted in docs/dl4j-handoff-dsp-embedding-slowness.md.)
      */
     protected float[] safeToFloatVector(INDArray array) {
         if (array == null) {
             LOG.error("[{}] Cannot convert null array to float vector", this.modelIdentifier);
             return null;
         }
+        INDArray compact = null;
+        boolean compacted = false;
         try {
-            return array.toFloatVector();
+            // Compact only when the backing buffer would not already equal the array's elements in
+            // row-major order (a view or Fortran-order array). Fresh c-order op outputs skip the copy.
+            if (array.isView() || array.ordering() != 'c') {
+                compact = array.dup('c');
+                compacted = true;
+            } else {
+                compact = array;
+            }
+            float[] flat = compact.data().asFloat();   // ONE device→host sync + bulk host read
+            int len = (int) compact.length();
+            // Defensive: if the backing buffer is larger than the logical array, trim to length.
+            return flat.length == len ? flat : java.util.Arrays.copyOf(flat, len);
         } catch (NullPointerException e) {
             // This catches JavaCPP "Pointer address of argument X is NULL" errors
-            LOG.error("[{}] Native pointer is null during toFloatVector - array may have been closed or corrupted: {}",
+            LOG.error("[{}] Native pointer is null during bulk float extraction - array may have been closed or corrupted: {}",
                     this.modelIdentifier, e.getMessage());
             return null;
         } catch (IllegalStateException e) {
             // This catches "DataBuffer was already released" errors
-            LOG.error("[{}] DataBuffer was released during toFloatVector: {}",
+            LOG.error("[{}] DataBuffer was released during bulk float extraction: {}",
                     this.modelIdentifier, e.getMessage());
             return null;
         } catch (Exception e) {
-            LOG.error("[{}] Unexpected error during toFloatVector: {}",
+            LOG.error("[{}] Unexpected error during bulk float extraction: {}",
                     this.modelIdentifier, e.getMessage(), e);
             return null;
+        } finally {
+            if (compacted) closeArraySafely(compact);
         }
     }
 
@@ -868,6 +936,13 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
     private volatile int instanceAbsoluteMaxBatchSize;
     private volatile double instanceMemoryScaleFactor;
     private volatile boolean batchSizeConfigured = false;
+
+    // When > 0, every forward pass is padded up to this fixed row count (at the seq hard cap) so EXACTLY
+    // ONE [maxRows x seqHardCap] DSP plan/workspace is ever compiled and retained — smaller inputs run on
+    // the same max shape (extra rows discarded), instead of each distinct row count compiling+retaining its
+    // own plan. Set per encodeBatch from the budget's maxRows; transiently zeroed during OOM-split retry so
+    // the reactive backstop can still shrink. Inference is serial in the subprocess, so a field is safe.
+    private volatile int fixedForwardRows = 0;
 
     // Legacy static batch sizes for backward compatibility
     private static final int OPTIMAL_INFERENCE_BATCH_SIZE;
@@ -1048,7 +1123,7 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
     @Override
     public List<float[]> encodeBatch(@NotNull List<String> texts) {
         if (texts.isEmpty()) {
-            return new java.util.ArrayList<>();
+            return new ArrayList<>();
         }
 
         // Check for shutdown before acquiring lock
@@ -1078,7 +1153,7 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
      */
     private List<float[]> encodeSequential(List<String> texts) {
         long startTime = System.currentTimeMillis();
-        List<float[]> results = new java.util.ArrayList<>(texts.size());
+        List<float[]> results = new ArrayList<>(texts.size());
         for (int i = 0; i < texts.size(); i++) {
             if (Thread.currentThread().isInterrupted()) {
                 LOG.debug("[{}] Sequential encoding interrupted at {}/{}", modelIdentifier, i, texts.size());
@@ -1097,8 +1172,8 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
     }
 
     /**
-     * Encode batch with dynamic sizing based on actual sequence lengths.
-     * Sorts by sequence length to minimize padding waste, then groups into optimal sub-batches.
+     * Encode a caller batch as logical micro-batches. In fixed-shape mode each logical batch still
+     * runs through the one physical SameDiff shape {@code [maxRows x seqHardCap]}.
      */
     private List<float[]> encodeBatchWithDynamicSizing(List<String> texts) {
         long totalStartTime = System.currentTimeMillis();
@@ -1114,7 +1189,7 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
         }
 
         // Step 1: Tokenize all texts and track sequence lengths with original indices
-        List<IndexedEncoding> indexedEncodings = new java.util.ArrayList<>(numTexts);
+        List<IndexedEncoding> indexedEncodings = new ArrayList<>(numTexts);
         int maxSeqLength = 0;
         int totalTokens = 0;
         int minSeqLength = Integer.MAX_VALUE;
@@ -1141,10 +1216,9 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
         LOG.debug("[{}] Tokenization: {}ms, minSeq={}, maxSeq={}, avgSeq={}",
                 modelIdentifier, tokenizeTime, minSeqLength, maxSeqLength, String.format("%.1f", avgSeqLength));
 
-        // Plan token-budgeted, bucket-padded micro-batches via the shared planner. A "batch" is a
-        // group of items whose padded shape (rows x seqBucket) fits a bounded native-memory budget
-        // while reusing a small set of DSP plans — NOT an opaque item count. Token lengths are real
-        // (padToMaxLength was disabled above), so short FP&A cells pad to a small bucket, not 512.
+        // Plan logical row groups. With fixed-shape mode on, the budget has a single seq bucket
+        // (seqHardCap), and each logical group is physically padded to [maxRows x seqHardCap] below.
+        // That keeps exactly one DSP plan while still bounding caller-visible batch sizes by memory.
         int[] tokenLengths = new int[numTexts];
         SamediffBertTokenizerPreProcessor.BertEncoding[] encByIndex =
                 new SamediffBertTokenizerPreProcessor.BertEncoding[numTexts];
@@ -1154,6 +1228,10 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
         }
 
         InferenceBatchPlanner.Budget budget = buildEmbeddingBatchBudget();
+        boolean fixedShape = fixedShapeEnabled();
+        // Pin every forward pass to the single max shape [budget.maxRows x seqHardCap] so only ONE DSP
+        // plan/workspace is ever compiled and retained (config kompile.encoder.fixedShape, default true).
+        this.fixedForwardRows = fixedShape ? budget.maxRows() : 0;
         List<InferenceBatchPlanner.Batch> plannedBatches = InferenceBatchPlanner.plan(tokenLengths, budget);
 
         float[][] reorderedResults = new float[numTexts][];
@@ -1166,20 +1244,20 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
                 return null;
             }
             int[] idxs = batch.itemIndices();
-            int bucket = batch.seqBucket();
-            List<String> subTexts = new java.util.ArrayList<>(idxs.length);
+            int logicalSeq = fixedShape ? budget.seqHardCap() : batch.seqBucket();
+            List<String> subTexts = new ArrayList<>(idxs.length);
             List<SamediffBertTokenizerPreProcessor.BertEncoding> subEncodings =
-                    new java.util.ArrayList<>(idxs.length);
+                    new ArrayList<>(idxs.length);
             for (int idx : idxs) {
                 subTexts.add(texts.get(idx));
                 subEncodings.add(encByIndex[idx]);
             }
             batchNum++;
 
-            LOG.debug("[{}] Batch {}/{}: {} texts x {} tok bucket ({} padded tokens)",
-                    modelIdentifier, batchNum, plannedBatches.size(), idxs.length, bucket, batch.tokens());
+            LOG.debug("[{}] Batch {}/{}: {} logical rows x {} seq (fixedShape={}, plannerTokens={})",
+                    modelIdentifier, batchNum, plannedBatches.size(), idxs.length, logicalSeq, fixedShape, batch.tokens());
 
-            List<float[]> subResults = encodeSingleInferenceBatchFromEncodings(subTexts, subEncodings, bucket);
+            List<float[]> subResults = encodeSingleInferenceBatchFromEncodings(subTexts, subEncodings, logicalSeq);
 
             if (subResults == null) {
                 if (Thread.currentThread().isInterrupted()) return null;
@@ -1217,24 +1295,65 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
      */
     private InferenceBatchPlanner.Budget buildEmbeddingBatchBudget() {
         int seqHardCap = resolveSeqHardCap();
-        int[] buckets = parseSeqBuckets(
-                System.getProperty("kompile.encoder.seqBuckets", "64,128,256,512"), seqHardCap);
+        boolean fixedShape = fixedShapeEnabled();
+        int[] buckets = fixedShape
+                ? new int[]{seqHardCap}
+                : parseSeqBuckets(System.getProperty("kompile.encoder.seqBuckets", "64,128,256,512"), seqHardCap);
+        int hidden = Math.max(1, getEmbeddingDimension());
+        double safety = parseDoubleProp("kompile.encoder.nativeMemSafetyFraction", 0.6);
+        double linFactor = parseDoubleProp("kompile.encoder.activationFactor", 320.0);
+        double attnFactor = parseDoubleProp("kompile.encoder.attentionFactor", 600.0);
+        long memCeil = readNativeMemoryCeilingBytes();
+
+        // THE dynamic default. A full-attention forward pass costs linear (hidden*seq) PLUS quadratic
+        // (seq^2) native memory; the quadratic attention term dominates at 512 seq, so a flat token
+        // budget under-counts it and a 64-row batch balloons past the subprocess RSS watchdog. Sizing
+        // the row cap at the worst-case sequence length is what lets fixed-shape mode use one hard-cap
+        // bucket safely. An explicitly configured absolute-max can only TIGHTEN this, never raise it
+        // past the memory-safe estimate. Default factors are calibrated to the observed 64x512 -> ~1 GB/row.
+        int memMaxRows = InferenceBatchPlanner.estimateMaxRowsForSeq(
+                memCeil, hidden, 4, safety, linFactor, attnFactor, seqHardCap);
+        int configMaxRows = this.instanceAbsoluteMaxBatchSize > 0
+                ? this.instanceAbsoluteMaxBatchSize : Integer.MAX_VALUE;
+        int maxRows = Math.max(1, Math.min(memMaxRows, configMaxRows));
+
+        // Token budget is consistent with the memory-derived row cap at the hard cap. In fixed-shape
+        // mode that is the only sequence bucket, so the planner cannot produce another physical shape.
         long maxBatchTokens = Long.getLong("kompile.encoder.batch.maxTokens", 0L);
         if (maxBatchTokens <= 0L) {
-            long memCeil = readNativeMemoryCeilingBytes();
-            double safety = parseDoubleProp("kompile.encoder.nativeMemSafetyFraction", 0.75);
-            double activation = parseDoubleProp("kompile.encoder.activationFactor", 16.0);
-            int hidden = Math.max(1, getEmbeddingDimension());
-            maxBatchTokens = InferenceBatchPlanner.estimateMaxBatchTokens(
-                    memCeil, hidden, 4, safety, activation, seqHardCap);
+            maxBatchTokens = (long) maxRows * seqHardCap;
         }
-        int maxRows = this.instanceAbsoluteMaxBatchSize > 0 ? this.instanceAbsoluteMaxBatchSize : 0;
+        LOG.info("[{}] Embedding batch budget: maxRows={} (mem-derived={}, config-cap={}), seqHardCap={}, "
+                        + "fixedShape={}, hidden={}, memCeil={}MB, safety={}, linFactor={}, attnFactor={}, maxBatchTokens={}",
+                modelIdentifier, maxRows, memMaxRows,
+                this.instanceAbsoluteMaxBatchSize > 0 ? this.instanceAbsoluteMaxBatchSize : -1,
+                seqHardCap, fixedShape, hidden, memCeil >> 20, safety, linFactor, attnFactor, maxBatchTokens);
         return InferenceBatchPlanner.Budget.builder()
                 .seqHardCap(seqHardCap)
                 .seqBuckets(buckets)
                 .maxBatchTokens(maxBatchTokens)
                 .maxRows(maxRows)
                 .build();
+    }
+
+    /**
+     * Memory-derived maximum rows per batch under the current native-memory budget. DSP warmup combines
+     * this with {@link #getMaxSequenceLength()} to pre-compile the single fixed physical shape used by
+     * real inference: {@code [plannedMaxRows() x getMaxSequenceLength()]}.
+     * Returns at least 1.
+     */
+    public int plannedMaxRows() {
+        return buildEmbeddingBatchBudget().maxRows();
+    }
+
+    /** Whether to pin every forward pass to a single [maxRows x seqHardCap] shape (one retained DSP plan). Default on. */
+    private static boolean fixedShapeEnabled() {
+        return !"false".equalsIgnoreCase(System.getProperty("kompile.encoder.fixedShape", "true"));
+    }
+
+    /** Maximum sequence length this model runs at (the seq hard cap) — the single retained plan's seq dimension. */
+    public int getMaxSequenceLength() {
+        return resolveSeqHardCap();
     }
 
     private int resolveSeqHardCap() {
@@ -1258,7 +1377,7 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
             return new int[]{seqHardCap};
         }
         String[] parts = csv.split(",");
-        List<Integer> vals = new java.util.ArrayList<>(parts.length);
+        List<Integer> vals = new ArrayList<>(parts.length);
         for (String p : parts) {
             try {
                 int v = Integer.parseInt(p.trim());
@@ -1280,17 +1399,20 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
     }
 
     /**
-     * Native off-heap ceiling for this subprocess, parsed from the JavaCPP system properties the
-     * launcher sets (e.g. {@code -Dorg.bytedeco.javacpp.maxphysicalbytes=49152m}); falls back to a
-     * heap-derived figure when unset.
+     * Per-process native off-heap ceiling for THIS subprocess, read from the JavaCPP
+     * {@code -Dorg.bytedeco.javacpp.maxbytes} the launcher sets; falls back to a heap-derived figure
+     * when unset.
+     *
+     * <p>Deliberately does NOT read {@code maxphysicalbytes}: that property is a near-machine-TOTAL
+     * system-wide guard (≈95% of host RAM) the launcher sets so sibling subprocesses don't false-trip
+     * each other's OOM restart. Using it as this process's budget made the planner size batches
+     * against all host RAM (e.g. 119 GB) — so a "reasonable" 64-row × 512-seq batch ballooned past
+     * the parent RSS watchdog (≈50% of RAM) and got SIGKILLed. {@code maxbytes} is the real
+     * per-process lever.</p>
      */
     private static long readNativeMemoryCeilingBytes() {
         long v = InferenceBatchPlanner.parseByteSize(
-                System.getProperty(ND4JSystemProperties.JAVACPP_MEMORY_MAX_PHYSICAL_BYTES));
-        if (v <= 0) {
-            v = InferenceBatchPlanner.parseByteSize(
-                    System.getProperty(ND4JSystemProperties.JAVACPP_MEMORY_MAX_BYTES));
-        }
+                System.getProperty(ND4JSystemProperties.JAVACPP_MEMORY_MAX_BYTES));
         if (v <= 0) {
             v = Math.max(2L << 30, Runtime.getRuntime().maxMemory());
         }
@@ -1302,7 +1424,7 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
      */
     private List<float[]> encodeSequentialFromEncodings(List<String> texts,
                                                          List<SamediffBertTokenizerPreProcessor.BertEncoding> encodings) {
-        List<float[]> results = new java.util.ArrayList<>(texts.size());
+        List<float[]> results = new ArrayList<>(texts.size());
         for (int i = 0; i < texts.size(); i++) {
             if (Thread.currentThread().isInterrupted()) return null;
             results.add(encodeFromTokenized(texts.get(i), encodings.get(i)));
@@ -1380,7 +1502,7 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
      *
      * @param texts Original texts (for logging)
      * @param encodings Pre-computed tokenizations
-     * @param maxSeqLength Maximum sequence length (for padding)
+     * @param maxSeqLength Logical maximum sequence length; fixed-shape mode physically pads to seqHardCap
      * @return List of embeddings, or null on failure
      */
     private List<float[]> encodeSingleInferenceBatchFromEncodings(
@@ -1388,7 +1510,7 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
             List<SamediffBertTokenizerPreProcessor.BertEncoding> encodings,
             int maxSeqLength) {
 
-        if (encodings.isEmpty()) return new java.util.ArrayList<>();
+        if (encodings.isEmpty()) return new ArrayList<>();
 
         int batchSize = encodings.size();
 
@@ -1398,18 +1520,26 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
         // resident footprint dominates physicalBytes(), so an absolute-fraction check falsely trips and
         // would reject even a single irreducible chunk (which is exactly what broke embedding before).
 
-        // Create padded arrays
-        long[][] batchInputIds = new long[batchSize][maxSeqLength];
-        long[][] batchAttentionMask = new long[batchSize][maxSeqLength];
-        long[][] batchTokenTypeIds = new long[batchSize][maxSeqLength];
+        // Single-plan shaping: pad the forward pass up to a FIXED [allocRows x allocSeq] shape so only ONE
+        // DSP plan/workspace is ever compiled (smaller inputs reuse the max shape; the extra rows are
+        // discarded after extraction). When fixedForwardRows==0 (disabled, or during OOM-split retry) this
+        // is a no-op and the batch runs at its natural size.
+        int fixedRows = this.fixedForwardRows;
+        int allocRows = (fixedRows >= batchSize) ? fixedRows : batchSize;
+        int allocSeq = (fixedRows > 0) ? Math.max(maxSeqLength, resolveSeqHardCap()) : maxSeqLength;
+
+        // Create padded arrays at the (possibly row/seq-pinned) shape
+        long[][] batchInputIds = new long[allocRows][allocSeq];
+        long[][] batchAttentionMask = new long[allocRows][allocSeq];
+        long[][] batchTokenTypeIds = new long[allocRows][allocSeq];
 
         int totalTokens = 0;
         int[] passageTokenCounts = new int[batchSize];
         for (int i = 0; i < batchSize; i++) {
             SamediffBertTokenizerPreProcessor.BertEncoding enc = encodings.get(i);
-            // Clamp to the batch bucket: the planner guarantees bucket >= real length, but this
+            // Clamp to the allocated seq width: the planner guarantees bucket >= real length, but this
             // keeps the copy in-bounds even if an oversized encoding ever slips through.
-            int seqLen = Math.min(enc.inputIds.length, maxSeqLength);
+            int seqLen = Math.min(enc.inputIds.length, allocSeq);
             totalTokens += seqLen;
             passageTokenCounts[i] = seqLen;
             System.arraycopy(enc.inputIds, 0, batchInputIds[i], 0, seqLen);
@@ -1418,11 +1548,22 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
                 System.arraycopy(enc.tokenTypeIds, 0, batchTokenTypeIds[i], 0, seqLen);
             }
         }
+        // Pad the row dimension up to allocRows by replicating row 0 (a real, valid input) so the forward
+        // pass is well-formed; these rows' outputs are never read (extractAllEmbeddings takes only batchSize).
+        for (int i = batchSize; i < allocRows; i++) {
+            System.arraycopy(batchInputIds[0], 0, batchInputIds[i], 0, allocSeq);
+            System.arraycopy(batchAttentionMask[0], 0, batchAttentionMask[i], 0, allocSeq);
+            System.arraycopy(batchTokenTypeIds[0], 0, batchTokenTypeIds[i], 0, allocSeq);
+        }
+        if (allocRows != batchSize || allocSeq != maxSeqLength) {
+            LOG.debug("[{}] Fixed-shape pad: {} real rows -> [{} x {}] (1-plan mode)",
+                    modelIdentifier, batchSize, allocRows, allocSeq);
+        }
 
         // Update BatchInfo so pipeline can read actual shapes
         long batchStartMs = System.currentTimeMillis();
-        updateBatchInfo(batchSize, maxSeqLength, getEmbeddingDimension(), totalTokens,
-                new long[]{batchSize, maxSeqLength}, new long[]{batchSize, getEmbeddingDimension()},
+        updateBatchInfo(batchSize, allocSeq, getEmbeddingDimension(), totalTokens,
+                new long[]{allocRows, allocSeq}, new long[]{batchSize, getEmbeddingDimension()},
                 "FORWARD_PASS", passageTokenCounts);
 
         Map<String, INDArray> placeholderMap = new HashMap<>();
@@ -1432,8 +1573,8 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
 
         try {
             // ========== SHAPE LOGGING: Batch Input Array Creation ==========
-            LOG.info("[{}] SHAPE BATCH CREATE: Creating batch arrays for {} texts, maxSeqLen={}, totalTokens={}",
-                    this.modelIdentifier, batchSize, maxSeqLength, totalTokens);
+            LOG.info("[{}] SHAPE BATCH CREATE: Creating fixed-shape arrays for {} logical texts as [{} x {}], totalTokens={}",
+                    this.modelIdentifier, batchSize, allocRows, allocSeq, totalTokens);
 
             // MEMORY FIX (1/2): Use Nd4j.create (not createFromArray) for per-batch input arrays.
             // createFromArray routes through the constant-buffer allocator; those buffers are
@@ -1464,8 +1605,8 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
             String outputTensorName = this.outputTensorNamesFromModel.get(0);
 
             // ========== SHAPE LOGGING: Pre-Inference Summary ==========
-            LOG.info("[{}] SHAPE BATCH INFERENCE INPUT: Calling model.output() for batch of {} texts",
-                    this.modelIdentifier, batchSize);
+            LOG.info("[{}] SHAPE BATCH INFERENCE INPUT: Calling model.output() for {} logical rows using physical shape [{} x {}]",
+                    this.modelIdentifier, batchSize, allocRows, allocSeq);
             for (Map.Entry<String, INDArray> entry : placeholderMap.entrySet()) {
                 INDArray arr = entry.getValue();
                 LOG.info("[{}] SHAPE BATCH INFERENCE INPUT:   {} -> shape={}, dtype={}, rank={}",
@@ -1526,8 +1667,8 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
             long totalTimeMs = System.currentTimeMillis() - batchStartMs;
             double tokensPerSec = totalTimeMs > 0 ? (totalTokens * 1000.0 / totalTimeMs) : 0;
             double chunksPerSec = totalTimeMs > 0 ? (batchSize * 1000.0 / totalTimeMs) : 0;
-            updateBatchInfoWithTiming(batchSize, maxSeqLength, getEmbeddingDimension(), totalTokens,
-                    new long[]{batchSize, maxSeqLength}, new long[]{batchSize, getEmbeddingDimension()},
+            updateBatchInfoWithTiming(batchSize, allocSeq, getEmbeddingDimension(), totalTokens,
+                    new long[]{allocRows, allocSeq}, new long[]{batchSize, getEmbeddingDimension()},
                     "COMPLETE", batchStartMs, 0, 0, 0, totalTimeMs, 0, totalTimeMs, tokensPerSec, chunksPerSec);
 
             return extracted;
@@ -1569,22 +1710,32 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
             if (batchSize > 1) {
                 int half = Math.max(1, batchSize / 2);
                 notifyBatchResize(batchSize, half, "native OOM — split and retry");
-                List<float[]> combined = new ArrayList<>(batchSize);
-                int offset = 0;
-                while (offset < batchSize) {
-                    int chunk = Math.min(half, batchSize - offset);
-                    List<String> chunkTexts = texts.subList(offset, offset + chunk);
-                    List<SamediffBertTokenizerPreProcessor.BertEncoding> chunkEncodings = encodings.subList(offset, offset + chunk);
-                    int chunkMaxSeq = 0;
-                    for (SamediffBertTokenizerPreProcessor.BertEncoding e : chunkEncodings) {
-                        chunkMaxSeq = Math.max(chunkMaxSeq, e.inputIds.length);
+                // Disable fixed-shape padding for the retry so the split ACTUALLY shrinks native memory —
+                // otherwise each chunk would pad back up to the same max shape and OOM again. The retry may
+                // transiently compile a smaller-shape plan; acceptable, because under OOM surviving beats
+                // keeping exactly one plan. Restored after the retry completes.
+                int savedFixedRows = this.fixedForwardRows;
+                this.fixedForwardRows = 0;
+                try {
+                    List<float[]> combined = new ArrayList<>(batchSize);
+                    int offset = 0;
+                    while (offset < batchSize) {
+                        int chunk = Math.min(half, batchSize - offset);
+                        List<String> chunkTexts = texts.subList(offset, offset + chunk);
+                        List<SamediffBertTokenizerPreProcessor.BertEncoding> chunkEncodings = encodings.subList(offset, offset + chunk);
+                        int chunkMaxSeq = 0;
+                        for (SamediffBertTokenizerPreProcessor.BertEncoding e : chunkEncodings) {
+                            chunkMaxSeq = Math.max(chunkMaxSeq, e.inputIds.length);
+                        }
+                        List<float[]> chunkResults = encodeSingleInferenceBatchFromEncodings(chunkTexts, chunkEncodings, chunkMaxSeq);
+                        if (chunkResults == null) return null;
+                        combined.addAll(chunkResults);
+                        offset += chunk;
                     }
-                    List<float[]> chunkResults = encodeSingleInferenceBatchFromEncodings(chunkTexts, chunkEncodings, chunkMaxSeq);
-                    if (chunkResults == null) return null;
-                    combined.addAll(chunkResults);
-                    offset += chunk;
+                    return combined;
+                } finally {
+                    this.fixedForwardRows = savedFixedRows;
                 }
-                return combined;
             }
             LOG.error("[{}] Native OOM even at batchSize=1 — the model's resident size plus one sample exceed the "
                     + "native cap. Skipping this chunk. Raise kompile.embedding.anserini.subprocessMaxPhysicalMb.",
@@ -1599,7 +1750,7 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
      * Includes detailed timing instrumentation for performance analysis.
      */
     private List<float[]> encodeSingleInferenceBatch(List<String> texts) {
-        if (texts.isEmpty()) return new java.util.ArrayList<>();
+        if (texts.isEmpty()) return new ArrayList<>();
 
         final int batchSize = texts.size();
         final long batchStartMs = System.currentTimeMillis();
@@ -1613,7 +1764,7 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
                 new long[0], new long[0], "TOKENIZING");
 
         long tokenizeStart = System.nanoTime();
-        List<SamediffBertTokenizerPreProcessor.BertEncoding> encodings = new java.util.ArrayList<>(texts.size());
+        List<SamediffBertTokenizerPreProcessor.BertEncoding> encodings = new ArrayList<>(texts.size());
         int maxLen = 0;
         int totalTokens = 0;
         int[] passageTokenCounts = new int[texts.size()];
@@ -1654,7 +1805,7 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
         // Create ND4J tensors and run single forward pass
         Map<String, INDArray> placeholderMap = new HashMap<>();
         Map<String, INDArray> outputMap = null;
-        List<float[]> results = new java.util.ArrayList<>(batchSize);
+        List<float[]> results = new ArrayList<>(batchSize);
 
         try {
             // ========== STEP 3: TENSOR CREATION ==========
@@ -1840,6 +1991,8 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
 
         INDArray clsEmbeddings = null;
         INDArray normalized = null;
+        INDArray logicalEmbeddings = null;
+        boolean logicalEmbeddingsIsView = false;
         INDArray norms = null;
 
         try {
@@ -1878,24 +2031,50 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
                 return null;
             }
 
-            // Ensure we have 2D [batch, hidden] shape
+            // Ensure we have 2D [physicalRows, hidden] shape; fixed-shape mode may have more
+            // physical rows than the logical batchSize, and those extra rows are sliced below.
             if (clsEmbeddings.rank() != 2) {
-                clsEmbeddings = clsEmbeddings.reshape(batchSize, -1);
+                long physicalRowsForReshape = clsEmbeddings.shape().length > 0
+                        ? Math.max(batchSize, clsEmbeddings.shape()[0]) : batchSize;
+                clsEmbeddings = clsEmbeddings.reshape(physicalRowsForReshape, -1);
             }
 
-            // Verify batch dimension matches
-            if (clsEmbeddings.shape()[0] != batchSize) {
-                LOG.error("[{}] Batch size mismatch: expected {} but got shape {}",
+            // In fixed-shape mode the physical DSP output can have padded rows
+            // (for example [18, hidden]) while this logical batch only requested
+            // fewer rows. Keep the single physical plan, but return only the
+            // logical rows that correspond to caller inputs.
+            long physicalRows = clsEmbeddings.shape()[0];
+            if (physicalRows < batchSize) {
+                LOG.error("[{}] Batch size mismatch: expected at least {} rows but got shape {}",
                         modelIdentifier, batchSize, Arrays.toString(clsEmbeddings.shape()));
                 return null;
             }
+            if (physicalRows > batchSize) {
+                logicalEmbeddings = clsEmbeddings.get(
+                        NDArrayIndex.interval(0, batchSize),
+                        NDArrayIndex.all());
+                logicalEmbeddingsIsView = true;
+                LOG.debug("[{}] VECTORIZED EXTRACT: using first {} logical rows from fixed-shape output {}",
+                        modelIdentifier, batchSize, Arrays.toString(clsEmbeddings.shape()));
+            } else {
+                logicalEmbeddings = clsEmbeddings;
+            }
 
-            int embeddingDim = (int) clsEmbeddings.shape()[1];
+            int embeddingDim = (int) logicalEmbeddings.shape()[1];
 
             if (this.normalizeOutput) {
+                // SANITIZE: Replace NaN and ±Inf with 0 BEFORE computing norms (two vectorized in-place
+                // ops: isNan() pass + isInfinite() pass).  A NaN in any element makes norm2() return NaN
+                // for that row, which Transforms.max PROPAGATES (max(NaN, epsilon) == NaN on most
+                // platforms), cascading into NaN after div.  Zeroing non-finite values preserves all
+                // finite components and produces a valid unit vector after normalization.  A row that was
+                // entirely NaN becomes all-zero; norm2 returns 0 for that row; the epsilon clamp raises
+                // it to 1e-12; division yields a near-zero but finite vector; isIndexableEmbedding
+                // correctly rejects it (completely broken FP16 forward pass).
+                sanitizeNonFinite(logicalEmbeddings);
                 // VECTORIZED L2 normalization using ND4J's native norm2 operation
                 // norm2(1) computes L2 norm along dimension 1 (hidden dim) for each row
-                norms = clsEmbeddings.norm2(1);  // [batch] - L2 norm per row
+                norms = logicalEmbeddings.norm2(1);  // [batch] - L2 norm per row
 
                 // Clamp norms to avoid division by zero, then reshape for broadcast
                 // Use Transforms.max for vectorized clamping with epsilon
@@ -1908,37 +2087,32 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
                 norms = norms.reshape(batchSize, 1);  // [batch, 1] for broadcast
 
                 // Broadcast divide: [batch, hidden] / [batch, 1] -> [batch, hidden]
-                normalized = clsEmbeddings.div(norms);
+                normalized = logicalEmbeddings.div(norms);
 
                 LOG.info("[{}] VECTORIZED EXTRACT: Normalized {} embeddings using norm2(), output shape={}",
                         modelIdentifier, batchSize, Arrays.toString(normalized.shape()));
             } else {
-                normalized = clsEmbeddings;
+                normalized = logicalEmbeddings;
             }
 
-            // OPTIMIZED EXTRACTION: Use single bulk read + System.arraycopy
-            // Avoids toFloatMatrix() which creates intermediate getRow().dup() allocations per row
-            List<float[]> results = new java.util.ArrayList<>(batchSize);
-
-            // Fast path: contiguous row-major data - single bulk read + arraycopy
-            if (normalized.ordering() == 'c' && !normalized.isView()
-                    && normalized.stride(0) == embeddingDim && normalized.stride(1) == 1) {
-                float[] flat = normalized.data().getFloatsAt(normalized.offset(), batchSize * embeddingDim);
-                for (int i = 0; i < batchSize; i++) {
-                    float[] embedding = new float[embeddingDim];
-                    System.arraycopy(flat, i * embeddingDim, embedding, 0, embeddingDim);
-                    results.add(embedding);
-                }
-            } else {
-                // General path: direct element access avoids intermediate INDArray allocations
-                // This handles views, non-contiguous data, and Fortran-order arrays
-                for (int i = 0; i < batchSize; i++) {
-                    float[] embedding = new float[embeddingDim];
-                    for (int j = 0; j < embeddingDim; j++) {
-                        embedding[j] = normalized.getFloat(i, j);
-                    }
-                    results.add(embedding);
-                }
+            // BULK EXTRACTION: ONE device→host copy, then split into per-row arrays.
+            // safeToFloatVector() does a SINGLE synchronizeHostData() for the whole buffer via
+            // DataBuffer.asFloat() (sync-free getFloatUnsynced host read). It deliberately does NOT use
+            // INDArray.toFloatVector(): toFloatVector loops getFloat(i), and on a CUDA DataBuffer every
+            // getFloat triggers synchronizeHostData → CudaExecutioner.commit — ~(batch*dim ≈ 24k) GPU→host
+            // syncs PER forward pass. Thread dumps showed that per-element commit loop, not the forward
+            // pass, dominated embedding wall-clock (~28s of host-side dispatch between batches). This is
+            // the mandate's "batch the retrieval, never getFloat per element to avoid JNI/GPU round-trips."
+            float[] flat = safeToFloatVector(normalized);
+            if (flat == null) {
+                LOG.error("[{}] Bulk float extraction returned null for batch of {}", modelIdentifier, batchSize);
+                return null;
+            }
+            List<float[]> results = new ArrayList<>(batchSize);
+            for (int i = 0; i < batchSize; i++) {
+                float[] embedding = new float[embeddingDim];
+                System.arraycopy(flat, i * embeddingDim, embedding, 0, embeddingDim);
+                results.add(embedding);
             }
 
             LOG.info("[{}] VECTORIZED EXTRACT COMPLETE: Returned {} embeddings of dim {}",
@@ -1954,6 +2128,9 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
             // Only close normalized if it's a new array (not the same as clsEmbeddings)
             if (normalized != null && normalized != clsEmbeddings && this.normalizeOutput) {
                 try { normalized.close(); } catch (Exception ignored) {}
+            }
+            if (logicalEmbeddingsIsView && logicalEmbeddings != null) {
+                try { logicalEmbeddings.close(); } catch (Exception ignored) {}
             }
             // Only close clsEmbeddings if it's not the same as batchOutput
             if (clsEmbeddings != null && clsEmbeddings != batchOutput) {

@@ -267,12 +267,14 @@ public class ChatSessionMetrics {
     // ========================================================================
 
     /**
-     * Record an escape event of the given type. Null or blank types are ignored.
+     * Record an escape event of the given type. Null or blank types are normalised to
+     * {@code "unknown"} so callers can always retrieve counts via
+     * {@link #getEscapesByType()}{@code .get("unknown")}.
      */
     public void recordEscape(String type) {
         escapeCount.incrementAndGet();
-        String key = (type != null && !type.isBlank()) ? type : "unknown";
-        escapesByType.computeIfAbsent(key, k -> new AtomicInteger(0)).incrementAndGet();
+        String effective = (type != null && !type.isBlank()) ? type : "unknown";
+        escapesByType.computeIfAbsent(effective, k -> new AtomicInteger(0)).incrementAndGet();
     }
 
     /** Increment the judge-call counter. */

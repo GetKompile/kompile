@@ -89,6 +89,10 @@ public class ConversationImportTool implements CliTool {
         conversationId.put("type", "string");
         conversationId.put("description", "Conversation ID or filename to import. Required for 'import' action.");
 
+        ObjectNode limit = props.putObject("limit");
+        limit.put("type", "integer");
+        limit.put("description", "Maximum number of conversations to list. Optional for 'list' action.");
+
         schema.putArray("required").add("action");
         return schema;
     }
@@ -105,12 +109,13 @@ public class ConversationImportTool implements CliTool {
         String action = params.path("action").asText("");
         String source = params.path("source").asText("");
         String conversationId = params.path("conversation_id").asText("");
+        int limit = params.path("limit").asInt(50);
 
         switch (action) {
             case "discover":
                 return doDiscover();
             case "list":
-                return doList(source);
+                return doList(source, limit);
             case "import":
                 return doImport(source, conversationId);
             case "import-all":
@@ -150,7 +155,7 @@ public class ConversationImportTool implements CliTool {
 
     // ─── list ───────────────────────────────────────────────────────────
 
-    private ToolResult doList(String source) {
+    private ToolResult doList(String source, int limit) {
         if (source.isEmpty()) {
             return ToolResult.error("'source' is required for 'list' action.");
         }
@@ -160,13 +165,18 @@ public class ConversationImportTool implements CliTool {
                     + " (known: " + ChatSourceRegistry.getInstance().ids() + ")");
         }
         try {
-            List<ChatSessionSummary> sessions = adapter.list();
+            int effectiveLimit = Math.max(0, limit);
+            List<ChatSessionSummary> sessions = adapter.list(effectiveLimit);
             if (sessions.isEmpty()) {
                 return ToolResult.success("No conversations found for " + source);
             }
+            int shown = sessions.size();
             StringBuilder sb = new StringBuilder();
-            sb.append(adapter.displayName()).append(" conversations (")
-                    .append(sessions.size()).append("):\n\n");
+            sb.append(adapter.displayName()).append(" conversations");
+            if (limit >= 0) {
+                sb.append(" (showing up to ").append(effectiveLimit).append(")");
+            }
+            sb.append(":\n\n");
             for (ChatSessionSummary s : sessions) {
                 sb.append("  ").append(s.sessionId()).append("  ");
                 String title = (s.title() == null || s.title().isBlank()) ? "(no title)" : s.title();
@@ -174,7 +184,7 @@ public class ConversationImportTool implements CliTool {
                 sb.append("  (").append(s.messageCount()).append(" messages)\n");
             }
             return ToolResult.success("conversation_import: list " + source, sb.toString(),
-                    Map.of("count", sessions.size()));
+                    Map.of("shown", shown));
         } catch (IOException e) {
             return ToolResult.error("Failed to list " + source + " conversations: " + e.getMessage());
         }

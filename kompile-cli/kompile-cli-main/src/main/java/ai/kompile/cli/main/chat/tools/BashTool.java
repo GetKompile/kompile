@@ -162,6 +162,9 @@ public class BashTool implements CliTool {
     }
 
     @Override
+    public McpToolAnnotations mcpAnnotations() { return McpToolAnnotations.DESTRUCTIVE; }
+
+    @Override
     public ToolResult execute(JsonNode params, ToolContext context) throws ToolExecutionException {
         String command = params.path("command").asText("");
         int timeout = params.path("timeout").asInt(DEFAULT_TIMEOUT_SECONDS);

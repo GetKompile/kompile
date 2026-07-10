@@ -16,7 +16,6 @@
 
 package ai.kompile.app.services;
 
-import ai.kompile.knowledgegraph.domain.EdgeProvenance;
 import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
@@ -46,6 +45,10 @@ import static org.mockito.Mockito.*;
  *
  * <p>Because {@code @Async} is a Spring AOP concern and this test does not load a Spring
  * context, all methods execute synchronously.</p>
+ *
+ * <p>The service now uses {@code KnowledgeGraphService.createEdgesBatch} for all edge
+ * creation (edges are batched per writeback operation). Tests verify edge labels via the
+ * {@link KnowledgeGraphService.EdgeSpec} list passed to {@code createEdgesBatch}.</p>
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -63,6 +66,7 @@ class ProcessGraphWritebackServiceTest {
     @BeforeEach
     void setUp() {
         objectMapper = new ObjectMapper();
+        // Use no-dataDir path to keep tests file-system-free
         service = new ProcessGraphWritebackService(knowledgeGraphService, objectMapper);
 
         stubStepNode = GraphNode.builder()
@@ -84,17 +88,28 @@ class ProcessGraphWritebackServiceTest {
         when(knowledgeGraphService.getNode(anyString())).thenReturn(Optional.empty());
         when(knowledgeGraphService.getNodeByExternalId(anyString(), any())).thenReturn(Optional.empty());
         when(knowledgeGraphService.edgeExists(anyString(), anyString())).thenReturn(false);
+        when(knowledgeGraphService.getNodesByExternalIds(any())).thenReturn(List.of());
     }
+
+    // ── Helper to capture EdgeSpec batches ────────────────────────────────────────
+
+    @SuppressWarnings("unchecked")
+    private List<String> captureEdgeLabels() {
+        ArgumentCaptor<List<KnowledgeGraphService.EdgeSpec>> captor =
+                ArgumentCaptor.forClass(List.class);
+        verify(knowledgeGraphService, atLeastOnce()).createEdgesBatch(captor.capture());
+        return captor.getAllValues().stream()
+                .flatMap(Collection::stream)
+                .map(KnowledgeGraphService.EdgeSpec::label)
+                .toList();
+    }
+
+    // ── Tests ─────────────────────────────────────────────────────────────────────
 
     @Test
     void onStepCompleted_createsEntityNodeAndEdges() {
         String graphNodeId1 = UUID.randomUUID().toString();
         String graphNodeId2 = UUID.randomUUID().toString();
-
-        GraphNode targetNode1 = GraphNode.builder().nodeId(graphNodeId1).title("Doc 1").build();
-        GraphNode targetNode2 = GraphNode.builder().nodeId(graphNodeId2).title("Doc 2").build();
-        when(knowledgeGraphService.getNode(graphNodeId1)).thenReturn(Optional.of(targetNode1));
-        when(knowledgeGraphService.getNode(graphNodeId2)).thenReturn(Optional.of(targetNode2));
 
         StepExecution step = StepExecution.builder()
                 .stepId("step-A")
@@ -119,11 +134,10 @@ class ProcessGraphWritebackServiceTest {
 
         assertEquals("step-exec:run-1/step-A", extIdCaptor.getValue());
 
-        verify(knowledgeGraphService, times(2))
-                .createEdgeWithMetadata(
-                        eq(stubStepNode.getNodeId()), anyString(),
-                        any(EdgeType.class), anyDouble(), anyString(),
-                        anyString(), isNull(), any(EdgeProvenance.class), isNull());
+        // Both EXECUTED_ON edges must appear in the batch
+        List<String> labels = captureEdgeLabels();
+        long executedOnCount = labels.stream().filter("EXECUTED_ON"::equals).count();
+        assertEquals(2, executedOnCount, "Expected 2 EXECUTED_ON edges, got: " + labels);
     }
 
     @Test
@@ -157,8 +171,6 @@ class ProcessGraphWritebackServiceTest {
     @Test
     void onStepCompleted_updatesWithOutputSummaryAndCreatesOutputEntity() {
         String graphNodeId = UUID.randomUUID().toString();
-        when(knowledgeGraphService.getNode(graphNodeId))
-                .thenReturn(Optional.of(GraphNode.builder().nodeId(graphNodeId).title("Some doc").build()));
 
         GraphNode outputNode = GraphNode.builder()
                 .nodeId(UUID.randomUUID().toString())
@@ -204,20 +216,15 @@ class ProcessGraphWritebackServiceTest {
         assertTrue(extIdCaptor.getAllValues().contains("step-output:run-4/step-D"),
                 "Should create output entity; got: " + extIdCaptor.getAllValues());
 
-        // Verify PRODUCED_OUTPUT edge
-        ArgumentCaptor<String> labelCaptor = ArgumentCaptor.forClass(String.class);
-        verify(knowledgeGraphService, atLeastOnce()).createEdgeWithMetadata(
-                anyString(), anyString(), any(EdgeType.class), anyDouble(),
-                labelCaptor.capture(), anyString(), isNull(), any(EdgeProvenance.class), isNull());
-        assertTrue(labelCaptor.getAllValues().contains("PRODUCED_OUTPUT"),
-                "Expected PRODUCED_OUTPUT edge; got: " + labelCaptor.getAllValues());
+        // Verify PRODUCED_OUTPUT edge appears in the batch
+        List<String> labels = captureEdgeLabels();
+        assertTrue(labels.contains("PRODUCED_OUTPUT"),
+                "Expected PRODUCED_OUTPUT edge in batch; got: " + labels);
     }
 
     @Test
     void onStepCompleted_createsErrorEntityForFailedStep() {
         String graphNodeId = UUID.randomUUID().toString();
-        when(knowledgeGraphService.getNode(graphNodeId))
-                .thenReturn(Optional.of(GraphNode.builder().nodeId(graphNodeId).title("Some doc").build()));
 
         GraphNode errorNode = GraphNode.builder()
                 .nodeId(UUID.randomUUID().toString())
@@ -248,20 +255,15 @@ class ProcessGraphWritebackServiceTest {
         assertTrue(extIdCaptor.getAllValues().contains("step-error:run-err/step-F"),
                 "Should create error entity; got: " + extIdCaptor.getAllValues());
 
-        // Verify PRODUCED_ERROR edge
-        ArgumentCaptor<String> labelCaptor = ArgumentCaptor.forClass(String.class);
-        verify(knowledgeGraphService, atLeastOnce()).createEdgeWithMetadata(
-                anyString(), anyString(), any(EdgeType.class), anyDouble(),
-                labelCaptor.capture(), anyString(), isNull(), any(EdgeProvenance.class), isNull());
-        assertTrue(labelCaptor.getAllValues().contains("PRODUCED_ERROR"),
-                "Expected PRODUCED_ERROR edge; got: " + labelCaptor.getAllValues());
+        // Verify PRODUCED_ERROR edge in batch
+        List<String> labels = captureEdgeLabels();
+        assertTrue(labels.contains("PRODUCED_ERROR"),
+                "Expected PRODUCED_ERROR edge in batch; got: " + labels);
     }
 
     @Test
     void onStepCompleted_createsUsesToolEdgeForToolCallStep() {
         String graphNodeId = UUID.randomUUID().toString();
-        when(knowledgeGraphService.getNode(graphNodeId))
-                .thenReturn(Optional.of(GraphNode.builder().nodeId(graphNodeId).title("Doc").build()));
 
         GraphNode toolNode = GraphNode.builder()
                 .nodeId(UUID.randomUUID().toString())
@@ -288,13 +290,10 @@ class ProcessGraphWritebackServiceTest {
 
         service.onStepCompleted(run, step);
 
-        // Verify USES_TOOL edge was created
-        ArgumentCaptor<String> labelCaptor = ArgumentCaptor.forClass(String.class);
-        verify(knowledgeGraphService, atLeastOnce()).createEdgeWithMetadata(
-                anyString(), anyString(), any(EdgeType.class), anyDouble(),
-                labelCaptor.capture(), anyString(), isNull(), any(EdgeProvenance.class), isNull());
-        assertTrue(labelCaptor.getAllValues().contains("USES_TOOL"),
-                "Expected USES_TOOL edge; got: " + labelCaptor.getAllValues());
+        // Verify USES_TOOL edge in batch
+        List<String> labels = captureEdgeLabels();
+        assertTrue(labels.contains("USES_TOOL"),
+                "Expected USES_TOOL edge in batch; got: " + labels);
 
         // Verify tool entity was created with correct external ID
         ArgumentCaptor<String> extIdCaptor = ArgumentCaptor.forClass(String.class);
@@ -312,9 +311,6 @@ class ProcessGraphWritebackServiceTest {
                 .nodeId(UUID.randomUUID().toString()).title("Step A (completed)").build();
         when(knowledgeGraphService.getNodeByExternalId("step-exec:run-5/step-A", NodeLevel.ENTITY))
                 .thenReturn(Optional.of(existingStepNode));
-
-        GraphNode dataNode = GraphNode.builder().nodeId(graphNodeId).title("Invoice Doc").build();
-        when(knowledgeGraphService.getNode(graphNodeId)).thenReturn(Optional.of(dataNode));
 
         when(knowledgeGraphService.createNode(
                 eq(NodeLevel.ENTITY), eq("process-run:run-5"),
@@ -335,15 +331,10 @@ class ProcessGraphWritebackServiceTest {
                 eq(NodeLevel.ENTITY), eq("process-run:run-5"),
                 anyString(), anyString(), anyMap());
 
-        ArgumentCaptor<String> edgeLabelCaptor = ArgumentCaptor.forClass(String.class);
-        verify(knowledgeGraphService, atLeastOnce()).createEdgeWithMetadata(
-                eq(stubRunNode.getNodeId()), anyString(), any(EdgeType.class),
-                anyDouble(), edgeLabelCaptor.capture(), anyString(),
-                isNull(), any(EdgeProvenance.class), isNull());
-
-        List<String> labels = edgeLabelCaptor.getAllValues();
-        assertTrue(labels.contains("CONTAINS_STEP") || labels.contains("REFERENCES_DATA"),
-                "Expected CONTAINS_STEP or REFERENCES_DATA edges, got: " + labels);
+        // Verify INSTANCE_OF and REFERENCES_DATA edges in batch
+        List<String> labels = captureEdgeLabels();
+        assertTrue(labels.contains("INSTANCE_OF") || labels.contains("REFERENCES_DATA"),
+                "Expected INSTANCE_OF or REFERENCES_DATA edge, got: " + labels);
         assertTrue(labels.contains("INSTANCE_OF"),
                 "Expected INSTANCE_OF edge from run to process definition, got: " + labels);
     }

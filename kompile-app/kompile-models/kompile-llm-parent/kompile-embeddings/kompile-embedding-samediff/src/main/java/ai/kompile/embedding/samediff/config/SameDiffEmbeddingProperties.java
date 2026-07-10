@@ -25,7 +25,7 @@ import java.util.List;
 import java.util.Map;
 
 @Data
-@Component // Ensures it's picked up for @EnableConfigurationProperties
+@Component // Sole registration — do not also @EnableConfigurationProperties this class
 @ConfigurationProperties(prefix = "kompile.embedding.samediff")
 public class SameDiffEmbeddingProperties {
 

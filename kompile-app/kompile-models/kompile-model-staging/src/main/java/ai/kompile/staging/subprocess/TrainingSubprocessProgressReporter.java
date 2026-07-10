@@ -99,6 +99,7 @@ public class TrainingSubprocessProgressReporter implements AutoCloseable {
 
     public void reportProgress(long step, int epoch, int totalEpochs, double loss, double lr,
                                 String phase, double epochProgress, double overallProgress, String message) {
+        validateProgressMetrics(loss, lr, epochProgress, overallProgress);
         long now = System.currentTimeMillis();
         long lastTime = lastProgressTime.get();
         if (now - lastTime < PROGRESS_THROTTLE_MS) return;
@@ -109,6 +110,7 @@ public class TrainingSubprocessProgressReporter implements AutoCloseable {
 
     public void reportProgressImmediate(long step, int epoch, int totalEpochs, double loss, double lr,
                                          String phase, double epochProgress, double overallProgress, String message) {
+        validateProgressMetrics(loss, lr, epochProgress, overallProgress);
         lastProgressTime.set(System.currentTimeMillis());
         send(TrainingSubprocessMessage.progress(taskId, step, epoch, totalEpochs, loss, lr,
                 phase, epochProgress, overallProgress, message));
@@ -117,6 +119,13 @@ public class TrainingSubprocessProgressReporter implements AutoCloseable {
     public void reportMetrics(long step, int epoch, double trainLoss, double evalLoss, double lr,
                                double gradNorm, double tokensPerSec, double samplesPerSec,
                                Map<String, Double> customMetrics) {
+        validateMetric("trainLoss", trainLoss);
+        validateMetric("evalLoss", evalLoss);
+        validateMetric("learningRate", lr);
+        validateMetric("gradNorm", gradNorm);
+        validateMetric("tokensPerSecond", tokensPerSec);
+        validateMetric("samplesPerSecond", samplesPerSec);
+        validateMetricMap(customMetrics);
         send(TrainingSubprocessMessage.metricsUpdate(taskId, step, epoch, trainLoss, evalLoss,
                 lr, gradNorm, tokensPerSec, samplesPerSec, customMetrics));
     }
@@ -135,6 +144,14 @@ public class TrainingSubprocessProgressReporter implements AutoCloseable {
                                       String gpuDeviceNames,
                                       long heapUsedBytes, long heapMaxBytes,
                                       double heapUsagePercent) {
+        validateMetric("trainLoss", trainLoss);
+        validateMetric("evalLoss", evalLoss);
+        validateMetric("learningRate", lr);
+        validateMetric("gradNorm", gradNorm);
+        validateMetric("tokensPerSecond", tokensPerSec);
+        validateMetric("samplesPerSecond", samplesPerSec);
+        validateMetric("heapUsagePercent", heapUsagePercent);
+        validateMetricMap(customMetrics);
         send(TrainingSubprocessMessage.metricsUpdateWithDsp(taskId, step, epoch, trainLoss, evalLoss,
                 lr, gradNorm, tokensPerSec, samplesPerSec, customMetrics,
                 dspSegmentsWarmup, dspSegmentsReplayed, dspSegmentsCaptured,
@@ -147,6 +164,9 @@ public class TrainingSubprocessProgressReporter implements AutoCloseable {
 
     public void reportCompleted(double finalLoss, double finalEvalLoss, long totalSteps,
                                  int totalEpochs, String outputPath, Map<String, Double> finalMetrics) {
+        validateMetric("finalLoss", finalLoss);
+        validateMetric("finalEvalLoss", finalEvalLoss);
+        validateMetricMap(finalMetrics);
         long totalDuration = System.currentTimeMillis() - startTimeMs;
         send(TrainingSubprocessMessage.completed(taskId, finalLoss, finalEvalLoss, totalSteps,
                 totalEpochs, totalDuration, outputPath, finalMetrics));
@@ -161,6 +181,7 @@ public class TrainingSubprocessProgressReporter implements AutoCloseable {
     }
 
     public void reportCheckpointSaved(long step, int epoch, String checkpointPath, double loss) {
+        validateMetric("checkpointLoss", loss);
         send(TrainingSubprocessMessage.checkpointSaved(taskId, step, epoch, checkpointPath, loss));
     }
 
@@ -176,6 +197,32 @@ public class TrainingSubprocessProgressReporter implements AutoCloseable {
             default -> logger.info("[{}] {}", source, message);
         }
         send(TrainingSubprocessMessage.log(taskId, level.toUpperCase(), source, message));
+    }
+
+    private void validateProgressMetrics(double loss, double lr, double epochProgress, double overallProgress) {
+        validateMetric("loss", loss);
+        validateMetric("learningRate", lr);
+        validateMetric("epochProgress", epochProgress);
+        validateMetric("overallProgress", overallProgress);
+    }
+
+    private void validateMetricMap(Map<String, Double> metrics) {
+        if (metrics == null) {
+            return;
+        }
+        for (Map.Entry<String, Double> entry : metrics.entrySet()) {
+            Double value = entry.getValue();
+            if (value == null) {
+                throw new IllegalStateException("Training metric '" + entry.getKey() + "' is null");
+            }
+            validateMetric(entry.getKey(), value);
+        }
+    }
+
+    private void validateMetric(String name, double value) {
+        if (!Double.isFinite(value)) {
+            throw new IllegalStateException("Training metric '" + name + "' is non-finite: " + value);
+        }
     }
 
     private synchronized void send(TrainingSubprocessMessage message) {

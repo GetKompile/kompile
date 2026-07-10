@@ -16,13 +16,25 @@
 
 package ai.kompile.cli.main.manage;
 
+import ai.kompile.cli.common.logs.LogPaths;
+import ai.kompile.cli.common.registry.InstanceInfo;
+import ai.kompile.cli.common.registry.InstanceRegistry;
+import ai.kompile.cli.main.install.registry.ComponentRegistry;
 import ai.kompile.cli.main.manage.ServiceManager.ComponentStatus;
 import ai.kompile.cli.main.manage.ServiceManager.ProcessResult;
 import picocli.CommandLine;
 
+import java.io.File;
+import java.io.IOException;
+import java.io.RandomAccessFile;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.List;
 import java.util.concurrent.Callable;
+import java.util.stream.Stream;
 
 /**
  * Main management command for starting, stopping, and monitoring Kompile components.
@@ -93,10 +105,10 @@ public class ManageComponents implements Callable<Integer> {
             
             // Get default port from registry if not specified
             if (port == null) {
-                ai.kompile.cli.main.install.registry.ComponentRegistry registry = 
-                        new ai.kompile.cli.main.install.registry.ComponentRegistry();
+                ComponentRegistry registry =
+                        new ComponentRegistry();
                 var descriptor = registry.getComponent(componentId);
-                port = descriptor.flatMap(ai.kompile.cli.main.install.registry.ComponentRegistry.ComponentDescriptor::getDefaultPort)
+                port = descriptor.flatMap(ComponentRegistry.ComponentDescriptor::getDefaultPort)
                         .orElse(8080);
             }
 
@@ -179,10 +191,10 @@ public class ManageComponents implements Callable<Integer> {
             ServiceManager manager = new ServiceManager();
             
             if (port == null) {
-                ai.kompile.cli.main.install.registry.ComponentRegistry registry = 
-                        new ai.kompile.cli.main.install.registry.ComponentRegistry();
+                ComponentRegistry registry =
+                        new ComponentRegistry();
                 var descriptor = registry.getComponent(componentId);
-                port = descriptor.flatMap(ai.kompile.cli.main.install.registry.ComponentRegistry.ComponentDescriptor::getDefaultPort)
+                port = descriptor.flatMap(ComponentRegistry.ComponentDescriptor::getDefaultPort)
                         .orElse(8080);
             }
 
@@ -226,15 +238,7 @@ public class ManageComponents implements Callable<Integer> {
             ComponentStatus status = manager.getComponentStatus(componentId);
 
             if (jsonOutput) {
-                // Simple JSON output
-                System.out.println("{");
-                System.out.println("  \"component\": \"" + status.getComponentId() + "\",");
-                System.out.println("  \"status\": \"" + status.getStatus() + "\",");
-                System.out.println("  \"installed\": " + status.isInstalled() + ",");
-                status.getPid().ifPresent(pid -> System.out.println("  \"pid\": " + pid + ","));
-                status.getPort().ifPresent(port -> System.out.println("  \"port\": " + port + ","));
-                status.getUrl().ifPresent(url -> System.out.println("  \"url\": \"" + url + "\","));
-                System.out.println("}");
+                printStatusJson(status);
             } else {
                 System.out.println("Component: " + status.getComponentId());
                 System.out.println("  Status: " + status.getStatusIcon() + " " + status.getStatus());
@@ -319,22 +323,185 @@ public class ManageComponents implements Callable<Integer> {
 
         @Override
         public Integer call() throws Exception {
-            ai.kompile.cli.common.registry.InstanceInfo info = 
-                    ai.kompile.cli.common.registry.InstanceRegistry.findByType(componentId);
+            InstanceInfo info =
+                    InstanceRegistry.findByType(componentId);
 
             if (info == null) {
                 System.err.println("Component not running: " + componentId);
                 return 1;
             }
 
-            // For now, indicate that logs should be checked via standard output
-            // In a full implementation, you'd redirect to a log file
-            System.out.println("Component " + componentId + " is running with PID: " + info.getPid());
-            System.out.println("Logs are being written to stdout/stderr.");
-            System.out.println("To view logs in real-time, use:");
-            System.out.println("  tail -f /proc/" + info.getPid() + "/fd/1");
-            
+            List<File> logFiles = existingComponentLogFiles(componentId);
+            if (logFiles.isEmpty()) {
+                System.err.println("No component log files found for " + componentId);
+                for (File file : componentLogFiles(componentId)) {
+                    System.err.println("  expected: " + file.getAbsolutePath());
+                }
+                return 1;
+            }
+
+            boolean showHeaders = logFiles.size() > 1;
+            for (File file : logFiles) {
+                printLastLines(file, lines, showHeaders);
+            }
+
+            if (follow) {
+                followLogs(logFiles);
+            }
+
             return 0;
         }
+    }
+
+    private static void printStatusJson(ComponentStatus status) {
+        List<String> fields = new ArrayList<>();
+        fields.add("  \"component\": " + jsonString(status.getComponentId()));
+        fields.add("  \"status\": " + jsonString(status.getStatus()));
+        fields.add("  \"installed\": " + status.isInstalled());
+        status.getPid().ifPresent(pid -> fields.add("  \"pid\": " + pid));
+        status.getPort().ifPresent(port -> fields.add("  \"port\": " + port));
+        status.getUrl().ifPresent(url -> fields.add("  \"url\": " + jsonString(url)));
+        status.getMessage().ifPresent(message -> fields.add("  \"message\": " + jsonString(message)));
+
+        System.out.println("{");
+        System.out.println(String.join(",\n", fields));
+        System.out.println("}");
+    }
+
+    private static String jsonString(String value) {
+        if (value == null) {
+            return "null";
+        }
+        StringBuilder escaped = new StringBuilder(value.length() + 2);
+        escaped.append('"');
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            switch (c) {
+                case '"':
+                    escaped.append("\\\"");
+                    break;
+                case '\\':
+                    escaped.append("\\\\");
+                    break;
+                case '\b':
+                    escaped.append("\\b");
+                    break;
+                case '\f':
+                    escaped.append("\\f");
+                    break;
+                case '\n':
+                    escaped.append("\\n");
+                    break;
+                case '\r':
+                    escaped.append("\\r");
+                    break;
+                case '\t':
+                    escaped.append("\\t");
+                    break;
+                default:
+                    if (c < 0x20) {
+                        escaped.append(String.format("\\u%04x", (int) c));
+                    } else {
+                        escaped.append(c);
+                    }
+            }
+        }
+        escaped.append('"');
+        return escaped.toString();
+    }
+
+    private static List<File> existingComponentLogFiles(String componentId) {
+        List<File> existing = new ArrayList<>();
+        for (File file : componentLogFiles(componentId)) {
+            if (file.isFile()) {
+                existing.add(file);
+            }
+        }
+        return existing;
+    }
+
+    static File[] componentLogFiles(String componentId) {
+        File dir = new File(LogPaths.logsDirectory(), "components");
+        String safeName = safeFileName(componentId);
+        return new File[] {
+                new File(dir, safeName + ".out.log"),
+                new File(dir, safeName + ".err.log")
+        };
+    }
+
+    private static String safeFileName(String value) {
+        if (value == null || value.isBlank()) {
+            return "_unknown";
+        }
+        return value.replaceAll("[^A-Za-z0-9._-]", "_");
+    }
+
+    private static void printLastLines(File file, int requestedLines, boolean showHeader) throws IOException {
+        if (showHeader) {
+            System.out.println("==> " + file.getAbsolutePath() + " <==");
+        }
+        int lineLimit = Math.max(0, requestedLines);
+        if (lineLimit == 0) {
+            return;
+        }
+
+        Deque<String> tail = new ArrayDeque<>(lineLimit);
+        try (Stream<String> stream = Files.lines(file.toPath())) {
+            stream.forEach(line -> {
+                if (tail.size() == lineLimit) {
+                    tail.removeFirst();
+                }
+                tail.addLast(line);
+            });
+        }
+        tail.forEach(System.out::println);
+    }
+
+    private static void followLogs(List<File> files) throws IOException {
+        List<LogCursor> cursors = new ArrayList<>();
+        for (File file : files) {
+            cursors.add(new LogCursor(file));
+        }
+        while (!Thread.currentThread().isInterrupted()) {
+            for (LogCursor cursor : cursors) {
+                cursor.printNewLines();
+            }
+            try {
+                Thread.sleep(1000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
+    private static class LogCursor {
+        private final File file;
+        private long position;
+
+        private LogCursor(File file) {
+            this.file = file;
+            this.position = file.length();
+        }
+
+        private void printNewLines() throws IOException {
+            if (!file.isFile()) {
+                return;
+            }
+            if (file.length() < position) {
+                position = 0;
+            }
+            try (RandomAccessFile reader = new RandomAccessFile(file, "r")) {
+                reader.seek(position);
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    System.out.println("[" + file.getName() + "] " + decodeUtf8Line(line));
+                }
+                position = reader.getFilePointer();
+            }
+        }
+    }
+
+    private static String decodeUtf8Line(String line) {
+        return new String(line.getBytes(StandardCharsets.ISO_8859_1), StandardCharsets.UTF_8);
     }
 }

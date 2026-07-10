@@ -25,7 +25,10 @@ import ai.kompile.cli.main.chat.tools.TaskTool;
 import ai.kompile.cli.main.chat.tools.CliTool;
 import ai.kompile.cli.main.chat.tools.ToolRegistry;
 
+import ai.kompile.cli.main.chat.tools.ResumeTool;
+
 import java.io.InputStream;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -165,7 +168,7 @@ public class SessionLifecycleManager {
      * Inspired by Claude Code /cost, Codex CLI stats, and Aider session metrics.
      */
     public void printSessionSummary() {
-        java.time.Duration duration = sessionMetrics.getSessionDuration();
+        Duration duration = sessionMetrics.getSessionDuration();
         StringBuilder body = new StringBuilder();
 
         // Session info
@@ -403,7 +406,7 @@ public class SessionLifecycleManager {
             System.out.println();
 
             // Create and execute ResumeTool
-            ai.kompile.cli.main.chat.tools.ResumeTool resumeTool = new ai.kompile.cli.main.chat.tools.ResumeTool();
+            ResumeTool resumeTool = new ResumeTool();
 
             // Launch interactive browser (args are handled within the tool)
             resumeTool.runInteractiveBrowser();

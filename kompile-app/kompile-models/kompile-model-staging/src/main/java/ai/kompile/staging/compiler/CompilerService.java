@@ -18,6 +18,8 @@ package ai.kompile.staging.compiler;
 
 import ai.kompile.modelmanager.registry.ModelMetadata;
 import ai.kompile.modelmanager.registry.RegistryService;
+import ai.kompile.utils.FormatUtils;
+import ai.kompile.staging.config.StagingPropertyKeys;
 import ai.kompile.staging.web.dto.*;
 import org.nd4j.autodiff.samediff.SameDiff;
 import org.nd4j.autodiff.samediff.internal.SameDiffOp;
@@ -59,7 +61,7 @@ public class CompilerService {
 
     private static final Logger log = LoggerFactory.getLogger(CompilerService.class);
 
-    @Value("${kompile.staging.models-dir:#{systemProperties['user.home'] + '/.kompile/models'}}")
+    @Value(StagingPropertyKeys.MODELS_DIR_VALUE)
     private String modelsDir;
 
     private final RegistryService registryService;
@@ -603,6 +605,156 @@ public class CompilerService {
                     .error("Comparison failed: " + e.getMessage())
                     .build();
         }
+    }
+
+    /**
+     * Compare an already materialized baseline model against quantization variants.
+     */
+    public QuantizationComparisonResponse compareQuantizationVariants(QuantizationComparisonRequest request) {
+        if (request == null || request.getBaseModelId() == null || request.getBaseModelId().isBlank()) {
+            return QuantizationComparisonResponse.builder()
+                    .success(false)
+                    .error("baseModelId is required")
+                    .build();
+        }
+        if (request.getVariants() == null || request.getVariants().isEmpty()) {
+            return QuantizationComparisonResponse.builder()
+                    .success(false)
+                    .baseModelId(request.getBaseModelId())
+                    .error("At least one quantization variant is required")
+                    .build();
+        }
+
+        QuantizationComparisonResponse.VariantResult base = inspectQuantizationVariant(
+                request.getBaseModelId(), "BASELINE", 0L);
+        long baseSizeBytes = base.isSuccess() ? base.getSizeBytes() : 0L;
+
+        List<QuantizationComparisonResponse.VariantResult> variants = new ArrayList<>();
+        for (QuantizationComparisonRequest.Variant variant : request.getVariants()) {
+            String variantModelId = variant != null ? variant.getModelId() : null;
+            String quantizationType = variant != null ? variant.getQuantizationType() : null;
+            QuantizationComparisonResponse.VariantResult result = inspectQuantizationVariant(
+                    variantModelId, quantizationType, baseSizeBytes);
+            if (request.isIncludeGraphComparison() && base.isSuccess() && result.isSuccess()) {
+                result.setGraphComparison(compareGraphs(request.getBaseModelId(), variantModelId));
+            }
+            variants.add(result);
+        }
+
+        List<QuantizationComparisonResponse.VariantResult> successfulVariants = variants.stream()
+                .filter(QuantizationComparisonResponse.VariantResult::isSuccess)
+                .toList();
+        List<QuantizationComparisonResponse.VariantResult> inspectedModels = new ArrayList<>();
+        if (base.isSuccess()) {
+            inspectedModels.add(base);
+        }
+        inspectedModels.addAll(successfulVariants);
+        QuantizationComparisonResponse.VariantResult smallest = inspectedModels.stream()
+                .min(Comparator.comparingLong(QuantizationComparisonResponse.VariantResult::getSizeBytes))
+                .orElse(null);
+        QuantizationComparisonResponse.VariantResult bestReduction = successfulVariants.stream()
+                .max(Comparator.comparingDouble(QuantizationComparisonResponse.VariantResult::getSizeReductionPercent))
+                .orElse(null);
+
+        boolean success = base.isSuccess() && !successfulVariants.isEmpty();
+        return QuantizationComparisonResponse.builder()
+                .success(success)
+                .error(success ? null : "Baseline or all quantization variants failed inspection")
+                .baseModelId(request.getBaseModelId())
+                .baseModel(base)
+                .variants(variants)
+                .smallestModelId(smallest != null ? smallest.getModelId() : null)
+                .bestSizeReductionModelId(bestReduction != null ? bestReduction.getModelId() : null)
+                .verdict(buildQuantizationVerdict(base, bestReduction))
+                .build();
+    }
+
+    private QuantizationComparisonResponse.VariantResult inspectQuantizationVariant(String modelId,
+                                                                                     String quantizationType,
+                                                                                     long baseSizeBytes) {
+        if (modelId == null || modelId.isBlank()) {
+            return QuantizationComparisonResponse.VariantResult.builder()
+                    .success(false)
+                    .quantizationType(quantizationType)
+                    .error("modelId is required")
+                    .build();
+        }
+
+        File modelFile = resolveModelFile(modelId);
+        if (modelFile == null || !modelFile.exists()) {
+            return QuantizationComparisonResponse.VariantResult.builder()
+                    .success(false)
+                    .modelId(modelId)
+                    .quantizationType(quantizationType)
+                    .error("Model file not found: " + modelId)
+                    .build();
+        }
+
+        SameDiff sd = null;
+        try {
+            sd = loadSameDiffModel(modelFile);
+            Map<String, String> opTypeCounts = new LinkedHashMap<>();
+            for (SameDiffOp op : sd.getOps().values()) {
+                String opType = op.getOp() != null ? op.getOp().opName() : "unknown";
+                opTypeCounts.merge(opType, "1", (a, b) -> String.valueOf(Integer.parseInt(a) + 1));
+            }
+
+            long sizeBytes = modelFile.length();
+            long deltaBytes = baseSizeBytes > 0 ? sizeBytes - baseSizeBytes : 0L;
+            double reductionPercent = baseSizeBytes > 0
+                    ? round2(((double) (baseSizeBytes - sizeBytes) / baseSizeBytes) * 100.0)
+                    : 0.0;
+
+            return QuantizationComparisonResponse.VariantResult.builder()
+                    .success(true)
+                    .modelId(modelId)
+                    .quantizationType(quantizationType)
+                    .modelFile(modelFile.getAbsolutePath())
+                    .sizeBytes(sizeBytes)
+                    .sizeDeltaBytes(deltaBytes)
+                    .sizeReductionPercent(reductionPercent)
+                    .opsCount(sd.getOps().size())
+                    .varsCount(sd.variables().size())
+                    .opTypeCounts(opTypeCounts)
+                    .build();
+        } catch (Exception e) {
+            log.warn("Failed to inspect quantization variant {}", modelId, e);
+            return QuantizationComparisonResponse.VariantResult.builder()
+                    .success(false)
+                    .modelId(modelId)
+                    .quantizationType(quantizationType)
+                    .modelFile(modelFile.getAbsolutePath())
+                    .sizeBytes(modelFile.length())
+                    .error("Inspection failed: " + e.getMessage())
+                    .build();
+        } finally {
+            if (sd != null) {
+                sd.close();
+            }
+        }
+    }
+
+    private String buildQuantizationVerdict(QuantizationComparisonResponse.VariantResult base,
+                                            QuantizationComparisonResponse.VariantResult bestReduction) {
+        if (base == null || !base.isSuccess()) {
+            return "Baseline model could not be inspected.";
+        }
+        if (bestReduction == null) {
+            return "No quantization variant could be inspected.";
+        }
+        long bytesSaved = base.getSizeBytes() - bestReduction.getSizeBytes();
+        String quantizationType = bestReduction.getQuantizationType() != null
+                ? bestReduction.getQuantizationType() : bestReduction.getModelId();
+        if (bytesSaved >= 0) {
+            return String.format("%s saves %s (%.2f%%) versus baseline.",
+                    quantizationType, FormatUtils.formatBytes(bytesSaved), bestReduction.getSizeReductionPercent());
+        }
+        return String.format("%s is %s larger (%.2f%% reduction) than baseline.",
+                quantizationType, FormatUtils.formatBytes(Math.abs(bytesSaved)), bestReduction.getSizeReductionPercent());
+    }
+
+    private double round2(double value) {
+        return Math.round(value * 100.0) / 100.0;
     }
 
     /**
@@ -1467,7 +1619,7 @@ public class CompilerService {
             int beforeOps = sd.getOps().size();
             int beforeVars = sd.variables().size();
             long sizeBeforeBytes = modelFile.length();
-            emitLog(jobId, "INFO", "LOADING", String.format("Model loaded: %d ops, %d vars, %s", beforeOps, beforeVars, formatSize(sizeBeforeBytes)));
+            emitLog(jobId, "INFO", "LOADING", String.format("Model loaded: %d ops, %d vars, %s", beforeOps, beforeVars, FormatUtils.formatBytes(sizeBeforeBytes)));
 
             // Phase: Shape Propagation
             updateJobStatus(jobId, "COMPILING", "SHAPE_PROPAGATION", 25, "Running shape propagation...");
@@ -1545,7 +1697,7 @@ public class CompilerService {
             // Phase: Complete
             updateJobStatus(jobId, "COMPILING", "COMPLETE", 100, "Compilation complete!");
             emitLog(jobId, "INFO", "COMPLETE", String.format("Compilation complete: %d->%d ops, %s->%s (%.1f%% reduction)",
-                    beforeOps, afterOps, formatSize(sizeBeforeBytes), formatSize(sizeAfterBytes), reductionPercent));
+                    beforeOps, afterOps, FormatUtils.formatBytes(sizeBeforeBytes), FormatUtils.formatBytes(sizeAfterBytes), reductionPercent));
 
             CompilerOptimizeResponse result = CompilerOptimizeResponse.builder()
                     .jobId(jobId)
@@ -1680,10 +1832,4 @@ public class CompilerService {
         }
     }
 
-    private String formatSize(long bytes) {
-        if (bytes < 1024) return bytes + " B";
-        if (bytes < 1024 * 1024) return String.format("%.1f KB", bytes / 1024.0);
-        if (bytes < 1024 * 1024 * 1024) return String.format("%.1f MB", bytes / (1024.0 * 1024));
-        return String.format("%.2f GB", bytes / (1024.0 * 1024 * 1024));
-    }
 }

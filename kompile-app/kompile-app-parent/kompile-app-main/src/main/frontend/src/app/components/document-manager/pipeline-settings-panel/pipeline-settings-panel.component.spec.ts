@@ -91,7 +91,6 @@ function mockPipelineConfig(overrides: Partial<PipelineConfig> = {}): PipelineCo
 
 function mockGraphConfig(overrides: Partial<GraphExtractionConfig> = {}): GraphExtractionConfig {
   return {
-    enabled: false,
     batchSize: 10,
     schemaEnforcement: 'none',
     extractionModelProvider: '',
@@ -162,7 +161,6 @@ function createTestBed() {
     'getSuggestedRelationshipTypes',
     'getModelProviders',
     'patchConfig',
-    'toggleEnabled',
     'resetConfig'
   ]);
 
@@ -269,7 +267,7 @@ describe('PipelineSettingsPanelComponent', () => {
     });
 
     it('should populate graphConfig from service', () => {
-      spies.graphExtractionServiceSpy.getConfig.and.returnValue(of(mockGraphConfig({ enabled: true, batchSize: 20 })));
+      spies.graphExtractionServiceSpy.getConfig.and.returnValue(of(mockGraphConfig({ batchSize: 20 })));
       fixture.detectChanges();
       expect(component.graphConfig).not.toBeNull();
       expect(component.graphConfig!.batchSize).toBe(20);
@@ -453,7 +451,6 @@ describe('PipelineSettingsPanelComponent', () => {
   describe('Graph extraction', () => {
     beforeEach(() => {
       spies.graphExtractionServiceSpy.patchConfig.and.returnValue(of(mockGraphConfig()));
-      spies.graphExtractionServiceSpy.toggleEnabled.and.returnValue(of(mockGraphConfig({ enabled: true })));
       spies.graphExtractionServiceSpy.resetConfig.and.returnValue(of(mockGraphConfig()));
       fixture.detectChanges();
     });
@@ -475,7 +472,7 @@ describe('PipelineSettingsPanelComponent', () => {
 
       it('should set graphConfigSaving=true then false on success', () => {
         component.graphConfig = mockGraphConfig();
-        component.onGraphConfigChange('enabled', true);
+        component.onGraphConfigChange('batchSize', 12);
         expect(component.graphConfigSaving).toBeFalse();
       });
 
@@ -493,29 +490,6 @@ describe('PipelineSettingsPanelComponent', () => {
       });
     });
 
-    describe('toggleGraphExtraction()', () => {
-      it('should call toggleEnabled on the service', () => {
-        component.toggleGraphExtraction();
-        expect(spies.graphExtractionServiceSpy.toggleEnabled).toHaveBeenCalled();
-      });
-
-      it('should update graphConfig from the toggle response', () => {
-        spies.graphExtractionServiceSpy.toggleEnabled.and.returnValue(of(mockGraphConfig({ enabled: true })));
-        component.toggleGraphExtraction();
-        expect(component.graphConfig!.enabled).toBeTrue();
-      });
-
-      it('should set graphConfigSaving=false after toggle success', () => {
-        component.toggleGraphExtraction();
-        expect(component.graphConfigSaving).toBeFalse();
-      });
-
-      it('should set graphConfigSaving=false on toggle error', () => {
-        spies.graphExtractionServiceSpy.toggleEnabled.and.returnValue(throwError(() => new Error('Toggle failed')));
-        component.toggleGraphExtraction();
-        expect(component.graphConfigSaving).toBeFalse();
-      });
-    });
 
     describe('resetGraphConfig()', () => {
       it('should call resetConfig on the service', () => {

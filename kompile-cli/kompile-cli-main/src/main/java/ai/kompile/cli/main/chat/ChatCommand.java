@@ -45,9 +45,11 @@ import java.io.IOError;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Scanner;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 
@@ -59,7 +61,10 @@ import java.util.concurrent.Callable;
 )
 public class ChatCommand implements Callable<Integer> {
 
-    @CommandLine.Option(names = {"--url"}, description = "Base URL of the kompile-app instance (e.g. http://localhost:8080)")
+    @CommandLine.Option(names = {"--url"}, description = {
+            "Base URL of the kompile-app instance.",
+            "Example: http://localhost:8080"
+    })
     private String url;
 
     @CommandLine.Option(names = {"--port", "-p"}, description = "Port of the kompile-app instance on localhost")
@@ -70,6 +75,12 @@ public class ChatCommand implements Callable<Integer> {
 
     @CommandLine.Option(names = {"--agent"}, description = "Agent name for chat sessions (standard mode) or passthrough agent name (passthrough mode)")
     private String agentName;
+
+    @CommandLine.Option(names = {"--model"}, description = {
+            "Model passed to the passthrough agent CLI.",
+            "Examples: haiku, gpt-5.2-codex, anthropic/claude-haiku-4-5"
+    })
+    private String model;
 
     @CommandLine.Option(names = {"--rag"}, negatable = true, description = "Enable RAG for chat (default: true)", defaultValue = "true")
     private boolean rag;
@@ -89,8 +100,11 @@ public class ChatCommand implements Callable<Integer> {
     @CommandLine.Option(names = {"--local"}, description = "Force local mode (direct LLM, no server)", defaultValue = "false")
     private boolean forceLocal;
 
-    @CommandLine.Option(names = {"--setup"}, description = "Run LLM configuration setup wizard", defaultValue = "false")
+    @CommandLine.Option(names = {"--setup"}, description = "Run chat configuration setup wizard", defaultValue = "false")
     private boolean runSetup;
+
+    @CommandLine.Option(names = {"--global-config"}, description = "Use global ~/.kompile/chat-config.json instead of project-local .kompile/chat-config.json", defaultValue = "false")
+    private boolean globalConfig;
 
     @CommandLine.Option(names = {"--mode"}, description = "Chat mode: 'standard' or 'passthrough' (overrides config)")
     private String mode;
@@ -120,7 +134,7 @@ public class ChatCommand implements Callable<Integer> {
     public Integer call() {
         // Handle --setup: run wizard and exit
         if (runSetup) {
-            ChatConfig config = SetupWizard.run();
+            ChatConfig config = runSetupWizard();
             return config != null ? 0 : 1;
         }
 
@@ -161,14 +175,18 @@ public class ChatCommand implements Callable<Integer> {
         boolean hasExplicitAction = isResume || (mode != null && !mode.isBlank())
                 || (url != null && !url.isBlank()) || port != null || forceLocal;
 
-        // Load provider credentials/settings, but do not treat saved chat mode/agent as
-        // a default session intent. Chat is task-specific and should ask unless the
-        // user provided explicit mode/agent flags in this invocation.
-        ChatConfig config = ChatConfig.loadOrFromEnv();
+        // Load saved chat settings. The legacy direct-LLM path can still fall back
+        // to env-based provider config; passthrough configs are CLI-agent/session
+        // state and do not require provider credentials.
+        ChatConfig config = globalConfig ? ChatConfig.loadGlobalOrFromEnv() : ChatConfig.loadOrFromEnv();
         boolean configSelectedInThisRun = false;
 
+        if (config == null && hasExplicitAction) {
+            config = configFromExplicitRoute();
+        }
+
         if (!hasExplicitAction || runSetup || config == null) {
-            config = SetupWizard.run();
+            config = runSetupWizard();
             configSelectedInThisRun = true;
             if (config == null) {
                 System.err.println("Setup cancelled.");
@@ -182,6 +200,28 @@ public class ChatCommand implements Callable<Integer> {
         }
 
         return routeFromConfig(config, isResume, resolvedRole, configSelectedInThisRun);
+    }
+
+    private ChatConfig runSetupWizard() {
+        return globalConfig ? SetupWizard.runGlobal() : SetupWizard.run();
+    }
+
+    ChatConfig configFromExplicitRoute() {
+        String normalizedMode = mode == null ? null : mode.trim().toLowerCase(Locale.ROOT);
+        if ("passthrough".equals(normalizedMode)) {
+            ChatConfig config = new ChatConfig(null, null, null, null);
+            config.setChatMode("passthrough");
+            if (agentName != null && !agentName.isBlank()) {
+                config.setPassthroughAgent(agentName);
+            }
+            return config;
+        }
+        if ((url != null && !url.isBlank()) || port != null) {
+            ChatConfig config = new ChatConfig("kompile", null, null, null);
+            config.setChatMode("standard");
+            return config;
+        }
+        return null;
     }
 
     /**
@@ -205,17 +245,28 @@ public class ChatCommand implements Callable<Integer> {
             }
             System.out.println("Starting passthrough mode with agent: " + agent);
 
-            // Decide ONCE whether this session runs enforced. A session that explicitly
-            // opted out (wizard "N") must never be forced back on by a stale
-            // .kompile/enforcer-config.json on disk; explicit --rules/--rule-file always
-            // activate; otherwise fall back to the project config auto-detection.
+            // Decide ONCE whether this session runs enforced. A direct passthrough
+            // config should remain a raw native-agent session unless the user passes
+            // explicit rule flags. Enforcement is per-session opt-in: a project enforcer
+            // config on disk never activates silently — the user is asked every run
+            // (wizard answer for wizard runs, activation prompt otherwise).
             Path wd = Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
             boolean hasExplicitRuleFlags = (enforcerRules != null && !enforcerRules.isBlank())
                     || (enforcerRuleFile != null && !enforcerRuleFile.isBlank());
-            ai.kompile.cli.main.chat.enforcer.EnforcerConfig enforcerConfig =
-                    ai.kompile.cli.main.chat.enforcer.EnforcerConfig.load(wd);
-            boolean enforce = ai.kompile.cli.main.chat.enforcer.EnforcerConfig.shouldActivate(
-                    config.getEnforcementEnabled(), hasExplicitRuleFlags, enforcerConfig);
+            boolean allowEnforcement = shouldConsiderEnforcement(config, hasExplicitRuleFlags);
+            EnforcerConfig enforcerConfig =
+                    allowEnforcement ? EnforcerConfig.load(wd) : null;
+            // Only THIS run's wizard answer counts; a persisted answer from an earlier
+            // session must not re-activate enforcement without asking again.
+            Boolean sessionChoice = configSelectedInThisRun ? config.getEnforcementEnabled() : null;
+            if (allowEnforcement && !hasExplicitRuleFlags && sessionChoice == null
+                    && enforcerConfig != null && enforcerConfig.isEnforcementEnabled()) {
+                sessionChoice = EnforcerActivationPrompt
+                        .confirmViaConsole(enforcerConfig);
+            }
+            boolean enforce = allowEnforcement
+                    && ai.kompile.cli.main.chat.enforcer.EnforcerConfig.shouldActivate(
+                    sessionChoice, hasExplicitRuleFlags, enforcerConfig);
 
             // Enforcement requires the managed REPL; otherwise honor the chosen style.
             boolean managed = config.isPassthroughManaged() || enforce;
@@ -247,6 +298,13 @@ public class ChatCommand implements Callable<Integer> {
 
         // Local mode - direct LLM API calls
         return runLocalLlmMode(config, isResume, resolvedRole);
+    }
+
+    static boolean shouldConsiderEnforcement(ChatConfig config, boolean hasExplicitRuleFlags) {
+        boolean directStyle = !config.isPassthroughManaged();
+        boolean explicitEnforcement = hasExplicitRuleFlags
+                || Boolean.TRUE.equals(config.getEnforcementEnabled());
+        return !directStyle || explicitEnforcement;
     }
 
     /**
@@ -411,6 +469,7 @@ public class ChatCommand implements Callable<Integer> {
             passthrough.injectTools = true;
             passthrough.kompileUrl = "";
             passthrough.mcpPort = 0;
+            passthrough.model = model;
             passthrough.systemPromptManager = SystemPromptManager.resolve(null, null, null);
             return passthrough.call();
         } catch (Exception | IOError e) {
@@ -456,6 +515,7 @@ public class ChatCommand implements Callable<Integer> {
             passthrough.injectTools = true;
             passthrough.kompileUrl = "";
             passthrough.mcpPort = 0;
+            passthrough.model = model;
             // Inject system prompt so Codex/OpenCode get AGENTS.md
             passthrough.systemPromptManager = SystemPromptManager.resolve(null, null, null);
             return passthrough.call();
@@ -587,6 +647,7 @@ public class ChatCommand implements Callable<Integer> {
             passthrough.injectTools = true;
             passthrough.kompileUrl = "";
             passthrough.mcpPort = 0;
+            passthrough.model = model;
             passthrough.systemPromptManager = SystemPromptManager.resolve(null, null, null);
             passthrough.enforcerEvaluator = evaluator;
             passthrough.enforcerPolicy = policy;

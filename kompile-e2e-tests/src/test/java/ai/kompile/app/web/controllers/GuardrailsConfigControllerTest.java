@@ -57,7 +57,7 @@ class GuardrailsConfigControllerTest {
 
     @Test
     void getConfig_withProperties_returnsConfig() {
-        GuardrailsProperties props = new GuardrailsProperties();
+        GuardrailsProperties props = new GuardrailsProperties(null);
         props.setEnabled(true);
         GuardrailsConfigController ctrl = new GuardrailsConfigController(props, null);
 
@@ -83,7 +83,7 @@ class GuardrailsConfigControllerTest {
 
     @Test
     void updateConfig_updatesEnabledField() {
-        GuardrailsProperties props = new GuardrailsProperties();
+        GuardrailsProperties props = new GuardrailsProperties(null);
         props.setEnabled(false);
         GuardrailsConfigController ctrl = new GuardrailsConfigController(props, null);
 
@@ -95,7 +95,7 @@ class GuardrailsConfigControllerTest {
 
     @Test
     void updateConfig_updatesMaxRetries() {
-        GuardrailsProperties props = new GuardrailsProperties();
+        GuardrailsProperties props = new GuardrailsProperties(null);
         GuardrailsConfigController ctrl = new GuardrailsConfigController(props, null);
 
         ctrl.updateConfig(Map.of("maxRetries", 5));
@@ -105,7 +105,7 @@ class GuardrailsConfigControllerTest {
 
     @Test
     void updateConfig_updatesInputPromptInjection() {
-        GuardrailsProperties props = new GuardrailsProperties();
+        GuardrailsProperties props = new GuardrailsProperties(null);
         GuardrailsConfigController ctrl = new GuardrailsConfigController(props, null);
         Map<String, Object> input = Map.of("promptInjection", Map.of("enabled", true, "threshold", 0.9));
 
@@ -167,7 +167,7 @@ class GuardrailsConfigControllerTest {
 
     @Test
     void toggleGuardrails_setsEnabled() {
-        GuardrailsProperties props = new GuardrailsProperties();
+        GuardrailsProperties props = new GuardrailsProperties(null);
         props.setEnabled(false);
         GuardrailsConfigController ctrl = new GuardrailsConfigController(props, null);
 
@@ -181,7 +181,7 @@ class GuardrailsConfigControllerTest {
 
     @Test
     void toggleGuardrails_noEnabledKey_doesNotChangeState() {
-        GuardrailsProperties props = new GuardrailsProperties();
+        GuardrailsProperties props = new GuardrailsProperties(null);
         props.setEnabled(true);
         GuardrailsConfigController ctrl = new GuardrailsConfigController(props, null);
 

@@ -61,7 +61,7 @@ public final class AnsiConstants {
 
     // ── ANSI stripping regex ──────────────────────────────────────────────
     public static final String ANSI_STRIP_REGEX =
-            "\033\\[[0-9;?]*[a-zA-Z]"
+            "\033\\[[0-9;?><]*[a-zA-Z]"
                     + "|\033\\].*?(?:\033\\\\|\007)"
                     + "|\033[()][0-9A-B]"
                     + "|\033[>=<]"

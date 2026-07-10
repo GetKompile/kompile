@@ -470,6 +470,41 @@ class GraphExtractionValidatorTest {
         }
     }
 
+    // ── Non-degenerate confidence defaults ──────────────────────────
+
+    @Test
+    void absentEntityConfidenceIsNotHardCertain() {
+        // Absent LLM confidence must NOT produce 1.0 (hard-certain). It must produce
+        // DEFAULT_ENTITY_CONFIDENCE so PSL treats it as a soft atom (< 0.99 threshold).
+        ExtractedEntity e = new ExtractedEntity("e1", "Name", "TYPE", null, "desc", null, null);
+        double confidence = e.confidence();
+        assertTrue(confidence < 1.0, "Absent entity confidence must be < 1.0, was: " + confidence);
+        assertEquals(GraphExtractionSchema.DEFAULT_ENTITY_CONFIDENCE, confidence, 1e-9);
+    }
+
+    @Test
+    void absentRelationConfidenceIsNotHardCertain() {
+        // Absent LLM confidence must NOT produce 1.0 (hard-certain). It must produce
+        // DEFAULT_RELATION_CONFIDENCE so PSL treats it as a soft atom (< 0.99 threshold).
+        ExtractedRelation r = new ExtractedRelation("e1", "e2", "REL", "desc", null, null);
+        double confidence = r.confidence();
+        assertTrue(confidence < 1.0, "Absent relation confidence must be < 1.0, was: " + confidence);
+        assertEquals(GraphExtractionSchema.DEFAULT_RELATION_CONFIDENCE, confidence, 1e-9);
+    }
+
+    @Test
+    void llmSuppliedEntityConfidenceIsPreserved() {
+        // A real LLM-supplied value must never be clobbered by the fallback.
+        ExtractedEntity e = new ExtractedEntity("e1", "Name", "TYPE", null, "desc", 0.85, null);
+        assertEquals(0.85, e.confidence(), 1e-9);
+    }
+
+    @Test
+    void llmSuppliedRelationConfidenceIsPreserved() {
+        ExtractedRelation r = new ExtractedRelation("e1", "e2", "REL", "desc", 0.63, null);
+        assertEquals(0.63, r.confidence(), 1e-9);
+    }
+
     // ── Prompt instructions ─────────────────────────────────────────
 
     @Test
@@ -480,6 +515,19 @@ class GraphExtractionValidatorTest {
         assertTrue(instructions.contains("entities"));
         assertTrue(instructions.contains("relations"));
         assertTrue(instructions.contains("JSON"));
+    }
+
+    @Test
+    void extractionPromptRequiresConfidenceExplicitly() {
+        // Both single-chunk and multi-chunk prompts must explicitly require confidence so the
+        // calibrated fallback is rarely hit in practice.
+        String single = GraphExtractionValidator.getExtractionPromptInstructions();
+        assertTrue(single.contains("confidence") && single.contains("MUST"),
+                "Single-chunk prompt must explicitly require confidence");
+
+        String multi = GraphExtractionValidator.getMultiChunkExtractionPromptInstructions();
+        assertTrue(multi.contains("confidence") && multi.contains("MUST"),
+                "Multi-chunk prompt must explicitly require confidence");
     }
 
     // ── Helpers ─────────────────────────────────────────────────────

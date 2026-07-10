@@ -46,15 +46,15 @@ class EventAttributionServiceTest {
 
         LocalDateTime now = LocalDateTime.now();
         rootNode = GraphNode.builder()
-                .id(1L).nodeId("root").title("Server Overloaded")
+                .nodeId("root").title("Server Overloaded")
                 .nodeType(NodeLevel.ENTITY).externalId("root")
                 .createdAt(now.minusHours(2)).updatedAt(now).build();
         midNode = GraphNode.builder()
-                .id(2L).nodeId("mid").title("Response Latency Spike")
+                .nodeId("mid").title("Response Latency Spike")
                 .nodeType(NodeLevel.ENTITY).externalId("mid")
                 .createdAt(now.minusHours(1)).updatedAt(now).build();
         targetNode = GraphNode.builder()
-                .id(3L).nodeId("target").title("User-Facing Outage")
+                .nodeId("target").title("User-Facing Outage")
                 .nodeType(NodeLevel.ENTITY).externalId("target")
                 .createdAt(now).updatedAt(now).build();
     }

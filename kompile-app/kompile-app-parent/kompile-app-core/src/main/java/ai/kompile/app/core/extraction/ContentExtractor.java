@@ -16,6 +16,7 @@
 
 package ai.kompile.app.core.extraction;
 
+import ai.kompile.core.language.LanguageSupport;
 import ai.kompile.core.retrievers.RetrievedDoc;
 
 import java.util.List;
@@ -39,7 +40,7 @@ import java.util.function.Consumer;
  * <p>All extractors can run concurrently in separate worker threads, allowing
  * parallel processing of different extraction types on the same document set.</p>
  */
-public interface ContentExtractor {
+public interface ContentExtractor extends LanguageSupport {
 
     /**
      * The type of content this extractor produces.

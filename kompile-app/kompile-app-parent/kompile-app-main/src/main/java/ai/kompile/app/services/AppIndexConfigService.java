@@ -18,6 +18,7 @@ package ai.kompile.app.services;
 
 import ai.kompile.app.config.AppIndexConfig;
 import ai.kompile.app.facts.domain.FactSheet;
+import ai.kompile.app.facts.service.FactSheetIndexConfigurer;
 import ai.kompile.core.embeddings.EmbeddingModel;
 import ai.kompile.core.embeddings.NoOpVectorStoreImpl;
 import ai.kompile.core.embeddings.VectorStore;
@@ -49,7 +50,7 @@ import java.util.List;
  * Also handles per-fact-sheet index switching.
  */
 @Service
-public class AppIndexConfigService {
+public class AppIndexConfigService implements FactSheetIndexConfigurer {
 
     private static final Logger log = LoggerFactory.getLogger(AppIndexConfigService.class);
     private static final String CONFIG_FILENAME = "app-index-config.json";

@@ -281,13 +281,45 @@
           <div class="contradiction-item" *ngFor="let c of contradictions">
             <div class="contradiction-header">
               <mat-icon class="warn-icon">warning</mat-icon>
-              <span class="contradiction-type">{{ c.contradictionType }}</span>
+              <span class="contradiction-type">{{ contradictionTitle(c) }}</span>
+              <span class="contradiction-score">Severity {{ formatPct(c.severity) }}</span>
+              <span class="contradiction-score">Recency {{ formatPct(c.recencyScore) }}</span>
+              <span class="contradiction-score probability" *ngIf="c.incompatibilityScore != null">
+                Conflict {{ formatPct(c.incompatibilityScore) }}
+              </span>
             </div>
             <div class="contradiction-body">
-              <div>{{ c.description }}</div>
+              <div class="contradiction-details">{{ contradictionDescription(c) }}</div>
+              <div class="probability-row" *ngIf="hasProbabilisticSignal(c)">
+                <span *ngIf="c.probabilityA != null">P(A) {{ formatPct(c.probabilityA) }}</span>
+                <span *ngIf="c.probabilityB != null">P(B) {{ formatPct(c.probabilityB) }}</span>
+                <span *ngIf="c.priorA != null">Prior A {{ formatPct(c.priorA) }}</span>
+                <span *ngIf="c.priorB != null">Prior B {{ formatPct(c.priorB) }}</span>
+                <span *ngIf="c.posteriorEntropy != null">Entropy {{ formatPct(c.posteriorEntropy) }}</span>
+                <span *ngIf="c.uncertaintyKind">{{ c.uncertaintyKind }}</span>
+              </div>
+              <div class="fact-compare">
+                <div class="fact-line">{{ c.existingFact }}</div>
+                <div class="fact-line">{{ c.newFact }}</div>
+              </div>
               <div class="contradiction-meta">
-                Entities: {{ c.sourceEntityId }} &harr; {{ c.targetEntityId }}
-                &middot; {{ c.conflictingEdgeIds.length }} conflicting edges
+                Entities: {{ c.entityIdA }} &harr; {{ c.entityIdB }}
+                &middot; {{ c.conflictingEdgeIds.length }} edge(s)
+                &middot; keep {{ c.recommendedEdgeId || 'review' }}
+              </div>
+              <div class="edge-chip-row" *ngIf="c.conflictingEdgeIds?.length">
+                <span class="edge-chip" *ngFor="let edgeId of c.conflictingEdgeIds">{{ edgeId }}</span>
+              </div>
+              <div class="contradiction-action" *ngIf="c.recommendedAction">
+                {{ c.recommendedAction }}
+              </div>
+              <div class="panel-actions inline-actions" *ngIf="c.candidateStaleEdgeIds?.length">
+                <button mat-stroked-button (click)="applyRecommendedResolution(c, true)">
+                  <mat-icon>preview</mat-icon> Preview This Fix
+                </button>
+                <button mat-flat-button color="warn" (click)="applyRecommendedResolution(c, false)">
+                  <mat-icon>rule</mat-icon> Apply This Fix
+                </button>
               </div>
             </div>
           </div>

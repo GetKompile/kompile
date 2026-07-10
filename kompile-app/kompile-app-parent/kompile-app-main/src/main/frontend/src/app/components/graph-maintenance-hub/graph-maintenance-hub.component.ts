@@ -249,6 +249,26 @@ export class GraphMaintenanceHubComponent implements OnInit, OnDestroy {
       });
   }
 
+  applyRecommendedResolution(contradiction: Contradiction, dryRun: boolean): void {
+    if (!this.factSheetId) return;
+    const edgeIds = contradiction.candidateStaleEdgeIds || [];
+    if (edgeIds.length === 0) {
+      this.showError('No recommended stale edge is available for this contradiction');
+      return;
+    }
+    this.loading = true;
+    this.maintenanceService.resolveContradictionSelection(this.factSheetId, edgeIds, dryRun)
+      .pipe(takeUntil(this.destroy$), finalize(() => this.loading = false))
+      .subscribe({
+        next: report => {
+          this.lastPruneReport = report;
+          this.showSuccess(`Contradiction resolution ${dryRun ? 'previewed' : 'applied'}`);
+          this.detectContradictions();
+        },
+        error: err => this.showError('Recommended contradiction resolution failed', err)
+      });
+  }
+
   validateProvenance(): void {
     if (!this.factSheetId) return;
     this.loading = true;
@@ -351,6 +371,30 @@ export class GraphMaintenanceHubComponent implements OnInit, OnDestroy {
 
   getInvalidProvenanceCount(): number {
     return this.provenanceChecks.filter(p => p.allSourcesInvalid).length;
+  }
+
+  contradictionTitle(c: Contradiction): string {
+    const type = c.type || 'CONTRADICTION';
+    return c.predicate ? `${type}: ${c.predicate}` : type;
+  }
+
+  contradictionDescription(c: Contradiction): string {
+    return c.details || `${c.existingFact || 'Fact'} conflicts with ${c.newFact || 'another fact'}`;
+  }
+
+  hasProbabilisticSignal(c: Contradiction): boolean {
+    return c.probabilityA != null
+      || c.probabilityB != null
+      || c.priorA != null
+      || c.priorB != null
+      || c.posteriorEntropy != null
+      || c.incompatibilityScore != null
+      || !!c.uncertaintyKind;
+  }
+
+  formatPct(value?: number | null): string {
+    if (value == null || Number.isNaN(value)) return '-';
+    return `${Math.round(value * 100)}%`;
   }
 
   formatDate(dateStr: string): string {

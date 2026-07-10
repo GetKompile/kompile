@@ -25,6 +25,10 @@ import org.springframework.context.event.EventListener;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Service;
 
+import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * Automatically starts the kompile-model-staging server on application boot
  * if it isn't already running and an executable can be found (project-local
@@ -83,8 +87,10 @@ public class StagingAutoStartService {
         // Check if an executable is available
         StagingServerLifecycleService.StagingExecutable exe = lifecycleService.findStagingExecutable();
         if (exe == null) {
-            log.info("No staging server executable found (project-local or global). " +
-                    "Embedding models will load from local cache if available.");
+            // Surface searched locations so operators know where to put the binary
+            List<String> searched = resolveSearchedLocations();
+            log.warn("No staging server executable found. Embedding models will load from local cache. " +
+                    "Searched locations: {}", searched);
             return;
         }
 
@@ -99,6 +105,22 @@ public class StagingAutoStartService {
         } else {
             log.warn("Failed to auto-start staging server: {}", result.getMessage());
         }
+    }
+
+    /**
+     * Returns a human-readable list of paths the lifecycle service would search for
+     * the staging executable.  Used in the WARN log when no executable is found.
+     */
+    private List<String> resolveSearchedLocations() {
+        List<String> locations = new ArrayList<>();
+        // Priority 1 & 2: project-local native image / JAR
+        locations.add("./staging/kompile-model-staging (native image)");
+        locations.add("./staging/kompile-model-staging*.jar");
+        // Priority 3: global install under ~/.kompile/components
+        String home = System.getProperty("user.home", "~");
+        locations.add(Paths.get(home, ".kompile", "components", "kompile-model-staging").toString()
+                + "/<version>/*.jar");
+        return locations;
     }
 
     /**

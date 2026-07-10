@@ -5,40 +5,42 @@ import ai.kompile.graphchangetracking.event.EdgeMutationEvent;
 import ai.kompile.graphchangetracking.event.GraphMutationEvent;
 import ai.kompile.graphchangetracking.event.NodeMutationEvent;
 import ai.kompile.graphchangetracking.hook.GraphUpdateHookRegistry;
-import ai.kompile.knowledgegraph.grounding.GroundingResetPort;
-import ai.kompile.graphchangetracking.repository.GraphMutationRecordRepository;
-import ai.kompile.knowledgegraph.grounding.GroundingProgressEvent;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.event.EventListener;
-import org.springframework.lang.Nullable;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
 
+/**
+ * Persist-only listener for node and edge mutation events.
+ *
+ * <h3>Cascade scheduling is NOT done here</h3>
+ * <p>Previously this class held a {@code GroundingResetPort} reference and called
+ * {@code scheduleReground()} on every node/edge mutation — an immediate (non-debounced)
+ * {@code schedule()} call that bypassed the debounce window in
+ * {@link ai.kompile.graphchangetracking.hook.GroundingCascadeHook}.  That caused every
+ * single manual edit to fire a full cascade immediately, making the debounced path in
+ * {@link ai.kompile.graphchangetracking.hook.GroundingCascadeEventListener} dead code.</p>
+ *
+ * <p>Cascade scheduling is now owned exclusively by
+ * {@link ai.kompile.graphchangetracking.hook.GroundingCascadeEventListener}:
+ * <ul>
+ *   <li>Node/edge mutations → {@code scheduleDebounced} (15 s quiet / 300 s max)</li>
+ *   <li>Changeset-completed / agent-assert / agent-retract → immediate {@code schedule}</li>
+ * </ul>
+ * This class is responsible ONLY for persisting {@link GraphMutationRecord}s and notifying
+ * registered {@link GraphUpdateHookRegistry} hooks.</p>
+ */
 @Component
 @Slf4j
 public class GraphMutationRecordingListener {
 
-    private final GraphMutationRecordRepository mutationRepo;
+    private final GraphMutationStore mutationStore;
     private final GraphUpdateHookRegistry hookRegistry;
 
-    /**
-     * Optional — wired when the grounding cascade is on the classpath. Null-safe everywhere.
-     * Injected via setter so the constructor remains compatible with test contexts that only
-     * wire mutationRepo + hookRegistry.
-     */
-    @Nullable
-    private GroundingResetPort groundingCascadeHook;
-
-    public GraphMutationRecordingListener(GraphMutationRecordRepository mutationRepo,
+    public GraphMutationRecordingListener(GraphMutationStore mutationStore,
                                            GraphUpdateHookRegistry hookRegistry) {
-        this.mutationRepo = mutationRepo;
+        this.mutationStore = mutationStore;
         this.hookRegistry = hookRegistry;
-    }
-
-    @Autowired(required = false)
-    public void setGroundingCascadeHook(GroundingResetPort groundingCascadeHook) {
-        this.groundingCascadeHook = groundingCascadeHook;
     }
 
     @EventListener
@@ -46,7 +48,8 @@ public class GraphMutationRecordingListener {
     public void onNodeMutation(NodeMutationEvent event) {
         persistMutation(event);
         hookRegistry.executeGraphMutated(event);
-        scheduleReground(event);
+        // Cascade scheduling is handled by GroundingCascadeEventListener.onNodeMutation
+        // via scheduleDebounced — do NOT call schedule() here (causes double-fire).
     }
 
     @EventListener
@@ -54,33 +57,8 @@ public class GraphMutationRecordingListener {
     public void onEdgeMutation(EdgeMutationEvent event) {
         persistMutation(event);
         hookRegistry.executeGraphMutated(event);
-        scheduleReground(event);
-    }
-
-    /**
-     * Schedule a debounced re-ground after a manual node/edge mutation.
-     *
-     * <p>The {@link GroundingCascadeHook} coalesces concurrent calls so a burst of
-     * mutations (e.g. a crawl emitting thousands of {@link NodeMutationEvent}s) collapses
-     * into a single reground rather than queuing thousands of tasks. The crawl path also
-     * fires a {@link ai.kompile.graphchangetracking.event.GraphChangesetCompletedEvent}
-     * at the end — that event will coalesce with (or supersede) any pending task already
-     * submitted here, still resulting in at most one reground per crawl.</p>
-     *
-     * <p>Manual REST edits (small batches, no changeset event) benefit directly because
-     * the changeset event is not emitted on single-node REST writes.</p>
-     */
-    private void scheduleReground(GraphMutationEvent event) {
-        if (groundingCascadeHook == null) {
-            return;
-        }
-        Long fsId = event.getFactSheetId();
-        if (fsId == null) {
-            return;
-        }
-        groundingCascadeHook.schedule(fsId,
-                event.getMutationType() + ":" + event.getEntityKind(),
-                GroundingProgressEvent.TRIGGER_CASCADE);
+        // Cascade scheduling is handled by GroundingCascadeEventListener.onEdgeMutation
+        // via scheduleDebounced — do NOT call schedule() here (causes double-fire).
     }
 
     private void persistMutation(GraphMutationEvent event) {
@@ -96,7 +74,7 @@ public class GraphMutationRecordingListener {
                     .snapshotAfter(event.getSnapshotAfter())
                     .changesetId(event.getChangesetId())
                     .build();
-            mutationRepo.save(record);
+            mutationStore.save(record);
         } catch (Exception e) {
             log.error("Failed to persist graph mutation record for {} {}", event.getMutationType(), event.getEntityId(), e);
         }

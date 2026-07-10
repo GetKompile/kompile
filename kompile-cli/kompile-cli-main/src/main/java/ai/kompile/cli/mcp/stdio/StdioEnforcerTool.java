@@ -67,7 +67,7 @@ public class StdioEnforcerTool {
 
         var agent = props.putObject("agent");
         agent.put("type", "string");
-        agent.put("description", "Designated agent to launch. Default: qwen.");
+        agent.put("description", "Designated agent to launch. Default: opencode.");
         ArrayNode enumValues = agent.putArray("enum");
         enumValues.add("qwen");
         enumValues.add("claude");
@@ -129,7 +129,7 @@ public class StdioEnforcerTool {
             return ToolResult.error("rules or rules_file is required");
         }
 
-        String agentName = stringArg(arguments, "agent", "qwen");
+        String agentName = stringArg(arguments, "agent", "opencode");
         String roleName = stringArg(arguments, "role", null);
         int maxCorrections = intArg(arguments, "max_corrections", EnforcerPolicy.DEFAULT_MAX_CORRECTIONS);
         boolean returnAttempts = boolArg(arguments, "return_attempts", false);

@@ -18,6 +18,7 @@ package ai.kompile.graph.reasoning.fol;
 import ai.kompile.graph.reasoning.mebn.logic.KnowledgeBase;
 import ai.kompile.graph.reasoning.mebn.logic.LogicalConstraint;
 
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -117,7 +118,7 @@ public final class FolRule {
      * All free variables referenced by this rule (union of antecedent and consequent variables).
      */
     public Set<String> freeVariables() {
-        Set<String> vars = new java.util.HashSet<>();
+        Set<String> vars = new HashSet<>();
         if (antecedent != null) vars.addAll(antecedent.getFreeVariables());
         vars.addAll(consequent.getFreeVariables());
         return vars;

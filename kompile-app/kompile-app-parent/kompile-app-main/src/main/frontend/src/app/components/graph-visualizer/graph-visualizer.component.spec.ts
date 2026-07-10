@@ -57,6 +57,9 @@ class GraphCanvasStubComponent {
   @Input() linkMode: boolean = false;
   @Input() showLegend: boolean = false;
   @Input() focusedNodeId: string | null = null;
+  @Input() reasoningLayerOverlayEnabled: boolean = false;
+  @Input() reasoningNodeLayerMap: Map<string, any> = new Map();
+  @Input() reasoningEdgeLayerMap: Map<string, any> = new Map();
   @Output() nodeSelected = new EventEmitter<D3Node | null>();
   @Output() nodeDoubleClicked = new EventEmitter<D3Node>();
   @Output() edgeCreated = new EventEmitter<{ source: string; target: string }>();
@@ -181,7 +184,8 @@ describe('GraphVisualizerComponent', () => {
       'deleteEdge',
       'getEdges',
       'getConnectedNodes',
-      'getAncestors'
+      'getAncestors',
+      'getReasoningLayers'
     ]);
 
     weightServiceSpy = jasmine.createSpyObj('SourceWeightService', [
@@ -199,6 +203,12 @@ describe('GraphVisualizerComponent', () => {
     graphServiceSpy.getTopKVisualization.and.returnValue(of(mockD3Data));
     graphServiceSpy.getFactSheetVisualizationData.and.returnValue(of(mockD3Data));
     graphServiceSpy.getAncestors.and.returnValue(of([]));
+    graphServiceSpy.getReasoningLayers.and.returnValue(of({
+      factSheetId: 42,
+      nodes: [],
+      edges: [],
+      statistics: { nodeCount: 0, edgeCount: 0 }
+    }));
     weightServiceSpy.getWeights.and.returnValue(of(mockSourceWeights));
     snackBarSpy.open.and.returnValue(makeSnackBarRef() as any);
     dialogSpy.open.and.returnValue(makeDialogRef() as any);
@@ -406,12 +416,11 @@ describe('GraphVisualizerComponent', () => {
     it('should filter links to only those between remaining nodes', () => {
       // Only SOURCE nodes remain → only links that go between SOURCE nodes
       component.filter.nodeTypes = ['SOURCE'];
-      component.filter.edgeTypes = ['HIERARCHICAL', 'EMBEDDING_SIMILARITY', 'SHARED_ENTITY', 'USER_DEFINED'];
       const result = component.applyFilters(mockD3Data);
       // n1 is SOURCE, n2/n3 are not → links e1, e2, e3 all involve non-SOURCE nodes
       result.links.forEach(l => {
-        const sourceId = l.source;
-        const targetId = l.target;
+        const sourceId = typeof l.source === 'string' ? l.source : String((l.source as any).id || (l.source as any).nodeId);
+        const targetId = typeof l.target === 'string' ? l.target : String((l.target as any).id || (l.target as any).nodeId);
         const nodeIds = new Set(result.nodes.map(n => n.id));
         expect(nodeIds.has(sourceId)).toBeTrue();
         expect(nodeIds.has(targetId)).toBeTrue();
@@ -440,8 +449,10 @@ describe('GraphVisualizerComponent', () => {
       const result = component.applyFilters(mockD3Data, 'entity');
       result.links.forEach(l => {
         const nodeIds = new Set(result.nodes.map(n => n.id));
-        expect(nodeIds.has(l.source)).toBeTrue();
-        expect(nodeIds.has(l.target)).toBeTrue();
+        const sourceId = typeof l.source === 'string' ? l.source : String((l.source as any).id || (l.source as any).nodeId);
+        const targetId = typeof l.target === 'string' ? l.target : String((l.target as any).id || (l.target as any).nodeId);
+        expect(nodeIds.has(sourceId)).toBeTrue();
+        expect(nodeIds.has(targetId)).toBeTrue();
       });
     });
 
@@ -451,17 +462,40 @@ describe('GraphVisualizerComponent', () => {
       expect(result.links.length).toBe(0);
     });
 
-    it('should filter links by type', () => {
-      component.filter.edgeTypes = ['HIERARCHICAL'];
+    it('should not filter links by edge type', () => {
       const result = component.applyFilters(mockD3Data);
-      result.links.forEach(l => expect(l.type).toBe('HIERARCHICAL'));
+      expect(result.links.map(l => l.type)).toContain('HIERARCHICAL');
+      expect(result.links.map(l => l.type)).toContain('EMBEDDING_SIMILARITY');
     });
 
-    it('should return node set with no type-filtered links when edgeTypes is empty', () => {
-      component.filter.edgeTypes = [];
+    it('should keep FP&A structural edge types enabled by default', () => {
+      const fpnaData: D3VisualizationData = {
+        nodes: mockD3Data.nodes,
+        links: [
+          { id: 'contains', source: 'n1', target: 'n2', type: 'CONTAINS', weight: 1.0 },
+          { id: 'header', source: 'n2', target: 'n3', type: 'HEADER_OF', weight: 1.0 }
+        ]
+      };
+      const result = component.applyFilters(fpnaData);
+      expect(result.links.map(l => l.id)).toEqual(['contains', 'header']);
+    });
+
+    it('should keep links whose endpoints are node objects', () => {
+      const objectEndpointData: D3VisualizationData = {
+        nodes: mockD3Data.nodes,
+        links: [
+          { id: 'object-edge', source: mockD3Data.nodes[0], target: mockD3Data.nodes[1], type: 'CONTAINS', weight: 1.0 }
+        ]
+      };
+      const result = component.applyFilters(objectEndpointData);
+      expect(result.links.length).toBe(1);
+    });
+
+    it('should ignore legacy edgeTypes state if present', () => {
+      (component.filter as any).edgeTypes = [];
       const result = component.applyFilters(mockD3Data);
-      expect(result.links.length).toBe(0);
-      expect(result.nodes.length).toBe(4); // nodes unaffected by edge filter
+      expect(result.links.length).toBe(mockD3Data.links.length);
+      expect(result.nodes.length).toBe(4);
     });
   });
 
@@ -1200,41 +1234,19 @@ describe('GraphVisualizerComponent', () => {
   });
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // 19. TOGGLE EDGE TYPE FILTER
+  // 19. EDGE TYPES ARE NOT VISIBILITY FILTERS
   // ═══════════════════════════════════════════════════════════════════════════
 
-  describe('toggleEdgeTypeFilter()', () => {
+  describe('edge type visibility', () => {
     beforeEach(fakeAsync(() => {
       createComponent();
       fixture.detectChanges();
       tick();
-      graphServiceSpy.getVisualizationData.calls.reset();
     }));
 
-    it('should remove an edge type from filter.edgeTypes if present', () => {
-      expect(component.filter.edgeTypes).toContain('HIERARCHICAL');
-      component.toggleEdgeTypeFilter('HIERARCHICAL');
-      expect(component.filter.edgeTypes).not.toContain('HIERARCHICAL');
+    it('should not expose a method that hides links by edge type', () => {
+      expect((component as any).toggleEdgeTypeFilter).toBeUndefined();
     });
-
-    it('should add an edge type to filter.edgeTypes if not present', () => {
-      component.filter.edgeTypes = [];
-      component.toggleEdgeTypeFilter('CITATION');
-      expect(component.filter.edgeTypes).toContain('CITATION');
-    });
-
-    it('should reload graph when graphData is set', fakeAsync(() => {
-      component.toggleEdgeTypeFilter('SHARED_ENTITY');
-      tick();
-      expect(graphServiceSpy.getVisualizationData).toHaveBeenCalled();
-    }));
-
-    it('should not reload graph when graphData is null', fakeAsync(() => {
-      component.graphData = null;
-      component.toggleEdgeTypeFilter('SHARED_ENTITY');
-      tick();
-      expect(graphServiceSpy.getVisualizationData).not.toHaveBeenCalled();
-    }));
   });
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1248,7 +1260,6 @@ describe('GraphVisualizerComponent', () => {
       tick();
       // Dirty the filters
       component.filter.nodeTypes = ['SOURCE'];
-      component.filter.edgeTypes = [];
       component.maxDepth = 5;
       component.maxNodes = 500;
       component.searchQuery = 'something';
@@ -1261,10 +1272,10 @@ describe('GraphVisualizerComponent', () => {
       expect(component.filter.nodeTypes).toEqual(component.allNodeTypes);
     }));
 
-    it('should reset filter.edgeTypes to the first 4 edge types', fakeAsync(() => {
+    it('should not create edge visibility filter state', fakeAsync(() => {
       component.resetFilters();
       tick();
-      expect(component.filter.edgeTypes.length).toBe(4);
+      expect((component.filter as any).edgeTypes).toBeUndefined();
     }));
 
     it('should reset maxDepth to 2', fakeAsync(() => {

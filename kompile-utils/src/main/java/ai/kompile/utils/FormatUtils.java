@@ -62,6 +62,17 @@ public final class FormatUtils {
     }
 
     /**
+     * Compact byte-count format for dense listings and token-lean tool output
+     * (ls -lh style): "512B", "1.5K", "2.3M", "1.1G".
+     */
+    public static String formatBytesCompact(long bytes) {
+        if (bytes < 1024) return bytes + "B";
+        if (bytes < 1024 * 1024) return String.format("%.1fK", bytes / 1024.0);
+        if (bytes < 1024L * 1024 * 1024) return String.format("%.1fM", bytes / (1024.0 * 1024));
+        return String.format("%.1fG", bytes / (1024.0 * 1024 * 1024));
+    }
+
+    /**
      * Format a number with comma grouping for readability.
      * Examples: 42 -> "42", 1234567 -> "1,234,567".
      */

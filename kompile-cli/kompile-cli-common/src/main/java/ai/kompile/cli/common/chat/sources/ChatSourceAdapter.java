@@ -37,6 +37,14 @@ public interface ChatSourceAdapter {
 
     List<ChatSessionSummary> list() throws IOException;
 
+    default List<ChatSessionSummary> list(int limit) throws IOException {
+        List<ChatSessionSummary> sessions = list();
+        if (limit < 0 || sessions.size() <= limit) {
+            return sessions;
+        }
+        return sessions.subList(0, limit);
+    }
+
     List<ChatTurn> readTurns(String sessionId) throws IOException;
 
     default Optional<Path> resolveWorkingDirectory(String sessionId) throws IOException {

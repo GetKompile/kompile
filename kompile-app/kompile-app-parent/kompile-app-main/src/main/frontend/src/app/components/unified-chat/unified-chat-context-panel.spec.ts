@@ -46,7 +46,7 @@ function createTestBed() {
   const agentChatServiceSpy = jasmine.createSpyObj('LocalAgentChatService', [
     'getStreamingContent', 'getStreamingComplete', 'getStreamingError',
     'getChatStats', 'getSources', 'getFilesModified', 'sendMessage',
-    'cancelStreaming', 'createSession', 'getToolUse'
+    'cancelStreaming', 'createSession', 'getToolUse', 'getCompaction'
   ]);
   const agentServiceSpy = jasmine.createSpyObj('AgentService', [
     'getAllAgents', 'getAvailableAgents', 'getKompileLocalStatus'
@@ -101,6 +101,7 @@ function createTestBed() {
   agentChatServiceSpy.getSources.and.returnValue(new Subject<any>().asObservable());
   agentChatServiceSpy.getFilesModified.and.returnValue(new Subject<any>().asObservable());
   agentChatServiceSpy.getToolUse.and.returnValue(new Subject<any>().asObservable());
+  agentChatServiceSpy.getCompaction.and.returnValue(new Subject<any>().asObservable());
   agentChatServiceSpy.sendMessage.and.returnValue(Promise.resolve());
   agentChatServiceSpy.createSession.and.returnValue({
     id: 'agent-session-1', name: 'Test', messages: [], createdAt: new Date().toISOString()

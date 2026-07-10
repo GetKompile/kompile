@@ -39,6 +39,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
+import java.time.ZoneId;
 import java.util.*;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
@@ -667,7 +668,7 @@ public class LlmKnowledgeGraphBuilder implements KnowledgeGraphBuilder {
                 record.getPromptTokens(),
                 record.getResponseTokens(),
                 record.getCreatedAt() != null
-                        ? record.getCreatedAt().atZone(java.time.ZoneId.systemDefault()).toInstant()
+                        ? record.getCreatedAt().atZone(ZoneId.systemDefault()).toInstant()
                         : Instant.now(),
                 record.getSuccess(),
                 record.getErrorMessage()

@@ -197,6 +197,27 @@ class ProcessEngineServiceImplTest {
                 () -> service.approveProcess("bad-id", "approver"));
     }
 
+    @Test
+    void reviseProcess_bumpsVersionUnderTheSameId_previousVersionStaysImmutable() {
+        ProcessDefinition original = service.createProcess(minimalDefinition("Procurement"));
+
+        ProcessDefinition revision = minimalDefinition("Procurement (with manager review)");
+        ProcessDefinition revised = service.reviseProcess(original.getId(), revision);
+
+        assertEquals(original.getId(), revised.getId(), "a revision keeps the process identity");
+        assertEquals(2, revised.getVersion());
+        assertEquals(ProcessStatus.DRAFT, revised.getStatus(), "revisions await approval");
+        assertEquals("Procurement (with manager review)", revised.getName());
+        assertEquals("Procurement", service.getProcess(original.getId(), 1).getName(),
+                "the previous version stays retrievable and unchanged");
+    }
+
+    @Test
+    void reviseProcess_throwsForUnknownId() {
+        assertThrows(IllegalArgumentException.class,
+                () -> service.reviseProcess("no-such-process", minimalDefinition("x")));
+    }
+
     // -------------------------------------------------------------------------
     // Workflow run — AUTO steps complete immediately
     // -------------------------------------------------------------------------

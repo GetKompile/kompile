@@ -195,6 +195,18 @@ public class GraphOntologyBindingService
         if (edges == null) {
             edges = List.of();
         }
+        // Endpoint types must come from the fact sheet's OWN nodes: GraphEdge.getSourceNode()
+        // synthesizes a hollow id-only node when the store didn't embed one (matrix edges never
+        // do), so typing off the embedded node made every edge validate as UNKNOWN→UNKNOWN.
+        java.util.Map<String, GraphNode> nodeById = new java.util.HashMap<>();
+        List<GraphNode> allNodes = knowledgeGraphService.getNodesInFactSheet(factSheetId);
+        if (allNodes != null) {
+            for (GraphNode n : allNodes) {
+                if (n != null && n.getNodeId() != null) {
+                    nodeById.put(n.getNodeId(), n);
+                }
+            }
+        }
         int edgesChecked = 0;
         int nonConformantEdges = 0;
         List<GraphConformanceReport.EdgeViolation> edgeViolations = new java.util.ArrayList<>();
@@ -212,8 +224,8 @@ public class GraphOntologyBindingService
             }
             edgesChecked++;
             String relType = edge.getRelationType();
-            String sourceType = extractEntityType(edge.getSourceNode());
-            String targetType = extractEntityType(edge.getTargetNode());
+            String sourceType = extractEntityType(edge.resolvedSourceNode(nodeById));
+            String targetType = extractEntityType(edge.resolvedTargetNode(nodeById));
             OntologyConformanceValidator.RelationshipConformance rc =
                     OntologyConformanceValidator.validateRelationship(schema, sourceType, relType, targetType);
             if (!rc.allowed()) {
@@ -459,4 +471,5 @@ public class GraphOntologyBindingService
         String fallback = node.getNodeType() != null ? node.getNodeType().name() : "UNKNOWN";
         return GraphNodeTypes.resolveEntityType(node.getMetadata(), fallback);
     }
+
 }

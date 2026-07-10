@@ -17,6 +17,7 @@
 package ai.kompile.cli.component.output;
 
 import ai.kompile.cli.common.util.JsonUtils;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.dataformat.csv.CsvMapper;
@@ -24,6 +25,7 @@ import com.fasterxml.jackson.dataformat.csv.CsvSchema;
 import com.fasterxml.jackson.dataformat.yaml.YAMLMapper;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -175,7 +177,7 @@ public class OutputFormatter {
             } else {
                 // Convert POJO to map using JSON mapper
                 @SuppressWarnings("unchecked")
-                Map<String, Object> map = JSON_MAPPER.convertValue(item, new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
+                Map<String, Object> map = JSON_MAPPER.convertValue(item, new TypeReference<Map<String, Object>>() {});
                 maps.add(map);
             }
         }
@@ -194,7 +196,7 @@ public class OutputFormatter {
         }
 
         List<Map<String, String>> stringRows = maps.stream().map(map -> {
-            Map<String, String> row = new java.util.LinkedHashMap<>();
+            Map<String, String> row = new LinkedHashMap<>();
             for (String header : headers) {
                 Object value = map.getOrDefault(header, "");
                 String strValue = value != null ? value.toString() : "";

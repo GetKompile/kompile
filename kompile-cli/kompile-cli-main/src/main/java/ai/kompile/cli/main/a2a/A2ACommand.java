@@ -23,6 +23,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import picocli.CommandLine;
 
 import java.io.IOException;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.Callable;
 
@@ -115,7 +116,7 @@ public class A2ACommand implements Callable<Integer> {
             try {
                 if (sets != null && sets.length > 0) {
                     // Update configuration
-                    Map<String, Object> updates = new java.util.LinkedHashMap<>();
+                    Map<String, Object> updates = new LinkedHashMap<>();
                     for (String s : sets) {
                         String[] kv = s.split("=", 2);
                         if (kv.length == 2) {

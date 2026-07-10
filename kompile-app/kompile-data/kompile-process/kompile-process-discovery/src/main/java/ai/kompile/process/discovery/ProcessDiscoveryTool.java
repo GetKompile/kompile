@@ -20,9 +20,11 @@ import ai.kompile.process.workflow.ProcessDefinition;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -40,6 +42,9 @@ public class ProcessDiscoveryTool {
     private static final Logger log = LoggerFactory.getLogger(ProcessDiscoveryTool.class);
 
     private final ProcessDiscoveryService discoveryService;
+
+    @Autowired(required = false)
+    private ProcessSuggestionStore suggestionStore;
 
     public ProcessDiscoveryTool(ProcessDiscoveryService discoveryService) {
         this.discoveryService = discoveryService;
@@ -490,6 +495,189 @@ public class ProcessDiscoveryTool {
             result.put("status", "success");
         } catch (Exception e) {
             log.error("Error in LLM process discovery for factSheetId={}", input.factSheetId(), e);
+            result.put("status", "error");
+            result.put("error", e.getMessage());
+        }
+        return result;
+    }
+
+    // ---- Suggestion Store Input Records ----
+
+    public record ListSuggestionsInput(
+            Long factSheetId,
+            Boolean includeSuperseded) {}
+
+    public record GetSuggestionInput(String suggestionId) {}
+
+    // ---- Suggestion Store Tools ----
+
+    @Tool(name = "process_discovery_list_suggestions",
+          description = "List stored process suggestions with summary fields. " +
+                  "factSheetId: optional, scope to one fact sheet. " +
+                  "includeSuperseded: default false — omit suggestions replaced by a newer generation.")
+    public Map<String, Object> listSuggestions(ListSuggestionsInput input) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        try {
+            if (suggestionStore == null) {
+                result.put("status", "error");
+                result.put("error", "ProcessSuggestionStore not available");
+                return result;
+            }
+            boolean includeSuperseded = Boolean.TRUE.equals(input.includeSuperseded());
+            List<ProcessSuggestion> all = input.factSheetId() != null
+                    ? suggestionStore.listByFactSheet(input.factSheetId())
+                    : suggestionStore.listAll();
+
+            if (!includeSuperseded) {
+                all = all.stream()
+                        .filter(s -> s.getSupersededBySuggestionId() == null)
+                        .collect(Collectors.toList());
+            }
+
+            List<Map<String, Object>> items = all.stream().map(s -> {
+                Map<String, Object> item = new LinkedHashMap<>();
+                item.put("id", s.getId());
+                item.put("name", s.getName());
+                item.put("factSheetId", s.getFactSheetId());
+                item.put("state", Boolean.TRUE.equals(s.getAccepted()) ? "ACCEPTED" : "PENDING");
+                item.put("confidence", s.getConfidence());
+                item.put("discoverySource", s.getDiscoverySource());
+                item.put("processKey", s.getProcessKey());
+                item.put("discoveredAt", s.getDiscoveredAt() != null ? s.getDiscoveredAt().toString() : null);
+                if (s.getSupersededBySuggestionId() != null) {
+                    item.put("supersededBy", s.getSupersededBySuggestionId());
+                }
+                if (s.getPreviousSuggestionId() != null) {
+                    item.put("previousSuggestionId", s.getPreviousSuggestionId());
+                }
+                return item;
+            }).collect(Collectors.toList());
+
+            result.put("status", "success");
+            result.put("count", items.size());
+            result.put("suggestions", items);
+        } catch (Exception e) {
+            log.error("process_discovery_list_suggestions failed", e);
+            result.put("status", "error");
+            result.put("error", e.getMessage());
+        }
+        return result;
+    }
+
+    @Tool(name = "process_discovery_get_suggestion",
+          description = "Get full detail for a process suggestion by ID, including drift report " +
+                  "(DRIFT evidence), conflict analysis (CONFLICT evidence), change-point score " +
+                  "(CHANGE_POINT evidence), grounded steps, lineage, and reasoning trace reference. " +
+                  "suggestionId: required.")
+    public Map<String, Object> getSuggestion(GetSuggestionInput input) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        try {
+            if (suggestionStore == null) {
+                result.put("status", "error");
+                result.put("error", "ProcessSuggestionStore not available");
+                return result;
+            }
+            if (input.suggestionId() == null || input.suggestionId().isBlank()) {
+                result.put("status", "error");
+                result.put("error", "suggestionId is required");
+                return result;
+            }
+            var opt = suggestionStore.get(input.suggestionId());
+            if (opt.isEmpty()) {
+                result.put("status", "not_found");
+                result.put("error", "No suggestion found with id: " + input.suggestionId());
+                return result;
+            }
+            ProcessSuggestion s = opt.get();
+            result.put("status", "success");
+            result.put("id", s.getId());
+            result.put("name", s.getName());
+            result.put("description", s.getDescription());
+            result.put("factSheetId", s.getFactSheetId());
+            result.put("discoverySource", s.getDiscoverySource());
+            result.put("confidence", s.getConfidence());
+            result.put("rawConformanceScore", s.getRawConformanceScore());
+            result.put("learnedScore", s.getLearnedScore());
+            result.put("state", Boolean.TRUE.equals(s.getAccepted()) ? "ACCEPTED" : "PENDING");
+            result.put("processKey", s.getProcessKey());
+            result.put("discoveredAt", s.getDiscoveredAt() != null ? s.getDiscoveredAt().toString() : null);
+            if (s.getNarrative() != null) result.put("narrative", s.getNarrative());
+            if (s.getNarrativeSource() != null) result.put("narrativeSource", s.getNarrativeSource());
+            if (s.getPreviousSuggestionId() != null) result.put("previousSuggestionId", s.getPreviousSuggestionId());
+            if (s.getSupersededBySuggestionId() != null) result.put("supersededBy", s.getSupersededBySuggestionId());
+            if (s.getSupersededAt() != null) result.put("supersededAt", s.getSupersededAt().toString());
+            if (s.getReasoningTraceId() != null) result.put("reasoningTraceId", s.getReasoningTraceId());
+            if (s.getAcceptedProcessDefinitionId() != null) result.put("acceptedProcessDefinitionId", s.getAcceptedProcessDefinitionId());
+            if (s.getRevisesProcessDefinitionId() != null) result.put("revisesProcessDefinitionId", s.getRevisesProcessDefinitionId());
+
+            // Structured evidence — drill-down by type
+            if (s.getStructuredEvidence() != null && !s.getStructuredEvidence().isEmpty()) {
+                List<Map<String, Object>> driftEvidence = new ArrayList<>();
+                List<Map<String, Object>> conflictEvidence = new ArrayList<>();
+                List<Map<String, Object>> changePointEvidence = new ArrayList<>();
+                List<Map<String, Object>> otherEvidence = new ArrayList<>();
+
+                for (ProcessSuggestion.StructuredEvidence ev : s.getStructuredEvidence()) {
+                    Map<String, Object> em = new LinkedHashMap<>();
+                    em.put("type", ev.getType());
+                    em.put("description", ev.getDescription());
+                    if (ev.getScore() != null) em.put("score", ev.getScore());
+                    if (ev.getSupportingNodeIds() != null && !ev.getSupportingNodeIds().isEmpty()) {
+                        em.put("supportingNodeIds", ev.getSupportingNodeIds());
+                    }
+                    String evType = ev.getType() != null ? ev.getType().toUpperCase() : "";
+                    switch (evType) {
+                        case "DRIFT" -> driftEvidence.add(em);
+                        case "CONFLICT" -> conflictEvidence.add(em);
+                        case "CHANGE_POINT" -> changePointEvidence.add(em);
+                        default -> otherEvidence.add(em);
+                    }
+                }
+
+                if (!driftEvidence.isEmpty()) result.put("driftReport", driftEvidence);
+                if (!conflictEvidence.isEmpty()) result.put("conflictReport", conflictEvidence);
+                if (!changePointEvidence.isEmpty()) result.put("changePointReport", changePointEvidence);
+                if (!otherEvidence.isEmpty()) result.put("otherEvidence", otherEvidence);
+                result.put("totalEvidenceItems", s.getStructuredEvidence().size());
+            }
+
+            // Phase/step summary
+            if (s.getPhases() != null) {
+                result.put("phaseCount", s.getPhases().size());
+                int stepCount = s.getPhases().stream()
+                        .mapToInt(p -> p.getSteps() != null ? p.getSteps().size() : 0).sum();
+                result.put("stepCount", stepCount);
+                result.put("phases", s.getPhases().stream().map(p -> {
+                    Map<String, Object> pm = new LinkedHashMap<>();
+                    pm.put("name", p.getName());
+                    pm.put("description", p.getDescription());
+                    pm.put("stepCount", p.getSteps() != null ? p.getSteps().size() : 0);
+                    return pm;
+                }).collect(Collectors.toList()));
+            }
+
+            // Evidence strings
+            if (s.getEvidence() != null && !s.getEvidence().isEmpty()) {
+                result.put("evidence", s.getEvidence());
+            }
+
+            // Lineage summary
+            if (s.getLineageRef() != null) {
+                ProcessSuggestion.ProcessLineage lin = s.getLineageRef();
+                Map<String, Object> linMap = new LinkedHashMap<>();
+                linMap.put("derivationMethod", lin.getDerivationMethod());
+                if (lin.getSoftTruthValue() != null) linMap.put("softTruthValue", lin.getSoftTruthValue());
+                if (!lin.getBasisNodeIds().isEmpty()) linMap.put("basisNodeCount", lin.getBasisNodeIds().size());
+                if (!lin.getSupportingRuleTexts().isEmpty())
+                    linMap.put("supportingRuleCount", lin.getSupportingRuleTexts().size());
+                if (!lin.getCausalActivityPairs().isEmpty())
+                    linMap.put("causalPairs", lin.getCausalActivityPairs().size() <= 5
+                            ? lin.getCausalActivityPairs()
+                            : lin.getCausalActivityPairs().subList(0, 5));
+                result.put("lineage", linMap);
+            }
+        } catch (Exception e) {
+            log.error("process_discovery_get_suggestion failed id={}", input.suggestionId(), e);
             result.put("status", "error");
             result.put("error", e.getMessage());
         }

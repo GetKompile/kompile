@@ -17,6 +17,7 @@
 package ai.kompile.pipelines.steps.samediff.llm;
 
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.Map;
 
 /**
@@ -145,7 +146,7 @@ public class SameDiffLLMModelComponent {
         private ModelArchitecture architecture = ModelArchitecture.CUSTOM;
         private String inputShape;
         private String outputShape;
-        private Map<String, Object> metadata = new java.util.HashMap<>();
+        private Map<String, Object> metadata = new HashMap<>();
         
         public Builder componentKey(String key) {
             this.componentKey = key;

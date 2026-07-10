@@ -64,6 +64,8 @@ public interface GraphEntity {
         LinkedHashSet<String> memberships = new LinkedHashSet<>();
         addTypeMembership(memberships, type());
         Map<String, Object> attrs = attributes();
+        addTypeMemberships(memberships, attrs.get("entityType"));
+        addTypeMemberships(memberships, attrs.get("entity_type"));
         addTypeMemberships(memberships, attrs.get("additionalType"));
         addTypeMemberships(memberships, attrs.get("additional_type"));
         addTypeMemberships(memberships, attrs.get("additionalTypes"));

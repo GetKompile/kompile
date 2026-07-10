@@ -53,9 +53,12 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 import org.bytedeco.javacpp.Pointer;
+import ai.kompile.app.services.SingleSourceCrawlPreviewService;
+import ai.kompile.app.services.SingleSourceCrawlStarter;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
 import ai.kompile.loaders.orchestrator.config.AppDocumentSourceProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.annotation.PostConstruct;
 
 import java.lang.management.BufferPoolMXBean;
 import java.lang.management.ManagementFactory;
@@ -138,10 +141,16 @@ public class UnifiedCrawlController {
     @Autowired(required = false)
     private OntologySchemaEnrichmentService schemaEnrichmentService;
 
+    @Autowired(required = false)
+    private SingleSourceCrawlStarter singleSourceCrawlStarter;
+
+    @Autowired(required = false)
+    private SingleSourceCrawlPreviewService singleSourceCrawlPreviewService;
+
     /** Resolved uploads directory for file-based crawl jobs */
     private Path uploadsPath;
 
-    @jakarta.annotation.PostConstruct
+    @PostConstruct
     private void initUploadsPath() {
         if (appDocumentSourceProperties != null
                 && appDocumentSourceProperties.getUploadsPath() != null
@@ -204,6 +213,8 @@ public class UnifiedCrawlController {
             resolveFactSheetScope(request);
             // Resolve schema preset if specified — populate entityTypes/relationshipTypes
             resolveSchemaPreset(request);
+            // Apply default processing route when none was specified in the request
+            applyDefaultProcessingRoute(request);
 
             String jobName = request.getName() != null ? request.getName() : "Unified crawl";
 
@@ -275,7 +286,7 @@ public class UnifiedCrawlController {
                                     })
                                     .metadata(Map.of(
                                             "sourceCount", request.getSources().size(),
-                                            "graphExtractionEnabled", request.getGraphExtraction() != null && request.getGraphExtraction().isEnabled(),
+                                            "graphExtractionEnabled", true,
                                             "vectorIndexEnabled", request.getVectorIndex() != null && request.getVectorIndex().isEnabled()
                                     ))
                                     .priority(50)
@@ -290,7 +301,7 @@ public class UnifiedCrawlController {
                     response.put("factSheetId", request.getFactSheetId());
                     response.put("sourceCount", request.getSources().size());
                     response.put("graphExtractionEnabled",
-                            request.getGraphExtraction() != null && request.getGraphExtraction().isEnabled());
+                            true);
                     response.put("vectorIndexEnabled",
                             request.getVectorIndex() != null && request.getVectorIndex().isEnabled());
                     response.put("scheduled", true);
@@ -324,7 +335,7 @@ public class UnifiedCrawlController {
             response.put("factSheetId", request.getFactSheetId());
             response.put("sourceCount", request.getSources().size());
             response.put("graphExtractionEnabled",
-                    request.getGraphExtraction() != null && request.getGraphExtraction().isEnabled());
+                    true);
             response.put("vectorIndexEnabled",
                     request.getVectorIndex() != null && request.getVectorIndex().isEnabled());
             response.put("scheduled", false);
@@ -429,6 +440,8 @@ public class UnifiedCrawlController {
             request.setSources(sources);
             resolveFactSheetScope(request);
             resolveSchemaPreset(request);
+            // Apply default processing route when none was specified in the request
+            applyDefaultProcessingRoute(request);
 
             UnifiedCrawlJob job = unifiedCrawlService.startJob(request);
 
@@ -447,7 +460,7 @@ public class UnifiedCrawlController {
             response.put("fileNames", sources.stream()
                     .map(UnifiedCrawlSource::getLabel).collect(Collectors.toList()));
             response.put("graphExtractionEnabled",
-                    request.getGraphExtraction() != null && request.getGraphExtraction().isEnabled());
+                    true);
             response.put("vectorIndexEnabled",
                     request.getVectorIndex() != null && request.getVectorIndex().isEnabled());
             response.put("message", "Unified crawl started for " + sources.size() + " file(s)");
@@ -459,6 +472,212 @@ public class UnifiedCrawlController {
             return ResponseEntity.internalServerError()
                     .body(Map.of("error", "Failed to start job: " + e.getMessage()));
         }
+    }
+
+    /**
+     * Flexible single-source crawl — the modal-free evolution of the add-source flow, and the backend
+     * for the {@code crawl_source} MCP tool and the crawlers-tab "Single source crawl" panel.
+     *
+     * <p>{@code dryRun=true} runs the synchronous zero-persistence preview lane (load → chunk → LLM
+     * extraction) and returns entity/relation samples. Otherwise the REAL pipeline runs via
+     * {@link SingleSourceCrawlStarter} and this call blocks until the job reaches a terminal state or
+     * {@code waitTimeoutSeconds} (default 900) elapses — on timeout the response carries
+     * {@code completed=false} plus the {@code jobId} to poll. Long waits need a direct connection to
+     * the app; a reverse proxy's read timeout is the binding constraint.</p>
+     */
+    @PostMapping("/single-source")
+    public ResponseEntity<?> runSingleSource(
+            @RequestBody SingleSourceCrawlStarter.SingleSourceRunRequest request) {
+        long startedAtMs = System.currentTimeMillis();
+        try {
+            if (request == null) {
+                return ResponseEntity.badRequest().body(Map.of("error", "Request body is required"));
+            }
+            boolean hasPath = request.pathOrUrl() != null && !request.pathOrUrl().isBlank();
+            boolean hasContent = request.content() != null && !request.content().isBlank();
+            if (hasPath == hasContent) {
+                return ResponseEntity.badRequest()
+                        .body(Map.of("error", "Provide exactly one of pathOrUrl or content"));
+            }
+            if (request.dryRun()) {
+                return runSingleSourceDry(request, hasContent, startedAtMs);
+            }
+            return runSingleSourcePersist(request, hasContent);
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        } catch (IllegalStateException e) {
+            String message = e.getMessage() != null ? e.getMessage() : "Unified crawl unavailable";
+            if (message.contains("queue is full") || message.contains("not available")) {
+                return ResponseEntity.status(503).body(Map.of("error", message));
+            }
+            log.error("Single-source crawl failed", e);
+            return ResponseEntity.internalServerError().body(Map.of("error", message));
+        } catch (Exception e) {
+            log.error("Single-source crawl failed", e);
+            return ResponseEntity.internalServerError()
+                    .body(Map.of("error", "Single-source crawl failed: " + e.getMessage()));
+        }
+    }
+
+    private ResponseEntity<?> runSingleSourceDry(
+            SingleSourceCrawlStarter.SingleSourceRunRequest request, boolean hasContent, long startedAtMs)
+            throws Exception {
+        if (singleSourceCrawlPreviewService == null) {
+            return ResponseEntity.status(503)
+                    .body(Map.of("error", "Single-source preview service is not available"));
+        }
+        List<String> warnings = new ArrayList<>();
+        if (request.steps() != null && !request.steps().isEmpty()) {
+            warnings.add("Step selection applies to persist runs only; a dry run always does load -> chunk -> extraction.");
+        }
+
+        Map<String, Object> properties = new LinkedHashMap<>();
+        if (request.properties() != null) {
+            properties.putAll(request.properties());
+        }
+        properties.putIfAbsent("graphPreviewEnabled", true);
+        if (request.modelName() != null && !request.modelName().isBlank()) {
+            properties.put("graphPreviewModelName", request.modelName().trim());
+        }
+        if (request.llmProvider() != null && !request.llmProvider().isBlank()) {
+            properties.put("graphPreviewLlmProvider", request.llmProvider().trim());
+        }
+
+        SingleSourceCrawlPreviewService.SingleSourcePreviewRequest previewRequest =
+                new SingleSourceCrawlPreviewService.SingleSourcePreviewRequest(
+                        resolveSingleSourceType(request, hasContent),
+                        request.label(),
+                        request.pathOrUrl(),
+                        request.content(),
+                        request.loaderName(),
+                        request.chunkerName(),
+                        request.maxDepth(),
+                        request.maxDocuments() != null ? request.maxDocuments() : 1,
+                        request.language(),
+                        properties);
+        SingleSourceCrawlPreviewService.SingleSourcePreviewResponse preview =
+                singleSourceCrawlPreviewService.preview(previewRequest);
+        return ResponseEntity.ok(SingleSourceCrawlStarter.SingleSourceRunResponse.fromPreview(
+                preview, warnings, System.currentTimeMillis() - startedAtMs));
+    }
+
+    private ResponseEntity<?> runSingleSourcePersist(
+            SingleSourceCrawlStarter.SingleSourceRunRequest request, boolean inlineContent) throws Exception {
+        if (singleSourceCrawlStarter == null || !singleSourceCrawlStarter.isAvailable()) {
+            return ResponseEntity.status(503)
+                    .body(Map.of("error", "Single-source crawl starter is not available"));
+        }
+
+        String pathOrUrl = request.pathOrUrl();
+        String label = request.label();
+        if (inlineContent) {
+            Path destination = writeInlineContentToUploads(request);
+            pathOrUrl = destination.toString();
+            if (label == null || label.isBlank()) {
+                label = destination.getFileName().toString();
+            }
+        }
+
+        DocumentSourceDescriptor.SourceType sourceType =
+                parseRunSourceType(resolveSingleSourceType(request, inlineContent), inlineContent);
+        UnifiedCrawlSource source = UnifiedCrawlSource.builder()
+                .label(label != null && !label.isBlank() ? label : pathOrUrl)
+                .sourceType(sourceType)
+                .pathOrUrl(pathOrUrl)
+                .maxDepth(request.maxDepth() != null ? request.maxDepth()
+                        : (sourceType == DocumentSourceDescriptor.SourceType.DIRECTORY ? 3 : 0))
+                .maxDocuments(request.maxDocuments() != null ? request.maxDocuments()
+                        : (sourceType == DocumentSourceDescriptor.SourceType.DIRECTORY ? 0 : 1))
+                .loaderName(request.loaderName())
+                .chunkerName(request.chunkerName())
+                .properties(request.properties())
+                .build();
+
+        int waitTimeoutSeconds = request.waitTimeoutSeconds() != null && request.waitTimeoutSeconds() > 0
+                ? request.waitTimeoutSeconds()
+                : (int) (SingleSourceCrawlStarter.DEFAULT_WAIT_TIMEOUT_MS / 1000L);
+        SingleSourceCrawlStarter.SingleSourceCrawlOptions options =
+                SingleSourceCrawlStarter.SingleSourceCrawlOptions.builder()
+                        .factSheetId(request.factSheetId())
+                        .steps(request.steps())
+                        .deriveOntology(request.deriveOntology())
+                        .vectorIndex(request.vectorIndex())
+                        .modelName(request.modelName())
+                        .llmProvider(request.llmProvider())
+                        .waitForCompletion(true)
+                        .waitTimeoutMs(waitTimeoutSeconds * 1000L)
+                        .build();
+
+        String jobName = "single-source: " + (label != null && !label.isBlank() ? label : pathOrUrl);
+        SingleSourceCrawlStarter.SingleSourceCrawlResult result =
+                singleSourceCrawlStarter.start(jobName, source, options);
+        // The starter already wrote the history record; membership here lets the periodic sync flush
+        // the terminal status/snapshot for this job like any other controller-started crawl.
+        if (result.jobId() != null) {
+            publishedJobIds.add(result.jobId());
+        }
+
+        List<String> warnings = new ArrayList<>();
+        if (Boolean.FALSE.equals(result.completed())) {
+            warnings.add("Wait timeout elapsed; the crawl is still running. Poll GET /api/unified-crawl/jobs/"
+                    + result.jobId() + " for progress.");
+        }
+        return ResponseEntity.ok(SingleSourceCrawlStarter.SingleSourceRunResponse.fromCrawlResult(result, warnings));
+    }
+
+    /** String source type for the preview lane and for run-lane enum parsing; auto-detected when omitted. */
+    private String resolveSingleSourceType(
+            SingleSourceCrawlStarter.SingleSourceRunRequest request, boolean hasContent) {
+        if (request.sourceType() != null && !request.sourceType().isBlank()) {
+            return request.sourceType().trim();
+        }
+        if (hasContent) {
+            return "text";
+        }
+        String pathOrUrl = request.pathOrUrl().trim();
+        String lower = pathOrUrl.toLowerCase(Locale.ROOT);
+        if (lower.startsWith("http://") || lower.startsWith("https://")) {
+            return "url";
+        }
+        return Files.isDirectory(Paths.get(pathOrUrl)) ? "directory" : "file";
+    }
+
+    private DocumentSourceDescriptor.SourceType parseRunSourceType(String sourceTypeName, boolean inlineContent) {
+        if (inlineContent) {
+            return DocumentSourceDescriptor.SourceType.FILE;
+        }
+        String normalized = sourceTypeName.trim().toUpperCase(Locale.ROOT).replace('-', '_');
+        return switch (normalized) {
+            case "URL" -> DocumentSourceDescriptor.SourceType.URL;
+            case "FILE", "PATH", "TEXT" -> DocumentSourceDescriptor.SourceType.FILE;
+            case "DIRECTORY", "DIR" -> DocumentSourceDescriptor.SourceType.DIRECTORY;
+            default -> {
+                try {
+                    yield DocumentSourceDescriptor.SourceType.valueOf(normalized);
+                } catch (IllegalArgumentException e) {
+                    throw new IllegalArgumentException("Unknown sourceType '" + sourceTypeName + "'");
+                }
+            }
+        };
+    }
+
+    private Path writeInlineContentToUploads(SingleSourceCrawlStarter.SingleSourceRunRequest request)
+            throws Exception {
+        String baseName = request.label() != null && !request.label().isBlank() ? request.label() : "text-input";
+        String sanitized = baseName.replaceAll("[^a-zA-Z0-9._-]", "_");
+        String lower = sanitized.toLowerCase(Locale.ROOT);
+        if (!lower.endsWith(".txt") && !lower.endsWith(".md")) {
+            sanitized = sanitized + ".txt";
+        }
+        Path destination = uploadsPath
+                .resolve(UUID.randomUUID().toString().substring(0, 8) + "-" + sanitized)
+                .normalize();
+        if (!destination.startsWith(uploadsPath)) {
+            throw new IllegalArgumentException("Invalid label for inline content: " + request.label());
+        }
+        Files.writeString(destination, request.content(),
+                StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+        return destination;
     }
 
     @GetMapping("/jobs")
@@ -629,8 +848,10 @@ public class UnifiedCrawlController {
                     result.put("embeddingSubprocessRssBytes", rss.getOrDefault("embeddingSubprocess", 0L));
                     result.put("otherChildProcessRssBytes", rss.getOrDefault("otherChildren", 0L));
                     result.put("processTreeRssBytes", rss.getOrDefault("tree", 0L));
-                    result.put("vectorBatchesTotal", snapshot.getVectorBatchesTotal());
-                    result.put("vectorBatchesCompleted", snapshot.getVectorBatchesCompleted());
+                    int vectorBatchesTotal = Math.max(0, snapshot.getVectorBatchesTotal());
+                    result.put("vectorBatchesTotal", vectorBatchesTotal);
+                    result.put("vectorBatchesCompleted",
+                            clampCompletedBatches(snapshot.getVectorBatchesCompleted(), vectorBatchesTotal));
                     result.put("currentBatchSize", snapshot.getCurrentBatchSize());
                     result.put("embeddingBatchSize", snapshot.getEmbeddingBatchSize());
                     result.put("embeddingModelOptimalBatchSize", snapshot.getEmbeddingModelOptimalBatchSize());
@@ -694,7 +915,7 @@ public class UnifiedCrawlController {
                     // Include job type flags and LLM info at top level for the runtime grid
                     if (job.getRequest() != null) {
                         result.put("graphExtractionEnabled",
-                                job.getRequest().getGraphExtraction() != null && job.getRequest().getGraphExtraction().isEnabled());
+                                true);
                         result.put("vectorIndexEnabled",
                                 job.getRequest().getVectorIndex() != null && job.getRequest().getVectorIndex().isEnabled());
                         if (job.getRequest().getGraphExtraction() != null) {
@@ -1562,6 +1783,59 @@ public class UnifiedCrawlController {
      * If the request's graphExtraction config has a schemaPresetId set,
      * resolve it via GraphSchemaPresetService and populate entityTypes/relationshipTypes.
      */
+    /**
+     * Populate missing route defaults from the managed processing-route config.
+     * CLI project crawls often send only PDF/VLM routing fields; those partial
+     * routes must still inherit the backend list and serving-lane policy.
+     */
+    private void applyDefaultProcessingRoute(UnifiedCrawlRequest request) {
+        if (processingRouteConfigService == null) {
+            return;
+        }
+        ProcessingRouteConfig defaultRoute = processingRouteConfigService.getConfig();
+        if (defaultRoute == null) {
+            return;
+        }
+
+        ProcessingRouteConfig route = request.getProcessingRoute();
+        if (route == null) {
+            request.setProcessingRoute(defaultRoute);
+            log.debug("Applied default processingRoute to crawl request '{}' (pdfMode={}, backends={})",
+                    request.getName(),
+                    defaultRoute.getPdfRoutingMode(),
+                    defaultRoute.getBackends() != null ? defaultRoute.getBackends().size() : 0);
+            return;
+        }
+
+        boolean routeHasBackends = route.getBackends() != null && !route.getBackends().isEmpty();
+        boolean defaultHasBackends = defaultRoute.getBackends() != null && !defaultRoute.getBackends().isEmpty();
+        if (routeHasBackends || !defaultHasBackends) {
+            return;
+        }
+
+        ProcessingRouteConfig merged = new ProcessingRouteConfig();
+        merged.setPdfRoutingMode(route.getPdfRoutingMode() != null
+                ? route.getPdfRoutingMode()
+                : defaultRoute.getPdfRoutingMode());
+        merged.setFallbackEnabled(defaultRoute.isFallbackEnabled());
+        merged.setBackends(new ArrayList<>(defaultRoute.getBackends()));
+        merged.setVlmModelId(firstNonBlank(route.getVlmModelId(), defaultRoute.getVlmModelId()));
+        merged.setExtractTablesFromTextPdfs(route.isExtractTablesFromTextPdfs());
+        merged.setTextThresholdCharsPerPage(route.getTextThresholdCharsPerPage() > 0
+                ? route.getTextThresholdCharsPerPage()
+                : defaultRoute.getTextThresholdCharsPerPage());
+        merged.setServingLaneEnabled(defaultRoute.isServingLaneEnabled());
+        request.setProcessingRoute(merged);
+        log.debug("Merged partial processingRoute for crawl request '{}' with default backends (pdfMode={}, backends={})",
+                request.getName(),
+                merged.getPdfRoutingMode(),
+                merged.getBackends() != null ? merged.getBackends().size() : 0);
+    }
+
+    private String firstNonBlank(String first, String second) {
+        return first != null && !first.isBlank() ? first : second;
+    }
+
     private void resolveSchemaPreset(UnifiedCrawlRequest request) {
         GraphExtractionConfig ge = request.getGraphExtraction();
         if (ge == null || ge.getSchemaPresetId() == null || ge.getSchemaPresetId().isEmpty()) {
@@ -1654,6 +1928,8 @@ public class UnifiedCrawlController {
         m.put("documentsIndexed", job.getDocumentsIndexed().get());
         m.put("entitiesExtracted", job.getEntitiesExtracted().get());
         m.put("relationshipsExtracted", job.getRelationshipsExtracted().get());
+        m.put("filesSkippedUnchanged", job.getFilesSkippedUnchanged().get());
+        m.put("filesReprocessed", job.getFilesReprocessed().get());
         m.put("errorCount", job.getErrorCount().get());
         if (job.getErrorMessage() != null) {
             m.put("errorMessage", job.getErrorMessage());
@@ -1687,8 +1963,10 @@ public class UnifiedCrawlController {
         m.put("embeddingSubprocessRssBytes", rss.getOrDefault("embeddingSubprocess", 0L));
         m.put("otherChildProcessRssBytes", rss.getOrDefault("otherChildren", 0L));
         m.put("processTreeRssBytes", rss.getOrDefault("tree", 0L));
-        m.put("vectorBatchesTotal", job.getVectorBatchesTotal().get());
-        m.put("vectorBatchesCompleted", job.getVectorBatchesCompleted().get());
+        int vectorBatchesTotal = Math.max(0, job.getVectorBatchesTotal().get());
+        m.put("vectorBatchesTotal", vectorBatchesTotal);
+        m.put("vectorBatchesCompleted",
+                clampCompletedBatches(job.getVectorBatchesCompleted().get(), vectorBatchesTotal));
         m.put("currentBatchSize", job.getCurrentBatchSize().get());
         m.put("embeddingBatchSize", job.getEmbeddingBatchSize().get());
         m.put("embeddingModelOptimalBatchSize", job.getEmbeddingModelOptimalBatchSize().get());
@@ -1710,7 +1988,7 @@ public class UnifiedCrawlController {
         // Include job type flags from the original request
         if (job.getRequest() != null) {
             m.put("graphExtractionEnabled",
-                    job.getRequest().getGraphExtraction() != null && job.getRequest().getGraphExtraction().isEnabled());
+                    true);
             m.put("vectorIndexEnabled",
                     job.getRequest().getVectorIndex() != null && job.getRequest().getVectorIndex().isEnabled());
             if (job.getRequest().getGraphExtraction() != null && job.getRequest().getGraphExtraction().getLlmProvider() != null) {
@@ -1896,8 +2174,9 @@ public class UnifiedCrawlController {
         m.put("nativeTotalBytes", snap.getNativeTotalBytes());
         m.put("nativeMaxPhysicalBytes", snap.getNativeMaxPhysicalBytes());
         m.put("directBufferBytes", snap.getDirectBufferBytes());
-        m.put("vectorBatchesTotal", snap.getVectorBatchesTotal());
-        m.put("vectorBatchesCompleted", snap.getVectorBatchesCompleted());
+        int vectorBatchesTotal = Math.max(0, snap.getVectorBatchesTotal());
+        m.put("vectorBatchesTotal", vectorBatchesTotal);
+        m.put("vectorBatchesCompleted", clampCompletedBatches(snap.getVectorBatchesCompleted(), vectorBatchesTotal));
         m.put("currentBatchSize", snap.getCurrentBatchSize());
         m.put("embeddingBatchSize", snap.getEmbeddingBatchSize());
         m.put("embeddingModelOptimalBatchSize", snap.getEmbeddingModelOptimalBatchSize());
@@ -1990,7 +2269,7 @@ public class UnifiedCrawlController {
         // Job type flags from request
         if (job.getRequest() != null) {
             m.put("graphExtractionEnabled",
-                    job.getRequest().getGraphExtraction() != null && job.getRequest().getGraphExtraction().isEnabled());
+                    true);
             m.put("vectorIndexEnabled",
                     job.getRequest().getVectorIndex() != null && job.getRequest().getVectorIndex().isEnabled());
             if (job.getRequest().getGraphExtraction() != null) {
@@ -2078,8 +2357,16 @@ public class UnifiedCrawlController {
                 .commandLine()
                 .or(() -> handle.info().command())
                 .map(command -> command.contains("EmbeddingSubprocessMain")
-                        || command.contains("ai.kompile.embedding.anserini.subprocess"))
+                        || command.contains("ai.kompile.embedding.anserini.subprocess")
+                        || command.contains("kompile-embedding-subprocess")
+                        || command.contains("embedding-subprocess"))
                 .orElse(false);
+    }
+
+    private int clampCompletedBatches(int completedBatches, int totalBatches) {
+        int completed = Math.max(0, completedBatches);
+        int total = Math.max(0, totalBatches);
+        return total > 0 ? Math.min(completed, total) : completed;
     }
 
     private long readProcessRssBytes(long pid) {

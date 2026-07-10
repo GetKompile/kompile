@@ -313,4 +313,73 @@ class TypeSystemTest {
         assertTrue(c.isSatisfiedBy((ReasoningGraph) g),
                 "Graph-level isSatisfiedBy always returns true for AttributeRequiredConstraint");
     }
+
+    @Test
+    @DisplayName("CardinalityConstraint ONE_TO_MANY caps target fan-in but not source fan-out")
+    void cardinalityConstraint_oneToManyCapsTargetFanIn() {
+        TypeConstraint constraint = new TypeConstraint.CardinalityConstraint(
+                "OWNS", TypeConstraint.Cardinality.ONE_TO_MANY);
+
+        MutableReasoningGraph valid = graphWithRelations("OWNS",
+                new String[]{"p1", "c1"},
+                new String[]{"p1", "c2"});
+        assertTrue(constraint.isSatisfiedBy(valid),
+                "ONE_TO_MANY allows one source to relate to multiple targets");
+
+        MutableReasoningGraph invalid = graphWithRelations("OWNS",
+                new String[]{"p1", "c1"},
+                new String[]{"p2", "c1"});
+        assertFalse(constraint.isSatisfiedBy(invalid),
+                "ONE_TO_MANY rejects multiple sources for the same target");
+    }
+
+    @Test
+    @DisplayName("CardinalityConstraint MANY_TO_ONE caps source fan-out but not target fan-in")
+    void cardinalityConstraint_manyToOneCapsSourceFanOut() {
+        TypeConstraint constraint = new TypeConstraint.CardinalityConstraint(
+                "REPORTS_TO", TypeConstraint.Cardinality.MANY_TO_ONE);
+
+        MutableReasoningGraph valid = graphWithRelations("REPORTS_TO",
+                new String[]{"e1", "m1"},
+                new String[]{"e2", "m1"});
+        assertTrue(constraint.isSatisfiedBy(valid),
+                "MANY_TO_ONE allows multiple sources to share one target");
+
+        MutableReasoningGraph invalid = graphWithRelations("REPORTS_TO",
+                new String[]{"e1", "m1"},
+                new String[]{"e1", "m2"});
+        assertFalse(constraint.isSatisfiedBy(invalid),
+                "MANY_TO_ONE rejects multiple targets for one source");
+    }
+
+    @Test
+    @DisplayName("CardinalityConstraint ONE_TO_ONE caps both source fan-out and target fan-in")
+    void cardinalityConstraint_oneToOneCapsBothEnds() {
+        TypeConstraint constraint = new TypeConstraint.CardinalityConstraint(
+                "ASSIGNED_TO", TypeConstraint.Cardinality.ONE_TO_ONE);
+
+        MutableReasoningGraph valid = graphWithRelations("ASSIGNED_TO", new String[]{"task1", "owner1"});
+        assertTrue(constraint.isSatisfiedBy(valid));
+
+        MutableReasoningGraph duplicateSource = graphWithRelations("ASSIGNED_TO",
+                new String[]{"task1", "owner1"},
+                new String[]{"task1", "owner2"});
+        assertFalse(constraint.isSatisfiedBy(duplicateSource));
+
+        MutableReasoningGraph duplicateTarget = graphWithRelations("ASSIGNED_TO",
+                new String[]{"task1", "owner1"},
+                new String[]{"task2", "owner1"});
+        assertFalse(constraint.isSatisfiedBy(duplicateTarget));
+    }
+
+    private static MutableReasoningGraph graphWithRelations(String relationType, String[]... sourceTargetPairs) {
+        MutableReasoningGraph g = new MutableReasoningGraph();
+        int relationIndex = 0;
+        for (String[] pair : sourceTargetPairs) {
+            g.addEntity(GraphEntity.builder(pair[0]).type("Source").label(pair[0]).build());
+            g.addEntity(GraphEntity.builder(pair[1]).type("Target").label(pair[1]).build());
+            g.addRelation("r" + relationIndex++, pair[0], pair[1], relationType, 1.0);
+        }
+        return g;
+    }
 }

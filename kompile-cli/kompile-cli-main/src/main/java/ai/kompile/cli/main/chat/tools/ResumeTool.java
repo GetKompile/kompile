@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.chat.tools;
 
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.utils.HashUtils;
 import ai.kompile.cli.main.chat.ChatHistory;
 import ai.kompile.cli.main.chat.ChatSessionMetrics;
 import ai.kompile.cli.main.chat.SessionIndex;
@@ -177,6 +178,12 @@ public class ResumeTool implements CliTool {
     public String description() {
         return "Interactive multi-tab tool for browsing, searching, migrating, and resuming conversations. " +
                 "Allows loading migrated conversations into designated agents via passthrough mode.";
+    }
+
+    @Override
+    public String compactHint() {
+        return "Browse/search/view/resume saved conversations. Kompile ids (passthrough-*/emulated-*) only name " +
+                "the local transcript — for native agent resume use the native_session_id from search/resume results.";
     }
 
     @Override
@@ -640,12 +647,15 @@ public class ResumeTool implements CliTool {
      */
     private final Set<String> harvestedExternalIds = new HashSet<>();
     private final Map<String, Path> sessionFilePaths = new HashMap<>();
+    // kompile session id (passthrough-*/emulated-*) → the underlying agent's REAL session id
+    private final Map<String, String> nativeSessionIds = new HashMap<>();
     private boolean conversationsLoaded = false;
 
     private void loadAllConversations() {
         allConversations.clear();
         harvestedExternalIds.clear();
         sessionFilePaths.clear();
+        nativeSessionIds.clear();
 
         // Load kompile sessions (always loaded - these are local passthrough sessions)
         try {
@@ -653,6 +663,16 @@ public class ResumeTool implements CliTool {
             for (ChatHistory.ConversationSummary session : kompileSessions) {
                 // Collect harvested external session IDs for deduplication
                 harvestedExternalIds.addAll(session.harvestedSourceIds());
+                // The last harvested id IS the underlying agent's real session id —
+                // the one native resume must be given instead of the kompile id.
+                if (!session.harvestedSourceIds().isEmpty()) {
+                    String nativeId = ChatHistory.normalizeNativeSessionId(
+                            session.harvestedSourceIds().get(session.harvestedSourceIds().size() - 1),
+                            normalizeAgentName(session.agent()));
+                    if (nativeId != null) {
+                        nativeSessionIds.put(session.sessionId(), nativeId);
+                    }
+                }
                 allConversations.add(new ConversationSummary(
                         session.sessionId(),
                         formatTitle(session.title()),
@@ -948,7 +968,7 @@ public class ResumeTool implements CliTool {
                             List<Path> projectDirsToScan;
                             if (localOnly) {
                                 // Gemini uses SHA256(path) as project directory name
-                                String hash = sha256(currentWorkingDir);
+                                String hash = HashUtils.sha256Hex(currentWorkingDir);
                                 Path matchDir = tmpDir.resolve(hash);
                                 projectDirsToScan = Files.isDirectory(matchDir)
                                         ? List.of(matchDir) : List.of();
@@ -1673,10 +1693,12 @@ public class ResumeTool implements CliTool {
         try {
             // Find the conversation summary to get the source, and lazily load title
             String convoSource = "external";
+            String convoAgent = "";
             String displayTitle = sessionId;
             for (ConversationSummary cs : allConversations) {
                 if (cs.sessionId().equals(sessionId)) {
                     convoSource = cs.source();
+                    convoAgent = cs.agent();
                     if (cs.title() != null && !cs.title().isEmpty()) {
                         displayTitle = cs.title();
                     } else {
@@ -1738,11 +1760,15 @@ public class ResumeTool implements CliTool {
             terminal.writer().println();
 
             if (choice.trim().equals("1")) {
-                // Option 1: Resume normally — same agent, use native resume directly
+                // Option 1: Resume normally — same agent, use native resume directly.
+                // For kompile-stored sessions the source is just "kompile"; the agent that
+                // actually ran the conversation is recorded on the summary (Agent: header).
+                String sourceAgent = "kompile".equals(conversation.source()) && isKnownAgent(convoAgent)
+                        ? convoAgent
+                        : determineAgentFromSource(conversation.source());
                 String agent = (selectedAgent != null && !selectedAgent.isBlank())
                         ? selectedAgent
-                        : determineAgentFromSource(conversation.source());
-                String sourceAgent = determineAgentFromSource(conversation.source());
+                        : sourceAgent;
 
                 // Same agent → skip export, just launch with native resume flag
                 if (targetUuid == null && sourceAgent.equals(agent)) {
@@ -1763,7 +1789,9 @@ public class ResumeTool implements CliTool {
 
             if (choice.trim().equals("2")) {
                 // Option 2: Resume with different agent
-                String currentAgent = determineAgentFromSource(conversation.source());
+                String currentAgent = "kompile".equals(conversation.source()) && isKnownAgent(convoAgent)
+                        ? convoAgent
+                        : determineAgentFromSource(conversation.source());
                 String agent = lineReader.readLine("Target agent (current: " + currentAgent + ") [claude]: ");
                 if (agent.isEmpty()) {
                     agent = "claude";
@@ -1775,7 +1803,9 @@ public class ResumeTool implements CliTool {
 
             if (choice.trim().equals("3")) {
                 // Option 3: Resume with specific UUID
-                String currentAgent = determineAgentFromSource(conversation.source());
+                String currentAgent = "kompile".equals(conversation.source()) && isKnownAgent(convoAgent)
+                        ? convoAgent
+                        : determineAgentFromSource(conversation.source());
                 String agent = lineReader.readLine("Target agent (current: " + currentAgent + ") [claude]: ");
                 if (agent.isEmpty()) {
                     agent = "claude";
@@ -1827,6 +1857,50 @@ public class ResumeTool implements CliTool {
     }
 
     /**
+     * True when the name is a concrete agent we know how to launch (as opposed to
+     * "unknown" or a server-side model label recorded on old kompile sessions).
+     */
+    private boolean isKnownAgent(String agent) {
+        if (agent == null) return false;
+        return switch (agent) {
+            case "claude", "codex", "gemini", "qwen", "opencode" -> true;
+            default -> false;
+        };
+    }
+
+    /**
+     * Map a kompile-stored session ({@code passthrough-}/{@code emulated-} ids) to the
+     * underlying agent's real session id. Returns null when the session never recorded
+     * one (e.g. the transcript harvest failed), in which case native resume is impossible.
+     */
+    private String resolveUnderlyingNativeSessionId(String sessionId, String agent) {
+        String cached = nativeSessionIds.get(sessionId);
+        if (cached != null) return cached;
+        return ChatHistory.resolveNativeSessionId(sessionId, agent);
+    }
+
+    /**
+     * Best-effort lookup of the working directory the native session actually ran in,
+     * so {@code claude --resume <id>} finds the session in its own project directory.
+     */
+    private Path resolveNativeWorkingDirectory(String agent, String nativeSessionId) {
+        String source = switch (agent.toLowerCase()) {
+            case "claude", "claude-code" -> "claude-code";
+            case "codex" -> "codex";
+            case "qwen" -> "qwen";
+            case "opencode" -> "opencode";
+            case "gemini" -> "gemini";
+            default -> null;
+        };
+        if (source == null) return null;
+        try {
+            return ConversationReader.resolveExternalWorkingDirectory(source, nativeSessionId);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
      * Launch an agent with its native resume command — no export, no conversion.
      * Used when resuming a conversation back into the same agent that created it.
      * The session file already exists in the agent's native format.
@@ -1839,31 +1913,59 @@ public class ResumeTool implements CliTool {
                     ? workingDirectory
                     : Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
 
+            // Kompile-stored sessions (passthrough-*/emulated-*) carry a synthetic id the
+            // native agent knows nothing about. Resume with the harvested underlying agent
+            // session id instead; if none was ever recorded, export into a fresh native
+            // session rather than handing the agent an id it will reject.
+            String nativeSessionId = sessionId;
+            boolean nativeResumeCapable = switch (agent.toLowerCase()) {
+                case "claude", "claude-code", "codex", "qwen", "opencode" -> true;
+                default -> false;
+            };
+            if (nativeResumeCapable && ChatHistory.exists(sessionId)) {
+                String resolved = resolveUnderlyingNativeSessionId(sessionId, agent);
+                if (resolved == null || resolved.isBlank()) {
+                    terminal.writer().println(YELLOW + "No native " + agent + " session recorded for "
+                            + sessionId + " — exporting into a new session instead." + RESET);
+                    terminal.writer().flush();
+                    LoadedConversation conv = loadConversation(sessionId);
+                    launchAgentWithSession(conv, agent, null);
+                    return;
+                }
+                nativeSessionId = resolved;
+                terminal.writer().println(DIM + "  Underlying " + agent + " session: " + nativeSessionId + RESET);
+                // Resume in the directory the native session actually ran in — agents
+                // scope their session stores per project directory.
+                Path nativeWorkDir = resolveNativeWorkingDirectory(agent, nativeSessionId);
+                if (nativeWorkDir != null) {
+                    effectiveWorkDir = nativeWorkDir;
+                }
+            }
+
             // Build the native resume command for this agent
             List<String> agentCommand = new ArrayList<>();
             switch (agent.toLowerCase()) {
                 case "claude", "claude-code" -> {
                     agentCommand.add("claude");
                     agentCommand.add("--resume");
-                    agentCommand.add(sessionId);
+                    agentCommand.add(nativeSessionId);
                 }
                 case "codex" -> {
                     agentCommand.add("codex");
                     agentCommand.add("resume");
-                    agentCommand.add("--all");
-                    agentCommand.add(sessionId);
+                    agentCommand.add(nativeSessionId);
                     agentCommand.add("-C");
                     agentCommand.add(effectiveWorkDir.toString());
                 }
                 case "qwen" -> {
                     agentCommand.add("qwen");
                     agentCommand.add("--resume");
-                    agentCommand.add(sessionId);
+                    agentCommand.add(nativeSessionId);
                 }
                 case "opencode" -> {
                     agentCommand.add("opencode");
                     agentCommand.add("--session");
-                    agentCommand.add(sessionId);
+                    agentCommand.add(nativeSessionId);
                 }
                 case "gemini" -> {
                     // Gemini uses index-based resume, not session ID — fall through to export path
@@ -1894,9 +1996,9 @@ public class ResumeTool implements CliTool {
                         agentCommand, agent, true, effectiveWorkDir);
             }
 
-            // Inject MCP tools before launching — probe for running kompile-app (SSE),
-            // fall back to stdio if not found
-            String sseUrl = ai.kompile.cli.main.chat.McpUrlResolver.resolveOnce(null, 0);
+            // Inject MCP tools before launching. Codex uses stdio config here;
+            // probing the HTTP app only slows the resume path and reports the wrong mode.
+            String sseUrl = resolveResumeMcpSseUrl(agent);
             try {
                 injectedSettingsFile = ai.kompile.cli.main.chat.mcp.McpToolInjection.injectTools(
                         effectiveWorkDir, agent, sseUrl);
@@ -1904,7 +2006,7 @@ public class ResumeTool implements CliTool {
                 terminal.writer().println(YELLOW + "Warning: Could not inject MCP tools: " + e.getMessage() + RESET);
             }
 
-            String mcpMode = (sseUrl != null && !sseUrl.isBlank()) ? "sse" : "stdio";
+            String mcpMode = mcpModeForResume(agent, sseUrl);
             terminal.writer().println(DIM + "  MCP: " + mcpMode + RESET);
             terminal.writer().println(DIM + "  Command: " + String.join(" ", agentCommand) + RESET);
             terminal.writer().println();
@@ -2107,12 +2209,12 @@ public class ResumeTool implements CliTool {
             terminal.writer().println();
             terminal.writer().flush();
 
-            // Inject MCP tools before launching — probe for running kompile-app (SSE),
-            // fall back to stdio if not found
+            // Inject MCP tools before launching. Codex uses stdio config here;
+            // probing the HTTP app only slows the resume path and reports the wrong mode.
             Path agentWorkingDir = exportResult.getWorkingDirectory() != null
                     ? exportResult.getWorkingDirectory()
                     : Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
-            String sseUrl = ai.kompile.cli.main.chat.McpUrlResolver.resolveOnce(null, 0);
+            String sseUrl = resolveResumeMcpSseUrl(agent);
             try {
                 injectedSettingsFile = ai.kompile.cli.main.chat.mcp.McpToolInjection.injectTools(
                         agentWorkingDir, agent, sseUrl);
@@ -2439,23 +2541,6 @@ public class ResumeTool implements CliTool {
     }
 
     /**
-     * Compute SHA256 hex digest of a string (used for Gemini project hash matching).
-     */
-    private String sha256(String input) {
-        try {
-            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
-            byte[] hash = md.digest(input.getBytes(StandardCharsets.UTF_8));
-            StringBuilder sb = new StringBuilder();
-            for (byte b : hash) {
-                sb.append(String.format("%02x", b));
-            }
-            return sb.toString();
-        } catch (java.security.NoSuchAlgorithmException e) {
-            throw new RuntimeException("SHA-256 not available", e);
-        }
-    }
-
-    /**
      * Load sessions from a Qwen chats directory.
      */
     private void loadQwenChatsDir(Path chatsDir, String agentName) {
@@ -2512,6 +2597,13 @@ public class ResumeTool implements CliTool {
             convoNode.put("agent", convo.agent());
             convoNode.put("source", convo.source());
             convoNode.put("last_modified", convo.lastModified());
+            // Kompile session ids (passthrough-*/emulated-*) only name the local
+            // transcript — surface the underlying agent's real session id for callers
+            // that resume via the agent's own CLI.
+            String nativeId = nativeSessionIds.get(convo.sessionId());
+            if (nativeId != null) {
+                convoNode.put("native_session_id", nativeId);
+            }
         }
 
         return ToolResult.success("Search results", result.toString());
@@ -2601,6 +2693,18 @@ public class ResumeTool implements CliTool {
                 result.put("target_session_id", targetSessionId);
             }
             result.put("source", conversation.source());
+            // For kompile-stored sessions, also report the underlying agent's real
+            // session id — the kompile id is invalid for native --resume/--session flags.
+            // Agent hint is null: the target agent may differ from the agent that ran
+            // the session, so normalize by id shape instead.
+            if ("kompile".equals(conversation.source())) {
+                String nativeId = resolveUnderlyingNativeSessionId(sessionId, null);
+                if (nativeId != null && !nativeId.isBlank()) {
+                    result.put("native_session_id", nativeId);
+                    result.put("native_session_note",
+                            "Use native_session_id (not session_id) when resuming with the agent's own resume flags.");
+                }
+            }
             result.put("original_message_count", originalCount);
             result.put("compact", compact);
 
@@ -2895,6 +2999,22 @@ public class ResumeTool implements CliTool {
 
     private boolean supportsNativeResumePermissionBypass(String agent) {
         return agent == null || !agent.toLowerCase(Locale.ROOT).contains("opencode");
+    }
+
+    private String resolveResumeMcpSseUrl(String agent) {
+        if (prefersStdioMcpForResume(agent)) {
+            return null;
+        }
+        return ai.kompile.cli.main.chat.McpUrlResolver.resolveOnce(null, 0);
+    }
+
+    private boolean prefersStdioMcpForResume(String agent) {
+        String agentKey = agent != null ? agent.toLowerCase(Locale.ROOT) : "";
+        return agentKey.contains("codex");
+    }
+
+    private String mcpModeForResume(String agent, String sseUrl) {
+        return prefersStdioMcpForResume(agent) || sseUrl == null || sseUrl.isBlank() ? "stdio" : "sse";
     }
 
     /**

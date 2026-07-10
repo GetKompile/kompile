@@ -113,8 +113,9 @@ public interface CliAgentAvailabilityAdapter {
      * <p>This is called at crawl-job start (and on config reload) so that model selection
      * for the entire job respects the per-project / per-crawl overrides from
      * {@link GraphExtractionConfig#getExtractionModelProviderAllow()},
-     * {@link GraphExtractionConfig#getExtractionModelExcludeMarkers()}, and
-     * {@link GraphExtractionConfig#getExtractionModelAllow()}.</p>
+     * {@link GraphExtractionConfig#getExtractionModelExcludeMarkers()},
+     * {@link GraphExtractionConfig#getExtractionModelAllow()}, and
+     * {@link GraphExtractionConfig#getExtractionModelPriority()}.</p>
      *
      * <p>The default no-op means that, when the adapter is absent (test slices, CPU-only
      * builds), the service retains whatever policy was previously set — no crawl is blocked.</p>
@@ -125,6 +126,21 @@ public interface CliAgentAvailabilityAdapter {
      */
     default void setActiveExtractionPolicy(List<String> providerAllow, List<String> excludeMarkers,
                                             List<String> modelAllow) {
+        setActiveExtractionPolicy(providerAllow, excludeMarkers, modelAllow, null);
+    }
+
+    /**
+     * Push the active extraction model-selection policy with a soft priority list. Priority does not
+     * restrict candidates; it only orders discovered, healthy candidates before discovery-order
+     * fallback.
+     *
+     * @param providerAllow   whitelist of provider prefixes; null or empty = all providers allowed
+     * @param excludeMarkers  model-id substrings to exclude; null = use service default ["claude","codex"]
+     * @param modelAllow      explicit model-id allow-list; null or empty = no explicit pin
+     * @param modelPriority   soft preferred model ordering; null = service/project default, empty = no priority
+     */
+    default void setActiveExtractionPolicy(List<String> providerAllow, List<String> excludeMarkers,
+                                            List<String> modelAllow, List<String> modelPriority) {
         // no-op default: safe when adapter is absent
     }
 
@@ -171,5 +187,19 @@ public interface CliAgentAvailabilityAdapter {
      */
     default int contextBudgetChars(double fraction, double charsPerToken) {
         return 0;
+    }
+
+    /**
+     * Returns the name of the primary CLI agent eligible for extraction, or {@code null} if none.
+     *
+     * <p>Used by the context-budget calculator to look up a per-agent fallback context window
+     * when model discovery returns no results (the common case for all non-opencode agents).
+     * The default returns {@code null}; concrete implementations override to expose the live
+     * agent registry lookup.</p>
+     *
+     * @return the agent name (e.g. {@code "opencode"}, {@code "claude"}), or {@code null}
+     */
+    default String resolveExtractionAgentName() {
+        return null;
     }
 }

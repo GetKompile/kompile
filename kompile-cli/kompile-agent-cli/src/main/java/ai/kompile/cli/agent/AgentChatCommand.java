@@ -19,6 +19,7 @@ package ai.kompile.cli.agent;
 import ai.kompile.cli.common.http.KompileHttpClient;
 import picocli.CommandLine;
 
+import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.Callable;
 
@@ -44,7 +45,7 @@ public class AgentChatCommand implements Callable<Integer> {
     public Integer call() throws Exception {
         KompileHttpClient client = KompileHttpClient.create(url, port);
         try {
-            Map<String, Object> body = new java.util.HashMap<>();
+            Map<String, Object> body = new HashMap<>();
             body.put("agentName", agentName);
             body.put("message", message);
             if (sessionId != null) {

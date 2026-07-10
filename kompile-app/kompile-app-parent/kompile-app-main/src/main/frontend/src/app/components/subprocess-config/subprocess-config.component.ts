@@ -42,6 +42,7 @@ import {
   SubprocessConfigResponse,
   SubprocessConfigUpdate,
   SubprocessStatus,
+  SubprocessTypeConfig,
   SystemInfo,
   JavaPathValidation,
   NativeExecutableValidation,
@@ -222,6 +223,14 @@ export class SubprocessConfigComponent implements OnInit, OnDestroy {
   // Selected debug mode (legacy support)
   selectedDebugMode = 'none';
 
+  // Per-subprocess-type overrides (graph-matrix, learning)
+  subprocessTypes: { [type: string]: SubprocessTypeConfig } = {};
+  editGraphMatrixEnabled = true;
+  editGraphMatrixHeapSize = '32g';
+  editLearningEnabled = true;
+  editLearningHeapSize = '16g';
+  isSavingTypeConfig: { [type: string]: boolean } = {};
+
   constructor(
     private configService: SubprocessConfigService,
     private snackBar: MatSnackBar,
@@ -237,6 +246,7 @@ export class SubprocessConfigComponent implements OnInit, OnDestroy {
     this.loadNativeImageInfo();
     this.loadEmbeddingSubprocessStatus();
     this.loadAvailableDebugModes();
+    this.loadSubprocessTypes();
 
     // Poll active processes and subprocess status every 5 seconds
     interval(5000)
@@ -1107,5 +1117,43 @@ export class SubprocessConfigComponent implements OnInit, OnDestroy {
   // Get valgrind suppression info from last result for display
   getValgrindSuppressionInfo(): ValgrindSuppressionInfo | null {
     return this.lastDebugRestartResult?.valgrindSuppressionInfo || null;
+  }
+
+  // ==================== Per-Subprocess-Type Override Methods ====================
+
+  loadSubprocessTypes(): void {
+    this.configService.getSubprocessTypes().subscribe({
+      next: (types) => {
+        this.subprocessTypes = types;
+        const gm = types['graph-matrix'];
+        this.editGraphMatrixEnabled = gm?.enabled ?? true;
+        this.editGraphMatrixHeapSize = gm?.heapSize ?? '32g';
+        const lr = types['learning'];
+        this.editLearningEnabled = lr?.enabled ?? true;
+        this.editLearningHeapSize = lr?.heapSize ?? '16g';
+        this.cdr.markForCheck();
+      },
+      error: () => {
+        // Silently ignore — defaults remain in place
+      }
+    });
+  }
+
+  saveSubprocessTypeConfig(type: string, enabled: boolean, heapSize: string): void {
+    this.isSavingTypeConfig[type] = true;
+    this.cdr.markForCheck();
+    this.configService.updateSubprocessType(type, { enabled, heapSize }).subscribe({
+      next: (types) => {
+        this.subprocessTypes = types;
+        this.isSavingTypeConfig[type] = false;
+        this.showSuccess(`Saved ${type} overrides`);
+        this.cdr.markForCheck();
+      },
+      error: (err) => {
+        this.isSavingTypeConfig[type] = false;
+        this.showError(`Failed to save ${type} overrides: ` + err.message);
+        this.cdr.markForCheck();
+      }
+    });
   }
 }

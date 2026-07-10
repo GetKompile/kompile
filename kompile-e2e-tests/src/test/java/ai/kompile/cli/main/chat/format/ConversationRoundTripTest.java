@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.chat.format;
 
 import ai.kompile.cli.main.chat.ChatHistory;
+import ai.kompile.utils.HashUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
@@ -26,8 +27,6 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -305,13 +304,7 @@ class ConversationRoundTripTest {
         }
     }
 
-    private String sha256Hex(String value) throws NoSuchAlgorithmException {
-        MessageDigest digest = MessageDigest.getInstance("SHA-256");
-        byte[] bytes = digest.digest(value.getBytes(StandardCharsets.UTF_8));
-        StringBuilder sb = new StringBuilder(bytes.length * 2);
-        for (byte b : bytes) {
-            sb.append(String.format("%02x", b & 0xff));
-        }
-        return sb.toString();
+    private String sha256Hex(String value) {
+        return HashUtils.sha256Hex(value);
     }
 }

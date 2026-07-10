@@ -15,6 +15,8 @@
  */
 package ai.kompile.graph.reasoning.fol.semiring;
 
+import java.util.List;
+
 /**
  * The top-k proofs semiring: {@code (ProofSet, merge-truncate, cross-truncate, ∅, {ε})}.
  *
@@ -72,7 +74,7 @@ public final class TopKProofsSemiring implements Semiring<ProofSet> {
     public TopKProofsSemiring(int k) {
         if (k < 1) throw new IllegalArgumentException("k must be ≥ 1, got: " + k);
         this.k = k;
-        this.ONE = ProofSet.singleton(new Proof(1.0, java.util.List.of(), java.util.List.of()), k);
+        this.ONE = ProofSet.singleton(new Proof(1.0, List.of(), List.of()), k);
     }
 
     /** Return the singleton instance using the default k ({@value #DEFAULT_K}). */

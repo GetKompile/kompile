@@ -186,8 +186,10 @@ public abstract class SpladePlusPlusSameDiffEncoder extends SameDiffSparseEncode
             reshapedMaxPooled = maxPooledWeights.reshape(this.anseriniVocabulary.getVocabSize());
 
             Map<String, Float> tokenFloatWeights = new LinkedHashMap<>();
-            for (int i = 0; i < reshapedMaxPooled.length(); i++) {
-                float weight = reshapedMaxPooled.getFloat(i);
+            int weightCount = (int) reshapedMaxPooled.length();
+            float[] weights = toHostFloatVector(reshapedMaxPooled, weightCount);
+            for (int i = 0; i < weightCount; i++) {
+                float weight = weights[i];
                 if (weight > 1e-5) {
                     String token = this.anseriniVocabulary.getToken(i);
                     if (token.equals(SamediffBertVocabulary.CLS_TOKEN) ||
@@ -211,6 +213,19 @@ public abstract class SpladePlusPlusSameDiffEncoder extends SameDiffSparseEncode
             closeArraySafely(reluOutput);
             closeArraySafely(maxPooledWeights);
             closeArraySafely(reshapedMaxPooled);
+        }
+    }
+
+    private float[] toHostFloatVector(INDArray array, int length) {
+        if (array.elementWiseStride() == 1) {
+            return array.data().getFloatsAt(array.offset(), length);
+        }
+        INDArray copy = null;
+        try {
+            copy = array.dup('c');
+            return copy.data().getFloatsAt(copy.offset(), length);
+        } finally {
+            closeArraySafely(copy);
         }
     }
 

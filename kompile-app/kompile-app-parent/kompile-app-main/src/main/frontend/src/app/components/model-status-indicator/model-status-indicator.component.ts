@@ -20,10 +20,13 @@ import { HttpClient, HttpClientModule } from '@angular/common/http';
 import { interval, Subscription, forkJoin, of, catchError } from 'rxjs';
 import { takeUntil, filter } from 'rxjs/operators';
 import { Subject } from 'rxjs';
+import { Router } from '@angular/router';
+import { RouterModule } from '@angular/router';
 import { BaseService } from '../../services/base.service';
 import { ModelRegistryService } from '../../services/model-registry.service';
 import { WebSocketService } from '../../services/websocket.service';
 import { ModelStatusUpdate } from '../../models/api-models';
+import { pauseWhenHidden } from '../../services/visibility.util';
 
 // ==================== Interfaces ====================
 
@@ -182,17 +185,19 @@ export type ModelSourceType = 'staging' | 'archive' | 'default' | 'registry';
 @Component({
   selector: 'app-model-status-indicator',
   standalone: true,
-  imports: [CommonModule, HttpClientModule],
+  imports: [CommonModule, HttpClientModule, RouterModule],
   template: `
     <div class="model-status-bar" [class.expanded]="isExpanded">
       <!-- Main Status Bar (always visible) -->
       <div class="status-bar-content" (click)="toggleExpanded()">
 
         <!-- Model Source Status (Staging or Archive) -->
-        <div class="status-segment source-segment"
+        <div class="status-segment source-segment navigable-segment"
              [class.ready]="isSourceConnected()"
              [class.warning]="isSourceConfigured() && !isSourceConnected()"
-             [class.not-loaded]="!isSourceConfigured()">
+             [class.not-loaded]="!isSourceConfigured()"
+             [title]="isSourceConnected() ? 'Model source connected — click to manage in Model Staging' : (!isSourceConfigured() ? 'No model source configured — open Model Staging to set one up' : 'Model source configured but not connected — open Model Staging to reconnect')"
+             (click)="navigateToStaging($event)">
           <div class="segment-icon">
             <!-- Archive icon -->
             <svg *ngIf="currentSourceType === 'archive'" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -223,7 +228,11 @@ export type ModelSourceType = 'staging' | 'archive' | 'default' | 'registry';
         <div class="divider"></div>
 
         <!-- Encoders from Source -->
-        <div class="status-segment" [class.ready]="denseEncoderCount > 0" [class.not-loaded]="denseEncoderCount === 0">
+        <div class="status-segment navigable-segment"
+             [class.ready]="denseEncoderCount > 0"
+             [class.not-loaded]="denseEncoderCount === 0"
+             [title]="denseEncoderCount > 0 ? 'Embedding encoders available — click to manage in Model Staging' : 'No encoder loaded — open Model Staging to load one'"
+             (click)="navigateToStaging($event)">
           <div class="segment-icon">
             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <circle cx="12" cy="12" r="10"></circle>
@@ -240,7 +249,11 @@ export type ModelSourceType = 'staging' | 'archive' | 'default' | 'registry';
         <div class="divider"></div>
 
         <!-- Cross-Encoders from Source -->
-        <div class="status-segment" [class.ready]="crossEncoderCount > 0" [class.not-loaded]="crossEncoderCount === 0">
+        <div class="status-segment navigable-segment"
+             [class.ready]="crossEncoderCount > 0"
+             [class.not-loaded]="crossEncoderCount === 0"
+             [title]="crossEncoderCount > 0 ? 'Re-ranking cross-encoders available — click to manage in Model Staging' : 'No cross-encoder loaded — open Model Staging to enable re-ranking'"
+             (click)="navigateToStaging($event)">
           <div class="segment-icon">
             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <line x1="4" y1="9" x2="20" y2="9"></line>
@@ -259,10 +272,12 @@ export type ModelSourceType = 'staging' | 'archive' | 'default' | 'registry';
         <div class="divider"></div>
 
         <!-- Active Embedding Status -->
-        <div class="status-segment embedding-segment"
+        <div class="status-segment embedding-segment navigable-segment"
              [class.ready]="modelStatus?.embedding?.initialized && !modelLoading"
              [class.loading]="modelLoading"
-             [class.not-loaded]="!modelStatus?.embedding?.initialized && !modelLoading">
+             [class.not-loaded]="!modelStatus?.embedding?.initialized && !modelLoading"
+             [title]="modelLoading ? 'Embedding model is loading — click to go to Model Staging' : (modelStatus?.embedding?.initialized ? 'Embedding model active — click to manage in Model Staging' : 'No embedding model loaded — open Model Staging to activate one')"
+             (click)="navigateToStaging($event)">
           <div class="segment-icon">
             <!-- Loading spinner when model is loading -->
             <svg *ngIf="modelLoading" class="spin" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -571,6 +586,8 @@ export type ModelSourceType = 'staging' | 'archive' | 'default' | 'registry';
     </div>
   `,
   styles: [`
+    :host { display: block; min-width: 0; }
+
     .model-status-bar {
       background: var(--bg-surface);
       border-radius: 8px;
@@ -643,6 +660,16 @@ export type ModelSourceType = 'staging' | 'archive' | 'default' | 'registry';
     .restart-segment.ready .segment-icon { color: #4caf50; }
     .restart-segment.warning .segment-icon { color: #ff9800; }
     .restart-segment.not-loaded .segment-icon { color: #f44336; }
+
+    .navigable-segment {
+      cursor: pointer;
+      border-radius: 4px;
+      transition: background 0.15s;
+    }
+
+    .navigable-segment:hover {
+      background: rgba(255, 255, 255, 0.08);
+    }
 
     .reranker-segment.ready .segment-icon { color: #4caf50; }
     .reranker-segment.warning .segment-icon { color: #ff9800; }
@@ -1040,6 +1067,16 @@ export type ModelSourceType = 'staging' | 'archive' | 'default' | 'registry';
       width: 30%;
     }
 
+    @media (max-width: 768px) {
+      .status-bar-content { flex-wrap: wrap; gap: 4px; padding: 6px 8px; }
+      .status-segment { flex: 1 1 120px; min-width: 0; }
+      .segment-info { min-width: 0; }
+      .segment-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .divider { display: none; }
+      .expand-icon { margin-left: 0; }
+      .expanded-panel { padding: 12px; }
+    }
+
     @keyframes loading-pulse {
       0% { transform: translateX(-100%); }
       100% { transform: translateX(400%); }
@@ -1115,7 +1152,8 @@ export class ModelStatusIndicatorComponent implements OnInit, OnDestroy, OnChang
     private baseService: BaseService,
     private modelRegistryService: ModelRegistryService,
     private webSocketService: WebSocketService,
-    private cdr: ChangeDetectorRef
+    private cdr: ChangeDetectorRef,
+    private router: Router
   ) {}
 
   ngOnInit(): void {
@@ -1130,8 +1168,10 @@ export class ModelStatusIndicatorComponent implements OnInit, OnDestroy, OnChang
     // Subscribe to WebSocket model status updates for real-time updates
     this.subscribeToModelStatusUpdates();
 
-    // Auto-refresh every 30 seconds as fallback
-    this.refreshSubscription = interval(30000).subscribe(() => {
+    // Auto-refresh every 30 seconds as fallback; pauses while tab is hidden
+    this.refreshSubscription = interval(30000).pipe(
+      pauseWhenHidden()
+    ).subscribe(() => {
       this.refreshAll();
     });
   }
@@ -1295,8 +1335,10 @@ export class ModelStatusIndicatorComponent implements OnInit, OnDestroy, OnChang
    */
   private startLoadingPoll(): void {
     this.stopLoadingPoll();
-    // Poll every 500ms when loading to show progress
-    this.loadingPollSubscription = interval(500).subscribe(() => {
+    // Poll every 500ms when model is actively loading; pauses when tab is hidden
+    this.loadingPollSubscription = interval(500).pipe(
+      pauseWhenHidden()
+    ).subscribe(() => {
       if (!this.modelLoading) {
         this.stopLoadingPoll();
         return;
@@ -1636,6 +1678,16 @@ export class ModelStatusIndicatorComponent implements OnInit, OnDestroy, OnChang
 
   openModelStaging(): void {
     this.openStaging.emit();
+    this.isExpanded = false;
+  }
+
+  /**
+   * Navigate to the Developer Hub Model & Staging section.
+   * Stops click propagation so the bar-level toggleExpanded() handler does not also fire.
+   */
+  navigateToStaging(event: MouseEvent): void {
+    event.stopPropagation();
+    this.router.navigate(['/developer'], { queryParams: { section: 'staging' } });
     this.isExpanded = false;
   }
 

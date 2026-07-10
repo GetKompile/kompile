@@ -13,6 +13,7 @@ import ai.kompile.graph.algorithms.adjacency.AdjacencyView;
 
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -52,7 +53,7 @@ public final class JaccardNodeSimilarity {
     }
 
     public static Map<String, Double> similarityToAll(AdjacencyView view, String node) {
-        java.util.Map<String, Double> out = new java.util.LinkedHashMap<>();
+        Map<String, Double> out = new LinkedHashMap<>();
         for (String other : view.nodeIds()) {
             if (other.equals(node)) continue;
             out.put(other, similarity(view, node, other));

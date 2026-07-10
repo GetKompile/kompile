@@ -118,4 +118,14 @@ class OntologyConformanceValidatorTest {
         assertTrue(OntologyConformanceValidator.withinSourceCardinality(Cardinality.ONE_TO_MANY, 99));
         assertTrue(OntologyConformanceValidator.withinSourceCardinality(null, 99));
     }
+
+    @Test
+    void targetCardinalityBoundsAreEnforced() {
+        assertFalse(OntologyConformanceValidator.withinTargetCardinality(Cardinality.ONE_TO_ONE, 2));
+        assertTrue(OntologyConformanceValidator.withinTargetCardinality(Cardinality.ONE_TO_ONE, 1));
+        assertTrue(OntologyConformanceValidator.withinTargetCardinality(Cardinality.ONE_TO_MANY, 1));
+        assertFalse(OntologyConformanceValidator.withinTargetCardinality(Cardinality.ONE_TO_MANY, 3));
+        assertTrue(OntologyConformanceValidator.withinTargetCardinality(Cardinality.MANY_TO_ONE, 99));
+        assertTrue(OntologyConformanceValidator.withinTargetCardinality(null, 99));
+    }
 }

@@ -27,9 +27,9 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import ai.kompile.utils.HashUtils;
+import jakarta.annotation.PreDestroy;
 import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -445,26 +445,12 @@ public class ContextualChunkEnricher {
     // ═══════════════════════════════════════════════════════════════════════════
 
     private String truncateText(String text, int maxChars) {
-        if (text == null || text.length() <= maxChars) {
-            return text;
-        }
-        return text.substring(0, maxChars) + "...";
+        if (text == null) return null;
+        return ai.kompile.utils.StringUtils.truncate(text, maxChars);
     }
 
     private String hashString(String input) {
-        try {
-            MessageDigest md = MessageDigest.getInstance("SHA-256");
-            byte[] hash = md.digest(input.getBytes(StandardCharsets.UTF_8));
-            StringBuilder hexString = new StringBuilder();
-            for (byte b : hash) {
-                String hex = Integer.toHexString(0xff & b);
-                if (hex.length() == 1) hexString.append('0');
-                hexString.append(hex);
-            }
-            return hexString.toString().substring(0, 16); // Use first 16 chars
-        } catch (NoSuchAlgorithmException e) {
-            return String.valueOf(input.hashCode());
-        }
+        return HashUtils.sha256HexShort(input, 16);
     }
 
     private <T> List<List<T>> partitionList(List<T> list, int batchSize) {
@@ -475,7 +461,7 @@ public class ContextualChunkEnricher {
         return partitions;
     }
 
-    @jakarta.annotation.PreDestroy
+    @PreDestroy
     public void shutdown() {
         executorService.shutdown();
         try {

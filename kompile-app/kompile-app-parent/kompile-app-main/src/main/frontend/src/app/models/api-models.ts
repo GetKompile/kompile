@@ -75,6 +75,25 @@ export interface AddPathRequest {
   chunkerName?: string;
 }
 
+export interface CrawlStartedResponseFields {
+  jobId?: string;
+  crawlJobId?: string;
+  taskId?: string;
+  status?: string;
+  processingStarted?: boolean;
+  crawlStarted?: boolean;
+  processingMode?: 'unified_crawl' | string;
+  sourceCount?: number;
+  graphExtractionEnabled?: boolean;
+  vectorIndexEnabled?: boolean;
+  factSheetId?: number;
+  crawlEndpoints?: {
+    job?: string;
+    active?: string;
+  };
+  crawlProgressTopic?: string;
+}
+
 // YouTube transcript request/response models
 export interface AddYouTubeRequest {
   url: string;
@@ -84,7 +103,7 @@ export interface AddYouTubeRequest {
   rebuildIndex?: boolean;
 }
 
-export interface YouTubeTranscriptResponse {
+export interface YouTubeTranscriptResponse extends CrawlStartedResponseFields {
   message: string;
   videoId: string;
   videoTitle: string;
@@ -94,8 +113,6 @@ export interface YouTubeTranscriptResponse {
   metadata?: { [key: string]: any };
   savedToFile?: string;
   filePath?: string;
-  taskId?: string;
-  processingStarted?: boolean;
   processingNote?: string;
   error?: string;
   details?: string;
@@ -110,13 +127,11 @@ export interface AddTextRequest {
   rebuildIndex?: boolean;
 }
 
-export interface AddTextResponse {
+export interface AddTextResponse extends CrawlStartedResponseFields {
   message: string;
   sourceName: string;
   contentLength: number;
   wordCount: number;
-  taskId?: string;
-  processingStarted?: boolean;
   filePath?: string;
   error?: string;
 }
@@ -132,7 +147,7 @@ export interface AddDiscordRequest {
   saveMessagesFile?: boolean;
 }
 
-export interface DiscordResponse {
+export interface DiscordResponse extends CrawlStartedResponseFields {
   message: string;
   serverId: string;
   serverName?: string;
@@ -171,34 +186,160 @@ export interface AddSlackHistoryRequest {
   chunkerName?: string;      // Chunker to use for processing
 }
 
-export interface SlackResponse {
+export interface SlackResponse extends CrawlStartedResponseFields {
   message: string;
   channelId: string;
   channelName?: string;
-  messageCount: number;
+  messageCount?: number;
   threadCount?: number;
   userCount?: number;
   startDate?: string;
   endDate?: string;
   metadata?: { [key: string]: any };
-  taskId?: string;
-  processingStarted?: boolean;
   processingNote?: string;
   error?: string;
   details?: string;
 }
 
-export interface FileUploadResponse {
+export interface FileUploadResponse extends CrawlStartedResponseFields {
   message: string;
   fileName?: string;
   filePath?: string;
   details?: string;
 }
 
-export interface SimpleMessageResponse {
+export interface FileSourceCrawlFileResult {
+  originalFileName?: string;
+  fileName?: string;
+  filePath?: string;
+  sizeBytes?: number;
+  contentType?: string;
+  accepted: boolean;
+  error?: string;
+  pdfRequiresVlm?: boolean;
+  pdfEffectiveRoute?: string;
+  pdfRoutingMode?: string;
+  pdfContentType?: string;
+  pdfPageCount?: number;
+  pdfImagePagesCount?: number;
+  pdfTextCharCount?: number;
+}
+
+export interface FileSourceCrawlResponse extends CrawlStartedResponseFields {
+  message: string;
+  sourceType?: string;
+  acceptedCount: number;
+  rejectedCount: number;
+  files: FileSourceCrawlFileResult[];
+  batchDirectory?: string;
+  pdfRouting?: {
+    pdfCount: number;
+    requiresVlmCount: number;
+    textOnlyCount: number;
+    unknownCount: number;
+    requiresVlm: boolean;
+    routes: Array<{ [key: string]: any }>;
+  };
+  details?: string;
+  error?: string;
+}
+
+export interface SimpleMessageResponse extends CrawlStartedResponseFields {
   message: string;
   details?: string;
   error?: string;
+}
+
+export interface SingleSourceCrawlPreviewRequest {
+  sourceType: string;
+  label?: string;
+  pathOrUrl?: string;
+  content?: string;
+  loaderName?: string;
+  chunkerName?: string;
+  maxDepth?: number;
+  maxDocuments?: number;
+  language?: string;
+  properties?: { [key: string]: any };
+}
+
+export interface SingleSourceCrawlPreviewItem {
+  title?: string;
+  pathOrUrl?: string;
+  sourceType?: string;
+  contentType?: string;
+  contentLength?: number;
+  contentHash?: string;
+  depth?: number;
+  loaderName?: string;
+  documentCount: number;
+  estimatedChunkCount: number;
+  characterCount: number;
+  previewText?: string;
+  metadata?: { [key: string]: any };
+}
+
+export interface SingleSourceGraphEntityPreview {
+  id?: string;
+  name?: string;
+  type?: string;
+  aliases?: string[];
+  description?: string;
+  confidence?: number;
+  sourceDocumentId?: string;
+  sourceTitle?: string;
+  properties?: { [key: string]: string };
+}
+
+export interface SingleSourceGraphRelationPreview {
+  source?: string;
+  target?: string;
+  type?: string;
+  sourceName?: string;
+  targetName?: string;
+  description?: string;
+  confidence?: number;
+  sourceDocumentId?: string;
+  sourceTitle?: string;
+  properties?: { [key: string]: string };
+  occurredAt?: string;
+}
+
+export interface SingleSourceGraphExtractionPreview {
+  dryRun: boolean;
+  available: boolean;
+  enabled: boolean;
+  extractionRun: boolean;
+  status: string;
+  documentsAnalyzed: number;
+  truncatedDocumentCount: number;
+  entityCount: number;
+  relationCount: number;
+  modelName?: string;
+  entities: SingleSourceGraphEntityPreview[];
+  relations: SingleSourceGraphRelationPreview[];
+  warnings?: string[];
+}
+
+export interface SingleSourceCrawlPreviewResponse {
+  previewId: string;
+  dryRun: boolean;
+  sourceType: string;
+  label?: string;
+  status: string;
+  crawlerUsed: boolean;
+  crawlerName?: string;
+  loaderName?: string;
+  chunkerName?: string;
+  discoveredCount: number;
+  documentCount: number;
+  estimatedChunkCount: number;
+  failedCount: number;
+  skippedCount: number;
+  truncated: boolean;
+  items: SingleSourceCrawlPreviewItem[];
+  warnings?: string[];
+  graphExtraction?: SingleSourceGraphExtractionPreview;
 }
 
 export interface LoaderInfo {

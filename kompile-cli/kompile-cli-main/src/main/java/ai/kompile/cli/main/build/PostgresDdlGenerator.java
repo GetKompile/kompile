@@ -19,6 +19,7 @@ package ai.kompile.cli.main.build;
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.util.Date;
 
 /**
  * Generates SQL DDL schema files for PostgreSQL/PostgresML integration.
@@ -51,7 +52,7 @@ public class PostgresDdlGenerator {
         File pgmlSchemaFile = new File(resourcesDir, "pgml-schema.sql");
         try (FileWriter writer = new FileWriter(pgmlSchemaFile)) {
             writer.write("-- PostgresML Comprehensive Schema Initialization\n");
-            writer.write("-- Generated on: " + new java.util.Date() + "\n");
+            writer.write("-- Generated on: " + new Date() + "\n");
             writer.write(
                     "-- COMPREHENSIVE FIX: Creates ALL possible function signatures for PostgreSQL string types\n");
             writer.write("-- This addresses PostgreSQL's strict function overloading rules\n\n");
@@ -291,7 +292,7 @@ public class PostgresDdlGenerator {
         File schemaFile = new File(resourcesDir, "schema.sql");
         try (FileWriter writer = new FileWriter(schemaFile)) {
             writer.write("-- Schema initialization for Kompile RAG application\n");
-            writer.write("-- Generated on: " + new java.util.Date() + "\n");
+            writer.write("-- Generated on: " + new Date() + "\n");
             writer.write("-- This script is designed to be idempotent and safe to run multiple times\n");
             writer.write("-- IMPORTANT: This script runs AFTER pgml-schema.sql (if present)\n\n");
 
@@ -400,7 +401,7 @@ public class PostgresDdlGenerator {
         File dataFile = new File(resourcesDir, "data.sql");
         try (FileWriter writer = new FileWriter(dataFile)) {
             writer.write("-- Initial data for Kompile RAG application\n");
-            writer.write("-- Generated on: " + new java.util.Date() + "\n\n");
+            writer.write("-- Generated on: " + new Date() + "\n\n");
 
             writer.write("-- Insert default collection if it doesn't exist\n");
             writer.write("INSERT INTO collections (name, description) \n");

@@ -27,6 +27,7 @@ import ai.kompile.graph.reasoning.fol.FactStore;
 import ai.kompile.graph.reasoning.fol.InferredFact;
 import ai.kompile.graph.reasoning.fol.InferredFactStore;
 import ai.kompile.graph.reasoning.fol.MebnInferenceService;
+import ai.kompile.graph.reasoning.hybrid.HybridReasoner;
 import ai.kompile.graph.reasoning.learning.HybridConsensusTrainer;
 import ai.kompile.graph.reasoning.learning.MebnWeightLearner;
 import ai.kompile.graph.reasoning.learning.PslWeightLearningService;
@@ -322,9 +323,10 @@ public class IncrementalReasoningOrchestrator {
     private final ConcurrentHashMap<Long, MTheory> mebnTheories = new ConcurrentHashMap<>();
 
     /**
-     * Per-factSheet MEBN ReasoningGraphs registered by callers alongside the MTheory.
+     * Per-factSheet reasoning graphs used by semantic consensus and, when registered, MEBN.
+     * Kept independently from MEBN theories so KGE can improve PSL-only cascades as well.
      */
-    private final ConcurrentHashMap<Long, ReasoningGraph> mebnGraphs = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Long, ReasoningGraph> reasoningGraphs = new ConcurrentHashMap<>();
 
     /**
      * Optional: MEBN weight persistence adapter (Spring-injected; null in plain-Java tests).
@@ -544,10 +546,25 @@ public class IncrementalReasoningOrchestrator {
      * @param graph       the reasoning graph the theory grounds over; must not be null
      */
     public void registerMTheory(long factSheetId, MTheory theory, ReasoningGraph graph) {
-        if (theory != null && graph != null) {
+        if (theory != null) {
             mebnTheories.put(factSheetId, theory);
-            mebnGraphs.put(factSheetId, graph);
+        }
+        registerReasoningGraph(factSheetId, graph);
+        if (theory != null && graph != null) {
             log.debug("IncrementalReasoningOrchestrator: registered MTheory for factSheet={}", factSheetId);
+        }
+    }
+
+    /**
+     * Register a graph for online hybrid consensus without requiring an MEBN theory.
+     * Replacing the graph is atomic; the next cascade observes newly persisted embeddings.
+     */
+    public void registerReasoningGraph(long factSheetId, ReasoningGraph graph) {
+        if (graph != null) {
+            reasoningGraphs.put(factSheetId, graph);
+            log.debug("IncrementalReasoningOrchestrator: registered reasoning graph for "
+                            + "factSheet={} (entities={}, relations={})",
+                    factSheetId, graph.entityCount(), graph.relationCount());
         }
     }
 
@@ -992,9 +1009,10 @@ public class IncrementalReasoningOrchestrator {
         });
         long cascadeCount = cascadeCounters.get(factSheetId).incrementAndGet();
         Map<String, Double> observedTargets = buildObservedTargets(factStore);
-        Map<String, Double> consensusTargets = kbCfg().isLearningEnabled()
-                ? deriveHybridConsensus(result.values(), observedTargets)
-                : observedTargets;
+        HybridConsensusTrainer.ContextualConsensus contextualConsensus = kbCfg().isLearningEnabled()
+                ? deriveHybridConsensus(factSheetId, result.values(), observedTargets)
+                : HybridConsensusTrainer.ContextualConsensus.observedOnly(observedTargets);
+        Map<String, Double> consensusTargets = contextualConsensus.targets();
 
         // CONSENSUS event: emit after the hybrid-consensus targets are derived so the UI shows
         // the consensus blending step.
@@ -1002,6 +1020,10 @@ public class IncrementalReasoningOrchestrator {
             Map<String, Object> consData = new java.util.LinkedHashMap<>();
             consData.put("observedTargets", observedTargets.size());
             consData.put("consensusTargets", consensusTargets.size());
+            consData.put("semanticConsensus", contextualConsensus.semanticConsensus());
+            consData.put("semanticAnchors", contextualConsensus.semanticAnchorCount());
+            consData.put("inferredSemanticAnchors", contextualConsensus.inferredSemanticAnchorCount());
+            consData.put("rankedEntities", contextualConsensus.ranking().size());
             publishProgress(factSheetId, runId, trigger,
                     GroundingProgressEvent.STAGE_CONSENSUS, GroundingProgressEvent.STATUS_DONE,
                     "Hybrid consensus derived: " + consensusTargets.size() + " target(s)", 12, consData);
@@ -1084,6 +1106,7 @@ public class IncrementalReasoningOrchestrator {
                                         ruleTexts, observedAtomMap, targetAtomList, softTargets,
                                         programKey, weightStoreDirPath,
                                         1, kbCfg().getPslLearningRate(),
+                                        1e-4, 64, 0L, 0.1, 0.5, null,
                                         pslCallback);
 
                         if (pslResult.success()) {
@@ -1283,7 +1306,7 @@ public class IncrementalReasoningOrchestrator {
         publishProgress(factSheetId, runId, trigger,
                 GroundingProgressEvent.STAGE_EPOCH, GroundingProgressEvent.STATUS_STARTED,
                 "Marking epoch for factSheet=" + factSheetId, 10, null);
-        kbGroundingService.markEpoch(factSheetId, runId, newIndex);
+        kbGroundingService.markEpoch(factSheetId, runId, newIndex, programForSnapshot.rules());
         publishProgress(factSheetId, runId, trigger,
                 GroundingProgressEvent.STAGE_EPOCH, GroundingProgressEvent.STATUS_DONE,
                 "Epoch marked: runId=" + runId, 10, null);
@@ -1297,7 +1320,7 @@ public class IncrementalReasoningOrchestrator {
         // the SameDiff step is offloaded to the bounded learning subprocess (same memory cap as KGE).
         if (kbCfg().isLearningEnabled() && mebnWeightAdapter != null) {
             MTheory theory = mebnTheories.get(factSheetId);
-            ReasoningGraph mebnGraph = mebnGraphs.get(factSheetId);
+            ReasoningGraph mebnGraph = reasoningGraphs.get(factSheetId);
             if (theory != null && mebnGraph != null && !result.values().isEmpty()) {
                 publishProgress(factSheetId, runId, trigger,
                         GroundingProgressEvent.STAGE_MEBN_LEARNING, GroundingProgressEvent.STATUS_STARTED,
@@ -1805,33 +1828,36 @@ public class IncrementalReasoningOrchestrator {
     }
 
     /**
-     * Derive the joint-training consensus signal CHEAPLY enough to run every cascade: aggregate the
-     * cascade's MAP posteriors into per-entity structural importance ({@link #entityImportanceFromMap})
-     * and pull the observed extracted facts toward it ({@link HybridConsensusTrainer#consensusTargets}).
-     * This is the structural component of the hybrid ranking, computed from the inference we ALREADY ran,
-     * so PSL (STEP 5b) and MEBN (STEP 9) co-train against ONE signal with no extra inference. The observed
-     * facts anchor the target (so it is NOT self-training on the MAP alone — observed ≠ MAP); the
-     * structural importance reweights toward central entities. Falls back to the raw observed targets on
-     * any failure. The semantic/embedding component is refreshed by the separate offline KGE job — not
-     * per cascade — and the full structural⊕semantic hybrid still applies at query/explain time.
+     * Derive a joint structural-semantic training signal without rerunning inference. The structural
+     * component is aggregated from this cascade's MAP posteriors; the semantic component resolves
+     * direct, relation, and nearby graph embeddings from the latest registered reasoning graph.
      */
-    private Map<String, Double> deriveHybridConsensus(Map<String, Double> mapValues, Map<String, Double> observed) {
+    private HybridConsensusTrainer.ContextualConsensus deriveHybridConsensus(
+            long factSheetId, Map<String, Double> mapValues, Map<String, Double> observed) {
         if (observed == null || observed.isEmpty()) {
-            return observed == null ? new HashMap<>() : observed;
+            return HybridConsensusTrainer.ContextualConsensus.observedOnly(
+                    observed == null ? Map.of() : observed);
         }
         try {
             Map<String, Double> entityScores = entityImportanceFromMap(mapValues);
-            if (entityScores.isEmpty()) {
-                return observed;
-            }
-            Map<String, Double> consensus = HybridConsensusTrainer.consensusTargets(
-                    observed, entityScores, kbCfg().getHybridConsensusWeight());
-            log.debug("Consensus: {} entity scores from MAP -> consensus over {} targets (w={})",
-                    entityScores.size(), consensus.size(), kbCfg().getHybridConsensusWeight());
+            ReasoningGraph graph = reasoningGraphs.get(factSheetId);
+            HybridConsensusTrainer.ContextualConsensus consensus =
+                    HybridConsensusTrainer.contextualConsensus(
+                            graph,
+                            observed,
+                            entityScores,
+                            Map.of(),
+                            new HybridReasoner().semanticResolutionHops(2),
+                            kbCfg().getHybridConsensusWeight());
+            log.debug("Consensus: {} structural entity scores, semantic={}, anchors={} "
+                            + "(inferred={}) -> {} targets (w={})",
+                    entityScores.size(), consensus.semanticConsensus(),
+                    consensus.semanticAnchorCount(), consensus.inferredSemanticAnchorCount(),
+                    consensus.targets().size(), kbCfg().getHybridConsensusWeight());
             return consensus;
         } catch (Exception e) {
-            log.warn("Consensus derivation failed — using observed targets: {}", e.getMessage());
-            return observed;
+            log.warn("Consensus derivation failed - using observed targets: {}", e.getMessage());
+            return HybridConsensusTrainer.ContextualConsensus.observedOnly(observed);
         }
     }
 

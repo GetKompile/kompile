@@ -29,6 +29,8 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -66,15 +68,25 @@ public class ClaudeCodeAdapter implements ChatSourceAdapter {
 
     @Override
     public List<ChatSessionSummary> list() throws IOException {
+        return list(-1);
+    }
+
+    @Override
+    public List<ChatSessionSummary> list(int limit) throws IOException {
         Path dir = rootDir();
         if (!Files.isDirectory(dir)) return Collections.emptyList();
-        List<ChatSessionSummary> out = new ArrayList<>();
+        List<Path> files;
         try (Stream<Path> stream = Files.walk(dir)) {
-            stream.filter(Files::isRegularFile)
+            files = stream.filter(Files::isRegularFile)
                     .filter(p -> p.toString().endsWith(".jsonl"))
-                    .forEach(path -> out.add(toSummary(path)));
+                    .collect(Collectors.toCollection(ArrayList::new));
         }
-        out.sort((a, b) -> Long.compare(b.lastModifiedMillis(), a.lastModifiedMillis()));
+        files.sort((a, b) -> Long.compare(ChatAdapterSupport.lastModified(b), ChatAdapterSupport.lastModified(a)));
+        int effectiveLimit = limit < 0 ? files.size() : Math.min(limit, files.size());
+        List<ChatSessionSummary> out = new ArrayList<>(effectiveLimit);
+        for (int i = 0; i < effectiveLimit; i++) {
+            out.add(toSummary(files.get(i)));
+        }
         return out;
     }
 
@@ -102,6 +114,18 @@ public class ClaudeCodeAdapter implements ChatSourceAdapter {
             }
         }
         return Optional.empty();
+    }
+
+    @Override
+    public String resolveTitle(String sessionId) throws IOException {
+        Optional<Path> file = findSessionFile(sessionId);
+        if (file.isEmpty()) {
+            return sessionId;
+        }
+        String title = readMeta(file.get()).title();
+        return title == null || title.isBlank() || "(untitled)".equals(title)
+                ? sessionId
+                : title;
     }
 
     protected Optional<Path> findSessionFile(String sessionId) throws IOException {
@@ -146,7 +170,7 @@ public class ClaudeCodeAdapter implements ChatSourceAdapter {
                     String content = ChatAdapterSupport.extractContent(node);
                     if (role != null && content != null && !content.isBlank()) {
                         ArrayNode rawBlocks = extractRawContentBlocks(node);
-                        out.add(new ChatTurn(role, content, null, rawBlocks));
+                        out.add(new ChatTurn(role, content, extractTimestamp(node), rawBlocks));
                     }
                 } catch (Exception ignore) {
                 }
@@ -174,6 +198,35 @@ public class ClaudeCodeAdapter implements ChatSourceAdapter {
         return null;
     }
 
+    private static Instant extractTimestamp(JsonNode node) {
+        JsonNode timestamp = node.path("timestamp");
+        if (timestamp.isMissingNode() || timestamp.isNull()) {
+            timestamp = node.path("message").path("timestamp");
+        }
+        if (timestamp.isNumber()) {
+            long value = timestamp.asLong();
+            return value < 100_000_000_000L
+                    ? Instant.ofEpochSecond(value)
+                    : Instant.ofEpochMilli(value);
+        }
+        if (timestamp.isTextual()) {
+            String raw = timestamp.asText();
+            try {
+                return Instant.parse(raw);
+            } catch (DateTimeParseException ignore) {
+                try {
+                    long value = Long.parseLong(raw);
+                    return value < 100_000_000_000L
+                            ? Instant.ofEpochSecond(value)
+                            : Instant.ofEpochMilli(value);
+                } catch (NumberFormatException ignored) {
+                    return null;
+                }
+            }
+        }
+        return null;
+    }
+
     private ChatSessionSummary toSummary(Path path) {
         SessionMeta meta = readMeta(path);
         String fname = path.getFileName().toString();
@@ -189,12 +242,13 @@ public class ClaudeCodeAdapter implements ChatSourceAdapter {
                 turns, ChatAdapterSupport.lastModified(path), meta.workingDirectory());
     }
 
-    /** Reads the canonical session id and display title (custom-title &gt; slug &gt; agent-name) from a file. */
+    /** Reads the canonical session id and display title (custom title, slug, agent name, then first user message). */
     private SessionMeta readMeta(Path path) {
         String sessionId = null;
         String customTitle = null;
         String slug = null;
         String agentName = null;
+        String firstUserText = null;
         String cwd = null;
         try (BufferedReader reader = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
             String line;
@@ -211,6 +265,13 @@ public class ClaudeCodeAdapter implements ChatSourceAdapter {
                         if (c != null && !c.isBlank()) cwd = c;
                     }
                     String type = node.path("type").asText("");
+                    if (firstUserText == null && "user".equals(type)) {
+                        String candidate = ChatAdapterSupport.extractContent(node);
+                        if (candidate != null && !candidate.isBlank()
+                                && !candidate.startsWith("[tool-result]")) {
+                            firstUserText = summarizeTitle(candidate);
+                        }
+                    }
                     if ("custom-title".equals(type)) {
                         String ct = node.path("customTitle").asText(null);
                         if (ct != null && !ct.isBlank()) customTitle = ct;
@@ -228,8 +289,17 @@ public class ClaudeCodeAdapter implements ChatSourceAdapter {
         String title = customTitle != null ? customTitle
                 : slug != null ? slug
                 : agentName != null ? agentName
+                : firstUserText != null ? firstUserText
                 : "(untitled)";
         return new SessionMeta(sessionId, title, slug, cwd);
+    }
+
+    private static String summarizeTitle(String content) {
+        String normalized = content.replaceAll("\\s+", " ").trim();
+        if (normalized.length() <= 120) {
+            return normalized;
+        }
+        return normalized.substring(0, 117) + "...";
     }
 
     private record SessionMeta(String sessionId, String title, String slug, String workingDirectory) {

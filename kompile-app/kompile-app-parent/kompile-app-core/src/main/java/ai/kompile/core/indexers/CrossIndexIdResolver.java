@@ -20,7 +20,7 @@ import java.util.List;
 /**
  * Resolves graph node identifiers to vector/keyword index document IDs.
  * <p>
- * During crawl indexing, SNIPPET graph nodes receive a synthetic external ID
+ * During crawl indexing, SNIPPET graph nodes receive a derived external ID
  * (e.g. "chunk:jobId:path:index"), while the vector store and keyword index
  * store documents under a different Spring AI auto-generated UUID. This interface
  * bridges that gap so that services operating on graph nodes can clean up

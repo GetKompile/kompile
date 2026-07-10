@@ -25,7 +25,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Read the current session's todo/task list.
+ * Read the current project's persisted todo/task list.
  * Comparable to OpenCode's TodoReadTool.
  */
 public class TodoReadTool implements CliTool {
@@ -35,7 +35,7 @@ public class TodoReadTool implements CliTool {
 
     @Override
     public String description() {
-        return "Read the current session's task list showing all tasks with their status. " +
+        return "Read the current project's persisted task list showing all tasks with their status. " +
                 "Use this to check progress on multi-step work.";
     }
 
@@ -56,10 +56,10 @@ public class TodoReadTool implements CliTool {
     public ToolResult execute(JsonNode params, ToolContext context) throws ToolExecutionException {
         context.checkPermission(permissionKey(), "Read todo list");
 
-        List<TodoWriteTool.TodoItem> todos = TodoWriteTool.getTodos(context.getSessionId());
+        List<TodoWriteTool.TodoItem> todos = TodoWriteTool.getTodos(context);
 
         if (todos.isEmpty()) {
-            return ToolResult.success("No tasks in the current session.");
+            return ToolResult.success("No tasks in the current project.");
         }
 
         StringBuilder sb = new StringBuilder();

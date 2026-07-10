@@ -55,6 +55,10 @@ class ExcelFormulaGraphExtractorTest {
             assertEquals(1, formulas.size());
             assertEquals("Data!C1", formulas.get(0).getCellReference());
             assertEquals("A1+B1", formulas.get(0).getFormula());
+            assertEquals("NUMERIC", formulas.get(0).getEvaluatedCellType());
+            assertEquals(30.0, formulas.get(0).getEvaluatedNumericValue(), 1.0e-9);
+            assertEquals(30.0, (Double) formulas.get(0).getRawValue(), 1.0e-9);
+            assertEquals(10.0, (Double) graph.getCells().get("Data!A1").getRawValue(), 1.0e-9);
 
             // Should have dependencies: C1 -> A1, C1 -> B1
             List<FormulaDependency> deps = graph.getDependencies();
@@ -66,6 +70,26 @@ class ExcelFormulaGraphExtractorTest {
                     .collect(Collectors.toList());
             assertTrue(referencedCells.contains("Data!A1"));
             assertTrue(referencedCells.contains("Data!B1"));
+        }
+    }
+
+    @Test
+    void capturesRawNumericValueAndNumberFormat() throws Exception {
+        try (XSSFWorkbook workbook = new XSSFWorkbook()) {
+            Sheet sheet = workbook.createSheet("Metrics");
+            Cell cell = sheet.createRow(0).createCell(0);
+            cell.setCellValue(0.25);
+            CellStyle style = workbook.createCellStyle();
+            style.setDataFormat(workbook.createDataFormat().getFormat("0.0%"));
+            cell.setCellStyle(style);
+
+            SpreadsheetGraph graph =
+                    new ExcelFormulaGraphExtractor(workbook).extract(workbook, "metrics.xlsx");
+            CellNode captured = graph.getCells().get("Metrics!A1");
+
+            assertEquals(0.25, (Double) captured.getRawValue(), 1.0e-9);
+            assertEquals("0.0%", captured.getNumberFormat());
+            assertNotNull(captured.getDataFormatIndex());
         }
     }
 
@@ -179,6 +203,10 @@ class ExcelFormulaGraphExtractorTest {
                     .collect(Collectors.toList());
             assertEquals(1, formulaEntities.size());
             assertTrue(formulaEntities.get(0).getDescription().contains("A1+B1"));
+            assertEquals(30.0,
+                    ((Number) formulaEntities.get(0).getMetadata()
+                            .get("evaluatedNumericValue")).doubleValue(),
+                    1.0e-9);
 
             // Verify relationships include DEPENDS_ON
             List<Relationship> dependsOn = coreGraph.getRelationships().stream()

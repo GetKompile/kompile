@@ -22,6 +22,7 @@ import ai.kompile.process.discovery.mining.causal.ProcessCausalAnalyzer;
 import ai.kompile.process.discovery.mining.causal.ProcessPslInference;
 import ai.kompile.process.discovery.mining.conformance.ConformanceResult;
 import ai.kompile.process.discovery.mining.declare.DeclareConstraint;
+import ai.kompile.process.discovery.mining.entail.ProcessEntailmentResult;
 import ai.kompile.process.discovery.mining.miner.HeuristicsNet;
 import ai.kompile.process.discovery.mining.perf.PerformanceAnalysis;
 import ai.kompile.process.discovery.mining.rules.MinedRulePersistenceService;
@@ -34,6 +35,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -69,6 +71,22 @@ public class MiningDiscoveryController {
             @RequestParam(required = false) String anchorType) {
         ProcessSuggestion suggestion = miningService.discoverForFactSheet(factSheetId, noise, anchorType);
         return suggestion == null ? ResponseEntity.noContent().build() : ResponseEntity.ok(suggestion);
+    }
+
+    /**
+     * Mine every fact sheet that currently has a graph. The UI's Run Discovery calls this alongside
+     * the legacy engine, so mined — and entailed — suggestions land in the suggestion store and show
+     * up on the same cards.
+     */
+    @PostMapping("/discover-all")
+    public ResponseEntity<Map<String, Object>> discoverAll(
+            @RequestParam(defaultValue = "0.0") double noise,
+            @RequestParam(required = false) String anchorType) {
+        Map<Long, String> discovered = miningService.discoverAll(noise, anchorType);
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("count", discovered.size());
+        response.put("suggestionsByFactSheet", discovered);
+        return ResponseEntity.ok(response);
     }
 
     /** Inspect the intermediate artifacts (event log stats, directly-follows arcs, process tree). */
@@ -136,6 +154,22 @@ public class MiningDiscoveryController {
             @RequestParam(defaultValue = "0.9") double minConfidence,
             @RequestParam(required = false) String anchorType) {
         return miningService.declareConstraints(factSheetId, minSupport, minConfidence, anchorType);
+    }
+
+    /**
+     * The entailment view: Declare constraints + directly-follows evidence compiled into one HL-MRF
+     * program over {@code Precedes}, settled by the reasoning engine — including transitively
+     * derived orderings never directly observed, antisymmetry/NCE suppression, and per-pair
+     * temporal verdicts against the log's valid time. Pure inspection; {@link #discover} runs the
+     * same pass and additionally asserts KB facts and materializes control-flow edges.
+     */
+    @GetMapping("/entailment")
+    public ProcessEntailmentResult entailment(
+            @RequestParam Long factSheetId,
+            @RequestParam(defaultValue = "0.2") double minSupport,
+            @RequestParam(defaultValue = "0.66") double minConfidence,
+            @RequestParam(required = false) String anchorType) {
+        return miningService.entailment(factSheetId, anchorType, minSupport, minConfidence);
     }
 
     /** Mermaid diagram source (directly-follows process map + process-tree blocks) for rendering. */

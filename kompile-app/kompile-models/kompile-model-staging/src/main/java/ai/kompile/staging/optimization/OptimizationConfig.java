@@ -22,6 +22,8 @@ import lombok.Data;
 
 import java.util.Arrays;
 import java.util.EnumSet;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Set;
 
 @Data
@@ -61,6 +63,13 @@ public class OptimizationConfig {
     @Builder.Default
     private boolean createBackup = true;
 
+    /**
+     * Real validation arrays keyed by SameDiff placeholder name.
+     * Relative paths resolve against the optimized model file's parent directory.
+     */
+    @Builder.Default
+    private Map<String, String> sampleInputs = new LinkedHashMap<>();
+
     public OptimizationConfig() {
         // Default optimizations matching GraphOptimizer.defaultOptimizations()
         // (all passes except hardware-specific cuDNN and quantization)
@@ -89,6 +98,7 @@ public class OptimizationConfig {
         );
         this.quantizePerChannel = false;
         this.createBackup = true;
+        this.sampleInputs = new LinkedHashMap<>();
     }
 
     public void enableOnly(OptimizationService.OptimizationType... types) {

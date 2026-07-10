@@ -21,6 +21,7 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -39,6 +40,22 @@ public class RelationshipTypeDefinition {
     private String targetEntityType;
     private String description;
     private Cardinality cardinality;
+    /** Canonical relation label emitted when observed aliases or inverse directions are normalized. */
+    private String canonicalType;
+    /** Relation labels observed in crawls that should normalize to {@link #canonicalType}. */
+    private List<String> observedTypes;
+    /** Inverse relation labels observed in crawls that should normalize to {@link #canonicalType}. */
+    private List<String> inverseTypes;
+    /** Generic action categories carried by this relationship, e.g. APPROVAL, ESCALATION, ROUTING. */
+    private List<String> actionCategories;
+    /** Generic control signatures carried by this relationship, e.g. SOX_C04 or variance_threshold_gate. */
+    private List<String> controlSignatures;
+    /** Process-policy metadata exposed to discovery without hardcoding domain-specific labels. */
+    private Map<String, Object> policyMetadata;
+    /** Whether an observed edge with source/target types reversed should be emitted in canonical direction. */
+    private Boolean flipWhenSwapped;
+    /** Whether already-canonical edges should still be re-emitted with normalization provenance. */
+    private Boolean emitAlreadyCanonical;
     private Map<String, Object> metadata;
 
     /**

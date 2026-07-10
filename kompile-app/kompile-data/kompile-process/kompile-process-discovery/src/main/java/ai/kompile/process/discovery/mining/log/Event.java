@@ -16,6 +16,7 @@
 
 package ai.kompile.process.discovery.mining.log;
 
+import java.io.Serializable;
 import java.time.LocalDateTime;
 import java.util.Map;
 
@@ -41,7 +42,9 @@ public record Event(
         String activity,
         LocalDateTime timestamp,
         String graphNodeId,
-        Map<String, Object> attributes) {
+        Map<String, Object> attributes) implements Serializable {
+
+    private static final long serialVersionUID = 1L;
 
     public Event {
         if (activity == null || activity.isBlank()) {

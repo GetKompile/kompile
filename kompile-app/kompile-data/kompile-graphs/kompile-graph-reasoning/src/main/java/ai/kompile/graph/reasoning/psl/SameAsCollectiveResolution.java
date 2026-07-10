@@ -10,6 +10,7 @@
 package ai.kompile.graph.reasoning.psl;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -263,7 +264,7 @@ public final class SameAsCollectiveResolution {
          * @return raw values map (includes all atoms, not just SameAs)
          */
         public Map<String, Double> values() {
-            return java.util.Collections.unmodifiableMap(values);
+            return Collections.unmodifiableMap(values);
         }
 
         /**
@@ -272,7 +273,7 @@ public final class SameAsCollectiveResolution {
          * @return unmodifiable list of candidates
          */
         public List<String> candidates() {
-            return java.util.Collections.unmodifiableList(candidates);
+            return Collections.unmodifiableList(candidates);
         }
     }
 }

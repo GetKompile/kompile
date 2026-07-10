@@ -34,6 +34,15 @@ import java.util.*;
  */
 public class IndexDatabase implements AutoCloseable {
 
+    /**
+     * Stamped into {@code PRAGMA user_version} once {@link #ensureSchema()}
+     * has run. Opens against a DB already at this version skip schema setup
+     * entirely — the DDL churn plus two full-table COUNT checks used to run
+     * on every open, which dominated read-action latency on large indexes.
+     * Bump this when the schema changes so existing DBs re-run the migration.
+     */
+    private static final int SCHEMA_VERSION = 2;
+
     private final Connection conn;
 
     private IndexDatabase(Connection conn) {
@@ -50,10 +59,28 @@ public class IndexDatabase implements AutoCloseable {
             stmt.execute("PRAGMA journal_mode=WAL");
             stmt.execute("PRAGMA synchronous=NORMAL");
             stmt.execute("PRAGMA cache_size=-8000"); // 8MB cache
+            stmt.execute("PRAGMA busy_timeout=5000"); // wait instead of SQLITE_BUSY across processes
+            stmt.execute("PRAGMA temp_store=MEMORY");
         }
         IndexDatabase db = new IndexDatabase(conn);
-        db.ensureSchema();
+        if (db.schemaVersion() != SCHEMA_VERSION) {
+            db.ensureSchema();
+            db.setSchemaVersion(SCHEMA_VERSION);
+        }
         return db;
+    }
+
+    private int schemaVersion() throws SQLException {
+        try (Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery("PRAGMA user_version")) {
+            return rs.next() ? rs.getInt(1) : 0;
+        }
+    }
+
+    private void setSchemaVersion(int version) throws SQLException {
+        try (Statement stmt = conn.createStatement()) {
+            stmt.execute("PRAGMA user_version=" + version);
+        }
     }
 
     private void ensureSchema() throws SQLException {
@@ -263,27 +290,38 @@ public class IndexDatabase implements AutoCloseable {
      * Delete a file and all its entities and relations from the index.
      */
     public void deleteFile(String relPath) throws SQLException {
-        // Delete FTS entries for this file's entities
-        try (PreparedStatement ps = conn.prepareStatement(
-                "DELETE FROM entities_fts WHERE rowid IN " +
-                "(SELECT id FROM entities_meta WHERE rel_path = ?)")) {
-            ps.setString(1, relPath);
-            ps.executeUpdate();
-        }
-        try (PreparedStatement ps = conn.prepareStatement(
-                "DELETE FROM entities_meta WHERE rel_path = ?")) {
-            ps.setString(1, relPath);
-            ps.executeUpdate();
-        }
-        try (PreparedStatement ps = conn.prepareStatement(
-                "DELETE FROM relations WHERE file_path = ?")) {
-            ps.setString(1, relPath);
-            ps.executeUpdate();
-        }
-        try (PreparedStatement ps = conn.prepareStatement(
-                "DELETE FROM file_status WHERE rel_path = ?")) {
-            ps.setString(1, relPath);
-            ps.executeUpdate();
+        deleteFiles(List.of(relPath));
+    }
+
+    /**
+     * Bulk variant of {@link #deleteFile}: removes many files' entities,
+     * relations and status rows with IN-chunked statements (4 statements per
+     * ~500 files instead of 4 per file).
+     */
+    public void deleteFiles(Collection<String> relPaths) throws SQLException {
+        if (relPaths == null || relPaths.isEmpty()) return;
+        List<String> paths = List.copyOf(relPaths);
+        int batchSize = 500;
+        for (int start = 0; start < paths.size(); start += batchSize) {
+            List<String> batch = paths.subList(start, Math.min(start + batchSize, paths.size()));
+            String placeholders = String.join(",", Collections.nCopies(batch.size(), "?"));
+
+            // FTS rows first — the subquery needs entities_meta still populated
+            String[] statements = {
+                    "DELETE FROM entities_fts WHERE rowid IN " +
+                            "(SELECT id FROM entities_meta WHERE rel_path IN (" + placeholders + "))",
+                    "DELETE FROM entities_meta WHERE rel_path IN (" + placeholders + ")",
+                    "DELETE FROM relations WHERE file_path IN (" + placeholders + ")",
+                    "DELETE FROM file_status WHERE rel_path IN (" + placeholders + ")"
+            };
+            for (String sql : statements) {
+                try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                    for (int i = 0; i < batch.size(); i++) {
+                        ps.setString(i + 1, batch.get(i));
+                    }
+                    ps.executeUpdate();
+                }
+            }
         }
     }
 
@@ -305,16 +343,22 @@ public class IndexDatabase implements AutoCloseable {
 
     /**
      * Insert entities for a file. Call deleteFile() first to remove old entries.
+     *
+     * <p>Row ids are pre-allocated from {@code sqlite_sequence} so both the
+     * meta and FTS inserts run as JDBC batches — the previous per-entity
+     * executeUpdate + getGeneratedKeys pair cost two round trips per entity
+     * and dominated index write time.</p>
      */
     public void insertEntities(String relPath, List<Map<String, Object>> entities)
             throws SQLException {
+        if (entities == null || entities.isEmpty()) return;
+        long nextId = nextEntityId();
         try (PreparedStatement metaPs = conn.prepareStatement("""
                 INSERT INTO entities_meta
-                (rel_path, entity_type, name, fqn, language, start_line, end_line,
+                (id, rel_path, entity_type, name, fqn, language, start_line, end_line,
                  signature, doc_comment, visibility, indexed_at, inherited_from, implements_list,
                  annotations)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                Statement.RETURN_GENERATED_KEYS);
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""");
              PreparedStatement ftsPs = conn.prepareStatement("""
                 INSERT INTO entities_fts(rowid, name, fqn, signature, doc_comment)
                 VALUES (?, ?, ?, ?, ?)""")) {
@@ -325,36 +369,59 @@ public class IndexDatabase implements AutoCloseable {
                 String sig = str(e, "signature");
                 String doc = str(e, "docComment");
 
-                metaPs.setString(1, relPath);
-                metaPs.setString(2, str(e, "entityType"));
-                metaPs.setString(3, name);
-                metaPs.setString(4, fqn);
-                metaPs.setString(5, str(e, "language"));
-                metaPs.setObject(6, e.get("startLine"));
-                metaPs.setObject(7, e.get("endLine"));
-                metaPs.setString(8, sig);
-                metaPs.setString(9, doc);
-                metaPs.setString(10, str(e, "visibility"));
-                metaPs.setString(11, str(e, "indexedAt"));
-                metaPs.setString(12, str(e, "inheritedFrom"));
-                metaPs.setString(13, str(e, "implementsList"));
-                metaPs.setString(14, str(e, "annotations"));
-                metaPs.executeUpdate();
+                long rowId = nextId++;
+                metaPs.setLong(1, rowId);
+                metaPs.setString(2, relPath);
+                metaPs.setString(3, str(e, "entityType"));
+                metaPs.setString(4, name);
+                metaPs.setString(5, fqn);
+                metaPs.setString(6, str(e, "language"));
+                metaPs.setObject(7, e.get("startLine"));
+                metaPs.setObject(8, e.get("endLine"));
+                metaPs.setString(9, sig);
+                metaPs.setString(10, doc);
+                metaPs.setString(11, str(e, "visibility"));
+                metaPs.setString(12, str(e, "indexedAt"));
+                metaPs.setString(13, str(e, "inheritedFrom"));
+                metaPs.setString(14, str(e, "implementsList"));
+                metaPs.setString(15, str(e, "annotations"));
+                metaPs.addBatch();
 
-                // Get the generated row ID for the FTS table
-                try (ResultSet keys = metaPs.getGeneratedKeys()) {
-                    if (keys.next()) {
-                        long rowId = keys.getLong(1);
-                        ftsPs.setLong(1, rowId);
-                        ftsPs.setString(2, name != null ? name : "");
-                        ftsPs.setString(3, fqn != null ? fqn : "");
-                        ftsPs.setString(4, sig != null ? sig : "");
-                        ftsPs.setString(5, doc != null ? doc : "");
-                        ftsPs.executeUpdate();
-                    }
-                }
+                ftsPs.setLong(1, rowId);
+                ftsPs.setString(2, name != null ? name : "");
+                ftsPs.setString(3, fqn != null ? fqn : "");
+                ftsPs.setString(4, sig != null ? sig : "");
+                ftsPs.setString(5, doc != null ? doc : "");
+                ftsPs.addBatch();
             }
+            metaPs.executeBatch();
+            ftsPs.executeBatch();
         }
+    }
+
+    /**
+     * Next collision-free entities_meta id. AUTOINCREMENT keeps
+     * {@code sqlite_sequence.seq} at the highest id ever used (explicit
+     * inserts bump it too), so seq+1 is always safe; MAX(id) guards the
+     * fresh-DB case where the sequence row doesn't exist yet. Same-connection
+     * reads see uncommitted rows, so repeated calls inside one transaction
+     * keep advancing.
+     */
+    private long nextEntityId() throws SQLException {
+        long seq = 0;
+        try (Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery(
+                     "SELECT seq FROM sqlite_sequence WHERE name='entities_meta'")) {
+            if (rs.next()) seq = rs.getLong(1);
+        } catch (SQLException ignored) {
+            // sqlite_sequence doesn't exist until the first AUTOINCREMENT insert
+        }
+        long maxId = 0;
+        try (Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery("SELECT COALESCE(MAX(id), 0) FROM entities_meta")) {
+            if (rs.next()) maxId = rs.getLong(1);
+        }
+        return Math.max(seq, maxId) + 1;
     }
 
     // -----------------------------------------------------------------------
@@ -648,29 +715,220 @@ public class IndexDatabase implements AutoCloseable {
         return stats;
     }
 
+    /** Rows still lacking a resolved cross-file target. */
+    private static final String UNRESOLVED_PRED =
+            "(target_fqn IS NULL OR target_fqn = '' OR target_fqn = target_name)";
+
+    /** Above this many distinct names, one streamed entities scan beats per-name probes. */
+    private static final int CONNECTIVITY_PROBE_THRESHOLD = 200;
+
     /**
-     * Post-indexing pass: resolve target_fqn for relations that only have target_name.
-     * Uses suffix matching against entities_meta.
-     *
-     * @return number of relations whose target_fqn was resolved
+     * Full-index variant of {@link #ensureConnectivity(Collection)}.
      */
     public int ensureConnectivity() throws SQLException {
-        try (Statement stmt = conn.createStatement()) {
-            return stmt.executeUpdate("""
-                UPDATE relations
-                SET target_fqn = (
-                    SELECT fqn FROM entities_meta
-                    WHERE fqn = relations.target_name
-                       OR fqn LIKE '%.' || relations.target_name
-                    LIMIT 1
-                )
-                WHERE (target_fqn IS NULL OR target_fqn = '' OR target_fqn = target_name)
-                  AND EXISTS (
-                    SELECT 1 FROM entities_meta
-                    WHERE fqn = relations.target_name
-                       OR fqn LIKE '%.' || relations.target_name
-                  )""");
+        return ensureConnectivity(null);
+    }
+
+    /**
+     * Post-indexing pass: resolve target_fqn for relations that only carry a
+     * target_name (exact FQN match, else an entity whose FQN ends with
+     * "." + target_name).
+     *
+     * <p>The legacy implementation was a single UPDATE with a correlated
+     * leading-wildcard LIKE — a full entities_meta scan per unresolved
+     * relation, O(relations × entities), re-run over the whole table after
+     * every incremental pass. This version collects the distinct unresolved
+     * names once (scoped to {@code changedFiles} when given: their own
+     * relations plus older unresolved relations anywhere that point at names
+     * (re)defined in those files), resolves each name a single time — indexed
+     * probes when few, one streamed scan when many — and applies the mapping
+     * with batched UPDATEs on the target_name index. Suffix matches are
+     * case-sensitive (the legacy LIKE was ASCII-case-insensitive, which only
+     * ever added false links between differently-cased identifiers).</p>
+     *
+     * @param changedFiles rel paths re-indexed in this pass; null or empty
+     *                     resolves across the whole index
+     * @return number of relations whose target_fqn actually changed
+     */
+    public int ensureConnectivity(Collection<String> changedFiles) throws SQLException {
+        Set<String> targets = collectUnresolvedTargets(changedFiles);
+        if (targets.isEmpty()) return 0;
+
+        Map<String, String> resolution = targets.size() <= CONNECTIVITY_PROBE_THRESHOLD
+                ? resolveTargetsByProbe(targets)
+                : resolveTargetsByScan(targets);
+        if (resolution.isEmpty()) return 0;
+
+        int updated = 0;
+        try (PreparedStatement ps = conn.prepareStatement(
+                "UPDATE relations SET target_fqn = ? WHERE target_name = ? AND "
+                        + UNRESOLVED_PRED + " AND target_fqn IS NOT ?")) {
+            for (Map.Entry<String, String> e : resolution.entrySet()) {
+                ps.setString(1, e.getValue());
+                ps.setString(2, e.getKey());
+                ps.setString(3, e.getValue());
+                ps.addBatch();
+            }
+            for (int c : ps.executeBatch()) {
+                if (c > 0) updated += c;
+            }
         }
+        return updated;
+    }
+
+    /**
+     * Distinct target names worth resolving. Scoped mode also picks up older
+     * unresolved relations elsewhere whose target matches a name or FQN
+     * (re)defined in the changed files, so new definitions heal old edges.
+     */
+    private Set<String> collectUnresolvedTargets(Collection<String> changedFiles) throws SQLException {
+        Set<String> targets = new LinkedHashSet<>();
+        if (changedFiles == null || changedFiles.isEmpty()) {
+            try (Statement stmt = conn.createStatement();
+                 ResultSet rs = stmt.executeQuery(
+                         "SELECT DISTINCT target_name FROM relations WHERE " + UNRESOLVED_PRED)) {
+                while (rs.next()) {
+                    String t = rs.getString(1);
+                    if (t != null && !t.isEmpty()) targets.add(t);
+                }
+            }
+            return targets;
+        }
+
+        List<String> paths = List.copyOf(changedFiles);
+        String unresolvedR = "(r.target_fqn IS NULL OR r.target_fqn = '' OR r.target_fqn = r.target_name)";
+        int batchSize = 500;
+        for (int start = 0; start < paths.size(); start += batchSize) {
+            List<String> batch = paths.subList(start, Math.min(start + batchSize, paths.size()));
+            String placeholders = String.join(",", Collections.nCopies(batch.size(), "?"));
+            String[] queries = {
+                    "SELECT DISTINCT target_name FROM relations WHERE file_path IN ("
+                            + placeholders + ") AND " + UNRESOLVED_PRED,
+                    "SELECT DISTINCT r.target_name FROM relations r JOIN entities_meta e "
+                            + "ON e.name = r.target_name WHERE e.rel_path IN ("
+                            + placeholders + ") AND " + unresolvedR,
+                    "SELECT DISTINCT r.target_name FROM relations r JOIN entities_meta e "
+                            + "ON e.fqn = r.target_name WHERE e.rel_path IN ("
+                            + placeholders + ") AND " + unresolvedR
+            };
+            for (String sql : queries) {
+                try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                    for (int i = 0; i < batch.size(); i++) {
+                        ps.setString(i + 1, batch.get(i));
+                    }
+                    try (ResultSet rs = ps.executeQuery()) {
+                        while (rs.next()) {
+                            String t = rs.getString(1);
+                            if (t != null && !t.isEmpty()) targets.add(t);
+                        }
+                    }
+                }
+            }
+        }
+        return targets;
+    }
+
+    /**
+     * Resolve a small set of names with indexed lookups: exact FQN, then
+     * simple-name match verified as a suffix, then an FTS-narrowed suffix
+     * probe (catches IMPORT/PACKAGE entities whose name is the full FQN and
+     * dotted target names, which the name-equality probe can't see).
+     */
+    private Map<String, String> resolveTargetsByProbe(Set<String> targets) throws SQLException {
+        Map<String, String> resolved = new LinkedHashMap<>();
+        try (PreparedStatement exactPs = conn.prepareStatement(
+                     "SELECT fqn FROM entities_meta WHERE fqn = ? LIMIT 1");
+             PreparedStatement namePs = conn.prepareStatement(
+                     "SELECT fqn FROM entities_meta WHERE name = ? AND fqn LIKE '%.' || ? LIMIT 1");
+             PreparedStatement ftsPs = conn.prepareStatement(
+                     "SELECT e.fqn FROM entities_fts f JOIN entities_meta e ON e.id = f.rowid "
+                             + "WHERE entities_fts MATCH ? LIMIT 50")) {
+            for (String target : targets) {
+                exactPs.setString(1, target);
+                try (ResultSet rs = exactPs.executeQuery()) {
+                    if (rs.next()) {
+                        resolved.put(target, target);
+                        continue;
+                    }
+                }
+
+                namePs.setString(1, target);
+                namePs.setString(2, target);
+                try (ResultSet rs = namePs.executeQuery()) {
+                    if (rs.next()) {
+                        resolved.put(target, rs.getString(1));
+                        continue;
+                    }
+                }
+
+                String segment = lastSegment(target);
+                if (segment.isEmpty()) continue;
+                try {
+                    ftsPs.setString(1, "fqn:\"" + segment.replace("\"", "\"\"") + "\"");
+                    try (ResultSet rs = ftsPs.executeQuery()) {
+                        while (rs.next()) {
+                            String fqn = rs.getString(1);
+                            if (fqn != null && fqn.endsWith("." + target)) {
+                                resolved.put(target, fqn);
+                                break;
+                            }
+                        }
+                    }
+                } catch (SQLException ignored) {
+                    // Un-tokenizable target — no FTS candidates, leave unresolved
+                }
+            }
+        }
+        return resolved;
+    }
+
+    /**
+     * Resolve many names in one streamed pass over entities_meta.fqn:
+     * O(entities + targets) with hash lookups instead of per-name queries.
+     */
+    private Map<String, String> resolveTargetsByScan(Set<String> targets) throws SQLException {
+        Map<String, String> resolved = new LinkedHashMap<>();
+        Set<String> undotted = new HashSet<>();
+        Map<String, List<String>> dottedBySegment = new HashMap<>();
+        for (String t : targets) {
+            if (t.indexOf('.') < 0) {
+                undotted.add(t);
+            } else {
+                dottedBySegment.computeIfAbsent(lastSegment(t), k -> new ArrayList<>()).add(t);
+            }
+        }
+
+        try (Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery("SELECT fqn FROM entities_meta")) {
+            while (rs.next()) {
+                String fqn = rs.getString(1);
+                if (fqn == null || fqn.isEmpty()) continue;
+
+                // Exact FQN match is authoritative — overwrite any suffix pick
+                if (targets.contains(fqn)) resolved.put(fqn, fqn);
+
+                String segment = lastSegment(fqn);
+                if (segment.length() == fqn.length()) continue; // no package prefix → no suffix match
+
+                if (undotted.contains(segment)) resolved.putIfAbsent(segment, fqn);
+
+                List<String> dotted = dottedBySegment.get(segment);
+                if (dotted != null) {
+                    for (String t : dotted) {
+                        if (fqn.length() > t.length() && fqn.endsWith(t)
+                                && fqn.charAt(fqn.length() - t.length() - 1) == '.') {
+                            resolved.putIfAbsent(t, fqn);
+                        }
+                    }
+                }
+            }
+        }
+        return resolved;
+    }
+
+    private static String lastSegment(String name) {
+        int dot = name.lastIndexOf('.');
+        return dot >= 0 ? name.substring(dot + 1) : name;
     }
 
     // -----------------------------------------------------------------------

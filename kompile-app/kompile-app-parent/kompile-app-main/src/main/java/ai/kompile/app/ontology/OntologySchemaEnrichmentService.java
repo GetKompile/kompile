@@ -32,11 +32,14 @@ public class OntologySchemaEnrichmentService {
 
     private final OwlReasoningService owlReasoningService;
     private final OntologyTypeInductionService typeInductionService;
+    private final RelationSchemaResolutionService relationSchemaResolutionService;
 
     public OntologySchemaEnrichmentService(OwlReasoningService owlReasoningService,
-                                           OntologyTypeInductionService typeInductionService) {
+                                           OntologyTypeInductionService typeInductionService,
+                                           RelationSchemaResolutionService relationSchemaResolutionService) {
         this.owlReasoningService = owlReasoningService;
         this.typeInductionService = typeInductionService;
+        this.relationSchemaResolutionService = relationSchemaResolutionService;
     }
 
     public OwlClassificationResponse generateSchemaAndTypes(long factSheetId) {
@@ -45,11 +48,17 @@ public class OntologySchemaEnrichmentService {
             return firstPass;
         }
         OntologyTypeInductionResult induction = typeInductionService.enrichAfterOwl(factSheetId);
-        if (!induction.changed()) {
+        // Relations resolve AFTER type induction so canonical class names (and fresh aliases) are
+        // in place for domain/range alias-matching.
+        RelationSchemaResolutionService.Result relations =
+                relationSchemaResolutionService.resolveRelationSchema(factSheetId);
+        if (!induction.changed() && !relations.changed()) {
             return firstPass;
         }
-        log.info("Re-running OWL classification after type induction for factSheet={}: aliasesAdded={}, typesAdded={}",
-                factSheetId, induction.aliasesAdded(), induction.typesAdded());
+        log.info("Re-running OWL classification after schema enrichment for factSheet={}: "
+                        + "aliasesAdded={}, typesAdded={}, relationsAdded={}, relationsEnriched={}",
+                factSheetId, induction.aliasesAdded(), induction.typesAdded(),
+                relations.definitionsAdded(), relations.definitionsEnriched());
         return owlReasoningService.classify(factSheetId);
     }
 }

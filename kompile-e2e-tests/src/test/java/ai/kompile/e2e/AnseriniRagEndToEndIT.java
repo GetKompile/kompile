@@ -116,7 +116,7 @@ class AnseriniRagEndToEndIT {
 
         embeddingModel = new InMemoryEmbeddingModel(384);
 
-        AnseriniVectorStoreProperties props = new AnseriniVectorStoreProperties();
+        AnseriniVectorStoreProperties props = new AnseriniVectorStoreProperties(null);
         props.setIndexPath(tempIndexDir.toString());
         props.setEnabled(true);
         props.setPersistenceEnabled(true); // use path as-is, no JVM suffix
@@ -772,7 +772,7 @@ class AnseriniRagEndToEndIT {
 
             realEmbedding = getOrCreateEncoder();
 
-            AnseriniVectorStoreProperties props = new AnseriniVectorStoreProperties();
+            AnseriniVectorStoreProperties props = new AnseriniVectorStoreProperties(null);
             props.setIndexPath(realIndexDir.toString());
             props.setEnabled(true);
             props.setPersistenceEnabled(true);

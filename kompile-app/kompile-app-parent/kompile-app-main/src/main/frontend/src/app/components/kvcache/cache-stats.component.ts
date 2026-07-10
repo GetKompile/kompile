@@ -10,6 +10,7 @@ import { MatSlideToggleModule } from '@angular/material/slide-toggle';
 import { KVCacheService } from '../../services/kvcache.service';
 import { KVCacheStats, KVCacheSummary, StatsSample } from '../../models/kvcache-models';
 import { Subscription, interval } from 'rxjs';
+import { pauseWhenHidden } from '../../services/visibility.util';
 
 @Component({
   standalone: true,
@@ -49,7 +50,7 @@ import { Subscription, interval } from 'rxjs';
           </mat-select>
         </mat-form-field>
         <mat-slide-toggle [(ngModel)]="autoRefresh" (change)="toggleAutoRefresh()">
-          Auto-refresh (2s)
+          Auto-refresh (10s)
         </mat-slide-toggle>
       </div>
 
@@ -189,7 +190,7 @@ export class CacheStatsComponent implements OnInit, OnDestroy, AfterViewInit {
   toggleAutoRefresh(): void {
     this.refreshSub?.unsubscribe();
     if (this.autoRefresh) {
-      this.refreshSub = interval(2000).subscribe(() => this.loadStats());
+      this.refreshSub = interval(10000).pipe(pauseWhenHidden()).subscribe(() => this.loadStats());
     }
   }
 

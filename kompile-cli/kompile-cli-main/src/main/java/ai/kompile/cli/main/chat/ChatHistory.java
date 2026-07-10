@@ -238,6 +238,7 @@ public class ChatHistory {
      */
     public void logHarvestedSource(String externalSessionId) {
         if (externalSessionId == null || externalSessionId.isEmpty()) return;
+        if (harvestedSourceIds.contains(externalSessionId)) return;
         harvestedSourceIds.add(externalSessionId);
         ensureWriter();
         if (writer != null) {
@@ -412,6 +413,68 @@ public class ChatHistory {
     public static boolean exists(String sessionId) {
         Path dir = KompileHome.homeDirectory().toPath().resolve("conversations");
         return Files.exists(dir.resolve(sessionId + ".txt"));
+    }
+
+    /**
+     * Resolves the real underlying agent session id for a kompile-stored session.
+     * <p>
+     * Passthrough/managed sessions save their transcript under a synthetic kompile id
+     * (e.g. {@code passthrough-1a2b3c4d}) and record the wrapped agent's own session via
+     * {@code [harvested:<id>]} markers. Native resume ({@code claude --resume},
+     * {@code codex resume}, {@code opencode --session}) must use the harvested id —
+     * the synthetic kompile id means nothing to the agent.
+     *
+     * @param sessionId kompile session id whose transcript to inspect
+     * @param agent the agent that ran the session, used to normalize
+     *              file-name-derived ids; may be null
+     * @return the most recently harvested native session id, or null if the transcript
+     *         is missing or never recorded one
+     */
+    public static String resolveNativeSessionId(String sessionId, String agent) {
+        if (sessionId == null || sessionId.isEmpty()) return null;
+        Path file = KompileHome.homeDirectory().toPath()
+                .resolve("conversations").resolve(sessionId + ".txt");
+        return resolveNativeSessionIdFrom(file, agent);
+    }
+
+    /**
+     * Transcript-file variant of {@link #resolveNativeSessionId(String, String)}.
+     * Scans the whole file and keeps the LAST marker: the underlying agent session can
+     * change across resumes, and each harvest appends a fresh marker.
+     */
+    static String resolveNativeSessionIdFrom(Path transcriptFile, String agent) {
+        if (transcriptFile == null || !Files.exists(transcriptFile)) return null;
+        String lastHarvested = null;
+        try (BufferedReader reader = new BufferedReader(
+                new FileReader(transcriptFile.toFile(), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.startsWith("[harvested:") && line.endsWith("]")) {
+                    lastHarvested = line.substring("[harvested:".length(), line.length() - 1);
+                }
+            }
+        } catch (IOException e) {
+            return null;
+        }
+        return normalizeNativeSessionId(lastHarvested, agent);
+    }
+
+    /**
+     * Normalizes a harvested id to the form the agent's native resume accepts.
+     * Harvested ids are usually session FILE names: codex logs are named
+     * {@code rollout-<timestamp>-<uuid>.jsonl} while {@code codex resume} takes the
+     * bare uuid; the other agents name the file by the session id itself.
+     */
+    public static String normalizeNativeSessionId(String harvestedId, String agent) {
+        if (harvestedId == null || harvestedId.isEmpty()) return null;
+        String lowerAgent = agent == null ? "" : agent.toLowerCase();
+        if (harvestedId.startsWith("rollout-")
+                && (lowerAgent.isEmpty() || lowerAgent.contains("codex"))) {
+            // rollout-2025-06-27T10-30-00-<uuid> → the timestamp is 20 chars before the uuid
+            String trimmed = harvestedId.substring("rollout-".length());
+            return trimmed.length() > 20 ? trimmed.substring(20) : trimmed;
+        }
+        return harvestedId;
     }
 
     private void updateIndex(String sessionId, String serverUrl, String agentName) {

@@ -15,9 +15,10 @@
  */
 
 import { Injectable } from '@angular/core';
-import { SafeHtml } from '@angular/platform-browser';
+import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import { marked, Renderer, Tokens } from 'marked';
 import hljs from 'highlight.js';
+import DOMPurify, { Config as DOMPurifyConfig } from 'dompurify';
 
 /**
  * Represents a parsed segment of a message — either text content (which may contain markdown),
@@ -44,6 +45,60 @@ export interface MessageSegment {
  * Service that handles markdown rendering with syntax highlighting,
  * thinking block extraction, and tool use formatting.
  */
+/**
+ * DOMPurify configuration that allows the full set of HTML that marked +
+ * highlight.js produces, plus the data-code attribute on the copy button that
+ * the renderer injects itself.  Everything else is stripped.
+ *
+ * Explicit choices:
+ *  - ALLOWED_URI_REGEXP: only http(s) and mailto — blocks javascript: / data:
+ *  - ADD_ATTR: data-code (copy button payload), data-message-id, data-source-index
+ *    (source-ref spans injected by getContentWithSourceLinks), target (links)
+ *  - FORCE_BODY: sanitize as a full fragment, not as innerHTML of a specific element
+ *  - RETURN_DOM_FRAGMENT: false (we want a string back)
+ *  - NO onclick or other inline event handlers — copy button uses a delegated
+ *    @HostListener in the rendering components instead of an inline handler,
+ *    so that LLM-supplied onclick attributes are always stripped here.
+ *
+ * After sanitization, links that survived still get rel="noopener noreferrer"
+ * via the marked link renderer, which runs before sanitization.
+ */
+const DOMPURIFY_CONFIG: DOMPurifyConfig = {
+  ALLOWED_TAGS: [
+    // Block
+    'div', 'p', 'pre', 'blockquote', 'details', 'summary',
+    // Headings
+    'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+    // Inline
+    'span', 'strong', 'b', 'em', 'i', 'u', 's', 'del', 'ins', 'mark', 'small', 'sup', 'sub',
+    // Lists
+    'ul', 'ol', 'li',
+    // Code
+    'code',
+    // Tables
+    'table', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td',
+    // Media
+    'img', 'a',
+    // Line
+    'hr', 'br',
+    // Interactive (copy button)
+    'button',
+  ],
+  ALLOWED_ATTR: [
+    'class', 'id', 'href', 'src', 'alt', 'title',
+    'target', 'rel',
+    'colspan', 'rowspan',
+    'open',          // <details open>
+    'data-code',                          // copy button payload (URL-encoded source)
+    'data-message-id', 'data-source-index', // source-ref spans
+    // NOTE: 'onclick' is intentionally absent — inline event handlers are
+    // stripped from ALL content (including LLM responses). Copy behaviour is
+    // implemented via delegated @HostListener in the rendering components.
+  ],
+  ALLOWED_URI_REGEXP: /^(?:https?|mailto):/i,
+  FORCE_BODY: true,
+};
+
 @Injectable({ providedIn: 'root' })
 export class MarkdownRendererService {
 
@@ -62,9 +117,20 @@ export class MarkdownRendererService {
     'go', 'rust', 'kotlin', 'dockerfile', 'ini', 'diff', 'plaintext'
   ];
 
-  constructor() {
+  constructor(private sanitizer: DomSanitizer) {
     this.markedInstance = marked;
     this.configureMarked();
+  }
+
+  /**
+   * Sanitize raw HTML with DOMPurify and wrap the result as Angular SafeHtml.
+   * This is the ONE choke-point that all innerHTML bindings must flow through;
+   * bypassing Angular's sanitizer is safe here because DOMPurify has already
+   * stripped every dangerous construct.
+   */
+  sanitizeAndTrust(html: string): SafeHtml {
+    const clean = DOMPurify.sanitize(html, DOMPURIFY_CONFIG) as unknown as string;
+    return this.sanitizer.bypassSecurityTrustHtml(clean);
   }
 
   private configureMarked(): void {
@@ -93,7 +159,7 @@ export class MarkdownRendererService {
       return `<div class="code-block-wrapper">
         <div class="code-block-header">
           <span class="code-lang-label">${this.escapeHtml(displayLang)}</span>
-          <button class="code-copy-btn" onclick="navigator.clipboard.writeText(decodeURIComponent(this.getAttribute('data-code'))).then(()=>{this.textContent='Copied!';setTimeout(()=>this.textContent='Copy',2000)})" data-code="${encodeURIComponent(text)}">Copy</button>
+          <button class="code-copy-btn" data-code="${encodeURIComponent(text)}">Copy</button>
         </div>
         <pre class="code-block"><code class="hljs language-${this.escapeHtml(displayLang)}">${highlighted}</code></pre>
       </div>`;
@@ -233,7 +299,9 @@ export class MarkdownRendererService {
   }
 
   /**
-   * Render a markdown string to sanitized HTML.
+   * Render a markdown string to DOMPurify-sanitized HTML.
+   * Returns a plain string (not SafeHtml) — callers that need SafeHtml must
+   * call sanitizeAndTrust() on the result or use renderMarkdownSafe() directly.
    */
   renderMarkdown(text: string): string {
     if (!text) return '';
@@ -241,14 +309,21 @@ export class MarkdownRendererService {
     try {
       const result = this.markedInstance.parse(text);
       // marked.parse can return string or Promise<string>; we only use sync mode
-      if (typeof result === 'string') {
-        return result;
-      }
-      return this.escapeHtml(text);
+      const raw = typeof result === 'string' ? result : this.escapeHtml(text);
+      return DOMPurify.sanitize(raw, DOMPURIFY_CONFIG) as unknown as string;
     } catch (e) {
       // Fallback: escape and wrap in <p>
       return `<p>${this.escapeHtml(text)}</p>`;
     }
+  }
+
+  /**
+   * Render markdown and return the result as Angular SafeHtml in one step.
+   * Prefer this over calling renderMarkdown() + sanitizeAndTrust() separately
+   * when both operations are needed together.
+   */
+  renderMarkdownSafe(text: string): SafeHtml {
+    return this.sanitizeAndTrust(this.renderMarkdown(text));
   }
 
   /**

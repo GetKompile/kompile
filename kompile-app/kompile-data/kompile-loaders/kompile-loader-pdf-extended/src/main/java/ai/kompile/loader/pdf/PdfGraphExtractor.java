@@ -265,20 +265,29 @@ public class PdfGraphExtractor implements DocumentGraphExtractor {
         }
 
         // ── ORGANIZATION from producer ───────────────────────────────────
+        // The PDF "Producer" is almost always the generating software (iText, Adobe Acrobat, Skia,
+        // Ghostscript, ...). Materializing that as an ORGANIZATION floods the graph with
+        // software-named junk orgs, so gate it on the same looksLikeSoftware heuristic used for the
+        // creator: a software producer is retained only as a document property; a non-software
+        // producer (a real publisher / organization) becomes an ORGANIZATION with PRODUCED_BY.
         String producer = str(meta.get(META_PRODUCER));
         if (producer != null) {
-            String orgId = entityId("org:" + producer.toLowerCase());
-            ExtractedEntity orgEntity = new ExtractedEntity(
-                    orgId, producer, GraphConstants.ENTITY_ORGANIZATION,
-                    null, "PDF producing software/organization", 0.7,
-                    Map.of(GraphConstants.PROP_SOURCE_FIELD, "producer")
-            );
-            addEntity(entityIndex, orgEntity);
-            relations.add(new ExtractedRelation(
-                    docEntityId, orgId, GraphConstants.REL_PRODUCED_BY,
-                    displayTitle + " produced by " + producer,
-                    0.7, null
-            ));
+            if (looksLikeSoftware(producer)) {
+                docProps.put(META_PRODUCER, producer);
+            } else {
+                String orgId = entityId("org:" + producer.toLowerCase());
+                ExtractedEntity orgEntity = new ExtractedEntity(
+                        orgId, producer, GraphConstants.ENTITY_ORGANIZATION,
+                        null, "PDF producing organization", 0.7,
+                        Map.of(GraphConstants.PROP_SOURCE_FIELD, "producer")
+                );
+                addEntity(entityIndex, orgEntity);
+                relations.add(new ExtractedRelation(
+                        docEntityId, orgId, GraphConstants.REL_PRODUCED_BY,
+                        displayTitle + " produced by " + producer,
+                        0.7, null
+                ));
+            }
         }
 
         // ── TOPICs from keywords ─────────────────────────────────────────

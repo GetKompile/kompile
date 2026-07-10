@@ -21,6 +21,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.core.io.Resource;
 import org.springframework.web.servlet.config.annotation.ResourceHandlerRegistry;
+import org.springframework.web.servlet.config.annotation.ViewControllerRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 import org.springframework.web.servlet.resource.PathResourceResolver;
 
@@ -32,8 +33,13 @@ import java.io.IOException;
  * Only active when running as the standalone staging server.
  */
 @Configuration(proxyBeanMethods = false)
-@ConditionalOnProperty(name = "kompile.staging.ui.enabled", havingValue = "true", matchIfMissing = false)
+@ConditionalOnProperty(name = "kompile.staging.ui.enabled", havingValue = "true", matchIfMissing = true)
 public class WebConfig implements WebMvcConfigurer {
+
+    @Override
+    public void addViewControllers(ViewControllerRegistry registry) {
+        registry.addRedirectViewController("/", "/dashboard");
+    }
 
     @Override
     public void addResourceHandlers(ResourceHandlerRegistry registry) {

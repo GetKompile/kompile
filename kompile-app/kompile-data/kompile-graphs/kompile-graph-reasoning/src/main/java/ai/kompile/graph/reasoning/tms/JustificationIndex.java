@@ -126,6 +126,24 @@ public class JustificationIndex {
     }
 
     /**
+     * Per-contributing-rule body fact sets for an atom — one set per ground rule that placed the
+     * atom in its head. The smallest set is the atom's minimal support; a fact contained in every
+     * set is a single point of failure (see {@link #solelyDependentOn(String)}).
+     *
+     * @param atomKey the atom to look up
+     * @return unmodifiable list of unmodifiable body-fact sets (empty when the atom has no
+     *         recorded justifications)
+     */
+    public List<Set<String>> perRuleBodyFacts(String atomKey) {
+        List<Set<String>> bodies = atomToPerRuleBodyFacts.getOrDefault(atomKey, List.of());
+        List<Set<String>> copy = new ArrayList<>(bodies.size());
+        for (Set<String> body : bodies) {
+            copy.add(Collections.unmodifiableSet(body));
+        }
+        return Collections.unmodifiableList(copy);
+    }
+
+    /**
      * Get the observed fact keys that supported an atom (union across all contributing rules).
      *
      * @param atomKey the atom to look up

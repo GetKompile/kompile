@@ -15,121 +15,180 @@
  */
 package ai.kompile.cli.mcp.stdio;
 
-import org.junit.jupiter.api.BeforeEach;
+import ai.kompile.cli.main.chat.ChatHistory;
+import ai.kompile.cli.main.chat.ChatSessionMetrics;
+import ai.kompile.cli.main.chat.agent.AgentConfig;
+import ai.kompile.cli.main.chat.agent.SubprocessAgentRunner;
+import ai.kompile.cli.main.chat.render.AsciiRenderer;
+import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
+import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/**
- * Tests for {@link DirectSubagentRunnerStdio} verifying that subagents are launched
- * as provider-agnostic managed subprocesses: the prompt is delivered over stdin,
- * the argument vector contains only the resolved binary, output is captured from
- * stdout/stderr, and cancellation destroys the managed process tree.
- */
 class DirectSubagentRunnerStdioTest {
 
     @TempDir
     Path tempDir;
 
-    private DirectSubagentRunnerStdio runner;
+    @Test
+    void runSubagentUsesManagedRunnerAndCapturesOutput() throws Exception {
+        ManagedTestRunner runner = new ManagedTestRunner(tempDir);
+        runner.setExtraEnvironment(Map.of("KOMPILE_TEST_FORK_ENV", "forked-value"));
 
-    @BeforeEach
-    void setUp() {
-        runner = new DirectSubagentRunnerStdio(tempDir);
-    }
+        String result = runner.runSubagent(AgentConfig.builder("codex").build(), "inspect managed tools");
 
-    private Path writeScript(String content) throws Exception {
-        Path script = tempDir.resolve("mock-agent");
-        Files.writeString(script, "#!/bin/sh\n" + content + "\n");
-        if (!script.toFile().setExecutable(true)) {
-            throw new IllegalStateException("Could not make " + script + " executable");
-        }
-        return script;
+        FakeManagedRunner fake = runner.fake;
+        assertNotNull(fake, "subagent should create the managed passthrough runner");
+        assertEquals("codex", fake.agentName);
+        assertTrue(fake.injectMcpTools, "top-level delegated agents should receive MCP tool injection");
+        assertTrue(fake.injectMcpToolsCalled, "MCP tool injection should be performed by the managed runner");
+        assertTrue(fake.cleanupCalled, "managed runner cleanup should restore injected tools/skills");
+        assertEquals("inspect managed tools", fake.message);
+        assertEquals("1", fake.extraEnvironment.get("KOMPILE_SUBAGENT_DEPTH"));
+        assertEquals("forked-value", fake.extraEnvironment.get("KOMPILE_TEST_FORK_ENV"));
+        assertTrue(result.contains("Subagent 'codex' completed"));
+        assertTrue(result.contains("managed-output"));
+        assertTrue(result.contains("Full output"));
     }
 
     @Test
-    void buildAgentCommandContainsOnlyBinary() {
-        List<String> cmd = runner.buildAgentCommand("/usr/bin/bash", "qwen");
-        assertEquals(List.of("/usr/bin/bash"), cmd);
+    void forkedRunnerStillCarriesManagedEnvironmentIntoManagedRunner() throws Exception {
+        ManagedTestRunner runner = new ManagedTestRunner(tempDir);
+        runner.setExtraEnvironment(Map.of("KOMPILE_TEST_FORK_ENV", "forked-value"));
+
+        ManagedTestRunner fork = (ManagedTestRunner) runner.forkForSubagent();
+        String result = fork.runSubagent(AgentConfig.builder("opencode").build(), "delegate checks");
+
+        assertTrue(result.contains("managed-output"));
+        assertEquals("forked-value", fork.fake.extraEnvironment.get("KOMPILE_TEST_FORK_ENV"));
     }
 
     @Test
-    void commandArgvExcludesPromptModeFlagsAndPromptText() throws Exception {
-        String prompt = "hello-provider-agnostic-prompt";
-        // Only echo the argument vector; do not read stdin so the output is purely the argv line.
-        Path script = writeScript("echo \"argv:$*\"");
-
-        String result = runner.executeSubagentProcess("bash", prompt, script.toString(), prompt, 0);
-
-        assertNotNull(result);
-        assertTrue(result.contains("argv:"), "argv marker should be present");
-        assertFalse(result.contains(prompt), "prompt text should not appear in argv/output");
-        for (String banned : List.of("-p", "exec", "run", "--continue", "--resume", "--session", "--fork")) {
-            assertFalse(result.contains(banned),
-                    "argv/output should not contain provider prompt-mode flag '" + banned + "'");
-        }
-    }
-
-    @Test
-    void promptIsSentThroughStdin() throws Exception {
-        String prompt = "send this via stdin\nsecond line";
-        Path script = writeScript("cat; echo EOF");
-
-        String result = runner.executeSubagentProcess("bash", prompt, script.toString(), prompt, 0);
-
-        assertTrue(result.contains(prompt), "prompt should appear in captured stdout");
-        assertTrue(result.contains("EOF"), "post-prompt marker should appear");
-    }
-
-    @Test
-    void stdoutAndStderrAreCaptured() throws Exception {
-        Path script = writeScript("echo out1; echo err1 >&2; echo out2; echo err2 >&2");
-
-        String result = runner.executeSubagentProcess("bash", "ignored", script.toString(), "ignored", 0);
-
-        assertTrue(result.contains("out1"), "stdout line 1 should be captured");
-        assertTrue(result.contains("err1"), "stderr line 1 should be captured");
-        assertTrue(result.contains("out2"), "stdout line 2 should be captured");
-        assertTrue(result.contains("err2"), "stderr line 2 should be captured");
-    }
-
-    @Test
-    void cancellationKillsManagedSubprocess() throws Exception {
-        Path pidFile = tempDir.resolve("subagent.pid");
-        Path script = writeScript(
-                "echo $$ > " + pidFile + "; sleep 30");
+    void cancelForwardsToCurrentManagedRunner() throws Exception {
+        ManagedTestRunner runner = new ManagedTestRunner(tempDir);
+        runner.blockRunMessage = true;
 
         CompletableFuture<String> future = CompletableFuture.supplyAsync(() -> {
             try {
-                return runner.executeSubagentProcess("bash", "sleep", script.toString(), "sleep", 0);
+                return runner.runSubagent(AgentConfig.builder("codex").build(), "long task");
             } catch (Exception e) {
                 throw new RuntimeException(e);
             }
         });
 
-        for (int i = 0; i < 50 && !Files.exists(pidFile); i++) {
-            Thread.sleep(50);
-        }
-        assertTrue(Files.exists(pidFile), "subagent should have written its pid");
-        long pid = Long.parseLong(Files.readString(pidFile).trim());
-        assertTrue(ProcessHandle.of(pid).map(ProcessHandle::isAlive).orElse(false),
-                "subagent process should be alive before cancellation");
+        assertTrue(runner.runnerCreated.await(5, TimeUnit.SECONDS), "managed runner should be created");
+        assertTrue(runner.fake.runStarted.await(5, TimeUnit.SECONDS), "managed runner should start its turn");
 
         runner.cancel();
-        assertThrows(Exception.class, () -> future.get(10, TimeUnit.SECONDS),
-                "cancelled subagent should complete exceptionally");
 
-        for (int i = 0; i < 50 && ProcessHandle.of(pid).map(ProcessHandle::isAlive).orElse(false); i++) {
-            Thread.sleep(50);
+        assertThrows(Exception.class, () -> future.get(5, TimeUnit.SECONDS));
+        assertTrue(runner.fake.cancelCalled, "cancel should be forwarded to the managed runner");
+        assertTrue(runner.fake.cleanupCalled, "cleanup should still run after cancellation");
+    }
+
+    static final class ManagedTestRunner extends DirectSubagentRunnerStdio {
+        private final Path testWorkDir;
+        final CountDownLatch runnerCreated = new CountDownLatch(1);
+        volatile FakeManagedRunner fake;
+        volatile boolean blockRunMessage;
+
+        ManagedTestRunner(Path workDir) {
+            super(workDir);
+            this.testWorkDir = workDir;
         }
-        assertFalse(ProcessHandle.of(pid).map(ProcessHandle::isAlive).orElse(false),
-                "managed subprocess should be killed after cancellation");
+
+        @Override
+        DirectSubagentRunnerStdio forkForSubagent() {
+            ManagedTestRunner fork = new ManagedTestRunner(testWorkDir);
+            fork.setExtraEnvironment(Map.of("KOMPILE_TEST_FORK_ENV", "forked-value"));
+            return fork;
+        }
+
+        @Override
+        SubprocessAgentRunner createManagedRunner(String agentName, boolean injectMcpTools) {
+            fake = new FakeManagedRunner(agentName, testWorkDir, injectMcpTools, () -> blockRunMessage);
+            runnerCreated.countDown();
+            return fake;
+        }
+    }
+
+    static final class FakeManagedRunner extends SubprocessAgentRunner {
+        final String agentName;
+        final boolean injectMcpTools;
+        final java.util.function.BooleanSupplier blockRunMessage;
+        final CountDownLatch runStarted = new CountDownLatch(1);
+        final CountDownLatch cancelled = new CountDownLatch(1);
+        volatile boolean injectMcpToolsCalled;
+        volatile boolean cleanupCalled;
+        volatile boolean cancelCalled;
+        volatile String message;
+        volatile Map<String, String> extraEnvironment = Map.of();
+        volatile Consumer<String> outputConsumer;
+
+        FakeManagedRunner(String agentName, Path workDir, boolean injectMcpTools,
+                          java.util.function.BooleanSupplier blockRunMessage) {
+            super(agentName, workDir.toString(), true, injectMcpTools, "", 0, null,
+                    new TerminalRenderer(false), new AsciiRenderer(new TerminalRenderer(false), 100));
+            this.agentName = agentName;
+            this.injectMcpTools = injectMcpTools;
+            this.blockRunMessage = blockRunMessage;
+        }
+
+        @Override
+        public void setExtraEnvironment(Map<String, String> extraEnvironment) {
+            this.extraEnvironment = extraEnvironment;
+        }
+
+        @Override
+        public void setOutputConsumer(Consumer<String> outputConsumer) {
+            this.outputConsumer = outputConsumer;
+        }
+
+        @Override
+        public void setInputProvider(Function<String, String> inputProvider) {
+            // No interactive input in fake runs.
+        }
+
+        @Override
+        public void injectMcpTools() {
+            injectMcpToolsCalled = true;
+        }
+
+        @Override
+        public String runMessage(String message, ChatHistory history, ChatSessionMetrics metrics) {
+            this.message = message;
+            runStarted.countDown();
+            if (blockRunMessage.getAsBoolean()) {
+                try {
+                    cancelled.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            if (outputConsumer != null) {
+                outputConsumer.accept("managed-output");
+            }
+            return "managed-output";
+        }
+
+        @Override
+        public void cancel() {
+            cancelCalled = true;
+            cancelled.countDown();
+        }
+
+        @Override
+        public void cleanup() {
+            cleanupCalled = true;
+        }
     }
 }

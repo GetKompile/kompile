@@ -16,6 +16,7 @@
 
 package ai.kompile.staging.training;
 
+import ai.kompile.staging.config.StagingPropertyKeys;
 import ai.kompile.staging.web.dto.*;
 import ai.kompile.core.staging.TrainingJobStatus;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -47,14 +48,13 @@ import java.util.stream.Collectors;
 /**
  * Service for model evaluation against datasets.
  * Supports both synchronous and asynchronous (SSE-based) evaluation.
- * Uses samediff-llm EvalRunner and benchmark infrastructure when model files are available,
- * with simulation fallback when they are not.
+ * Missing model artifacts or unsupported metric paths are treated as hard failures.
  */
 @Service("stagingEvaluationService")
 public class EvaluationService {
     private static final Logger log = LoggerFactory.getLogger(EvaluationService.class);
 
-    @Value("${kompile.staging.models-dir:#{systemProperties['user.home'] + '/.kompile/models'}}")
+    @Value(StagingPropertyKeys.MODELS_DIR_VALUE)
     private String modelsDir;
 
     private final Map<String, TrainingJobStatus> activeJobs = new ConcurrentHashMap<>();
@@ -134,8 +134,7 @@ public class EvaluationService {
 
     /**
      * Run a benchmark evaluation using samediff-llm EvalRunner.
-     * If the model file exists and a TextGenerator can be constructed, runs real evaluation.
-     * Otherwise falls back to simulation.
+     * The model file, tokenizer, and input/output names must all resolve.
      */
     private EvaluationResult runBenchmark(String evaluationId, EvaluationRequest request) throws IOException {
         String benchmarkName = request.getBenchmarkName().toLowerCase();
@@ -147,8 +146,8 @@ public class EvaluationService {
 
         File modelFile = resolveModelFile(request.getModelId());
         if (modelFile == null || !modelFile.exists()) {
-            log.warn("Model file not found for {}, falling back to simulation for benchmark {}", request.getModelId(), benchmarkName);
-            return simulateBenchmarkResult(evaluationId, request, benchmark);
+            throw new IllegalStateException("Model file not found for " + request.getModelId()
+                    + " while running benchmark " + benchmarkName);
         }
 
         long startMs = System.currentTimeMillis();
@@ -161,16 +160,14 @@ public class EvaluationService {
             File modelDir = modelFile.getParentFile();
             Tokenizer tokenizer = loadTokenizerFromModelDir(modelDir);
             if (tokenizer == null) {
-                log.warn("No tokenizer found for model {}, falling back to simulation", request.getModelId());
-                return simulateBenchmarkResult(evaluationId, request, benchmark);
+                throw new IllegalStateException("No tokenizer found for model " + request.getModelId());
             }
 
             // Determine input/output variable names from the model
             String inputIdsName = findVariableName(sd, "input_ids", "input");
             String logitsOutputName = findVariableName(sd, "logits", "output");
             if (inputIdsName == null || logitsOutputName == null) {
-                log.warn("Could not determine model input/output names for {}, falling back to simulation", request.getModelId());
-                return simulateBenchmarkResult(evaluationId, request, benchmark);
+                throw new IllegalStateException("Could not determine model input/output names for " + request.getModelId());
             }
 
             TextGenerator generator = new TextGenerator(
@@ -190,9 +187,7 @@ public class EvaluationService {
             return mapEvalResult(evaluationId, request.getModelId(), benchmark, evalResult, request.isLogSamples(), elapsedMs);
 
         } catch (Exception e) {
-            log.warn("Failed to run real benchmark evaluation for {}: {}, falling back to simulation",
-                    request.getModelId(), e.getMessage());
-            return simulateBenchmarkResult(evaluationId, request, benchmark);
+            throw new IllegalStateException("Failed to run benchmark evaluation for " + request.getModelId(), e);
         }
     }
 
@@ -289,28 +284,6 @@ public class EvaluationService {
     }
 
     /**
-     * Simulate benchmark results when model file is not available.
-     */
-    private EvaluationResult simulateBenchmarkResult(String evaluationId, EvaluationRequest request, BenchmarkTask benchmark) {
-        Random rng = new Random(42);
-        Map<String, Double> metrics = new LinkedHashMap<>();
-        for (EvalMetric metric : benchmark.allMetrics()) {
-            metrics.put(metric.name(), 0.2 + rng.nextDouble() * 0.5);
-        }
-
-        return EvaluationResult.builder()
-                .evaluationId(evaluationId)
-                .modelId(request.getModelId())
-                .benchmarkName(benchmark.name())
-                .metrics(metrics)
-                .evaluationTimeMs(0)
-                .samplesEvaluated(0)
-                .summary("Simulated results - model file not found for " + request.getModelId())
-                .completedAt(Instant.now().toString())
-                .build();
-    }
-
-    /**
      * Run an asynchronous model evaluation with SSE-based progress streaming.
      */
     public TrainingJobStatus startAsyncEvaluation(EvaluationRequest request) {
@@ -353,75 +326,34 @@ public class EvaluationService {
     private void executeAsyncEvaluation(String jobId, EvaluationRequest request) {
         long startMs = System.currentTimeMillis();
         try {
-            List<String> requestedMetrics = request.getMetrics();
-            if (requestedMetrics == null || requestedMetrics.isEmpty()) {
-                requestedMetrics = List.of("perplexity", "accuracy");
-            }
-
             emitLog(jobId, "INFO", "Starting evaluation for model: " + request.getModelId());
             emitLog(jobId, "INFO", "Dataset: " + request.getDatasetId());
-            emitLog(jobId, "INFO", "Metrics: " + String.join(", ", requestedMetrics));
+            emitLog(jobId, "INFO", "Benchmark: " + request.getBenchmarkName());
 
-            updateJobStatus(jobId, "TRAINING", 0.0, "Loading model...");
+            updateJobStatus(jobId, "TRAINING", 0.05, "Running evaluation...");
 
-            // Simulate evaluation progress
-            int totalSamples = request.getMaxSamples() > 0 ? request.getMaxSamples() : 1000;
-            int batchSize = request.getBatchSize() > 0 ? request.getBatchSize() : 8;
-            int totalBatches = (int) Math.ceil((double) totalSamples / batchSize);
-
-            emitLog(jobId, "INFO", "Evaluating " + totalSamples + " samples in " + totalBatches + " batches");
-
-            Random rng = new Random(42);
-            Map<String, Double> runningMetrics = new LinkedHashMap<>();
-
-            for (int batch = 0; batch < totalBatches; batch++) {
-                if (Thread.currentThread().isInterrupted()) {
-                    handleCancellation(jobId, startMs);
-                    return;
-                }
-
-                double progress = (double) (batch + 1) / totalBatches;
-
-                for (String metric : requestedMetrics) {
-                    double value = simulateMetricValue(metric, progress, rng);
-                    runningMetrics.put(metric, value);
-                }
-
-                if ((batch + 1) % 10 == 0 || batch == totalBatches - 1) {
-                    StringBuilder metricsStr = new StringBuilder();
-                    metricsStr.append(String.format("Batch %d/%d (%.0f%%)", batch + 1, totalBatches, progress * 100));
-                    for (Map.Entry<String, Double> entry : runningMetrics.entrySet()) {
-                        metricsStr.append(String.format(" | %s: %.4f", entry.getKey(), entry.getValue()));
-                    }
-                    emitLog(jobId, "INFO", metricsStr.toString());
-                }
-
-                updateJobStatus(jobId, "TRAINING", progress,
-                        String.format("Evaluating batch %d/%d", batch + 1, totalBatches));
-
-                try {
-                    Thread.sleep(20);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    handleCancellation(jobId, startMs);
-                    return;
-                }
+            EvaluationResult result;
+            if (request.getBenchmarkName() != null && !request.getBenchmarkName().isEmpty()) {
+                result = runBenchmark(jobId, request);
+            } else {
+                long metricsStartMs = System.currentTimeMillis();
+                Map<String, Double> metrics = computeMetrics(request);
+                result = EvaluationResult.builder()
+                        .evaluationId(jobId)
+                        .modelId(request.getModelId())
+                        .datasetId(request.getDatasetId())
+                        .metrics(metrics)
+                        .evaluationTimeMs(System.currentTimeMillis() - metricsStartMs)
+                        .samplesEvaluated(request.getMaxSamples() > 0 ? request.getMaxSamples() : 0)
+                        .completedAt(Instant.now().toString())
+                        .build();
             }
-
-            // Finalize
-            long elapsedMs = System.currentTimeMillis() - startMs;
-
-            EvaluationResult result = EvaluationResult.builder()
-                    .evaluationId(jobId)
-                    .modelId(request.getModelId())
-                    .datasetId(request.getDatasetId())
-                    .metrics(runningMetrics)
-                    .evaluationTimeMs(elapsedMs)
-                    .samplesEvaluated(totalSamples)
-                    .completedAt(Instant.now().toString())
-                    .build();
+            if (result.getMetrics() == null || result.getMetrics().isEmpty()) {
+                throw new IllegalStateException("Evaluation produced no metrics");
+            }
             evaluationResults.put(jobId, result);
 
+            long elapsedMs = System.currentTimeMillis() - startMs;
             TrainingJobStatus completedStatus = TrainingJobStatus.builder()
                     .jobId(jobId)
                     .status("COMPLETED")
@@ -430,7 +362,7 @@ public class EvaluationService {
                     .currentEpoch(1)
                     .totalEpochs(1)
                     .overallProgress(1.0)
-                    .metrics(runningMetrics)
+                    .metrics(result.getMetrics())
                     .startedAt(activeJobs.get(jobId).getStartedAt())
                     .completedAt(Instant.now().toString())
                     .elapsedMs(elapsedMs)
@@ -439,7 +371,7 @@ public class EvaluationService {
             activeJobs.put(jobId, completedStatus);
 
             StringBuilder finalStr = new StringBuilder("Evaluation completed in " + (elapsedMs / 1000) + "s:");
-            for (Map.Entry<String, Double> entry : runningMetrics.entrySet()) {
+            for (Map.Entry<String, Double> entry : result.getMetrics().entrySet()) {
                 finalStr.append(String.format(" %s=%.4f", entry.getKey(), entry.getValue()));
             }
             emitLog(jobId, "INFO", finalStr.toString());
@@ -721,47 +653,40 @@ public class EvaluationService {
     private Map<String, Double> computeMetrics(EvaluationRequest request) {
         List<String> requestedMetrics = request.getMetrics();
         if (requestedMetrics == null || requestedMetrics.isEmpty()) {
-            requestedMetrics = List.of("perplexity", "accuracy");
+            requestedMetrics = List.of("perplexity");
         }
 
         File modelFile = resolveModelFile(request.getModelId());
-        if (modelFile != null && modelFile.exists()) {
-            try {
-                SameDiff sd = SameDiff.fromFlatFile(modelFile);
-                File modelDir = modelFile.getParentFile();
-                Tokenizer tokenizer = loadTokenizerFromModelDir(modelDir);
+        if (modelFile == null || !modelFile.exists()) {
+            throw new IllegalStateException("Model file not found for " + request.getModelId());
+        }
 
-                Map<String, Double> results = new LinkedHashMap<>();
-                for (String metricName : requestedMetrics) {
-                    if ("perplexity".equalsIgnoreCase(metricName)) {
-                        try {
-                            PerplexityEvaluator.PerplexityResult ppResult =
-                                    PerplexityEvaluator.evaluateWikiText2(sd, tokenizer, 512, 128);
-                            results.put("perplexity", ppResult.getPerplexity());
-                        } catch (Exception e) {
-                            log.warn("Perplexity evaluation failed", e);
-                            results.put("perplexity", simulateMetricValue("perplexity", 1.0, new Random(42)));
-                        }
-                    } else {
-                        // Other metrics (exact_match, f1, bleu, rouge, etc.) require
-                        // a TextGenerator + dataset to produce predictions first.
-                        // Use simulation when running outside a benchmark context.
-                        results.put(metricName, simulateMetricValue(metricName, 1.0, new Random(42)));
-                    }
-                }
-                return results;
-            } catch (Exception e) {
-                log.warn("Failed to load model for direct evaluation, falling back to simulation", e);
+        try {
+            SameDiff sd = SameDiff.fromFlatFile(modelFile);
+            File modelDir = modelFile.getParentFile();
+            Tokenizer tokenizer = loadTokenizerFromModelDir(modelDir);
+            if (tokenizer == null) {
+                throw new IllegalStateException("No tokenizer found for model " + request.getModelId());
             }
-        }
 
-        // Simulation fallback
-        Random rng = new Random(42);
-        Map<String, Double> metrics = new LinkedHashMap<>();
-        for (String metric : requestedMetrics) {
-            metrics.put(metric, simulateMetricValue(metric, 1.0, rng));
+            Map<String, Double> results = new LinkedHashMap<>();
+            for (String metricName : requestedMetrics) {
+                if ("perplexity".equalsIgnoreCase(metricName)) {
+                    PerplexityEvaluator.PerplexityResult ppResult =
+                            PerplexityEvaluator.evaluateWikiText2(sd, tokenizer, 512, 128);
+                    results.put("perplexity", ppResult.getPerplexity());
+                } else {
+                    throw new IllegalArgumentException("Direct metric '" + metricName
+                            + "' requires benchmark evaluation with a real dataset/generator");
+                }
+            }
+            if (results.isEmpty()) {
+                throw new IllegalStateException("Evaluation produced no metrics");
+            }
+            return results;
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to compute evaluation metrics for " + request.getModelId(), e);
         }
-        return metrics;
     }
 
     /**
@@ -787,30 +712,6 @@ public class EvaluationService {
                 return new VqaAccuracyMetric();
             default:
                 return null;
-        }
-    }
-
-    private double simulateMetricValue(String metric, double progress, Random rng) {
-        double noise = rng.nextGaussian() * 0.01;
-        switch (metric.toLowerCase()) {
-            case "perplexity":
-                return Math.max(1.0, 50.0 * Math.exp(-2.0 * progress) + 8.0 + noise * 5);
-            case "accuracy":
-                return Math.min(0.99, 0.3 + progress * 0.55 + noise);
-            case "f1":
-                return Math.min(0.98, 0.25 + progress * 0.55 + noise);
-            case "bleu":
-                return Math.min(0.95, 0.1 + progress * 0.45 + noise);
-            case "rouge":
-                return Math.min(0.96, 0.15 + progress * 0.50 + noise);
-            case "exact_match":
-                return Math.min(0.95, 0.2 + progress * 0.50 + noise);
-            case "loss":
-                return Math.max(0.01, 2.5 * Math.exp(-3.0 * progress) + 0.15 + noise);
-            case "tokens_per_second":
-                return 500.0 + noise * 50;
-            default:
-                return 0.5 + progress * 0.3 + noise;
         }
     }
 

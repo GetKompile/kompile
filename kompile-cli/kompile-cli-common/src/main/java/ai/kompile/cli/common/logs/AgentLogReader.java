@@ -16,6 +16,8 @@
 
 package ai.kompile.cli.common.logs;
 
+import java.io.RandomAccessFile;
+
 import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -24,6 +26,7 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -153,9 +156,20 @@ public final class AgentLogReader {
         }
     }
 
-    /** Lists all subprocess runs under {@code logs/subprocesses} (most recent first). */
+    /**
+     * Lists all subprocess runs under {@code logs/subprocesses}, preferring the supplied working directory
+     * and falling back to {@code ~/.kompile} when no project root resolves.
+     */
     public static List<SubprocessLogMetadata> listSubprocessRuns(SubprocessRunFilter filter) {
-        File root = LogPaths.subprocessesRoot();
+        return listSubprocessRuns((Path) null, filter);
+    }
+
+    /**
+     * Lists subprocess runs under {@code .kompile}/logs/subprocesses for the supplied directory,
+     * or {@code ~/.kompile} when the directory is null or no project root is found.
+     */
+    public static List<SubprocessLogMetadata> listSubprocessRuns(Path workingDirectory, SubprocessRunFilter filter) {
+        File root = LogPaths.subprocessesRoot(workingDirectory);
         List<SubprocessLogMetadata> out = new ArrayList<>();
         if (!root.isDirectory()) return out;
 
@@ -184,11 +198,65 @@ public final class AgentLogReader {
         }
     }
 
-    /** Finds a subprocess run by its {@code runId}, scanning all type directories. */
+    /** Finds a subprocess run by its {@code runId}, scanning the configured root. */
     public static Optional<SubprocessLogMetadata> findSubprocessByRunId(String runId) {
-        return listSubprocessRuns(SubprocessRunFilter.none()).stream()
+        return findSubprocessByRunId((Path) null, runId);
+    }
+
+    /** Finds a subprocess run by {@code runId}, scoped by working directory. */
+    public static Optional<SubprocessLogMetadata> findSubprocessByRunId(Path workingDirectory, String runId) {
+        Optional<SubprocessLogMetadata> scoped = listSubprocessRuns(workingDirectory, SubprocessRunFilter.none()).stream()
                 .filter(m -> runId.equals(m.getRunId()))
                 .findFirst();
+        if (scoped.isPresent() || workingDirectory == null) {
+            return scoped;
+        }
+        return listSubprocessRuns((Path) null, SubprocessRunFilter.none()).stream()
+                .filter(m -> runId.equals(m.getRunId()))
+                .findFirst();
+    }
+
+    /** Resolves the log path for one subprocess run. */
+    public static File resolveSubprocessLogFile(Path workingDirectory, SubprocessLogMetadata meta) {
+        if (meta == null) return null;
+        return resolveSubprocessLogFile(workingDirectory, meta.getWorkingDirectory(), meta.getSubprocessType(), meta.getRunId());
+    }
+
+    private static File resolveSubprocessLogFile(Path workingDirectory, String metadataWorkingDirectory,
+                                               String subprocessType, String runId) {
+        if (subprocessType == null || runId == null) {
+            return null;
+        }
+        File fallback = null;
+        if (metadataWorkingDirectory != null && !metadataWorkingDirectory.isBlank()) {
+            try {
+                File candidate = LogPaths.subprocessLogFile(Path.of(metadataWorkingDirectory), subprocessType, runId);
+                if (candidate.isFile()) {
+                    return candidate;
+                }
+                fallback = candidate;
+            } catch (Exception ignored) {
+                // fall through to the explicit working directory or global default.
+            }
+        }
+        if (workingDirectory != null) {
+            try {
+                File candidate = LogPaths.subprocessLogFile(workingDirectory, subprocessType, runId);
+                if (candidate.isFile()) {
+                    return candidate;
+                }
+                if (fallback == null) {
+                    fallback = candidate;
+                }
+            } catch (Exception ignored) {
+                // fall through to the global default.
+            }
+        }
+        File global = LogPaths.subprocessLogFile(subprocessType, runId);
+        if (global.isFile()) {
+            return global;
+        }
+        return fallback != null ? fallback : global;
     }
 
     /**
@@ -197,10 +265,15 @@ public final class AgentLogReader {
      * {@code processId}=runId + {@code agentName}=subprocessType for subprocess runs).
      */
     public static Stream<AgentLogRecord> aggregateAcrossSubprocessRuns(List<SubprocessLogMetadata> runs) {
+        return aggregateAcrossSubprocessRuns((Path) null, runs);
+    }
+
+    /** Merges records across subprocesses in ascending timestamp order within a root scope. */
+    public static Stream<AgentLogRecord> aggregateAcrossSubprocessRuns(Path workingDirectory, List<SubprocessLogMetadata> runs) {
         List<Stream<AgentLogRecord>> openStreams = new ArrayList<>();
         for (SubprocessLogMetadata meta : runs) {
-            File logFile = LogPaths.subprocessLogFile(meta.getSubprocessType(), meta.getRunId());
-            if (!logFile.isFile()) continue;
+            File logFile = resolveSubprocessLogFile(workingDirectory, meta);
+            if (logFile == null || !logFile.isFile()) continue;
             try {
                 Stream<AgentLogRecord> s = readRecords(logFile)
                         .peek(r -> {
@@ -306,7 +379,7 @@ public final class AgentLogReader {
         Instant lastActivity = Instant.now();
         while (!Thread.currentThread().isInterrupted()) {
             if (logFile.isFile() && logFile.length() > offset) {
-                try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(logFile, "r")) {
+                try (RandomAccessFile raf = new RandomAccessFile(logFile, "r")) {
                     raf.seek(offset);
                     String line;
                     while ((line = raf.readLine()) != null) {

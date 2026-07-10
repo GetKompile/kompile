@@ -20,8 +20,6 @@ import ai.kompile.core.llm.memory.KompileChatMemory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.model.ChatResponse;
-import org.springframework.ai.chat.model.Generation;
-import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.stereotype.Service;
 
@@ -29,9 +27,8 @@ import java.util.List;
 import java.util.Collections;
 
 /**
- * No-operation implementation of ConversationalLanguageModel that provides placeholder functionality
- * when no actual language model is configured. This implementation logs warnings and returns
- * error messages for all operations.
+ * Missing-bean implementation of ConversationalLanguageModel.
+ * Model invocation fails loudly until a real conversational language model is configured.
  * 
  * @author Kompile Inc.
  * @since 1.0.0
@@ -46,35 +43,27 @@ public class NoOpConversationalLanguageModelImpl implements ConversationalLangua
     public NoOpConversationalLanguageModelImpl(KompileChatMemory chatMemory) {
         this.chatMemory = chatMemory;
         logger.warn("No specific ConversationalLanguageModel implementation found. " +
-                   "Initializing NoOpConversationalLanguageModelImpl. LLM functionality will be disabled.");
+                   "Initializing NoOpConversationalLanguageModelImpl. Invocations will fail until a real model is configured.");
     }
 
     @Override
     public String generateResponse(String userQuery, List<String> context) {
-        String message = "Language Model is not configured. Cannot generate response.";
-        logger.warn(message + " Query: " + userQuery);
-        return "Error: " + message;
+        throw notConfigured();
     }
 
     @Override
     public ChatResponse generateResponseWithPotentialToolCalls(String userQuery, List<String> context) {
-        String message = "Language Model is not configured. Cannot generate response with tool calls.";
-        logger.warn(message + " Query: " + userQuery);
-        return createErrorResponse("Error: " + message);
+        throw notConfigured();
     }
 
     @Override
     public String generateConversationalResponse(String conversationId, String userQuery, List<String> context) {
-        String message = "Language Model is not configured. Cannot generate conversational response.";
-        logger.warn(message + " Conversation: {}, Query: {}", conversationId, userQuery);
-        return "Error: " + message;
+        throw notConfigured();
     }
 
     @Override
     public ChatResponse generateConversationalResponseWithToolCalls(String conversationId, String userQuery, List<String> context) {
-        String message = "Language Model is not configured. Cannot generate conversational response with tool calls.";
-        logger.warn(message + " Conversation: {}, Query: {}", conversationId, userQuery);
-        return createErrorResponse("Error: " + message);
+        throw notConfigured();
     }
 
     @Override
@@ -105,14 +94,7 @@ public class NoOpConversationalLanguageModelImpl implements ConversationalLangua
         return chatMemory != null ? chatMemory.getActiveConversationIds() : Collections.emptyList();
     }
 
-    /**
-     * Creates an error response indicating that the language model is not configured.
-     * 
-     * @param errorMessage the error message
-     * @return the error chat response
-     */
-    private ChatResponse createErrorResponse(String errorMessage) {
-        Generation generation = new Generation(new AssistantMessage(errorMessage), null);
-        return new ChatResponse(Collections.singletonList(generation));
+    private IllegalStateException notConfigured() {
+        return new IllegalStateException("ConversationalLanguageModel is not configured");
     }
 }

@@ -223,25 +223,46 @@ public class ExcelFormulaGraphExtractor {
                 .column(colLetter)
                 .row(rowNum);
 
+        CellStyle style = cell.getCellStyle();
+        if (style != null) {
+            builder.numberFormat(style.getDataFormatString());
+            builder.dataFormatIndex((int) style.getDataFormat());
+        }
+
         switch (cell.getCellType()) {
             case FORMULA:
+                FormulaEvaluation evaluation = evaluateFormula(cell);
                 builder.cellType("FORMULA");
                 builder.formula(cell.getCellFormula());
-                builder.displayValue(evaluateForDisplay(cell));
+                builder.displayValue(evaluation.displayValue());
+                builder.rawValue(evaluation.rawValue());
+                builder.evaluatedCellType(evaluation.cellType());
+                builder.evaluatedNumericValue(evaluation.numericValue());
+                builder.formulaError(evaluation.error());
                 break;
             case STRING:
                 builder.cellType("STRING");
                 builder.displayValue(cell.getStringCellValue());
+                builder.rawValue(cell.getStringCellValue());
                 break;
             case NUMERIC:
+                double numeric = cell.getNumericCellValue();
                 builder.cellType(DateUtil.isCellDateFormatted(cell) ? "DATE" : "NUMERIC");
                 builder.displayValue(DateUtil.isCellDateFormatted(cell)
                         ? cell.getDateCellValue().toString()
-                        : formatNumeric(cell.getNumericCellValue()));
+                        : formatNumeric(numeric));
+                builder.rawValue(numeric);
                 break;
             case BOOLEAN:
                 builder.cellType("BOOLEAN");
                 builder.displayValue(String.valueOf(cell.getBooleanCellValue()));
+                builder.rawValue(cell.getBooleanCellValue());
+                break;
+            case ERROR:
+                String error = formulaError(cell.getErrorCellValue());
+                builder.cellType("ERROR");
+                builder.displayValue(error);
+                builder.rawValue(error);
                 break;
             case BLANK:
                 // Skip blank cells unless they're referenced by a formula
@@ -278,23 +299,75 @@ public class ExcelFormulaGraphExtractor {
         return builder.build();
     }
 
-    private String evaluateForDisplay(Cell cell) {
-        if (evaluator == null) {
-            return "(unevaluated)";
-        }
+    private FormulaEvaluation evaluateFormula(Cell cell) {
         try {
-            CellValue val = evaluator.evaluate(cell);
-            if (val == null) return "(null)";
-            switch (val.getCellType()) {
-                case STRING: return val.getStringValue();
-                case NUMERIC: return formatNumeric(val.getNumberValue());
-                case BOOLEAN: return String.valueOf(val.getBooleanValue());
-                case ERROR: return "#ERROR";
-                default: return "";
+            if (evaluator != null) {
+                CellValue value = evaluator.evaluate(cell);
+                if (value != null) {
+                    return formulaEvaluation(value);
+                }
             }
+            return cachedFormulaEvaluation(cell);
         } catch (Exception e) {
-            return "(eval-error)";
+            String message = e.getMessage() == null
+                    ? e.getClass().getSimpleName() : e.getMessage();
+            return new FormulaEvaluation("ERROR", null, null,
+                    "(eval-error)", message);
         }
+    }
+
+    private FormulaEvaluation formulaEvaluation(CellValue value) {
+        return switch (value.getCellType()) {
+            case STRING -> new FormulaEvaluation(
+                    "STRING", value.getStringValue(), null, value.getStringValue(), null);
+            case NUMERIC -> new FormulaEvaluation(
+                    "NUMERIC", value.getNumberValue(), value.getNumberValue(),
+                    formatNumeric(value.getNumberValue()), null);
+            case BOOLEAN -> new FormulaEvaluation(
+                    "BOOLEAN", value.getBooleanValue(), null,
+                    String.valueOf(value.getBooleanValue()), null);
+            case ERROR -> {
+                String error = formulaError(value.getErrorValue());
+                yield new FormulaEvaluation("ERROR", error, null, error, error);
+            }
+            case BLANK -> new FormulaEvaluation("BLANK", null, null, "", null);
+            default -> new FormulaEvaluation("UNKNOWN", null, null, "", null);
+        };
+    }
+
+    private FormulaEvaluation cachedFormulaEvaluation(Cell cell) {
+        return switch (cell.getCachedFormulaResultType()) {
+            case STRING -> new FormulaEvaluation(
+                    "STRING", cell.getStringCellValue(), null, cell.getStringCellValue(), null);
+            case NUMERIC -> new FormulaEvaluation(
+                    "NUMERIC", cell.getNumericCellValue(), cell.getNumericCellValue(),
+                    formatNumeric(cell.getNumericCellValue()), null);
+            case BOOLEAN -> new FormulaEvaluation(
+                    "BOOLEAN", cell.getBooleanCellValue(), null,
+                    String.valueOf(cell.getBooleanCellValue()), null);
+            case ERROR -> {
+                String error = formulaError(cell.getErrorCellValue());
+                yield new FormulaEvaluation("ERROR", error, null, error, error);
+            }
+            case BLANK -> new FormulaEvaluation("BLANK", null, null, "", null);
+            default -> new FormulaEvaluation("UNKNOWN", null, null, "(unevaluated)", null);
+        };
+    }
+
+    private String formulaError(byte errorCode) {
+        try {
+            return FormulaError.forInt(errorCode).getString();
+        } catch (IllegalArgumentException ignored) {
+            return "#ERROR(" + errorCode + ")";
+        }
+    }
+
+    private record FormulaEvaluation(
+            String cellType,
+            Object rawValue,
+            Double numericValue,
+            String displayValue,
+            String error) {
     }
 
     private String formatNumeric(double value) {

@@ -16,6 +16,7 @@
 
 package ai.kompile.staging.training;
 
+import ai.kompile.staging.config.StagingPropertyKeys;
 import ai.kompile.staging.web.dto.PeftConfigRequest;
 import org.nd4j.autodiff.samediff.SDVariable;
 import org.nd4j.autodiff.samediff.SameDiff;
@@ -28,6 +29,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.io.File;
+import java.io.IOException;
+import java.nio.file.Path;
 import java.util.*;
 
 /**
@@ -39,7 +42,7 @@ import java.util.*;
 public class PeftService {
     private static final Logger log = LoggerFactory.getLogger(PeftService.class);
 
-    @Value("${kompile.staging.models-dir:#{systemProperties['user.home'] + '/.kompile/models'}}")
+    @Value(StagingPropertyKeys.MODELS_DIR_VALUE)
     private String modelsDir;
 
     /**
@@ -84,6 +87,7 @@ public class PeftService {
         result.put("peftType", config.getPeftType());
 
         String peftType = config.getPeftType() != null ? config.getPeftType().toUpperCase() : "LORA";
+        String outputModelId = modelId + "-peft-" + peftType.toLowerCase(Locale.ROOT);
 
         // Try to load the model and apply PEFT adapters using direct SameDiff APIs
         File modelFile = resolveModelFile(modelId);
@@ -99,18 +103,32 @@ public class PeftService {
                 long trainableParams = applyPeftAdapters(sd, peftType, config);
 
                 // Save the PEFT model
-                File outputDir = new File(modelsDir, modelId + "-peft-" + peftType.toLowerCase());
+                File outputDir = new File(modelsDir, outputModelId);
                 outputDir.mkdirs();
-                File outputFile = new File(outputDir, modelId + "-peft.fb");
+                File outputFile = new File(outputDir, outputModelId + ".fb");
                 sd.save(outputFile, true);
+
+                Map<String, Object> peftConfig = describePeftConfig(peftType, config);
+                Map<String, Object> metrics = new LinkedHashMap<>();
+                metrics.put("trainableParameters", trainableParams);
+                metrics.put("totalParameters", totalParams);
+                metrics.put("trainablePercent", totalParams > 0 ? (double) trainableParams / totalParams * 100.0 : 0.0);
+                Path manifestPath = writePeftArtifactManifest("create", peftType, modelId, outputModelId,
+                        outputDir, outputFile, peftConfig, metrics);
 
                 result.put("trainableParameters", trainableParams);
                 result.put("totalParameters", totalParams);
                 result.put("trainablePercent", totalParams > 0 ? (double) trainableParams / totalParams * 100.0 : 0.0);
                 result.put("status", "created");
+                result.put("outputModelId", outputModelId);
+                result.put("outputDir", outputDir.getAbsolutePath());
                 result.put("outputPath", outputFile.getAbsolutePath());
+                result.put("modelFile", outputFile.getName());
+                result.put("manifestPath", manifestPath.toString());
+                result.put("deployable", true);
+                result.put("registryEligible", true);
                 result.put("message", "PEFT model created using SameDiff");
-                result.put("peftConfig", describePeftConfig(peftType, config));
+                result.put("peftConfig", peftConfig);
                 log.info("Created PEFT model: type={}, base={}, trainable={}/{}", peftType, modelId, trainableParams, totalParams);
                 return result;
             } catch (Exception e) {
@@ -130,6 +148,9 @@ public class PeftService {
         result.put("totalParameters", estimatedTotal);
         result.put("trainablePercent", (double) estimatedTrainable / estimatedTotal * 100.0);
         result.put("status", "created");
+        result.put("outputModelId", outputModelId);
+        result.put("deployable", false);
+        result.put("registryEligible", false);
         result.put("message", "PEFT model created (estimation mode - model file not found at " + modelId + ")");
         result.put("peftConfig", describePeftConfig(peftType, config));
 
@@ -147,6 +168,7 @@ public class PeftService {
     public Map<String, Object> mergeWeights(String peftModelId) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("peftModelId", peftModelId);
+        String mergedId = peftModelId + "-merged";
 
         File modelFile = resolveModelFile(peftModelId);
         if (modelFile != null && modelFile.exists()) {
@@ -182,15 +204,27 @@ public class PeftService {
                 }
 
                 // Save merged model
-                String mergedId = peftModelId + "-merged";
                 File outputDir = new File(modelsDir, mergedId);
                 outputDir.mkdirs();
                 File outputFile = new File(outputDir, mergedId + ".fb");
                 sd.save(outputFile, true);
 
+                Map<String, Object> peftConfig = new LinkedHashMap<>();
+                peftConfig.put("sourcePeftModelId", peftModelId);
+                peftConfig.put("adaptersMerged", mergedCount);
+                Map<String, Object> metrics = new LinkedHashMap<>();
+                metrics.put("adaptersMerged", mergedCount);
+                Path manifestPath = writePeftArtifactManifest("merge", "PEFT_MERGE", peftModelId, mergedId,
+                        outputDir, outputFile, peftConfig, metrics);
+
                 result.put("status", "merged");
                 result.put("outputModelId", mergedId);
+                result.put("outputDir", outputDir.getAbsolutePath());
                 result.put("outputPath", outputFile.getAbsolutePath());
+                result.put("modelFile", outputFile.getName());
+                result.put("manifestPath", manifestPath.toString());
+                result.put("deployable", true);
+                result.put("registryEligible", true);
                 result.put("adaptersMerged", mergedCount);
                 result.put("message", "PEFT weights merged and saved successfully (" + mergedCount + " adapters merged)");
                 log.info("Merged PEFT weights: {} -> {} ({} adapters)", peftModelId, mergedId, mergedCount);
@@ -210,7 +244,9 @@ public class PeftService {
         // Model file not found
         result.put("status", "not_found");
         result.put("message", "Model file not found for: " + peftModelId);
-        result.put("outputModelId", peftModelId + "-merged");
+        result.put("outputModelId", mergedId);
+        result.put("deployable", false);
+        result.put("registryEligible", false);
         return result;
     }
 
@@ -320,6 +356,29 @@ public class PeftService {
     }
 
     // ==================== Internal Helpers ====================
+
+    private Path writePeftArtifactManifest(String operation,
+                                           String trainingType,
+                                           String baseModelId,
+                                           String outputModelId,
+                                           File outputDirFile,
+                                           File modelFile,
+                                           Map<String, Object> peftConfig,
+                                           Map<String, Object> metrics) throws IOException {
+        Map<String, Object> trainingConfig = new LinkedHashMap<>();
+        trainingConfig.put("operation", operation);
+        trainingConfig.put("peftConfig", peftConfig != null ? new LinkedHashMap<>(peftConfig) : Collections.emptyMap());
+        return TrainingArtifactManifestWriter.writeManifest(
+                "peft-" + outputModelId,
+                baseModelId,
+                outputModelId,
+                trainingType,
+                outputDirFile.toPath(),
+                modelFile.toPath(),
+                Collections.emptyMap(),
+                trainingConfig,
+                metrics);
+    }
 
     private Map<String, String> peftTypeEntry(String id, String name, String description) {
         Map<String, String> entry = new LinkedHashMap<>();

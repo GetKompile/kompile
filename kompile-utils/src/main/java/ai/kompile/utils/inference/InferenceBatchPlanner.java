@@ -216,6 +216,11 @@ public final class InferenceBatchPlanner {
      * {@code activationFactor} captures per-token intermediate/attention buffers and is tuned by the
      * caller (it is the one fuzzy term; reactive OOM handling remains the backstop). Never returns
      * less than {@code seqHardCap} so at least one full-length row is always plannable.
+     *
+     * <p><b>Linear only.</b> This models native cost as {@code rows * seqLen} (linear in sequence),
+     * which fits autoregressive decode (KV cache grows linearly) but <em>under-counts a full
+     * bidirectional encoder forward pass</em>, whose attention scores cost {@code rows * seqLen^2}.
+     * For such models size with {@link #estimateMaxRowsForSeq} instead.</p>
      */
     public static long estimateMaxBatchTokens(long memoryCeilingBytes, int hiddenSize,
                                               int bytesPerElement, double safetyFraction,
@@ -224,6 +229,46 @@ public final class InferenceBatchPlanner {
         double usable = memoryCeilingBytes * Math.max(0.01, Math.min(1.0, safetyFraction));
         long tokens = (long) Math.floor(usable / bytesPerToken);
         return Math.max(seqHardCap, tokens);
+    }
+
+    /**
+     * Maximum rows that fit a native-memory ceiling at a given padded sequence length, modeling the
+     * TWO native costs a full-attention encoder forward pass pays — costs a flat {@code rows*seqLen}
+     * token budget conflates and therefore under-counts:
+     * <ul>
+     *   <li><b>Linear activations</b> — per row, each layer materializes a handful of
+     *       {@code seqLen * hidden} buffers (QKV, attention output, the {@code 4*hidden} FFN
+     *       intermediate, residuals): {@code ≈ linActivationFactor * hidden * seqLen} elements.</li>
+     *   <li><b>Quadratic attention</b> — per row, each layer materializes {@code heads * seqLen^2}
+     *       score/softmax buffers: {@code ≈ attentionFactor * seqLen^2} elements. This term DOMINATES
+     *       at long sequences and is exactly what a token budget cannot see, so a batch that looks
+     *       affordable by token count can still balloon native memory and trip an OOM kill.</li>
+     * </ul>
+     *
+     * <p>Both factors fold the layer count, head count and the allocator's retention/overhead into a
+     * single per-model coefficient — the encoder runs SameDiff without per-layer workspace recycling,
+     * so intermediates accumulate across the whole graph — and are caller-supplied; nothing
+     * model-specific is hardcoded here. Evaluate at the model's {@code seqHardCap} to get a row cap
+     * that is safe for every smaller bucket too (fewer tokens AND a smaller quadratic term). Always
+     * returns at least 1 so a single oversized row is still plannable; reactive OOM is the backstop.
+     *
+     * @return max rows per batch at {@code seqLen}, clamped to {@code [1, Integer.MAX_VALUE]}
+     */
+    public static int estimateMaxRowsForSeq(long memoryCeilingBytes, int hiddenSize, int bytesPerElement,
+                                            double safetyFraction, double linActivationFactor,
+                                            double attentionFactor, int seqLen) {
+        int seq = Math.max(1, seqLen);
+        int hidden = Math.max(1, hiddenSize);
+        int elem = Math.max(1, bytesPerElement);
+        double usable = Math.max(0L, memoryCeilingBytes) * Math.max(0.01, Math.min(1.0, safetyFraction));
+        double linBytesPerRow = (double) elem * Math.max(0.0, linActivationFactor) * hidden * seq;
+        double quadBytesPerRow = (double) elem * Math.max(0.0, attentionFactor) * (double) seq * seq;
+        double bytesPerRow = Math.max(1.0, linBytesPerRow + quadBytesPerRow);
+        long rows = (long) Math.floor(usable / bytesPerRow);
+        if (rows < 1) {
+            return 1;
+        }
+        return rows > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) rows;
     }
 
     /**

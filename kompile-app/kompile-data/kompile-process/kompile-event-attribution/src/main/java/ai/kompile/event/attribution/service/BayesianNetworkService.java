@@ -397,12 +397,37 @@ public class BayesianNetworkService {
                                                       Map<String, Integer> evidence,
                                                       int maxDepth, int maxNodes,
                                                       TypeHierarchy typeHierarchy) {
+        return queryMebnFromKg(seedNodeIds, evidence, maxDepth, maxNodes, typeHierarchy, null);
+    }
+
+    /**
+     * As {@link #queryMebnFromKg(Collection, Map, int, int, TypeHierarchy)}, but scopes the BFS
+     * traversal to nodes belonging to the given {@code factSheetId}.  When {@code factSheetId} is
+     * {@code null} or ≤ 0, the filter is disabled and the full global graph is used (legacy
+     * behaviour).
+     *
+     * <p>Scoping works by filtering nodes during BFS: any discovered node whose
+     * {@code factSheetId} does not match the requested fact sheet is excluded from the
+     * subgraph passed to the MEBN builder.  The seed node itself is always included
+     * regardless (the caller is responsible for supplying a node from the correct sheet).</p>
+     */
+    public BayesianInferenceResult queryMebnFromKg(Collection<String> seedNodeIds,
+                                                      Map<String, Integer> evidence,
+                                                      int maxDepth, int maxNodes,
+                                                      TypeHierarchy typeHierarchy,
+                                                      Long factSheetId) {
         long startTime = System.currentTimeMillis();
 
         KgMTheoryBuilder builder = new KgMTheoryBuilder(graphService)
                 .maxDepth(maxDepth)
                 .maxNodes(maxNodes)
                 .withEmpiricalPriors(empiricalPriors);
+
+        // Apply fact-sheet scoping when requested
+        if (factSheetId != null && factSheetId > 0) {
+            builder.filterByFactSheetId(factSheetId);
+        }
+
         MTheory mTheory = builder.build(seedNodeIds);
 
         if (mTheory.getMFrags().isEmpty()) {

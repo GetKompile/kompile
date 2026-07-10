@@ -1,7 +1,7 @@
 package ai.kompile.graphchangetracking.controller;
 
 import ai.kompile.graphchangetracking.domain.GraphMutationRecord;
-import ai.kompile.graphchangetracking.repository.GraphMutationRecordRepository;
+import ai.kompile.graphchangetracking.service.GraphMutationStore;
 import ai.kompile.graphchangetracking.service.TemporalGraphQueryService;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -19,12 +19,12 @@ import java.util.Map;
 public class GraphChangeTrackingController {
 
     private final TemporalGraphQueryService temporalService;
-    private final GraphMutationRecordRepository mutationRepo;
+    private final GraphMutationStore mutationStore;
 
     public GraphChangeTrackingController(TemporalGraphQueryService temporalService,
-                                          GraphMutationRecordRepository mutationRepo) {
+                                          GraphMutationStore mutationStore) {
         this.temporalService = temporalService;
-        this.mutationRepo = mutationRepo;
+        this.mutationStore = mutationStore;
     }
 
     @GetMapping("/nodes/{nodeId}/history")
@@ -82,21 +82,21 @@ public class GraphChangeTrackingController {
         if (factSheetId != null && from != null && to != null) {
             LocalDateTime fromTime = LocalDateTime.parse(from, DateTimeFormatter.ISO_LOCAL_DATE_TIME);
             LocalDateTime toTime = LocalDateTime.parse(to, DateTimeFormatter.ISO_LOCAL_DATE_TIME);
-            return ResponseEntity.ok(mutationRepo.findByFactSheetIdAndOccurredAtBetweenOrderByOccurredAtDesc(
+            return ResponseEntity.ok(mutationStore.findByFactSheetIdAndOccurredAtBetweenOrderByOccurredAtDesc(
                     factSheetId, fromTime, toTime, pageable));
         } else if (factSheetId != null) {
-            return ResponseEntity.ok(mutationRepo.findByFactSheetIdOrderByOccurredAtDesc(factSheetId, pageable));
+            return ResponseEntity.ok(mutationStore.findByFactSheetIdOrderByOccurredAtDesc(factSheetId, pageable));
         } else if (from != null && to != null) {
             LocalDateTime fromTime = LocalDateTime.parse(from, DateTimeFormatter.ISO_LOCAL_DATE_TIME);
             LocalDateTime toTime = LocalDateTime.parse(to, DateTimeFormatter.ISO_LOCAL_DATE_TIME);
-            return ResponseEntity.ok(mutationRepo.findByOccurredAtBetweenOrderByOccurredAtDesc(fromTime, toTime, pageable));
+            return ResponseEntity.ok(mutationStore.findByOccurredAtBetweenOrderByOccurredAtDesc(fromTime, toTime, pageable));
         } else {
-            return ResponseEntity.ok(mutationRepo.findAll(pageable));
+            return ResponseEntity.ok(mutationStore.findAll(pageable));
         }
     }
 
     @GetMapping("/changesets/{changesetId}")
     public ResponseEntity<List<GraphMutationRecord>> getChangeset(@PathVariable String changesetId) {
-        return ResponseEntity.ok(mutationRepo.findByChangesetId(changesetId));
+        return ResponseEntity.ok(mutationStore.findByChangesetId(changesetId));
     }
 }

@@ -9,6 +9,7 @@
  */
 package ai.kompile.graph.reasoning.mebn;
 
+import java.io.Serializable;
 import java.util.*;
 
 /**
@@ -25,7 +26,7 @@ import java.util.*;
  * <p>When grounded with specific entity instances, each substitution produces
  * a concrete BN node: {@code isActive(alice)}, {@code isActive(bob)}, etc.</p>
  */
-public class RandomVariable {
+public class RandomVariable implements Serializable {
 
     /**
      * Role of this random variable in its home MFrag.

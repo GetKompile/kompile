@@ -20,9 +20,11 @@ import ai.kompile.knowledgegraph.matrix.model.MatrixGraphNode;
 import org.nd4j.linalg.api.ndarray.INDArray;
 
 import java.io.IOException;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * Interface for persistent storage of matrix-based graphs.
@@ -88,9 +90,23 @@ public interface MatrixGraphStore {
      *
      * @return the set of loaded graph IDs (never null)
      */
-    default java.util.Set<String> getLoadedGraphIds() {
+    default Set<String> getLoadedGraphIds() {
         List<String> ids = listGraphs();
-        return ids == null ? java.util.Set.of() : new java.util.LinkedHashSet<>(ids);
+        return ids == null ? Set.of() : new LinkedHashSet<>(ids);
+    }
+
+    /**
+     * Merge arbitrary metadata into an existing directed edge without modifying its topology.
+     * Used by GNN/link-prediction overlays to attach scores post-hoc.
+     *
+     * @return true if the edge was found and updated, false otherwise
+     */
+    default boolean mergeEdgeMetadata(String graphId,
+                                      String sourceNodeId,
+                                      String targetNodeId,
+                                      String edgeType,
+                                      Map<String, Object> additionalMetadata) {
+        return false;
     }
 
     /**

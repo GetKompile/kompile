@@ -26,6 +26,9 @@ import {
   ServerStatus,
   TransportType
 } from '../../services/external-mcp-server.service';
+import { ExtMcpServerDialogComponent, ExtMcpServerDialogData } from './ext-mcp-server-dialog.component';
+import { ExtMcpImportDialogComponent } from './ext-mcp-import-dialog.component';
+import { ExtMcpDetailsDialogComponent, ExtMcpDetailsDialogData, EXT_MCP_DETAILS_EDIT_ACTION } from './ext-mcp-details-dialog.component';
 
 @Component({
   standalone: false,
@@ -46,24 +49,6 @@ export class McpConfigManagerComponent implements OnInit, OnDestroy {
   jsonConfig = '';
   jsonError = '';
   jsonValid = true;
-
-  // Dialog state
-  showServerDialog = false;
-  showImportDialog = false;
-  showDetailsDialog = false;
-  isEditing = false;
-  editingServer: ExternalMcpServerConfig | null = null;
-  viewingServer: ExternalMcpServerConfig | null = null;
-  viewingServerJson = '';
-  importJson = '';
-
-  // Environment variable editing (for STDIO servers)
-  envKeys: string[] = [];
-  envValues: string[] = [];
-
-  // HTTP headers editing (for REST/SSE servers)
-  headerKeys: string[] = [];
-  headerValues: string[] = [];
 
   private destroy$ = new Subject<void>();
 
@@ -118,66 +103,47 @@ export class McpConfigManagerComponent implements OnInit, OnDestroy {
   // ==================== Server CRUD ====================
 
   createServer(transportType: TransportType = 'STDIO'): void {
+    let server: ExternalMcpServerConfig;
     if (transportType === 'STDIO') {
-      this.editingServer = this.mcpService.createDefaultConfig();
+      server = this.mcpService.createDefaultConfig();
     } else if (transportType === 'REST') {
-      this.editingServer = this.mcpService.createDefaultRestConfig();
+      server = this.mcpService.createDefaultRestConfig();
     } else {
-      this.editingServer = this.mcpService.createDefaultSseConfig();
+      server = this.mcpService.createDefaultSseConfig();
     }
-    this.isEditing = false;
-    this.initEnvArrays();
-    this.initHeaderArrays();
-    this.showServerDialog = true;
+    this.openAddServerDialog(server);
   }
 
   editServer(server: ExternalMcpServerConfig): void {
-    this.editingServer = {
-      ...server,
-      args: [...(server.args || [])],
-      env: { ...(server.env || {}) },
-      headers: { ...(server.headers || {}) }
-    };
-    this.isEditing = true;
-    this.initEnvArrays();
-    this.initHeaderArrays();
-    this.showServerDialog = true;
+    this.openAddServerDialog(server);
   }
 
-  saveServer(): void {
-    if (!this.editingServer) return;
+  openAddServerDialog(server: ExternalMcpServerConfig): void {
+    const isEditing = !!server.id && this.servers.some(s => s.id === server.id);
+    const envKeys = server.env ? Object.keys(server.env) : [];
+    const envValues = server.env ? Object.values(server.env) : [];
+    const headerKeys = server.headers ? Object.keys(server.headers) : [];
+    const headerValues = server.headers ? Object.values(server.headers) : [];
 
-    const isStdio = this.mcpService.isStdio(this.editingServer);
-
-    if (isStdio) {
-      // Convert env arrays back to object for STDIO servers
-      this.editingServer.env = {};
-      for (let i = 0; i < this.envKeys.length; i++) {
-        const key = this.envKeys[i].trim();
-        if (key) {
-          this.editingServer.env[key] = this.envValues[i] || '';
+    const data: ExtMcpServerDialogData = { server, isEditing, envKeys, envValues, headerKeys, headerValues };
+    this.dialog.open(ExtMcpServerDialogComponent, { data, width: '700px' })
+      .afterClosed()
+      .pipe(takeUntil(this.destroy$))
+      .subscribe((result: ExternalMcpServerConfig | null) => {
+        if (result) {
+          this.saveServer(result, isEditing);
         }
-      }
-    } else {
-      // Convert header arrays back to object for REST/SSE servers
-      this.editingServer.headers = {};
-      for (let i = 0; i < this.headerKeys.length; i++) {
-        const key = this.headerKeys[i].trim();
-        if (key) {
-          this.editingServer.headers[key] = this.headerValues[i] || '';
-        }
-      }
-    }
+      });
+  }
 
-    const operation = this.isEditing
-      ? this.mcpService.updateServer(this.editingServer.id, this.editingServer)
-      : this.mcpService.addServer(this.editingServer);
+  saveServer(server: ExternalMcpServerConfig, isEditing: boolean): void {
+    const operation = isEditing
+      ? this.mcpService.updateServer(server.id, server)
+      : this.mcpService.addServer(server);
 
     operation.subscribe({
       next: () => {
-        this.showSuccess(`Server ${this.isEditing ? 'updated' : 'created'} successfully`);
-        this.showServerDialog = false;
-        this.editingServer = null;
+        this.showSuccess(`Server ${isEditing ? 'updated' : 'created'} successfully`);
         this.loadServers();
       },
       error: (err) => {
@@ -319,18 +285,20 @@ export class McpConfigManagerComponent implements OnInit, OnDestroy {
   // ==================== Import/Export ====================
 
   openImportDialog(): void {
-    this.importJson = '';
-    this.showImportDialog = true;
+    this.dialog.open(ExtMcpImportDialogComponent)
+      .afterClosed()
+      .pipe(takeUntil(this.destroy$))
+      .subscribe((json: string | null) => {
+        if (json) {
+          this.importConfig(json);
+        }
+      });
   }
 
-  importConfig(): void {
-    if (!this.importJson.trim()) return;
-
-    this.mcpService.importConfig(this.importJson).subscribe({
+  importConfig(json: string): void {
+    this.mcpService.importConfig(json).subscribe({
       next: (result) => {
         this.showSuccess(result.message);
-        this.showImportDialog = false;
-        this.importJson = '';
         this.loadServers();
       },
       error: (err) => {
@@ -371,62 +339,6 @@ export class McpConfigManagerComponent implements OnInit, OnDestroy {
     }).catch(err => {
       this.showError('Failed to paste: ' + err);
     });
-  }
-
-  // ==================== Environment Variables (STDIO) ====================
-
-  initEnvArrays(): void {
-    if (this.editingServer?.env) {
-      this.envKeys = Object.keys(this.editingServer.env);
-      this.envValues = Object.values(this.editingServer.env);
-    } else {
-      this.envKeys = [];
-      this.envValues = [];
-    }
-  }
-
-  addEnvVar(): void {
-    this.envKeys.push('');
-    this.envValues.push('');
-  }
-
-  removeEnvVar(index: number): void {
-    this.envKeys.splice(index, 1);
-    this.envValues.splice(index, 1);
-  }
-
-  // ==================== HTTP Headers (REST/SSE) ====================
-
-  initHeaderArrays(): void {
-    if (this.editingServer?.headers) {
-      this.headerKeys = Object.keys(this.editingServer.headers);
-      this.headerValues = Object.values(this.editingServer.headers);
-    } else {
-      this.headerKeys = [];
-      this.headerValues = [];
-    }
-  }
-
-  addHeader(): void {
-    this.headerKeys.push('');
-    this.headerValues.push('');
-  }
-
-  removeHeader(index: number): void {
-    this.headerKeys.splice(index, 1);
-    this.headerValues.splice(index, 1);
-  }
-
-  // ==================== Args Editing ====================
-
-  getArgsString(): string {
-    return this.editingServer?.args?.join('\n') || '';
-  }
-
-  setArgsFromString(value: string): void {
-    if (this.editingServer) {
-      this.editingServer.args = value.split('\n').map(s => s.trim()).filter(s => s);
-    }
   }
 
   // ==================== UI Helpers ====================
@@ -490,36 +402,18 @@ export class McpConfigManagerComponent implements OnInit, OnDestroy {
     return this.mcpService.isSse(server);
   }
 
-  cancelServerDialog(): void {
-    this.showServerDialog = false;
-    this.editingServer = null;
-  }
-
-  cancelImportDialog(): void {
-    this.showImportDialog = false;
-    this.importJson = '';
-  }
-
   // ==================== View Details ====================
 
   viewServerDetails(server: ExternalMcpServerConfig): void {
-    this.viewingServer = server;
-    this.viewingServerJson = this.formatSingleServerJson(server);
-    this.showDetailsDialog = true;
-  }
-
-  cancelDetailsDialog(): void {
-    this.showDetailsDialog = false;
-    this.viewingServer = null;
-    this.viewingServerJson = '';
-  }
-
-  copyServerJson(): void {
-    navigator.clipboard.writeText(this.viewingServerJson).then(() => {
-      this.showSuccess('Server configuration copied to clipboard');
-    }).catch(err => {
-      this.showError('Failed to copy: ' + err);
-    });
+    const data: ExtMcpDetailsDialogData = { server, serverJson: this.formatSingleServerJson(server) };
+    this.dialog.open(ExtMcpDetailsDialogComponent, { data, width: '780px' })
+      .afterClosed()
+      .pipe(takeUntil(this.destroy$))
+      .subscribe((result: string | null) => {
+        if (result === EXT_MCP_DETAILS_EDIT_ACTION) {
+          this.openAddServerDialog(server);
+        }
+      });
   }
 
   formatSingleServerJson(server: ExternalMcpServerConfig): string {

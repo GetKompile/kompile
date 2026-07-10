@@ -26,6 +26,16 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import ai.kompile.gateway.core.gateway.channel.DefaultEmailClient;
+import ai.kompile.gateway.core.gateway.channel.DefaultTelegramApiClient;
+import ai.kompile.gateway.core.gateway.channel.EmailClient;
+import ai.kompile.kclaw.gateway.channel.DiscordChannelAdapter;
+import ai.kompile.kclaw.gateway.channel.DefaultDiscordApiClient;
+import ai.kompile.kclaw.gateway.channel.DefaultSlackApiClient;
+import ai.kompile.kclaw.gateway.channel.EmailChannelAdapter;
+import ai.kompile.kclaw.gateway.channel.SlackChannelAdapter;
+import ai.kompile.kclaw.gateway.channel.TelegramChannelAdapter;
+
 import java.util.List;
 import java.util.Map;
 
@@ -66,14 +76,14 @@ public class ChannelController {
     public ResponseEntity<Void> updateChannelConfig(
             @PathVariable String channelName,
             @RequestBody ChannelConfig config) {
-        
+
         channelManager.getAdapter(channelName).ifPresent(adapter -> {
             if (config.getAdapterConfig() != null) {
                 adapter.updateConfig(config.getAdapterConfig());
             }
             applyChannelSpecificConfig(adapter, config);
         });
-        
+
         return ResponseEntity.ok().build();
     }
 
@@ -133,7 +143,7 @@ public class ChannelController {
 
     private void applyChannelSpecificConfig(ChannelAdapter adapter, ChannelConfig config) {
         String channelName = adapter.getChannelName();
-        
+
         switch (channelName) {
             case "telegram" -> applyTelegramConfig(adapter, config);
             case "discord" -> applyDiscordConfig(adapter, config);
@@ -145,35 +155,35 @@ public class ChannelController {
 
     private void applyTelegramConfig(ChannelAdapter adapter, ChannelConfig config) {
         if (config.getTelegram() == null) return;
-        
-        ai.kompile.kclaw.gateway.channel.TelegramChannelAdapter telegramAdapter = 
-                (ai.kompile.kclaw.gateway.channel.TelegramChannelAdapter) adapter;
-        
+
+        TelegramChannelAdapter telegramAdapter =
+                (TelegramChannelAdapter) adapter;
+
         if (config.getTelegram().getBotToken() != null) {
             telegramAdapter.setApiClient(
-                    new ai.kompile.gateway.core.gateway.channel.DefaultTelegramApiClient(
+                    new DefaultTelegramApiClient(
                             config.getTelegram().getBotToken()
                     )
             );
         }
-        
+
         config.getTelegram().getAllowedChatIds()
                 .forEach(telegramAdapter::addAllowedChat);
     }
 
     private void applyDiscordConfig(ChannelAdapter adapter, ChannelConfig config) {
         if (config.getDiscord() == null) return;
-        
-        ai.kompile.kclaw.gateway.channel.DiscordChannelAdapter discordAdapter = 
-                (ai.kompile.kclaw.gateway.channel.DiscordChannelAdapter) adapter;
-        
+
+        DiscordChannelAdapter discordAdapter =
+                (DiscordChannelAdapter) adapter;
+
         if (config.getDiscord().getBotToken() != null) {
             discordAdapter.setBotToken(config.getDiscord().getBotToken());
             discordAdapter.setApiClient(
-                    new ai.kompile.kclaw.gateway.channel.DefaultDiscordApiClient()
+                    new DefaultDiscordApiClient()
             );
         }
-        
+
         config.getDiscord().getAllowedChannelIds()
                 .forEach(discordAdapter::addAllowedChannel);
         config.getDiscord().getAllowedGuildIds()
@@ -182,18 +192,18 @@ public class ChannelController {
 
     private void applySlackConfig(ChannelAdapter adapter, ChannelConfig config) {
         if (config.getSlack() == null) return;
-        
-        ai.kompile.kclaw.gateway.channel.SlackChannelAdapter slackAdapter = 
-                (ai.kompile.kclaw.gateway.channel.SlackChannelAdapter) adapter;
-        
+
+        SlackChannelAdapter slackAdapter =
+                (SlackChannelAdapter) adapter;
+
         if (config.getSlack().getBotToken() != null) {
             slackAdapter.setBotToken(config.getSlack().getBotToken());
             slackAdapter.setAppToken(config.getSlack().getAppToken());
             slackAdapter.setApiClient(
-                    new ai.kompile.kclaw.gateway.channel.DefaultSlackApiClient()
+                    new DefaultSlackApiClient()
             );
         }
-        
+
         config.getSlack().getAllowedChannelIds()
                 .forEach(slackAdapter::addAllowedChannel);
         slackAdapter.setRespondToAllMessages(config.getSlack().isRespondToAllMessages());
@@ -201,33 +211,33 @@ public class ChannelController {
 
     private void applyWhatsAppConfig(ChannelAdapter adapter, ChannelConfig config) {
         if (config.getWhatsapp() == null) return;
-        
-        ai.kompile.kclaw.gateway.channel.WhatsAppChannelAdapter waAdapter = 
-                (ai.kompile.kclaw.gateway.channel.WhatsAppChannelAdapter) adapter;
-        
+
+        WhatsAppChannelAdapter waAdapter =
+                (WhatsAppChannelAdapter) adapter;
+
         if (config.getWhatsapp().getAccessToken() != null) {
             waAdapter.setAccessToken(config.getWhatsapp().getAccessToken());
             waAdapter.setPhoneNumberId(config.getWhatsapp().getPhoneNumberId());
             waAdapter.setVerifyToken(config.getWhatsapp().getVerifyToken());
             waAdapter.setApiClient(
-                    new ai.kompile.kclaw.gateway.channel.DefaultWhatsAppApiClient()
+                    new DefaultWhatsAppApiClient()
             );
         }
-        
+
         config.getWhatsapp().getAllowedPhoneNumbers()
                 .forEach(waAdapter::addAllowedPhone);
     }
 
     private void applyEmailConfig(ChannelAdapter adapter, ChannelConfig config) {
         if (config.getEmail() == null) return;
-        
-        ai.kompile.kclaw.gateway.channel.EmailChannelAdapter emailAdapter = 
-                (ai.kompile.kclaw.gateway.channel.EmailChannelAdapter) adapter;
-        
+
+        EmailChannelAdapter emailAdapter =
+                (EmailChannelAdapter) adapter;
+
         ChannelConfig.EmailConfig email = config.getEmail();
-        
-        ai.kompile.gateway.core.gateway.channel.EmailClient.EmailConfig emailClientConfig = 
-                new ai.kompile.gateway.core.gateway.channel.EmailClient.EmailConfig(
+
+        EmailClient.EmailConfig emailClientConfig =
+                new EmailClient.EmailConfig(
                         email.getImapHost(),
                         email.getImapPort(),
                         email.getUsername(),
@@ -241,12 +251,12 @@ public class ChannelController {
                         email.getFromName(),
                         email.getPollIntervalSeconds()
                 );
-        
+
         emailAdapter.setEmailConfig(emailClientConfig);
         emailAdapter.setEmailClient(
-                new ai.kompile.gateway.core.gateway.channel.DefaultEmailClient()
+                new DefaultEmailClient()
         );
-        
+
         email.getAllowedSenders()
                 .forEach(emailAdapter::addAllowedSender);
     }

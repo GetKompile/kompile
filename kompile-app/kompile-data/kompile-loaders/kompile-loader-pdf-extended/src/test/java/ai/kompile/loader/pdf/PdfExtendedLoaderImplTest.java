@@ -25,6 +25,7 @@ import org.apache.pdfbox.pdmodel.common.PDRectangle;
 import org.apache.pdfbox.pdmodel.font.PDType1Font;
 import org.apache.pdfbox.pdmodel.font.Standard14Fonts;
 import org.apache.pdfbox.pdmodel.interactive.annotation.PDAnnotationText;
+import org.apache.pdfbox.pdmodel.interactive.documentnavigation.destination.PDPageFitDestination;
 import org.apache.pdfbox.pdmodel.interactive.documentnavigation.outline.PDDocumentOutline;
 import org.apache.pdfbox.pdmodel.interactive.documentnavigation.outline.PDOutlineItem;
 import org.apache.pdfbox.pdmodel.interactive.form.PDAcroForm;
@@ -240,6 +241,27 @@ class PdfExtendedLoaderImplTest {
     }
 
     @Test
+    void extractBookmarks_emitsDestinationPageSuffix() throws Exception {
+        File pdfFile = createPdfWithBookmarkDestinations("bookmarked-dest.pdf");
+
+        PdfExtendedLoaderImpl loader = new PdfExtendedLoaderImpl();
+        DocumentSourceDescriptor descriptor = DocumentSourceDescriptor.builder()
+                .type(DocumentSourceDescriptor.SourceType.FILE)
+                .pathOrUrl(pdfFile.getAbsolutePath())
+                .build();
+
+        Document bookmarkDoc = loader.load(descriptor).stream()
+                .filter(d -> "bookmarks".equals(d.getMetadata().get("extractionType")))
+                .findFirst()
+                .orElse(null);
+        assertNotNull(bookmarkDoc, "bookmark document should be produced");
+        // The bookmark pointing to page 2 must carry the "[page=2]" suffix PdfGraphExtractor parses to
+        // link the PDF_SECTION to its page — previously the suffix was omitted, so ON_PAGE was a no-op.
+        assertTrue(bookmarkDoc.getText().contains("Chapter 2 [page=2]"),
+                "bookmark destination page must be emitted as a [page=N] suffix; got:\n" + bookmarkDoc.getText());
+    }
+
+    @Test
     void testLoadNonExistentFile() {
         PdfExtendedLoaderImpl loader = new PdfExtendedLoaderImpl();
         DocumentSourceDescriptor descriptor = DocumentSourceDescriptor.builder()
@@ -442,6 +464,46 @@ class PdfExtendedLoaderImplTest {
 
             PDOutlineItem chapter2 = new PDOutlineItem();
             chapter2.setTitle("Chapter 2");
+            outline.addLast(chapter2);
+
+            document.save(file);
+        }
+        return file;
+    }
+
+    private File createPdfWithBookmarkDestinations(String name) throws Exception {
+        File file = tempDir.resolve(name).toFile();
+        try (PDDocument document = new PDDocument()) {
+            PDPage page1 = new PDPage();
+            document.addPage(page1);
+            PDPage page2 = new PDPage();
+            document.addPage(page2);
+
+            for (PDPage page : List.of(page1, page2)) {
+                try (PDPageContentStream contentStream = new PDPageContentStream(document, page)) {
+                    contentStream.beginText();
+                    contentStream.setFont(new PDType1Font(Standard14Fonts.FontName.HELVETICA), 12);
+                    contentStream.newLineAtOffset(50, 700);
+                    contentStream.showText("Chapter content.");
+                    contentStream.endText();
+                }
+            }
+
+            PDDocumentOutline outline = new PDDocumentOutline();
+            document.getDocumentCatalog().setDocumentOutline(outline);
+
+            PDOutlineItem chapter1 = new PDOutlineItem();
+            chapter1.setTitle("Chapter 1");
+            PDPageFitDestination dest1 = new PDPageFitDestination();
+            dest1.setPage(page1);
+            chapter1.setDestination(dest1);
+            outline.addLast(chapter1);
+
+            PDOutlineItem chapter2 = new PDOutlineItem();
+            chapter2.setTitle("Chapter 2");
+            PDPageFitDestination dest2 = new PDPageFitDestination();
+            dest2.setPage(page2);
+            chapter2.setDestination(dest2);
             outline.addLast(chapter2);
 
             document.save(file);

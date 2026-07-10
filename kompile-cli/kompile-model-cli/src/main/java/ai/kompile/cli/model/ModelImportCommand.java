@@ -17,6 +17,7 @@
 package ai.kompile.cli.model;
 
 import ai.kompile.cli.common.KompileHome;
+import ai.kompile.utils.FormatUtils;
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
 import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream;
@@ -117,14 +118,7 @@ public class ModelImportCommand implements Callable<Integer> {
         }
 
         System.out.printf("Successfully imported %d files (%s) to %s%n",
-                fileCount, formatSize(totalBytes), targetDir);
+                fileCount, FormatUtils.formatBytes(totalBytes), targetDir);
         return 0;
-    }
-
-    private String formatSize(long bytes) {
-        if (bytes < 1024) return bytes + " B";
-        if (bytes < 1024 * 1024) return String.format("%.1f KB", bytes / 1024.0);
-        if (bytes < 1024 * 1024 * 1024) return String.format("%.1f MB", bytes / (1024.0 * 1024));
-        return String.format("%.2f GB", bytes / (1024.0 * 1024 * 1024));
     }
 }

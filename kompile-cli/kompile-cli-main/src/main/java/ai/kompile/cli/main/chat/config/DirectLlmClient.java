@@ -199,6 +199,47 @@ public class DirectLlmClient {
         return conversationHistory.size();
     }
 
+    /** The model configured for this client (before any per-agent override). */
+    public String getConfiguredModel() {
+        return config.getModel();
+    }
+
+    /** The resolved provider base URL this client sends requests to. */
+    public String getResolvedBaseUrl() {
+        return config.resolveBaseUrl();
+    }
+
+    /**
+     * In-place mid-conversation pruning of the wire history: collapse the content of
+     * old {@code tool} messages to short summaries and clip old assistant text, while
+     * leaving message roles, ids, and {@code tool_calls} wiring untouched — so the
+     * assistant/tool pairing the provider validates stays intact. Safe to call between
+     * agentic steps, unlike a full summary rewrite.
+     *
+     * @param preserveRecentMessages number of newest messages left untouched
+     * @param toolResultSummarizer   maps (toolName, content) → summary text
+     * @return number of messages shrunk
+     */
+    public int compactToolHistory(int preserveRecentMessages,
+                                  java.util.function.BinaryOperator<String> toolResultSummarizer) {
+        int lastPrunable = conversationHistory.size() - Math.max(0, preserveRecentMessages);
+        int shrunk = 0;
+        for (int i = 0; i < lastPrunable; i++) {
+            ObjectNode msg = conversationHistory.get(i);
+            String role = msg.path("role").asText("");
+            String content = msg.path("content").asText("");
+            if ("tool".equals(role) && content.length() > 600) {
+                String toolName = msg.path("name").asText(null);
+                msg.put("content", toolResultSummarizer.apply(toolName, content));
+                shrunk++;
+            } else if ("assistant".equals(role) && content.length() > 2_000) {
+                msg.put("content", content.substring(0, 2_000) + "\n... (truncated during compaction)");
+                shrunk++;
+            }
+        }
+        return shrunk;
+    }
+
     // ========================================================================
     // OpenAI-compatible Chat Completions
     // ========================================================================

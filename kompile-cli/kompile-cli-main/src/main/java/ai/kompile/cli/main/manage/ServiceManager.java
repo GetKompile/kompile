@@ -16,8 +16,11 @@
 
 package ai.kompile.cli.main.manage;
 
+import ai.kompile.cli.common.logs.LogPaths;
+import ai.kompile.cli.common.config.HardwareAutoConfigurator;
 import ai.kompile.cli.common.registry.InstanceInfo;
 import ai.kompile.cli.common.registry.InstanceRegistry;
+import ai.kompile.cli.common.util.JavaRuntimeLocator;
 import ai.kompile.cli.main.install.registry.ComponentRegistry;
 import org.zeroturnaround.exec.ProcessExecutor;
 import org.zeroturnaround.exec.stream.LogOutputStream;
@@ -40,6 +43,39 @@ public class ServiceManager {
 
     private static final int DEFAULT_STARTUP_TIMEOUT_SECONDS = 120;
     private static final int HEALTH_CHECK_TIMEOUT_MS = 5000;
+
+    /**
+     * Machine-sized default heap for a component/instance type when the caller
+     * passed no -Xmx. Replaces the old fixed 4g default, which oversubscribed
+     * small boxes and starved large ones.
+     */
+    private static String defaultHeapFor(String componentOrType) {
+        HardwareAutoConfigurator.Tier tier = HardwareAutoConfigurator.currentTier();
+        String key = componentOrType == null ? "" : componentOrType.toLowerCase();
+        if (key.contains("staging")) {
+            return HardwareAutoConfigurator.stagingHeapForTier(tier);
+        }
+        if (key.contains("serving")) {
+            return HardwareAutoConfigurator.servingHeapForTier(tier);
+        }
+        return HardwareAutoConfigurator.appHeapForTier(tier);
+    }
+
+    private static File[] componentLogFiles(String componentId) {
+        File dir = new File(LogPaths.logsDirectory(), "components");
+        String safeName = safeFileName(componentId);
+        return new File[] {
+                new File(dir, safeName + ".out.log"),
+                new File(dir, safeName + ".err.log")
+        };
+    }
+
+    private static String safeFileName(String value) {
+        if (value == null || value.isBlank()) {
+            return "_unknown";
+        }
+        return value.replaceAll("[^A-Za-z0-9._-]", "_");
+    }
 
     /**
      * Start a component as a background process
@@ -70,21 +106,26 @@ public class ServiceManager {
 
         // Build command
         List<String> command = new ArrayList<>();
-        command.add("java");
-        
-        // Add JVM arguments
-        if (jvmArgs != null) {
-            command.addAll(jvmArgs);
+        boolean isNative = !jarFile.getName().endsWith(".jar");
+        if (isNative) {
+            command.add(jarFile.getAbsolutePath());
+        } else {
+            command.add(JavaRuntimeLocator.javaExecutable());
+
+            // Add JVM arguments
+            if (jvmArgs != null) {
+                command.addAll(jvmArgs);
+            }
+
+            // Add default memory settings if not specified, sized to this machine
+            boolean hasXmx = jvmArgs != null && jvmArgs.stream().anyMatch(arg -> arg.startsWith("-Xmx"));
+            if (!hasXmx) {
+                command.add("-Xmx" + defaultHeapFor(componentId));
+            }
+
+            command.add("-jar");
+            command.add(jarFile.getAbsolutePath());
         }
-        
-        // Add default memory settings if not specified
-        boolean hasXmx = jvmArgs != null && jvmArgs.stream().anyMatch(arg -> arg.startsWith("-Xmx"));
-        if (!hasXmx) {
-            command.add("-Xmx4g");
-        }
-        
-        command.add("-jar");
-        command.add(jarFile.getAbsolutePath());
         
         // Add Spring Boot port argument
         command.add("--server.port=" + port);
@@ -99,14 +140,21 @@ public class ServiceManager {
         System.out.println("  Port: " + port);
         System.out.println("  Command: " + String.join(" ", command));
 
+        File[] logFiles = componentLogFiles(componentId);
+        File logDir = logFiles[0].getParentFile();
+        if (!logDir.exists() && !logDir.mkdirs() && !logDir.isDirectory()) {
+            throw new IOException("Failed to create log directory: " + logDir.getAbsolutePath());
+        }
+
         // Start process
         Process process = new ProcessBuilder(command)
-                .redirectOutput(ProcessBuilder.Redirect.PIPE)
-                .redirectError(ProcessBuilder.Redirect.PIPE)
+                .redirectOutput(ProcessBuilder.Redirect.appendTo(logFiles[0]))
+                .redirectError(ProcessBuilder.Redirect.appendTo(logFiles[1]))
                 .start();
 
         long pid = process.pid();
         System.out.println("  PID: " + pid);
+        System.out.println("  Logs: " + logDir.getAbsolutePath());
 
         // Register instance
         InstanceInfo instanceInfo = InstanceInfo.builder()
@@ -307,13 +355,13 @@ public class ServiceManager {
         if (isNative) {
             command.add(jarFile.getAbsolutePath());
         } else {
-            command.add("java");
+            command.add(JavaRuntimeLocator.javaExecutable());
             if (jvmArgs != null) {
                 command.addAll(jvmArgs);
             }
             boolean hasXmx = jvmArgs != null && jvmArgs.stream().anyMatch(arg -> arg.startsWith("-Xmx"));
             if (!hasXmx) {
-                command.add("-Xmx4g");
+                command.add("-Xmx" + defaultHeapFor(type));
             }
             command.add("-jar");
             command.add(jarFile.getAbsolutePath());
@@ -334,6 +382,10 @@ public class ServiceManager {
             logDir.mkdirs();
             pb.redirectOutput(new File(logDir, instanceName + ".out.log"));
             pb.redirectError(new File(logDir, instanceName + ".err.log"));
+        } else {
+            // Pipe consumers read a single stream; without the merge, launch
+            // errors (e.g. invalid jar) land on an unread stderr pipe.
+            pb.redirectErrorStream(true);
         }
 
         Process process = pb.start();

@@ -76,7 +76,7 @@ public class ProcessingCapacityTrackerImpl implements ProcessingCapacityTracker 
                 .toList();
 
         for (ProcessingBackend backend : sorted) {
-            if (canAccept(backend.getId(), taskType)) {
+            if (canAccept(backend, taskType)) {
                 log.debug("Selected backend '{}' (type={}, priority={}) for task type '{}'",
                         backend.getId(), backend.getType(), backend.getPriority(), taskType);
                 return Optional.of(backend);
@@ -90,21 +90,7 @@ public class ProcessingCapacityTrackerImpl implements ProcessingCapacityTracker 
     }
 
     @Override
-    public boolean canAccept(String backendId, String taskType) {
-        // Check concurrent limit
-        AtomicInteger active = activeRequests.get(backendId);
-        int currentActive = active != null ? active.get() : 0;
-
-        // We need the backend config to check limits — use a generous default
-        // The actual limits come from the ProcessingBackend passed in selectBackend
-        // For direct canAccept calls, we only check what we can track locally
-        return true; // Will be refined when called from selectBackend with config context
-    }
-
-    /**
-     * Check if a specific backend can accept work, using its config for limits.
-     */
-    public boolean canAcceptWithConfig(ProcessingBackend backend, String taskType) {
+    public boolean canAccept(ProcessingBackend backend, String taskType) {
         String backendId = backend.getId();
 
         // Check concurrent request limit
@@ -185,7 +171,7 @@ public class ProcessingCapacityTrackerImpl implements ProcessingCapacityTracker 
                 }
             }
 
-            boolean available = canAcceptWithConfig(backend, "any");
+            boolean available = canAccept(backend, "any");
             String statusMsg = available ? "Ready" : buildUnavailableReason(backend, active, recentRequests);
 
             snapshots.add(CapacitySnapshot.builder()

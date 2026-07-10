@@ -4,9 +4,19 @@
   -->
 
 <div class="graphs-hub">
+  <!-- Hub header with CTA -->
   <div class="hub-header">
-    <h2>Graphs</h2>
-    <p class="subtitle">Manage knowledge graphs as assets — the named-graph registry, health metrics over time, and maintenance.</p>
+    <div class="hub-header-left">
+      <h2>Graphs</h2>
+      <p class="subtitle">Manage knowledge graphs as assets — explore, build, reason, and audit.</p>
+    </div>
+    <div class="hub-header-actions">
+      <button mat-raised-button color="primary" class="ask-graph-btn" (click)="openChat()"
+              matTooltip="Open chat to ask questions about this graph">
+        <mat-icon>chat</mat-icon>
+        Ask about this graph
+      </button>
+    </div>
   </div>
 
   <!-- D1 Cold-start banner: shown when a fact sheet is active but has no facts yet -->
@@ -16,9 +26,9 @@
       <span class="banner-title">This graph is empty — here's how to populate it:</span>
       <ol class="banner-steps">
         <li><strong>Build graph (crawl)</strong> — add sources and run a crawl to extract nodes &amp; edges</li>
-        <li><strong>Bind / derive an ontology</strong> — go to the Ontology tab to give the graph a schema</li>
-        <li><strong>Run grounding cascade</strong> — use the Grounding tab to propagate facts through the KB</li>
-        <li><strong>Learn weights</strong> — use the Weights tab to train confidence scores from evidence</li>
+        <li><strong>Bind / derive an ontology</strong> — go to the Ontology section to give the graph a schema</li>
+        <li><strong>Run grounding cascade</strong> — use Reason → Grounding to propagate facts through the KB</li>
+        <li><strong>Learn weights</strong> — use Reason → Weights to train confidence scores from evidence</li>
       </ol>
     </div>
     <button class="banner-dismiss" (click)="dismissColdStartBanner()" aria-label="Dismiss">
@@ -26,199 +36,156 @@
     </button>
   </div>
 
-  <div class="sub-tabs">
-    <button class="sub-tab" [class.active]="activeSubTab === 'visualizer'" (click)="selectSubTab('visualizer')">
-      <mat-icon class="tab-icon">scatter_plot</mat-icon>
-      <span class="tab-label">Visualizer</span>
-    </button>
-    <button class="sub-tab" [class.active]="activeSubTab === 'hierarchy'" (click)="selectSubTab('hierarchy')">
-      <mat-icon class="tab-icon">lan</mat-icon>
-      <span class="tab-label">Hierarchy</span>
-    </button>
-    <button class="sub-tab" [class.active]="activeSubTab === 'builder'" (click)="selectSubTab('builder')">
-      <mat-icon class="tab-icon">construction</mat-icon>
-      <span class="tab-label">Builder</span>
-    </button>
-    <button class="sub-tab" [class.active]="activeSubTab === 'eventObservation'" (click)="selectSubTab('eventObservation')">
-      <mat-icon class="tab-icon">query_stats</mat-icon>
-      <span class="tab-label">Event Observation</span>
-    </button>
-    <button class="sub-tab" [class.active]="activeSubTab === 'causalAttribution'" (click)="selectSubTab('causalAttribution')">
-      <mat-icon class="tab-icon">psychology</mat-icon>
-      <span class="tab-label">Causal Attribution</span>
-    </button>
-    <button class="sub-tab" [class.active]="activeSubTab === 'overview'" (click)="selectSubTab('overview')">
-      <mat-icon class="tab-icon">account_tree</mat-icon>
-      <span class="tab-label">Overview</span>
-    </button>
-    <button class="sub-tab" [class.active]="activeSubTab === 'health'" (click)="selectSubTab('health')">
-      <mat-icon class="tab-icon">monitor_heart</mat-icon>
-      <span class="tab-label">Health</span>
-    </button>
-    <button class="sub-tab" [class.active]="activeSubTab === 'ontology'" (click)="selectSubTab('ontology')">
-      <mat-icon class="tab-icon">schema</mat-icon>
-      <span class="tab-label">Ontology</span>
-    </button>
-    <button class="sub-tab" [class.active]="activeSubTab === 'pipelines'" (click)="selectSubTab('pipelines')">
-      <mat-icon class="tab-icon">cable</mat-icon>
-      <span class="tab-label">Channel Pipelines</span>
-    </button>
-    <button class="sub-tab" [class.active]="activeSubTab === 'provenance'" (click)="selectSubTab('provenance')">
-      <mat-icon class="tab-icon">history_edu</mat-icon>
-      <span class="tab-label">Provenance</span>
-    </button>
-    <button class="sub-tab" [class.active]="activeSubTab === 'diff'" (click)="selectSubTab('diff')">
-      <mat-icon class="tab-icon">difference</mat-icon>
-      <span class="tab-label">Diff</span>
-    </button>
-    <button class="sub-tab" [class.active]="activeSubTab === 'maintenance'" (click)="selectSubTab('maintenance')">
-      <mat-icon class="tab-icon">build</mat-icon>
-      <span class="tab-label">Maintenance</span>
-    </button>
-    <button class="sub-tab" [class.active]="activeSubTab === 'rules'" (click)="selectSubTab('rules')">
-      <mat-icon class="tab-icon">rule</mat-icon>
-      <span class="tab-label">Rules</span>
-    </button>
-    <button class="sub-tab" [class.active]="activeSubTab === 'extract'" (click)="selectSubTab('extract')">
-      <mat-icon class="tab-icon">auto_awesome</mat-icon>
-      <span class="tab-label">Extraction</span>
-    </button>
-    <button class="sub-tab" [class.active]="activeSubTab === 'patch'" (click)="selectSubTab('patch')">
-      <mat-icon class="tab-icon">edit_note</mat-icon>
-      <span class="tab-label">Data Patch</span>
-    </button>
-    <button class="sub-tab" [class.active]="activeSubTab === 'eval'" (click)="selectSubTab('eval')">
-      <mat-icon class="tab-icon">bug_report</mat-icon>
-      <span class="tab-label">Eval Debugger</span>
-    </button>
-    <button class="sub-tab" [class.active]="activeSubTab === 'io'" (click)="selectSubTab('io')">
-      <mat-icon class="tab-icon">import_export</mat-icon>
-      <span class="tab-label">Import / Export</span>
-    </button>
-    <button class="sub-tab" [class.active]="activeSubTab === 'grounding'" (click)="selectSubTab('grounding')">
-      <mat-icon class="tab-icon">hub</mat-icon>
-      <span class="tab-label">Grounding</span>
-    </button>
-    <button class="sub-tab" [class.active]="activeSubTab === 'audit'" (click)="selectSubTab('audit')">
-      <mat-icon class="tab-icon">history</mat-icon>
-      <span class="tab-label">Audit</span>
-    </button>
-    <button class="sub-tab" [class.active]="activeSubTab === 'liveReasoning'" (click)="selectSubTab('liveReasoning')">
-      <mat-icon class="tab-icon">sensors</mat-icon>
-      <span class="tab-label">Live Reasoning</span>
-    </button>
-    <button class="sub-tab" [class.active]="activeSubTab === 'factsByTier'" (click)="selectSubTab('factsByTier')">
-      <mat-icon class="tab-icon">grade</mat-icon>
-      <span class="tab-label">Facts by Tier</span>
-    </button>
-    <button class="sub-tab" [class.active]="activeSubTab === 'weights'" (click)="selectSubTab('weights')">
-      <mat-icon class="tab-icon">scale</mat-icon>
-      <span class="tab-label">Weights</span>
-    </button>
-    <button class="sub-tab" [class.active]="activeSubTab === 'opinions'" (click)="selectSubTab('opinions')">
-      <mat-icon class="tab-icon">psychology_alt</mat-icon>
-      <span class="tab-label">Opinions</span>
-    </button>
-    <button class="sub-tab" [class.active]="activeSubTab === 'communities'" (click)="selectSubTab('communities')">
-      <mat-icon class="tab-icon">bubble_chart</mat-icon>
-      <span class="tab-label">Communities</span>
-    </button>
-    <button class="sub-tab" [class.active]="activeSubTab === 'folRules'" (click)="selectSubTab('folRules')">
-      <mat-icon class="tab-icon">rule</mat-icon>
-      <span class="tab-label">FOL Rules</span>
+  <!-- ── Outer section tabs ───────────────────────────────────────────────── -->
+  <div class="section-tabs">
+    <button *ngFor="let sec of sections"
+            class="section-tab"
+            [class.active]="activeSection === sec"
+            (click)="selectSection(sec)">
+      <mat-icon class="tab-icon">{{ sectionIcon(sec) }}</mat-icon>
+      <span class="tab-label">{{ sectionLabel(sec) }}</span>
     </button>
   </div>
 
-  <div class="sub-tab-content">
-    <div *ngIf="activeSubTab === 'visualizer'" class="graph-explore-panel">
-      <app-graph-visualizer
-        [factSheetId]="activeFactSheet?.id || null"
-        [factSheetName]="activeFactSheet?.name || ''"
-        [focusNodeId]="focusNodeId">
-      </app-graph-visualizer>
-    </div>
-    <div *ngIf="activeSubTab === 'hierarchy'" class="graph-explore-panel">
-      <app-graph-hierarchy
-        [factSheetId]="activeFactSheetId"
-        (navigateToGraph)="onNavigateToGraph($event)"
-        (viewSubGraph)="onNavigateToGraph($event)">
-      </app-graph-hierarchy>
-    </div>
-    <div *ngIf="activeSubTab === 'builder'">
-      <app-knowledge-graph-builder></app-knowledge-graph-builder>
-    </div>
-    <div *ngIf="activeSubTab === 'eventObservation'">
-      <app-event-observation-dashboard (openInAttribution)="onAttributeNode($event)"></app-event-observation-dashboard>
-    </div>
-    <div *ngIf="activeSubTab === 'causalAttribution'">
-      <app-causal-attribution-panel [seedNodeId]="attributionSeedNodeId"></app-causal-attribution-panel>
-    </div>
-    <div *ngIf="activeSubTab === 'overview'">
-      <app-graph-overview></app-graph-overview>
-    </div>
-    <div *ngIf="activeSubTab === 'health'">
-      <app-graph-health-panel [factSheetId]="activeFactSheetId"></app-graph-health-panel>
-    </div>
-    <div *ngIf="activeSubTab === 'ontology'">
+  <!-- ── Inner leaf tabs (per section) ───────────────────────────────────── -->
+  <div class="inner-tabs" *ngIf="activeSection !== 'ontology'">
+    <button *ngFor="let tab of tabsForSection(activeSection)"
+            class="inner-tab"
+            [class.active]="activeTab === tab"
+            (click)="selectTab(tab)"
+            [matTooltip]="tab === 'folRules' ? 'First-order logic rules derived from the knowledge graph' : tab === 'factsByTier' ? 'Facts by Tier: confidence/provenance levels — Tier 0 = asserted facts, higher tiers = inferred with decreasing confidence' : ''">
+      <mat-icon class="tab-icon">{{ tabIcon(tab) }}</mat-icon>
+      <span class="tab-label">{{ tabLabel(tab) }}</span>
+    </button>
+  </div>
+
+  <!-- ── Tab content ─────────────────────────────────────────────────────── -->
+  <div class="tab-content-area">
+
+    <!-- EXPLORE section -->
+    <ng-container *ngIf="activeSection === 'explore'">
+      <div *ngIf="activeTab === 'visualizer'" class="graph-explore-panel">
+        <app-graph-visualizer
+          [factSheetId]="activeFactSheet?.id || null"
+          [factSheetName]="activeFactSheet?.name || ''"
+          [focusNodeId]="focusNodeId">
+        </app-graph-visualizer>
+      </div>
+      <div *ngIf="activeTab === 'hierarchy'" class="graph-explore-panel">
+        <app-graph-hierarchy
+          [factSheetId]="activeFactSheetId"
+          (navigateToGraph)="onNavigateToGraph($event)"
+          (viewSubGraph)="onNavigateToGraph($event)">
+        </app-graph-hierarchy>
+      </div>
+      <div *ngIf="activeTab === 'overview'">
+        <app-graph-overview></app-graph-overview>
+      </div>
+      <div *ngIf="activeTab === 'communities'">
+        <app-community-panel [factSheetId]="activeFactSheetId"></app-community-panel>
+      </div>
+    </ng-container>
+
+    <!-- BUILD section -->
+    <ng-container *ngIf="activeSection === 'build'">
+      <div *ngIf="activeTab === 'builder'">
+        <app-knowledge-graph-builder></app-knowledge-graph-builder>
+      </div>
+      <div *ngIf="activeTab === 'extract'">
+        <app-multi-agent-graph-extraction></app-multi-agent-graph-extraction>
+      </div>
+      <div *ngIf="activeTab === 'patch'">
+        <app-graph-data-patch [factSheetId]="activeFactSheetId"></app-graph-data-patch>
+      </div>
+      <div *ngIf="activeTab === 'io'">
+        <app-graph-io-panel [factSheetId]="activeFactSheetId"></app-graph-io-panel>
+      </div>
+      <div *ngIf="activeTab === 'pipelines'">
+        <app-graph-pipelines-panel [factSheetId]="activeFactSheetId"></app-graph-pipelines-panel>
+      </div>
+      <div *ngIf="activeTab === 'maintenance'">
+        <app-graph-maintenance-hub [factSheetId]="activeFactSheetId"></app-graph-maintenance-hub>
+      </div>
+    </ng-container>
+
+    <!-- REASON section -->
+    <ng-container *ngIf="activeSection === 'reason'">
+      <div *ngIf="activeTab === 'grounding'">
+        <app-grounding-console-panel></app-grounding-console-panel>
+      </div>
+      <div *ngIf="activeTab === 'liveReasoning'">
+        <app-grounding-monitor [factSheetId]="activeFactSheetId"></app-grounding-monitor>
+      </div>
+      <div *ngIf="activeTab === 'simulator'">
+        <app-graph-simulator (navigateToTab)="onSimulatorNavigate()"></app-graph-simulator>
+      </div>
+      <div *ngIf="activeTab === 'rules'">
+        <app-graph-rules-panel [factSheetId]="activeFactSheetId"></app-graph-rules-panel>
+      </div>
+      <div *ngIf="activeTab === 'folRules'">
+        <app-fol-rules-browser [factSheetId]="activeFactSheetId"></app-fol-rules-browser>
+      </div>
+      <div *ngIf="activeTab === 'weights'">
+        <app-kb-weights-panel [factSheetId]="activeFactSheetId"></app-kb-weights-panel>
+      </div>
+      <div *ngIf="activeTab === 'opinions'">
+        <app-opinion-browser [factSheetId]="activeFactSheetId"></app-opinion-browser>
+      </div>
+      <div *ngIf="activeTab === 'factsByTier'">
+        <app-facts-by-tier-panel [factSheetId]="activeFactSheetId"></app-facts-by-tier-panel>
+      </div>
+      <div *ngIf="activeTab === 'causalAttribution'">
+        <app-causal-attribution-panel [seedNodeId]="attributionSeedNodeId"></app-causal-attribution-panel>
+      </div>
+      <div *ngIf="activeTab === 'eventObservation'">
+        <app-event-observation-dashboard (openInAttribution)="onAttributeNode($event)"></app-event-observation-dashboard>
+      </div>
+    </ng-container>
+
+    <!-- AUDIT section -->
+    <ng-container *ngIf="activeSection === 'audit'">
+      <div *ngIf="activeTab === 'provenance'">
+        <app-graph-provenance-panel [factSheetId]="activeFactSheetId"></app-graph-provenance-panel>
+      </div>
+      <div *ngIf="activeTab === 'diff'">
+        <app-graph-diff-panel [factSheetId]="activeFactSheetId"></app-graph-diff-panel>
+      </div>
+      <div *ngIf="activeTab === 'audit'">
+        <app-audit-timeline [factSheetId]="activeFactSheetId"></app-audit-timeline>
+      </div>
+      <div *ngIf="activeTab === 'health'">
+        <app-graph-health-panel [factSheetId]="activeFactSheetId"></app-graph-health-panel>
+      </div>
+      <div *ngIf="activeTab === 'eval'">
+        <app-graph-eval-debugger></app-graph-eval-debugger>
+      </div>
+    </ng-container>
+
+    <!-- ONTOLOGY section — uses its own mat-tab-group for the inner sub-tabs -->
+    <ng-container *ngIf="activeSection === 'ontology'">
       <mat-tab-group class="ontology-subtabs" animationDuration="150ms">
         <mat-tab label="Binding &amp; Conformance">
-          <app-graph-ontology-panel [factSheetId]="activeFactSheetId"></app-graph-ontology-panel>
+          <ng-template matTabContent>
+            <app-graph-ontology-panel [factSheetId]="activeFactSheetId"></app-graph-ontology-panel>
+          </ng-template>
         </mat-tab>
         <mat-tab label="Schemas">
-          <app-process-ontology></app-process-ontology>
+          <ng-template matTabContent>
+            <app-process-ontology></app-process-ontology>
+          </ng-template>
+        </mat-tab>
+        <mat-tab label="Taxonomy">
+          <ng-template matTabContent>
+            <app-taxonomy-browser [factSheetId]="activeFactSheetId"></app-taxonomy-browser>
+          </ng-template>
+        </mat-tab>
+        <mat-tab label="Categories">
+          <ng-template matTabContent>
+            <app-category-manager [factSheetId]="activeFactSheetId"></app-category-manager>
+          </ng-template>
         </mat-tab>
       </mat-tab-group>
-    </div>
-    <div *ngIf="activeSubTab === 'pipelines'">
-      <app-graph-pipelines-panel [factSheetId]="activeFactSheetId"></app-graph-pipelines-panel>
-    </div>
-    <div *ngIf="activeSubTab === 'provenance'">
-      <app-graph-provenance-panel [factSheetId]="activeFactSheetId"></app-graph-provenance-panel>
-    </div>
-    <div *ngIf="activeSubTab === 'diff'">
-      <app-graph-diff-panel [factSheetId]="activeFactSheetId"></app-graph-diff-panel>
-    </div>
-    <div *ngIf="activeSubTab === 'maintenance'">
-      <app-graph-maintenance-hub [factSheetId]="activeFactSheetId"></app-graph-maintenance-hub>
-    </div>
-    <div *ngIf="activeSubTab === 'rules'">
-      <app-graph-rules-panel [factSheetId]="activeFactSheetId"></app-graph-rules-panel>
-    </div>
-    <div *ngIf="activeSubTab === 'extract'">
-      <app-multi-agent-graph-extraction></app-multi-agent-graph-extraction>
-    </div>
-    <div *ngIf="activeSubTab === 'patch'">
-      <app-graph-data-patch [factSheetId]="activeFactSheetId"></app-graph-data-patch>
-    </div>
-    <div *ngIf="activeSubTab === 'eval'">
-      <app-graph-eval-debugger></app-graph-eval-debugger>
-    </div>
-    <div *ngIf="activeSubTab === 'io'">
-      <app-graph-io-panel [factSheetId]="activeFactSheetId"></app-graph-io-panel>
-    </div>
-    <div *ngIf="activeSubTab === 'grounding'">
-      <app-grounding-console-panel></app-grounding-console-panel>
-    </div>
-    <div *ngIf="activeSubTab === 'audit'">
-      <app-audit-timeline [factSheetId]="activeFactSheetId"></app-audit-timeline>
-    </div>
-    <div *ngIf="activeSubTab === 'liveReasoning'">
-      <app-grounding-monitor [factSheetId]="activeFactSheetId"></app-grounding-monitor>
-    </div>
-    <div *ngIf="activeSubTab === 'factsByTier'">
-      <app-facts-by-tier-panel [factSheetId]="activeFactSheetId"></app-facts-by-tier-panel>
-    </div>
-    <div *ngIf="activeSubTab === 'weights'">
-      <app-kb-weights-panel [factSheetId]="activeFactSheetId"></app-kb-weights-panel>
-    </div>
-    <div *ngIf="activeSubTab === 'opinions'">
-      <app-opinion-browser [factSheetId]="activeFactSheetId"></app-opinion-browser>
-    </div>
-    <div *ngIf="activeSubTab === 'communities'">
-      <app-community-panel [factSheetId]="activeFactSheetId"></app-community-panel>
-    </div>
-    <div *ngIf="activeSubTab === 'folRules'">
-      <app-fol-rules-browser [factSheetId]="activeFactSheetId"></app-fol-rules-browser>
-    </div>
+    </ng-container>
+
   </div>
 </div>

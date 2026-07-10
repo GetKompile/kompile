@@ -22,6 +22,7 @@ import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -30,6 +31,7 @@ import org.springframework.stereotype.Service;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -106,8 +108,8 @@ public class GraphValidationService {
                 try {
                     @SuppressWarnings("unchecked")
                     Map<String, Object> meta = entity.getMetadataJson() != null && !entity.getMetadataJson().isBlank()
-                            ? objectMapper.readValue(entity.getMetadataJson(), new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {})
-                            : new java.util.LinkedHashMap<>();
+                            ? objectMapper.readValue(entity.getMetadataJson(), new TypeReference<Map<String, Object>>() {})
+                            : new LinkedHashMap<>();
                     knowledgeGraphService.updateNode(entity.getNodeId(), newTitle, entity.getDescription(), meta);
                 } catch (Exception saveEx) {
                     log.warn("Failed to update title for entity {}: {}", entity.getNodeId(), saveEx.getMessage());
@@ -145,7 +147,7 @@ public class GraphValidationService {
 
         if (!edgesToDelete.isEmpty()) {
             // Deduplicate
-            List<String> uniqueEdges = new ArrayList<>(new java.util.LinkedHashSet<>(edgesToDelete));
+            List<String> uniqueEdges = new ArrayList<>(new LinkedHashSet<>(edgesToDelete));
             knowledgeGraphService.deleteEdgesBulk(uniqueEdges);
             auditService.logAction(factSheetId, jobId, "CLEAN", "REMOVE_DANGLING_EDGE",
                     null, "GRAPH_EDGE", null, null,
@@ -206,7 +208,7 @@ public class GraphValidationService {
                 .max(Comparator.comparingDouble(this::edgeStrength)
                         .thenComparingInt(edge -> textLength(edge.getMetadataJson()))
                         .thenComparingInt(edge -> textLength(edge.getDescription()))
-                        .thenComparingLong(edge -> edge.getId() != null ? edge.getId() : 0L))
+                        .thenComparing(edge -> edge.getEdgeId() != null ? edge.getEdgeId() : ""))
                 .orElse(edges.get(0));
     }
 

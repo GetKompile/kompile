@@ -19,6 +19,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -58,7 +59,7 @@ public final class CypherDumpImporter {
                 if (externalId == null) externalId = props.get("nodeId");
                 if (externalId == null) continue;
                 // Known scalar props that go into dedicated PortableNode fields
-                java.util.Set<String> knownNodeProps = java.util.Set.of(
+                Set<String> knownNodeProps = Set.of(
                         "externalId", "nodeId", "title", "description",
                         "confidence", "namedGraphId", "factSheetId", "occurredAt");
                 Map<String, Object> meta = new HashMap<>();

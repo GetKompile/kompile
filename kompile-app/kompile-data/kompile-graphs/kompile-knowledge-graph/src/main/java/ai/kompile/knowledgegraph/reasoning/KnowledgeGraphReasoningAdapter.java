@@ -32,6 +32,7 @@ import java.util.ArrayDeque;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Queue;
@@ -58,6 +59,7 @@ public final class KnowledgeGraphReasoningAdapter {
     private int maxDepth = 3;
     private int maxNodes = 100;
     private double minEdgeWeight = 0.05;
+    private boolean preserveParallelRelations;
 
     public KnowledgeGraphReasoningAdapter(KnowledgeGraphService graphService) {
         this.graphService = graphService;
@@ -67,9 +69,18 @@ public final class KnowledgeGraphReasoningAdapter {
     public KnowledgeGraphReasoningAdapter maxNodes(int maxNodes) { this.maxNodes = maxNodes; return this; }
     public KnowledgeGraphReasoningAdapter minEdgeWeight(double minEdgeWeight) { this.minEdgeWeight = minEdgeWeight; return this; }
 
+    /**
+     * Preserve parallel stored relations by using their edge IDs as relation IDs.
+     * The default remains endpoint de-duplication for bounded neighborhood projections.
+     */
+    public KnowledgeGraphReasoningAdapter preserveParallelRelations(boolean preserve) {
+        this.preserveParallelRelations = preserve;
+        return this;
+    }
+
     /** Materialize the subgraph reachable from {@code seedNodeIds} as a {@link ReasoningGraph}. */
     public ReasoningGraph subgraph(Collection<String> seedNodeIds) {
-        if (seedNodeIds == null) seedNodeIds = java.util.List.of();
+        if (seedNodeIds == null) seedNodeIds = List.of();
         Map<String, GraphNode> discovered = new LinkedHashMap<>();
         Set<String> visited = new HashSet<>();
         Set<String> edgeSeen = new HashSet<>();
@@ -126,17 +137,62 @@ public final class KnowledgeGraphReasoningAdapter {
         return graph;
     }
 
+    /**
+     * Project already-loaded nodes and edges without issuing additional store reads.
+     * This is used after KGE so the registered reasoning graph contains the vectors
+     * persisted by that completed training run.
+     */
+    public ReasoningGraph graphFrom(Collection<GraphNode> nodes, Collection<GraphEdge> edges) {
+        MutableReasoningGraph graph = new MutableReasoningGraph();
+        Set<String> entityIds = new HashSet<>();
+        Set<String> edgeSeen = new HashSet<>();
+
+        if (nodes != null) {
+            for (GraphNode node : nodes) {
+                if (node == null || node.getNodeId() == null || entityIds.size() >= maxNodes) {
+                    continue;
+                }
+                if (entityIds.add(node.getNodeId())) {
+                    graph.addEntity(toEntity(node));
+                }
+            }
+        }
+
+        if (edges != null) {
+            for (GraphEdge edge : edges) {
+                if (edge == null || edge.getSourceNode() == null || edge.getTargetNode() == null) {
+                    continue;
+                }
+                String sourceId = edge.getSourceNode().getNodeId();
+                String targetId = edge.getTargetNode().getNodeId();
+                if (sourceId == null || targetId == null
+                        || !entityIds.contains(sourceId) || !entityIds.contains(targetId)) {
+                    continue;
+                }
+                double strength = NoisyOrCpt.computeCausalStrength(
+                        edge.getWeight(), edge.getConfidence(), 1.0);
+                addRelation(graph, edgeSeen, sourceId, targetId, strength, edge);
+                if (Boolean.TRUE.equals(edge.getBidirectional())) {
+                    addRelation(graph, edgeSeen, targetId, sourceId, strength, edge);
+                }
+            }
+        }
+        return graph;
+    }
+
     private void addRelation(MutableReasoningGraph graph, Set<String> seen,
                              String sourceId, String targetId, double strength, GraphEdge edge) {
         if (strength < minEdgeWeight) {
             return;
         }
-        String key = sourceId + "->" + targetId;
+        String key = relationKey(edge, sourceId, targetId);
         if (!seen.add(key)) {
             return;
         }
         double confidence = edge.getConfidence() != null ? edge.getConfidence() : 1.0;
-        String type = edge.getEdgeType() != null ? edge.getEdgeType().name() : "";
+        String type = edge.getRelationType() != null && !edge.getRelationType().isBlank()
+                ? edge.getRelationType()
+                : edge.getEdgeType() != null ? edge.getEdgeType().name() : "";
         graph.addRelation(GraphRelation.builder(key, sourceId, targetId)
                 .type(type)
                 .weight(strength)
@@ -145,6 +201,27 @@ public final class KnowledgeGraphReasoningAdapter {
                 .embedding(INDArrayConverter.toDoubleArray(edge.getKgRelationEmbedding()))
                 .timestamp(toInstant(edge.getOccurredAt()))
                 .build());
+    }
+
+    private String relationKey(GraphEdge edge, String sourceId, String targetId) {
+        if (!preserveParallelRelations) {
+            return sourceId + "->" + targetId;
+        }
+
+        String base = edge.getEdgeId();
+        if (base == null || base.isBlank()) {
+            String type = edge.getRelationType() != null && !edge.getRelationType().isBlank()
+                    ? edge.getRelationType()
+                    : edge.getEdgeType() != null ? edge.getEdgeType().name() : "relation";
+            base = sourceId + "->" + targetId + ":" + type;
+        }
+
+        String originalSource = edge.getSourceNode() != null ? edge.getSourceNode().getNodeId() : null;
+        String originalTarget = edge.getTargetNode() != null ? edge.getTargetNode().getNodeId() : null;
+        boolean reverse = originalSource != null && originalTarget != null
+                && !originalSource.equals(originalTarget)
+                && sourceId.equals(originalTarget) && targetId.equals(originalSource);
+        return reverse ? base + ":reverse" : base;
     }
 
     private GraphEntity toEntity(GraphNode node) {

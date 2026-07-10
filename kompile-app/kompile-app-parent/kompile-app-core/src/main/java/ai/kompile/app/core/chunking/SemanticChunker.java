@@ -46,6 +46,28 @@ public class SemanticChunker implements TextChunker {
 
     private final EmbeddingModel embeddingModel;
 
+    private static float[] toHostFloatVector(INDArray array) {
+        if (array == null || array.isEmpty()) {
+            return new float[0];
+        }
+        long length = array.length();
+        if (length > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException("INDArray too large to materialize as float[]: " + length);
+        }
+        if (array.elementWiseStride() == 1) {
+            return array.data().getFloatsAt(array.offset(), (int) length);
+        }
+        INDArray copy = null;
+        try {
+            copy = array.dup('c');
+            return copy.data().getFloatsAt(copy.offset(), (int) length);
+        } finally {
+            if (copy != null && !copy.wasClosed()) {
+                copy.close();
+            }
+        }
+    }
+
     public SemanticChunker(EmbeddingModel embeddingModel) {
         this.embeddingModel = embeddingModel;
     }
@@ -106,7 +128,7 @@ public class SemanticChunker implements TextChunker {
             try {
                 INDArray embedding = embeddingModel.embed(sentence);
                 if (embedding != null && !embedding.isEmpty()) {
-                    embeddings.add(embedding.toFloatVector());
+                    embeddings.add(toHostFloatVector(embedding));
                 } else {
                     embeddings.add(null);
                 }

@@ -16,20 +16,12 @@ echo "=== Graph Relation Extraction ==="
 echo "Target: $BASE_URL"
 echo ""
 
-# 1. Verify graph extraction is enabled
+# 1. Verify graph extraction configuration
 config=$(curl -s "${BASE_URL}/api/graph-extraction/config")
-enabled=$(echo "$config" | python3 -c "import json,sys; print(json.load(sys.stdin).get('enabled', False))" 2>/dev/null)
 provider=$(echo "$config" | python3 -c "import json,sys; print(json.load(sys.stdin).get('extractionModelProvider', 'unknown'))" 2>/dev/null)
 
-echo "Graph extraction enabled: $enabled"
+echo "Graph extraction: mandatory"
 echo "Model provider: $provider"
-
-if [ "$enabled" != "True" ]; then
-    echo ""
-    echo "Enabling graph extraction..."
-    curl -s -X POST "${BASE_URL}/api/graph-extraction/config/toggle" \
-        -H "Content-Type: application/json" | python3 -m json.tool 2>/dev/null
-fi
 
 # 2. Check schema preset
 preset=$(echo "$config" | python3 -c "import json,sys; print(json.load(sys.stdin).get('activeSchemaPresetId', 'None'))" 2>/dev/null)
@@ -67,8 +59,7 @@ echo "To trigger graph extraction on already-uploaded documents,"
 echo "use the web UI at ${BASE_URL} or re-upload files with:"
 echo "  ./scripts/upload-fpna-dataset.sh"
 echo ""
-echo "Graph extraction runs automatically during document ingestion"
-echo "when the extraction config is enabled."
+echo "Graph extraction runs automatically during document ingestion."
 echo ""
 
 # 5. Show current graph stats

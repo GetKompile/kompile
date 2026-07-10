@@ -485,22 +485,38 @@ class GraphExtractionRoundTripTest {
     }
 
     @Test
-    void testExtractedEntityDefaultsConfidenceToOne() {
+    void testExtractedEntityDefaultsConfidenceToCalibratedFallback() {
+        // Absent LLM confidence must NOT be treated as hard-certain (1.0).
+        // It must map to DEFAULT_ENTITY_CONFIDENCE so PSL treats it as a soft atom.
         ExtractedEntity entity = new ExtractedEntity(
                 "e1", "name", "TYPE", null, "desc", null, null);
 
-        assertEquals(1.0, entity.confidence());
+        assertEquals(GraphExtractionSchema.DEFAULT_ENTITY_CONFIDENCE, entity.confidence());
         assertNotNull(entity.aliases());
         assertNotNull(entity.properties());
     }
 
     @Test
-    void testExtractedRelationDefaultsConfidenceToOne() {
+    void testExtractedRelationDefaultsConfidenceToCalibratedFallback() {
+        // Absent LLM confidence must NOT be treated as hard-certain (1.0).
+        // It must map to DEFAULT_RELATION_CONFIDENCE so PSL treats it as a soft atom.
         ExtractedRelation rel = new ExtractedRelation(
                 "e1", "e2", "REL", "desc", null, null);
 
-        assertEquals(1.0, rel.confidence());
+        assertEquals(GraphExtractionSchema.DEFAULT_RELATION_CONFIDENCE, rel.confidence());
         assertNotNull(rel.properties());
+    }
+
+    @Test
+    void testLlmSuppliedConfidenceIsPreserved() {
+        // A real LLM-supplied value must never be clobbered by the fallback.
+        ExtractedEntity entity = new ExtractedEntity(
+                "e1", "name", "TYPE", null, "desc", 0.92, null);
+        assertEquals(0.92, entity.confidence(), 1e-9);
+
+        ExtractedRelation rel = new ExtractedRelation(
+                "e1", "e2", "REL", "desc", 0.63, null);
+        assertEquals(0.63, rel.confidence(), 1e-9);
     }
 
     // =========================================================================

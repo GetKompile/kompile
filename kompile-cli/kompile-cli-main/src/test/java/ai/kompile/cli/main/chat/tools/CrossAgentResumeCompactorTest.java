@@ -103,8 +103,10 @@ class CrossAgentResumeCompactorTest {
                     CrossAgentResumeCompactor.targetBudget("claude", "opencode", tempDir);
 
             assertEquals("claude-opus-4-7", budget.modelId());
-            assertEquals(200_000, budget.contextWindow());
-            assertEquals(32_000, budget.maxOutputTokens());
+            // claude-opus-4-7 is a 1M-context model per the live CLI catalog
+            // (providers: anthropic/302ai/auriko report ctx=1_000_000, out=128_000)
+            assertEquals(1_000_000, budget.contextWindow());
+            assertEquals(128_000, budget.maxOutputTokens());
         } finally {
             restoreProperty("kompile.claude.model", previous);
         }
@@ -155,10 +157,17 @@ class CrossAgentResumeCompactorTest {
 
     @Test
     void modelWindowTableCoversClaudeAndCodexVariants() {
-        assertModel("claude-opus-4-7", 200_000, 32_000);
-        assertModel("claude-sonnet-4-20250514", 200_000, 16_000);
-        assertModel("claude-haiku-4-5", 200_000, 8_192);
-        assertModel("anthropic/claude-sonnet-4.5", 200_000, 16_000);
+        // All context-window/maxOutput expectations below reflect the LIVE ~/.cache/opencode/models.json
+        // catalog (dynamic-first via CliModelCatalog). Update these when the CLI ships updated specs.
+
+        // claude-opus-4-7: 1M context per live catalog (anthropic/302ai/auriko all report 1_000_000)
+        assertModel("claude-opus-4-7", 1_000_000, 128_000);
+        // claude-sonnet-4-20250514: anthropic catalog reports out=64_000 (not 16_000)
+        assertModel("claude-sonnet-4-20250514", 200_000, 64_000);
+        // claude-haiku-4-5: anthropic/opencode catalogs report out=64_000 (not 8_192)
+        assertModel("claude-haiku-4-5", 200_000, 64_000);
+        // anthropic/claude-sonnet-4.5: live catalog now reports ctx=1_000_000 (updated provider spec)
+        assertModel("anthropic/claude-sonnet-4.5", 1_000_000, 64_000);
 
         assertModel("gpt-5.5", 1_050_000, 128_000);
         assertModel("gpt-5-codex", 400_000, 128_000);
@@ -166,7 +175,9 @@ class CrossAgentResumeCompactorTest {
         assertModel("openai/gpt-5.2-codex", 400_000, 128_000);
         assertModel("gpt-4o", 128_000, 16_384);
 
-        assertModel("deepseek-v4-flash-free", 200_000, 128_000);
+        // deepseek-v4-flash-free: reconcileFreeAliases promotes ctx to match the
+        // non-free sibling (deepseek-v4-flash ctx=1_000_000) → results in 1_000_000
+        assertModel("deepseek-v4-flash-free", 1_000_000, 384_000);
         assertModel("deepseek-v4-flash", 1_000_000, 384_000);
         assertModel("opencode/deepseek-v4-pro", 1_000_000, 384_000);
     }

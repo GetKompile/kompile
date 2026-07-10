@@ -38,6 +38,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * REST controller that exposes the multi-agent graph extraction pipeline.
@@ -300,7 +301,7 @@ public class MultiAgentGraphController {
                         : new HashMap<>();
                 String id = chunk.id() != null && !chunk.id().isBlank()
                         ? chunk.id()
-                        : java.util.UUID.randomUUID().toString();
+                        : UUID.randomUUID().toString();
                 chunks.add(new RetrievedDoc(id, chunk.text(), metadata));
             }
         }

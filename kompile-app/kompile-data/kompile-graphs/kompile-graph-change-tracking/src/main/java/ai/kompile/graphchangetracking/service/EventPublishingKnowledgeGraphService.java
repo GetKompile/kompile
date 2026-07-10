@@ -1,7 +1,9 @@
 package ai.kompile.graphchangetracking.service;
 
 import ai.kompile.core.graphrag.maintenance.model.GraphPruneResult;
+import ai.kompile.graphchangetracking.domain.GraphMutationRecord;
 import ai.kompile.graphchangetracking.event.EdgeMutationEvent;
+import ai.kompile.graphchangetracking.event.GraphBatchMutationEvent;
 import ai.kompile.graphchangetracking.event.NodeMutationEvent;
 import ai.kompile.knowledgegraph.domain.*;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
@@ -9,10 +11,12 @@ import org.nd4j.linalg.api.ndarray.INDArray;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Primary;
+import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
@@ -20,6 +24,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 @Service
 @Primary
@@ -32,6 +37,14 @@ public class EventPublishingKnowledgeGraphService implements KnowledgeGraphServi
     private final ObjectMapper objectMapper;
     private final MutationContextHolder contextHolder;
 
+    /**
+     * Optional — mutation store for recording batch-write entries that bypass the per-item
+     * event path. Injected when present (i.e. kompile-graph-change-tracking is on the classpath
+     * and both beans are in the same Spring context). Null-safe everywhere.
+     */
+    @Nullable
+    private GraphMutationStore mutationStore;
+
     public EventPublishingKnowledgeGraphService(
             @Qualifier("knowledgeGraphDelegate") KnowledgeGraphService delegate,
             ApplicationEventPublisher eventPublisher,
@@ -41,6 +54,12 @@ public class EventPublishingKnowledgeGraphService implements KnowledgeGraphServi
         this.eventPublisher = eventPublisher;
         this.objectMapper = objectMapper;
         this.contextHolder = contextHolder;
+    }
+
+    /** Setter injection so the store is optional (avoids circular-bean issues in thin test contexts). */
+    @Autowired(required = false)
+    public void setMutationStore(GraphMutationStore mutationStore) {
+        this.mutationStore = mutationStore;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -136,6 +155,85 @@ public class EventPublishingKnowledgeGraphService implements KnowledgeGraphServi
     }
 
     @Override
+    public List<GraphNode> createNodesBatch(List<NodeSpec> specs, Long factSheetId) {
+        List<GraphNode> result = delegate.createNodesBatch(specs, factSheetId);
+        try {
+            if (result != null && !result.isEmpty()) {
+                recordBatchNodes(result, "NODE_CREATED", factSheetId);
+                publishBatch("NODES_CREATED", factSheetId, result.size());
+            }
+        } catch (Exception e) {
+            log.warn("EventPublishingKnowledgeGraphService: batch event/log failed for createNodesBatch factSheet={}: {}",
+                    factSheetId, e.getMessage());
+        }
+        return result;
+    }
+
+    @Override
+    public List<GraphNode> createSnippetNodesBatch(List<SnippetSpec> specs) {
+        List<GraphNode> result = delegate.createSnippetNodesBatch(specs);
+        try {
+            if (result != null && !result.isEmpty()) {
+                // Snippet nodes may span multiple fact sheets; derive factSheetId from first node
+                Long factSheetId = result.get(0).getFactSheetId();
+                recordBatchNodes(result, "NODE_CREATED", factSheetId);
+                publishBatch("SNIPPET_NODES_CREATED", factSheetId, result.size());
+            }
+        } catch (Exception e) {
+            log.warn("EventPublishingKnowledgeGraphService: batch event/log failed for createSnippetNodesBatch: {}",
+                    e.getMessage());
+        }
+        return result;
+    }
+
+    @Override
+    public int updateNodesBatch(List<NodeUpdate> updates) {
+        int result = delegate.updateNodesBatch(updates);
+        try {
+            if (result > 0 && updates != null && !updates.isEmpty()) {
+                // NodeUpdate doesn't carry factSheetId; emit a batch event without factSheet scoping
+                publishBatch("NODES_UPDATED", null, result);
+                if (mutationStore != null) {
+                    MutationContextHolder.MutationContext ctx = contextHolder.current();
+                    for (NodeUpdate u : updates) {
+                        if (u == null) continue;
+                        GraphMutationRecord rec = GraphMutationRecord.builder()
+                                .mutationType("NODE_UPDATED")
+                                .entityKind("NODE")
+                                .entityId(u.nodeId())
+                                .factSheetId(null)
+                                .changesetId(ctx.changesetId())
+                                .triggerSource(ctx.triggerSource())
+                                .actorId(ctx.actorId())
+                                .build();
+                        try { mutationStore.save(rec); } catch (Exception ex) {
+                            log.warn("mutationStore.save failed for nodeId {}: {}", u.nodeId(), ex.getMessage());
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.warn("EventPublishingKnowledgeGraphService: batch event/log failed for updateNodesBatch: {}",
+                    e.getMessage());
+        }
+        return result;
+    }
+
+    @Override
+    public int updateNodeKgeMetadataBatch(List<NodeMetadataUpdate> updates) {
+        int result = delegate.updateNodeKgeMetadataBatch(updates);
+        try {
+            if (result > 0) {
+                publishBatch("NODES_METADATA_UPDATED", null, result);
+            }
+        } catch (Exception e) {
+            log.warn("EventPublishingKnowledgeGraphService: batch event/log failed for updateNodeKgeMetadataBatch: {}",
+                    e.getMessage());
+        }
+        return result;
+    }
+
+    @Override
     public void deleteNode(String nodeId) {
         Optional<GraphNode> before = delegate.getNode(nodeId);
         String snapshotBefore = before.map(this::toJson).orElse(null);
@@ -172,6 +270,41 @@ public class EventPublishingKnowledgeGraphService implements KnowledgeGraphServi
         eventPublisher.publishEvent(EdgeMutationEvent.created(this, result.getEdgeId(),
                 result.getFactSheetId(), edgeType.name(), sourceNodeId, targetNodeId,
                 toJson(result), contextHolder.current()));
+        return result;
+    }
+
+    @Override
+    public int createEdgesBatch(List<EdgeSpec> specs) {
+        int result = delegate.createEdgesBatch(specs);
+        try {
+            if (result > 0 && specs != null && !specs.isEmpty()) {
+                // Derive factSheetId from the first spec (most batches are scoped to one fact sheet)
+                Long factSheetId = specs.stream()
+                        .filter(s -> s != null && s.factSheetId() != null)
+                        .map(EdgeSpec::factSheetId)
+                        .findFirst()
+                        .orElse(null);
+                recordBatchEdges(specs, result, "EDGE_CREATED", factSheetId);
+                publishBatch("EDGES_CREATED", factSheetId, result);
+            }
+        } catch (Exception e) {
+            log.warn("EventPublishingKnowledgeGraphService: batch event/log failed for createEdgesBatch factSheet=<derived>: {}",
+                    e.getMessage());
+        }
+        return result;
+    }
+
+    @Override
+    public int updateEdgeMetadataBatch(List<EdgeMetadataUpdate> updates) {
+        int result = delegate.updateEdgeMetadataBatch(updates);
+        try {
+            if (result > 0) {
+                publishBatch("EDGES_METADATA_UPDATED", null, result);
+            }
+        } catch (Exception e) {
+            log.warn("EventPublishingKnowledgeGraphService: batch event/log failed for updateEdgeMetadataBatch: {}",
+                    e.getMessage());
+        }
         return result;
     }
 
@@ -227,6 +360,11 @@ public class EventPublishingKnowledgeGraphService implements KnowledgeGraphServi
     @Override
     public Optional<GraphNode> getNodeByExternalId(String externalId, NodeLevel nodeType, Long factSheetId) {
         return delegate.getNodeByExternalId(externalId, nodeType, factSheetId);
+    }
+
+    @Override
+    public List<GraphNode> getNodesByExternalIds(List<ExternalNodeLookup> lookups) {
+        return delegate.getNodesByExternalIds(lookups);
     }
 
     @Override
@@ -454,13 +592,48 @@ public class EventPublishingKnowledgeGraphService implements KnowledgeGraphServi
     // MAINTENANCE
     // ═══════════════════════════════════════════════════════════════════════════
 
+    /**
+     * Delete every node and edge belonging to {@code factSheetId}.
+     *
+     * <p>Per-item enumeration before deletion is intentionally skipped here — the matrix store
+     * can contain millions of nodes and materialising them just for audit would be prohibitively
+     * expensive. Instead a single consolidated {@link GraphBatchMutationEvent} is published so
+     * {@link ai.kompile.graphchangetracking.hook.GroundingCascadeEventListener} can schedule a
+     * re-ground (which will be a no-op because the fact sheet is gone, but it also clears the
+     * stale flag). A summary {@link GraphMutationRecord} with type {@code FACT_SHEET_DELETED}
+     * is written to the mutation store for audit trail purposes.</p>
+     */
     @Override
     public void deleteByFactSheetId(Long factSheetId) {
         delegate.deleteByFactSheetId(factSheetId);
+        try {
+            MutationContextHolder.MutationContext ctx = contextHolder.current();
+            // Write a consolidated audit record for the entire fact-sheet deletion.
+            if (mutationStore != null) {
+                GraphMutationRecord rec = GraphMutationRecord.builder()
+                        .mutationType("FACT_SHEET_DELETED")
+                        .entityKind("FACT_SHEET")
+                        .entityId(String.valueOf(factSheetId))
+                        .factSheetId(factSheetId)
+                        .changesetId(ctx.changesetId())
+                        .triggerSource(ctx.triggerSource())
+                        .actorId(ctx.actorId())
+                        .build();
+                mutationStore.save(rec);
+            }
+            // Publish a batch event so cascade scheduling and stale-marking fire automatically.
+            publishBatch("FACT_SHEET_DELETED", factSheetId, 1);
+            log.info("EventPublishingKnowledgeGraphService: published FACT_SHEET_DELETED event "
+                    + "for factSheet={} — FactStore phantom atoms will be cleared by cascade",
+                    factSheetId);
+        } catch (Exception e) {
+            log.warn("EventPublishingKnowledgeGraphService: event/log failed for deleteByFactSheetId "
+                    + "factSheet={}: {}", factSheetId, e.getMessage());
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // PRUNING / MAINTENANCE — pure delegation (read-only, no events published)
+    // PRUNING / MAINTENANCE — emits events so cascade scheduling fires correctly
     // ═══════════════════════════════════════════════════════════════════════════
 
     @Override
@@ -469,7 +642,7 @@ public class EventPublishingKnowledgeGraphService implements KnowledgeGraphServi
     }
 
     @Override
-    public List<String> findOrphanNodeIds(Long factSheetId, java.util.Set<NodeLevel> levels) {
+    public List<String> findOrphanNodeIds(Long factSheetId, Set<NodeLevel> levels) {
         return delegate.findOrphanNodeIds(factSheetId, levels);
     }
 
@@ -493,24 +666,77 @@ public class EventPublishingKnowledgeGraphService implements KnowledgeGraphServi
         return delegate.findActiveEdgeIds(factSheetId);
     }
 
+    /**
+     * Prune (soft-delete or hard-delete) a collection of nodes.
+     *
+     * <p>After delegating, if the operation was not a dry-run and actually affected items, one
+     * {@link GraphBatchMutationEvent} is published per fact sheet found in the affected IDs so
+     * the grounding cascade can re-project the affected graphs. Per-item
+     * {@link GraphMutationRecord}s are written for itemised audit; when {@code affectedIds} is
+     * empty (bulk hard-delete path) a single summary record is written instead.</p>
+     */
     @Override
     public GraphPruneResult pruneNodes(Collection<String> nodeIds,
                                        boolean softDelete,
                                        Duration grace,
                                        boolean dryRun) {
-        return delegate.pruneNodes(nodeIds, softDelete, grace, dryRun);
+        GraphPruneResult result = delegate.pruneNodes(nodeIds, softDelete, grace, dryRun);
+        if (!dryRun && result.affectedCount() > 0) {
+            try {
+                String mutType = softDelete ? "NODE_SOFT_DELETED" : "NODE_HARD_DELETED";
+                recordAndPublishPruneResult(result, mutType, "NODE", null);
+            } catch (Exception e) {
+                log.warn("EventPublishingKnowledgeGraphService: event/log failed for pruneNodes: {}",
+                        e.getMessage());
+            }
+        }
+        return result;
     }
 
+    /**
+     * Prune (soft-delete or hard-delete) a collection of edges.
+     *
+     * <p>Same event/audit contract as {@link #pruneNodes}.</p>
+     */
     @Override
     public GraphPruneResult pruneEdges(Collection<String> edgeIds,
                                        boolean softDelete,
                                        boolean dryRun) {
-        return delegate.pruneEdges(edgeIds, softDelete, dryRun);
+        GraphPruneResult result = delegate.pruneEdges(edgeIds, softDelete, dryRun);
+        if (!dryRun && result.affectedCount() > 0) {
+            try {
+                String mutType = softDelete ? "EDGE_SOFT_DELETED" : "EDGE_HARD_DELETED";
+                recordAndPublishPruneResult(result, mutType, "EDGE", null);
+            } catch (Exception e) {
+                log.warn("EventPublishingKnowledgeGraphService: event/log failed for pruneEdges: {}",
+                        e.getMessage());
+            }
+        }
+        return result;
     }
 
+    /**
+     * Hard-delete nodes whose stale flag has aged past {@code grace} for the given fact sheet.
+     *
+     * <p>A {@link GraphBatchMutationEvent} is published so the cascade reschedules re-grounding
+     * and the stale flag is refreshed. Because {@code hardDeleteStaleNodes} returns only a count
+     * (no per-item IDs when using the bulk-delete path), per-item records are not written; instead
+     * a single {@code NODES_HARD_DELETED_BULK} summary record is written to the mutation store.</p>
+     */
     @Override
     public GraphPruneResult hardDeleteStaleNodes(Long factSheetId, Duration grace) {
-        return delegate.hardDeleteStaleNodes(factSheetId, grace);
+        GraphPruneResult result = delegate.hardDeleteStaleNodes(factSheetId, grace);
+        if (result.hardDeleted() > 0) {
+            try {
+                recordAndPublishPruneResult(result, "NODES_HARD_DELETED_BULK", "NODE", factSheetId);
+                log.info("EventPublishingKnowledgeGraphService: hardDeleteStaleNodes factSheet={} "
+                        + "deleted={} — cascade scheduled", factSheetId, result.hardDeleted());
+            } catch (Exception e) {
+                log.warn("EventPublishingKnowledgeGraphService: event/log failed for hardDeleteStaleNodes "
+                        + "factSheet={}: {}", factSheetId, e.getMessage());
+            }
+        }
+        return result;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -528,5 +754,133 @@ public class EventPublishingKnowledgeGraphService implements KnowledgeGraphServi
 
     private String nodeTypeStr(GraphNode node) {
         return node.getNodeType() != null ? node.getNodeType().name() : "UNKNOWN";
+    }
+
+    /** Publish a single coalesced batch event — NEVER throws. */
+    private void publishBatch(String batchType, Long factSheetId, int count) {
+        try {
+            MutationContextHolder.MutationContext ctx = contextHolder.current();
+            eventPublisher.publishEvent(new GraphBatchMutationEvent(
+                    this, batchType, factSheetId, count, ctx.changesetId(), ctx.triggerSource()));
+        } catch (Exception e) {
+            log.warn("Failed to publish GraphBatchMutationEvent type={} factSheet={}: {}",
+                    batchType, factSheetId, e.getMessage());
+        }
+    }
+
+    /** Record one mutation entry per node into GraphMutationStore — NEVER throws. */
+    private void recordBatchNodes(List<GraphNode> nodes, String mutationType, Long defaultFactSheetId) {
+        if (mutationStore == null || nodes == null) return;
+        MutationContextHolder.MutationContext ctx = contextHolder.current();
+        for (GraphNode node : nodes) {
+            if (node == null) continue;
+            try {
+                Long fsId = node.getFactSheetId() != null ? node.getFactSheetId() : defaultFactSheetId;
+                GraphMutationRecord rec = GraphMutationRecord.builder()
+                        .mutationType(mutationType)
+                        .entityKind("NODE")
+                        .entityId(node.getNodeId())
+                        .factSheetId(fsId)
+                        .changesetId(ctx.changesetId())
+                        .triggerSource(ctx.triggerSource())
+                        .actorId(ctx.actorId())
+                        .snapshotAfter(toJson(node))
+                        .build();
+                mutationStore.save(rec);
+            } catch (Exception e) {
+                log.warn("recordBatchNodes: failed for nodeId {}: {}", node.getNodeId(), e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * Write per-item (or summary) mutation records and publish a coalesced batch event for a
+     * prune/maintenance operation — NEVER throws.
+     *
+     * <p>When {@code result.affectedIds()} is non-empty, one {@link GraphMutationRecord} is
+     * written per ID. When {@code affectedIds} is empty (bulk-delete path, only a count is
+     * available), a single summary record is written using {@code "bulk"} as the entity ID.
+     * A single {@link GraphBatchMutationEvent} is published for the {@code factSheetId} (which
+     * may be supplied directly, or derived from the mutationType tag when the IDs give no
+     * fact-sheet context).</p>
+     *
+     * @param result         prune result from the delegate
+     * @param mutationType   audit label, e.g. {@code "NODE_SOFT_DELETED"} or {@code "NODES_HARD_DELETED_BULK"}
+     * @param entityKind     {@code "NODE"} or {@code "EDGE"}
+     * @param factSheetId    explicit fact-sheet ID, or {@code null} to derive from context
+     */
+    private void recordAndPublishPruneResult(GraphPruneResult result,
+                                              String mutationType,
+                                              String entityKind,
+                                              Long factSheetId) {
+        MutationContextHolder.MutationContext ctx = contextHolder.current();
+        if (mutationStore != null) {
+            List<String> ids = result.affectedIds();
+            if (ids != null && !ids.isEmpty()) {
+                for (String id : ids) {
+                    try {
+                        GraphMutationRecord rec = GraphMutationRecord.builder()
+                                .mutationType(mutationType)
+                                .entityKind(entityKind)
+                                .entityId(id)
+                                .factSheetId(factSheetId)
+                                .changesetId(ctx.changesetId())
+                                .triggerSource(ctx.triggerSource())
+                                .actorId(ctx.actorId())
+                                .build();
+                        mutationStore.save(rec);
+                    } catch (Exception ex) {
+                        log.warn("recordAndPublishPruneResult: failed for id {}: {}", id, ex.getMessage());
+                    }
+                }
+            } else {
+                // Bulk path — only a count is available; write a single summary record.
+                try {
+                    int count = result.affectedCount() > 0 ? result.affectedCount() : result.hardDeleted();
+                    GraphMutationRecord rec = GraphMutationRecord.builder()
+                            .mutationType(mutationType)
+                            .entityKind(entityKind)
+                            .entityId("bulk:" + count)
+                            .factSheetId(factSheetId)
+                            .changesetId(ctx.changesetId())
+                            .triggerSource(ctx.triggerSource())
+                            .actorId(ctx.actorId())
+                            .build();
+                    mutationStore.save(rec);
+                } catch (Exception ex) {
+                    log.warn("recordAndPublishPruneResult: bulk summary record failed: {}", ex.getMessage());
+                }
+            }
+        }
+        // Publish the batch event so GroundingCascadeEventListener schedules re-grounding.
+        int itemCount = result.affectedCount() > 0 ? result.affectedCount() : result.hardDeleted();
+        publishBatch(mutationType, factSheetId, itemCount);
+    }
+
+    /** Record one mutation entry per edge spec into GraphMutationStore — NEVER throws. */
+    private void recordBatchEdges(List<EdgeSpec> specs, int createdCount, String mutationType, Long defaultFactSheetId) {
+        if (mutationStore == null || specs == null) return;
+        MutationContextHolder.MutationContext ctx = contextHolder.current();
+        int recorded = 0;
+        for (EdgeSpec spec : specs) {
+            if (spec == null || recorded >= createdCount) break;
+            try {
+                Long fsId = spec.factSheetId() != null ? spec.factSheetId() : defaultFactSheetId;
+                GraphMutationRecord rec = GraphMutationRecord.builder()
+                        .mutationType(mutationType)
+                        .entityKind("EDGE")
+                        .entityId(spec.sourceNodeId() + "->" + spec.targetNodeId())
+                        .factSheetId(fsId)
+                        .changesetId(ctx.changesetId())
+                        .triggerSource(ctx.triggerSource())
+                        .actorId(ctx.actorId())
+                        .build();
+                mutationStore.save(rec);
+                recorded++;
+            } catch (Exception e) {
+                log.warn("recordBatchEdges: failed for spec {}->{}: {}",
+                        spec.sourceNodeId(), spec.targetNodeId(), e.getMessage());
+            }
+        }
     }
 }

@@ -16,6 +16,9 @@
 
 package ai.kompile.loader.microsoft;
 
+import ai.kompile.core.graphrag.GraphConstants;
+import ai.kompile.core.graphrag.model.Graph;
+import ai.kompile.core.graphrag.table.TableCellGraphBuilder;
 import ai.kompile.core.loaders.DocumentLoader;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
 import com.healthmarketscience.jackcess.Database;
@@ -408,16 +411,16 @@ public class MicrosoftOfficeLoaderImpl implements DocumentLoader {
             }
             tableRows.add(cells);
         }
-        ai.kompile.core.graphrag.model.Graph tableGraph =
-                new ai.kompile.core.graphrag.table.TableCellGraphBuilder()
+        Graph tableGraph =
+                new TableCellGraphBuilder()
                         .namespace("docx:" + file.getName() + "#" + tableIndex)
                         .tableName("Table " + (tableIndex + 1))
                         .rows(tableRows)
                         .firstRowIsHeader(true)
                         .build();
         if (!tableGraph.getEntities().isEmpty()) {
-            doc.getMetadata().put(ai.kompile.core.graphrag.GraphConstants.META_TABLE_GRAPH,
-                    ai.kompile.core.graphrag.table.TableCellGraphBuilder.toJson(tableGraph));
+            doc.getMetadata().put(GraphConstants.META_TABLE_GRAPH,
+                    TableCellGraphBuilder.toJson(tableGraph));
         }
 
         return doc;

@@ -106,9 +106,12 @@ class GraphCommandRegistrationTest {
         assertTrue(subcommands.containsKey("proposals"),      "missing 'proposals'");
         assertTrue(subcommands.containsKey("config"),         "missing 'config'");
 
+        // Maintenance command (added in wave: graph health diagnostics)
+        assertTrue(subcommands.containsKey("maintain"),       "missing 'maintain'");
+
         // Total count guard — catches unintended additions or removals
-        assertEquals(32, subcommands.size(),
-                "Expected exactly 32 subcommands under 'graph', got " + subcommands.size());
+        assertEquals(33, subcommands.size(),
+                "Expected exactly 33 subcommands under 'graph', got " + subcommands.size());
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

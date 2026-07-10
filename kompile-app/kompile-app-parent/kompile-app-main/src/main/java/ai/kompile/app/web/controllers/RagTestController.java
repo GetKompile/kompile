@@ -212,29 +212,10 @@ public class RagTestController {
                 }
                 result.put("timing", timing);
 
-                // Include first 10 values as preview
-                double[] preview = new double[Math.min(10, (int) embedding.length())];
-                for (int i = 0; i < preview.length; i++) {
-                    preview[i] = embedding.getDouble(i);
-                }
-                result.put("preview", preview);
+                result.put("preview", embeddingPreview(embedding, 10));
 
             } else {
-                // Fallback for other embedding models - just wall-clock time
-                long startTime = System.currentTimeMillis();
-                INDArray embedding = embeddingModel.embed(text);
-                long duration = System.currentTimeMillis() - startTime;
-
-                result.put("dimensions", embedding.length());
-                result.put("shape", Arrays.toString(embedding.shape()));
-                result.put(FieldNames.DURATION_MS, duration);
-
-                // Include first 10 values as preview
-                double[] preview = new double[Math.min(10, (int) embedding.length())];
-                for (int i = 0; i < preview.length; i++) {
-                    preview[i] = embedding.getDouble(i);
-                }
-                result.put("preview", preview);
+                result.put("error", "Direct main-process embedding tests are disabled; use a managed embedding subprocess model.");
             }
 
         } catch (Exception e) {
@@ -243,6 +224,14 @@ public class RagTestController {
         }
 
         return ResponseEntity.ok(result);
+    }
+
+    private static double[] embeddingPreview(INDArray embedding, int maxValues) {
+        if (embedding == null || embedding.isEmpty() || maxValues <= 0) {
+            return new double[0];
+        }
+        double[] values = embedding.ravel('c').data().asDouble();
+        return Arrays.copyOf(values, Math.min(maxValues, values.length));
     }
 
     /**

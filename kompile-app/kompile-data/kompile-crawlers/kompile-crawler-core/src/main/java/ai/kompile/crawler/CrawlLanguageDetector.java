@@ -17,7 +17,8 @@
 package ai.kompile.crawler;
 
 import ai.kompile.core.crawler.CrawlItem;
-import ai.kompile.core.source.SourceMetadataConstants;
+import ai.kompile.core.language.LanguageMetadata;
+import ai.kompile.core.language.LanguageSupport;
 import ai.kompile.langdetect.LanguageDetectionConfigService;
 import ai.kompile.langdetect.OpenNLPLanguageDetector;
 import org.slf4j.Logger;
@@ -85,9 +86,11 @@ public class CrawlLanguageDetector {
         String detected = languageDetector.detectLanguage(textSample);
         double confidence = languageDetector.detectLanguageConfidence(textSample);
 
-        item.setLanguage(detected);
+        item.setLanguage(LanguageSupport.normalizeLanguageCode(detected));
         item.setLanguageConfidence(confidence);
-        item.setLanguageSource("detected");
+        item.setLanguageSource(LanguageSupport.UNDETERMINED_LANGUAGE.equals(item.getLanguage())
+                ? LanguageMetadata.SOURCE_UNDETERMINED
+                : LanguageMetadata.SOURCE_DETECTED);
 
         propagateToMetadata(item);
 
@@ -108,15 +111,8 @@ public class CrawlLanguageDetector {
             item.setMetadata(new HashMap<>());
         }
         if (item.getLanguage() != null) {
-            item.getMetadata().put(SourceMetadataConstants.LANGUAGE, item.getLanguage());
-        }
-        if (item.getLanguageConfidence() != null) {
-            item.getMetadata().put(SourceMetadataConstants.LANGUAGE_CONFIDENCE,
-                    item.getLanguageConfidence().toString());
-        }
-        if (item.getLanguageSource() != null) {
-            item.getMetadata().put(SourceMetadataConstants.LANGUAGE_DETECTION_METHOD,
-                    item.getLanguageSource());
+            LanguageMetadata.putLanguage(item.getMetadata(), item.getLanguage(), item.getLanguageConfidence(),
+                    item.getLanguageSource(), null);
         }
     }
 }

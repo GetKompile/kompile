@@ -55,6 +55,17 @@ class SpreadsheetGraphToGraphTest {
                 .build();
     }
 
+    private CellNode textCell(String sheetName, String col, int row, String value) {
+        return CellNode.builder()
+                .cellReference(sheetName + "!" + col + row)
+                .sheetName(sheetName)
+                .column(col)
+                .row(row)
+                .cellType("STRING")
+                .displayValue(value)
+                .build();
+    }
+
     private CellNode formulaCell(String sheetName, String col, int row, String formula, String value) {
         return CellNode.builder()
                 .cellReference(sheetName + "!" + col + row)
@@ -151,6 +162,112 @@ class SpreadsheetGraphToGraphTest {
             assertThat(formulaEntity.getDescription()).contains("30");
             assertThat(formulaEntity.getMetadata()).containsEntry("formula", "A1+B1");
             assertThat(formulaEntity.getMetadata()).containsEntry("displayValue", "30");
+        }
+
+        @Test
+        void numericAndFormulaCellsCarryGenericRowAndColumnSemantics() {
+            SpreadsheetGraph graph = new SpreadsheetGraph();
+            graph.setWorkbookName("pnl.xlsx");
+            graph.addCell(textCell("P&L", "A", 1, "Metric"));
+            graph.addCell(textCell("P&L", "B", 1, "July"));
+            graph.addCell(textCell("P&L", "A", 2, "Gross Margin"));
+            graph.addCell(formulaCell("P&L", "B", 2, "B3/B4", "0.42"));
+
+            Entity formulaEntity = graph.toGraph().getEntities().stream()
+                    .filter(entity -> ENTITY_FORMULA_CELL.equals(entity.getType()))
+                    .findFirst().orElseThrow();
+
+            assertThat(formulaEntity.getTitle()).isEqualTo("Gross Margin / July");
+            assertThat(formulaEntity.getMetadata()).containsEntry("rowLabel", "Gross Margin");
+            assertThat(formulaEntity.getMetadata()).containsEntry("columnLabel", "July");
+            assertThat(formulaEntity.getMetadata()).containsEntry(
+                    "semanticLabel", "Gross Margin / July");
+            Map<?, ?> dimensions =
+                    (Map<?, ?>) formulaEntity.getMetadata().get("dimensions");
+            assertThat(dimensions.get("sheet")).isEqualTo("P&L");
+            assertThat(dimensions.get("row")).isEqualTo("Gross Margin");
+            assertThat(dimensions.get("column")).isEqualTo("July");
+        }
+
+        @Test
+        void loneTextRowsBecomeSheetTitleAndSectionLabels() {
+            SpreadsheetGraph graph = new SpreadsheetGraph();
+            graph.setWorkbookName("group.xlsx");
+            graph.addCell(textCell("Entity", "A", 1, "Entity-level P&L"));
+            graph.addCell(textCell("Entity", "A", 3, "Net revenue"));
+            graph.addCell(textCell("Entity", "A", 4, "Entity"));
+            graph.addCell(textCell("Entity", "B", 4, "Jun 2026"));
+            graph.addCell(textCell("Entity", "A", 5, "US"));
+            graph.addCell(valueCell("Entity", "B", 5, "100"));
+            graph.addCell(textCell("Entity", "A", 6, "APAC"));
+            graph.addCell(valueCell("Entity", "B", 6, "40"));
+            graph.addCell(textCell("Entity", "A", 8, "Operating income (EBIT)"));
+            graph.addCell(textCell("Entity", "A", 9, "APAC"));
+            graph.addCell(valueCell("Entity", "B", 9, "12"));
+
+            Graph result = graph.toGraph();
+            Entity revenueCell = result.getEntities().stream()
+                    .filter(entity -> entity.getId().endsWith("cell:Entity!B6"))
+                    .findFirst().orElseThrow();
+            Entity ebitCell = result.getEntities().stream()
+                    .filter(entity -> entity.getId().endsWith("cell:Entity!B9"))
+                    .findFirst().orElseThrow();
+
+            assertThat(revenueCell.getMetadata())
+                    .containsEntry("sectionLabel", "Net revenue")
+                    .containsEntry("sheetTitle", "Entity-level P&L");
+            assertThat(ebitCell.getMetadata())
+                    .containsEntry("sectionLabel", "Operating income (EBIT)")
+                    .containsEntry("sheetTitle", "Entity-level P&L");
+        }
+
+        @Test
+        void numericCellsRetainAllLeftHandRowDimensions() {
+            SpreadsheetGraph graph = new SpreadsheetGraph();
+            graph.setWorkbookName("forecast.xlsx");
+            graph.addCell(textCell("Forecast", "A", 1, "SKU"));
+            graph.addCell(textCell("Forecast", "B", 1, "Product"));
+            graph.addCell(textCell("Forecast", "C", 1, "Channel"));
+            graph.addCell(textCell("Forecast", "D", 1, "July"));
+            graph.addCell(textCell("Forecast", "A", 2, "SKU-1"));
+            graph.addCell(textCell("Forecast", "B", 2, "Restful Bath Salt 16oz"));
+            graph.addCell(textCell("Forecast", "C", 2, "DTC"));
+            graph.addCell(valueCell("Forecast", "D", 2, "100"));
+            graph.addCell(textCell("Forecast", "A", 3, "SKU-2"));
+            graph.addCell(textCell("Forecast", "B", 3, "Hydrate Daily Set"));
+            graph.addCell(textCell("Forecast", "C", 3, "Retail"));
+            graph.addCell(valueCell("Forecast", "D", 3, "200"));
+
+            Graph result = graph.toGraph();
+            Entity valueEntity = result.getEntities().stream()
+                    .filter(entity -> entity.getId().endsWith("cell:Forecast!D2"))
+                    .findFirst().orElseThrow();
+
+            assertThat(valueEntity.getTitle()).isEqualTo(
+                    "SKU-1 / Restful Bath Salt 16oz / DTC / July");
+            assertThat(valueEntity.getMetadata()).containsEntry("rowLabel", "DTC");
+            assertThat(valueEntity.getMetadata().get("rowLabels")).isEqualTo(
+                    List.of("SKU-1", "Restful Bath Salt 16oz", "DTC"));
+            Map<?, ?> rowDimensions =
+                    (Map<?, ?>) valueEntity.getMetadata().get("rowDimensions");
+            assertThat(rowDimensions.get("SKU")).isEqualTo("SKU-1");
+            assertThat(rowDimensions.get("Product")).isEqualTo("Restful Bath Salt 16oz");
+            assertThat(rowDimensions.get("Channel")).isEqualTo("DTC");
+            Map<?, ?> dimensions =
+                    (Map<?, ?>) valueEntity.getMetadata().get("dimensions");
+            assertThat(dimensions.get("sku")).isEqualTo("SKU-1");
+            assertThat(dimensions.get("product")).isEqualTo("Restful Bath Salt 16oz");
+            assertThat(dimensions.get("channel")).isEqualTo("DTC");
+            assertThat(dimensions.get("column")).isEqualTo("July");
+
+            Entity secondValue = result.getEntities().stream()
+                    .filter(entity -> entity.getId().endsWith("cell:Forecast!D3"))
+                    .findFirst().orElseThrow();
+            Map<?, ?> secondDimensions =
+                    (Map<?, ?>) secondValue.getMetadata().get("dimensions");
+            assertThat(secondDimensions.get("sku")).isEqualTo("SKU-2");
+            assertThat(secondDimensions.get("product")).isEqualTo("Hydrate Daily Set");
+            assertThat(secondDimensions.get("channel")).isEqualTo("Retail");
         }
 
         @Test
@@ -694,6 +811,111 @@ class SpreadsheetGraphToGraphTest {
 
             assertThat(result.getEntities().stream()
                     .noneMatch(e -> ENTITY_TABLE.equals(e.getType())))
+                    .isTrue();
+        }
+
+        @Test
+        void inferredMasterTableProjectsTypedKeyedMembers() {
+            SpreadsheetGraph graph = new SpreadsheetGraph();
+            graph.setWorkbookName("consolidation.xlsx");
+            graph.addCell(textCell("SKU master", "A", 1, "Corporate SKU master"));
+            graph.addCell(textCell("SKU master", "A", 3, "Corp SKU"));
+            graph.addCell(textCell("SKU master", "B", 3, "Product name"));
+            graph.addCell(textCell("SKU master", "C", 3, "Brand"));
+            graph.addCell(textCell("SKU master", "A", 4, "RST-001"));
+            graph.addCell(textCell("SKU master", "B", 4, "Restful Bath Salt 16oz"));
+            graph.addCell(textCell("SKU master", "C", 4, "Restful"));
+            graph.addCell(textCell("SKU master", "A", 5, "HYD-101"));
+            graph.addCell(textCell("SKU master", "B", 5, "Hydrate Daily Set"));
+            graph.addCell(textCell("SKU master", "C", 5, "Hydrate"));
+            graph.addCell(textCell("SKU master", "A", 6, "Total"));
+            graph.addCell(textCell("SKU master", "B", 6, "aggregate row, not a member"));
+
+            Graph result = graph.toGraph();
+
+            Entity table = result.getEntities().stream()
+                    .filter(e -> ENTITY_TABLE.equals(e.getType()))
+                    .findFirst().orElseThrow();
+            assertThat(table.getMetadata()).containsEntry("inferred", true);
+            assertThat(table.getMetadata()).containsEntry("keyColumn", "Corp SKU");
+            assertThat(table.getMetadata()).containsEntry("memberType", "SKU");
+
+            List<Entity> members = result.getEntities().stream()
+                    .filter(e -> "SKU".equals(e.getType()))
+                    .toList();
+            assertThat(members).hasSize(2);
+            Entity bathSalt = members.stream()
+                    .filter(e -> "Restful Bath Salt 16oz".equals(e.getTitle()))
+                    .findFirst().orElseThrow();
+            assertThat(bathSalt.getMetadata()).containsEntry("memberKey", "RST-001");
+            assertThat(bathSalt.getMetadata()).containsEntry("tableMember", true);
+            assertThat(bathSalt.getMetadata().get("aliases"))
+                    .isEqualTo(List.of("RST-001", "Restful Bath Salt 16oz"));
+            assertThat(bathSalt.getMetadata()).containsEntry("brand", "Restful");
+            assertThat(result.getRelationships().stream().anyMatch(rel ->
+                    rel.getSource().equals(table.getId())
+                            && rel.getTarget().equals(bathSalt.getId())
+                            && REL_CONTAINS.equals(rel.getType())))
+                    .isTrue();
+        }
+
+        @Test
+        void memberReferenceColumnsBecomeTypedRelations() {
+            SpreadsheetGraph graph = new SpreadsheetGraph();
+            graph.setWorkbookName("consolidation.xlsx");
+            graph.addCell(textCell("Brand master", "A", 1, "Brand"));
+            graph.addCell(textCell("Brand master", "B", 1, "Owner"));
+            graph.addCell(textCell("Brand master", "A", 2, "Restful"));
+            graph.addCell(textCell("Brand master", "B", 2, "S. Chen"));
+            graph.addCell(textCell("Brand master", "A", 3, "Hydrate"));
+            graph.addCell(textCell("Brand master", "B", 3, "M. Ito"));
+            graph.addCell(textCell("SKU master", "A", 1, "Corp SKU"));
+            graph.addCell(textCell("SKU master", "B", 1, "Product name"));
+            graph.addCell(textCell("SKU master", "C", 1, "Brand"));
+            graph.addCell(textCell("SKU master", "A", 2, "RST-001"));
+            graph.addCell(textCell("SKU master", "B", 2, "Restful Bath Salt 16oz"));
+            graph.addCell(textCell("SKU master", "C", 2, "Restful"));
+            graph.addCell(textCell("SKU master", "A", 3, "HYD-101"));
+            graph.addCell(textCell("SKU master", "B", 3, "Hydrate Daily Set"));
+            graph.addCell(textCell("SKU master", "C", 3, "Hydrate"));
+
+            Graph result = graph.toGraph();
+
+            List<Relationship> references = result.getRelationships().stream()
+                    .filter(rel -> "HAS_BRAND".equals(rel.getType()))
+                    .toList();
+            assertThat(references).hasSize(2);
+            for (Relationship reference : references) {
+                assertThat(reference.getMetadata()).containsEntry("memberReference", true);
+                assertThat(reference.getSource()).contains("member:sku:");
+                assertThat(reference.getTarget()).contains("member:brand:");
+            }
+        }
+
+        @Test
+        void keylessGridStillBecomesAnInferredTableWithoutMembers() {
+            SpreadsheetGraph graph = new SpreadsheetGraph();
+            graph.setWorkbookName("forecast.xlsx");
+            graph.addCell(textCell("Detail", "A", 1, "SKU"));
+            graph.addCell(textCell("Detail", "B", 1, "Channel"));
+            graph.addCell(textCell("Detail", "C", 1, "Jul rev"));
+            graph.addCell(textCell("Detail", "A", 2, "RST-001"));
+            graph.addCell(textCell("Detail", "B", 2, "DTC"));
+            graph.addCell(valueCell("Detail", "C", 2, "100"));
+            graph.addCell(textCell("Detail", "A", 3, "RST-001"));
+            graph.addCell(textCell("Detail", "B", 3, "DTC"));
+            graph.addCell(valueCell("Detail", "C", 3, "200"));
+
+            Graph result = graph.toGraph();
+
+            Entity table = result.getEntities().stream()
+                    .filter(e -> ENTITY_TABLE.equals(e.getType()))
+                    .findFirst().orElseThrow();
+            assertThat(table.getMetadata()).doesNotContainKey("memberType");
+            assertThat(result.getEntities().stream()
+                    .noneMatch(e -> Boolean.TRUE.equals(
+                            e.getMetadata() != null
+                                    ? e.getMetadata().get("tableMember") : null)))
                     .isTrue();
         }
     }

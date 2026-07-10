@@ -29,11 +29,15 @@ import { MatTooltipModule } from '@angular/material/tooltip';
 import { MatMenuModule } from '@angular/material/menu';
 import { MatDividerModule } from '@angular/material/divider';
 import { MatSlideToggleModule } from '@angular/material/slide-toggle';
+import { MatDialog, MatDialogModule } from '@angular/material/dialog';
 import { Subscription, interval } from 'rxjs';
-import { CodeProjectService, CodeProject, CreateCodeProjectRequest, IndexingProgress, ProjectSession } from '../../services/code-project.service';
+import { pauseWhenHidden } from '../../services/visibility.util';
+import { CodeProjectService, CodeProject, IndexingProgress, ProjectSession } from '../../services/code-project.service';
 import { WebSocketService } from '../../services/websocket.service';
 import { CodeGraphBuilderComponent } from '../code-graph-builder/code-graph-builder.component';
 import { DiffIndexBrowserComponent } from '../diff-index-browser/diff-index-browser.component';
+import { CreateProjectDialogComponent } from './create-project-dialog.component';
+import { ConfirmDialogComponent } from '../confirm-dialog/confirm-dialog.component';
 
 @Component({
   selector: 'app-code-projects-hub',
@@ -53,8 +57,11 @@ import { DiffIndexBrowserComponent } from '../diff-index-browser/diff-index-brow
     MatMenuModule,
     MatDividerModule,
     MatSlideToggleModule,
+    MatDialogModule,
     CodeGraphBuilderComponent,
-    DiffIndexBrowserComponent
+    DiffIndexBrowserComponent,
+    CreateProjectDialogComponent,
+    ConfirmDialogComponent
   ],
   templateUrl: './code-projects-hub.component.html',
   styleUrls: ['./code-projects-hub.component.css']
@@ -64,18 +71,6 @@ export class CodeProjectsHubComponent implements OnInit, OnDestroy {
   activeProject: CodeProject | null = null;
   selectedProject: CodeProject | null = null;
   factSheet: any = null;
-
-  // Create project dialog
-  showCreateDialog = false;
-  newProject: CreateCodeProjectRequest = {
-    projectId: '',
-    name: '',
-    description: '',
-    color: '#4caf50',
-    icon: 'code',
-    directories: []
-  };
-  newDirectoryPath = '';
 
   // Indexing progress
   indexingProgress: IndexingProgress | null = null;
@@ -90,7 +85,8 @@ export class CodeProjectsHubComponent implements OnInit, OnDestroy {
 
   constructor(
     private projectService: CodeProjectService,
-    private webSocketService: WebSocketService
+    private webSocketService: WebSocketService,
+    private dialog: MatDialog
   ) {}
 
   ngOnInit(): void {
@@ -153,7 +149,7 @@ export class CodeProjectsHubComponent implements OnInit, OnDestroy {
   }
 
   private pollIndexProgress(projectId: string): void {
-    const pollSub = interval(1000).subscribe(() => {
+    const pollSub = interval(5000).pipe(pauseWhenHidden()).subscribe(() => {
       this.projectService.getIndexStatus(projectId).subscribe({
         next: (status) => {
           if (status.progressPercent !== undefined) {
@@ -177,55 +173,16 @@ export class CodeProjectsHubComponent implements OnInit, OnDestroy {
   // ── Create Project ─────────────────────────────────────────────
 
   openCreateDialog(): void {
-    this.newProject = {
-      projectId: '',
-      name: '',
-      description: '',
-      color: '#4caf50',
-      icon: 'code',
-      directories: []
-    };
-    this.newDirectoryPath = '';
-    this.showCreateDialog = true;
-  }
-
-  closeCreateDialog(): void {
-    this.showCreateDialog = false;
-  }
-
-  addDirectory(): void {
-    if (this.newDirectoryPath.trim()) {
-      if (!this.newProject.directories) {
-        this.newProject.directories = [];
-      }
-      this.newProject.directories.push({ path: this.newDirectoryPath.trim() });
-      this.newDirectoryPath = '';
-    }
-  }
-
-  removeDirectory(index: number): void {
-    this.newProject.directories?.splice(index, 1);
-  }
-
-  generateProjectId(): void {
-    if (this.newProject.name && !this.newProject.projectId) {
-      this.newProject.projectId = this.newProject.name
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '-')
-        .replace(/^-|-$/g, '');
-    }
-  }
-
-  createProject(): void {
-    if (!this.newProject.projectId || !this.newProject.name) return;
-
-    this.projectService.createProject(this.newProject).subscribe({
-      next: (project) => {
-        this.showCreateDialog = false;
-        this.selectProject(project);
-      },
-      error: (err) => console.error('Failed to create project:', err)
-    });
+    this.dialog.open(CreateProjectDialogComponent, { width: '520px' })
+      .afterClosed()
+      .subscribe(result => {
+        if (result) {
+          this.projectService.createProject(result).subscribe({
+            next: () => this.loadProjects(),
+            error: (err) => console.error('Failed to create project:', err)
+          });
+        }
+      });
   }
 
   // ── Project Actions ────────────────────────────────────────────
@@ -257,12 +214,25 @@ export class CodeProjectsHubComponent implements OnInit, OnDestroy {
     });
   }
 
-  deleteProject(project: CodeProject): void {
-    if (!confirm(`Delete project "${project.name}"? This will remove all indexed data.`)) return;
+  confirmDelete(project: CodeProject): void {
+    this.dialog.open(ConfirmDialogComponent, {
+      data: {
+        title: 'Delete Project',
+        message: `Delete project "${project.name}"? This will remove all indexed data.`,
+        confirmText: 'Delete',
+        confirmColor: 'warn',
+        icon: 'delete',
+        iconColor: 'warn'
+      }
+    }).afterClosed().subscribe(confirmed => {
+      if (confirmed) this.deleteProject(project.projectId);
+    });
+  }
 
-    this.projectService.deleteProject(project.projectId).subscribe({
+  private deleteProject(projectId: string): void {
+    this.projectService.deleteProject(projectId).subscribe({
       next: () => {
-        if (this.selectedProject?.projectId === project.projectId) {
+        if (this.selectedProject?.projectId === projectId) {
           this.selectedProject = null;
           this.factSheet = null;
         }

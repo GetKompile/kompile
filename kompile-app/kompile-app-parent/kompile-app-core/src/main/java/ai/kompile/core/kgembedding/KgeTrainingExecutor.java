@@ -15,6 +15,7 @@
  */
 package ai.kompile.core.kgembedding;
 
+import java.nio.file.Path;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -40,9 +41,9 @@ import org.nd4j.linalg.api.ndarray.INDArray;
  * <ol>
  *   <li>The caller supplies the triples list (already extracted from the graph store).</li>
  *   <li>The implementation trains in a separate JVM, writes embeddings to a temp file,
- *       and returns a {@link KgeTrainingResult} with an already-populated
- *       {@link KGEmbeddingModel} shim that {@code adapter.storeEmbeddings()} can consume
- *       directly.</li>
+ *       and returns a {@link KgeTrainingResult} that points at that serialized artifact.
+ *       Callers that support serialized write-back must consume that file directly rather
+ *       than rehydrating vectors in the parent JVM.</li>
  *   <li>If training fails, {@link KgeTrainingResult#success()} is {@code false} and
  *       the caller falls through to the existing failure path unchanged.</li>
  * </ol>
@@ -74,8 +75,8 @@ public interface KgeTrainingExecutor {
      * @param config      training hyper-parameters (epochs, batchSize, lr, margin, etc.)
      * @param triples     triples extracted by the caller's adapter (entity IDs are whatever the
      *                    adapter produced — the executor must preserve them verbatim)
-     * @return result holding a ready-to-use {@link KGEmbeddingModel} shim on success,
-     *         or an error message on failure
+     * @return result holding either a serialized embedding artifact or a ready-to-use
+     *         {@link KGEmbeddingModel} on success, or an error message on failure
      */
     KgeTrainingResult trainOutOfProcess(Long factSheetId,
                                         KGEmbeddingAlgorithm algorithm,
@@ -139,6 +140,23 @@ public interface KgeTrainingExecutor {
     }
 
     /**
+     * Trains KGE embeddings out-of-process with a pre-serialized warm-start file.
+     *
+     * <p>The file uses the learning-subprocess JSON shape and lets app-main pass prior
+     * embeddings to the subprocess without rehydrating them into {@link INDArray} objects.</p>
+     */
+    default KgeTrainingResult trainOutOfProcess(String crawlJobId,
+                                                Long factSheetId,
+                                                KGEmbeddingAlgorithm algorithm,
+                                                KGEmbeddingConfig config,
+                                                List<Triple> triples,
+                                                Path serializedWarmStartPath,
+                                                ProgressCallback callback) {
+        return trainOutOfProcess(crawlJobId, factSheetId, algorithm, config, triples,
+                Collections.emptyMap(), Collections.emptyMap(), callback);
+    }
+
+    /**
      * Trains KGE embeddings out-of-process with full warm-start support for both entity and
      * relation embeddings.
      *
@@ -176,24 +194,53 @@ public interface KgeTrainingExecutor {
     /**
      * Result of an out-of-process KGE training run.
      *
-     * @param success     whether training completed without error
-     * @param model       populated model shim (non-null on success; null on failure)
-     * @param finalLoss   final training loss (0.0 on failure)
-     * @param errorMessage error description (null on success)
+     * @param success                  whether training completed without error
+     * @param model                    optional in-JVM model fallback; subprocess callers should prefer
+     *                                 {@code serializedEmbeddingsPath}
+     * @param finalLoss                final training loss (0.0 on failure)
+     * @param errorMessage             error description (null on success)
+     * @param serializedEmbeddingsPath serialized subprocess output JSON; owned by the caller on success
+     * @param entityCount              number of entity embeddings produced
+     * @param relationCount            number of relation embeddings produced
      */
     record KgeTrainingResult(boolean success,
                               KGEmbeddingModel model,
                               double finalLoss,
-                              String errorMessage) {
+                              String errorMessage,
+                              Path serializedEmbeddingsPath,
+                              int entityCount,
+                              int relationCount) {
 
-        /** Convenience factory for a successful run. */
+        public KgeTrainingResult(boolean success,
+                                 KGEmbeddingModel model,
+                                 double finalLoss,
+                                 String errorMessage) {
+            this(success, model, finalLoss, errorMessage, null,
+                    model != null ? model.getEntityCount() : 0,
+                    model != null ? model.getRelationCount() : 0);
+        }
+
+        /** Convenience factory for a successful in-JVM/model-backed run. */
         public static KgeTrainingResult success(KGEmbeddingModel model, double finalLoss) {
             return new KgeTrainingResult(true, model, finalLoss, null);
         }
 
+        /** Convenience factory for a successful serialized subprocess run. */
+        public static KgeTrainingResult success(Path serializedEmbeddingsPath,
+                                                int entityCount,
+                                                int relationCount,
+                                                double finalLoss) {
+            return new KgeTrainingResult(true, null, finalLoss, null,
+                    serializedEmbeddingsPath, entityCount, relationCount);
+        }
+
         /** Convenience factory for a failed run. */
         public static KgeTrainingResult failure(String reason) {
-            return new KgeTrainingResult(false, null, 0.0, reason);
+            return new KgeTrainingResult(false, null, 0.0, reason, null, 0, 0);
+        }
+
+        public boolean hasSerializedEmbeddings() {
+            return serializedEmbeddingsPath != null;
         }
     }
 }

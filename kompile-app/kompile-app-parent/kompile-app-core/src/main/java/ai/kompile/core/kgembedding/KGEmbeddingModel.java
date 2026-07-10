@@ -83,6 +83,24 @@ public interface KGEmbeddingModel extends AutoCloseable {
      */
     Set<String> getRelationTypes();
 
+    /**
+     * Returns entity IDs in the same row order as {@link #getEntityEmbeddingMatrix()}.
+     *
+     * <p>The default preserves the legacy unordered set iteration for implementations that do not
+     * expose a stable row mapping. Matrix-backed implementations should override this so callers can
+     * export the full matrix with one bulk host read instead of one row read per ID.</p>
+     */
+    default List<String> getEntityIdsInEmbeddingOrder() {
+        return List.copyOf(getEntityIds());
+    }
+
+    /**
+     * Returns relation types in the same row order as {@link #getRelationEmbeddingMatrix()}.
+     */
+    default List<String> getRelationTypesInEmbeddingOrder() {
+        return List.copyOf(getRelationTypes());
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // TRAINING
     // ═══════════════════════════════════════════════════════════════════════════

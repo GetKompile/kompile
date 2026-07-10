@@ -157,6 +157,52 @@ public class CodexAdapter implements ChatSourceAdapter {
     }
 
     @Override
+    public List<ChatSessionSummary> list(int limit) throws IOException {
+        if (limit < 0) {
+            return list();
+        }
+        Map<String, ChatSessionSummary> out = new LinkedHashMap<>();
+        Path sessions = sessionsDir();
+        if (Files.isDirectory(sessions)) {
+            List<Path> files;
+            try (Stream<Path> stream = Files.walk(sessions)) {
+                files = stream.filter(Files::isRegularFile)
+                        .filter(p -> {
+                            String n = p.getFileName().toString();
+                            return n.endsWith(".jsonl") || n.endsWith(".jsonl.zst");
+                        })
+                        .toList();
+            }
+            files.stream()
+                    .sorted((a, b) -> Long.compare(ChatAdapterSupport.lastModified(b), ChatAdapterSupport.lastModified(a)))
+                    .limit(limit)
+                    .forEach(path -> {
+                        String id = extractIdFromRollout(path.getFileName().toString());
+                        if (id == null) id = path.getFileName().toString();
+                        out.putIfAbsent(id, new ChatSessionSummary(
+                                id, id(), "(codex rollout)", id(),
+                                0, ChatAdapterSupport.lastModified(path)));
+                    });
+        }
+        if (out.size() < limit) {
+            Path history = historyFile();
+            if (Files.exists(history)) {
+                for (Map.Entry<String, List<ChatTurn>> e : readHistoryGrouped(history).entrySet()) {
+                    out.putIfAbsent(e.getKey(), new ChatSessionSummary(
+                            e.getKey(), id(), "(codex history)", id(),
+                            e.getValue().size(), ChatAdapterSupport.lastModified(history)));
+                    if (out.size() >= limit) {
+                        break;
+                    }
+                }
+            }
+        }
+        List<ChatSessionSummary> list = new ArrayList<>(out.values());
+        list.sort((a, b) -> Long.compare(b.lastModifiedMillis(), a.lastModifiedMillis()));
+        return list;
+    }
+
+    @Override
     public List<ChatTurn> readTurns(String sessionId) throws IOException {
         Optional<Path> rollout = findRollout(sessionId);
         if (rollout.isPresent()) {

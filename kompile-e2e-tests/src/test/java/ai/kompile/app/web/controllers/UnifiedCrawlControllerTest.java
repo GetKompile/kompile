@@ -74,7 +74,7 @@ class UnifiedCrawlControllerTest {
                         .sourceType(DocumentSourceDescriptor.SourceType.DIRECTORY)
                         .pathOrUrl("/data/docs")
                         .build()))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(true).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(true).build())
                 .build();
 
@@ -112,8 +112,8 @@ class UnifiedCrawlControllerTest {
     }
 
     @Test
-    @DisplayName("POST /start with null graph/vector configs shows disabled in response")
-    void startJob_nullConfigsShowsDisabled() {
+    @DisplayName("POST /start with null graph config still reports mandatory graph extraction")
+    void startJob_nullGraphConfigShowsEnabled() {
         UnifiedCrawlJob mockJob = buildMockJob("job-2", UnifiedCrawlJob.Status.PENDING);
         when(unifiedCrawlService.startJob(any())).thenReturn(mockJob);
 
@@ -128,7 +128,7 @@ class UnifiedCrawlControllerTest {
         assertEquals(HttpStatus.OK, response.getStatusCode());
         @SuppressWarnings("unchecked")
         Map<String, Object> body = (Map<String, Object>) response.getBody();
-        assertEquals(false, body.get("graphExtractionEnabled"));
+        assertEquals(true, body.get("graphExtractionEnabled"));
         assertEquals(false, body.get("vectorIndexEnabled"));
     }
 

@@ -458,6 +458,48 @@ public class SubprocessConfigController {
         ));
     }
 
+    // ==================== Per-Subprocess-Type Override Endpoints ====================
+
+    /**
+     * Get per-subprocess-type overrides (enabled toggle + heap size) for all known types.
+     */
+    @GetMapping("/subprocess-types")
+    public ResponseEntity<Map<String, Object>> getSubprocessTypes() {
+        if (configService == null) {
+            return ResponseEntity.notFound().build();
+        }
+        return ResponseEntity.ok(configService.getSubprocessTypes());
+    }
+
+    /**
+     * Update the {@code enabled} and/or {@code heapSize} override for a specific subprocess type
+     * (e.g. {@code graph-matrix}, {@code learning}). Only non-null fields are written;
+     * existing keys in the entry are preserved.
+     *
+     * @param type the subprocess type id
+     * @param body JSON object with optional {@code "enabled"} (boolean) and {@code "heapSize"} (string)
+     */
+    @PostMapping("/subprocess-types/{type}")
+    public ResponseEntity<Map<String, Object>> setSubprocessTypeConfig(
+            @PathVariable String type,
+            @RequestBody Map<String, Object> body
+    ) {
+        if (configService == null) {
+            return ResponseEntity.notFound().build();
+        }
+        Boolean enabled = null;
+        if (body.get("enabled") instanceof Boolean b) {
+            enabled = b;
+        }
+        String heapSize = null;
+        if (body.get("heapSize") instanceof String s) {
+            heapSize = s;
+        }
+        log.info("Updating subprocess type config: type={}, enabled={}, heapSize={}", type, enabled, heapSize);
+        configService.setTypeConfig(type, enabled, heapSize);
+        return ResponseEntity.ok(configService.getSubprocessTypes());
+    }
+
     // ==================== Subprocess Restart Endpoints ====================
     // These endpoints allow restarting subprocesses with updated environment variables
     // Useful for debugging and applying ND4J configuration changes without full app restart

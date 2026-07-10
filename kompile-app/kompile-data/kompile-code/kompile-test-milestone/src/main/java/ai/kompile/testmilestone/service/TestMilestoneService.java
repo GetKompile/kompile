@@ -19,6 +19,7 @@ import java.io.InputStreamReader;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -321,7 +322,7 @@ public class TestMilestoneService {
             Instant commitTimestamp = null;
             if (timestampStr != null && !timestampStr.isEmpty()) {
                 try {
-                    commitTimestamp = java.time.OffsetDateTime.parse(timestampStr).toInstant();
+                    commitTimestamp = OffsetDateTime.parse(timestampStr).toInstant();
                 } catch (Exception e) {
                     log.warn("Failed to parse commit timestamp: {}", timestampStr);
                 }

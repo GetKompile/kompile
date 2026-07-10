@@ -17,8 +17,12 @@
 package ai.kompile.cli.main.codeindex;
 
 import java.io.IOException;
+import java.io.OutputStream;
 import java.io.PrintStream;
 import java.nio.file.*;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.*;
 import java.util.regex.Matcher;
@@ -592,8 +596,8 @@ public class CodeSearchEngine {
 
     private Map<String, IndexFileStore.FileFingerprint> loadFingerprints(String projectId) throws IOException {
         Path indexDir = LocalCodeIndexer.getIndexDir(projectId);
-        com.fasterxml.jackson.databind.ObjectMapper om = new com.fasterxml.jackson.databind.ObjectMapper();
-        om.registerModule(new com.fasterxml.jackson.datatype.jsr310.JavaTimeModule());
+        ObjectMapper om = new ObjectMapper();
+        om.registerModule(new JavaTimeModule());
         IndexFileStore store = new IndexFileStore(indexDir, om);
         return store.loadFingerprints();
     }
@@ -626,6 +630,6 @@ public class CodeSearchEngine {
     }
 
     private static PrintStream nullOut() {
-        return new PrintStream(java.io.OutputStream.nullOutputStream());
+        return new PrintStream(OutputStream.nullOutputStream());
     }
 }

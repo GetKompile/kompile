@@ -174,6 +174,10 @@ public class StructuredPerceptronLearner implements WeightLearner {
         // Single RNG seeded once for the whole run, ensuring deterministic subsampling.
         Random rng = new Random(seed);
 
+        // GradientSession for the Adam+placeholder-reuse path. Lazily initialised on the first
+        // epoch that enters the SameDiff branch; recreated when R or K changes (mini-batch, etc.).
+        SameDiffPslWeightGradient.GradientSession pslSession = null;
+
         boolean converged = false;
         int epoch;
 
@@ -201,13 +205,18 @@ public class StructuredPerceptronLearner implements WeightLearner {
             // original `rules`. After epoch 0 the weights diverge, so passing `rules` causes findRuleIndex
             // to match by the epoch-0 weight and miss every ground rule → gradient-0 → spurious convergence.
             //
-            // Production path: SameDiffPslWeightGradient for programs with many ground rules (one
-            // autodiff backward pass over K_r weight scalars, backend-agnostic). Falls back to the
-            // scalar PslRuleGradient below the threshold (avoids SameDiff graph-build overhead at
-            // small scale).
+            // Production path: GradientSession (SameDiff + Adam + placeholder reuse) for programs with
+            // many ground rules. The session is lazily created and reused across epochs when R is stable
+            // (full-batch). If R changes (mini-batch, program growth), the session is recreated.
+            // Falls back to scalar PslRuleGradient below the threshold.
+            boolean useSameDiff = batch.size() >= SameDiffPslWeightGradient.GROUND_RULE_THRESHOLD;
             double[] gradient;
-            if (batch.size() >= SameDiffPslWeightGradient.GROUND_RULE_THRESHOLD) {
-                gradient = SameDiffPslWeightGradient.compute(currentRules, batch, predicted, groundTruth);
+            if (useSameDiff) {
+                if (pslSession == null || !pslSession.matches(currentRules, batch)) {
+                    pslSession = new SameDiffPslWeightGradient.GradientSession(
+                            currentRules, batch, weights, learningRate);
+                }
+                gradient = pslSession.computeGradient(batch, predicted, groundTruth);
             } else {
                 gradient = PslRuleGradient.ruleGradient(currentRules, batch, predicted, groundTruth);
             }
@@ -229,7 +238,14 @@ public class StructuredPerceptronLearner implements WeightLearner {
                 }
             }
 
-            double maxChange = optimizer.step(weights, gradient);
+            // Apply optimizer: Adam via GradientSession for the large-batch SameDiff path,
+            // plain SGD (ProjectedGradientOptimizer) for the scalar path.
+            double maxChange;
+            if (useSameDiff && pslSession != null) {
+                maxChange = pslSession.applyAdamStep(weights, gradient, epoch);
+            } else {
+                maxChange = optimizer.step(weights, gradient);
+            }
             log.debug("StructuredPerceptronLearner epoch {}: maxChange={}", epoch, maxChange);
 
             if (optimizer.converged(maxChange)) {

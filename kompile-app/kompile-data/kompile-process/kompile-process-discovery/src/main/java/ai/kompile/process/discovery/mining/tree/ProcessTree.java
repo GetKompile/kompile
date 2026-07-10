@@ -16,13 +16,16 @@
 
 package ai.kompile.process.discovery.mining.tree;
 
+import java.io.Serializable;
 import java.util.LinkedHashSet;
 import java.util.Set;
 
 /**
  * A discovered process tree: a {@link ProcessTreeNode} root plus convenience accessors. Immutable.
  */
-public final class ProcessTree {
+public final class ProcessTree implements Serializable {
+
+    private static final long serialVersionUID = 1L;
 
     private final ProcessTreeNode root;
 

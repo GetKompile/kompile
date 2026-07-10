@@ -16,6 +16,7 @@
 
 package ai.kompile.loader.pdf;
 
+import ai.kompile.core.graphrag.GraphConstants;
 import ai.kompile.core.loaders.DocumentLoader;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
 import org.apache.pdfbox.Loader;
@@ -24,8 +25,15 @@ import org.apache.pdfbox.pdmodel.PDDocumentInformation;
 import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.interactive.action.PDAction;
 import org.apache.pdfbox.pdmodel.interactive.action.PDActionURI;
+import org.apache.pdfbox.pdmodel.PDDocumentNameDictionary;
+import org.apache.pdfbox.pdmodel.PDEmbeddedFilesNameTreeNode;
+import org.apache.pdfbox.pdmodel.common.PDNameTreeNode;
+import org.apache.pdfbox.pdmodel.common.filespecification.PDComplexFileSpecification;
+import org.apache.pdfbox.pdmodel.common.filespecification.PDEmbeddedFile;
+import org.apache.pdfbox.pdmodel.interactive.digitalsignature.PDSignature;
 import org.apache.pdfbox.pdmodel.interactive.annotation.PDAnnotation;
 import org.apache.pdfbox.pdmodel.interactive.annotation.PDAnnotationLink;
+import org.apache.pdfbox.pdmodel.interactive.annotation.PDAnnotationMarkup;
 import org.apache.pdfbox.pdmodel.interactive.documentnavigation.outline.PDDocumentOutline;
 import org.apache.pdfbox.pdmodel.interactive.documentnavigation.outline.PDOutlineItem;
 import org.apache.pdfbox.pdmodel.interactive.form.PDAcroForm;
@@ -44,7 +52,9 @@ import org.slf4j.LoggerFactory;
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 @Component
@@ -236,10 +246,22 @@ public class PdfExtendedLoaderImpl implements DocumentLoader {
                     }
                 }
 
-                // Extract annotation contents
+                // Extract annotation contents, appending the subtype and author (markup "T" entry) as
+                // "[subtype=X] [author=Y]" suffixes so PdfGraphExtractor can build the annotation's
+                // subtype property and the ANNOTATED_BY → PERSON cross-link. Without the author suffix
+                // ANNOTATED_BY was a no-op.
                 if (annotation.getContents() != null && !annotation.getContents().trim().isEmpty()) {
                     annotationContent.append("Annotation on page ").append(pageNum + 1)
-                            .append(": ").append(annotation.getContents()).append("\n");
+                            .append(": ").append(annotation.getContents());
+                    String subtype = annotation.getSubtype();
+                    if (subtype != null && !subtype.isBlank()) {
+                        annotationContent.append(" [subtype=").append(subtype).append("]");
+                    }
+                    if (annotation instanceof PDAnnotationMarkup markup
+                            && markup.getTitlePopup() != null && !markup.getTitlePopup().isBlank()) {
+                        annotationContent.append(" [author=").append(markup.getTitlePopup()).append("]");
+                    }
+                    annotationContent.append("\n");
                 }
             }
         }
@@ -293,7 +315,7 @@ public class PdfExtendedLoaderImpl implements DocumentLoader {
         }
 
         StringBuilder bookmarkContent = new StringBuilder();
-        extractBookmarkItems(outline, bookmarkContent, 0);
+        extractBookmarkItems(document, outline, bookmarkContent, 0);
 
         if (bookmarkContent.length() > 0) {
             Document bookmarkDoc = new Document(bookmarkContent.toString());
@@ -305,20 +327,42 @@ public class PdfExtendedLoaderImpl implements DocumentLoader {
         return null;
     }
 
-    private void extractBookmarkItems(PDDocumentOutline item, StringBuilder content, int level) throws IOException {
-        extractBookmarkItems(item.getFirstChild(),content,level);
+    private void extractBookmarkItems(PDDocument document, PDDocumentOutline outline, StringBuilder content, int level) throws IOException {
+        // Walk ALL top-level outline items, not just the first. The previous code descended only
+        // getFirstChild() (and its descendants), so every top-level bookmark after the first —
+        // and its whole subtree — was silently dropped.
+        PDOutlineItem child = outline.getFirstChild();
+        while (child != null) {
+            extractBookmarkItems(document, child, content, level);
+            child = child.getNextSibling();
+        }
     }
 
-    private void extractBookmarkItems(PDOutlineItem item, StringBuilder content, int level) throws IOException {
+    private void extractBookmarkItems(PDDocument document, PDOutlineItem item, StringBuilder content, int level) throws IOException {
         String indent = "  ".repeat(level);
 
         if (item != null) {
-            content.append(indent).append(item.getTitle()).append("\n");
+            content.append(indent).append(item.getTitle());
+            // Emit the destination page as a "[page=N]" suffix so PdfGraphExtractor can link the
+            // PDF_SECTION to its page (REL_ON_PAGE). Without it, every bookmark's page link was a
+            // no-op. Best-effort: a bookmark with no resolvable destination just omits the suffix.
+            try {
+                PDPage dest = item.findDestinationPage(document);
+                if (dest != null) {
+                    int pageIndex = document.getPages().indexOf(dest);
+                    if (pageIndex >= 0) {
+                        content.append(" [page=").append(pageIndex + 1).append("]");
+                    }
+                }
+            } catch (IOException ignored) {
+                // no resolvable destination — leave the bookmark without a page suffix
+            }
+            content.append("\n");
 
             // Process children
             PDOutlineItem child = item.getFirstChild();
             while (child != null) {
-                extractBookmarkItems(child, content, level + 1);
+                extractBookmarkItems(document, child, content, level + 1);
                 child = child.getNextSibling();
             }
         }
@@ -332,6 +376,28 @@ public class PdfExtendedLoaderImpl implements DocumentLoader {
         document.getMetadata().put("documentType", "PDF Document");
         document.getMetadata().put("loader", getName());
         document.getMetadata().put("pageCount", pdfDocument.getNumberOfPages());
+
+        // Catalog /Lang → language metadata. PdfGraphExtractor reads META_PDF_LANGUAGE to set the
+        // PDF_DOCUMENT language property; previously the catalog language was never surfaced.
+        String catalogLanguage = pdfDocument.getDocumentCatalog().getLanguage();
+        if (catalogLanguage != null && !catalogLanguage.isBlank()) {
+            document.getMetadata().put(GraphConstants.META_PDF_LANGUAGE, catalogLanguage);
+        }
+
+        // Embedded files (/Names /EmbeddedFiles) → EMBEDDED_FILE entities + HAS_EMBEDDED_FILE edges.
+        // No producer emitted this before, so PdfGraphExtractor's embedded-file branch was dead.
+        // (Entity ids are per-source, so stamping on every sub-doc dedups to one entity per file.)
+        List<Map<String, Object>> embeddedFiles = extractEmbeddedFiles(pdfDocument);
+        if (!embeddedFiles.isEmpty()) {
+            document.getMetadata().put(GraphConstants.META_PDF_EMBEDDED_FILES, embeddedFiles);
+        }
+
+        // Digital signatures (/AcroForm signature fields) → PDF_SIGNATURE entities + HAS_SIGNATURE
+        // edges (and signer PERSON/ORG via the certificate CN/O). No producer emitted this before.
+        List<Map<String, Object>> signatures = extractSignatures(pdfDocument);
+        if (!signatures.isEmpty()) {
+            document.getMetadata().put(GraphConstants.META_PDF_SIGNATURES, signatures);
+        }
 
         if (extractMetadata) {
             PDDocumentInformation info = pdfDocument.getDocumentInformation();
@@ -361,6 +427,100 @@ public class PdfExtendedLoaderImpl implements DocumentLoader {
                     document.getMetadata().put("modificationDate", info.getModificationDate().getTime());
                 }
             }
+        }
+    }
+
+    /**
+     * Embedded files declared in the catalog name tree (/Names /EmbeddedFiles), flattened to a list of
+     * {@code {name, mimeType, size}} maps in the shape {@code PdfGraphExtractor} consumes. Best-effort.
+     */
+    private List<Map<String, Object>> extractEmbeddedFiles(PDDocument document) {
+        List<Map<String, Object>> result = new ArrayList<>();
+        try {
+            PDDocumentNameDictionary names = document.getDocumentCatalog().getNames();
+            if (names == null) {
+                return result;
+            }
+            PDEmbeddedFilesNameTreeNode efTree = names.getEmbeddedFiles();
+            if (efTree != null) {
+                collectEmbeddedFiles(efTree, result);
+            }
+        } catch (IOException e) {
+            logger.debug("Embedded-file extraction failed for a PDF: {}", e.toString());
+        }
+        return result;
+    }
+
+    private void collectEmbeddedFiles(PDNameTreeNode<PDComplexFileSpecification> node,
+                                      List<Map<String, Object>> sink) throws IOException {
+        Map<String, PDComplexFileSpecification> names = node.getNames();
+        if (names != null) {
+            for (Map.Entry<String, PDComplexFileSpecification> entry : names.entrySet()) {
+                PDComplexFileSpecification spec = entry.getValue();
+                if (spec == null) {
+                    continue;
+                }
+                String name = spec.getFilename() != null ? spec.getFilename() : entry.getKey();
+                if (name == null || name.isBlank()) {
+                    continue;
+                }
+                Map<String, Object> fileMeta = new LinkedHashMap<>();
+                fileMeta.put("name", name);
+                PDEmbeddedFile embedded = spec.getEmbeddedFile();
+                if (embedded != null) {
+                    String subtype = embedded.getSubtype();
+                    if (subtype != null && !subtype.isBlank()) {
+                        fileMeta.put("mimeType", subtype);
+                    }
+                    int size = embedded.getSize();
+                    if (size > 0) {
+                        fileMeta.put("size", size);
+                    }
+                }
+                sink.add(fileMeta);
+            }
+        }
+        List<PDNameTreeNode<PDComplexFileSpecification>> kids = node.getKids();
+        if (kids != null) {
+            for (PDNameTreeNode<PDComplexFileSpecification> kid : kids) {
+                collectEmbeddedFiles(kid, sink);
+            }
+        }
+    }
+
+    /**
+     * Digital signature dictionaries (/AcroForm signature fields), flattened to a list of
+     * {@code {name, reason, location, contactInfo, signDate}} maps in the shape
+     * {@code PdfGraphExtractor} consumes. Best-effort — never throws.
+     */
+    private List<Map<String, Object>> extractSignatures(PDDocument document) {
+        List<Map<String, Object>> result = new ArrayList<>();
+        try {
+            for (PDSignature sig : document.getSignatureDictionaries()) {
+                if (sig == null) {
+                    continue;
+                }
+                Map<String, Object> sigMeta = new LinkedHashMap<>();
+                putIfNotBlank(sigMeta, "name", sig.getName());
+                putIfNotBlank(sigMeta, "reason", sig.getReason());
+                putIfNotBlank(sigMeta, "location", sig.getLocation());
+                putIfNotBlank(sigMeta, "contactInfo", sig.getContactInfo());
+                if (sig.getSignDate() != null) {
+                    sigMeta.put("signDate", sig.getSignDate().toInstant().toString());
+                }
+                if (!sigMeta.isEmpty()) {
+                    result.add(sigMeta);
+                }
+            }
+        } catch (Exception e) {
+            logger.debug("Signature extraction failed for a PDF: {}", e.toString());
+        }
+        return result;
+    }
+
+    private static void putIfNotBlank(Map<String, Object> map, String key, String value) {
+        if (value != null && !value.isBlank()) {
+            map.put(key, value);
         }
     }
 

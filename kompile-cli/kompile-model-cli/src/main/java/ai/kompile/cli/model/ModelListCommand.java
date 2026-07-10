@@ -17,6 +17,7 @@
 package ai.kompile.cli.model;
 
 import ai.kompile.cli.common.KompileHome;
+import ai.kompile.utils.FormatUtils;
 import ai.kompile.cli.common.http.KompileHttpClient;
 import picocli.CommandLine;
 
@@ -59,9 +60,9 @@ public class ModelListCommand implements Callable<Integer> {
             System.out.println("Local models in " + modelsDir.getAbsolutePath() + ":");
             for (File f : modelsDir.listFiles()) {
                 if (f.isDirectory()) {
-                    System.out.printf("  %-40s %s%n", f.getName(), formatSize(dirSize(f)));
+                    System.out.printf("  %-40s %s%n", f.getName(), FormatUtils.formatBytes(dirSize(f)));
                 } else {
-                    System.out.printf("  %-40s %s%n", f.getName(), formatSize(f.length()));
+                    System.out.printf("  %-40s %s%n", f.getName(), FormatUtils.formatBytes(f.length()));
                 }
             }
         }
@@ -79,10 +80,4 @@ public class ModelListCommand implements Callable<Integer> {
         return size;
     }
 
-    private String formatSize(long bytes) {
-        if (bytes < 1024) return bytes + " B";
-        if (bytes < 1024 * 1024) return String.format("%.1f KB", bytes / 1024.0);
-        if (bytes < 1024 * 1024 * 1024) return String.format("%.1f MB", bytes / (1024.0 * 1024));
-        return String.format("%.2f GB", bytes / (1024.0 * 1024 * 1024));
-    }
 }

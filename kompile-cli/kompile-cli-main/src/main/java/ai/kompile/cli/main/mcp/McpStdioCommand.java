@@ -16,7 +16,106 @@
 
 package ai.kompile.cli.main.mcp;
 
+import ai.kompile.cli.common.logs.LogPaths;
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.cli.main.chat.agent.AgentConfig;
+import ai.kompile.cli.main.chat.config.SystemPromptManager;
+import ai.kompile.cli.main.chat.enforcer.EnforcerToolCallGuard;
+import ai.kompile.cli.main.chat.gateway.CliToolGatewayInterceptor;
+import ai.kompile.cli.main.chat.permission.PermissionService;
+import ai.kompile.cli.main.chat.skill.SkillRegistry;
+import ai.kompile.cli.main.chat.skill.SkillsInjection;
+import ai.kompile.cli.main.chat.tools.ActivateToolsTool;
+import ai.kompile.cli.main.chat.tools.AmbientGardenTool;
+import ai.kompile.cli.main.chat.tools.AmbientMemoryGardener;
+import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
+import ai.kompile.cli.main.chat.tools.BashTool;
+import ai.kompile.cli.main.chat.tools.BrowserTool;
+import ai.kompile.cli.main.chat.tools.CliTool;
+import ai.kompile.cli.main.chat.tools.CodeGraphTool;
+import ai.kompile.cli.main.chat.tools.CodeSearchTool;
+import ai.kompile.cli.main.chat.tools.ConfigArchiveTool;
+import ai.kompile.cli.main.chat.tools.ConversationImportTool;
+import ai.kompile.cli.main.chat.tools.DictationTool;
+import ai.kompile.cli.main.chat.tools.DynamicToolManager;
+import ai.kompile.cli.main.chat.tools.EditCoordinatorTool;
+import ai.kompile.cli.main.chat.tools.EditTool;
+import ai.kompile.cli.main.chat.tools.EnforcerConfigTool;
+import ai.kompile.cli.main.chat.tools.ExploreTool;
+import ai.kompile.cli.main.chat.tools.FetchResultTool;
+import ai.kompile.cli.main.chat.tools.FileActivityTool;
+import ai.kompile.cli.main.chat.tools.GlobTool;
+import ai.kompile.cli.main.chat.tools.GraphAggregateTool;
+import ai.kompile.cli.main.chat.tools.GraphBayesTool;
+import ai.kompile.cli.main.chat.tools.GraphCentralityTool;
+import ai.kompile.cli.main.chat.tools.GraphEmbeddingsTool;
+import ai.kompile.cli.main.chat.tools.GraphForecastTool;
+import ai.kompile.cli.main.chat.tools.GraphRagSearchTool;
+import ai.kompile.cli.main.chat.tools.GraphSimulateTool;
+import ai.kompile.cli.main.chat.tools.GrepTool;
+import ai.kompile.cli.main.chat.tools.KnowledgeGraphTool;
+import ai.kompile.cli.main.chat.tools.ListTool;
+import ai.kompile.cli.main.chat.tools.LocalCodeIndexTool;
+import ai.kompile.cli.main.chat.tools.LspTool;
+import ai.kompile.cli.main.chat.tools.McpToolAnnotations;
+import ai.kompile.cli.main.chat.tools.MemoryTool;
+import ai.kompile.cli.main.chat.tools.PatchTool;
+import ai.kompile.cli.main.chat.tools.ProcessManagementTool;
+import ai.kompile.cli.main.chat.tools.ProcessMiningCliTool;
+import ai.kompile.cli.main.chat.tools.ProjectConfigTool;
+import ai.kompile.cli.main.chat.tools.RagSearchTool;
+import ai.kompile.cli.main.chat.tools.ReadTool;
+import ai.kompile.cli.main.chat.tools.ResumeTool;
+import ai.kompile.cli.main.chat.tools.RoleManagerTool;
+import ai.kompile.cli.main.chat.tools.SemanticMemoryEngine;
+import ai.kompile.cli.main.chat.tools.SemanticMemoryTool;
+import ai.kompile.cli.main.chat.tools.ServerModeTool;
+import ai.kompile.cli.main.chat.tools.SidePanelTool;
+import ai.kompile.cli.main.chat.tools.SkillManagerTool;
+import ai.kompile.cli.main.chat.tools.TestMilestoneTool;
+import ai.kompile.cli.main.chat.tools.TodoReadTool;
+import ai.kompile.cli.main.chat.tools.TodoWriteTool;
+import ai.kompile.cli.main.chat.tools.ToolCallCatalogTool;
+import ai.kompile.cli.main.chat.tools.ToolContext;
+import ai.kompile.cli.main.chat.tools.ToolResult;
+import ai.kompile.cli.main.chat.tools.ToolResultReferenceCache;
+import ai.kompile.cli.main.chat.tools.ToolSchemaOptimizer;
+import ai.kompile.cli.main.chat.tools.TranscriptSearchTool;
+import ai.kompile.cli.main.chat.tools.WebFetchTool;
+import ai.kompile.cli.main.chat.tools.WebSearchTool;
+import ai.kompile.cli.main.chat.tools.WriteTool;
+import ai.kompile.cli.main.chat.tools.custom.CustomToolBridge;
+import ai.kompile.cli.main.chat.tools.custom.CustomToolLoader;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphAssertTool;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphClaimTool;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphExplainTool;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphFusedTool;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphMebnTool;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphQueryTool;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphRetractTool;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphSubscribeTool;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphSynthesizeTool;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphVerifyTool;
+import ai.kompile.cli.main.chat.tools.grounding.CrawlSourceTool;
+import ai.kompile.cli.main.chat.tools.grounding.GraphExportTool;
+import ai.kompile.cli.main.chat.tools.grounding.GraphImportTool;
+import ai.kompile.cli.main.chat.tools.grounding.GraphReasonTool;
+import ai.kompile.cli.main.chat.tools.grounding.GraphReasoningQueryTool;
+import ai.kompile.cli.main.chat.tui.SidePanelManager;
+import ai.kompile.cli.main.coordination.CoordinationStateManager;
+import ai.kompile.cli.main.coordination.FileWatcherService;
+import ai.kompile.cli.main.serve.DaemonClient;
+import ai.kompile.cli.main.serve.SharedResourcePool;
+import ai.kompile.cli.mcp.stdio.AsyncToolExecutor;
+import ai.kompile.cli.mcp.stdio.DirectSubagentRunnerStdio;
+import ai.kompile.cli.mcp.stdio.McpSessionTracker;
+import ai.kompile.cli.mcp.stdio.McpStderrLogger;
+import ai.kompile.cli.mcp.stdio.McpToolAuditLogger;
+import ai.kompile.cli.mcp.stdio.McpToolProgressLogger;
+import ai.kompile.cli.mcp.stdio.StdioHarnessTool;
+import ai.kompile.cli.mcp.stdio.StdioMultiTaskTool;
+import ai.kompile.cli.mcp.stdio.StdioQuorumTaskTool;
+import ai.kompile.cli.mcp.stdio.StdioTaskTool;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -60,7 +159,7 @@ public class McpStdioCommand implements Callable<Integer> {
 
     @CommandLine.Option(names = {"--profile"},
             description = "Tool profile: full (default, all tools), core (file I/O + search + workflow), " +
-                    "explore (read-only + code intelligence), minimal (read + grep + glob only)",
+                    "explore (read-only + code intelligence), minimal (read + search + list only)",
             defaultValue = "full")
     private String profile;
 
@@ -76,14 +175,14 @@ public class McpStdioCommand implements Callable<Integer> {
     static {
         Map<String, Set<String>> m = new LinkedHashMap<>();
 
-        // minimal: just read + search (~5 tools, ~1000 tokens)
+        // minimal: read + search only (~4 tools, ~1000 tokens)
         m.put("minimal", new LinkedHashSet<>(Set.of(
-                "read", "grep", "glob", "list", "bash"
+                "read", "grep", "glob", "list"
         )));
 
-        // explore: read-only + code intelligence (~10 tools, ~2500 tokens)
+        // explore: read-only + code intelligence (~9 tools, ~2500 tokens)
         m.put("explore", new LinkedHashSet<>(Set.of(
-                "read", "grep", "glob", "list", "bash",
+                "read", "grep", "glob", "list",
                 "explore", "code_search", "local_code_index", "code_graph",
                 "fetch_result"
         )));
@@ -103,43 +202,43 @@ public class McpStdioCommand implements Callable<Integer> {
     }
 
     /** Session tracker for metrics and harness evaluation across the MCP server lifecycle. */
-    private volatile ai.kompile.cli.mcp.stdio.McpSessionTracker sessionTracker;
+    private volatile McpSessionTracker sessionTracker;
 
     /** Coordination state manager for cross-agent edit/process/agent coordination. */
-    private volatile ai.kompile.cli.main.coordination.CoordinationStateManager coordinator;
+    private volatile CoordinationStateManager coordinator;
 
     /** Reference cache for large tool outputs — enables handle-based inter-tool communication. */
-    private volatile ai.kompile.cli.main.chat.tools.ToolResultReferenceCache resultReferenceCache;
+    private volatile ToolResultReferenceCache resultReferenceCache;
 
     /** Dynamic tool manager for lazy tool loading — reduces tool schema bloat. */
-    private volatile ai.kompile.cli.main.chat.tools.DynamicToolManager dynamicToolManager;
+    private volatile DynamicToolManager dynamicToolManager;
 
     /** Semantic memory engine for passive vector-based memory retrieval. */
-    private volatile ai.kompile.cli.main.chat.tools.SemanticMemoryEngine semanticMemoryEngine;
+    private volatile SemanticMemoryEngine semanticMemoryEngine;
 
     /** File watcher service for multi-agent file change notifications. */
-    private volatile ai.kompile.cli.main.coordination.FileWatcherService fileWatcherService;
+    private volatile FileWatcherService fileWatcherService;
 
     /** Ambient memory gardener for background memory maintenance. */
-    private volatile ai.kompile.cli.main.chat.tools.AmbientMemoryGardener ambientGardener;
+    private volatile AmbientMemoryGardener ambientGardener;
 
     /** Skill registry for MCP prompts endpoint. */
-    private volatile ai.kompile.cli.main.chat.skill.SkillRegistry skillRegistry;
+    private volatile SkillRegistry skillRegistry;
 
-    /** Centralized progress logger — writes all tool activity to ~/.kompile/logs/mcp-activity.log. */
-    private volatile ai.kompile.cli.mcp.stdio.McpToolProgressLogger progressLogger;
+    /** Centralized progress logger — writes all tool activity to the project-scoped {@code <.kompile>/logs/mcp-activity.log}. */
+    private volatile McpToolProgressLogger progressLogger;
 
     /** Async executor — runs tools in background when _background=true, supports polling. */
-    private volatile ai.kompile.cli.mcp.stdio.AsyncToolExecutor asyncExecutor;
+    private volatile AsyncToolExecutor asyncExecutor;
 
     /** Structured audit logger — writes MCP tool calls to the shared tool-call catalog. */
-    private volatile ai.kompile.cli.mcp.stdio.McpToolAuditLogger auditLogger;
+    private volatile McpToolAuditLogger auditLogger;
 
     /** CLI-side tool gateway — applies gateway rules outside the Spring MCP registry. */
-    private volatile ai.kompile.cli.main.chat.gateway.CliToolGatewayInterceptor gatewayInterceptor;
+    private volatile CliToolGatewayInterceptor gatewayInterceptor;
 
     /** Enforcer tool call guard — blocks tool calls that violate active enforcer policy. */
-    private volatile ai.kompile.cli.main.chat.enforcer.EnforcerToolCallGuard enforcerGuard;
+    private volatile EnforcerToolCallGuard enforcerGuard;
 
     /** Output writer for sending JSON-RPC notifications (stored as field for access from helpers). */
     private volatile OutputStreamWriter mcpOut;
@@ -182,8 +281,10 @@ public class McpStdioCommand implements Callable<Integer> {
         // stdout is intentionally left alone here so daemon bridgeStdio() can still write
         // JSON-RPC responses to the real stdout; runInProcess() additionally redirects
         // stdout once it takes over stdio.
-        ai.kompile.cli.mcp.stdio.McpStderrLogger stderrLogger =
-                new ai.kompile.cli.mcp.stdio.McpStderrLogger();
+        Path resolvedLogDir = LogPaths.logsDirectory(wd).toPath();
+        McpStderrLogger stderrLogger =
+                new McpStderrLogger(
+                        resolvedLogDir.resolve("mcp-stderr.log"));
         PrintStream originalErr = System.err;
         System.setErr(stderrLogger.getPrintStream());
         try {
@@ -197,8 +298,8 @@ public class McpStdioCommand implements Callable<Integer> {
 
             // Auto-start daemon if needed, then bridge — collapses N MCP processes into one
             if (!noDaemon) {
-                ai.kompile.cli.main.serve.DaemonClient client =
-                        ai.kompile.cli.main.serve.DaemonClient.ensureDaemon("mcp", wd);
+                DaemonClient client =
+                        DaemonClient.ensureDaemon("mcp", wd);
                 if (client != null) {
                     try {
                         client.bridgeStdio();
@@ -217,7 +318,7 @@ public class McpStdioCommand implements Callable<Integer> {
         }
     }
 
-    private int runInProcess(Path wd, ai.kompile.cli.mcp.stdio.McpStderrLogger stderrLogger) {
+    private int runInProcess(Path wd, McpStderrLogger stderrLogger) {
         // File-backed stderr sink so diagnostics (skill-loading errors, warnings,
         // third-party library chatter) do not pollute the MCP client's UI.
         PrintStream originalErr = System.err;
@@ -236,12 +337,12 @@ public class McpStdioCommand implements Callable<Integer> {
 
             om = JsonUtils.standardMapper();
 
-            sessionTracker = new ai.kompile.cli.mcp.stdio.McpSessionTracker(om);
-            resultReferenceCache = new ai.kompile.cli.main.chat.tools.ToolResultReferenceCache();
-            progressLogger = new ai.kompile.cli.mcp.stdio.McpToolProgressLogger();
-            asyncExecutor = new ai.kompile.cli.mcp.stdio.AsyncToolExecutor(progressLogger);
-            gatewayInterceptor = ai.kompile.cli.main.chat.gateway.CliToolGatewayInterceptor.fromConfig(om);
-            auditLogger = new ai.kompile.cli.mcp.stdio.McpToolAuditLogger(
+            sessionTracker = new McpSessionTracker(om);
+            resultReferenceCache = new ToolResultReferenceCache();
+            progressLogger = new McpToolProgressLogger(wd);
+            asyncExecutor = new AsyncToolExecutor(progressLogger);
+            gatewayInterceptor = CliToolGatewayInterceptor.fromConfig(om);
+            auditLogger = new McpToolAuditLogger(
                     sessionTracker.getMetrics().getSessionId(),
                     "kompile-mcp-stdio",
                     "mcp-stdio",
@@ -249,7 +350,7 @@ public class McpStdioCommand implements Callable<Integer> {
                     om);
 
             // Load enforcer tool call guard from environment (if enforcer mode is active)
-            enforcerGuard = ai.kompile.cli.main.chat.enforcer.EnforcerToolCallGuard.fromEnvironment(om);
+            enforcerGuard = EnforcerToolCallGuard.fromEnvironment(om);
 
             // ── CRITICAL: Start event loop FIRST, defer heavy init ──────────
             // Claude Code drops the MCP connection if the server doesn't respond
@@ -271,11 +372,14 @@ public class McpStdioCommand implements Callable<Integer> {
                 if (fileWatcherService != null) fileWatcherService.stop();
                 if (ambientGardener != null) ambientGardener.stop();
                 if (asyncExecutor != null) asyncExecutor.shutdown();
+                // Release the enforcer guard's judge lease so a lazily-created judge
+                // process never outlives this MCP server.
+                if (enforcerGuard != null) enforcerGuard.close();
                 // Close cached IndexDatabase connections
-                ai.kompile.cli.main.chat.tools.LocalCodeIndexTool.closeAll();
+                LocalCodeIndexTool.closeAll();
             }, "mcp-harness-shutdown"));
 
-            dynamicToolManager = new ai.kompile.cli.main.chat.tools.DynamicToolManager();
+            dynamicToolManager = new DynamicToolManager();
             dynamicToolManager.setDynamicMode(false);
 
             // Tools map and readiness flag are instance fields (tools, toolsReady)
@@ -467,7 +571,10 @@ public class McpStdioCommand implements Callable<Integer> {
                     // Build raw tool definitions (only active tools)
                     var rawDefs = om.createArrayNode();
                     // Keep annotations separate since optimizer doesn't handle them
-                    Map<String, ai.kompile.cli.main.chat.tools.McpToolAnnotations> annotationsMap = new LinkedHashMap<>();
+                    Map<String, McpToolAnnotations> annotationsMap = new LinkedHashMap<>();
+                    // Curated per-tool compact hints, applied by the optimizer at COMPACT/AGGRESSIVE
+                    // in place of blind-truncating the description (see CliTool#compactHint).
+                    Map<String, String> compactHints = new LinkedHashMap<>();
                     for (ToolDef td : tools.values()) {
                         if (!activeIds.contains(td.name())) continue;
                         var toolObj = rawDefs.addObject();
@@ -477,15 +584,18 @@ public class McpStdioCommand implements Callable<Integer> {
                         if (td.annotations() != null) {
                             annotationsMap.put(td.name(), td.annotations());
                         }
+                        if (td.compactHint() != null && !td.compactHint().isBlank()) {
+                            compactHints.put(td.name(), td.compactHint());
+                        }
                     }
 
                     // Apply schema optimization to reduce token footprint.
                     // Level is controlled by --schema-level (default: compact).
-                    var optimized = ai.kompile.cli.main.chat.tools.ToolSchemaOptimizer.optimize(
-                            rawDefs, resolveSchemaLevel());
+                    var optimized = ToolSchemaOptimizer.optimize(
+                            rawDefs, resolveSchemaLevel(), compactHints);
 
-                    int rawTokens = ai.kompile.cli.main.chat.tools.ToolSchemaOptimizer.estimateTokens(rawDefs);
-                    int optTokens = ai.kompile.cli.main.chat.tools.ToolSchemaOptimizer.estimateTokens(optimized);
+                    int rawTokens = ToolSchemaOptimizer.estimateTokens(rawDefs);
+                    int optTokens = ToolSchemaOptimizer.estimateTokens(optimized);
                     int totalTools = tools.size();
                     System.err.println("[MCP] tools/list: " + optimized.size() + "/" + totalTools
                             + " tools active, ~" + optTokens + " tokens (saved ~"
@@ -495,7 +605,7 @@ public class McpStdioCommand implements Callable<Integer> {
                     for (JsonNode toolNode : optimized) {
                         ObjectNode toolObj = (ObjectNode) toolNode;
                         String toolName = toolObj.path("name").asText();
-                        ai.kompile.cli.main.chat.tools.McpToolAnnotations ann = annotationsMap.get(toolName);
+                        McpToolAnnotations ann = annotationsMap.get(toolName);
                         if (ann != null) {
                             toolObj.set("annotations", ann.toJsonNode());
                         }
@@ -562,7 +672,7 @@ public class McpStdioCommand implements Callable<Integer> {
                         if (gateway != null && gateway.isEnabled()) {
                             var gatewayDecision = gateway.evaluate(toolName, effectiveArgMap);
                             if (gatewayDecision.action
-                                    == ai.kompile.cli.main.chat.gateway.CliToolGatewayInterceptor.InterceptAction.BLOCK) {
+                                    == CliToolGatewayInterceptor.InterceptAction.BLOCK) {
                                 ObjectNode callResult = om.createObjectNode();
                                 String blockMsg = "BLOCKED by gateway: " + gatewayDecision.reason;
                                 callResult.putArray("content").addObject().put("type", "text").put("text", blockMsg);
@@ -578,7 +688,7 @@ public class McpStdioCommand implements Callable<Integer> {
                                 }
                                 return result;
                             } else if (gatewayDecision.action
-                                    == ai.kompile.cli.main.chat.gateway.CliToolGatewayInterceptor.InterceptAction.REWRITE
+                                    == CliToolGatewayInterceptor.InterceptAction.REWRITE
                                     && gatewayDecision.rewrittenArgs != null) {
                                 effectiveArgMap = new LinkedHashMap<>(gatewayDecision.rewrittenArgs);
                                 auditDecision = "gateway_rewritten";
@@ -619,13 +729,13 @@ public class McpStdioCommand implements Callable<Integer> {
 
                         Map<String, Object> argMap = new LinkedHashMap<>(effectiveArgMap);
 
-                        // Check for _background mode — run tool async and return immediately.
+                        // Check for _background mode -- run tool async and return immediately.
                         // Delegation tools (task, multi_task, quorum_task) are ALWAYS async
-                        // because they spawn external agent processes that can take minutes.
+                        // because managed agent turns can take minutes.
                         boolean background = argMap != null
                                 && Boolean.TRUE.equals(argMap.remove("_background"));
                         // Force async for delegation tools to avoid client-side timeouts
-                        if (!background && td.annotations() == ai.kompile.cli.main.chat.tools.McpToolAnnotations.DELEGATION) {
+                        if (!background && td.annotations() == McpToolAnnotations.DELEGATION) {
                             background = true;
                         }
 
@@ -672,7 +782,7 @@ public class McpStdioCommand implements Callable<Integer> {
                             textObj.put("text", "Tool '" + toolName + "' running in background.\n\n"
                                     + "**Task ID**: `" + taskId + "`\n"
                                     + "**Poll**: Call `poll` tool with `task_id=\"" + taskId + "\"`\n"
-                                    + "**Log**: `tail -f " + (progressLogger != null ? progressLogger.getLogFile() : "~/.kompile/logs/mcp-activity.log") + "`");
+                                    + "**Log**: `tail -f " + (progressLogger != null ? progressLogger.getLogFile() : LogPaths.logsDirectory().toPath().resolve("mcp-activity.log")) + "`");
                             callResult.put("isError", false);
                             result.set("result", callResult);
 
@@ -705,7 +815,7 @@ public class McpStdioCommand implements Callable<Integer> {
                                             tr.getOutput() != null ? tr.getOutput().lines().findFirst().orElse("") : "");
                                 } else {
                                     progressLogger.toolComplete(callId, toolName, callDuration,
-                                            ai.kompile.cli.mcp.stdio.McpToolProgressLogger.summarizeResult(tr));
+                                            McpToolProgressLogger.summarizeResult(tr));
                                 }
                             }
 
@@ -1055,13 +1165,13 @@ public class McpStdioCommand implements Callable<Integer> {
      * Resolve the schema optimization level from the --schema-level CLI option.
      * Defaults to COMPACT if the option is unrecognized.
      */
-    private ai.kompile.cli.main.chat.tools.ToolSchemaOptimizer.OptimizationLevel resolveSchemaLevel() {
-        if (schemaLevel == null) return ai.kompile.cli.main.chat.tools.ToolSchemaOptimizer.OptimizationLevel.COMPACT;
+    private ToolSchemaOptimizer.OptimizationLevel resolveSchemaLevel() {
+        if (schemaLevel == null) return ToolSchemaOptimizer.OptimizationLevel.COMPACT;
         return switch (schemaLevel.toLowerCase().trim()) {
-            case "none"       -> ai.kompile.cli.main.chat.tools.ToolSchemaOptimizer.OptimizationLevel.NONE;
-            case "moderate"   -> ai.kompile.cli.main.chat.tools.ToolSchemaOptimizer.OptimizationLevel.MODERATE;
-            case "aggressive" -> ai.kompile.cli.main.chat.tools.ToolSchemaOptimizer.OptimizationLevel.AGGRESSIVE;
-            default           -> ai.kompile.cli.main.chat.tools.ToolSchemaOptimizer.OptimizationLevel.COMPACT;
+            case "none"       -> ToolSchemaOptimizer.OptimizationLevel.NONE;
+            case "moderate"   -> ToolSchemaOptimizer.OptimizationLevel.MODERATE;
+            case "aggressive" -> ToolSchemaOptimizer.OptimizationLevel.AGGRESSIVE;
+            default           -> ToolSchemaOptimizer.OptimizationLevel.COMPACT;
         };
     }
 
@@ -1101,17 +1211,17 @@ public class McpStdioCommand implements Callable<Integer> {
 
         // Reuse SharedResourcePool to avoid duplicating registry/config construction
         // that the daemon path already consolidates. Saves ~35MB of redundant class loading.
-        var pool = new ai.kompile.cli.main.serve.SharedResourcePool(wd);
+        var pool = new SharedResourcePool(wd);
         var agentRegistry = pool.agentRegistry();
         var roleManager = pool.roleManager();
-        var processManager = new ai.kompile.cli.main.chat.tools.BackgroundProcessManager(System.getProperty("user.dir"));
-        var subagentRunner = new ai.kompile.cli.mcp.stdio.DirectSubagentRunnerStdio(wd, roleManager);
+        var processManager = new BackgroundProcessManager(System.getProperty("user.dir"));
+        var subagentRunner = new DirectSubagentRunnerStdio(wd, roleManager);
         System.err.println("[MCP] SharedResourcePool: " + (System.currentTimeMillis() - t0) + "ms");
 
         // ── Skills injection for subagents (from shared pool) ────────────
         try {
             skillRegistry = pool.skillRegistry();
-            var skillsInjection = new ai.kompile.cli.main.chat.skill.SkillsInjection(skillRegistry, wd);
+            var skillsInjection = new SkillsInjection(skillRegistry, wd);
             subagentRunner.setSkillsInjection(skillsInjection);
             System.err.println("[MCP] Skills injection configured (" + skillRegistry.all().size() + " skills, exposed as MCP prompts)");
         } catch (Exception e) {
@@ -1120,7 +1230,7 @@ public class McpStdioCommand implements Callable<Integer> {
 
         // ── System prompt injection for subagents ─────────────────────────
         try {
-            var spm = ai.kompile.cli.main.chat.config.SystemPromptManager.resolve(null, null, null);
+            var spm = SystemPromptManager.resolve(null, null, null);
             if (spm != null) {
                 subagentRunner.setSystemPromptManager(spm);
                 System.err.println("[MCP] System prompt injection configured");
@@ -1131,165 +1241,187 @@ public class McpStdioCommand implements Callable<Integer> {
 
         // ── Coordination state manager ────────────────────────────────────
         String coordSessionId = "mcp-stdio-" + System.currentTimeMillis();
-        coordinator = new ai.kompile.cli.main.coordination.CoordinationStateManager(wd, coordSessionId, om);
+        coordinator = new CoordinationStateManager(wd, coordSessionId, om);
         System.err.println("[MCP] Core init: " + (System.currentTimeMillis() - t0) + "ms");
 
         // ── File I/O tools ─────────────────────────────────────────────────
-        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.ReadTool(), om, wd);
-        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.WriteTool(coordinator), om, wd);
-        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.EditTool(coordinator), om, wd);
-        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.PatchTool(), om, wd);
+        registerCliTool(tools, new ReadTool(), om, wd);
+        registerCliTool(tools, new WriteTool(coordinator), om, wd);
+        registerCliTool(tools, new EditTool(coordinator), om, wd);
+        registerCliTool(tools, new PatchTool(), om, wd);
 
         // ── Search tools ───────────────────────────────────────────────────
-        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.GrepTool(), om, wd);
-        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.GlobTool(), om, wd);
-        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.ListTool(), om, wd);
-        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.ExploreTool(), om, wd);
+        registerCliTool(tools, new GrepTool(), om, wd);
+        registerCliTool(tools, new GlobTool(), om, wd);
+        registerCliTool(tools, new ListTool(), om, wd);
+        registerCliTool(tools, new ExploreTool(), om, wd);
 
         // ── Result reference cache ────────────────────────────────────────
         if (resultReferenceCache != null) {
             registerCliTool(tools,
-                    new ai.kompile.cli.main.chat.tools.FetchResultTool(resultReferenceCache), om, wd);
+                    new FetchResultTool(resultReferenceCache), om, wd);
         }
 
         // ── Dynamic tool activation ──────────────────────────────────────
         if (dynamicToolManager != null) {
             registerCliTool(tools,
-                    new ai.kompile.cli.main.chat.tools.ActivateToolsTool(dynamicToolManager), om, wd);
+                    new ActivateToolsTool(dynamicToolManager), om, wd);
         }
 
         // ── Execution tools ────────────────────────────────────────────────
-        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.BashTool(), om, wd);
+        registerCliTool(tools, new BashTool(), om, wd);
 
         // ── Network tools ──────────────────────────────────────────────────
-        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.WebFetchTool(), om, wd);
-        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.WebSearchTool(), om, wd);
+        registerCliTool(tools, new WebFetchTool(), om, wd);
+        registerCliTool(tools, new WebSearchTool(), om, wd);
 
         // ── Workflow tools ─────────────────────────────────────────────────
-        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.TodoWriteTool(), om, wd);
-        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.TodoReadTool(), om, wd);
+        registerCliTool(tools, new TodoWriteTool(), om, wd);
+        registerCliTool(tools, new TodoReadTool(), om, wd);
 
         // ── Knowledge & memory tools ───────────────────────────────────────
-        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.TranscriptSearchTool(), om, wd);
-        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.ConversationImportTool(), om, wd);
-        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.MemoryTool(), om, wd);
+        registerCliTool(tools, new TranscriptSearchTool(), om, wd);
+        registerCliTool(tools, new ConversationImportTool(), om, wd);
+        registerCliTool(tools, new MemoryTool(), om, wd);
 
         // ── Config tools ──────────────────────────────────────────────────
-        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.ConfigArchiveTool(), om, wd);
-        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.ProjectConfigTool(), om, wd);
-        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.EnforcerConfigTool(), om, wd);
+        registerCliTool(tools, new ConfigArchiveTool(), om, wd);
+        registerCliTool(tools, new ProjectConfigTool(), om, wd);
+        registerCliTool(tools, new EnforcerConfigTool(), om, wd);
 
         // ── Test milestone tracking ───────────────────────────────────────
-        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.TestMilestoneTool(), om, wd);
+        registerCliTool(tools, new TestMilestoneTool(), om, wd);
 
         // ── Code search & graph (local fallback when no kompile-app backend) ──
-        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.CodeSearchTool(baseUrl, om), om, wd);
-        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.CodeGraphTool(baseUrl, om), om, wd);
-        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.LocalCodeIndexTool(), om, wd);
+        registerCliTool(tools, new CodeSearchTool(baseUrl, om), om, wd);
+        registerCliTool(tools, new CodeGraphTool(baseUrl, om), om, wd);
+        registerCliTool(tools, new LocalCodeIndexTool(), om, wd);
+        registerCliTool(tools, new LspTool(coordinator), om, wd);
 
         // ── Tool call catalog (search/index tool usage across sessions) ────
-        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.ToolCallCatalogTool(), om, wd);
+        registerCliTool(tools, new ToolCallCatalogTool(), om, wd);
 
         // ── RAG & Graph search (require kompile-app backend) ──────────────
-        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.RagSearchTool(baseUrl, om), om, wd);
-        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.GraphRagSearchTool(baseUrl, om), om, wd);
+        registerCliTool(tools, new RagSearchTool(baseUrl, om), om, wd);
+        registerCliTool(tools, new GraphRagSearchTool(baseUrl, om), om, wd);
 
         // ── Full knowledge graph CRUD + graph capabilities ─────────────────
-        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.KnowledgeGraphTool(baseUrl, om), om, wd);
+        registerCliTool(tools, new KnowledgeGraphTool(baseUrl, om), om, wd);
 
         // ── KB Grounding tools (LLM→MCP→KB path, require kompile-app backend) ──
-        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.grounding.AskGraphVerifyTool(baseUrl, om), om, wd);
-        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.grounding.AskGraphQueryTool(baseUrl, om), om, wd);
-        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.grounding.AskGraphExplainTool(baseUrl, om), om, wd);
-        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.grounding.AskGraphAssertTool(baseUrl, om), om, wd);
-        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.grounding.AskGraphSubscribeTool(om), om, wd);
-        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.grounding.AskGraphMebnTool(baseUrl, om), om, wd);
-        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.grounding.GraphReasonTool(baseUrl, om), om, wd);
+        registerCliTool(tools, new AskGraphVerifyTool(baseUrl, om), om, wd);
+        registerCliTool(tools, new AskGraphQueryTool(baseUrl, om), om, wd);
+        registerCliTool(tools, new AskGraphExplainTool(baseUrl, om), om, wd);
+        registerCliTool(tools, new AskGraphAssertTool(baseUrl, om), om, wd);
+        registerCliTool(tools, new AskGraphRetractTool(baseUrl, om), om, wd);
+        registerCliTool(tools, new AskGraphSubscribeTool(baseUrl, om), om, wd);
+        registerCliTool(tools, new AskGraphMebnTool(baseUrl, om), om, wd);
+        registerCliTool(tools, new GraphReasonTool(baseUrl, om), om, wd);
+        registerCliTool(tools, new AskGraphFusedTool(baseUrl, om), om, wd);
+        registerCliTool(tools, new AskGraphSynthesizeTool(baseUrl, om), om, wd);
+        registerCliTool(tools, new GraphImportTool(baseUrl, om), om, wd);
+        registerCliTool(tools, new GraphExportTool(baseUrl, om), om, wd);
+        registerCliTool(tools, new CrawlSourceTool(baseUrl, om), om, wd);
+
+        // ── Graph analytics (require kompile-app backend) ─────────────────
+        registerCliTool(tools, new GraphAggregateTool(baseUrl, om), om, wd);
+        registerCliTool(tools, new GraphForecastTool(baseUrl, om), om, wd);
+        registerCliTool(tools, new GraphCentralityTool(baseUrl, om), om, wd);
+
+        // ── Graph reasoning & advanced analytics (require kompile-app backend) ──
+        registerCliTool(tools, new AskGraphClaimTool(baseUrl, om), om, wd);
+        registerCliTool(tools, new GraphReasoningQueryTool(baseUrl, om), om, wd);
+        registerCliTool(tools, new GraphBayesTool(baseUrl, om), om, wd);
+        registerCliTool(tools, new GraphEmbeddingsTool(baseUrl, om), om, wd);
+        registerCliTool(tools, new GraphSimulateTool(baseUrl, om), om, wd);
+
+        // ── Process mining (require kompile-app backend) ───────────────────
+        registerCliTool(tools, new ProcessMiningCliTool(baseUrl, om), om, wd);
 
         // ── Process management ─────────────────────────────────────────────
-        var procTool = new ai.kompile.cli.main.chat.tools.ProcessManagementTool(processManager);
+        var procTool = new ProcessManagementTool(processManager, coordinator);
         tools.put(procTool.id(), new ToolDef(procTool.id(), procTool.description(), procTool.parameterSchema(),
             procTool.mcpAnnotations(),
-            args -> { try { return procTool.execute(om.valueToTree(args), ctx(wd)); } catch (Exception e) { return ai.kompile.cli.main.chat.tools.ToolResult.error(e.getMessage()); } }));
+            args -> { try { return procTool.execute(om.valueToTree(args), ctx(wd)); } catch (Exception e) { return ToolResult.error(e.getMessage()); } }));
 
         // ── Edit coordination ─────────────────────────────────────────────
-        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.EditCoordinatorTool(coordinator), om, wd);
+        registerCliTool(tools, new EditCoordinatorTool(coordinator), om, wd);
 
         // ── Semantic memory (passive vector retrieval) ────────────────────
         long tSem = System.currentTimeMillis();
-        semanticMemoryEngine = new ai.kompile.cli.main.chat.tools.SemanticMemoryEngine();
+        semanticMemoryEngine = new SemanticMemoryEngine();
         semanticMemoryEngine.initialize();
-        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.SemanticMemoryTool(semanticMemoryEngine), om, wd);
+        registerCliTool(tools, new SemanticMemoryTool(semanticMemoryEngine), om, wd);
         System.err.println("[MCP] SemanticMemoryEngine: " + (System.currentTimeMillis() - tSem) + "ms");
 
         // ── File activity tracking (multi-agent file change notifications) ──
         try {
-            fileWatcherService = new ai.kompile.cli.main.coordination.FileWatcherService(wd);
+            fileWatcherService = new FileWatcherService(wd);
             fileWatcherService.start();
-            registerCliTool(tools, new ai.kompile.cli.main.chat.tools.FileActivityTool(fileWatcherService), om, wd);
+            registerCliTool(tools, new FileActivityTool(fileWatcherService), om, wd);
         } catch (IOException e) {
             System.err.println("[MCP] Warning: FileWatcherService not available: " + e.getMessage());
         }
 
         // ── Browser automation (CDP-based) ────────────────────────────────
-        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.BrowserTool(), om, wd);
+        registerCliTool(tools, new BrowserTool(), om, wd);
 
         // ── Ambient memory gardening ──────────────────────────────────────
         Path memoryDir = Paths.get(System.getProperty("user.home"), ".kompile", "memory");
-        ambientGardener = new ai.kompile.cli.main.chat.tools.AmbientMemoryGardener(memoryDir);
-        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.AmbientGardenTool(ambientGardener), om, wd);
+        ambientGardener = new AmbientMemoryGardener(memoryDir);
+        registerCliTool(tools, new AmbientGardenTool(ambientGardener), om, wd);
 
         // ── Persistent server mode ────────────────────────────────────────
-        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.ServerModeTool(), om, wd);
+        registerCliTool(tools, new ServerModeTool(), om, wd);
 
         // ── Side panel (TUI auxiliary display) ────────────────────────────
-        var sidePanelManager = new ai.kompile.cli.main.chat.tui.SidePanelManager();
-        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.SidePanelTool(sidePanelManager), om, wd);
+        var sidePanelManager = new SidePanelManager();
+        registerCliTool(tools, new SidePanelTool(sidePanelManager), om, wd);
 
         // ── Dictation / voice input ───────────────────────────────────────
-        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.DictationTool(), om, wd);
+        registerCliTool(tools, new DictationTool(), om, wd);
 
         // ── Delegation tools ───────────────────────────────────────────────
-        var taskTool = new ai.kompile.cli.mcp.stdio.StdioTaskTool(agentRegistry, subagentRunner, om, roleManager, coordinator);
+        var taskTool = new StdioTaskTool(agentRegistry, subagentRunner, om, roleManager, coordinator);
         tools.put(taskTool.id(), new ToolDef(taskTool.id(), taskTool.description(), taskTool.parameterSchema(),
-            ai.kompile.cli.main.chat.tools.McpToolAnnotations.DELEGATION,
-            args -> { try { return taskTool.execute(args); } catch (Exception e) { return ai.kompile.cli.main.chat.tools.ToolResult.error(e.getMessage()); } }));
+            McpToolAnnotations.DELEGATION,
+            args -> { try { return taskTool.execute(args); } catch (Exception e) { return ToolResult.error(e.getMessage()); } }));
 
-        var quorumTool = new ai.kompile.cli.mcp.stdio.StdioQuorumTaskTool(agentRegistry, subagentRunner, om, wd);
+        var quorumTool = new StdioQuorumTaskTool(agentRegistry, subagentRunner, om, wd);
         tools.put(quorumTool.id(), new ToolDef(quorumTool.id(), quorumTool.description(), quorumTool.parameterSchema(),
-            ai.kompile.cli.main.chat.tools.McpToolAnnotations.DELEGATION,
-            args -> { try { return quorumTool.execute(args); } catch (Exception e) { return ai.kompile.cli.main.chat.tools.ToolResult.error(e.getMessage()); } }));
+            McpToolAnnotations.DELEGATION,
+            args -> { try { return quorumTool.execute(args); } catch (Exception e) { return ToolResult.error(e.getMessage()); } }));
 
-        var multiTool = new ai.kompile.cli.mcp.stdio.StdioMultiTaskTool(agentRegistry, subagentRunner, om, wd, roleManager, coordinator);
+        var multiTool = new StdioMultiTaskTool(agentRegistry, subagentRunner, om, wd, roleManager, coordinator);
         tools.put(multiTool.id(), new ToolDef(multiTool.id(), multiTool.description(), multiTool.parameterSchema(),
-            ai.kompile.cli.main.chat.tools.McpToolAnnotations.DELEGATION,
-            args -> { try { return multiTool.execute(args); } catch (Exception e) { return ai.kompile.cli.main.chat.tools.ToolResult.error(e.getMessage()); } }));
+            McpToolAnnotations.DELEGATION,
+            args -> { try { return multiTool.execute(args); } catch (Exception e) { return ToolResult.error(e.getMessage()); } }));
 
-        var rmTool = new ai.kompile.cli.main.chat.tools.RoleManagerTool(roleManager, om);
+        var rmTool = new RoleManagerTool(roleManager, om);
         tools.put(rmTool.id(), new ToolDef(rmTool.id(), rmTool.description(), rmTool.parameterSchema(),
             rmTool.mcpAnnotations(),
-            args -> { try { return rmTool.execute(om.valueToTree(args), ctx(wd)); } catch (Exception e) { return ai.kompile.cli.main.chat.tools.ToolResult.error(e.getMessage()); } }));
+            args -> { try { return rmTool.execute(om.valueToTree(args), ctx(wd)); } catch (Exception e) { return ToolResult.error(e.getMessage()); } }));
 
-        var skillTool = new ai.kompile.cli.main.chat.tools.SkillManagerTool(om, wd);
+        var skillTool = new SkillManagerTool(om, wd);
         tools.put(skillTool.id(), new ToolDef(skillTool.id(), skillTool.description(), skillTool.parameterSchema(),
             skillTool.mcpAnnotations(),
-            args -> { try { return skillTool.execute(om.valueToTree(args), ctx(wd)); } catch (Exception e) { return ai.kompile.cli.main.chat.tools.ToolResult.error(e.getMessage()); } }));
+            args -> { try { return skillTool.execute(om.valueToTree(args), ctx(wd)); } catch (Exception e) { return ToolResult.error(e.getMessage()); } }));
 
         // ── Conversation resume ────────────────────────────────────────────
         try {
-            var resumeTool = new ai.kompile.cli.main.chat.tools.ResumeTool(true);
+            var resumeTool = new ResumeTool(true);
             tools.put(resumeTool.id(), new ToolDef(resumeTool.id(), resumeTool.description(), resumeTool.parameterSchema(),
                 resumeTool.mcpAnnotations(),
-                args -> { try { return resumeTool.execute(om.valueToTree(args), ctx(wd)); } catch (Exception e) { return ai.kompile.cli.main.chat.tools.ToolResult.error(e.getMessage()); } }));
+                args -> { try { return resumeTool.execute(om.valueToTree(args), ctx(wd)); } catch (Exception e) { return ToolResult.error(e.getMessage()); } }));
         } catch (IOException e) {
             System.err.println("[MCP] Warning: ResumeTool not available: " + e.getMessage());
         }
 
         // ── Performance harness ───────────────────────────────────────────
-        var harnessTool = new ai.kompile.cli.mcp.stdio.StdioHarnessTool(om, sessionTracker);
+        var harnessTool = new StdioHarnessTool(om, sessionTracker);
         tools.put(harnessTool.id(), new ToolDef(harnessTool.id(), harnessTool.description(), harnessTool.parameterSchema(),
-            ai.kompile.cli.main.chat.tools.McpToolAnnotations.READ_ONLY,
-            args -> { try { return harnessTool.execute(args); } catch (Exception e) { return ai.kompile.cli.main.chat.tools.ToolResult.error(e.getMessage()); } }));
+            McpToolAnnotations.READ_ONLY,
+            args -> { try { return harnessTool.execute(args); } catch (Exception e) { return ToolResult.error(e.getMessage()); } }));
 
         // Wire session tracker into subagent runner for post-completion evaluation
         subagentRunner.setSessionTracker(sessionTracker);
@@ -1312,12 +1444,12 @@ public class McpStdioCommand implements Callable<Integer> {
                     "Any tool can be run in background by adding _background=true to its arguments. " +
                     "Use this tool to poll for results or view real-time progress from the log file.",
                     pollSchema,
-                    ai.kompile.cli.main.chat.tools.McpToolAnnotations.READ_ONLY,
+                    McpToolAnnotations.READ_ONLY,
                     args -> {
                         try {
                             return executePoll(args);
                         } catch (Exception e) {
-                            return ai.kompile.cli.main.chat.tools.ToolResult.error(e.getMessage());
+                            return ToolResult.error(e.getMessage());
                         }
                     }));
         }
@@ -1328,11 +1460,11 @@ public class McpStdioCommand implements Callable<Integer> {
                 System.getProperty("kompile.custom.tools.enabled",
                         System.getenv().getOrDefault("KOMPILE_CUSTOM_TOOLS_ENABLED", "false")));
         if (customToolsEnabled) {
-            var customLoader = new ai.kompile.cli.main.chat.tools.custom.CustomToolLoader(wd, om);
+            var customLoader = new CustomToolLoader(wd, om);
             var customDefs = customLoader.loadAll();
             if (!customDefs.isEmpty()) {
                 for (var def : customDefs.values()) {
-                    var bridge = new ai.kompile.cli.main.chat.tools.custom.CustomToolBridge(def);
+                    var bridge = new CustomToolBridge(def);
                     registerCliTool(tools, bridge, om, wd);
                     if (dynamicToolManager != null) {
                         dynamicToolManager.registerCustomToolId(bridge.id());
@@ -1347,7 +1479,7 @@ public class McpStdioCommand implements Callable<Integer> {
     }
 
     /** Execute the poll meta-tool for checking background tasks and viewing logs. */
-    private ai.kompile.cli.main.chat.tools.ToolResult executePoll(Map<String, Object> args) throws Exception {
+    private ToolResult executePoll(Map<String, Object> args) throws Exception {
         String action = args != null ? String.valueOf(args.getOrDefault("action", "status")) : "status";
         String taskId = args != null ? (String) args.get("task_id") : null;
 
@@ -1359,11 +1491,11 @@ public class McpStdioCommand implements Callable<Integer> {
                     lines = Math.min(200, Math.max(1, Integer.parseInt(String.valueOf(args.get("lines")))));
                 }
                 if (progressLogger == null) {
-                    return ai.kompile.cli.main.chat.tools.ToolResult.error("Progress logger not initialized");
+                    return ToolResult.error("Progress logger not initialized");
                 }
                 Path logFile = progressLogger.getLogFile();
                 if (!Files.exists(logFile)) {
-                    return ai.kompile.cli.main.chat.tools.ToolResult.success("poll: log",
+                    return ToolResult.success("poll: log",
                             "No activity log yet. Tools will be logged to: " + logFile);
                 }
                 List<String> allLines = Files.readAllLines(logFile);
@@ -1375,16 +1507,16 @@ public class McpStdioCommand implements Callable<Integer> {
                 for (int i = start; i < allLines.size(); i++) {
                     sb.append(allLines.get(i)).append("\n");
                 }
-                return ai.kompile.cli.main.chat.tools.ToolResult.success("poll: log", sb.toString());
+                return ToolResult.success("poll: log", sb.toString());
             }
 
             case "list" -> {
                 if (asyncExecutor == null) {
-                    return ai.kompile.cli.main.chat.tools.ToolResult.error("Async executor not initialized");
+                    return ToolResult.error("Async executor not initialized");
                 }
                 var allTasks = asyncExecutor.getAllTasks();
                 if (allTasks.isEmpty()) {
-                    return ai.kompile.cli.main.chat.tools.ToolResult.success("poll: list",
+                    return ToolResult.success("poll: list",
                             "No background tasks. Run any tool with `_background: true` to execute it asynchronously.");
                 }
                 StringBuilder sb = new StringBuilder();
@@ -1393,25 +1525,25 @@ public class McpStdioCommand implements Callable<Integer> {
                     sb.append("- **").append(t.taskId()).append("** [").append(t.status()).append("] ")
                             .append(t.toolName()).append(" — ").append(t.resultSummary()).append("\n");
                 }
-                return ai.kompile.cli.main.chat.tools.ToolResult.success("poll: list", sb.toString());
+                return ToolResult.success("poll: list", sb.toString());
             }
 
             default -> {
                 // status — check specific task or show active
                 if (asyncExecutor == null) {
-                    return ai.kompile.cli.main.chat.tools.ToolResult.error("Async executor not initialized");
+                    return ToolResult.error("Async executor not initialized");
                 }
                 if (taskId != null && !taskId.isEmpty()) {
                     var status = asyncExecutor.getStatus(taskId);
                     if (status == null) {
-                        return ai.kompile.cli.main.chat.tools.ToolResult.error(
+                        return ToolResult.error(
                                 "Unknown task ID: " + taskId + ". Use action='list' to see all tasks.");
                     }
                     if (status.result() != null) {
                         // Task completed — return the full result
                         var tr = status.result();
                         String title = tr.getTitle() != null ? tr.getTitle() : "";
-                        return ai.kompile.cli.main.chat.tools.ToolResult.success(
+                        return ToolResult.success(
                                 "poll: " + taskId + " [" + status.status() + "]",
                                 "Task completed in " + status.elapsedMs() + "ms\n\n" +
                                 (title.isEmpty() ? "" : title + "\n") +
@@ -1419,7 +1551,7 @@ public class McpStdioCommand implements Callable<Integer> {
                                 Map.of("taskId", taskId, "status", status.status(),
                                         "elapsedMs", status.elapsedMs()));
                     }
-                    return ai.kompile.cli.main.chat.tools.ToolResult.success(
+                    return ToolResult.success(
                             "poll: " + taskId + " [" + status.status() + "]",
                             "Tool: " + status.toolName() + "\nStatus: " + status.status() +
                             "\nElapsed: " + status.elapsedMs() + "ms\n" + status.resultSummary(),
@@ -1430,7 +1562,7 @@ public class McpStdioCommand implements Callable<Integer> {
                 // No specific task — show all active
                 var active = asyncExecutor.getActiveTasks();
                 if (active.isEmpty()) {
-                    return ai.kompile.cli.main.chat.tools.ToolResult.success("poll: status",
+                    return ToolResult.success("poll: status",
                             "No active background tasks.");
                 }
                 StringBuilder sb = new StringBuilder();
@@ -1440,26 +1572,38 @@ public class McpStdioCommand implements Callable<Integer> {
                             .append(" — running for ").append(t.elapsedMs()).append("ms\n");
                 }
                 sb.append("\nPoll a specific task with: poll task_id=\"<id>\"");
-                return ai.kompile.cli.main.chat.tools.ToolResult.success("poll: status", sb.toString());
+                return ToolResult.success("poll: status", sb.toString());
             }
         }
     }
 
     /** Build a standard MCP call result from a ToolResult. */
-    private ObjectNode buildCallResult(ai.kompile.cli.main.chat.tools.ToolResult tr) {
-        ObjectNode callResult = om.createObjectNode();
+    ObjectNode buildCallResult(ToolResult tr) {
+        ObjectMapper mapper = om != null ? om : JsonUtils.standardMapper();
+        ObjectNode callResult = mapper.createObjectNode();
         var content = callResult.putArray("content");
         var textObj = content.addObject();
         textObj.put("type", "text");
         String title = tr.getTitle() != null ? tr.getTitle() + "\n" : "";
-        textObj.put("text", title + (tr.getOutput() != null ? tr.getOutput() : ""));
+        String output = tr.getOutput() != null ? tr.getOutput() : "";
+        String text = title + output;
+        textObj.put("text", text);
+        if (tr.getMetadata() != null && !tr.getMetadata().isEmpty()) {
+            ObjectNode structured = mapper.createObjectNode();
+            if (tr.getTitle() != null && !tr.getTitle().isEmpty()) {
+                structured.put("title", tr.getTitle());
+            }
+            structured.put("output", output);
+            structured.set("metadata", mapper.valueToTree(tr.getMetadata()));
+            callResult.set("structuredContent", structured);
+        }
         callResult.put("isError", tr.isError());
         return callResult;
     }
 
     /** Register a standalone CliTool (no special constructor deps) into the MCP tool map. */
     private void registerCliTool(Map<String, ToolDef> tools,
-                                  ai.kompile.cli.main.chat.tools.CliTool cliTool,
+                                  CliTool cliTool,
                                   ObjectMapper om, Path wd) {
         tools.put(cliTool.id(), new ToolDef(
             cliTool.id(), cliTool.description(), cliTool.parameterSchema(),
@@ -1468,22 +1612,31 @@ public class McpStdioCommand implements Callable<Integer> {
                 try {
                     return cliTool.execute(om.valueToTree(args), ctx(wd));
                 } catch (Exception e) {
-                    return ai.kompile.cli.main.chat.tools.ToolResult.error(e.getMessage());
+                    return ToolResult.error(e.getMessage());
                 }
-            }
+            },
+            cliTool.compactHint()
         ));
     }
 
     record ToolDef(String name, String description, JsonNode schema,
-                   ai.kompile.cli.main.chat.tools.McpToolAnnotations annotations,
-                   Function<Map<String,Object>, ai.kompile.cli.main.chat.tools.ToolResult> executor) {}
+                   McpToolAnnotations annotations,
+                   Function<Map<String,Object>, ToolResult> executor,
+                   String compactHint) {
+        /** Back-compat constructor for tool defs without a curated compact hint. */
+        ToolDef(String name, String description, JsonNode schema,
+                McpToolAnnotations annotations,
+                Function<Map<String,Object>, ToolResult> executor) {
+            this(name, description, schema, annotations, executor, null);
+        }
+    }
 
-    private static final ThreadLocal<ai.kompile.cli.main.chat.tools.ToolContext> CTX = ThreadLocal.withInitial(() -> null);
+    private static final ThreadLocal<ToolContext> CTX = ThreadLocal.withInitial(() -> null);
 
-    private ai.kompile.cli.main.chat.tools.ToolContext ctx(Path wd) {
+    private ToolContext ctx(Path wd) {
         var ctx = CTX.get();
         if (ctx == null) {
-            ctx = new ai.kompile.cli.main.chat.tools.ToolContext(
+            ctx = new ToolContext(
                 "mcp-stdio", null,
                 new AllowAllPermissionService(),
                 wd, null);
@@ -1503,11 +1656,11 @@ public class McpStdioCommand implements Callable<Integer> {
     }
 
     /** No-op permission service that allows everything - stdio mode runs trusted tools. */
-    static class AllowAllPermissionService extends ai.kompile.cli.main.chat.permission.PermissionService {
+    static class AllowAllPermissionService extends PermissionService {
         @Override
-        public ai.kompile.cli.main.chat.permission.PermissionService.PermissionResult check(
-                ai.kompile.cli.main.chat.agent.AgentConfig agent, String permissionKey, String description) {
-            return ai.kompile.cli.main.chat.permission.PermissionService.PermissionResult.ALLOWED;
+        public PermissionService.PermissionResult check(
+                AgentConfig agent, String permissionKey, String description) {
+            return PermissionService.PermissionResult.ALLOWED;
         }
     }
 }

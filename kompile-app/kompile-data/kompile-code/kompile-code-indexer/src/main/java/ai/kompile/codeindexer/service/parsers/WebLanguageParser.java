@@ -27,6 +27,7 @@ import org.springframework.stereotype.Component;
 
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.regex.Matcher;
@@ -796,7 +797,7 @@ public class WebLanguageParser implements LanguageParser {
     private void extractHtml(String[] lines, String filePath, String projectId,
                              List<CodeEntity> entities, List<RelationTriple> relations) {
 
-        Set<String> seenElements = new java.util.HashSet<>();
+        Set<String> seenElements = new HashSet<>();
         int scriptBlockIndex = 0;
 
         int i = 0;
@@ -846,7 +847,7 @@ public class WebLanguageParser implements LanguageParser {
                     String[] scriptLines = new String[blockLen];
                     System.arraycopy(lines, scriptStart, scriptLines, 0, blockLen);
 
-                    // Create a synthetic MODULE entity for the script block
+                    // Create an inline MODULE entity for the script block
                     String blockName = "script#" + scriptBlockIndex++;
                     entities.add(CodeEntity.builder()
                             .projectId(projectId)

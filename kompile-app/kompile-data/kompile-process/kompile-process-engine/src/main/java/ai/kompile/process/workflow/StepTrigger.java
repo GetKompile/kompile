@@ -21,6 +21,8 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.io.Serializable;
+
 /**
  * Defines what causes a {@link ProcessStep} to start executing.
  */
@@ -28,7 +30,9 @@ import lombok.NoArgsConstructor;
 @Builder
 @AllArgsConstructor
 @NoArgsConstructor
-public class StepTrigger {
+public class StepTrigger implements Serializable {
+
+    private static final long serialVersionUID = 1L;
 
     private TriggerType type;
     /** Source step ID for {@link TriggerType#ON_STEP_COMPLETE} triggers. */

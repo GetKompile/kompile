@@ -19,14 +19,18 @@ import ai.kompile.graph.reasoning.model.GraphEntity;
 import ai.kompile.graph.reasoning.model.GraphRelation;
 import ai.kompile.graph.reasoning.model.MutableReasoningGraph;
 import ai.kompile.graph.reasoning.model.ReasoningGraph;
+import ai.kompile.graph.reasoning.unified.UnifiedGraph;
+import ai.kompile.graph.reasoning.unified.VectorLayer;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * Materializes a focused {@link SubgraphView} from a {@link ReasoningGraph} using the criteria
@@ -157,6 +161,71 @@ public final class SubgraphMaterializer {
                 capped);
 
         return new SubgraphView(view, prov);
+    }
+
+    /**
+     * Materialize a focused subgraph from a {@link UnifiedGraph} while preserving unified analysis
+     * assets that still apply to the retained topology.
+     *
+     * <p>The generic {@link #materialize(ReasoningGraph, SubgraphSpec)} method returns a bare
+     * {@link MutableReasoningGraph}. This overload keeps the result in the unified container so
+     * downstream hybrid, embedding, subjective-logic, and model-artifact consumers do not lose access
+     * to the graph's non-topological analysis state.</p>
+     */
+    public UnifiedGraph materializeUnified(UnifiedGraph source, SubgraphSpec spec) {
+        Objects.requireNonNull(source, "source");
+        SubgraphView view = materialize(source, spec);
+        UnifiedGraph out = UnifiedGraph.of(view.graph());
+        copyUnifiedAssets(source, out, view.provenance());
+        return out;
+    }
+
+    private void copyUnifiedAssets(UnifiedGraph source, UnifiedGraph target, SubgraphProvenance provenance) {
+        Set<String> entityIds = target.entities().stream()
+                .map(GraphEntity::id)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        Set<String> relationIds = target.relations().stream()
+                .map(GraphRelation::id)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+
+        source.meta().forEach(target::meta);
+        target.meta("subgraph.resolvedSeedIds", new ArrayList<>(provenance.resolvedSeedIds()));
+        target.meta("subgraph.radius", provenance.radius());
+        target.meta("subgraph.sourceEntityCount", provenance.sourceEntityCount());
+        target.meta("subgraph.cappedByMaxNodes", provenance.cappedByMaxNodes());
+
+        for (VectorLayer layer : source.vectorLayers().values()) {
+            VectorLayer filtered = new VectorLayer(layer.name(), layer.target(), layer.dim(), layer.dtype());
+            for (Map.Entry<String, double[]> row : layer.rows().entrySet()) {
+                boolean keep = switch (layer.target()) {
+                    case ENTITY -> entityIds.contains(row.getKey());
+                    case RELATION -> relationIds.contains(row.getKey());
+                    case GLOBAL -> true;
+                };
+                if (keep) {
+                    filtered.put(row.getKey(), row.getValue().clone());
+                }
+            }
+            if (!filtered.isEmpty() || layer.target() == VectorLayer.Target.GLOBAL) {
+                target.putVectorLayer(filtered);
+            }
+        }
+
+        for (Map.Entry<String, ai.kompile.graph.reasoning.confidence.Opinion> entry
+                : source.entityOpinions().entrySet()) {
+            if (entityIds.contains(entry.getKey())) {
+                target.putEntityOpinion(entry.getKey(), entry.getValue());
+            }
+        }
+        for (Map.Entry<String, ai.kompile.graph.reasoning.confidence.Opinion> entry
+                : source.relationOpinions().entrySet()) {
+            if (relationIds.contains(entry.getKey())) {
+                target.putRelationOpinion(entry.getKey(), entry.getValue());
+            }
+        }
+        source.weightMaps().forEach(target::putWeightMap);
+        source.artifacts().forEach((name, data) -> target.putArtifact(name, data.clone()));
     }
 
     // -----------------------------------------------------------------------

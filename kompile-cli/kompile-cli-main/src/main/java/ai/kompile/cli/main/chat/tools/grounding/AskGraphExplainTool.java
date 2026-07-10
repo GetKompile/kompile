@@ -10,7 +10,6 @@
 package ai.kompile.cli.main.chat.tools.grounding;
 
 import ai.kompile.cli.main.chat.tools.CliTool;
-import ai.kompile.cli.main.chat.tools.KompileBackendClient;
 import ai.kompile.cli.main.chat.tools.McpToolAnnotations;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolExecutionException;
@@ -19,8 +18,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
-import java.net.ConnectException;
-import java.time.Duration;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -35,15 +33,28 @@ import java.util.Map;
  */
 public class AskGraphExplainTool implements CliTool {
 
-    private final KompileBackendClient backend;
+    private final GroundingBackendClient groundingClient;
     private final ObjectMapper objectMapper;
 
     public AskGraphExplainTool(String baseUrl, ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
-        this.backend = KompileBackendClient.getInstance();
-        if (baseUrl != null && !baseUrl.isEmpty()) {
-            backend.setBaseUrl(baseUrl);
-        }
+        this.groundingClient = new GroundingBackendClient(baseUrl);
+    }
+
+    /** Visible for testing — lets a {@code MockRestServiceServer} intercept HTTP calls. */
+    AskGraphExplainTool(GroundingBackendClient groundingClient, ObjectMapper objectMapper) {
+        this.objectMapper = objectMapper;
+        this.groundingClient = groundingClient;
+    }
+
+    @Override
+    public String compactHint() {
+        return "Explain why the KB believes (or disbelieves) a fact. "
+                + "atom format: 'predicate(arg1, arg2)' — case-sensitive predicate, comma-space separated args. "
+                + "Reasoning approach is auto-selected from the atom shape; mode is an advanced override. "
+                + "Output: step-by-step derivation tree showing which rules fired, which supporting facts "
+                + "were used at each hop, and a plain-English summary. "
+                + "depth default 3 (how many inference hops to trace back).";
     }
 
     @Override
@@ -79,9 +90,10 @@ public class AskGraphExplainTool implements CliTool {
         ObjectNode modeNode = props.putObject("mode");
         modeNode.put("type", "string");
         modeNode.put("description", "Reasoning engine override: GROUNDING (KB derivation tree), "
-                + "HYBRID (structural + semantic), or CAUSAL (event attribution). "
+                + "HYBRID (structural + semantic), CAUSAL (event attribution), "
+                + "PSL (soft-rule reasoning), or MEBN (probabilistic network reasoning). "
                 + "Default: auto-detected from atom shape.");
-        modeNode.putArray("enum").add("GROUNDING").add("HYBRID").add("CAUSAL");
+        modeNode.putArray("enum").add("GROUNDING").add("HYBRID").add("CAUSAL").add("PSL").add("MEBN");
         props.putObject("sessionId")
                 .put("type", "string");
 
@@ -104,7 +116,7 @@ public class AskGraphExplainTool implements CliTool {
             return ToolResult.error("atom is required");
         }
 
-        if (!backend.isAvailable()) {
+        if (!groundingClient.isAvailable()) {
             return ToolResult.error("ask_graph_explain requires a running kompile-app.");
         }
 
@@ -117,8 +129,8 @@ public class AskGraphExplainTool implements CliTool {
             if (!params.path("mode").isMissingNode())        body.set("mode", params.get("mode"));
             if (!params.path("sessionId").isMissingNode())   body.set("sessionId", params.get("sessionId"));
 
-            var resp = backend.post("/api/explain",
-                    objectMapper.writeValueAsString(body), Duration.ofSeconds(30));
+            var resp = groundingClient.post("/api/explain",
+                    objectMapper.writeValueAsString(body));
 
             if (resp.statusCode() != 200) {
                 return ToolResult.error("ask_graph_explain failed (HTTP " + resp.statusCode() + "): "
@@ -156,12 +168,25 @@ public class AskGraphExplainTool implements CliTool {
                 sb.append("\n\nDerivation tree:\n").append(derivationJson);
             }
 
-            return ToolResult.success("ask_graph_explain: " + atom, sb.toString(),
-                    Map.of("verdict", verdict, "confidence", conf,
-                           "inferenceMode", inferenceMode, "runId", runId));
+            Map<String, Object> metadata = new LinkedHashMap<>();
+            metadata.put("target", atom);
+            metadata.put("verdict", verdict);
+            metadata.put("confidence", conf);
+            metadata.put("inferenceMode", inferenceMode);
+            metadata.put("runId", runId);
+            if (!summary.isBlank()) {
+                metadata.put("naturalLanguageSummary", summary);
+            }
+            if (derivationJson != null && !derivationJson.isBlank()) {
+                metadata.put("derivationTreeJson", derivationJson);
+            }
+            putJsonMetadata(metadata, "trail", result.path("trail"));
+            putJsonMetadata(metadata, "evidence", evidenceNode);
+            putJsonMetadata(metadata, "activatedRules", rulesNode);
 
-        } catch (ConnectException e) {
-            return ToolResult.error("Cannot connect to kompile-app. " + e.getMessage());
+            return ToolResult.success("ask_graph_explain: " + atom, sb.toString(),
+                    metadata);
+
         } catch (Exception e) {
             return ToolResult.error("ask_graph_explain error: " + e.getMessage());
         }
@@ -189,5 +214,12 @@ public class AskGraphExplainTool implements CliTool {
             if (msg != null) return msg;
         } catch (Exception ignored) {}
         return body.length() > 200 ? body.substring(0, 200) + "..." : body;
+    }
+
+    private void putJsonMetadata(Map<String, Object> metadata, String key, JsonNode value) {
+        if (value == null || value.isMissingNode() || value.isNull()) {
+            return;
+        }
+        metadata.put(key, objectMapper.convertValue(value, Object.class));
     }
 }

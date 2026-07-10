@@ -1,0 +1,252 @@
+<!--
+  Copyright 2025 Kompile Inc.
+  Licensed under the Apache License, Version 2.0 (the "License");
+  http://www.apache.org/licenses/LICENSE-2.0
+-->
+<div class="sim-layout">
+
+  <!-- ── Left rail: scenario setup + runs ─────────────────────────────────── -->
+  <aside class="sim-rail">
+    <mat-card class="sim-card">
+      <mat-card-header>
+        <mat-card-title><mat-icon>science</mat-icon> Scenario</mat-card-title>
+      </mat-card-header>
+      <mat-card-content>
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Dataset scenario</mat-label>
+          <mat-select [ngModel]="selectedScenario?.id"
+                      (ngModelChange)="onScenarioSelected($event)">
+            <mat-option *ngFor="let s of scenarios" [value]="s.id">{{ s.name }}</mat-option>
+          </mat-select>
+        </mat-form-field>
+
+        <p class="scenario-description" *ngIf="selectedScenario">{{ selectedScenario.description }}</p>
+        <div class="plants" *ngIf="selectedScenario">
+          <span class="plant-chip" *ngFor="let p of selectedScenario.plants">{{ p }}</span>
+        </div>
+
+        <div class="param-grid" *ngIf="selectedScenario">
+          <mat-form-field appearance="outline" *ngFor="let p of selectedScenario.params">
+            <mat-label>{{ p.label }}</mat-label>
+            <input matInput type="number" [min]="p.min" [max]="p.max"
+                   [step]="p.type === 'double' ? 0.05 : 1"
+                   [(ngModel)]="paramValues[p.key]">
+          </mat-form-field>
+          <mat-form-field appearance="outline">
+            <mat-label>Seed</mat-label>
+            <input matInput type="number" [(ngModel)]="seed">
+          </mat-form-field>
+        </div>
+
+        <div class="run-config">
+          <mat-form-field appearance="outline">
+            <mat-label>Mode</mat-label>
+            <mat-select [(ngModel)]="mode">
+              <mat-option value="PLAY">Play (auto-tick)</mat-option>
+              <mat-option value="ALL">All at once</mat-option>
+              <mat-option value="STEP">Step (manual)</mat-option>
+            </mat-select>
+          </mat-form-field>
+          <mat-form-field appearance="outline" *ngIf="mode !== 'ALL'">
+            <mat-label>Reason every N ticks</mat-label>
+            <input matInput type="number" min="0" [(ngModel)]="reasonEveryK">
+          </mat-form-field>
+        </div>
+
+        <div class="stage-toggles">
+          <div class="section-label">Reasoning stages</div>
+          <mat-checkbox *ngFor="let s of stages" [(ngModel)]="stageEnabled[s]">{{ s }}</mat-checkbox>
+          <mat-checkbox [(ngModel)]="dryRun"
+                        matTooltip="Stages execute without writing — preview what would be learned">
+            Dry run
+          </mat-checkbox>
+        </div>
+      </mat-card-content>
+      <mat-card-actions>
+        <button mat-raised-button color="primary" (click)="start()"
+                [disabled]="!selectedScenario || starting">
+          <mat-icon>play_circle</mat-icon> Start run
+        </button>
+      </mat-card-actions>
+    </mat-card>
+
+    <mat-card class="sim-card">
+      <mat-card-header>
+        <mat-card-title><mat-icon>history</mat-icon> Runs</mat-card-title>
+        <button mat-icon-button (click)="refreshRuns()" matTooltip="Refresh runs">
+          <mat-icon>refresh</mat-icon>
+        </button>
+      </mat-card-header>
+      <mat-card-content>
+        <div class="run-row" *ngFor="let r of runs"
+             [class.active]="activeRun?.runId === r.runId" (click)="attach(r)">
+          <span class="status-dot" [ngClass]="statusClass(r.status)"></span>
+          <span class="run-name">{{ r.scenarioId }} · seed {{ r.seed }}</span>
+          <span class="run-sub">{{ r.ticksApplied }}/{{ r.totalTicks }} ticks</span>
+          <button mat-icon-button (click)="dispose(r); $event.stopPropagation()"
+                  matTooltip="Dispose run + delete sandbox sheet">
+            <mat-icon>delete_outline</mat-icon>
+          </button>
+        </div>
+        <div class="empty-note" *ngIf="runs.length === 0">No runs yet.</div>
+      </mat-card-content>
+    </mat-card>
+  </aside>
+
+  <!-- ── Center: the EXISTING graph visualizer on the sandbox sheet ───────── -->
+  <section class="sim-center">
+    <div class="sim-status-bar" *ngIf="activeRun">
+      <span class="status-chip" [ngClass]="statusClass(activeRun.status)">{{ activeRun.status }}</span>
+      <span class="stat">tick {{ activeRun.ticksApplied }}/{{ activeRun.totalTicks }}</span>
+      <span class="stat">{{ activeRun.nodesCreated }} nodes</span>
+      <span class="stat">{{ activeRun.edgesCreated }} edges</span>
+      <span class="stat" *ngIf="activeRun.lastScore">
+        macro-F1 <strong>{{ activeRun.lastScore.macroF1 | number:'1.2-2' }}</strong>
+      </span>
+      <span class="spacer"></span>
+      <button mat-stroked-button (click)="step()"
+              [disabled]="isWorking() || activeRun.ticksApplied >= activeRun.totalTicks">
+        <mat-icon>skip_next</mat-icon> Step
+      </button>
+      <button mat-stroked-button (click)="activeRun.paused ? play() : pause()"
+              [disabled]="activeRun.status === 'COMPLETED'">
+        <mat-icon>{{ activeRun.paused ? 'play_arrow' : 'pause' }}</mat-icon>
+        {{ activeRun.paused ? 'Play' : 'Pause' }}
+      </button>
+      <button mat-stroked-button (click)="reasonNow()" [disabled]="isWorking()"
+              matTooltip="Run the reasoning stages + scoring again now">
+        <mat-icon>psychology</mat-icon> Reason
+      </button>
+      <button mat-stroked-button (click)="bumpVisualizer()" matTooltip="Reload the graph view">
+        <mat-icon>refresh</mat-icon>
+      </button>
+      <button mat-stroked-button (click)="promote()" matTooltip="Keep the sandbox as a permanent sheet">
+        <mat-icon>bookmark_add</mat-icon> Keep
+      </button>
+      <button mat-stroked-button color="primary" (click)="openInGraphsHub()"
+              matTooltip="Activate the sandbox sheet and open the full Graphs workspace">
+        <mat-icon>hub</mat-icon> Open in Graphs Hub
+      </button>
+    </div>
+    <mat-progress-bar mode="indeterminate" *ngIf="isWorking()"></mat-progress-bar>
+
+    <div class="viz-host" *ngIf="activeRun; else noRun">
+      <app-graph-visualizer *ngIf="showViz"
+                            [factSheetId]="activeRun.factSheetId"
+                            [factSheetName]="activeRun.scenarioName + ' (simulation)'"
+                            [simTruthNodeMap]="revealTruth ? truthNodeMap : null">
+      </app-graph-visualizer>
+    </div>
+    <ng-template #noRun>
+      <div class="sim-empty">
+        <mat-icon>science</mat-icon>
+        <h3>Graph Simulator</h3>
+        <p>Pick a scenario, start a run, and watch the reasoning stack learn — inferred relations
+          appear as violet edges in the visualizer, scored against the planted ground truth.</p>
+      </div>
+    </ng-template>
+  </section>
+
+  <!-- ── Right rail: learned patterns inspector ────────────────────────────── -->
+  <aside class="sim-inspector" *ngIf="activeRun">
+    <mat-card class="sim-card" *ngIf="activeRun.lastScore as score">
+      <mat-card-header>
+        <mat-card-title><mat-icon>grading</mat-icon> Pattern recovery</mat-card-title>
+      </mat-card-header>
+      <mat-card-content>
+        <table class="score-table">
+          <tr><th>family</th><th>P</th><th>R</th><th>F1</th><th>hit/truth</th></tr>
+          <tr *ngFor="let f of score.families">
+            <td>{{ f.family }}</td>
+            <td>{{ f.precision | number:'1.2-2' }}</td>
+            <td>{{ f.recall | number:'1.2-2' }}</td>
+            <td [class.good]="f.f1 >= 0.7" [class.bad]="f.f1 < 0.3">{{ f.f1 | number:'1.2-2' }}</td>
+            <td>{{ f.truePositives }}/{{ f.truthCount }}</td>
+          </tr>
+        </table>
+        <div class="score-footer">
+          <span>ECE {{ score.ece | number:'1.3-3' }}</span>
+          <span *ngIf="score.forbiddenViolations > 0" class="bad">
+            {{ score.forbiddenViolations }} forbidden causal link(s) inferred
+          </span>
+          <span *ngIf="score.hallucinatedCount > 0" class="warn">
+            {{ score.hallucinatedCount }} hallucinated
+          </span>
+          <span *ngIf="score.unanticipatedCount > 0" matTooltip="Derived relations outside every planted family — not penalized">
+            {{ score.unanticipatedCount }} unanticipated
+          </span>
+        </div>
+        <div class="band-bar" *ngIf="bandSegments().length > 0"
+             matTooltip="Strength-band distribution after the last reasoning pass">
+          <div class="band-seg" *ngFor="let seg of bandSegments()"
+               [style.width.%]="seg.pct" [attr.data-band]="seg.band">
+            {{ seg.band[0] }}{{ seg.count }}
+          </div>
+        </div>
+      </mat-card-content>
+    </mat-card>
+
+    <mat-card class="sim-card">
+      <mat-card-header>
+        <mat-card-title><mat-icon>fact_check</mat-icon> Ground truth</mat-card-title>
+        <mat-slide-toggle [checked]="revealTruth" (change)="toggleTruth()">Reveal</mat-slide-toggle>
+      </mat-card-header>
+      <mat-card-content *ngIf="!revealTruth">
+        <div class="truth-summary">
+          <span>{{ activeRun.truthSummary.expectedInferredEdges }} planted inferences</span>
+          <span *ngIf="activeRun.truthSummary.communities > 0">{{ activeRun.truthSummary.communities }} communities</span>
+          <span *ngIf="activeRun.truthSummary.duplicateSets > 0">{{ activeRun.truthSummary.duplicateSets }} duplicate groups</span>
+          <span *ngIf="activeRun.truthSummary.expectedCausalLinks > 0">{{ activeRun.truthSummary.expectedCausalLinks }} causal links</span>
+          <span *ngIf="activeRun.truthSummary.corruptedEdges > 0">{{ activeRun.truthSummary.corruptedEdges }} planted noise edges</span>
+        </div>
+        <p class="empty-note">Hidden until revealed — run the reasoner first, then compare.</p>
+      </mat-card-content>
+      <mat-card-content *ngIf="revealTruth && truth">
+        <div class="truth-rules" *ngIf="truth.generatingRules.length > 0">
+          <div class="section-label">Hidden generating rules</div>
+          <code *ngFor="let r of truth.generatingRules">{{ r.rule }} (w={{ r.weight }})</code>
+        </div>
+        <div class="truth-list">
+          <div class="truth-row" *ngFor="let e of truth.edges" [ngClass]="'truth-' + e.status"
+               [matTooltip]="e.why">
+            <mat-icon>{{ truthStatusIcon(e.status) }}</mat-icon>
+            <span class="triple">{{ e.sourceKey }} —{{ e.relationType }}→ {{ e.targetKey }}</span>
+            <span class="truth-status">{{ e.status }}</span>
+          </div>
+        </div>
+        <div class="truth-hallucinated" *ngIf="truth.hallucinatedEdges.length > 0">
+          <div class="section-label bad">Hallucinated (recovered, never planted)</div>
+          <div class="truth-row truth-violation" *ngFor="let h of truth.hallucinatedEdges">
+            <mat-icon>report</mat-icon>
+            <span class="triple">{{ h.sourceKey }} —{{ h.relationType }}→ {{ h.targetKey }}</span>
+            <span class="truth-status">{{ h.confidence | number:'1.2-2' }}</span>
+          </div>
+        </div>
+      </mat-card-content>
+    </mat-card>
+
+    <mat-card class="sim-card" *ngIf="activeRun.inferredFacts.length > 0">
+      <mat-card-header>
+        <mat-card-title><mat-icon>psychology</mat-icon> Learned facts (last pass)</mat-card-title>
+      </mat-card-header>
+      <mat-card-content>
+        <div class="fact-row" *ngFor="let f of activeRun.inferredFacts.slice(0, 30)"
+             [matTooltip]="(f.rules || []).join('\n') || 'no rule provenance'">
+          <span class="fact-atom">{{ f.atomKey }}</span>
+          <span class="fact-value">{{ f.value | number:'1.2-2' }}</span>
+        </div>
+      </mat-card-content>
+    </mat-card>
+
+    <mat-card class="sim-card">
+      <mat-card-header>
+        <mat-card-title><mat-icon>terminal</mat-icon> Activity</mat-card-title>
+      </mat-card-header>
+      <mat-card-content>
+        <pre class="transcript"><span *ngFor="let line of transcriptTail()">{{ line }}
+</span></pre>
+        <div class="error-note" *ngIf="activeRun.error">{{ activeRun.error }}</div>
+      </mat-card-content>
+    </mat-card>
+  </aside>
+</div>

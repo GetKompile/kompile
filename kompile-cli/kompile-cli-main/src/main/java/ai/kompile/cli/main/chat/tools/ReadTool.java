@@ -22,9 +22,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.io.IOException;
+import java.io.BufferedReader;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -46,6 +48,13 @@ public class ReadTool implements CliTool {
                 "Supports optional offset (starting line, 1-based) and limit (number of lines). " +
                 "Lines longer than 2000 characters are truncated. " +
                 "Use this tool to understand existing code before making changes.";
+    }
+
+    @Override
+    public String compactHint() {
+        return "Read file contents, line-numbered. offset=start line (1-based), limit=lines "
+                + "(default & max 2000). Lines over 2000 chars are truncated. The shown "
+                + "line-number prefix is display-only.";
     }
 
     @Override
@@ -75,6 +84,9 @@ public class ReadTool implements CliTool {
     public String permissionKey() { return "read"; }
 
     @Override
+    public McpToolAnnotations mcpAnnotations() { return McpToolAnnotations.READ_ONLY; }
+
+    @Override
     public ToolResult execute(JsonNode params, ToolContext context) throws ToolExecutionException {
         context.checkPermission(permissionKey(), "Read file");
 
@@ -102,39 +114,54 @@ public class ReadTool implements CliTool {
         try {
             long size = Files.size(path);
             // Check if binary
-            if (isBinary(path)) {
+            if (SearchExclusions.isLikelyBinaryFile(path)) {
                 return ToolResult.success(path.getFileName().toString(),
                         "(binary file, " + size + " bytes)",
                         Map.of("binary", true, "size", size));
             }
 
-            List<String> allLines = Files.readAllLines(path);
-            int totalLines = allLines.size();
+            int startLine = Math.max(1, offset);
+            int endExclusive = startLine + limit;
+            boolean scanWhole = size <= MAX_FILE_SIZE;
+            int totalLines = 0;
+            int shown = 0;
+            boolean truncated = false;
+            StringBuilder output = new StringBuilder();
 
-            int startIdx = offset - 1; // convert to 0-based
-            int endIdx = Math.min(startIdx + limit, totalLines);
+            try (BufferedReader reader = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    totalLines++;
+                    if (totalLines >= startLine && shown < limit) {
+                        output.append(String.format("%6d\t%s%n", totalLines, truncateLine(line)));
+                        shown++;
+                    }
+                    if (!scanWhole && totalLines > endExclusive) {
+                        truncated = true;
+                        break;
+                    }
+                }
+            }
 
-            if (startIdx >= totalLines) {
+            boolean totalLinesKnown = !truncated;
+            if (startLine > totalLines && totalLinesKnown) {
                 return ToolResult.success(path.getFileName().toString(),
                         "(file has " + totalLines + " lines, offset " + offset + " is past end)",
-                        Map.of("totalLines", totalLines));
+                        Map.of("totalLines", totalLines, "totalLinesKnown", true));
             }
 
-            StringBuilder sb = new StringBuilder();
-            for (int i = startIdx; i < endIdx; i++) {
-                String line = allLines.get(i);
-                if (line.length() > MAX_LINE_LENGTH) {
-                    line = line.substring(0, MAX_LINE_LENGTH) + "... (truncated)";
-                }
-                sb.append(String.format("%6d\t%s%n", i + 1, line));
-            }
+            context.recordFileRead(path);
 
-            boolean truncated = endIdx < totalLines;
-            Map<String, Object> meta = Map.of(
-                    "totalLines", totalLines,
-                    "linesShown", endIdx - startIdx,
-                    "truncated", truncated
-            );
+            Map<String, Object> meta = new LinkedHashMap<>();
+            meta.put("totalLines", totalLines);
+            meta.put("totalLinesKnown", totalLinesKnown);
+            meta.put("linesShown", shown);
+            meta.put("truncated", truncated);
+            if (output.isEmpty() && totalLinesKnown && startLine > totalLines) {
+                return ToolResult.success(path.getFileName().toString(),
+                        "(file has " + totalLines + " lines, offset " + offset + " is past end)",
+                        meta);
+            }
 
             String title;
             try {
@@ -142,22 +169,20 @@ public class ReadTool implements CliTool {
             } catch (IllegalArgumentException ex) {
                 title = path.toString();
             }
-            return ToolResult.success(title, sb.toString(), meta);
+            return ToolResult.success(title, output.toString(), meta);
 
         } catch (IOException e) {
             return ToolResult.error("Error reading file: " + e.getMessage());
         }
     }
 
-    private boolean isBinary(Path path) throws IOException {
-        byte[] header = new byte[512];
-        try (var is = Files.newInputStream(path)) {
-            int read = is.read(header);
-            if (read <= 0) return false;
-            for (int i = 0; i < read; i++) {
-                if (header[i] == 0) return true;
-            }
+    private static String truncateLine(String line) {
+        if (line == null) {
+            return "";
         }
-        return false;
+        if (line.length() <= MAX_LINE_LENGTH) {
+            return line;
+        }
+        return line.substring(0, MAX_LINE_LENGTH) + "... (truncated)";
     }
 }

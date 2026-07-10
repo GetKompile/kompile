@@ -74,6 +74,23 @@ public class VirtualTerminal {
     // cursor move clears the flag.
     private boolean pendingWrap = false;
 
+    // DECAWM auto-wrap mode (SM/RM ?7). On by default. When a full-screen TUI (codex/ratatui,
+    // opencode/bubbletea) disables it with ESC[?7l to draw precise box borders, a glyph written
+    // to the final column must OVERWRITE in place instead of wrapping — otherwise a border row
+    // exactly `cols` wide wraps and shifts the whole layout down by one, corrupting positional
+    // chrome detection.
+    private boolean autoWrap = true;
+
+    // Last graphic char written — needed to implement REP (CSI b), which ratatui uses to paint
+    // runs of repeated filler glyphs efficiently.
+    private char lastGraphicChar = ' ';
+
+    // Guards the screen/style buffers and cursor state against the writer (PTY-reader thread
+    // calling feed()) racing the decoder-observer thread's compound reads (getRow/getFullScreen/
+    // getStyledRow/getScreenHash). VT never acquires any external lock while holding this, so it
+    // cannot participate in a lock cycle.
+    private final Object screenLock = new Object();
+
     // Saved cursor state (DECSC / DECRC — ESC 7 / ESC 8)
     private int savedCursorRow;
     private int savedCursorCol;
@@ -138,6 +155,12 @@ public class VirtualTerminal {
      */
     public void resize(int newRows, int newCols) {
         if (newRows <= 0 || newCols <= 0) return;
+        synchronized (screenLock) {
+            resizeLocked(newRows, newCols);
+        }
+    }
+
+    private void resizeLocked(int newRows, int newCols) {
         this.rows = newRows;
         this.cols = newCols;
         this.mainScreen = new char[newRows][newCols];
@@ -166,6 +189,12 @@ public class VirtualTerminal {
      * and placing characters at the correct cursor positions.
      */
     public void feed(String data) {
+        synchronized (screenLock) {
+            feedLocked(data);
+        }
+    }
+
+    private void feedLocked(String data) {
         for (int i = 0; i < data.length(); i++) {
             char c = data.charAt(i);
             switch (state) {
@@ -203,7 +232,13 @@ public class VirtualTerminal {
      * keybinding hints, separator lines, logo elements, and model info lines
      * by their textual patterns rather than by absolute row position (since
      * TUI layouts are dynamic and chrome positions shift with content).
+     *
+     * @deprecated Product-level content extraction does not belong in the pure emulator (design F6).
+     *     No production caller remains (the legacy scrape→render path was removed in WP5); content
+     *     extraction is the decoder's job ({@code AgentTuiDecoder.extractContent}/{@code observe}).
+     *     Retained only for the emulator test suite; to be removed after one release.
      */
+    @Deprecated(forRemoval = true)
     public String getNewText() {
         StringBuilder result = new StringBuilder();
         for (int r = 0; r < rows; r++) {
@@ -343,7 +378,10 @@ public class VirtualTerminal {
         // OpenCode / Gemini / Codex chrome patterns
         if (lower.contains("opencode") && lower.contains("v")) return true;
         if (lower.contains("gemini cli")) return true;
-        if (lower.contains("codex")) return true;
+        // Codex version banners ("codex v0.x.y", "codex cli", "codex-cli x.y.z")
+        // Use a targeted check — bare "codex" is too broad and filters real response
+        // content (e.g. the "kompile [codex]>" prompt) and any LLM output about Codex.
+        if (lower.contains("codex") && (lower.contains("v") || lower.contains("cli"))) return true;
 
         // Progress / spinner / status lines (Generating…, Thinking…, ⠼ spinner)
         if (isProgressOrSpinner(text)) return true;
@@ -447,7 +485,12 @@ public class VirtualTerminal {
      * <p>
      * This method does NOT update the snapshot — calling it won't affect future
      * {@link #getNewText()} results.
+     *
+     * @deprecated Product-level content extraction does not belong in the pure emulator (design F6).
+     *     No production caller remains (WP5); use the decoder's extraction instead. Retained only for
+     *     the emulator test suite; to be removed after one release.
      */
+    @Deprecated(forRemoval = true)
     public String getAllContentText() {
         StringBuilder result = new StringBuilder();
         for (int r = 0; r < rows; r++) {
@@ -472,37 +515,43 @@ public class VirtualTerminal {
      * rendering its response.
      */
     public long getScreenHash() {
-        long hash = 0;
-        for (int r = 0; r < rows; r++) {
-            for (int c = 0; c < cols; c++) {
-                hash = hash * 31 + screen[r][c];
+        synchronized (screenLock) {
+            long hash = 0;
+            for (int r = 0; r < rows; r++) {
+                for (int c = 0; c < cols; c++) {
+                    hash = hash * 31 + screen[r][c];
+                }
             }
+            return hash;
         }
-        return hash;
     }
 
     /**
      * Get the full text content of a specific row (trimmed).
      */
     public String getRow(int row) {
-        if (row < 0 || row >= rows) return "";
-        int end = cols;
-        while (end > 0 && screen[row][end - 1] == ' ') end--;
-        return new String(screen[row], 0, end);
+        synchronized (screenLock) {
+            if (row < 0 || row >= rows) return "";
+            int end = cols;
+            while (end > 0 && screen[row][end - 1] == ' ') end--;
+            return new String(screen[row], 0, end);
+        }
     }
 
     /**
      * Get the full screen content as a string (for debugging).
      */
     public String getFullScreen() {
-        StringBuilder sb = new StringBuilder();
-        for (int r = 0; r < rows; r++) {
-            String line = getRow(r);
-            if (!line.isEmpty()) {
-                sb.append(line).append('\n');
+        synchronized (screenLock) {
+            StringBuilder sb = new StringBuilder();
+            for (int r = 0; r < rows; r++) {
+                String line = getRow(r);
+                if (!line.isEmpty()) {
+                    sb.append(line).append('\n');
+                }
             }
+            return sb.toString();
         }
-        return sb.toString();
     }
 
     public int getRows() { return rows; }
@@ -536,132 +585,10 @@ public class VirtualTerminal {
     /** Whether the terminal is currently in the alternate screen buffer. */
     public boolean isInAlternateScreen() { return inAlternateScreen; }
 
-    /**
-     * Build terminal responses for queries emitted by full-screen TUIs.
-     * <p>
-     * Managed passthrough captures child output instead of connecting it to a
-     * real terminal emulator, so requests like cursor-position report must be
-     * answered explicitly and written back to the child stdin.
-     */
-    public String terminalResponsesFor(String data) {
-        if (data == null || data.isEmpty()) return "";
-        StringBuilder response = new StringBuilder();
-
-        // DSR: cursor position report. Terminal rows/cols are 1-indexed.
-        if (data.contains("\033[6n")) {
-            response.append("\033[")
-                    .append(clamp(cursorRow + 1, 1, rows))
-                    .append(';')
-                    .append(clamp(cursorCol + 1, 1, cols))
-                    .append('R');
-        }
-        // DSR: terminal status OK.
-        if (data.contains("\033[5n")) {
-            response.append("\033[0n");
-        }
-        // Primary device attributes — report VT220 with advanced features.
-        // A richer DA1 response satisfies Bubble Tea's feature detection so it
-        // doesn't fall back to a degraded rendering mode.
-        if (data.contains("\033[c") || data.contains("\033[0c")) {
-            response.append("\033[?62;22c");
-        }
-        // Secondary device attributes.
-        if (data.contains("\033[>c") || data.contains("\033[>0c")) {
-            response.append("\033[>0;0;0c");
-        }
-        // Kitty keyboard protocol query: report no enhanced keyboard flags.
-        if (data.contains("\033[?u")) {
-            response.append("\033[?0u");
-        }
-        // Window/text-area reports used by some terminal UI libraries.
-        if (data.contains("\033[18t")) {
-            response.append("\033[8;").append(rows).append(';').append(cols).append('t');
-        }
-        if (data.contains("\033[14t")) {
-            response.append("\033[4;").append(rows * 16).append(';').append(cols * 8).append('t');
-        }
-        if (data.contains("\033[16t")) {
-            response.append("\033[6;16;8t");
-        }
-        // OSC color queries. Use neutral defaults; the exact color is rarely
-        // important, but terminal libraries may block waiting for a reply.
-        if (containsOscQuery(data, "10")) {
-            response.append("\033]10;rgb:eeee/eeee/eeee\033\\");
-        }
-        if (containsOscQuery(data, "11")) {
-            response.append("\033]11;rgb:0000/0000/0000\033\\");
-        }
-        if (containsOscQuery(data, "12")) {
-            response.append("\033]12;rgb:eeee/eeee/eeee\033\\");
-        }
-
-        return response.toString();
-    }
-
-    /**
-     * Like {@link #terminalResponsesFor(String)} but omits responses that
-     * are known to cause problems when written back to subprocess stdin.
-     * <p>
-     * Specifically, the Kitty keyboard protocol response ({@code ESC[?0u})
-     * gets misinterpreted as keystrokes by Claude Code, triggering nano.
-     * This method sends DA1, DSR, and other safe responses that Claude Code
-     * needs to proceed with rendering, while skipping dangerous ones.
-     */
-    public String safeTerminalResponsesFor(String data) {
-        if (data == null || data.isEmpty()) return "";
-        StringBuilder response = new StringBuilder();
-
-        // DSR: cursor position report
-        if (data.contains("\033[6n")) {
-            response.append("\033[")
-                    .append(clamp(cursorRow + 1, 1, rows))
-                    .append(';')
-                    .append(clamp(cursorCol + 1, 1, cols))
-                    .append('R');
-        }
-        // DSR: terminal status OK
-        if (data.contains("\033[5n")) {
-            response.append("\033[0n");
-        }
-        // Primary device attributes — needed for Claude Code to proceed
-        if (data.contains("\033[c") || data.contains("\033[0c")) {
-            response.append("\033[?62;22c");
-        }
-        // Secondary device attributes
-        if (data.contains("\033[>c") || data.contains("\033[>0c")) {
-            response.append("\033[>0;0;0c");
-        }
-        // SKIP: Kitty keyboard protocol (\033[?u) — response \033[?0u
-        // triggers nano when misinterpreted as keystrokes
-
-        // Window/text-area size reports
-        if (data.contains("\033[18t")) {
-            response.append("\033[8;").append(rows).append(';').append(cols).append('t');
-        }
-        if (data.contains("\033[14t")) {
-            response.append("\033[4;").append(rows * 16).append(';').append(cols * 8).append('t');
-        }
-        if (data.contains("\033[16t")) {
-            response.append("\033[6;16;8t");
-        }
-        // OSC color queries
-        if (containsOscQuery(data, "10")) {
-            response.append("\033]10;rgb:eeee/eeee/eeee\033\\");
-        }
-        if (containsOscQuery(data, "11")) {
-            response.append("\033]11;rgb:0000/0000/0000\033\\");
-        }
-        if (containsOscQuery(data, "12")) {
-            response.append("\033]12;rgb:eeee/eeee/eeee\033\\");
-        }
-
-        return response.toString();
-    }
-
-    private boolean containsOscQuery(String data, String code) {
-        String prefix = "\033]" + code + ";?";
-        return data.contains(prefix + "\007") || data.contains(prefix + "\033\\");
-    }
+    // Terminal-query answering moved to the shared TerminalQueryResponder (design F5d/WP4):
+    // terminalResponsesFor (test-only) and safeTerminalResponsesFor (the one emulated-passthrough
+    // caller) kept product logic inside the pure emulator (F6). The single responder now answers
+    // queries, parameterized by a per-agent QueryPolicy; the VT is a pure screen model again.
 
     // ═══════════════════════════════════════════════════════════════════════
     // Internal processing
@@ -933,7 +860,7 @@ public class VirtualTerminal {
                 }
                 break;
             case 'n': // DSR — device status report
-                // Response is handled by terminalResponsesFor()
+                // Response is handled by the shared TerminalQueryResponder
                 break;
             case 's': // SCP — save cursor position (ANSI.SYS variant)
                 savedCursorRow = cursorRow;
@@ -975,11 +902,13 @@ public class VirtualTerminal {
                     style[cursorRow][ci] = 0L;
                 }
                 break;
+            case 'b': // REP — repeat the preceding graphic char arg0 times (ratatui filler runs)
+                for (int n = Math.max(1, arg0(args)); n > 0; n--) putChar(lastGraphicChar);
+                break;
             case 't': // Window manipulation — ignore
-            case 'c': // DA — device attributes — handled by terminalResponsesFor()
+            case 'c': // DA — device attributes — handled by the shared TerminalQueryResponder
             case 'q': // DECLL/DECSCUSR — ignore (cursor shape, LED)
             case 'p': // DECSTR and others — ignore
-            case 'b': // REP — repeat preceding graphic char — ignore for now
             case 'g': // TBC — tab clear — ignore
             case 'i': // MC — media copy (print) — ignore
             case 'W': // CTC — cursor tabulation control — ignore
@@ -1003,7 +932,11 @@ public class VirtualTerminal {
                 case 4: // DECSCLM — smooth/jump scroll — ignore
                 case 5: // DECSCNM — reverse/normal video — ignore
                 case 6: // DECOM — origin mode — ignore
-                case 7: // DECAWM — auto-wrap mode — ignore
+                    break;
+                case 7: // DECAWM — auto-wrap mode
+                    autoWrap = set;
+                    pendingWrap = false;
+                    break;
                 case 8: // DECARM — auto-repeat keys — ignore
                 case 9: // X10 mouse tracking — ignore
                 case 12: // Cursor blink — ignore
@@ -1123,21 +1056,72 @@ public class VirtualTerminal {
     // ═══════════════════════════════════════════════════════════════════════
 
     private void putChar(char c) {
+        // Low surrogate: the high surrogate already advanced the cursor and was written as the
+        // display cell, so drop the trailing unit rather than emitting a second (mojibake) cell.
+        if (Character.isLowSurrogate(c)) {
+            lastGraphicChar = c;
+            return;
+        }
+        int width = charWidth(c);
         if (pendingWrap) {
             // Resolve a deferred wrap from the previous glyph before writing this one.
             pendingWrap = false;
             cursorCol = 0;
             linefeed();
         }
+        // A double-width glyph that would straddle the last column wraps to the next row first
+        // (real terminals leave the final cell blank rather than split the glyph).
+        if (width == 2 && autoWrap && cursorCol == cols - 1) {
+            cursorCol = 0;
+            linefeed();
+        }
         if (cursorRow >= 0 && cursorRow < rows && cursorCol >= 0 && cursorCol < cols) {
             screen[cursorRow][cursorCol] = c;
             style[cursorRow][cursorCol] = currentStyle;
+            // Blank the trailing cell of a wide glyph so a stale character can't shine through.
+            if (width == 2 && cursorCol + 1 < cols) {
+                screen[cursorRow][cursorCol + 1] = ' ';
+                style[cursorRow][cursorCol + 1] = currentStyle;
+            }
         }
-        if (cursorCol >= cols - 1) {
-            pendingWrap = true;   // at the last column — defer the wrap to the next glyph
+        lastGraphicChar = c;
+        int advance = Math.max(1, width);
+        if (cursorCol + advance >= cols) {
+            // At/over the last column. With DECAWM on, defer the wrap to the next glyph; with it
+            // off, the cursor sticks to the last column and further glyphs overwrite in place.
+            if (autoWrap) {
+                pendingWrap = true;
+            } else {
+                cursorCol = cols - 1;
+            }
         } else {
-            cursorCol++;
+            cursorCol += advance;
         }
+    }
+
+    /**
+     * Display width of a BMP code unit: 2 for East-Asian wide / fullwidth ranges and for the
+     * high surrogate of an astral glyph (emoji, CJK-ext), 1 otherwise. Box-drawing and block
+     * glyphs are intentionally width 1. Not a full wcwidth table — covers the ranges CLI agent
+     * TUIs actually emit (CJK text, fullwidth punctuation, emoji spinners/status icons).
+     */
+    private static int charWidth(char c) {
+        if (c < 0x1100) return 1;                       // fast path: Latin/Greek/Cyrillic/box art
+        if (Character.isHighSurrogate(c)) return 2;     // astral plane (emoji, CJK ext) — approx wide
+        if ((c >= 0x1100 && c <= 0x115F)                // Hangul Jamo
+                || (c >= 0x2E80 && c <= 0x303E)         // CJK radicals, Kangxi
+                || (c >= 0x3041 && c <= 0x33FF)         // Hiragana..CJK compat
+                || (c >= 0x3400 && c <= 0x4DBF)         // CJK ext A
+                || (c >= 0x4E00 && c <= 0x9FFF)         // CJK unified
+                || (c >= 0xA000 && c <= 0xA4CF)         // Yi
+                || (c >= 0xAC00 && c <= 0xD7A3)         // Hangul syllables
+                || (c >= 0xF900 && c <= 0xFAFF)         // CJK compat ideographs
+                || (c >= 0xFE30 && c <= 0xFE4F)         // CJK compat forms
+                || (c >= 0xFF00 && c <= 0xFF60)         // Fullwidth forms
+                || (c >= 0xFFE0 && c <= 0xFFE6)) {      // Fullwidth signs
+            return 2;
+        }
+        return 1;
     }
 
     private void linefeed() {
@@ -1310,24 +1294,26 @@ public class VirtualTerminal {
      * preserved. Leading default-styled spaces and trailing spaces are trimmed.
      */
     public String getStyledRow(int row) {
-        if (row < 0 || row >= rows) return "";
-        int end = cols;
-        while (end > 0 && screen[row][end - 1] == ' ') end--;
-        int start = 0;
-        while (start < end && screen[row][start] == ' ' && style[row][start] == 0L) start++;
-        if (start >= end) return "";
-        StringBuilder sb = new StringBuilder();
-        long active = 0L;
-        for (int c = start; c < end; c++) {
-            long st = style[row][c];
-            if (st != active) {
-                sb.append(sgrFor(st));
-                active = st;
+        synchronized (screenLock) {
+            if (row < 0 || row >= rows) return "";
+            int end = cols;
+            while (end > 0 && screen[row][end - 1] == ' ') end--;
+            int start = 0;
+            while (start < end && screen[row][start] == ' ' && style[row][start] == 0L) start++;
+            if (start >= end) return "";
+            StringBuilder sb = new StringBuilder();
+            long active = 0L;
+            for (int c = start; c < end; c++) {
+                long st = style[row][c];
+                if (st != active) {
+                    sb.append(sgrFor(st));
+                    active = st;
+                }
+                sb.append(screen[row][c]);
             }
-            sb.append(screen[row][c]);
+            if (active != 0L) sb.append("\033[0m");
+            return sb.toString();
         }
-        if (active != 0L) sb.append("\033[0m");
-        return sb.toString();
     }
 
     /**
@@ -1336,19 +1322,21 @@ public class VirtualTerminal {
      * for content extraction). Write the result at column 1 to reproduce the agent's layout.
      */
     public String getStyledRowFull(int row) {
-        if (row < 0 || row >= rows) return "";
-        int end = cols;
-        while (end > 0 && screen[row][end - 1] == ' ' && style[row][end - 1] == 0L) end--;
-        if (end == 0) return "";
-        StringBuilder sb = new StringBuilder();
-        long active = 0L;
-        for (int c = 0; c < end; c++) {
-            long st = style[row][c];
-            if (st != active) { sb.append(sgrFor(st)); active = st; }
-            sb.append(screen[row][c]);
+        synchronized (screenLock) {
+            if (row < 0 || row >= rows) return "";
+            int end = cols;
+            while (end > 0 && screen[row][end - 1] == ' ' && style[row][end - 1] == 0L) end--;
+            if (end == 0) return "";
+            StringBuilder sb = new StringBuilder();
+            long active = 0L;
+            for (int c = 0; c < end; c++) {
+                long st = style[row][c];
+                if (st != active) { sb.append(sgrFor(st)); active = st; }
+                sb.append(screen[row][c]);
+            }
+            if (active != 0L) sb.append("\033[0m");
+            return sb.toString();
         }
-        if (active != 0L) sb.append("\033[0m");
-        return sb.toString();
     }
 
     private String sgrFor(long st) {

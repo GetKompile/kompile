@@ -351,22 +351,37 @@ public class CosDprDistilSameDiffEncoder extends SameDiffEncoder<float[]> {
             LOG.error("[{}] Cannot convert null array to float vector", this.modelIdentifier);
             return null;
         }
+        INDArray copy = null;
         try {
-            return array.toFloatVector();
+            long length = array.length();
+            if (length > Integer.MAX_VALUE) {
+                throw new IllegalArgumentException("INDArray too large to materialize as float[]: " + length);
+            }
+            if (array.elementWiseStride() == 1) {
+                return array.data().getFloatsAt(array.offset(), (int) length);
+            }
+            copy = array.dup('c');
+            return copy.data().getFloatsAt(copy.offset(), (int) length);
         } catch (NullPointerException e) {
-            // This catches JavaCPP "Pointer address of argument X is NULL" errors
-            LOG.error("[{}] Native pointer is null during toFloatVector - array may have been closed or corrupted: {}",
+            LOG.error("[{}] Native pointer is null during float extraction - array may have been closed or corrupted: {}",
                     this.modelIdentifier, e.getMessage());
             return null;
         } catch (IllegalStateException e) {
-            // This catches "DataBuffer was already released" errors
-            LOG.error("[{}] DataBuffer was released during toFloatVector: {}",
+            LOG.error("[{}] DataBuffer was released during float extraction: {}",
                     this.modelIdentifier, e.getMessage());
             return null;
         } catch (Exception e) {
-            LOG.error("[{}] Unexpected error during toFloatVector: {}",
+            LOG.error("[{}] Unexpected error during float extraction: {}",
                     this.modelIdentifier, e.getMessage(), e);
             return null;
+        } finally {
+            if (copy != null) {
+                try {
+                    copy.close();
+                } catch (Exception e) {
+                    LOG.debug("[{}] Error closing conversion copy: {}", this.modelIdentifier, e.getMessage());
+                }
+            }
         }
     }
 

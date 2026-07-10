@@ -37,9 +37,36 @@ public class CodexDecoder extends AbstractTuiDecoder {
 
     private static final char COMPOSER_ARROW = '›'; // U+203A
 
+    /** Latches once the startup directory-trust modal has been auto-accepted. */
+    private boolean directoryTrustConfirmed;
+
     @Override
     public String agentName() {
         return "codex";
+    }
+
+    /**
+     * Codex opens on a directory-trust modal ("Do you trust the contents of this directory?")
+     * before it will accept any input. Unlike Claude, it has no flag to skip it — the interactive
+     * bypass flag only covers command approvals. Left unanswered, the first user message's submit
+     * CR lands on the modal and (because the trust option is not the default highlight) quits the
+     * agent. Auto-accept it: arrow up to the first option ("Yes, allow …", always topmost) — extra
+     * Ups clamp harmlessly at the boundary — then Enter to confirm. Fires exactly once.
+     */
+    @Override
+    public String buildInputResponses(String rawChunk, VirtualTerminal vt) {
+        if (directoryTrustConfirmed) return "";
+        String haystack = (rawChunk == null ? "" : rawChunk)
+                + '\n' + (vt == null ? "" : vt.getFullScreen());
+        String lower = haystack.toLowerCase(Locale.ROOT);
+        // Anchor on the exact prompt question so this can never fire on ordinary response text
+        // in an already-trusted directory (where no modal appears).
+        if ((lower.contains("do you trust") || lower.contains("trust the contents"))
+                && (lower.contains("yes") || lower.contains("quit") || lower.contains("proceed"))) {
+            directoryTrustConfirmed = true;
+            return "\033[A\033[A\r"; // Up, Up (clamp to topmost "Yes" option), Enter
+        }
+        return "";
     }
 
     @Override
@@ -65,8 +92,26 @@ public class CodexDecoder extends AbstractTuiDecoder {
         if (text.contains("release notes")) return true;
         if (lower.contains("openai/codex")) return true;            // update URL
         if (text.startsWith("tip:")) return true;
+        if (text.startsWith("heads up,") && text.contains("limit")) return true;
+        if (text.contains("run /status") && text.contains("breakdown")) return true;
         if (text.contains("esc to go back") || text.contains("ctrl+")) return true;
         if (text.startsWith("press enter")) return true;
+
+        // Codex settings / permission hook screens are full-screen UI chrome. If these rows enter
+        // the managed transcript they look like stale scrollback after the picker closes.
+        if (text.equals("hooks") || text.equals("pretooluse hooks")) return true;
+        if (text.contains("lifecycle hooks") && text.contains("config")) return true;
+        if (text.contains("event") && text.contains("installed") && text.contains("active")) return true;
+        if (text.startsWith("pretooluse") && text.contains("before a tool executes")) return true;
+        if (text.startsWith("permissionrequest") && text.contains("permission is requested")) return true;
+        if (text.contains("turn hooks on or off") || text.contains("saved automatically")) return true;
+        if (text.startsWith("[x] hook") || text.startsWith("[ ] hook")) return true;
+        if (text.startsWith("event") && text.contains("pretooluse")) return true;
+
+        // Inline decision-prompt affordances are mirrored by Kompile's prompt bridge, not assistant
+        // output. Keep the exact Codex wording narrow so numbered prose lists still survive.
+        if (text.contains("type the option number") && text.contains("navigate")) return true;
+        if (text.equals("1. yes, continue") || text.equals("2. no, quit")) return true;
 
         return false;
     }
@@ -74,6 +119,16 @@ public class CodexDecoder extends AbstractTuiDecoder {
     private boolean containsEffortWord(String lower) {
         return lower.contains("xhigh") || lower.contains("high") || lower.contains("medium")
                 || lower.contains("low") || lower.contains("minimal");
+    }
+
+    @Override
+    protected String[] extraBlockingPhrases() {
+        // Codex wording for exhaustion. NOT the benign "1 usage limit reset available" /
+        // "less than 25% of your 5h limit left" hints — those are handled by isIdle/chrome.
+        return new String[]{
+                "you've hit your usage limit", "weekly limit reached",
+                "run /login", "to continue, run", "please run codex login",
+        };
     }
 
     @Override

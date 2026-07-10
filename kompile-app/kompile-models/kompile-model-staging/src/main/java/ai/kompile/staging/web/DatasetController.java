@@ -17,10 +17,14 @@
 package ai.kompile.staging.web;
 
 import ai.kompile.staging.training.DatasetService;
+import ai.kompile.staging.training.StandardDatasetCatalog;
 import ai.kompile.staging.web.dto.BenchmarkInfo;
+import ai.kompile.staging.web.dto.DatasetDownloadStatus;
 import ai.kompile.staging.web.dto.DatasetInfo;
 import ai.kompile.staging.web.dto.DatasetStats;
+import ai.kompile.staging.web.dto.EvalSuitePresetInfo;
 import ai.kompile.staging.web.dto.PreloadDatasetRequest;
+import ai.kompile.staging.web.dto.StandardDatasetInfo;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
@@ -46,9 +50,121 @@ public class DatasetController {
     private static final Logger log = LoggerFactory.getLogger(DatasetController.class);
 
     private final DatasetService datasetService;
+    private final StandardDatasetCatalog standardDatasetCatalog;
 
-    public DatasetController(DatasetService datasetService) {
+    public DatasetController(DatasetService datasetService,
+                             StandardDatasetCatalog standardDatasetCatalog) {
         this.datasetService = datasetService;
+        this.standardDatasetCatalog = standardDatasetCatalog;
+    }
+
+    // ==================== Standard Catalog ====================
+
+    /**
+     * List standard datasets available for one-click import.
+     */
+    @GetMapping("/catalog")
+    public ResponseEntity<List<StandardDatasetInfo>> listStandardCatalog(
+            @RequestParam(required = false) String category) {
+        try {
+            return ResponseEntity.ok(standardDatasetCatalog.listByCategory(category));
+        } catch (Exception e) {
+            log.error("Failed to list standard dataset catalog", e);
+            return ResponseEntity.internalServerError().build();
+        }
+    }
+
+    /**
+     * List standard dataset categories.
+     */
+    @GetMapping("/catalog/categories")
+    public ResponseEntity<List<String>> listStandardCatalogCategories() {
+        try {
+            return ResponseEntity.ok(standardDatasetCatalog.listCategories());
+        } catch (Exception e) {
+            log.error("Failed to list standard dataset catalog categories", e);
+            return ResponseEntity.internalServerError().build();
+        }
+    }
+
+    /**
+     * List curated evaluation suite presets.
+     */
+    @GetMapping("/catalog/presets")
+    public ResponseEntity<List<EvalSuitePresetInfo>> listStandardCatalogPresets() {
+        try {
+            return ResponseEntity.ok(standardDatasetCatalog.listPresets());
+        } catch (Exception e) {
+            log.error("Failed to list standard dataset catalog presets", e);
+            return ResponseEntity.internalServerError().build();
+        }
+    }
+
+    /**
+     * Get a standard dataset catalog entry by ID.
+     */
+    @GetMapping("/catalog/{id}")
+    public ResponseEntity<StandardDatasetInfo> getStandardCatalogDataset(@PathVariable String id) {
+        try {
+            StandardDatasetInfo info = standardDatasetCatalog.get(id);
+            if (info == null) {
+                return ResponseEntity.notFound().build();
+            }
+            return ResponseEntity.ok(info);
+        } catch (Exception e) {
+            log.error("Failed to get standard dataset catalog entry: {}", id, e);
+            return ResponseEntity.internalServerError().build();
+        }
+    }
+
+    /**
+     * Start importing a standard dataset into managed dataset storage.
+     */
+    @PostMapping("/catalog/{id}/download")
+    public ResponseEntity<DatasetDownloadStatus> startStandardDatasetDownload(@PathVariable String id) {
+        try {
+            DatasetDownloadStatus status = standardDatasetCatalog.startAsyncDownload(id, datasetService);
+            if ("FAILED".equals(status.getPhase())) {
+                return ResponseEntity.badRequest().body(status);
+            }
+            if ("COMPLETED".equals(status.getPhase())) {
+                return ResponseEntity.ok(status);
+            }
+            return ResponseEntity.accepted().body(status);
+        } catch (Exception e) {
+            log.error("Failed to start standard dataset download: {}", id, e);
+            return ResponseEntity.internalServerError().build();
+        }
+    }
+
+    /**
+     * Get current import status for a standard dataset.
+     */
+    @GetMapping("/catalog/{id}/download")
+    public ResponseEntity<DatasetDownloadStatus> getStandardDatasetDownloadStatus(@PathVariable String id) {
+        try {
+            DatasetDownloadStatus status = standardDatasetCatalog.getDownloadStatus(id);
+            if (status == null) {
+                return ResponseEntity.notFound().build();
+            }
+            return ResponseEntity.ok(status);
+        } catch (Exception e) {
+            log.error("Failed to get standard dataset download status: {}", id, e);
+            return ResponseEntity.internalServerError().build();
+        }
+    }
+
+    /**
+     * List active standard dataset imports.
+     */
+    @GetMapping("/catalog/downloads")
+    public ResponseEntity<Map<String, DatasetDownloadStatus>> listStandardDatasetDownloadStatuses() {
+        try {
+            return ResponseEntity.ok(standardDatasetCatalog.getAllDownloadStatuses());
+        } catch (Exception e) {
+            log.error("Failed to list standard dataset download statuses", e);
+            return ResponseEntity.internalServerError().build();
+        }
     }
 
     // ==================== Upload ====================

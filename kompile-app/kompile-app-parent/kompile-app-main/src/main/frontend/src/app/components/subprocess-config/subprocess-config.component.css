@@ -37,15 +37,15 @@
 }
 
 .mode-banner.enabled {
-  background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
-  border: 1px solid #a5d6a7;
-  border-left: 4px solid #4caf50;
+  background: linear-gradient(135deg, var(--status-success-bg) 0%, var(--status-success-border) 100%);
+  border: 1px solid var(--status-success-border);
+  border-left: 4px solid var(--status-success-icon);
 }
 
 .mode-banner.disabled {
-  background: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%);
-  border: 1px solid #ffcc80;
-  border-left: 4px solid #ff9800;
+  background: linear-gradient(135deg, var(--status-warning-bg) 0%, var(--status-warning-border) 100%);
+  border: 1px solid var(--status-warning-border);
+  border-left: 4px solid var(--status-warning-icon);
 }
 
 .mode-banner .banner-content {
@@ -56,11 +56,11 @@
 }
 
 .mode-banner.enabled .banner-content mat-icon {
-  color: #388e3c;
+  color: var(--status-success-text);
 }
 
 .mode-banner.disabled .banner-content mat-icon {
-  color: #f57c00;
+  color: var(--status-warning-text);
 }
 
 .mode-banner .banner-text {
@@ -74,17 +74,17 @@
 }
 
 .mode-banner.enabled .banner-text strong {
-  color: #2e7d32;
+  color: var(--status-success-text);
 }
 
 .mode-banner.disabled .banner-text strong {
-  color: #e65100;
+  color: var(--status-warning-text);
 }
 
 .mode-banner .banner-note {
   display: block;
   font-size: 12px;
-  color: rgba(0, 0, 0, 0.6);
+  color: var(--text-secondary);
 }
 
 .mode-toggle {
@@ -134,7 +134,7 @@ mat-card-actions {
   margin-left: 16px;
   font-family: 'Roboto Mono', monospace;
   font-size: 11px;
-  background-color: #e3f2fd;
+  background-color: var(--status-info-bg);
   padding: 2px 8px;
   border-radius: 4px;
 }
@@ -183,13 +183,13 @@ mat-card-actions {
 }
 
 .validation-result.valid {
-  background-color: #e8f5e9;
-  color: #2e7d32;
+  background-color: var(--status-success-bg);
+  color: var(--status-success-text);
 }
 
 .validation-result.invalid {
-  background-color: #ffebee;
-  color: #c62828;
+  background-color: var(--status-error-bg);
+  color: var(--status-error-text);
 }
 
 .validation-result mat-icon {
@@ -200,7 +200,7 @@ mat-card-actions {
 }
 
 .recommended-tag {
-  color: #4caf50;
+  color: var(--status-success-icon);
   font-weight: 500;
   margin-left: 8px;
 }
@@ -211,7 +211,7 @@ mat-card-actions {
   flex-wrap: wrap;
   gap: 24px;
   padding: 12px;
-  background-color: #e3f2fd;
+  background-color: var(--status-info-bg);
   border-radius: 8px;
 }
 
@@ -219,7 +219,7 @@ mat-card-actions {
   display: flex;
   align-items: center;
   gap: 8px;
-  color: #1565c0;
+  color: var(--status-info-text);
   font-size: 13px;
 }
 
@@ -234,17 +234,17 @@ mat-card-actions {
   align-items: center;
   gap: 8px;
   padding: 12px 16px;
-  background-color: #e3f2fd;
-  border-top: 1px solid #bbdefb;
+  background-color: var(--status-info-bg);
+  border-top: 1px solid var(--status-info-border);
   font-size: 12px;
-  color: #1565c0;
+  color: var(--status-info-text);
 }
 
 .config-note mat-icon {
   font-size: 18px;
   width: 18px;
   height: 18px;
-  color: #1976d2;
+  color: var(--status-info-icon);
 }
 
 /* Processes Card */
@@ -282,8 +282,8 @@ mat-card-actions {
 
 .pid-badge {
   display: inline-block;
-  background-color: #e3f2fd;
-  color: #1565c0;
+  background-color: var(--status-info-bg);
+  color: var(--status-info-text);
   padding: 2px 6px;
   border-radius: 4px;
   font-size: 10px;
@@ -299,12 +299,12 @@ mat-card-actions {
   text-transform: uppercase;
 }
 
-.phase-loading { background-color: #e3f2fd; color: #1565c0; }
-.phase-chunking { background-color: #f3e5f5; color: #7b1fa2; }
-.phase-embedding { background-color: #fff3e0; color: #e65100; }
-.phase-indexing { background-color: #e8f5e9; color: #2e7d32; }
-.phase-completed { background-color: #c8e6c9; color: #1b5e20; }
-.phase-failed { background-color: #ffcdd2; color: #b71c1c; }
+.phase-loading { background-color: var(--status-info-bg); color: var(--status-info-text); }
+.phase-chunking { background-color: var(--bg-surface-elevated); color: var(--color-secondary); }
+.phase-embedding { background-color: var(--status-warning-bg); color: var(--status-warning-text); }
+.phase-indexing { background-color: var(--status-success-bg); color: var(--status-success-text); }
+.phase-completed { background-color: var(--status-success-border); color: var(--status-success-text); }
+.phase-failed { background-color: var(--status-error-border); color: var(--status-error-text); }
 .phase-starting { background-color: var(--bg-surface-elevated); color: var(--text-secondary); }
 
 .progress-cell {
@@ -385,7 +385,7 @@ mat-card-actions {
 }
 
 .oom-row {
-  background-color: #fff8e1;
+  background-color: var(--status-warning-bg);
 }
 
 /* System Panel */
@@ -488,7 +488,7 @@ mat-card-actions {
 }
 
 .section-title mat-icon {
-  color: #1976d2;
+  color: var(--color-primary);
 }
 
 /* Toggle Hints */
@@ -510,23 +510,23 @@ mat-card-actions {
 }
 
 .native-status-banner.native-mode {
-  background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
-  border: 1px solid #a5d6a7;
-  border-left: 4px solid #4caf50;
+  background: linear-gradient(135deg, var(--status-success-bg) 0%, var(--status-success-border) 100%);
+  border: 1px solid var(--status-success-border);
+  border-left: 4px solid var(--status-success-icon);
 }
 
 .native-status-banner.native-mode mat-icon {
-  color: #2e7d32;
+  color: var(--status-success-text);
 }
 
 .native-status-banner.jvm-mode {
-  background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%);
-  border: 1px solid #90caf9;
-  border-left: 4px solid #2196f3;
+  background: linear-gradient(135deg, var(--status-info-bg) 0%, var(--status-info-border) 100%);
+  border: 1px solid var(--status-info-border);
+  border-left: 4px solid var(--status-info-icon);
 }
 
 .native-status-banner.jvm-mode mat-icon {
-  color: #1565c0;
+  color: var(--status-info-text);
 }
 
 .native-status-banner .status-text {
@@ -540,16 +540,16 @@ mat-card-actions {
 }
 
 .native-status-banner.native-mode .status-text strong {
-  color: #2e7d32;
+  color: var(--status-success-text);
 }
 
 .native-status-banner.jvm-mode .status-text strong {
-  color: #1565c0;
+  color: var(--status-info-text);
 }
 
 .native-status-banner .status-details {
   font-size: 12px;
-  color: rgba(0, 0, 0, 0.7);
+  color: var(--text-secondary);
   line-height: 1.5;
 }
 
@@ -561,7 +561,7 @@ mat-card-actions {
 .option-desc {
   display: block;
   font-size: 11px;
-  color: rgba(0, 0, 0, 0.54);
+  color: var(--text-secondary);
   line-height: 1.3;
   margin-top: 2px;
 }
@@ -614,18 +614,18 @@ mat-card-actions {
 }
 
 .native-mode-chip.native {
-  background-color: #c8e6c9;
-  color: #2e7d32;
+  background-color: var(--status-success-border);
+  color: var(--status-success-text);
 }
 
 .native-mode-chip.jvm {
-  background-color: #bbdefb;
-  color: #1565c0;
+  background-color: var(--status-info-border);
+  color: var(--status-info-text);
 }
 
 .native-mode-chip.auto {
-  background-color: #fff3e0;
-  color: #e65100;
+  background-color: var(--status-warning-bg);
+  color: var(--status-warning-text);
 }
 
 /* Native executable validation */
@@ -640,21 +640,21 @@ mat-card-actions {
 }
 
 .native-validation-result.valid {
-  background-color: #e8f5e9;
-  border: 1px solid #a5d6a7;
+  background-color: var(--status-success-bg);
+  border: 1px solid var(--status-success-border);
 }
 
 .native-validation-result.valid mat-icon {
-  color: #2e7d32;
+  color: var(--status-success-text);
 }
 
 .native-validation-result.invalid {
-  background-color: #ffebee;
-  border: 1px solid #ef9a9a;
+  background-color: var(--status-error-bg);
+  border: 1px solid var(--status-error-border);
 }
 
 .native-validation-result.invalid mat-icon {
-  color: #c62828;
+  color: var(--status-error-text);
 }
 
 .native-validation-result .validation-content {
@@ -671,7 +671,7 @@ mat-card-actions {
   font-size: 11px;
   white-space: pre-wrap;
   word-break: break-word;
-  background-color: rgba(0, 0, 0, 0.05);
+  background-color: var(--bg-surface-elevated);
   padding: 6px 8px;
   border-radius: 4px;
   margin-top: 6px;
@@ -712,13 +712,13 @@ mat-card-actions {
 }
 
 .embedding-subprocess-card mat-card-title mat-icon {
-  color: #7b1fa2;
+  color: var(--color-secondary);
 }
 
 /* Subprocess Status */
 .subprocess-status {
-  background: linear-gradient(135deg, #f3e5f5 0%, #e1bee7 100%);
-  border: 1px solid #ce93d8;
+  background: linear-gradient(135deg, var(--bg-surface-elevated) 0%, var(--border-color) 100%);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   padding: 16px;
   margin-bottom: 16px;
@@ -738,22 +738,22 @@ mat-card-actions {
 }
 
 .subprocess-status .status-header mat-icon.running {
-  color: #4caf50;
+  color: var(--status-success-icon);
 }
 
 .subprocess-status .status-header mat-icon.stopped {
-  color: #f44336;
+  color: var(--status-error-icon);
 }
 
 .subprocess-status .status-label {
   font-size: 18px;
   font-weight: 500;
-  color: #4a148c;
+  color: var(--text-primary);
 }
 
 .subprocess-status .model-loaded-badge {
   display: inline-block;
-  background-color: #7b1fa2;
+  background-color: var(--color-secondary);
   color: white;
   padding: 4px 8px;
   border-radius: 4px;
@@ -775,26 +775,26 @@ mat-card-actions {
 
 .subprocess-status .status-item .label {
   font-size: 11px;
-  color: rgba(74, 20, 140, 0.7);
+  color: var(--text-secondary);
   text-transform: uppercase;
   font-weight: 500;
 }
 
 .subprocess-status .status-item .value {
   font-size: 14px;
-  color: #4a148c;
+  color: var(--text-primary);
   font-family: 'Roboto Mono', monospace;
 }
 
 .subprocess-status .status-item .value.error-text {
-  color: #c62828;
+  color: var(--status-error-text);
 }
 
 .subprocess-status .status-unavailable {
   display: flex;
   align-items: center;
   gap: 8px;
-  color: #f57c00;
+  color: var(--status-warning-text);
   font-size: 14px;
 }
 
@@ -820,11 +820,11 @@ mat-card-actions {
   align-items: flex-start;
   gap: 8px;
   padding: 12px;
-  background-color: #e3f2fd;
+  background-color: var(--status-info-bg);
   border-radius: 4px;
   margin-bottom: 16px;
   font-size: 12px;
-  color: #1565c0;
+  color: var(--status-info-text);
 }
 
 .env-var-hint mat-icon {
@@ -907,7 +907,7 @@ mat-card-actions {
   flex: 1;
   font-family: 'Roboto Mono', monospace;
   font-size: 12px;
-  color: #1565c0;
+  color: var(--status-info-text);
   font-weight: 500;
   min-width: 200px;
   word-break: break-word;
@@ -958,13 +958,13 @@ mat-card-actions {
 }
 
 .restart-result .result-header.success {
-  background-color: #e8f5e9;
-  color: #2e7d32;
+  background-color: var(--status-success-bg);
+  color: var(--status-success-text);
 }
 
 .restart-result .result-header.error {
-  background-color: #ffebee;
-  color: #c62828;
+  background-color: var(--status-error-bg);
+  color: var(--status-error-text);
 }
 
 .restart-result .result-header mat-icon {
@@ -1023,24 +1023,24 @@ mat-card-actions {
 
 .debug-tools-panel {
   margin-top: 12px;
-  background-color: #fff8e1;
-  border: 1px solid #ffe082;
+  background-color: var(--status-warning-bg);
+  border: 1px solid var(--status-warning-border);
   border-radius: 8px;
 }
 
 .debug-tools-panel mat-expansion-panel-header {
-  background-color: #fff8e1;
+  background-color: var(--status-warning-bg);
 }
 
 .debug-tools-panel mat-panel-title {
   display: flex;
   align-items: center;
   gap: 8px;
-  color: #f57c00;
+  color: var(--status-warning-text);
 }
 
 .debug-tools-panel mat-panel-title mat-icon {
-  color: #ff9800;
+  color: var(--status-warning-icon);
 }
 
 .debug-tools-content {
@@ -1052,12 +1052,12 @@ mat-card-actions {
   align-items: flex-start;
   gap: 8px;
   padding: 12px;
-  background-color: #fff3e0;
+  background-color: var(--status-warning-bg);
   border-radius: 4px;
   margin-bottom: 16px;
   font-size: 12px;
-  color: #e65100;
-  border-left: 3px solid #ff9800;
+  color: var(--status-warning-text);
+  border-left: 3px solid var(--status-warning-icon);
 }
 
 .debug-tools-hint mat-icon {
@@ -1065,7 +1065,7 @@ mat-card-actions {
   font-size: 18px;
   width: 18px;
   height: 18px;
-  color: #ff9800;
+  color: var(--status-warning-icon);
 }
 
 .debug-config-grid {
@@ -1089,7 +1089,7 @@ mat-card-actions {
 
 .debug-mode-desc {
   font-size: 11px;
-  color: #7b1fa2;
+  color: var(--color-secondary);
   font-weight: 500;
 }
 
@@ -1098,18 +1098,18 @@ mat-card-actions {
   align-items: center;
   gap: 6px;
   padding: 8px 12px;
-  background-color: #fce4ec;
+  background-color: var(--status-error-bg);
   border-radius: 4px;
   margin-top: 4px;
   font-size: 11px;
-  color: #c2185b;
+  color: var(--status-error-text);
 }
 
 .cuda-warning mat-icon {
   font-size: 16px;
   width: 16px;
   height: 16px;
-  color: #d81b60;
+  color: var(--status-error-icon);
 }
 
 /* Debug JVM Arguments */
@@ -1137,12 +1137,12 @@ mat-card-actions {
   align-items: center;
   gap: 4px;
   padding: 4px 4px 4px 12px;
-  background-color: #e3f2fd;
-  border: 1px solid #90caf9;
+  background-color: var(--status-info-bg);
+  border: 1px solid var(--status-info-border);
   border-radius: 16px;
   font-size: 12px;
   font-family: 'Roboto Mono', monospace;
-  color: #1565c0;
+  color: var(--status-info-text);
 }
 
 .jvm-arg-chip button {
@@ -1212,13 +1212,13 @@ mat-card-actions {
 }
 
 .debug-restart-result .result-header.success {
-  background-color: #e8f5e9;
-  color: #2e7d32;
+  background-color: var(--status-success-bg);
+  color: var(--status-success-text);
 }
 
 .debug-restart-result .result-header.error {
-  background-color: #ffebee;
-  color: #c62828;
+  background-color: var(--status-error-bg);
+  color: var(--status-error-text);
 }
 
 .debug-restart-result .result-header mat-icon {
@@ -1278,7 +1278,7 @@ mat-card-actions {
 }
 
 .command-details .env-key {
-  color: #1565c0;
+  color: var(--status-info-text);
   font-weight: 500;
 }
 
@@ -1290,7 +1290,7 @@ mat-card-actions {
 .debug-section {
   margin-bottom: 24px;
   padding-bottom: 16px;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .debug-section:last-of-type {
@@ -1313,7 +1313,7 @@ mat-card-actions {
   font-size: 20px;
   width: 20px;
   height: 20px;
-  color: #ff9800;
+  color: var(--status-warning-icon);
 }
 
 /* Full width config items */
@@ -1357,19 +1357,19 @@ mat-card-actions {
 
 /* Valgrind Section */
 .valgrind-section {
-  background-color: #f3e5f5;
-  border: 1px solid #ce93d8;
+  background-color: var(--bg-surface-elevated);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   padding: 16px;
   margin-bottom: 20px;
 }
 
 .valgrind-section h4 {
-  color: #7b1fa2;
+  color: var(--color-secondary);
 }
 
 .valgrind-section h4 mat-icon {
-  color: #9c27b0;
+  color: var(--color-secondary);
 }
 
 .valgrind-info {
@@ -1377,12 +1377,12 @@ mat-card-actions {
   align-items: flex-start;
   gap: 8px;
   padding: 12px;
-  background-color: #ede7f6;
+  background-color: var(--bg-surface-elevated);
   border-radius: 4px;
   margin-bottom: 16px;
   font-size: 12px;
-  color: #4a148c;
-  border-left: 3px solid #9c27b0;
+  color: var(--text-primary);
+  border-left: 3px solid var(--color-secondary);
 }
 
 .valgrind-info mat-icon {
@@ -1390,7 +1390,7 @@ mat-card-actions {
   font-size: 18px;
   width: 18px;
   height: 18px;
-  color: #7b1fa2;
+  color: var(--color-secondary);
 }
 
 /* Valgrind Suppression Info Display */
@@ -1399,24 +1399,24 @@ mat-card-actions {
 }
 
 .suppression-panel {
-  background-color: #f3e5f5;
-  border: 1px solid #ce93d8;
+  background-color: var(--bg-surface-elevated);
+  border: 1px solid var(--border-color);
 }
 
 .suppression-panel mat-expansion-panel-header {
-  background-color: #f3e5f5;
+  background-color: var(--bg-surface-elevated);
 }
 
 .suppression-panel mat-panel-title {
   display: flex;
   align-items: center;
   gap: 8px;
-  color: #7b1fa2;
+  color: var(--color-secondary);
   font-size: 13px;
 }
 
 .suppression-panel mat-panel-title mat-icon {
-  color: #9c27b0;
+  color: var(--color-secondary);
   font-size: 20px;
   width: 20px;
   height: 20px;
@@ -1440,18 +1440,18 @@ mat-card-actions {
 .suppression-details .label {
   font-size: 12px;
   font-weight: 500;
-  color: #7b1fa2;
+  color: var(--color-secondary);
 }
 
 .suppression-details code.value {
   font-family: 'Roboto Mono', monospace;
   font-size: 11px;
-  background-color: #ede7f6;
+  background-color: var(--bg-surface-elevated);
   padding: 8px 12px;
   border-radius: 4px;
   word-break: break-all;
   white-space: pre-wrap;
-  color: #4a148c;
+  color: var(--text-primary);
 }
 
 /* Chip List for Error Types */
@@ -1464,8 +1464,8 @@ mat-card-actions {
 .chip-list .chip {
   display: inline-block;
   padding: 4px 10px;
-  background-color: #e1bee7;
-  color: #6a1b9a;
+  background-color: var(--border-color);
+  color: var(--color-secondary);
   border-radius: 12px;
   font-size: 11px;
   font-weight: 500;
@@ -1478,17 +1478,17 @@ mat-card-actions {
   gap: 8px;
   margin-top: 12px;
   padding: 8px 12px;
-  background-color: #ede7f6;
+  background-color: var(--bg-surface-elevated);
   border-radius: 4px;
   font-size: 11px;
-  color: #6a1b9a;
+  color: var(--text-secondary);
 }
 
 .suppression-note mat-icon {
   font-size: 16px;
   width: 16px;
   height: 16px;
-  color: #9c27b0;
+  color: var(--color-secondary);
 }
 
 /* Responsive for debug tools */
@@ -1609,7 +1609,7 @@ mat-card-actions {
 }
 
 .status-card mat-card-title mat-icon {
-  color: #7b1fa2;
+  color: var(--color-secondary);
 }
 
 /* Debug Card */
@@ -1620,7 +1620,7 @@ mat-card-actions {
 }
 
 .debug-card mat-card-title mat-icon {
-  color: #ff9800;
+  color: var(--status-warning-icon);
 }
 
 /* Environment Section */
@@ -1640,7 +1640,7 @@ mat-card-actions {
 }
 
 .section-subtitle mat-icon {
-  color: #1976d2;
+  color: var(--color-primary);
   font-size: 18px;
   width: 18px;
   height: 18px;
@@ -1677,5 +1677,40 @@ mat-card-actions {
   .config-tab-group ::ng-deep .mat-mdc-tab {
     min-width: 48px;
     padding: 0 8px;
+  }
+}
+
+/* Per-subprocess-type override rows */
+.type-override-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border-color, rgba(0,0,0,0.08));
+}
+
+.type-override-row:last-child {
+  border-bottom: none;
+}
+
+.type-label {
+  min-width: 120px;
+  color: var(--text-primary);
+  font-size: 14px;
+}
+
+.type-heap-input {
+  flex: 1;
+  max-width: 200px;
+}
+
+@media (max-width: 700px) {
+  .type-override-row {
+    flex-wrap: wrap;
+  }
+
+  .type-heap-input {
+    max-width: 100%;
+    width: 100%;
   }
 }

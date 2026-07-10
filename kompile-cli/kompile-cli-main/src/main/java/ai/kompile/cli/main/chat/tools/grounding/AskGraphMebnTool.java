@@ -10,7 +10,6 @@
 package ai.kompile.cli.main.chat.tools.grounding;
 
 import ai.kompile.cli.main.chat.tools.CliTool;
-import ai.kompile.cli.main.chat.tools.KompileBackendClient;
 import ai.kompile.cli.main.chat.tools.McpToolAnnotations;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolExecutionException;
@@ -19,11 +18,10 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
-import java.net.ConnectException;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
-import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -45,15 +43,28 @@ public class AskGraphMebnTool implements CliTool {
     /** Maximum number of variables shown in the formatted summary. */
     static final int MAX_VARIABLES_DISPLAY = 10;
 
-    private final KompileBackendClient backend;
+    private final GroundingBackendClient groundingClient;
     private final ObjectMapper objectMapper;
 
     public AskGraphMebnTool(String baseUrl, ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
-        this.backend = KompileBackendClient.getInstance();
-        if (baseUrl != null && !baseUrl.isEmpty()) {
-            backend.setBaseUrl(baseUrl);
-        }
+        this.groundingClient = new GroundingBackendClient(baseUrl);
+    }
+
+    /** Visible for testing — lets a {@code MockRestServiceServer} intercept HTTP calls. */
+    AskGraphMebnTool(GroundingBackendClient groundingClient, ObjectMapper objectMapper) {
+        this.objectMapper = objectMapper;
+        this.groundingClient = groundingClient;
+    }
+
+    @Override
+    public String compactHint() {
+        return "Probabilistic network reasoning anchored at a graph node. "
+                + "nodeId = graph node UUID — find it with knowledge_graph search_nodes or list_nodes. "
+                + "Returns updated probability estimates for all related nodes reachable within maxDepth hops, "
+                + "showing before/after probability deltas sorted by how much each changed. "
+                + "factSheetId optional — discover via knowledge_graph list_fact_sheets; omit for the global graph. "
+                + "Output: prior→posterior deltas for each related node; biggest deltas = most influenced by the anchor.";
     }
 
     @Override
@@ -86,6 +97,13 @@ public class AskGraphMebnTool implements CliTool {
                 .put("type", "integer")
                 .put("description", "Maximum number of nodes to include in the reasoning subgraph. Default: 100.")
                 .put("default", 100);
+        props.putObject("factSheetId")
+                .put("type", "integer")
+                .put("description", "Optional fact sheet ID to scope MEBN inference. " +
+                        "When provided, nodes discovered during BFS are filtered to those belonging " +
+                        "to this fact sheet, preventing cross-sheet contamination. " +
+                        "Omit to use the global/default graph. " +
+                        "Use knowledge_graph action=list_fact_sheets to discover valid IDs.");
 
         schema.putArray("required").add("nodeId");
         return schema;
@@ -106,20 +124,25 @@ public class AskGraphMebnTool implements CliTool {
             return ToolResult.error("nodeId is required");
         }
 
-        if (!backend.isAvailable()) {
+        if (!groundingClient.isAvailable()) {
             return ToolResult.error("ask_graph_mebn requires a running kompile-app.");
         }
 
         int maxDepth = params.path("maxDepth").asInt(3);
         int maxNodes = params.path("maxNodes").asInt(100);
+        long factSheetId = params.path("factSheetId").asLong(0);
 
         try {
-            String path = "/api/attribution/bayesian/mebn/query"
-                    + "?nodeId=" + URLEncoder.encode(nodeId, StandardCharsets.UTF_8)
-                    + "&maxDepth=" + maxDepth
-                    + "&maxNodes=" + maxNodes;
+            StringBuilder pathBuilder = new StringBuilder("/api/attribution/bayesian/mebn/query")
+                    .append("?nodeId=").append(URLEncoder.encode(nodeId, StandardCharsets.UTF_8))
+                    .append("&maxDepth=").append(maxDepth)
+                    .append("&maxNodes=").append(maxNodes);
+            if (factSheetId > 0) {
+                pathBuilder.append("&factSheetId=").append(factSheetId);
+            }
+            String path = pathBuilder.toString();
 
-            var resp = backend.get(path, Duration.ofSeconds(30));
+            var resp = groundingClient.get(path);
 
             if (resp.statusCode() != 200) {
                 return ToolResult.error("ask_graph_mebn failed (HTTP " + resp.statusCode() + "): "
@@ -135,14 +158,17 @@ public class AskGraphMebnTool implements CliTool {
 
             int totalVars = posteriors.isObject() ? posteriors.size() : 0;
 
+            Map<String, Object> metadata = new LinkedHashMap<>();
+            metadata.put("nodeId", nodeId);
+            metadata.put("totalVariables", totalVars);
+            metadata.put("computationTimeMs", computationTimeMs);
+            if (factSheetId > 0) metadata.put("factSheetId", factSheetId);
+
             return ToolResult.success("ask_graph_mebn: " + nodeId,
                     formatMebnResult(nodeId, posteriors, priors, variableToTitle,
                             variableToMebnMeta, totalVars, computationTimeMs),
-                    Map.of("nodeId", nodeId, "totalVariables", totalVars,
-                            "computationTimeMs", computationTimeMs));
+                    metadata);
 
-        } catch (ConnectException e) {
-            return ToolResult.error("Cannot connect to kompile-app. " + e.getMessage());
         } catch (Exception e) {
             return ToolResult.error("ask_graph_mebn error: " + e.getMessage());
         }

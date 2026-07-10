@@ -195,7 +195,7 @@ public class OrphanPruner {
         // (but no entity-to-entity edges yet) is incorrectly classified as an orphan and
         // soft-deleted — causing the node count to plummet during early/cold-start crawls where
         // cross-document shared-entity edges have not yet been computed.
-        for (NodeLevel anchorLevel : java.util.List.of(NodeLevel.DOCUMENT, NodeLevel.TABLE)) {
+        for (NodeLevel anchorLevel : List.of(NodeLevel.DOCUMENT, NodeLevel.TABLE)) {
             knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, anchorLevel).stream()
                     .filter(n -> !Boolean.TRUE.equals(n.getStale()))
                     .forEach(n -> graph.addEntity(n.getNodeId(), nodeType(n), nodeLabel(n)));

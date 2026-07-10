@@ -15,6 +15,7 @@
  */
 package ai.kompile.graph.reasoning.mebn.type;
 
+import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -40,7 +41,7 @@ import java.util.Optional;
  *
  * <p>Instances are immutable once built. Use the {@link Builder} to construct them.</p>
  */
-public final class TypeAttributeSchema {
+public final class TypeAttributeSchema implements Serializable {
 
     /** An empty schema (no declared attributes). Returned when no schema has been declared. */
     public static final TypeAttributeSchema EMPTY = new TypeAttributeSchema(Map.of(), List.of());

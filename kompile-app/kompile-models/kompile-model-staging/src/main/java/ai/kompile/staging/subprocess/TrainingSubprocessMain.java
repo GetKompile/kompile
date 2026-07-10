@@ -18,25 +18,36 @@ package ai.kompile.staging.subprocess;
 
 import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.eclipse.deeplearning4j.llm.tokenizer.Encoding;
+import org.eclipse.deeplearning4j.llm.tokenizer.HuggingFaceTokenizer;
+import org.eclipse.deeplearning4j.llm.tokenizer.Tokenizer;
 import org.nd4j.autodiff.loss.LossReduce;
 import org.nd4j.autodiff.samediff.SDVariable;
 import org.nd4j.autodiff.samediff.SameDiff;
 import org.nd4j.autodiff.samediff.TrainingConfig;
 import org.nd4j.autodiff.samediff.VariableType;
+import org.nd4j.autodiff.samediff.config.LoraConfig;
+import org.nd4j.autodiff.samediff.config.QLoraConfig;
+import org.nd4j.autodiff.samediff.config.TaskType;
 import org.nd4j.autodiff.samediff.execution.DspHandle;
+import org.nd4j.autodiff.samediff.peft.PeftModel;
 import org.nd4j.linalg.api.buffer.DataType;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.dataset.MultiDataSet;
 import org.nd4j.linalg.factory.Nd4j;
+import org.nd4j.linalg.api.ops.impl.loss.DistillationKLLoss;
 import org.nd4j.linalg.learning.config.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.Instant;
 import java.util.*;
 
 /**
@@ -57,9 +68,33 @@ public class TrainingSubprocessMain {
 
     private static final Logger logger = LoggerFactory.getLogger(TrainingSubprocessMain.class);
     private static final ObjectMapper OBJECT_MAPPER = JsonUtils.standardMapper();
+    private static final String TRAINING_ARTIFACT_SCHEMA_VERSION = "kompile.training-artifact.v1";
+    private static final String TRAINING_ARTIFACT_MANIFEST_FILE = "training-artifact.json";
+    private static final String DISTILLATION_TEACHER_LOGITS = "distillation_teacher_logits";
+    private static final String DISTILLATION_LOSS = "distillation_loss";
+    private static final int MIN_TRAINING_BATCH_SIZE = 1;
+    private static final int MAX_TRAINING_STEP_RETRIES = 3;
+    private static final long INITIAL_TRAINING_RETRY_BACKOFF_MS = 250L;
+    private static final int MAX_DATASET_ROWS_IN_MEMORY = 4096;
+    private static final List<String> INPUT_FIELD_CANDIDATES = List.of(
+            "input", "prompt", "instruction", "question", "text", "context", "source", "chosen");
+    private static final List<String> OUTPUT_FIELD_CANDIDATES = List.of(
+            "output", "response", "completion", "answer", "label", "labels", "label_ids",
+            "target", "reference", "references");
+    private static final List<String> CHOSEN_FIELD_CANDIDATES = List.of(
+            "chosen", "preferred", "accepted", "positive", "response_chosen");
+    private static final List<String> REJECTED_FIELD_CANDIDATES = List.of(
+            "rejected", "non_preferred", "negative", "response_rejected");
+    private static final List<String> SCORE_FIELD_CANDIDATES = List.of(
+            "score", "reward", "rating", "preference", "label");
+    private static final List<String> NUMERIC_VECTOR_FIELD_CANDIDATES = List.of(
+            "features", "feature", "input_ids", "tokens", "values", "vector", "embedding", "labels", "label_ids");
+    private static final Map<String, DatasetView> DATASET_CACHE = new HashMap<>();
+    private static final Map<String, Integer> DATASET_CURSORS = new HashMap<>();
 
     private static PrintStream originalStdout;
     private static volatile TrainingSubprocessArgs currentArgs;
+    private static volatile Tokenizer trainingTokenizer;
 
     public static TrainingSubprocessArgs getCurrentArgs() {
         return currentArgs;
@@ -121,6 +156,7 @@ public class TrainingSubprocessMain {
             }
             System.exit(1);
         } finally {
+            closeTrainingTokenizer();
             if (reporter != null) {
                 reporter.close();
             }
@@ -195,13 +231,12 @@ public class TrainingSubprocessMain {
         SameDiff sd = loadSameDiffModel(args, reporter);
         if (sd != null) {
             try {
-                runSameDiffTraining(sd, args, reporter, "finetune", null);
+                runSameDiffTraining(sd, args, reporter, "finetune", null, null);
             } finally {
                 closeSameDiff(sd);
             }
         } else {
-            reporter.reportLog("INFO", "No SameDiff model available, running simulation");
-            runSimulatedTraining(args, reporter, "finetune");
+            throw missingTrainingModel("finetune", args);
         }
     }
 
@@ -211,119 +246,91 @@ public class TrainingSubprocessMain {
                                      TrainingSubprocessProgressReporter reporter) throws Exception {
         reporter.reportLog("INFO", "Executing LoRA training for model: " + args.modelId());
 
-        // Parse LoRA config
         Map<String, Object> peftConfig = parseJsonConfig(args.peftConfigJson());
-        int rank = getIntFromConfig(peftConfig, "rank", 8);
-        double alpha = getDoubleFromConfig(peftConfig, "alpha", 16.0);
-        double dropout = getDoubleFromConfig(peftConfig, "dropout", 0.05);
-        List<String> targetModules = getStringListFromConfig(peftConfig, "targetModules");
-        String peftType = getStringFromConfig(peftConfig, "peftType", "LORA");
+        LoraConfig loraConfig = buildLoraConfig(peftConfig);
+        reporter.reportLog("INFO", "PEFT config: " + loraConfig.getSummary());
 
-        reporter.reportLog("INFO", String.format("LoRA config: rank=%d, alpha=%.1f, dropout=%.3f, peftType=%s",
-                rank, alpha, dropout, peftType));
-        if (targetModules != null && !targetModules.isEmpty()) {
-            reporter.reportLog("INFO", "Target modules: " + targetModules);
+        SameDiff baseModel = loadSameDiffModel(args, reporter);
+        if (baseModel == null) {
+            throw missingTrainingModel("lora", args);
         }
 
-        SameDiff sd = loadSameDiffModel(args, reporter);
-        if (sd != null) {
-            try {
-                // Identify weight variables and apply LoRA decomposition
-                applyLoraAdapters(sd, rank, alpha, dropout, targetModules, reporter);
-                runSameDiffTraining(sd, args, reporter, "lora", peftConfig);
-            } finally {
-                closeSameDiff(sd);
+        PeftModel peftModel = null;
+        try {
+            // PeftModel performs the graph rewrite and freezes base parameters. Merely
+            // adding A/B variables leaves them disconnected from the forward pass.
+            peftModel = PeftModel.fromPretrained(baseModel, loraConfig);
+            if (peftModel.getTrainableParameterCount() == 0) {
+                throw new IllegalStateException("No model variables matched LoRA target modules "
+                        + loraConfig.getTargetModules());
             }
-        } else {
-            reporter.reportLog("INFO", "No SameDiff model available, running LoRA simulation");
-            runSimulatedLoraTraining(args, reporter, peftConfig);
+            reporter.reportLog("INFO", String.format(
+                    "LoRA graph ready: trainable=%d, total=%d (%.4f%%)",
+                    peftModel.getTrainableParameterCount(),
+                    peftModel.getTotalParameterCount(),
+                    peftModel.getTrainablePercentage()));
+
+            runSameDiffTraining(peftModel.getModel(), args, reporter, "lora", peftConfig, peftModel);
+        } finally {
+            if (peftModel != null) {
+                closeSameDiff(peftModel.getModel());
+            }
+            closeSameDiff(baseModel);
         }
     }
 
-    /**
-     * Apply LoRA low-rank decomposition to target weight matrices in the SameDiff graph.
-     *
-     * For each target weight W of shape [in, out], we:
-     * 1. Freeze the original weight (remove from training variables)
-     * 2. Create A matrix of shape [in, rank] (initialized with Kaiming uniform)
-     * 3. Create B matrix of shape [rank, out] (initialized to zeros)
-     * 4. Create the adapted output: W*x + (alpha/rank) * (B @ A @ x)
-     *
-     * Only A and B are trainable, reducing trainable parameters significantly.
-     */
-    private static void applyLoraAdapters(SameDiff sd, int rank, double alpha, double dropout,
-                                           List<String> targetModules,
-                                           TrainingSubprocessProgressReporter reporter) {
-        double scalingFactor = alpha / rank;
-        List<SDVariable> allVars = sd.variables();
-        int adaptedCount = 0;
+    @SuppressWarnings("unchecked")
+    private static LoraConfig buildLoraConfig(Map<String, Object> peftConfig) {
+        String peftType = getStringFromConfig(peftConfig, "peftType", "LORA").toUpperCase(Locale.ROOT);
+        String nestedKey = "QLORA".equals(peftType) ? "qloraConfig" : "loraConfig";
+        Map<String, Object> options = nestedMap(peftConfig, nestedKey);
 
-        for (SDVariable var : allVars) {
-            if (var.getVariableType() != VariableType.VARIABLE) continue;
+        int rank = positiveOrDefault(
+                getIntFromConfig(options, "rank", getIntFromConfig(peftConfig, "rank", 8)), 8);
+        int alpha = positiveOrDefault((int) Math.round(
+                getDoubleFromConfig(options, "alpha", getDoubleFromConfig(peftConfig, "alpha", rank * 2.0))),
+                rank * 2);
+        double dropout = getDoubleFromConfig(options, "dropout",
+                getDoubleFromConfig(peftConfig, "dropout", 0.05));
+        List<String> targetModules = getStringListFromConfig(options, "targetModules");
+        if (targetModules == null || targetModules.isEmpty()) {
+            targetModules = getStringListFromConfig(peftConfig, "targetModules");
+        }
+        if (targetModules == null || targetModules.isEmpty()) {
+            targetModules = LoraConfig.TRANSFORMER_ALL_LINEAR;
+        }
+        String bias = getStringFromConfig(options, "bias", "none");
 
-            String name = var.name();
-            long[] shape = var.getShape();
-            if (shape == null || shape.length != 2) continue;
-
-            // Check if this variable matches target modules
-            if (targetModules != null && !targetModules.isEmpty()) {
-                boolean matches = false;
-                for (String target : targetModules) {
-                    if (name.contains(target)) {
-                        matches = true;
-                        break;
-                    }
-                }
-                if (!matches) continue;
-            } else {
-                // Default: target weight matrices (query, key, value projections)
-                String lower = name.toLowerCase();
-                if (!lower.contains("weight") && !lower.contains("query") &&
-                    !lower.contains("key") && !lower.contains("value") &&
-                    !lower.contains("dense") && !lower.contains("linear")) {
-                    continue;
-                }
-            }
-
-            long inFeatures = shape[0];
-            long outFeatures = shape[1];
-
-            // Skip if rank is larger than either dimension
-            if (rank >= inFeatures || rank >= outFeatures) continue;
-
-            // Create LoRA A matrix: [in, rank] - Kaiming uniform initialization
-            double bound = Math.sqrt(1.0 / rank);
-            INDArray loraAData = Nd4j.rand(DataType.FLOAT, inFeatures, rank).muli(2 * bound).subi(bound);
-            SDVariable loraA = sd.var(name + "_lora_A", loraAData);
-
-            // Create LoRA B matrix: [rank, out] - initialized to zeros
-            INDArray loraBData = Nd4j.zeros(DataType.FLOAT, rank, outFeatures);
-            SDVariable loraB = sd.var(name + "_lora_B", loraBData);
-
-            reporter.reportLog("INFO", String.format("LoRA adapter applied to %s [%d, %d] -> rank %d (%.1f%% params)",
-                    name, inFeatures, outFeatures, rank,
-                    100.0 * (inFeatures * rank + rank * outFeatures) / (inFeatures * outFeatures)));
-            adaptedCount++;
+        if ("QLORA".equals(peftType)) {
+            String quantType = getStringFromConfig(options, "quantType", "nf4");
+            int bits = positiveOrDefault(getIntFromConfig(options, "bits", 4), 4);
+            boolean doubleQuant = getBooleanFromConfig(options, "doubleQuant", true);
+            DataType computeType = parseDataType(
+                    getStringFromConfig(options, "computeDtype", "bfloat16"), DataType.BFLOAT16);
+            return QLoraConfig.builder()
+                    .r(rank)
+                    .loraAlpha(alpha)
+                    .loraDropout(dropout)
+                    .targetModules(targetModules)
+                    .bias(bias)
+                    .bits(bits)
+                    .quantType(quantType)
+                    .doubleQuant(doubleQuant)
+                    .computeDataType(computeType)
+                    .loraDataType(computeType)
+                    .taskType(TaskType.CAUSAL_LM)
+                    .build();
         }
 
-        if (adaptedCount == 0) {
-            reporter.reportLog("WARN", "No weight matrices matched for LoRA adaptation. " +
-                    "Check targetModules configuration or model variable names.");
-        } else {
-            long totalLoraParams = 0;
-            for (SDVariable var : sd.variables()) {
-                if (var.name().contains("_lora_") && var.getVariableType() == VariableType.VARIABLE) {
-                    long[] s = var.getShape();
-                    if (s != null) {
-                        long params = 1;
-                        for (long d : s) params *= d;
-                        totalLoraParams += params;
-                    }
-                }
-            }
-            reporter.reportLog("INFO", String.format("LoRA applied to %d weight matrices, %d trainable adapter parameters",
-                    adaptedCount, totalLoraParams));
-        }
+        return LoraConfig.builder()
+                .r(rank)
+                .loraAlpha(alpha)
+                .loraDropout(dropout)
+                .targetModules(targetModules)
+                .bias(bias)
+                .initLoraWeights(getStringFromConfig(options, "initMethod", "kaiming_uniform"))
+                .taskType(TaskType.CAUSAL_LM)
+                .build();
     }
 
     // ==================== Knowledge Distillation ====================
@@ -346,10 +353,26 @@ public class TrainingSubprocessMain {
         reporter.reportLog("INFO", "Student model: " + studentModelId);
 
         SameDiff teacherSd = null;
-        SameDiff studentSd = null;
+        SameDiff studentBase = null;
+        PeftModel studentPeft = null;
 
         try {
-            studentSd = loadSameDiffModel(args, reporter);
+            studentBase = loadSameDiffModel(args, reporter);
+            SameDiff studentTrainingModel = studentBase;
+            if (studentBase != null && args.peftConfigJson() != null && !args.peftConfigJson().isBlank()) {
+                LoraConfig studentPeftConfig = buildLoraConfig(parseJsonConfig(args.peftConfigJson()));
+                studentPeft = PeftModel.fromPretrained(studentBase, studentPeftConfig);
+                if (studentPeft.getTrainableParameterCount() == 0) {
+                    throw new IllegalStateException("No student variables matched PEFT target modules "
+                            + studentPeftConfig.getTargetModules());
+                }
+                studentTrainingModel = studentPeft.getModel();
+                reporter.reportLog("INFO", String.format(
+                        "Student PEFT graph ready: trainable=%d, total=%d (%.4f%%)",
+                        studentPeft.getTrainableParameterCount(),
+                        studentPeft.getTotalParameterCount(),
+                        studentPeft.getTrainablePercentage()));
+            }
 
             if (teacherModelId != null && !teacherModelId.isEmpty()) {
                 File teacherFile = resolveModelFile(teacherModelId);
@@ -361,70 +384,134 @@ public class TrainingSubprocessMain {
                 }
             }
 
-            if (studentSd != null && teacherSd != null) {
-                runSameDiffDistillation(teacherSd, studentSd, args, reporter, distillConfig);
-            } else if (studentSd != null) {
-                reporter.reportLog("WARN", "Teacher model not available, training student with standard loss");
-                runSameDiffTraining(studentSd, args, reporter, "distillation", distillConfig);
+            if (studentTrainingModel != null && teacherSd != null) {
+                runSameDiffDistillation(
+                        teacherSd, studentTrainingModel, args, reporter, distillConfig, studentPeft);
+            } else if (studentTrainingModel != null) {
+                throw new IllegalStateException(
+                        "Teacher SameDiff model is required for distillation training: " + teacherModelId);
             } else {
-                reporter.reportLog("INFO", "No SameDiff models available, running distillation simulation");
-                runSimulatedDistillation(args, reporter, distillConfig);
+                throw missingTrainingModel("distillation", args);
             }
         } finally {
-            if (teacherSd != null) closeSameDiff(teacherSd);
-            if (studentSd != null) closeSameDiff(studentSd);
+            closeSameDiff(teacherSd);
+            if (studentPeft != null) {
+                closeSameDiff(studentPeft.getModel());
+            }
+            closeSameDiff(studentBase);
         }
     }
 
     /**
-     * Run actual distillation training with teacher and student SameDiff models.
-     * The teacher provides soft targets via temperature-scaled output distributions.
-     * The student is trained with a combination of:
-     *   - KD loss: KL divergence between teacher and student soft logits
-     *   - Task loss: standard cross-entropy on hard labels
-     * Combined loss = alpha * KD_loss + (1-alpha) * task_loss
+     * Run logit distillation with teacher and student SameDiff models.
+     * The teacher produces raw logits and the student graph owns a
+     * temperature-scaled {@link DistillationKLLoss} objective.
      */
     private static void runSameDiffDistillation(SameDiff teacher, SameDiff student,
                                                   TrainingSubprocessArgs args,
                                                   TrainingSubprocessProgressReporter reporter,
-                                                  Map<String, Object> distillConfig) throws Exception {
+                                                  Map<String, Object> distillConfig,
+                                                  PeftModel studentPeft) throws Exception {
         double temperature = getDoubleFromConfig(distillConfig, "temperature", 4.0);
-        double kdAlpha = getDoubleFromConfig(distillConfig, "alpha", 0.5);
+        double kdAlpha = getDoubleFromConfig(distillConfig, "alpha", 1.0);
         String distillationType = getStringFromConfig(distillConfig, "distillationType", "LOGIT_KD");
+        if (!"LOGIT_KD".equalsIgnoreCase(distillationType)) {
+            throw new UnsupportedOperationException(
+                    "Training subprocess currently supports LOGIT_KD; requested " + distillationType);
+        }
+        if (temperature <= 0.0) {
+            throw new IllegalArgumentException("Distillation temperature must be positive");
+        }
+        if (Math.abs(kdAlpha - 1.0) > 1.0e-12) {
+            throw new UnsupportedOperationException(
+                    "LOGIT_KD currently implements a pure KL objective and requires alpha=1.0");
+        }
 
         reporter.reportLog("INFO", "Setting up distillation training...");
 
-        // Get input/output names from student model
+        // Get input/output names before adding the distillation loss output.
         List<String> studentInputs = student.inputs();
-        List<String> studentOutputs = student.outputs();
+        List<String> teacherInputs = teacher.inputs();
+        List<String> studentOutputs = new ArrayList<>(student.outputs());
+        List<String> teacherOutputs = new ArrayList<>(teacher.outputs());
         reporter.reportLog("INFO", "Student inputs: " + studentInputs + ", outputs: " + studentOutputs);
+        reporter.reportLog("INFO", "Teacher inputs: " + teacherInputs + ", outputs: " + teacherOutputs);
+        if (studentInputs.isEmpty() || studentOutputs.isEmpty()) {
+            throw new IllegalStateException("Student model must expose at least one input and one logits output");
+        }
+        if (teacherInputs.isEmpty() || teacherOutputs.isEmpty()) {
+            throw new IllegalStateException("Teacher model must expose at least one input and one logits output");
+        }
+        String teacherLogitsName = getStringFromConfig(
+                distillConfig, "teacherLogitVariable", teacherOutputs.get(0));
+        if (teacher.getVariable(teacherLogitsName) == null) {
+            throw new IllegalArgumentException("Teacher logits variable not found: " + teacherLogitsName);
+        }
+        teacherOutputs = List.of(teacherLogitsName);
 
-        List<String> teacherOutputs = teacher.outputs();
-        reporter.reportLog("INFO", "Teacher outputs: " + teacherOutputs);
+        String studentLogitsName = getStringFromConfig(
+                distillConfig, "studentLogitVariable", studentOutputs.get(0));
+        SDVariable studentLogits = student.getVariable(studentLogitsName);
+        if (studentLogits == null) {
+            throw new IllegalArgumentException("Student logits variable not found: " + studentLogitsName);
+        }
+        long[] teacherLogitShape = validateDistillationCompatibility(
+                teacher, student, args, teacherInputs, studentInputs,
+                teacherLogitsName, studentLogitsName, reporter);
+        long[] declaredStudentShape = studentLogits.getShape();
+        if (declaredStudentShape != null && declaredStudentShape.length == teacherLogitShape.length) {
+            for (int i = 1; i < teacherLogitShape.length; i++) {
+                if (declaredStudentShape[i] > 0) teacherLogitShape[i] = declaredStudentShape[i];
+            }
+        }
+        if (teacherLogitShape.length > 0) {
+            teacherLogitShape[0] = -1;
+        }
+        SDVariable teacherLogits = student.placeHolder(
+                DISTILLATION_TEACHER_LOGITS, studentLogits.dataType(), teacherLogitShape);
+        SDVariable studentLossLogits = studentLogits;
+        SDVariable teacherLossLogits = teacherLogits;
+        if (teacherLogitShape.length > 2) {
+            long classes = teacherLogitShape[teacherLogitShape.length - 1];
+            if (classes <= 0) {
+                throw new IllegalArgumentException(
+                        "Cannot flatten distillation logits with unknown class dimension: "
+                                + Arrays.toString(teacherLogitShape));
+            }
+            studentLossLogits = studentLogits.reshape(-1, classes);
+            teacherLossLogits = teacherLogits.reshape(-1, classes);
+        }
+        SDVariable distillationLoss = new DistillationKLLoss(
+                student, studentLossLogits, teacherLossLogits, temperature, kdAlpha)
+                .outputVariable()
+                .rename(DISTILLATION_LOSS);
+        student.setLossVariables(distillationLoss);
+        student.invalidateGradFunction();
 
-        // Configure student training with standard optimizer
+        // Train directly against raw teacher logits, matching the DL4J
+        // DistillationKLLoss contract (the op applies temperature scaling itself).
         IUpdater updater = createUpdater(args);
         TrainingConfig config = TrainingConfig.builder()
                 .updater(updater)
                 .initialLossDataType(DataType.FLOAT)
                 .dataSetFeatureMapping(studentInputs.toArray(new String[0]))
-                .dataSetLabelMapping("distill_labels")
+                .dataSetLabelMapping(DISTILLATION_TEACHER_LOGITS)
+                .skipBuilderValidation(true)
                 .build();
         student.setTrainingConfig(config);
 
         // Training loop
         int epochs = args.epochs();
-        int batchSize = args.batchSize();
+        int effectiveBatchSize = Math.max(MIN_TRAINING_BATCH_SIZE, args.batchSize());
         int loggingSteps = args.loggingSteps() > 0 ? args.loggingSteps() : 10;
         int saveSteps = args.saveSteps() > 0 ? args.saveSteps() : 500;
-        long stepsPerEpoch = 500;
+        long stepsPerEpoch = datasetStepsPerEpoch(args, effectiveBatchSize);
         long totalSteps = args.maxSteps() > 0 ? args.maxSteps() : stepsPerEpoch * epochs;
         long globalStep = 0;
+        double lastStudentLoss = Double.NaN;
 
-        reporter.reportLog("INFO", String.format("Distillation: %d epochs, %d steps/epoch, %d total steps",
-                epochs, stepsPerEpoch, totalSteps));
-
-        Random rng = new Random(args.seed());
+        reporter.reportLog("INFO", String.format("Distillation: %d epochs, %d steps/epoch, %d total steps, batchSize=%d",
+                epochs, stepsPerEpoch, totalSteps, effectiveBatchSize));
 
         for (int epoch = 0; epoch < epochs; epoch++) {
             if (Thread.currentThread().isInterrupted()) {
@@ -438,35 +525,12 @@ public class TrainingSubprocessMain {
                 if (Thread.currentThread().isInterrupted()) return;
                 globalStep++;
 
-                // Create synthetic batch for distillation
-                int seqLen = 128;
-                INDArray inputIds = Nd4j.createFromArray(
-                        generateRandomIntBatch(rng, batchSize, seqLen, 30000));
-                INDArray attentionMask = Nd4j.ones(DataType.FLOAT, batchSize, seqLen);
-
-                // Get teacher soft targets
-                Map<String, INDArray> teacherInputs = new LinkedHashMap<>();
-                if (teacher.inputs().size() > 0) teacherInputs.put(teacher.inputs().get(0), inputIds);
-                if (teacher.inputs().size() > 1) teacherInputs.put(teacher.inputs().get(1), attentionMask);
-
-                Map<String, INDArray> teacherOut = teacher.output(teacherInputs,
-                        teacherOutputs.toArray(new String[0]));
-
-                // Apply temperature scaling to teacher logits
-                INDArray teacherLogits = teacherOut.get(teacherOutputs.get(0));
-                INDArray softTargets = softmax(teacherLogits.div(temperature));
-
-                // Train student with soft targets
-                INDArray[] features = studentInputs.size() > 1
-                        ? new INDArray[]{inputIds, attentionMask}
-                        : new INDArray[]{inputIds};
-                INDArray[] labels = new INDArray[]{softTargets};
-
-                MultiDataSet mds = new MultiDataSet(features, labels);
-                student.fit(mds);
-
-                // Compute loss for reporting (student output vs soft targets)
-                double studentLoss = computeKLDivergence(student, studentInputs, features, softTargets, temperature);
+                TrainingStepResult stepResult = fitDistillationStepWithRetry(
+                        teacher, student, studentInputs, teacherOutputs,
+                        effectiveBatchSize, reporter, globalStep);
+                double studentLoss = stepResult.loss();
+                lastStudentLoss = studentLoss;
+                effectiveBatchSize = stepResult.batchSize();
 
                 double progress = (double) globalStep / totalSteps;
                 double currentLr = computeLearningRate(args.learningRate(), progress, args.lrSchedule(), args.warmupRatio());
@@ -480,15 +544,16 @@ public class TrainingSubprocessMain {
                 if (globalStep % loggingSteps == 0 || globalStep == 1) {
                     Map<String, Double> stepMetrics = new LinkedHashMap<>();
                     stepMetrics.put("student_loss", studentLoss);
-                    stepMetrics.put("kd_loss", studentLoss * kdAlpha);
+                    stepMetrics.put("kd_loss", studentLoss);
                     stepMetrics.put("temperature", temperature);
                     stepMetrics.put("learning_rate", currentLr);
 
-                    reportStepMetrics(reporter, student, globalStep, epoch + 1, studentLoss, studentLoss * 1.1,
-                            currentLr, 0.0, batchSize * 512.0, batchSize, stepMetrics);
+                    stepMetrics.put("effective_batch_size", (double) effectiveBatchSize);
+                    reportStepMetrics(reporter, student, globalStep, epoch + 1, studentLoss, studentLoss,
+                            currentLr, 0.0, effectiveBatchSize * 512.0, effectiveBatchSize, stepMetrics);
                     reporter.reportLog("INFO", String.format(
-                            "Step %d/%d | Student loss: %.4f | KD loss: %.4f | LR: %.2e",
-                            globalStep, totalSteps, studentLoss, studentLoss * kdAlpha, currentLr));
+                            "Step %d/%d | Student loss: %.4f | KD loss: %.4f | LR: %.2e | Batch: %d",
+                            globalStep, totalSteps, studentLoss, studentLoss, currentLr, effectiveBatchSize));
                 }
 
                 // Save checkpoint
@@ -498,12 +563,6 @@ public class TrainingSubprocessMain {
                     student.save(new File(cpPath, "student_model.fb"), true);
                     reporter.reportCheckpointSaved(globalStep, epoch + 1, cpPath, studentLoss);
                 }
-
-                // Cleanup batch arrays
-                inputIds.close();
-                attentionMask.close();
-                softTargets.close();
-                for (INDArray arr : teacherOut.values()) arr.close();
 
                 sleepOrInterrupt(50, reporter);
                 if (args.maxSteps() > 0 && globalStep >= args.maxSteps()) break;
@@ -517,14 +576,42 @@ public class TrainingSubprocessMain {
         String outputPath = resolveOutputPath(args);
         new File(outputPath).mkdirs();
         student.save(new File(outputPath, "student_model.fb"), true);
+        String deployableModelFile = "student_model.fb";
+        if (studentPeft != null) {
+            File adapterDir = new File(outputPath, "adapter");
+            studentPeft.saveAdapter(adapterDir);
+            reporter.reportLog("INFO", "Saved distilled student adapter to: "
+                    + adapterDir.getAbsolutePath());
 
+            SameDiff merged = studentPeft.mergeAndUnload();
+            try {
+                deployableModelFile = "merged_student_model.fb";
+                merged.save(new File(outputPath, deployableModelFile), true);
+                reporter.reportLog("INFO", "Saved merged distilled student to: "
+                        + new File(outputPath, deployableModelFile).getAbsolutePath());
+            } finally {
+                closeSameDiff(merged);
+            }
+        }
+
+        validateFiniteMetric("final distillation loss", lastStudentLoss);
         Map<String, Double> finalMetrics = new LinkedHashMap<>();
+        finalMetrics.put("final_student_loss", lastStudentLoss);
+        finalMetrics.put("final_kd_loss", lastStudentLoss);
+        finalMetrics.put("temperature", temperature);
+        finalMetrics.put("alpha", kdAlpha);
         finalMetrics.put("total_steps", (double) globalStep);
-        finalMetrics.put("distillation_type", 0.0);
+        if (studentPeft != null) {
+            finalMetrics.put("trainable_parameters", (double) studentPeft.getTrainableParameterCount());
+            finalMetrics.put("total_parameters", (double) studentPeft.getTotalParameterCount());
+            finalMetrics.put("merged_adapter", 1.0);
+        }
+        Path manifestPath = writeTrainingArtifactManifest(args, "distillation", outputPath,
+                deployableModelFile, finalMetrics, distillConfig);
 
         reporter.reportPhaseTransition("TRAINING", "COMPLETED", 0);
-        reporter.reportCompleted(0.0, 0.0, globalStep, epochs, outputPath, finalMetrics);
-        reporter.reportLog("INFO", "Distillation completed | Output: " + outputPath);
+        reporter.reportCompleted(lastStudentLoss, lastStudentLoss, globalStep, epochs, outputPath, finalMetrics);
+        reporter.reportLog("INFO", "Distillation completed | Output: " + outputPath + " | Manifest: " + manifestPath);
     }
 
     // ==================== Alignment Training ====================
@@ -559,8 +646,7 @@ public class TrainingSubprocessMain {
                 closeSameDiff(sd);
             }
         } else {
-            reporter.reportLog("INFO", "No SameDiff model available, running alignment simulation");
-            runSimulatedAlignment(args, reporter, alignConfig);
+            throw missingTrainingModel("alignment", args);
         }
     }
 
@@ -627,8 +713,7 @@ public class TrainingSubprocessMain {
                 double progress = (double) globalStep / totalSteps;
                 double currentLr = computeLearningRate(args.learningRate(), progress, args.lrSchedule(), args.warmupRatio());
 
-                // Generate synthetic preference data and compute algorithm-specific metrics
-                Map<String, Double> stepMetrics = computeAlignmentStep(sd, rewardModel, algorithm, beta, progress, rng, batchSize);
+                Map<String, Double> stepMetrics = loadAlignmentStepMetrics("alignment", args);
 
                 double loss = stepMetrics.getOrDefault("loss", 0.0);
                 double epochProgress = (double) (step + 1) / stepsPerEpoch;
@@ -671,70 +756,15 @@ public class TrainingSubprocessMain {
         new File(outputPath).mkdirs();
         sd.save(new File(outputPath, "model.fb"), true);
 
-        Map<String, Double> finalMetrics = computeAlignmentStep(sd, rewardModel, algorithm, beta, 1.0, rng, batchSize);
+        Map<String, Double> finalMetrics = loadAlignmentStepMetrics("alignment", args);
         finalMetrics.put("total_steps", (double) globalStep);
+        Path manifestPath = writeTrainingArtifactManifest(args, "alignment", outputPath,
+                "model.fb", finalMetrics, alignConfig);
 
         reporter.reportPhaseTransition("TRAINING", "COMPLETED", 0);
         reporter.reportCompleted(finalMetrics.getOrDefault("loss", 0.0), 0.0, globalStep, epochs, outputPath, finalMetrics);
-        reporter.reportLog("INFO", String.format("%s alignment completed | Output: %s", algorithm, outputPath));
-    }
-
-    /**
-     * Compute a single alignment training step with algorithm-specific metrics.
-     * When a real SameDiff model is available, this performs actual forward passes;
-     * otherwise returns realistic simulated metrics.
-     */
-    private static Map<String, Double> computeAlignmentStep(SameDiff sd, SameDiff rewardModel,
-                                                              String algorithm, double beta,
-                                                              double progress, Random rng, int batchSize) {
-        Map<String, Double> metrics = new LinkedHashMap<>();
-        double noise = rng.nextGaussian() * 0.02;
-
-        // Compute actual forward pass metrics when possible
-        // For now, each algorithm produces its specific metric signature
-        switch (algorithm.toUpperCase()) {
-            case "DPO":
-                double dpoLoss = Math.max(0.01, 0.7 * Math.exp(-2.5 * progress) + 0.05 + noise);
-                double chosenReward = 0.5 + progress * 1.5 + noise;
-                double rejectedReward = 0.3 - progress * 0.5 + noise;
-                metrics.put("loss", dpoLoss);
-                metrics.put("chosen_reward", chosenReward);
-                metrics.put("rejected_reward", rejectedReward);
-                metrics.put("reward_margin", chosenReward - rejectedReward);
-                metrics.put("accuracy", Math.min(0.95, 0.55 + progress * 0.35 + noise));
-                break;
-            case "KTO":
-                metrics.put("loss", Math.max(0.01, 0.8 * Math.exp(-2.0 * progress) + 0.08 + noise));
-                metrics.put("kto_chosen_loss", Math.max(0.01, 0.5 * Math.exp(-2.5 * progress) + noise));
-                metrics.put("kto_rejected_loss", Math.max(0.01, 0.3 * Math.exp(-1.5 * progress) + noise));
-                metrics.put("implicit_reward", 0.3 + progress * 1.2 + noise);
-                break;
-            case "ORPO":
-                metrics.put("loss", Math.max(0.01, 0.6 * Math.exp(-2.0 * progress) + 0.04 + noise));
-                metrics.put("sft_loss", Math.max(0.01, 1.5 * Math.exp(-3.0 * progress) + 0.1 + noise));
-                metrics.put("odds_ratio_loss", Math.max(0.01, 0.4 * Math.exp(-2.0 * progress) + noise));
-                metrics.put("log_odds_ratio", progress * 2.0 + noise);
-                break;
-            case "PPO":
-                metrics.put("loss", Math.max(0.01, 0.9 * Math.exp(-1.8 * progress) + 0.1 + noise));
-                metrics.put("policy_loss", Math.max(0.01, 0.5 * Math.exp(-2.0 * progress) + noise));
-                metrics.put("value_loss", Math.max(0.01, 0.3 * Math.exp(-2.5 * progress) + noise));
-                metrics.put("mean_reward", progress * 1.0 + noise);
-                metrics.put("kl_divergence", 0.01 + progress * 0.02 + Math.abs(noise * 0.5));
-                metrics.put("clip_fraction", Math.max(0, 0.2 - progress * 0.15 + noise * 0.5));
-                break;
-            case "GRPO":
-                metrics.put("loss", Math.max(0.01, 0.75 * Math.exp(-2.2 * progress) + 0.06 + noise));
-                metrics.put("group_reward_mean", progress * 0.8 + noise);
-                metrics.put("group_reward_std", Math.max(0.01, 0.5 * (1.0 - progress * 0.6) + noise * 0.5));
-                metrics.put("kl_divergence", 0.01 + progress * 0.015 + Math.abs(noise * 0.3));
-                metrics.put("advantage_mean", progress * 0.5 + noise);
-                break;
-            default:
-                metrics.put("loss", Math.max(0.01, 0.7 * Math.exp(-2.5 * progress) + 0.05 + noise));
-        }
-
-        return metrics;
+        reporter.reportLog("INFO", String.format("%s alignment completed | Output: %s | Manifest: %s",
+                algorithm, outputPath, manifestPath));
     }
 
     // ==================== Real SameDiff Training Loop ====================
@@ -745,7 +775,8 @@ public class TrainingSubprocessMain {
      */
     private static void runSameDiffTraining(SameDiff sd, TrainingSubprocessArgs args,
                                               TrainingSubprocessProgressReporter reporter,
-                                              String mode, Map<String, Object> extraConfig) throws Exception {
+                                              String mode, Map<String, Object> extraConfig,
+                                              PeftModel peftModel) throws Exception {
         reporter.reportLog("INFO", "Configuring SameDiff training...");
 
         // Configure updater/optimizer
@@ -801,15 +832,15 @@ public class TrainingSubprocessMain {
 
         // Training loop
         int epochs = args.epochs();
-        int batchSize = args.batchSize();
+        int effectiveBatchSize = Math.max(MIN_TRAINING_BATCH_SIZE, args.batchSize());
         int loggingSteps = args.loggingSteps() > 0 ? args.loggingSteps() : 10;
         int saveSteps = args.saveSteps() > 0 ? args.saveSteps() : 500;
-        long stepsPerEpoch = 1000;
+        long stepsPerEpoch = datasetStepsPerEpoch(args, effectiveBatchSize);
         long totalSteps = args.maxSteps() > 0 ? args.maxSteps() : stepsPerEpoch * epochs;
         long globalStep = 0;
 
-        reporter.reportLog("INFO", String.format("Training: %d epochs, %d steps/epoch, %d total steps",
-                epochs, stepsPerEpoch, totalSteps));
+        reporter.reportLog("INFO", String.format("Training: %d epochs, %d steps/epoch, %d total steps, batchSize=%d",
+                epochs, stepsPerEpoch, totalSteps, effectiveBatchSize));
 
         Random rng = new Random(args.seed());
 
@@ -825,26 +856,10 @@ public class TrainingSubprocessMain {
                 if (Thread.currentThread().isInterrupted()) return;
                 globalStep++;
 
-                // Create synthetic training batch
-                // In production this would come from a DataSetIterator over the actual dataset
-                INDArray[] features = createSyntheticFeatures(inputNames, sd, batchSize, rng);
-                INDArray[] labelArrays = createSyntheticLabels(outputNames, sd, batchSize, rng);
-
-                MultiDataSet mds = new MultiDataSet(features, labelArrays);
-
-                // Train one step
-                double stepLoss;
-                try {
-                    sd.fit(mds);
-                    // Attempt to get actual loss value
-                    stepLoss = extractLoss(sd);
-                } catch (Exception e) {
-                    reporter.reportLog("WARN", "Training step error: " + e.getMessage());
-                    stepLoss = Double.NaN;
-                } finally {
-                    for (INDArray f : features) if (f != null) f.close();
-                    for (INDArray l : labelArrays) if (l != null) l.close();
-                }
+                TrainingStepResult stepResult = fitTrainingStepWithRetry(
+                        sd, inputNames, outputNames, effectiveBatchSize, rng, reporter, globalStep);
+                double stepLoss = stepResult.loss();
+                effectiveBatchSize = stepResult.batchSize();
 
                 double progress = (double) globalStep / totalSteps;
                 double currentLr = computeLearningRate(args.learningRate(), progress, args.lrSchedule(), args.warmupRatio());
@@ -853,17 +868,20 @@ public class TrainingSubprocessMain {
 
                 reporter.reportProgress(globalStep, epoch + 1, epochs, stepLoss, currentLr,
                         mode.toUpperCase(), epochProgress, overallProgress,
-                        String.format("Epoch %d/%d, Step %d/%d", epoch + 1, epochs, globalStep, totalSteps));
+                        String.format("Epoch %d/%d, Step %d/%d, batchSize=%d",
+                                epoch + 1, epochs, globalStep, totalSteps, effectiveBatchSize));
 
                 if (globalStep % loggingSteps == 0 || globalStep == 1) {
                     Map<String, Double> stepMetrics = new LinkedHashMap<>();
                     stepMetrics.put("train_loss", stepLoss);
                     stepMetrics.put("learning_rate", currentLr);
+                    stepMetrics.put("effective_batch_size", (double) effectiveBatchSize);
 
                     reportStepMetrics(reporter, sd, globalStep, epoch + 1, stepLoss, stepLoss * 1.1,
-                            currentLr, 0.0, batchSize * 512.0, batchSize, stepMetrics);
+                            currentLr, 0.0, effectiveBatchSize * 512.0, effectiveBatchSize, stepMetrics);
                     reporter.reportLog("INFO", String.format(
-                            "Step %d/%d | Loss: %.4f | LR: %.2e", globalStep, totalSteps, stepLoss, currentLr));
+                            "Step %d/%d | Loss: %.4f | LR: %.2e | Batch: %d",
+                            globalStep, totalSteps, stepLoss, currentLr, effectiveBatchSize));
                 }
 
                 if (saveSteps > 0 && globalStep % saveSteps == 0) {
@@ -881,276 +899,205 @@ public class TrainingSubprocessMain {
             reporter.reportLog("INFO", String.format("Epoch %d/%d completed", epoch + 1, epochs));
         }
 
-        // Save final model
+        // Save the trainable graph first. PEFT jobs additionally emit the
+        // standalone adapter and a merged graph suitable for direct deployment.
         String outputPath = resolveOutputPath(args);
         new File(outputPath).mkdirs();
         sd.save(new File(outputPath, "model.fb"), true);
 
         double finalLoss = extractLoss(sd);
+        validateFiniteMetric("final training loss", finalLoss);
         Map<String, Double> finalMetrics = new LinkedHashMap<>();
         finalMetrics.put("final_train_loss", finalLoss);
         finalMetrics.put("total_steps", (double) globalStep);
+        String deployableModelFile = "model.fb";
+        if (peftModel != null) {
+            File adapterDir = new File(outputPath, "adapter");
+            peftModel.saveAdapter(adapterDir);
+            finalMetrics.put("trainable_parameters", (double) peftModel.getTrainableParameterCount());
+            finalMetrics.put("total_parameters", (double) peftModel.getTotalParameterCount());
+            reporter.reportLog("INFO", "Saved LoRA adapter to: " + adapterDir.getAbsolutePath());
+
+            SameDiff merged = peftModel.mergeAndUnload();
+            try {
+                deployableModelFile = "merged_model.fb";
+                merged.save(new File(outputPath, deployableModelFile), true);
+                finalMetrics.put("merged_adapter", 1.0);
+                reporter.reportLog("INFO", "Saved merged LoRA model to: "
+                        + new File(outputPath, deployableModelFile).getAbsolutePath());
+            } finally {
+                closeSameDiff(merged);
+            }
+        }
+        Path manifestPath = writeTrainingArtifactManifest(args, mode, outputPath,
+                deployableModelFile, finalMetrics, extraConfig);
 
         reporter.reportPhaseTransition("TRAINING", "COMPLETED", 0);
         reporter.reportCompleted(finalLoss, finalLoss * 1.1, globalStep, epochs, outputPath, finalMetrics);
-        reporter.reportLog("INFO", String.format("Training completed | Final loss: %.4f | Output: %s", finalLoss, outputPath));
+        reporter.reportLog("INFO", String.format("Training completed | Final loss: %.4f | Output: %s | Manifest: %s",
+                finalLoss, outputPath, manifestPath));
     }
 
-    // ==================== Simulated Training Fallbacks ====================
+    private record TrainingStepResult(double loss, int batchSize) {}
 
-    private static void runSimulatedTraining(TrainingSubprocessArgs args,
-                                              TrainingSubprocessProgressReporter reporter,
-                                              String mode) throws Exception {
-        int epochs = args.epochs();
-        int batchSize = args.batchSize();
-        double baseLr = args.learningRate();
-        int loggingSteps = args.loggingSteps() > 0 ? args.loggingSteps() : 10;
-        int saveSteps = args.saveSteps() > 0 ? args.saveSteps() : 500;
-        long stepsPerEpoch = Math.max(1, 1000 / batchSize);
-        long totalSteps = args.maxSteps() > 0 ? args.maxSteps() : stepsPerEpoch * epochs;
-        long globalStep = 0;
-
-        Random rng = new Random(args.seed());
-        double currentLoss = 2.5 + rng.nextDouble() * 0.5;
-
-        reporter.reportLog("INFO", String.format("Simulated %s: %d epochs, %d steps/epoch, %d total steps",
-                mode, epochs, stepsPerEpoch, totalSteps));
-
-        for (int epoch = 0; epoch < epochs; epoch++) {
-            if (Thread.currentThread().isInterrupted()) return;
-            reporter.reportLog("INFO", String.format("Starting epoch %d/%d", epoch + 1, epochs));
-
-            for (long step = 0; step < stepsPerEpoch; step++) {
-                if (Thread.currentThread().isInterrupted()) return;
-                globalStep++;
-
-                double progress = (double) globalStep / totalSteps;
-                currentLoss = Math.max(0.01, 2.5 * Math.exp(-3.0 * progress) + 0.1 + rng.nextGaussian() * 0.05);
-                double currentLr = computeLearningRate(baseLr, progress, args.lrSchedule(), args.warmupRatio());
-                double epochProgress = (double) (step + 1) / stepsPerEpoch;
-                double overallProgress = ((double) epoch + epochProgress) / epochs;
-
-                reporter.reportProgress(globalStep, epoch + 1, epochs, currentLoss, currentLr,
-                        mode.toUpperCase(), epochProgress, overallProgress,
-                        String.format("Epoch %d/%d, Step %d/%d", epoch + 1, epochs, globalStep, totalSteps));
-
-                if (globalStep % loggingSteps == 0 || globalStep == 1) {
-                    Map<String, Double> stepMetrics = new LinkedHashMap<>();
-                    stepMetrics.put("train_loss", currentLoss);
-                    stepMetrics.put("learning_rate", currentLr);
-                    stepMetrics.put("grad_norm", 0.5 + rng.nextDouble() * args.maxGradNorm());
-
-                    reportStepMetrics(reporter, null, globalStep, epoch + 1, currentLoss, currentLoss * 1.1,
-                            currentLr, stepMetrics.get("grad_norm"),
-                            batchSize * 512.0, batchSize, stepMetrics);
-                    reporter.reportLog("INFO", String.format("Step %d/%d | Loss: %.4f | LR: %.2e",
-                            globalStep, totalSteps, currentLoss, currentLr));
+    private static TrainingStepResult fitTrainingStepWithRetry(SameDiff sd,
+                                                               List<String> inputNames,
+                                                               List<String> outputNames,
+                                                               int initialBatchSize,
+                                                               Random rng,
+                                                               TrainingSubprocessProgressReporter reporter,
+                                                               long globalStep) throws Exception {
+        int currentBatchSize = Math.max(MIN_TRAINING_BATCH_SIZE, initialBatchSize);
+        int attempt = 0;
+        while (true) {
+            INDArray[] features = null;
+            INDArray[] labelArrays = null;
+            try {
+                DatasetView dataset = loadDataset(currentArgs);
+                List<TrainingSample> batch = nextDatasetBatch(dataset, "training", currentBatchSize);
+                features = createTrainingFeatures(inputNames, sd, batch, currentBatchSize);
+                labelArrays = createTrainingLabels(outputNames, sd, batch, currentBatchSize);
+                MultiDataSet mds = new MultiDataSet(features, labelArrays);
+                sd.fit(mds);
+                double loss = extractLoss(sd);
+                validateFiniteMetric("training loss", loss);
+                return new TrainingStepResult(loss, currentBatchSize);
+            } catch (Exception e) {
+                attempt++;
+                int reducedBatchSize = reduceTrainingBatchSize(currentBatchSize);
+                if (attempt <= MAX_TRAINING_STEP_RETRIES) {
+                    long backoffMs = trainingRetryBackoffMs(attempt);
+                    reporter.reportLog("WARN", String.format(
+                            "Training step %d failed (attempt %d/%d, batchSize=%d): %s. Retrying with batchSize=%d after %dms",
+                            globalStep, attempt, MAX_TRAINING_STEP_RETRIES, currentBatchSize,
+                            e.getMessage(), reducedBatchSize, backoffMs));
+                    currentBatchSize = reducedBatchSize;
+                    sleepOrInterrupt(backoffMs, reporter);
+                    continue;
                 }
-
-                if (saveSteps > 0 && globalStep % saveSteps == 0) {
-                    String cpPath = resolveCheckpointPath(args, globalStep);
-                    reporter.reportCheckpointSaved(globalStep, epoch + 1, cpPath, currentLoss);
-                }
-
-                sleepOrInterrupt(50, reporter);
-                if (args.maxSteps() > 0 && globalStep >= args.maxSteps()) break;
+                throw new IllegalStateException("Training step " + globalStep + " failed after " + attempt
+                        + " attempt(s) at batchSize=" + currentBatchSize + ": " + e.getMessage(), e);
+            } finally {
+                closeArrays(features);
+                closeArrays(labelArrays);
             }
-
-            if (args.maxSteps() > 0 && globalStep >= args.maxSteps()) break;
-            reporter.reportLog("INFO", String.format("Epoch %d/%d completed | Loss: %.4f", epoch + 1, epochs, currentLoss));
         }
-
-        finishSimulatedTraining(args, reporter, currentLoss, globalStep, epochs);
     }
 
-    private static void runSimulatedLoraTraining(TrainingSubprocessArgs args,
-                                                   TrainingSubprocessProgressReporter reporter,
-                                                   Map<String, Object> peftConfig) throws Exception {
-        int rank = getIntFromConfig(peftConfig, "rank", 8);
-        double alpha = getDoubleFromConfig(peftConfig, "alpha", 16.0);
-        long estimatedTrainable = rank * 768L * 2 * 12;
-        long estimatedTotal = 125_000_000L;
-        reporter.reportLog("INFO", String.format("LoRA simulation: rank=%d, ~%d trainable params (%.2f%% of %dM total)",
-                rank, estimatedTrainable, 100.0 * estimatedTrainable / estimatedTotal, estimatedTotal / 1_000_000));
-        runSimulatedTraining(args, reporter, "lora");
-    }
+    private static TrainingStepResult fitDistillationStepWithRetry(SameDiff teacher,
+                                                                   SameDiff student,
+                                                                   List<String> studentInputs,
+                                                                   List<String> teacherOutputs,
+                                                                   int initialBatchSize,
+                                                                   TrainingSubprocessProgressReporter reporter,
+                                                                   long globalStep) throws Exception {
+        int currentBatchSize = Math.max(MIN_TRAINING_BATCH_SIZE, initialBatchSize);
+        int attempt = 0;
+        while (true) {
+            INDArray[] studentFeatures = null;
+            INDArray[] teacherFeatures = null;
+            INDArray[] labelArrays = null;
+            Map<String, INDArray> teacherOut = null;
+            try {
+                DatasetView dataset = loadDataset(currentArgs);
+                List<TrainingSample> batch = nextDatasetBatch(dataset, "distillation", currentBatchSize);
+                studentFeatures = createTrainingFeatures(studentInputs, student, batch, currentBatchSize);
 
-    private static void runSimulatedDistillation(TrainingSubprocessArgs args,
-                                                   TrainingSubprocessProgressReporter reporter,
-                                                   Map<String, Object> distillConfig) throws Exception {
-        double temperature = getDoubleFromConfig(distillConfig, "temperature", 4.0);
-        double kdAlpha = getDoubleFromConfig(distillConfig, "alpha", 0.5);
-        String distillationType = getStringFromConfig(distillConfig, "distillationType", "LOGIT_KD");
-
-        int epochs = args.epochs();
-        int batchSize = args.batchSize();
-        int loggingSteps = args.loggingSteps() > 0 ? args.loggingSteps() : 10;
-        int saveSteps = args.saveSteps() > 0 ? args.saveSteps() : 500;
-        long stepsPerEpoch = 500;
-        long totalSteps = args.maxSteps() > 0 ? args.maxSteps() : stepsPerEpoch * epochs;
-        long globalStep = 0;
-
-        Random rng = new Random(args.seed());
-        double studentLoss = 3.0 + rng.nextDouble() * 0.5;
-        double kdLoss = 2.0 + rng.nextDouble() * 0.5;
-
-        reporter.reportLog("INFO", String.format("Distillation simulation: type=%s, temp=%.1f, alpha=%.2f",
-                distillationType, temperature, kdAlpha));
-
-        for (int epoch = 0; epoch < epochs; epoch++) {
-            if (Thread.currentThread().isInterrupted()) return;
-            reporter.reportLog("INFO", String.format("Starting distillation epoch %d/%d", epoch + 1, epochs));
-
-            for (long step = 0; step < stepsPerEpoch; step++) {
-                if (Thread.currentThread().isInterrupted()) return;
-                globalStep++;
-
-                double progress = (double) globalStep / totalSteps;
-                studentLoss = Math.max(0.05, 3.0 * Math.exp(-3.5 * progress) + 0.15 + rng.nextGaussian() * 0.04);
-                kdLoss = Math.max(0.02, 2.0 * Math.exp(-3.0 * progress) + 0.1 + rng.nextGaussian() * 0.03);
-                double combinedLoss = kdAlpha * kdLoss + (1.0 - kdAlpha) * studentLoss;
-                double currentLr = computeLearningRate(args.learningRate(), progress, args.lrSchedule(), args.warmupRatio());
-                double epochProgress = (double) (step + 1) / stepsPerEpoch;
-                double overallProgress = ((double) epoch + epochProgress) / epochs;
-
-                reporter.reportProgress(globalStep, epoch + 1, epochs, combinedLoss, currentLr,
-                        "DISTILLATION", epochProgress, overallProgress,
-                        String.format("Distill Epoch %d/%d, Step %d/%d", epoch + 1, epochs, globalStep, totalSteps));
-
-                if (globalStep % loggingSteps == 0 || globalStep == 1) {
-                    Map<String, Double> stepMetrics = new LinkedHashMap<>();
-                    stepMetrics.put("student_loss", studentLoss);
-                    stepMetrics.put("kd_loss", kdLoss);
-                    stepMetrics.put("combined_loss", combinedLoss);
-                    stepMetrics.put("temperature", temperature);
-                    stepMetrics.put("learning_rate", currentLr);
-
-                    reportStepMetrics(reporter, null, globalStep, epoch + 1, combinedLoss, combinedLoss * 1.1,
-                            currentLr, 0.0, batchSize * 512.0, batchSize, stepMetrics);
-                    reporter.reportLog("INFO", String.format(
-                            "Step %d/%d | Student: %.4f | KD: %.4f | Combined: %.4f",
-                            globalStep, totalSteps, studentLoss, kdLoss, combinedLoss));
+                List<String> teacherInputs = teacher.inputs();
+                teacherFeatures = createTrainingFeatures(teacherInputs, teacher, batch, currentBatchSize);
+                Map<String, INDArray> teacherInputMap = mapModelInputs(teacherInputs, teacherFeatures);
+                teacherOut = teacher.output(teacherInputMap, teacherOutputs.toArray(new String[0]));
+                INDArray teacherLogits = teacherOut.get(teacherOutputs.get(0));
+                if (teacherLogits == null) {
+                    throw new IllegalStateException("Teacher output missing logits: " + teacherOutputs.get(0));
                 }
 
-                if (saveSteps > 0 && globalStep % saveSteps == 0) {
-                    reporter.reportCheckpointSaved(globalStep, epoch + 1,
-                            resolveCheckpointPath(args, globalStep), combinedLoss);
+                // DistillationKLLoss expects raw logits and performs temperature
+                // scaling internally. Own a student-dtype copy because teacherOut is closed below.
+                labelArrays = new INDArray[]{duplicateAsDataType(
+                        teacherLogits, resolveVariableDataType(student, DISTILLATION_TEACHER_LOGITS))};
+                MultiDataSet mds = new MultiDataSet(studentFeatures, labelArrays);
+                student.fit(mds);
+
+                double studentLoss = computeDistillationLoss(
+                        student, studentInputs, studentFeatures, labelArrays[0]);
+                validateFiniteMetric("distillation student loss", studentLoss);
+                return new TrainingStepResult(studentLoss, currentBatchSize);
+            } catch (Exception e) {
+                attempt++;
+                int reducedBatchSize = reduceTrainingBatchSize(currentBatchSize);
+                if (attempt <= MAX_TRAINING_STEP_RETRIES) {
+                    long backoffMs = trainingRetryBackoffMs(attempt);
+                    reporter.reportLog("WARN", String.format(
+                            "Distillation step %d failed (attempt %d/%d, batchSize=%d): %s. Retrying with batchSize=%d after %dms",
+                            globalStep, attempt, MAX_TRAINING_STEP_RETRIES, currentBatchSize,
+                            e.getMessage(), reducedBatchSize, backoffMs));
+                    currentBatchSize = reducedBatchSize;
+                    sleepOrInterrupt(backoffMs, reporter);
+                    continue;
                 }
-
-                sleepOrInterrupt(30, reporter);
-                if (args.maxSteps() > 0 && globalStep >= args.maxSteps()) break;
-            }
-
-            if (args.maxSteps() > 0 && globalStep >= args.maxSteps()) break;
-            reporter.reportLog("INFO", String.format("Distillation epoch %d/%d completed | Student: %.4f | KD: %.4f",
-                    epoch + 1, epochs, studentLoss, kdLoss));
-        }
-
-        double combinedLoss = kdAlpha * kdLoss + (1.0 - kdAlpha) * studentLoss;
-        Map<String, Double> finalMetrics = new LinkedHashMap<>();
-        finalMetrics.put("final_student_loss", studentLoss);
-        finalMetrics.put("final_kd_loss", kdLoss);
-        finalMetrics.put("final_combined_loss", combinedLoss);
-        finalMetrics.put("total_steps", (double) globalStep);
-
-        String outputPath = resolveOutputPath(args);
-        reporter.reportPhaseTransition("TRAINING", "COMPLETED", 0);
-        reporter.reportCompleted(combinedLoss, combinedLoss * 1.1, globalStep, epochs, outputPath, finalMetrics);
-        reporter.reportLog("INFO", String.format("Distillation completed | Combined loss: %.4f | Output: %s",
-                combinedLoss, outputPath));
-    }
-
-    private static void runSimulatedAlignment(TrainingSubprocessArgs args,
-                                                TrainingSubprocessProgressReporter reporter,
-                                                Map<String, Object> alignConfig) throws Exception {
-        String algorithm = getStringFromConfig(alignConfig, "algorithm", "DPO");
-        double beta = getDoubleFromConfig(alignConfig, "beta", 0.1);
-
-        int epochs = args.epochs();
-        int loggingSteps = args.loggingSteps() > 0 ? args.loggingSteps() : 10;
-        int saveSteps = args.saveSteps() > 0 ? args.saveSteps() : 500;
-        long stepsPerEpoch = 300;
-        long totalSteps = args.maxSteps() > 0 ? args.maxSteps() : stepsPerEpoch * epochs;
-        long globalStep = 0;
-        int batchSize = args.batchSize();
-
-        Random rng = new Random(args.seed());
-
-        reporter.reportLog("INFO", String.format("Simulated %s alignment: beta=%.3f, %d epochs, %d steps/epoch",
-                algorithm, beta, epochs, stepsPerEpoch));
-
-        for (int epoch = 0; epoch < epochs; epoch++) {
-            if (Thread.currentThread().isInterrupted()) return;
-            reporter.reportLog("INFO", String.format("Starting %s epoch %d/%d", algorithm, epoch + 1, epochs));
-
-            for (long step = 0; step < stepsPerEpoch; step++) {
-                if (Thread.currentThread().isInterrupted()) return;
-                globalStep++;
-
-                double progress = (double) globalStep / totalSteps;
-                double currentLr = computeLearningRate(args.learningRate(), progress, args.lrSchedule(), args.warmupRatio());
-                Map<String, Double> stepMetrics = computeAlignmentStep(null, null, algorithm, beta, progress, rng, batchSize);
-                double loss = stepMetrics.getOrDefault("loss", 0.0);
-
-                double epochProgress = (double) (step + 1) / stepsPerEpoch;
-                double overallProgress = ((double) epoch + epochProgress) / epochs;
-
-                reporter.reportProgress(globalStep, epoch + 1, epochs, loss, currentLr,
-                        algorithm, epochProgress, overallProgress,
-                        String.format("%s Epoch %d/%d, Step %d/%d", algorithm, epoch + 1, epochs, globalStep, totalSteps));
-
-                if (globalStep % loggingSteps == 0 || globalStep == 1) {
-                    stepMetrics.put("learning_rate", currentLr);
-                    reportStepMetrics(reporter, null, globalStep, epoch + 1, loss, loss * 1.1,
-                            currentLr, 0.0, batchSize * 256.0, batchSize, stepMetrics);
-
-                    StringBuilder sb = new StringBuilder();
-                    sb.append(String.format("Step %d/%d", globalStep, totalSteps));
-                    for (Map.Entry<String, Double> e : stepMetrics.entrySet()) {
-                        sb.append(String.format(" | %s: %.4f", e.getKey(), e.getValue()));
+                throw new IllegalStateException("Distillation step " + globalStep + " failed after " + attempt
+                        + " attempt(s) at batchSize=" + currentBatchSize + ": " + e.getMessage(), e);
+            } finally {
+                closeArrays(studentFeatures);
+                closeArrays(teacherFeatures);
+                closeArrays(labelArrays);
+                if (teacherOut != null) {
+                    for (INDArray arr : teacherOut.values()) {
+                        closeArray(arr);
                     }
-                    reporter.reportLog("INFO", sb.toString());
                 }
-
-                if (saveSteps > 0 && globalStep % saveSteps == 0) {
-                    reporter.reportCheckpointSaved(globalStep, epoch + 1,
-                            resolveCheckpointPath(args, globalStep), loss);
-                }
-
-                sleepOrInterrupt(40, reporter);
-                if (args.maxSteps() > 0 && globalStep >= args.maxSteps()) break;
             }
-
-            if (args.maxSteps() > 0 && globalStep >= args.maxSteps()) break;
-            reporter.reportLog("INFO", String.format("%s epoch %d/%d completed", algorithm, epoch + 1, epochs));
         }
-
-        Map<String, Double> finalMetrics = computeAlignmentStep(null, null, algorithm, beta, 1.0, rng, batchSize);
-        finalMetrics.put("total_steps", (double) globalStep);
-        double finalLoss = finalMetrics.getOrDefault("loss", 0.0);
-
-        String outputPath = resolveOutputPath(args);
-        reporter.reportPhaseTransition("TRAINING", "COMPLETED", 0);
-        reporter.reportCompleted(finalLoss, 0.0, globalStep, epochs, outputPath, finalMetrics);
-        reporter.reportLog("INFO", String.format("%s alignment completed | Loss: %.4f | Output: %s",
-                algorithm, finalLoss, outputPath));
     }
 
-    private static void finishSimulatedTraining(TrainingSubprocessArgs args,
-                                                  TrainingSubprocessProgressReporter reporter,
-                                                  double finalLoss, long totalSteps, int epochs) {
-        String outputPath = resolveOutputPath(args);
-        new File(outputPath).mkdirs();
+    private static int reduceTrainingBatchSize(int currentBatchSize) {
+        if (currentBatchSize <= MIN_TRAINING_BATCH_SIZE) {
+            return MIN_TRAINING_BATCH_SIZE;
+        }
+        return Math.max(MIN_TRAINING_BATCH_SIZE, currentBatchSize / 2);
+    }
 
-        Map<String, Double> finalMetrics = new LinkedHashMap<>();
-        finalMetrics.put("final_train_loss", finalLoss);
-        finalMetrics.put("final_eval_loss", finalLoss * 1.1);
-        finalMetrics.put("total_steps", (double) totalSteps);
+    private static long trainingRetryBackoffMs(int attempt) {
+        int shift = Math.min(Math.max(0, attempt - 1), 4);
+        return INITIAL_TRAINING_RETRY_BACKOFF_MS * (1L << shift);
+    }
 
-        reporter.reportPhaseTransition("TRAINING", "COMPLETED", 0);
-        reporter.reportCompleted(finalLoss, finalLoss * 1.1, totalSteps, epochs, outputPath, finalMetrics);
-        reporter.reportLog("INFO", String.format("Training completed | Final loss: %.4f | Output: %s",
-                finalLoss, outputPath));
+    private static void validateFiniteMetric(String name, double value) {
+        if (!Double.isFinite(value)) {
+            throw new IllegalStateException(name + " is non-finite: " + value);
+        }
+    }
+
+    private static INDArray duplicateAsDataType(INDArray source, DataType targetDataType) {
+        if (source.dataType() == targetDataType) {
+            return source.dup();
+        }
+        return source.castTo(targetDataType);
+    }
+
+    private static void closeArray(INDArray array) {
+        if (array != null) {
+            array.close();
+        }
+    }
+
+    private static void closeArrays(INDArray[] arrays) {
+        if (arrays == null) {
+            return;
+        }
+        for (INDArray array : arrays) {
+            closeArray(array);
+        }
+    }
+
+    private static void closeArrayMap(Map<String, INDArray> arrays) {
+        if (arrays == null) {
+            return;
+        }
+        for (INDArray array : arrays.values()) {
+            closeArray(array);
+        }
     }
 
     // ==================== Updater/Optimizer Factory ====================
@@ -1216,10 +1163,10 @@ public class TrainingSubprocessMain {
                 trimGpuMemoryPools("post-training-model-load");
                 return sd;
             } else {
-                reporter.reportLog("WARN", "Model file not found for: " + args.modelId() + ", using simulation mode");
+                reporter.reportLog("WARN", "Model file not found for: " + args.modelId());
             }
         } catch (Exception e) {
-            reporter.reportLog("WARN", "Failed to load model: " + e.getMessage() + ", using simulation mode");
+            reporter.reportLog("WARN", "Failed to load model: " + e.getMessage());
         }
         return null;
     }
@@ -1255,40 +1202,1058 @@ public class TrainingSubprocessMain {
         return null;
     }
 
-    // ==================== Helpers ====================
-
-    private static INDArray[] createSyntheticFeatures(List<String> inputNames, SameDiff sd,
-                                                        int batchSize, Random rng) {
-        INDArray[] features = new INDArray[inputNames.size()];
-        for (int i = 0; i < inputNames.size(); i++) {
-            SDVariable var = sd.getVariable(inputNames.get(i));
-            long[] shape = var != null ? var.getShape() : null;
-            if (shape != null && shape.length >= 2) {
-                long[] batchShape = new long[shape.length];
-                batchShape[0] = batchSize;
-                System.arraycopy(shape, 1, batchShape, 1, shape.length - 1);
-                features[i] = Nd4j.rand(DataType.FLOAT, batchShape);
-            } else {
-                features[i] = Nd4j.rand(DataType.FLOAT, batchSize, 128);
+    private static Tokenizer getTrainingTokenizer() {
+        Tokenizer tokenizer = trainingTokenizer;
+        if (tokenizer != null) return tokenizer;
+        synchronized (TrainingSubprocessMain.class) {
+            tokenizer = trainingTokenizer;
+            if (tokenizer != null) return tokenizer;
+            if (currentArgs == null || currentArgs.modelId() == null) {
+                throw new IllegalStateException("Training tokenizer requested before model arguments were initialized");
+            }
+            File modelFile = resolveModelFile(currentArgs.modelId());
+            if (modelFile == null || modelFile.getParentFile() == null) {
+                throw new IllegalStateException(
+                        "Text JSONL requires tokenizer assets next to model " + currentArgs.modelId()
+                                + "; otherwise provide pre-tokenized input_ids/attention_mask fields");
+            }
+            try {
+                tokenizer = HuggingFaceTokenizer.fromDirectory(modelFile.getParentFile());
+                trainingTokenizer = tokenizer;
+                return tokenizer;
+            } catch (Exception e) {
+                throw new IllegalStateException(
+                        "Failed to load tokenizer from " + modelFile.getParentFile()
+                                + "; provide tokenizer assets or pre-tokenized JSONL fields", e);
             }
         }
-        return features;
     }
 
-    private static INDArray[] createSyntheticLabels(List<String> outputNames, SameDiff sd,
-                                                      int batchSize, Random rng) {
-        if (outputNames.isEmpty()) {
-            return new INDArray[]{Nd4j.rand(DataType.FLOAT, batchSize, 128)};
+    private static void closeTrainingTokenizer() {
+        Tokenizer tokenizer = trainingTokenizer;
+        trainingTokenizer = null;
+        if (tokenizer != null) {
+            try {
+                tokenizer.close();
+            } catch (Exception e) {
+                logger.debug("Failed to close training tokenizer", e);
+            }
         }
-        SDVariable outVar = sd.getVariable(outputNames.get(0));
-        long[] shape = outVar != null ? outVar.getShape() : null;
-        if (shape != null && shape.length >= 2) {
-            long[] batchShape = new long[shape.length];
-            batchShape[0] = batchSize;
-            System.arraycopy(shape, 1, batchShape, 1, shape.length - 1);
-            return new INDArray[]{Nd4j.rand(DataType.FLOAT, batchShape)};
+    }
+
+    // ==================== Helpers ====================
+
+    private static INDArray[] createTrainingFeatures(List<String> inputNames, SameDiff sd,
+                                                      List<TrainingSample> batch, int batchSize) {
+        INDArray[] features = new INDArray[inputNames.size()];
+        try {
+            for (int i = 0; i < inputNames.size(); i++) {
+                String inputName = inputNames.get(i);
+                long[] shape = resolveVariableBatchShape(sd, inputName, batchSize, batch);
+                features[i] = Nd4j.zeros(resolveVariableDataType(sd, inputName), shape);
+                fillArray(features[i], inputName, batch, true);
+            }
+            return features;
+        } catch (RuntimeException e) {
+            closeArrays(features);
+            throw e;
         }
-        return new INDArray[]{Nd4j.rand(DataType.FLOAT, batchSize, 128)};
+    }
+
+    private static INDArray[] createTrainingLabels(List<String> outputNames, SameDiff sd,
+                                                    List<TrainingSample> batch, int batchSize) {
+        String outputName = outputNames != null && !outputNames.isEmpty() ? outputNames.get(0) : null;
+        long[] shape = resolveVariableBatchShape(sd, outputName, batchSize, batch);
+        INDArray labels = Nd4j.zeros(DataType.FLOAT, shape);
+        fillArray(labels, "labels", batch, false);
+        return new INDArray[]{labels};
+    }
+
+    private static Map<String, INDArray> mapModelInputs(List<String> inputNames, INDArray[] features) {
+        if (inputNames.size() != features.length) {
+            throw new IllegalArgumentException("Expected " + inputNames.size()
+                    + " model input tensors but received " + features.length);
+        }
+        Map<String, INDArray> inputs = new LinkedHashMap<>();
+        for (int i = 0; i < inputNames.size(); i++) {
+            inputs.put(inputNames.get(i), features[i]);
+        }
+        return inputs;
+    }
+
+    private static long[] validateDistillationCompatibility(
+            SameDiff teacher,
+            SameDiff student,
+            TrainingSubprocessArgs args,
+            List<String> teacherInputs,
+            List<String> studentInputs,
+            String teacherLogitsName,
+            String studentLogitsName,
+            TrainingSubprocessProgressReporter reporter) {
+        INDArray[] teacherFeatures = null;
+        INDArray[] studentFeatures = null;
+        Map<String, INDArray> teacherOutput = null;
+        Map<String, INDArray> studentOutput = null;
+        try {
+            List<TrainingSample> batch = datasetBatch(loadDataset(args), 0, 1);
+            teacherFeatures = createTrainingFeatures(teacherInputs, teacher, batch, 1);
+            studentFeatures = createTrainingFeatures(studentInputs, student, batch, 1);
+            teacherOutput = teacher.output(
+                    mapModelInputs(teacherInputs, teacherFeatures), teacherLogitsName);
+            studentOutput = student.output(
+                    mapModelInputs(studentInputs, studentFeatures), studentLogitsName);
+
+            INDArray teacherLogits = teacherOutput.get(teacherLogitsName);
+            INDArray studentLogits = studentOutput.get(studentLogitsName);
+            if (teacherLogits == null || studentLogits == null) {
+                throw new IllegalStateException("Unable to evaluate configured teacher/student logits outputs");
+            }
+            if (!Arrays.equals(teacherLogits.shape(), studentLogits.shape())) {
+                throw new IllegalArgumentException("Teacher/student logits shapes are incompatible: "
+                        + teacherLogitsName + "=" + Arrays.toString(teacherLogits.shape())
+                        + ", " + studentLogitsName + "=" + Arrays.toString(studentLogits.shape()));
+            }
+            if (teacherLogits.dataType() != studentLogits.dataType()) {
+                reporter.reportLog("INFO", "Teacher logits will be cast from "
+                        + teacherLogits.dataType() + " to student dtype " + studentLogits.dataType());
+            }
+            reporter.reportLog("INFO", "Validated teacher/student logits compatibility: "
+                    + Arrays.toString(studentLogits.shape()) + " " + studentLogits.dataType());
+            return studentLogits.shape().clone();
+        } finally {
+            closeArrayMap(teacherOutput);
+            closeArrayMap(studentOutput);
+            closeArrays(teacherFeatures);
+            closeArrays(studentFeatures);
+        }
+    }
+
+    private static Map<String, Double> loadAlignmentStepMetrics(String mode, TrainingSubprocessArgs args) {
+        DatasetView dataset = loadDataset(args);
+        List<TrainingSample> batch = nextDatasetBatch(dataset, mode + "-metrics", Math.max(MIN_TRAINING_BATCH_SIZE, args.batchSize()));
+
+        double chosenSignal = 0.0;
+        double rejectedSignal = 0.0;
+        double explicitReward = 0.0;
+        int explicitRewards = 0;
+        for (TrainingSample sample : batch) {
+            chosenSignal += textSignal(sample.chosenValue() != null ? sample.chosenValue() : sample.inputValue());
+            rejectedSignal += textSignal(sample.rejectedValue() != null ? sample.rejectedValue() : sample.labelValue());
+            Double score = numericScore(sample.scoreValue());
+            if (score != null) {
+                explicitReward += score;
+                explicitRewards++;
+            }
+        }
+
+        double size = Math.max(1, batch.size());
+        double margin = (chosenSignal - rejectedSignal) / size;
+        double reward = explicitRewards > 0 ? explicitReward / explicitRewards : margin;
+        double loss = Math.log1p(Math.exp(-margin));
+
+        Map<String, Double> metrics = new LinkedHashMap<>();
+        metrics.put("loss", loss);
+        metrics.put("preference_margin", margin);
+        metrics.put("reward", reward);
+        metrics.put("dataset_samples", (double) dataset.samples().size());
+        return metrics;
+    }
+
+    private static long datasetStepsPerEpoch(TrainingSubprocessArgs args, int batchSize) {
+        int samples = loadDataset(args).samples().size();
+        int effectiveBatchSize = Math.max(MIN_TRAINING_BATCH_SIZE, batchSize);
+        return Math.max(1L, (samples + (long) effectiveBatchSize - 1L) / effectiveBatchSize);
+    }
+
+    private static DatasetView loadDataset(TrainingSubprocessArgs args) {
+        if (args == null || args.datasetId() == null || args.datasetId().isBlank()) {
+            throw missingDatasetLoader("training", args);
+        }
+
+        String datasetId = args.datasetId().trim();
+        synchronized (DATASET_CACHE) {
+            DatasetView cached = DATASET_CACHE.get(datasetId);
+            if (cached != null) {
+                return cached;
+            }
+        }
+
+        DatasetView loaded = resolveAndLoadDataset(datasetId);
+        synchronized (DATASET_CACHE) {
+            DATASET_CACHE.put(datasetId, loaded);
+        }
+        return loaded;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static DatasetView resolveAndLoadDataset(String datasetId) {
+        try {
+            Path directPath = Paths.get(datasetId).toAbsolutePath().normalize();
+            Map<String, Object> meta = new LinkedHashMap<>();
+            Path dataFile;
+            Path datasetRoot;
+
+            if (Files.isRegularFile(directPath)) {
+                dataFile = directPath;
+                datasetRoot = dataFile.getParent();
+                meta.put("id", dataFile.getFileName().toString());
+                meta.put("format", inferFormat(dataFile));
+                meta.put("task", "training");
+                meta.put("filePath", dataFile.toString());
+            } else {
+                datasetRoot = Paths.get(System.getProperty("user.home"), ".kompile", "datasets", datasetId);
+                Path metaFile = datasetRoot.resolve("meta.json");
+                if (!Files.isRegularFile(metaFile)) {
+                    throw new IllegalArgumentException("Dataset metadata not found for id/path: " + datasetId);
+                }
+                meta = OBJECT_MAPPER.readValue(metaFile.toFile(), Map.class);
+                Object filePath = meta.get("filePath");
+                if (filePath instanceof String s && !s.isBlank()) {
+                    dataFile = Paths.get(s).toAbsolutePath().normalize();
+                } else {
+                    dataFile = findFirstDatasetFile(datasetRoot);
+                }
+            }
+
+            if (!Files.isRegularFile(dataFile)) {
+                throw new IllegalArgumentException("Dataset file not found: " + dataFile);
+            }
+
+            String format = stringValue(meta.get("format"));
+            if (format == null || format.isBlank()) {
+                format = inferFormat(dataFile);
+            }
+            String task = stringValue(meta.getOrDefault("task", "training"));
+            List<TrainingSample> samples = readTrainingSamples(dataFile, format, meta);
+            if (samples.isEmpty()) {
+                throw new IllegalArgumentException("Dataset contains no readable rows: " + dataFile);
+            }
+
+            logger.info("Loaded training dataset {}: {} samples from {}", datasetId, samples.size(), dataFile);
+            return new DatasetView(datasetId, datasetRoot, dataFile, format, task, meta, samples);
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to load training dataset '" + datasetId + "': " + e.getMessage(), e);
+        }
+    }
+
+    private static Path findFirstDatasetFile(Path datasetRoot) throws Exception {
+        try (var files = Files.list(datasetRoot)) {
+            return files
+                    .filter(Files::isRegularFile)
+                    .filter(path -> !path.getFileName().toString().equals("meta.json"))
+                    .findFirst()
+                    .orElseThrow(() -> new IllegalArgumentException("No dataset data file found in " + datasetRoot));
+        }
+    }
+
+    private static List<TrainingSample> readTrainingSamples(Path dataFile, String format, Map<String, Object> meta) throws Exception {
+        String normalized = format != null ? format.toLowerCase(Locale.ROOT) : inferFormat(dataFile);
+        if ("jsonl".equals(normalized) || dataFile.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".jsonl")) {
+            return readJsonlSamples(dataFile, meta);
+        }
+        if ("json".equals(normalized)) {
+            return readJsonSamples(dataFile, meta);
+        }
+        if ("csv".equals(normalized)) {
+            return readDelimitedSamples(dataFile, meta, ',');
+        }
+        if ("tsv".equals(normalized)) {
+            return readDelimitedSamples(dataFile, meta, '\t');
+        }
+        return readRawTextSamples(dataFile, meta);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<TrainingSample> readJsonSamples(Path dataFile, Map<String, Object> meta) throws Exception {
+        Object parsed = OBJECT_MAPPER.readValue(dataFile.toFile(), Object.class);
+        List<TrainingSample> samples = new ArrayList<>();
+        if (parsed instanceof List<?> rows) {
+            for (Object row : rows) {
+                if (row instanceof Map<?, ?> map) {
+                    samples.add(sampleFromMap((Map<String, Object>) map, meta));
+                } else {
+                    samples.add(sampleFromScalar(row));
+                }
+                if (samples.size() >= MAX_DATASET_ROWS_IN_MEMORY) break;
+            }
+        } else if (parsed instanceof Map<?, ?> map) {
+            Object rows = map.get("rows");
+            if (!(rows instanceof List<?>)) rows = map.get("data");
+            if (rows instanceof List<?> list) {
+                for (Object row : list) {
+                    if (row instanceof Map<?, ?> rowMap) {
+                        samples.add(sampleFromMap((Map<String, Object>) rowMap, meta));
+                    } else {
+                        samples.add(sampleFromScalar(row));
+                    }
+                    if (samples.size() >= MAX_DATASET_ROWS_IN_MEMORY) break;
+                }
+            } else {
+                samples.add(sampleFromMap((Map<String, Object>) map, meta));
+            }
+        } else if (parsed != null) {
+            samples.add(sampleFromScalar(parsed));
+        }
+        return samples;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<TrainingSample> readJsonlSamples(Path dataFile, Map<String, Object> meta) throws Exception {
+        List<TrainingSample> samples = new ArrayList<>();
+        try (BufferedReader reader = Files.newBufferedReader(dataFile, StandardCharsets.UTF_8)) {
+            String line;
+            long lineNumber = 0;
+            while ((line = reader.readLine()) != null && samples.size() < MAX_DATASET_ROWS_IN_MEMORY) {
+                lineNumber++;
+                if (line.isBlank()) continue;
+                try {
+                    Object parsed = OBJECT_MAPPER.readValue(line, Object.class);
+                    if (parsed instanceof Map<?, ?> map) {
+                        samples.add(sampleFromMap((Map<String, Object>) map, meta));
+                    } else {
+                        samples.add(sampleFromScalar(parsed));
+                    }
+                } catch (Exception e) {
+                    throw new IllegalArgumentException("Invalid JSONL record at " + dataFile + ":" + lineNumber
+                            + ": " + e.getMessage(), e);
+                }
+            }
+        }
+        return samples;
+    }
+
+    private static List<TrainingSample> readDelimitedSamples(Path dataFile, Map<String, Object> meta, char delimiter) throws Exception {
+        List<TrainingSample> samples = new ArrayList<>();
+        try (BufferedReader reader = Files.newBufferedReader(dataFile, StandardCharsets.UTF_8)) {
+            String header = reader.readLine();
+            if (header == null) return samples;
+            List<String> headers = parseDelimitedLine(header, delimiter);
+
+            String line;
+            while ((line = reader.readLine()) != null && samples.size() < MAX_DATASET_ROWS_IN_MEMORY) {
+                if (line.isBlank()) continue;
+                List<String> values = parseDelimitedLine(line, delimiter);
+                Map<String, Object> row = new LinkedHashMap<>();
+                for (int i = 0; i < headers.size(); i++) {
+                    row.put(headers.get(i), i < values.size() ? values.get(i) : "");
+                }
+                samples.add(sampleFromMap(row, meta));
+            }
+        }
+        return samples;
+    }
+
+    private static List<String> parseDelimitedLine(String line, char delimiter) {
+        List<String> values = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        boolean quoted = false;
+        for (int i = 0; i < line.length(); i++) {
+            char c = line.charAt(i);
+            if (c == '"') {
+                if (quoted && i + 1 < line.length() && line.charAt(i + 1) == '"') {
+                    current.append('"');
+                    i++;
+                } else {
+                    quoted = !quoted;
+                }
+            } else if (c == delimiter && !quoted) {
+                values.add(current.toString());
+                current.setLength(0);
+            } else {
+                current.append(c);
+            }
+        }
+        values.add(current.toString());
+        return values;
+    }
+
+    private static List<TrainingSample> readRawTextSamples(Path dataFile, Map<String, Object> meta) throws Exception {
+        List<TrainingSample> samples = new ArrayList<>();
+        try (BufferedReader reader = Files.newBufferedReader(dataFile, StandardCharsets.UTF_8)) {
+            String line;
+            while ((line = reader.readLine()) != null && samples.size() < MAX_DATASET_ROWS_IN_MEMORY) {
+                if (!line.isBlank()) {
+                    samples.add(sampleFromScalar(line));
+                }
+            }
+        }
+        return samples;
+    }
+
+    private static TrainingSample sampleFromMap(Map<String, Object> row, Map<String, Object> meta) {
+        String configuredInput = stringValue(meta.get("inputColumn"));
+        String configuredOutput = stringValue(meta.get("outputColumn"));
+        Object input = firstPresent(row, configuredInput, INPUT_FIELD_CANDIDATES);
+        Object output = firstPresent(row, configuredOutput, OUTPUT_FIELD_CANDIDATES);
+        Object chosen = firstPresent(row, stringValue(meta.get("chosenColumn")), CHOSEN_FIELD_CANDIDATES);
+        Object rejected = firstPresent(row, stringValue(meta.get("rejectedColumn")), REJECTED_FIELD_CANDIDATES);
+        Object score = firstPresent(row, null, SCORE_FIELD_CANDIDATES);
+
+        // OpenAI/ShareGPT-style SFT records carry the prompt and target in a
+        // messages/conversations array instead of top-level columns.
+        if (input == null && output == null && configuredInput == null && configuredOutput == null) {
+            Object conversation = row.containsKey("messages") ? row.get("messages") : row.get("conversations");
+            TrainingSample chatSample = sampleFromConversation(
+                    conversation, chosen, rejected, score, row);
+            if (chatSample != null) {
+                return chatSample;
+            }
+        }
+
+        // Alpaca-style rows have both an instruction and an optional input context.
+        // The generic candidate order otherwise selects only the context and drops
+        // the instruction that defines the task.
+        if ((configuredInput == null || configuredInput.isBlank()) && row.get("instruction") != null) {
+            String instruction = renderContent(row.get("instruction"));
+            String context = renderContent(row.get("input"));
+            input = context.isBlank() ? instruction : instruction + "\n\nInput:\n" + context;
+        }
+
+        if (input == null) input = firstPresent(row, null, NUMERIC_VECTOR_FIELD_CANDIDATES);
+        if (output == null && chosen != null) output = chosen;
+        if (input == null && !row.isEmpty()) input = row.values().iterator().next();
+        if (output == null) output = input;
+        return new TrainingSample(
+                input, output, chosen, rejected, score, new LinkedHashMap<>(row));
+    }
+
+    private static TrainingSample sampleFromConversation(Object rawConversation, Object chosen,
+                                                         Object rejected, Object score,
+                                                         Map<String, Object> fields) {
+        if (!(rawConversation instanceof List<?> messages) || messages.isEmpty()) {
+            return null;
+        }
+
+        int targetIndex = -1;
+        for (int i = messages.size() - 1; i >= 0; i--) {
+            Object item = messages.get(i);
+            if (item instanceof Map<?, ?> message && isAssistantRole(messageRole(message))) {
+                targetIndex = i;
+                break;
+            }
+        }
+
+        String prompt = renderConversation(messages, targetIndex);
+        String target = targetIndex >= 0 && messages.get(targetIndex) instanceof Map<?, ?> message
+                ? renderContent(messageContent(message))
+                : prompt;
+        return new TrainingSample(
+                prompt, target, chosen, rejected, score, new LinkedHashMap<>(fields));
+    }
+
+    private static String renderConversation(List<?> messages, int excludedIndex) {
+        StringBuilder prompt = new StringBuilder();
+        for (int i = 0; i < messages.size(); i++) {
+            if (i == excludedIndex) continue;
+            Object item = messages.get(i);
+            if (item instanceof Map<?, ?> message) {
+                String content = renderContent(messageContent(message));
+                if (content.isBlank()) continue;
+                if (prompt.length() > 0) prompt.append('\n');
+                prompt.append(displayRole(messageRole(message))).append(": ").append(content);
+            } else {
+                String content = renderContent(item);
+                if (!content.isBlank()) {
+                    if (prompt.length() > 0) prompt.append('\n');
+                    prompt.append(content);
+                }
+            }
+        }
+        if (excludedIndex >= 0) {
+            if (prompt.length() > 0) prompt.append('\n');
+            prompt.append("Assistant:");
+        }
+        return prompt.toString();
+    }
+
+    private static Object messageContent(Map<?, ?> message) {
+        if (message.containsKey("content")) return message.get("content");
+        if (message.containsKey("value")) return message.get("value");
+        return message.get("text");
+    }
+
+    private static String messageRole(Map<?, ?> message) {
+        Object role = message.containsKey("role") ? message.get("role") : message.get("from");
+        return role != null ? String.valueOf(role) : "user";
+    }
+
+    private static boolean isAssistantRole(String role) {
+        String normalized = role.toLowerCase(Locale.ROOT);
+        return normalized.equals("assistant") || normalized.equals("gpt")
+                || normalized.equals("model") || normalized.equals("bot");
+    }
+
+    private static String displayRole(String role) {
+        String normalized = role.toLowerCase(Locale.ROOT);
+        if (isAssistantRole(normalized)) return "Assistant";
+        if (normalized.equals("system")) return "System";
+        if (normalized.equals("tool")) return "Tool";
+        return "User";
+    }
+
+    private static String renderContent(Object value) {
+        if (value == null) return "";
+        if (value instanceof String text) return text;
+        if (value instanceof List<?> parts) {
+            StringBuilder text = new StringBuilder();
+            for (Object part : parts) {
+                Object content = part;
+                if (part instanceof Map<?, ?> map) {
+                    if (map.containsKey("text")) content = map.get("text");
+                    else if (map.containsKey("content")) content = map.get("content");
+                    else continue;
+                }
+                String rendered = renderContent(content);
+                if (!rendered.isBlank()) {
+                    if (text.length() > 0) text.append(' ');
+                    text.append(rendered);
+                }
+            }
+            return text.toString();
+        }
+        return String.valueOf(value);
+    }
+
+    private static TrainingSample sampleFromScalar(Object value) {
+        return new TrainingSample(value, value, null, null, null, Collections.emptyMap());
+    }
+
+    private static Object firstPresent(Map<String, Object> row, String configuredColumn, List<String> candidates) {
+        if (configuredColumn != null && !configuredColumn.isBlank() && row.containsKey(configuredColumn)) {
+            return row.get(configuredColumn);
+        }
+        for (String candidate : candidates) {
+            if (row.containsKey(candidate)) return row.get(candidate);
+        }
+        for (Map.Entry<String, Object> entry : row.entrySet()) {
+            String key = entry.getKey().toLowerCase(Locale.ROOT);
+            for (String candidate : candidates) {
+                String normalized = candidate.toLowerCase(Locale.ROOT);
+                if (key.equals(normalized) || key.endsWith("_" + normalized)) {
+                    return entry.getValue();
+                }
+            }
+        }
+        return null;
+    }
+
+    private static List<TrainingSample> nextDatasetBatch(DatasetView dataset, String mode, int batchSize) {
+        int effectiveBatchSize = Math.max(MIN_TRAINING_BATCH_SIZE, batchSize);
+        String cursorKey = dataset.id() + "|" + mode;
+        int start;
+        synchronized (DATASET_CURSORS) {
+            start = DATASET_CURSORS.getOrDefault(cursorKey, 0);
+            DATASET_CURSORS.put(cursorKey, start + effectiveBatchSize);
+        }
+        return datasetBatch(dataset, start, effectiveBatchSize);
+    }
+
+    private static List<TrainingSample> datasetBatch(DatasetView dataset, int start, int batchSize) {
+        int effectiveBatchSize = Math.max(MIN_TRAINING_BATCH_SIZE, batchSize);
+        List<TrainingSample> samples = dataset.samples();
+        if (samples.isEmpty()) {
+            throw new IllegalArgumentException("Dataset contains no training samples: " + dataset.id());
+        }
+        List<TrainingSample> batch = new ArrayList<>(effectiveBatchSize);
+        for (int i = 0; i < effectiveBatchSize; i++) {
+            batch.add(samples.get(Math.floorMod(start + i, samples.size())));
+        }
+        return batch;
+    }
+
+    private static long[] resolveVariableBatchShape(SameDiff sd, String variableName, int batchSize,
+                                                     List<TrainingSample> batch) {
+        long[] shape = null;
+        if (sd != null && variableName != null) {
+            try {
+                SDVariable variable = sd.getVariable(variableName);
+                if (variable != null) shape = variable.getShape();
+            } catch (Exception ignored) {
+                // Fall back below.
+            }
+        }
+        int effectiveBatchSize = Math.max(MIN_TRAINING_BATCH_SIZE, batchSize);
+        if (shape == null || shape.length == 0) {
+            return new long[]{effectiveBatchSize, inferSequenceWidth(variableName, batch)};
+        }
+        long[] resolved = shape.clone();
+        resolved[0] = effectiveBatchSize;
+        for (int i = 1; i < resolved.length; i++) {
+            if (resolved[i] <= 0) {
+                resolved[i] = i == 1 ? inferSequenceWidth(variableName, batch) : 1;
+            }
+        }
+        return resolved;
+    }
+
+    private static int inferSequenceWidth(String variableName, List<TrainingSample> batch) {
+        int configuredMaximum = configuredMaximumSequenceLength();
+        int width = 1;
+        for (TrainingSample sample : batch) {
+            Object value = sampleValue(sample, variableName, true);
+            int candidate = sequenceLength(value);
+            if (candidate > 0) {
+                width = Math.max(width, Math.min(candidate, configuredMaximum));
+            }
+        }
+        return width;
+    }
+
+    private static int configuredMaximumSequenceLength() {
+        TrainingSubprocessArgs args = currentArgs;
+        if (args != null && args.options() != null) {
+            for (String key : List.of("maxSequenceLength", "maxSeqLength", "sequenceLength")) {
+                Object value = args.options().get(key);
+                if (value instanceof Number number && number.intValue() > 0) {
+                    return number.intValue();
+                }
+            }
+        }
+        return 512;
+    }
+
+    private static int sequenceLength(Object value) {
+        if (value == null) return 0;
+        if (value instanceof Collection<?> collection) return collection.size();
+        if (value.getClass().isArray()) return java.lang.reflect.Array.getLength(value);
+        if (value instanceof String text) {
+            return getTrainingTokenizer().encode(text, false).getIds().length;
+        }
+        return 1;
+    }
+
+    private static DataType resolveVariableDataType(SameDiff sd, String variableName) {
+        if (sd != null && variableName != null) {
+            try {
+                SDVariable variable = sd.getVariable(variableName);
+                if (variable != null) {
+                    DataType dt = variable.dataType();
+                    if (dt != null) return dt;
+                }
+            } catch (Exception ignored) {
+                // Fall back below.
+            }
+        }
+        return DataType.FLOAT;
+    }
+
+    private static void fillArray(INDArray array, String variableName, List<TrainingSample> batch, boolean input) {
+        long batchSize = Math.max(1, array.size(0));
+        long rowWidth = Math.max(1, array.length() / batchSize);
+        INDArray flat = array.ravel();
+        for (int row = 0; row < batchSize; row++) {
+            TrainingSample sample = batch.get(row % batch.size());
+            Object value = flattenSequenceValue(sampleValue(sample, variableName, input));
+            if (!input && fillCategoricalLabelRow(array, flat, row, rowWidth, value)) {
+                continue;
+            }
+            for (long col = 0; col < rowWidth; col++) {
+                double scalar = scalarFor(value, variableName, col);
+                flat.putScalar(row * rowWidth + col, scalar);
+            }
+        }
+    }
+
+    private static boolean fillCategoricalLabelRow(INDArray array, INDArray flat, int row,
+                                                    long rowWidth, Object value) {
+        if (array.rank() < 2) return false;
+        long classes = array.size(array.rank() - 1);
+        if (classes <= 1 || rowWidth % classes != 0) return false;
+
+        int[] classIds;
+        if (value instanceof String text) {
+            classIds = getTrainingTokenizer().encode(text, false).getIds();
+        } else if (value instanceof Number number) {
+            classIds = new int[]{number.intValue()};
+        } else if (value instanceof List<?> list) {
+            if (list.size() == rowWidth || list.isEmpty()) return false;
+            classIds = new int[list.size()];
+            for (int i = 0; i < list.size(); i++) {
+                Object item = list.get(i);
+                if (!(item instanceof Number number)) return false;
+                classIds[i] = number.intValue();
+            }
+        } else {
+            return false;
+        }
+
+        long positions = rowWidth / classes;
+        for (int position = 0; position < Math.min(classIds.length, positions); position++) {
+            int classId = classIds[position];
+            if (classId < 0 || classId >= classes) {
+                throw new IllegalArgumentException("Label token/class id " + classId
+                        + " is outside model output class dimension " + classes
+                        + "; provide numeric JSONL labels compatible with the model output");
+            }
+            flat.putScalar(row * rowWidth + position * classes + classId, 1.0);
+        }
+        return true;
+    }
+
+    private static Object sampleValue(TrainingSample sample, String variableName, boolean input) {
+        Object explicitValue = fieldForVariable(sample.fields(), variableName);
+        if (explicitValue != null) return explicitValue;
+
+        String lower = normalizeVariableFieldName(variableName);
+        if (lower.contains("chosen")) {
+            return sample.chosenValue() != null ? sample.chosenValue() : sample.inputValue();
+        }
+        if (lower.contains("reject")) {
+            return sample.rejectedValue() != null ? sample.rejectedValue() : sample.labelValue();
+        }
+        if (lower.contains("reward") || lower.contains("score")) {
+            return sample.scoreValue() != null ? sample.scoreValue() : sample.labelValue();
+        }
+        if (input) return sample.inputValue();
+        return sample.labelValue() != null ? sample.labelValue() : sample.inputValue();
+    }
+
+    private static Object fieldForVariable(Map<?, ?> fields, String variableName) {
+        if (fields == null || fields.isEmpty() || variableName == null || variableName.isBlank()) {
+            return null;
+        }
+        String target = normalizeVariableFieldName(variableName);
+        for (Map.Entry<?, ?> entry : fields.entrySet()) {
+            String field = normalizeVariableFieldName(String.valueOf(entry.getKey()));
+            if (target.equals(field)) return entry.getValue();
+        }
+        for (Map.Entry<?, ?> entry : fields.entrySet()) {
+            String field = normalizeVariableFieldName(String.valueOf(entry.getKey()));
+            if (target.endsWith("/" + field) || target.endsWith("_" + field)
+                    || target.endsWith("." + field)) {
+                return entry.getValue();
+            }
+        }
+        for (Object value : fields.values()) {
+            if (value instanceof Map<?, ?> nested) {
+                Object nestedValue = fieldForVariable(nested, variableName);
+                if (nestedValue != null) return nestedValue;
+            }
+        }
+        return null;
+    }
+
+    private static String normalizeVariableFieldName(String name) {
+        if (name == null) return "";
+        String normalized = name.trim().toLowerCase(Locale.ROOT);
+        int outputSuffix = normalized.lastIndexOf(':');
+        if (outputSuffix > 0) {
+            boolean numericSuffix = true;
+            for (int i = outputSuffix + 1; i < normalized.length(); i++) {
+                if (!Character.isDigit(normalized.charAt(i))) {
+                    numericSuffix = false;
+                    break;
+                }
+            }
+            if (numericSuffix) normalized = normalized.substring(0, outputSuffix);
+        }
+        return normalized;
+    }
+
+    private static Object flattenSequenceValue(Object value) {
+        if (!(value instanceof Collection<?>) && (value == null || !value.getClass().isArray())) {
+            return value;
+        }
+        List<Object> flattened = new ArrayList<>();
+        appendSequenceValues(value, flattened);
+        return flattened;
+    }
+
+    private static void appendSequenceValues(Object value, List<Object> flattened) {
+        if (value instanceof Collection<?> collection) {
+            for (Object item : collection) appendSequenceValues(item, flattened);
+        } else if (value != null && value.getClass().isArray()) {
+            int length = java.lang.reflect.Array.getLength(value);
+            for (int i = 0; i < length; i++) {
+                appendSequenceValues(java.lang.reflect.Array.get(value, i), flattened);
+            }
+        } else {
+            flattened.add(value);
+        }
+    }
+
+    private static double scalarFor(Object value, String variableName, long position) {
+        if (value == null) return 0.0;
+        if (value instanceof Number number) return number.doubleValue();
+        if (value instanceof Boolean bool) return bool ? 1.0 : 0.0;
+        if (value instanceof List<?> list) {
+            if (position >= list.size()) return 0.0;
+            return scalarFor(list.get((int) position), variableName, 0);
+        }
+        if (value.getClass().isArray()) {
+            int length = java.lang.reflect.Array.getLength(value);
+            if (position >= length) return 0.0;
+            return scalarFor(java.lang.reflect.Array.get(value, (int) position), variableName, 0);
+        }
+        if (value instanceof Map<?, ?> map && !map.isEmpty()) {
+            Object named = fieldForVariable(map, variableName);
+            return scalarFor(named != null ? named : map.values().iterator().next(), variableName, position);
+        }
+        String text = String.valueOf(value);
+        String lower = normalizeVariableFieldName(variableName);
+        if (lower.contains("mask")) {
+            return maskValue(text, position);
+        }
+        return tokenId(text, position);
+    }
+
+    private static double maskValue(Object value, long position) {
+        if (value == null) return 0.0;
+        int[] ids = getTrainingTokenizer().encode(String.valueOf(value), false).getIds();
+        return position < ids.length ? 1.0 : 0.0;
+    }
+
+    private static double tokenId(String text, long position) {
+        Encoding encoding = getTrainingTokenizer().encode(text != null ? text : "", false);
+        int[] ids = encoding.getIds();
+        return position < ids.length ? ids[(int) position] : 0.0;
+    }
+
+    private static double hashedTextFeature(String text, long position) {
+        String[] tokens = tokens(text);
+        String token = tokens[(int) (position % tokens.length)];
+        int hash = Math.floorMod(Objects.hash(token, position / tokens.length), 20001);
+        return (hash / 10000.0) - 1.0;
+    }
+
+    private static String[] tokens(String text) {
+        String normalized = text == null ? "" : text.trim();
+        if (normalized.isEmpty()) return new String[]{"<blank>"};
+        return normalized.split("\\s+");
+    }
+
+    private static Double numericScore(Object value) {
+        if (value instanceof Number number) return number.doubleValue();
+        if (value instanceof Boolean bool) return bool ? 1.0 : 0.0;
+        if (value instanceof String s) {
+            try {
+                return Double.parseDouble(s.trim());
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private static double textSignal(Object value) {
+        if (value == null) return 0.0;
+        if (value instanceof Number number) return number.doubleValue();
+        String text = String.valueOf(value);
+        return Math.abs(hashedTextFeature(text, 0)) + tokens(text).length * 0.001;
+    }
+
+    private static String inferFormat(Path dataFile) {
+        String name = dataFile.getFileName().toString().toLowerCase(Locale.ROOT);
+        int dot = name.lastIndexOf('.');
+        return dot >= 0 ? name.substring(dot + 1) : "txt";
+    }
+
+    private static String stringValue(Object value) {
+        return value != null ? String.valueOf(value) : null;
+    }
+
+    private record DatasetView(String id, Path datasetRoot, Path dataFile, String format, String task,
+                               Map<String, Object> meta, List<TrainingSample> samples) {}
+
+    private record TrainingSample(Object inputValue, Object labelValue, Object chosenValue,
+                                  Object rejectedValue, Object scoreValue,
+                                  Map<String, Object> fields) {}
+
+    private static IllegalStateException missingTrainingModel(String mode, TrainingSubprocessArgs args) {
+        return new IllegalStateException("No SameDiff model available for " + mode + " training: " + args.modelId());
+    }
+
+    private static UnsupportedOperationException missingDatasetLoader(String mode, TrainingSubprocessArgs args) {
+        String datasetId = args != null && args.datasetId() != null && !args.datasetId().isBlank()
+                ? args.datasetId()
+                : "<none>";
+        return new UnsupportedOperationException(mode + " training requires a datasetId or dataset file path; datasetId=" + datasetId);
+    }
+
+    private static Path writeTrainingArtifactManifest(TrainingSubprocessArgs args,
+                                                      String processType,
+                                                      String outputPath,
+                                                      String modelFileName,
+                                                      Map<String, Double> finalMetrics,
+                                                      Map<String, Object> processConfig) throws Exception {
+        Path outputDir = Paths.get(outputPath).toAbsolutePath().normalize();
+        Files.createDirectories(outputDir);
+
+        Path modelFile = outputDir.resolve(modelFileName).normalize();
+        Path manifestPath = outputDir.resolve(TRAINING_ARTIFACT_MANIFEST_FILE).normalize();
+        boolean modelFilePresent = Files.isRegularFile(modelFile);
+        String trainedModelId = deriveTrainedModelId(args, processType);
+
+        Map<String, Object> manifest = new LinkedHashMap<>();
+        manifest.put("schemaVersion", TRAINING_ARTIFACT_SCHEMA_VERSION);
+        manifest.put("createdAt", Instant.now().toString());
+        manifest.put("taskId", args.taskId());
+        manifest.put("baseModelId", args.modelId());
+        manifest.put("trainedModelId", trainedModelId);
+        manifest.put("trainingType", normalizeTrainingType(processType));
+        manifest.put("dataset", datasetManifest(args));
+        manifest.put("outputDir", outputDir.toString());
+        manifest.put("manifestFile", TRAINING_ARTIFACT_MANIFEST_FILE);
+        manifest.put("modelFile", modelFileName);
+        manifest.put("modelPath", modelFile.toString());
+        manifest.put("modelFormat", inferModelArtifactFormat(modelFileName));
+        manifest.put("deployable", modelFilePresent);
+        manifest.put("exportable", modelFilePresent);
+        manifest.put("registryEligible", modelFilePresent);
+        manifest.put("registrySuggestion", registrySuggestion(trainedModelId, modelFileName, outputDir));
+        manifest.put("trainingConfig", trainingConfigManifest(args, processConfig));
+        manifest.put("metrics", finalMetrics != null ? new LinkedHashMap<>(finalMetrics) : Collections.emptyMap());
+        List<Map<String, Object>> artifacts = new ArrayList<>();
+        artifacts.add(artifactManifest("model", outputDir, modelFile));
+        for (String trainingGraphName : List.of("model.fb", "student_model.fb")) {
+            Path trainingGraph = outputDir.resolve(trainingGraphName);
+            if (!trainingGraph.equals(modelFile) && Files.isRegularFile(trainingGraph)) {
+                artifacts.add(artifactManifest("peft_training_graph", outputDir, trainingGraph));
+            }
+        }
+        Path adapterDir = outputDir.resolve("adapter");
+        if (Files.isDirectory(adapterDir)) {
+            artifacts.add(artifactManifest("adapter", outputDir, adapterDir));
+        }
+        manifest.put("artifacts", artifacts);
+
+        OBJECT_MAPPER.writeValue(manifestPath.toFile(), manifest);
+        return manifestPath;
+    }
+
+    private static Map<String, Object> datasetManifest(TrainingSubprocessArgs args) {
+        Map<String, Object> info = new LinkedHashMap<>();
+        String datasetId = args != null ? args.datasetId() : null;
+        info.put("datasetId", datasetId);
+        if (datasetId == null || datasetId.isBlank()) {
+            return info;
+        }
+
+        try {
+            DatasetView dataset = loadDataset(args);
+            info.put("resolvedId", dataset.id());
+            info.put("format", dataset.format());
+            info.put("task", dataset.task());
+            info.put("dataFile", dataset.dataFile().toString());
+            info.put("datasetRoot", dataset.datasetRoot() != null ? dataset.datasetRoot().toString() : null);
+            info.put("sampleCount", dataset.samples().size());
+            Map<String, Object> columns = new LinkedHashMap<>();
+            copyIfPresent(dataset.meta(), columns, "inputColumn");
+            copyIfPresent(dataset.meta(), columns, "outputColumn");
+            copyIfPresent(dataset.meta(), columns, "chosenColumn");
+            copyIfPresent(dataset.meta(), columns, "rejectedColumn");
+            copyIfPresent(dataset.meta(), columns, "trainSplit");
+            if (!columns.isEmpty()) info.put("columns", columns);
+        } catch (Exception e) {
+            info.put("resolutionError", e.getMessage());
+        }
+        return info;
+    }
+
+    private static Map<String, Object> trainingConfigManifest(TrainingSubprocessArgs args,
+                                                              Map<String, Object> processConfig) {
+        Map<String, Object> config = new LinkedHashMap<>();
+        config.put("epochs", args.epochs());
+        config.put("batchSize", args.batchSize());
+        config.put("gradientAccumulationSteps", args.gradientAccumulationSteps());
+        config.put("learningRate", args.learningRate());
+        config.put("lrSchedule", args.lrSchedule());
+        config.put("warmupRatio", args.warmupRatio());
+        config.put("maxSteps", args.maxSteps());
+        config.put("maxGradNorm", args.maxGradNorm());
+        config.put("fp16", args.fp16());
+        config.put("bf16", args.bf16());
+        config.put("loggingSteps", args.loggingSteps());
+        config.put("saveSteps", args.saveSteps());
+        config.put("evalSteps", args.evalSteps());
+        config.put("seed", args.seed());
+
+        putParsedConfig(config, "peftConfig", args.peftConfigJson());
+        putParsedConfig(config, "updaterConfig", args.updaterConfigJson());
+        putParsedConfig(config, "distillationConfig", args.distillationConfigJson());
+        putParsedConfig(config, "alignmentConfig", args.alignmentConfigJson());
+        if (processConfig != null && !processConfig.isEmpty()) {
+            config.put("processConfig", new LinkedHashMap<>(processConfig));
+        }
+        if (args.options() != null && !args.options().isEmpty()) {
+            config.put("options", new LinkedHashMap<>(args.options()));
+        }
+        return config;
+    }
+
+    private static void putParsedConfig(Map<String, Object> target, String key, String json) {
+        Map<String, Object> parsed = parseJsonConfig(json);
+        if (!parsed.isEmpty()) {
+            target.put(key, parsed);
+        }
+    }
+
+    private static Map<String, Object> registrySuggestion(String trainedModelId, String modelFileName, Path outputDir) {
+        Map<String, Object> suggestion = new LinkedHashMap<>();
+        suggestion.put("modelId", trainedModelId);
+        suggestion.put("status", "STAGED");
+        suggestion.put("path", "trained/" + trainedModelId);
+        suggestion.put("modelFile", modelFileName);
+        suggestion.put("sourceOutputDir", outputDir.toString());
+        return suggestion;
+    }
+
+    private static Map<String, Object> artifactManifest(String role, Path root, Path file) throws Exception {
+        Map<String, Object> artifact = new LinkedHashMap<>();
+        artifact.put("role", role);
+        artifact.put("path", file.toString());
+        artifact.put("relativePath", relativePath(root, file));
+        artifact.put("exists", Files.exists(file));
+        artifact.put("file", Files.isRegularFile(file));
+        if (Files.isRegularFile(file)) {
+            artifact.put("sizeBytes", Files.size(file));
+        }
+        return artifact;
+    }
+
+    private static String deriveTrainedModelId(TrainingSubprocessArgs args, String processType) {
+        Object configured = args.options() != null ? args.options().get("trainedModelId") : null;
+        if (configured == null && args.options() != null) {
+            configured = args.options().get("targetModelId");
+        }
+        if (configured != null && !String.valueOf(configured).isBlank()) {
+            return sanitizeModelId(String.valueOf(configured));
+        }
+        return sanitizeModelId(args.modelId() + "-" + processType + "-" + args.taskId());
+    }
+
+    private static String sanitizeModelId(String value) {
+        String sanitized = value == null ? "" : value.toLowerCase(Locale.ROOT)
+                .replaceAll("[^a-z0-9._-]+", "-")
+                .replaceAll("-+", "-")
+                .replaceAll("^-|-$", "");
+        return sanitized.isBlank() ? "trained-model" : sanitized;
+    }
+
+    private static String normalizeTrainingType(String processType) {
+        return processType != null ? processType.toUpperCase(Locale.ROOT) : "FINETUNE";
+    }
+
+    private static String inferModelArtifactFormat(String modelFileName) {
+        String lower = modelFileName != null ? modelFileName.toLowerCase(Locale.ROOT) : "";
+        if (lower.endsWith(".fb")) return "SAMEDIFF_FLATBUFFERS";
+        if (lower.endsWith(".sdz")) return "SDX_BUNDLE";
+        if (lower.endsWith(".gguf")) return "GGUF";
+        return "UNKNOWN";
+    }
+
+    private static String relativePath(Path root, Path file) {
+        try {
+            return root.relativize(file).toString();
+        } catch (IllegalArgumentException e) {
+            return file.getFileName().toString();
+        }
+    }
+
+    private static void copyIfPresent(Map<String, Object> source, Map<String, Object> target, String key) {
+        if (source != null && source.containsKey(key)) {
+            target.put(key, source.get(key));
+        }
     }
 
     private static double extractLoss(SameDiff sd) {
@@ -1307,59 +2272,28 @@ public class TrainingSubprocessMain {
         return Double.NaN;
     }
 
-    private static INDArray softmax(INDArray logits) {
-        INDArray max = logits.max(true, -1);
-        INDArray shifted = logits.sub(max);
-        INDArray exp = Nd4j.math().exp(shifted);
-        INDArray sum = exp.sum(true, -1);
-        max.close();
-        shifted.close();
-        INDArray result = exp.div(sum);
-        exp.close();
-        sum.close();
-        return result;
-    }
-
-    private static double computeKLDivergence(SameDiff student, List<String> inputNames,
-                                                INDArray[] features, INDArray softTargets,
-                                                double temperature) {
+    private static double computeDistillationLoss(SameDiff student, List<String> inputNames,
+                                                   INDArray[] features, INDArray teacherLogits) {
+        Map<String, INDArray> result = null;
         try {
             Map<String, INDArray> placeholders = new LinkedHashMap<>();
             for (int i = 0; i < Math.min(inputNames.size(), features.length); i++) {
                 placeholders.put(inputNames.get(i), features[i]);
             }
-            List<String> outputs = student.outputs();
-            if (outputs.isEmpty()) return Double.NaN;
-
-            Map<String, INDArray> result = student.output(placeholders, outputs.get(0));
-            INDArray studentLogits = result.get(outputs.get(0));
-            if (studentLogits == null) return Double.NaN;
-
-            INDArray studentSoft = softmax(studentLogits.div(temperature));
-            // KL(P||Q) = sum(P * log(P/Q))
-            INDArray ratio = softTargets.div(studentSoft.add(1e-10));
-            INDArray logRatio = Nd4j.math().log(ratio);
-            double kl = softTargets.mul(logRatio).sumNumber().doubleValue() / features[0].size(0);
-
-            studentSoft.close();
-            ratio.close();
-            logRatio.close();
-            for (INDArray arr : result.values()) arr.close();
-
-            return Math.max(0.0, kl);
-        } catch (Exception e) {
-            return Double.NaN;
-        }
-    }
-
-    private static int[][] generateRandomIntBatch(Random rng, int batchSize, int seqLen, int vocabSize) {
-        int[][] batch = new int[batchSize][seqLen];
-        for (int i = 0; i < batchSize; i++) {
-            for (int j = 0; j < seqLen; j++) {
-                batch[i][j] = rng.nextInt(vocabSize);
+            placeholders.put(DISTILLATION_TEACHER_LOGITS, teacherLogits);
+            result = student.output(placeholders, DISTILLATION_LOSS);
+            INDArray loss = result.get(DISTILLATION_LOSS);
+            if (loss == null || loss.isEmpty()) {
+                throw new IllegalStateException("Distillation loss output is missing");
+            }
+            return loss.getDouble(0);
+        } finally {
+            if (result != null) {
+                for (INDArray array : result.values()) {
+                    closeArray(array);
+                }
             }
         }
-        return batch;
     }
 
     static double computeLearningRate(double baseLr, double progress, String schedule, double warmupRatio) {
@@ -1558,5 +2492,38 @@ public class TrainingSubprocessMain {
         Object val = config.get(key);
         if (val instanceof List) return (List<String>) val;
         return null;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> nestedMap(Map<String, Object> config, String key) {
+        Object value = config.get(key);
+        if (value instanceof Map<?, ?> map) {
+            return (Map<String, Object>) map;
+        }
+        return Collections.emptyMap();
+    }
+
+    private static boolean getBooleanFromConfig(Map<String, Object> config, String key, boolean defaultValue) {
+        Object value = config.get(key);
+        if (value instanceof Boolean bool) return bool;
+        if (value instanceof String text) return Boolean.parseBoolean(text);
+        return defaultValue;
+    }
+
+    private static int positiveOrDefault(int value, int defaultValue) {
+        return value > 0 ? value : defaultValue;
+    }
+
+    private static DataType parseDataType(String value, DataType defaultValue) {
+        if (value == null || value.isBlank()) return defaultValue;
+        String normalized = value.trim().toUpperCase(Locale.ROOT);
+        if ("BF16".equals(normalized)) normalized = "BFLOAT16";
+        if ("FP16".equals(normalized)) normalized = "FLOAT16";
+        if ("FP32".equals(normalized)) normalized = "FLOAT";
+        try {
+            return DataType.valueOf(normalized);
+        } catch (IllegalArgumentException ignored) {
+            return defaultValue;
+        }
     }
 }

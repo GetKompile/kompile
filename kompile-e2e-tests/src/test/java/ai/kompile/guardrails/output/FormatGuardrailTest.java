@@ -39,7 +39,7 @@ class FormatGuardrailTest {
 
     @BeforeEach
     void setUp() {
-        properties = new GuardrailsProperties();
+        properties = new GuardrailsProperties(null);
         properties.getOutput().getFormat().setEnabled(true);
         guardrail = new FormatGuardrail(properties);
     }

@@ -576,29 +576,15 @@ public class BatchSizeConfigService {
 
         // Get batch sizes to test
         List<Integer> batchSizes = request.getBatchSizesToTestOrDefault();
-        int iterations = request.getIterationsOrDefault();
-        int warmupIterations = request.getWarmupIterationsOrDefault();
-        int timeoutSeconds = request.getTimeoutSecondsOrDefault();
+        String disabledMessage = "Batch-size benchmarking is disabled in the main app process; "
+                + "run calibration through the managed embedding subprocess/adaptive batcher.";
 
-        log.info("Starting batch size benchmark: model={}, batchSizes={}, iterations={}, warmup={}, texts={}",
-                modelId, batchSizes, iterations, warmupIterations, sampleTexts.size());
+        log.info("Refusing in-process batch size benchmark: model={}, batchSizes={}",
+                modelId, batchSizes);
 
-        // Run benchmarks
-        List<BatchSizeTestResult> results = new ArrayList<>();
-        int maxSafeBatchSize = 0;
-
-        for (int batchSize : batchSizes) {
-            BatchSizeTestResult result = runSingleBatchTest(
-                    model, sampleTexts, batchSize, iterations, warmupIterations, timeoutSeconds);
-            results.add(result);
-
-            if (result.success()) {
-                maxSafeBatchSize = Math.max(maxSafeBatchSize, batchSize);
-            }
-        }
-
-        // Calculate recommended batch size
-        int recommendedBatchSize = calculateRecommendedBatchSize(results);
+        List<BatchSizeTestResult> results = batchSizes.stream()
+                .map(batchSize -> BatchSizeTestResult.failure(batchSize, disabledMessage))
+                .toList();
 
         // Calculate average sequence length (rough estimate)
         int totalChars = sampleTexts.stream().mapToInt(String::length).sum();
@@ -614,8 +600,8 @@ public class BatchSizeConfigService {
                 .modelName(modelName)
                 .embeddingDimensions(dimensions)
                 .results(results)
-                .recommendedBatchSize(recommendedBatchSize)
-                .maxSafeBatchSize(maxSafeBatchSize)
+                .recommendedBatchSize(0)
+                .maxSafeBatchSize(0)
                 .testDurationMs(testDuration)
                 .systemInfo(systemInfo)
                 .sampleTextCount(sampleTexts.size())
@@ -633,82 +619,8 @@ public class BatchSizeConfigService {
             int iterations,
             int warmupIterations,
             int timeoutSeconds) {
-        log.debug("Testing batch size: {}", batchSize);
-
-        // Prepare batch of texts
-        List<String> batchTexts = new ArrayList<>();
-        while (batchTexts.size() < batchSize) {
-            batchTexts.addAll(sampleTexts);
-        }
-        batchTexts = batchTexts.subList(0, batchSize);
-
-        List<Long> times = new ArrayList<>();
-        long memoryBefore = getUsedMemory();
-        long peakMemory = memoryBefore;
-
-        try {
-            // Warmup iterations
-            for (int i = 0; i < warmupIterations; i++) {
-                model.embedBatch(batchTexts);
-            }
-
-            // Timed iterations
-            for (int i = 0; i < iterations; i++) {
-                // Check timeout
-                long start = System.currentTimeMillis();
-                List<float[]> results = model.embedBatch(batchTexts);
-                long elapsed = System.currentTimeMillis() - start;
-                times.add(elapsed);
-
-                if (results == null || results.isEmpty()) {
-                    return BatchSizeTestResult.failure(batchSize, "Model returned empty results");
-                }
-
-                // Track memory
-                long currentMemory = getUsedMemory();
-                peakMemory = Math.max(peakMemory, currentMemory);
-
-                // Check timeout
-                if (elapsed > TimeUnit.SECONDS.toMillis(timeoutSeconds)) {
-                    return BatchSizeTestResult.failure(batchSize,
-                            "Timeout: single batch took " + elapsed + "ms (limit: " + timeoutSeconds + "s)");
-                }
-            }
-
-            // Calculate statistics
-            double avgTimeMs = times.stream().mapToLong(Long::longValue).average().orElse(0);
-            double minTimeMs = times.stream().mapToLong(Long::longValue).min().orElse(0);
-            double maxTimeMs = times.stream().mapToLong(Long::longValue).max().orElse(0);
-            double stdDevMs = calculateStdDev(times, avgTimeMs);
-
-            // Calculate throughput
-            int totalChars = batchTexts.stream().mapToInt(String::length).sum();
-            int estimatedTokens = totalChars / 4; // rough estimate
-            double tokensPerSecond = avgTimeMs > 0 ? (estimatedTokens * 1000.0 / avgTimeMs) : 0;
-            double documentsPerSecond = avgTimeMs > 0 ? (batchSize * 1000.0 / avgTimeMs) : 0;
-
-            long memoryUsed = getUsedMemory() - memoryBefore;
-
-            return BatchSizeTestResult.success(
-                    batchSize,
-                    avgTimeMs,
-                    minTimeMs,
-                    maxTimeMs,
-                    stdDevMs,
-                    tokensPerSecond,
-                    documentsPerSecond,
-                    memoryUsed,
-                    peakMemory - memoryBefore,
-                    estimatedTokens * iterations,
-                    batchSize * iterations);
-
-        } catch (OutOfMemoryError e) {
-            System.gc(); // Try to recover
-            return BatchSizeTestResult.failure(batchSize, "Out of memory: " + e.getMessage());
-        } catch (Exception e) {
-            log.warn("Batch size {} test failed: {}", batchSize, e.getMessage());
-            return BatchSizeTestResult.failure(batchSize, e.getMessage());
-        }
+        return BatchSizeTestResult.failure(batchSize,
+                "Batch-size benchmarking is disabled in the main app process");
     }
 
     /**

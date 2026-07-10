@@ -9,6 +9,7 @@
  */
 package ai.kompile.graph.reasoning.psl;
 
+import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -40,9 +41,19 @@ import java.util.List;
  * @param distinct pairs of variable names constrained to differ ({@code A != B})
  */
 public record PslRule(double weight, boolean hard, boolean squared,
-                      List<PslAtom> body, List<PslAtom> head, List<String[]> distinct) {
+                      List<PslAtom> body, List<PslAtom> head, List<String[]> distinct) implements Serializable {
 
     public PslRule {
+        if (Double.isNaN(weight) || weight < 0.0) {
+            throw new IllegalArgumentException("Rule weight must be non-negative, got: " + weight);
+        }
+        if (weight == Double.POSITIVE_INFINITY) {
+            hard = true;
+            squared = true;
+        } else if (hard) {
+            weight = Double.POSITIVE_INFINITY;
+            squared = true;
+        }
         body = List.copyOf(body);
         head = List.copyOf(head);
         distinct = List.copyOf(distinct);

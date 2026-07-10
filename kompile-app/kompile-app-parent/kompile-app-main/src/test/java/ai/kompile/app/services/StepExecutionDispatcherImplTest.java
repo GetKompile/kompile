@@ -164,6 +164,17 @@ class StepExecutionDispatcherImplTest {
         assertEquals("http://dead-host/api", result.get("url"));
     }
 
+    // --- agent sessions ---
+
+    @Test
+    void executeAgentSessionFailsClearlyWithoutChatRuntime() {
+        IllegalStateException exception = assertThrows(IllegalStateException.class,
+                () -> dispatcher.executeAgentSession("triage", "Triage requests", null,
+                        Map.of("message", "charged twice")));
+
+        assertTrue(exception.getMessage().contains("ChatClient.Builder"));
+    }
+
     // --- executeScript ---
 
     @Test

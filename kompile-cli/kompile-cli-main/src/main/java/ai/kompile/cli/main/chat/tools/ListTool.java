@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.chat.tools;
 
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.utils.FormatUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -26,6 +27,7 @@ import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.LinkOption;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
@@ -39,6 +41,8 @@ import java.util.Map;
  */
 public class ListTool implements CliTool {
 
+    private static final int MAX_ENTRIES = 500;
+
     private static final DateTimeFormatter DATE_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
             .withZone(ZoneId.systemDefault());
 
@@ -49,6 +53,12 @@ public class ListTool implements CliTool {
     public String description() {
         return "List the contents of a directory with file metadata (size, type, modification time). " +
                 "Use this to explore project structure and understand directory layout.";
+    }
+
+    @Override
+    public String compactHint() {
+        return "List ONE directory (non-recursive) with sizes/mtimes. Use glob to search file "
+                + "names recursively, read for file contents, grep for contents by regex.";
     }
 
     @Override
@@ -70,6 +80,9 @@ public class ListTool implements CliTool {
     public String permissionKey() { return "list"; }
 
     @Override
+    public McpToolAnnotations mcpAnnotations() { return McpToolAnnotations.READ_ONLY; }
+
+    @Override
     public ToolResult execute(JsonNode params, ToolContext context) throws ToolExecutionException {
         context.checkPermission(permissionKey(), "List directory");
 
@@ -83,16 +96,30 @@ public class ListTool implements CliTool {
         try {
             List<String> entries = new ArrayList<>();
             int fileCount = 0, dirCount = 0;
+            int totalEntries = 0;
+            boolean truncated = false;
 
             try (DirectoryStream<Path> stream = Files.newDirectoryStream(dir)) {
                 for (Path entry : stream) {
-                    BasicFileAttributes attrs = Files.readAttributes(entry, BasicFileAttributes.class);
+                    if (totalEntries >= MAX_ENTRIES) {
+                        truncated = true;
+                        break;
+                    }
+                    BasicFileAttributes attrs;
+                    try {
+                        attrs = Files.readAttributes(entry, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+                    } catch (IOException e) {
+                        continue;
+                    }
+                    totalEntries++;
                     String name = entry.getFileName().toString();
-                    String type = attrs.isDirectory() ? "dir" : "file";
+                    String type = attrs.isDirectory() ? "dir"
+                            : attrs.isRegularFile() ? "file"
+                            : attrs.isSymbolicLink() ? "symlink" : "other";
                     long size = attrs.size();
                     Instant mtime = attrs.lastModifiedTime().toInstant();
 
-                    String sizeStr = attrs.isDirectory() ? "-" : formatSize(size);
+                    String sizeStr = attrs.isDirectory() ? "-" : FormatUtils.formatBytesCompact(size);
                     entries.add(String.format("%-4s  %8s  %s  %s",
                             type, sizeStr, DATE_FMT.format(mtime), name));
 
@@ -117,17 +144,11 @@ public class ListTool implements CliTool {
             }
 
             return ToolResult.success(title, sb.toString().trim(),
-                    Map.of("files", fileCount, "directories", dirCount));
+                    Map.of("files", fileCount, "directories", dirCount, "truncated", truncated));
 
         } catch (IOException e) {
             return ToolResult.error("Error listing directory: " + e.getMessage());
         }
     }
 
-    private String formatSize(long bytes) {
-        if (bytes < 1024) return bytes + "B";
-        if (bytes < 1024 * 1024) return String.format("%.1fK", bytes / 1024.0);
-        if (bytes < 1024 * 1024 * 1024) return String.format("%.1fM", bytes / (1024.0 * 1024));
-        return String.format("%.1fG", bytes / (1024.0 * 1024 * 1024));
-    }
 }

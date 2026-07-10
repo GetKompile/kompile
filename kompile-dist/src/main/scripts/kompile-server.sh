@@ -28,16 +28,55 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")")" && pwd)"
 DIST_HOME="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-BINARY="${DIST_HOME}/bin/kompile-server"
-
-if [ ! -x "${BINARY}" ]; then
-    echo "error: kompile-server binary not found at ${BINARY}" >&2
+# ── Java resolution (jar-tier fallback only; native binary is preferred below) ──
+# Order: $KOMPILE_JAVA → <dist>/runtime/bin/java → $JAVA_HOME/bin/java → java on PATH
+resolve_java() {
+    if [ -x "${KOMPILE_JAVA:-}" ]; then
+        echo "${KOMPILE_JAVA}"
+        return
+    fi
+    if [ -x "${DIST_HOME}/runtime/bin/java" ]; then
+        echo "${DIST_HOME}/runtime/bin/java"
+        return
+    fi
+    if [ -n "${JAVA_HOME:-}" ] && [ -x "${JAVA_HOME}/bin/java" ]; then
+        echo "${JAVA_HOME}/bin/java"
+        return
+    fi
+    if command -v java >/dev/null 2>&1; then
+        echo "java"
+        return
+    fi
+    echo "error: no Java runtime found. Install Java 21+, set JAVA_HOME, or rebuild the dist" \
+         "with a bundled runtime (see build-dist.sh --variant <variant>)." >&2
     exit 1
-fi
+}
+
+BINARY="${DIST_HOME}/bin/kompile-server"
+JAR="${DIST_HOME}/lib/kompile-server.jar"
 
 export LD_LIBRARY_PATH="${DIST_HOME}/bin:${DIST_HOME}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 export DYLD_LIBRARY_PATH="${DIST_HOME}/bin:${DIST_HOME}/lib${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}"
 
-exec "${BINARY}" \
+# Prefer native binary.
+if [ -x "${BINARY}" ]; then
+    exec "${BINARY}" \
+        -Dspring.config.additional-location="optional:file:${DIST_HOME}/conf/" \
+        "$@"
+fi
+
+# Fall back to exec JAR under the resolved Java runtime.
+if [ ! -f "${JAR}" ]; then
+    echo "error: neither native binary ${BINARY} nor exec JAR ${JAR} found" >&2
+    exit 1
+fi
+
+JAVA_BIN="$(resolve_java)"
+KOMPILE_SERVER_HEAP="${KOMPILE_SERVER_HEAP:--Xmx4g}"
+
+exec "${JAVA_BIN}" \
+    ${KOMPILE_SERVER_HEAP} \
+    -Djava.library.path="${DIST_HOME}/lib" \
     -Dspring.config.additional-location="optional:file:${DIST_HOME}/conf/" \
+    -jar "${JAR}" \
     "$@"

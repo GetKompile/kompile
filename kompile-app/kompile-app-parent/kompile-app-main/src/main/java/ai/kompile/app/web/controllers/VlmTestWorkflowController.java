@@ -121,6 +121,10 @@ public class VlmTestWorkflowController {
                         .description("VLM test: " + (originalName != null ? originalName : "unknown"))
                         .resourceProfile(JobResourceProfiles.VLM)
                         .executor(ctx -> {
+                            // Deliver the scheduler's device-agnostic placement before the spawn.
+                            if (ctx.placement() != null) {
+                                launcher.applyPlacement(ctx.placement());
+                            }
                             CompletableFuture<VlmTestResult> f = launcher.launchTest(
                                     taskId, tempFile.toAbsolutePath().toString(), modelId, outputFormat, options);
                             activeFutures.put(taskId, f);

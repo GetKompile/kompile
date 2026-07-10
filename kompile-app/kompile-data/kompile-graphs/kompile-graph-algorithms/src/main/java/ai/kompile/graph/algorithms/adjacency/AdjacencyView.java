@@ -106,16 +106,45 @@ public final class AdjacencyView {
     }
 
     /**
+     * Dense-matrix threshold: graphs larger than this node count must NOT use
+     * {@link #toAdjacencyMatrix()} — callers should branch on {@link #isLarge()} and
+     * use adjacency-list traversal ({@link #outNeighbors}, {@link #inNeighbors}, {@link #weight})
+     * instead.
+     */
+    public static final int DENSE_NODE_CAP = 2000;
+
+    /**
+     * Returns {@code true} when the graph exceeds {@link #DENSE_NODE_CAP} and a dense
+     * {@code [n×n]} matrix would be too costly to materialize.
+     */
+    public boolean isLarge() {
+        return nodeIds.size() > DENSE_NODE_CAP;
+    }
+
+    /**
      * Materializes the view as a dense [n x n] float adjacency matrix where
      * {@code M[i, j] = weight(nodeIds[i], nodeIds[j])}.
      *
      * <p>Used by algorithms that benefit from vectorized BLAS ops (PageRank via mmul,
      * degree via row/col sums, weakly connected components via A + A<sup>T</sup>).
+     *
+     * <p><b>Size guard:</b> callers MUST check {@link #isLarge()} and use adjacency-list
+     * traversal instead when {@code n > }{@link #DENSE_NODE_CAP} — materializing a
+     * {@code [n×n]} matrix at 4000 nodes consumes ~64 MB and grows quadratically.
+     *
+     * @throws IllegalStateException if the view has more than {@link #DENSE_NODE_CAP} nodes
      */
     public INDArray toAdjacencyMatrix() {
         int n = nodeIds.size();
         if (n == 0) {
             return Nd4j.zeros(DataType.FLOAT, 0, 0);
+        }
+        if (n > DENSE_NODE_CAP) {
+            throw new IllegalStateException(
+                    "AdjacencyView.toAdjacencyMatrix() called with n=" + n
+                    + " which exceeds DENSE_NODE_CAP=" + DENSE_NODE_CAP
+                    + ". Use adjacency-list traversal (outNeighbors/weight) instead, "
+                    + "or the sparse path in MatrixGraphAlgorithms.");
         }
         INDArray adj = Nd4j.zeros(DataType.FLOAT, n, n);
         for (Map.Entry<String, Map<String, Double>> row : outWeights.entrySet()) {

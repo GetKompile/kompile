@@ -17,6 +17,7 @@
 package ai.kompile.staging.cli.archive;
 
 import ai.kompile.staging.transfer.TransferProgress;
+import ai.kompile.utils.FormatUtils;
 import ai.kompile.utils.StringUtils;
 import ai.kompile.staging.update.UpdateInfo;
 import ai.kompile.staging.update.UpdateService;
@@ -285,7 +286,7 @@ public class ArchiveUpdateCommand implements Callable<Integer> {
                 progress.getPhase(),
                 bar,
                 progress.getProgressPercent(),
-                formatSize(progress.getBytesTransferred()),
+                FormatUtils.formatBytes(progress.getBytesTransferred()),
                 speed));
     }
 
@@ -313,13 +314,6 @@ public class ArchiveUpdateCommand implements Callable<Integer> {
                 .replace("\n", "\\n")
                 .replace("\r", "\\r")
                 .replace("\t", "\\t");
-    }
-
-    private String formatSize(long bytes) {
-        if (bytes < 1024) return bytes + " B";
-        if (bytes < 1024 * 1024) return String.format("%.1f KB", bytes / 1024.0);
-        if (bytes < 1024 * 1024 * 1024) return String.format("%.1f MB", bytes / (1024.0 * 1024));
-        return String.format("%.2f GB", bytes / (1024.0 * 1024 * 1024));
     }
 
     private String formatSpeed(double bytesPerSecond) {

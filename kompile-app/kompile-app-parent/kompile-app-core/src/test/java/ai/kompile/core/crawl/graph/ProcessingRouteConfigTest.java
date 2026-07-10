@@ -33,7 +33,7 @@ class ProcessingRouteConfigTest {
         ProcessingRouteConfig config = ProcessingRouteConfig.builder().build();
 
         assertEquals(PdfRoutingMode.AUTO, config.getPdfRoutingMode());
-        assertFalse(config.isFallbackEnabled());
+        assertTrue(config.isFallbackEnabled());
         assertNotNull(config.getBackends());
         assertTrue(config.getBackends().isEmpty());
         assertNull(config.getVlmModelId());

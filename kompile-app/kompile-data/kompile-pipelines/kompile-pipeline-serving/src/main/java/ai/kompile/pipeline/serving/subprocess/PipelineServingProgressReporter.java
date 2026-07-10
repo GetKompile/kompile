@@ -17,6 +17,7 @@
 package ai.kompile.pipeline.serving.subprocess;
 
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.utils.ThrowableUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -233,16 +234,6 @@ public class PipelineServingProgressReporter implements AutoCloseable {
     }
 
     private String truncateStackTrace(Throwable t, int maxLines) {
-        StringBuilder sb = new StringBuilder();
-        sb.append(t.toString()).append("\n");
-        StackTraceElement[] frames = t.getStackTrace();
-        int lines = Math.min(frames.length, maxLines);
-        for (int i = 0; i < lines; i++) {
-            sb.append("\tat ").append(frames[i]).append("\n");
-        }
-        if (frames.length > maxLines) {
-            sb.append("\t... ").append(frames.length - maxLines).append(" more\n");
-        }
-        return sb.toString();
+        return ThrowableUtils.stackTraceString(t, maxLines);
     }
 }

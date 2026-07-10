@@ -150,4 +150,47 @@ class InferenceBatchPlannerTest {
         assertEquals(2, batches.get(2).itemIndices()[0]); // length 256
         assertEquals(0, batches.get(3).itemIndices()[0]); // length 500
     }
+
+    @Test
+    void estimateMaxRowsForSeqScalesLinearlyWithMemory() {
+        long ceil = 16L << 30;
+        int rows = InferenceBatchPlanner.estimateMaxRowsForSeq(ceil, 768, 4, 0.6, 320.0, 600.0, 512);
+        int rowsDouble = InferenceBatchPlanner.estimateMaxRowsForSeq(2 * ceil, 768, 4, 0.6, 320.0, 600.0, 512);
+        assertTrue(rows >= 1, "got " + rows);
+        // Doubling the native-memory ceiling roughly doubles the affordable rows (per-row cost fixed).
+        assertEquals((double) rowsDouble, 2.0 * rows, 1.0);
+    }
+
+    @Test
+    void estimateMaxRowsForSeqPenalizesLongSequencesSuperLinearly() {
+        long ceil = 16L << 30;
+        int rowsAt512 = InferenceBatchPlanner.estimateMaxRowsForSeq(ceil, 768, 4, 0.6, 320.0, 600.0, 512);
+        int rowsAt256 = InferenceBatchPlanner.estimateMaxRowsForSeq(ceil, 768, 4, 0.6, 320.0, 600.0, 256);
+        // Halving the sequence length must MORE than double the rows: a flat token budget would give
+        // exactly 2x, but the quadratic attention term (seq^2) makes short sequences disproportionately
+        // cheaper. This is the property that keeps a "reasonable" 512-seq batch from OOM-ing.
+        assertTrue(rowsAt256 > 2 * rowsAt512,
+                "256-seq rows (" + rowsAt256 + ") must exceed 2x 512-seq rows (" + rowsAt512 + ")");
+    }
+
+    @Test
+    void estimateMaxRowsForSeqDefaultsStayUnderTheObservedOomCeiling() {
+        // Regression for the embedding-subprocess OOM: with the per-process maxbytes ceiling (32 GB,
+        // NOT the 119 GB system-wide guard) and the calibrated defaults, the planned batch's native
+        // footprint must stay well under the parent RSS watchdog (~50% of 128 GB host = ~64 GB). The
+        // old path planned 64 rows x 512 and ballooned to ~71 GB. bytesPerRow(512) ~= 1.13 GB here.
+        long maxbytes = 32L << 30;
+        int rows = InferenceBatchPlanner.estimateMaxRowsForSeq(maxbytes, 768, 4, 0.6, 320.0, 600.0, 512);
+        assertTrue(rows >= 8 && rows <= 32, "expected a modest CPU batch, got " + rows);
+        double bytesPerRow = 4.0 * (320.0 * 768 * 512 + 600.0 * 512L * 512);
+        double footprintGb = rows * bytesPerRow / 1e9;
+        assertTrue(footprintGb < 40.0, "forward-pass footprint " + footprintGb + " GB must stay under the watchdog");
+    }
+
+    @Test
+    void estimateMaxRowsForSeqAlwaysReturnsAtLeastOne() {
+        // A tiny ceiling against a huge model still yields a single (oversized) row; reactive OOM is
+        // the backstop, the planner never returns zero and drops the item.
+        assertEquals(1, InferenceBatchPlanner.estimateMaxRowsForSeq(1024, 8192, 4, 0.5, 320.0, 600.0, 4096));
+    }
 }

@@ -16,6 +16,7 @@
 package ai.kompile.cli.main.chat;
 
 import ai.kompile.cli.main.chat.agent.SubprocessAgentRunner;
+import ai.kompile.cli.main.chat.terminal.ScriptPtyProvider;
 
 import java.io.*;
 import java.util.*;
@@ -350,44 +351,7 @@ public class AgentCommandForwarder {
      * This forces line-buffered output and preserves ANSI formatting.
      */
     static List<String> wrapWithPty(List<String> cmd) {
-        boolean isWindows = System.getProperty("os.name", "").toLowerCase().startsWith("win");
-        if (isWindows) return new ArrayList<>(cmd);
-
-        // Check if 'script' is available
-        try {
-            Process check = new ProcessBuilder("which", "script")
-                    .redirectErrorStream(true).start();
-            int rc = check.waitFor();
-            if (rc != 0) return new ArrayList<>(cmd);
-        } catch (Exception e) {
-            return new ArrayList<>(cmd);
-        }
-
-        boolean isMac = System.getProperty("os.name", "").toLowerCase().contains("mac");
-        List<String> wrapped = new ArrayList<>();
-        wrapped.add("script");
-        wrapped.add("-q");
-        if (isMac) {
-            wrapped.add("/dev/null");
-            wrapped.addAll(cmd);
-        } else {
-            // Linux: script -q /dev/null -c "cmd arg1 arg2"
-            wrapped.add("/dev/null");
-            wrapped.add("-c");
-            StringBuilder cmdStr = new StringBuilder();
-            for (int i = 0; i < cmd.size(); i++) {
-                if (i > 0) cmdStr.append(' ');
-                String arg = cmd.get(i);
-                if (arg.contains(" ") || arg.contains("'") || arg.contains("\"")
-                        || arg.contains("(") || arg.contains(")")) {
-                    cmdStr.append("'").append(arg.replace("'", "'\\''")).append("'");
-                } else {
-                    cmdStr.append(arg);
-                }
-            }
-            wrapped.add(cmdStr.toString());
-        }
-        return wrapped;
+        return ScriptPtyProvider.INSTANCE.wrap(cmd);
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────

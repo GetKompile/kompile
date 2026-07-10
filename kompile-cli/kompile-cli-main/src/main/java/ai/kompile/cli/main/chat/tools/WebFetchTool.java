@@ -68,6 +68,9 @@ public class WebFetchTool implements CliTool {
     public String permissionKey() { return "webfetch"; }
 
     @Override
+    public McpToolAnnotations mcpAnnotations() { return McpToolAnnotations.NETWORK; }
+
+    @Override
     public ToolResult execute(JsonNode params, ToolContext context) throws ToolExecutionException {
         context.checkPermission(permissionKey(), "Fetch URL");
 

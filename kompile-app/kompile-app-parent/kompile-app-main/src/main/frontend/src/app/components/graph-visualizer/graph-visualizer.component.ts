@@ -39,6 +39,7 @@ import { MatRadioModule } from '@angular/material/radio';
 import { HttpClient } from '@angular/common/http';
 import { Subject, Subscription, takeUntil, debounceTime, interval, filter, of } from 'rxjs';
 import { catchError, switchMap } from 'rxjs/operators';
+import { pauseWhenHidden } from '../../services/visibility.util';
 import { ConfirmDialogComponent, ConfirmDialogData } from '../confirm-dialog/confirm-dialog.component';
 import { BayesianPanelComponent } from './bayesian-panel.component';
 import { MarkdownRendererComponent } from '../markdown-renderer/markdown-renderer.component';
@@ -53,6 +54,7 @@ import { GraphCanvasComponent } from './graph-canvas.component';
 import { GraphService, GraphBuildStatus, FactSheetGraphStatistics } from '../../services/graph.service';
 import { SourceWeightService } from '../../services/source-weight.service';
 import { AttributionService } from '../../services/attribution.service';
+import { ProcessEngineService } from '../../services/process-engine.service';
 import { KbGroundingService, StrengthBand, confidenceToStrengthBand, ReasoningTrailDto, UnifiedExplainRequest } from '../../services/kb-grounding.service';
 import { AttributionResult, PredictionResult } from '../../models/attribution-models';
 import { Citation } from '../../models/api-models';
@@ -70,8 +72,58 @@ import {
   CreateEdgeRequest,
   WeightedSearchPreview,
   NODE_COLORS,
-  TemporalBounds
+  TemporalBounds,
+  ReasoningLayers,
+  NodeReasoningOverlay,
+  EdgeReasoningOverlay,
+  ReasoningLayerKind,
+  ReasoningLayerVisualOverlay,
+  OntologyOverlay,
+  TypeHierarchyOverlay,
+  InferredRelationOverlay
 } from '../../models/graph-models';
+import {
+  FlatProcessReasoningStep,
+  ProcessHybridActivityReasoning,
+  ProcessHybridReasoning,
+  ProcessReasoningTrace,
+  ProcessSuggestionSummary,
+  flattenProcessReasoningTrace,
+  processHybridModeLabel,
+  rankedProcessHybridActivities,
+  sortProcessSuggestions
+} from '../../models/process-reasoning-models';
+
+const DEFAULT_NODE_TYPES: NodeLevel[] = [
+  'SOURCE', 'DOCUMENT', 'SNIPPET', 'ENTITY', 'CUSTOM', 'TABLE', 'ATTACHMENT', 'IDENTIFIER', 'ALIAS'
+];
+
+const DEFAULT_EDGE_TYPES: EdgeType[] = [
+  'HIERARCHICAL',
+  'EMBEDDING_SIMILARITY',
+  'SHARED_ENTITY',
+  'USER_DEFINED',
+  'CITATION',
+  'TEMPORAL',
+  'CROSS_SOURCE',
+  'CONTAINS',
+  'EXTRACTED_FROM',
+  'AUTHORED_BY',
+  'ADDRESSED_TO',
+  'RESOLVES_TO',
+  'ALIAS_OF',
+  'HAS_OWNER',
+  'OWNED_BY',
+  'HAS_TABLE',
+  'HEADER_OF',
+  'DEPENDS_ON',
+  'CROSS_SHEET_DEPENDS_ON',
+  'CROSS_SHEET_LINK',
+  'RANGE_INPUT',
+  'HAS_COMMENT',
+  'HAS_DATA_VALIDATION',
+  'VERSION_OF'
+];
 
 @Component({
   selector: 'app-graph-visualizer',
@@ -205,6 +257,19 @@ import {
         </div>
         <div class="toolbar-right">
           <button mat-icon-button
+                  (click)="exportUnifiedGraph()"
+                  [disabled]="exportingUnified"
+                  matTooltip="Export full graph (.kgraph — all vectors, opinions, weights)">
+            <mat-icon>{{exportingUnified ? 'hourglass_empty' : 'download'}}</mat-icon>
+          </button>
+          <button mat-icon-button
+                  (click)="kgraphInput.click()"
+                  [disabled]="importingUnified"
+                  matTooltip="Import a .kgraph file into this graph">
+            <mat-icon>{{importingUnified ? 'hourglass_empty' : 'upload'}}</mat-icon>
+          </button>
+          <input #kgraphInput type="file" accept=".kgraph" hidden (change)="importUnifiedGraph($event)">
+          <button mat-icon-button
                   [color]="strengthOverlayEnabled ? 'accent' : ''"
                   (click)="toggleStrengthOverlay()"
                   matTooltip="Toggle Strength Band Overlay">
@@ -230,6 +295,13 @@ import {
                   matTooltip="Toggle Ontology Conformance Overlay (green=conformant, red=violation, grey=untagged)">
             <mat-icon>{{conformanceLoading ? 'hourglass_empty' : 'rule'}}</mat-icon>
           </button>
+          <button mat-icon-button
+                  [color]="reasoningLayerOverlayEnabled ? 'accent' : ''"
+                  (click)="toggleReasoningLayerOverlay()"
+                  [disabled]="reasoningLayersLoading || !factSheetId"
+                  matTooltip="Toggle Reasoning Layers (ontology, PSL, MEBN, provenance, opinions, neural scores)">
+            <mat-icon>{{reasoningLayersLoading ? 'hourglass_empty' : 'schema'}}</mat-icon>
+          </button>
           <button mat-icon-button (click)="toggleSidePanel()" matTooltip="Toggle Side Panel">
             <mat-icon>{{showSidePanel ? 'chevron_right' : 'chevron_left'}}</mat-icon>
           </button>
@@ -253,6 +325,7 @@ import {
             [mebnMfragMap]="mebnMfragMap"
             [findingNodeMap]="findingNodeMap"
             [influenceOverlayActive]="influenceOverlayActive"
+            [simTruthNodeMap]="simTruthNodeMap"
             [strengthOverlayEnabled]="strengthOverlayEnabled"
             [strengthBandMap]="strengthBandMap"
             [provenanceOverlayEnabled]="provenanceOverlayEnabled"
@@ -260,6 +333,11 @@ import {
             [communityMap]="communityMap"
             [conformanceOverlayEnabled]="conformanceOverlayEnabled"
             [conformanceMap]="conformanceMap"
+            [reasoningLayerOverlayEnabled]="reasoningLayerOverlayEnabled"
+            [reasoningNodeLayerMap]="reasoningNodeLayerMap"
+            [reasoningEdgeLayerMap]="reasoningEdgeLayerMap"
+            [processEvidenceNodeIds]="processEvidenceNodeIds"
+            [processEvidenceEdgeIds]="processEvidenceEdgeIds"
             (nodeSelected)="onNodeSelected($event)"
             (nodeDoubleClicked)="onNodeDoubleClicked($event)"
             (edgeCreated)="onEdgeCreated($event)"
@@ -307,6 +385,15 @@ import {
                     <span class="label">Metadata:</span>
                     <pre class="value metadata">{{selectedNode.metadata | json}}</pre>
                   </div>
+                  <mat-expansion-panel *ngIf="getSelectedNodeReasoning() as reasoning" class="reasoning-section">
+                    <mat-expansion-panel-header>
+                      <mat-panel-title>
+                        <mat-icon class="section-icon">schema</mat-icon>
+                        Reasoning Layers
+                      </mat-panel-title>
+                    </mat-expansion-panel-header>
+                    <ng-container *ngTemplateOutlet="reasoningNodeDetails; context: {$implicit: reasoning}"></ng-container>
+                  </mat-expansion-panel>
                   <!-- Rendered table for TABLE nodes — works for any graph backend -->
                   <div class="detail-row detail-table-view" *ngIf="isTableNode(selectedNode)">
                     <span class="label">Table:</span>
@@ -728,24 +815,137 @@ import {
 
                 <div class="relations-list" *ngIf="nodeRelations && nodeRelations.length > 0">
                   <div class="relation-item" *ngFor="let rel of nodeRelations">
-                    <div class="relation-nodes">
-                      <span>{{getNodeLabel(rel.sourceNodeId)}}</span>
-                      <mat-icon class="relation-arrow">arrow_forward</mat-icon>
-                      <span>{{getNodeLabel(rel.targetNodeId)}}</span>
+                    <div class="relation-main-row">
+                      <div class="relation-nodes">
+                        <span>{{getNodeLabel(rel.sourceNodeId)}}</span>
+                        <mat-icon class="relation-arrow">arrow_forward</mat-icon>
+                        <span>{{getNodeLabel(rel.targetNodeId)}}</span>
+                      </div>
+                      <span class="relation-type-badge" [class]="rel.edgeType.toLowerCase()">
+                        {{formatEdgeType(rel.edgeType)}}
+                      </span>
+                      <span class="relation-weight">{{rel.weight | number:'1.2-2'}}</span>
+                      <button mat-icon-button color="warn" (click)="deleteRelation(rel)" matTooltip="Delete relation">
+                        <mat-icon>delete</mat-icon>
+                      </button>
                     </div>
-                    <span class="relation-type-badge" [class]="rel.edgeType.toLowerCase()">
-                      {{formatEdgeType(rel.edgeType)}}
-                    </span>
-                    <span class="relation-weight">{{rel.weight | number:'1.2-2'}}</span>
-                    <button mat-icon-button color="warn" (click)="deleteRelation(rel)" matTooltip="Delete relation">
-                      <mat-icon>delete</mat-icon>
-                    </button>
+                    <div class="relation-reasoning" *ngIf="getRelationReasoning(rel) as edgeReasoning">
+                      <div class="reasoning-chip-row">
+                        <span class="reasoning-chip" *ngIf="edgeReasoning.ontology">Ontology</span>
+                        <span class="reasoning-chip" *ngIf="edgeReasoning.psl">PSL {{edgeReasoning.psl.truthValue | number:'1.2-2'}}</span>
+                        <span class="reasoning-chip" *ngIf="edgeReasoning.mebn">MEBN {{edgeReasoning.mebn.posterior | number:'1.2-2'}}</span>
+                        <span class="reasoning-chip" *ngIf="edgeReasoning.provenance">Provenance</span>
+                        <span class="reasoning-chip" *ngIf="edgeReasoning.opinion">Opinion {{edgeReasoning.opinion.confidence | number:'1.2-2'}}</span>
+                        <span class="reasoning-chip" *ngIf="edgeReasoning.neuralScores">Neural</span>
+                      </div>
+                      <ng-container *ngTemplateOutlet="reasoningNodeDetails; context: {$implicit: edgeReasoning}"></ng-container>
+                    </div>
                   </div>
                 </div>
                 <div *ngIf="selectedNode && (!nodeRelations || nodeRelations.length === 0)" class="no-selection">
                   <mat-icon>link_off</mat-icon>
                   <p>No relations found for this node</p>
                 </div>
+              </div>
+            </mat-tab>
+
+            <!-- Reasoning Layers Tab -->
+            <mat-tab label="Reasoning">
+              <div class="panel-content reasoning-panel">
+                <div class="reasoning-header">
+                  <div>
+                    <h4>Reasoning Layers</h4>
+                    <p class="hint" *ngIf="factSheetId">Typed overlays from ontology, PSL, MEBN, provenance, opinion, and neural scoring metadata.</p>
+                    <p class="hint" *ngIf="!factSheetId">Select a fact sheet to load reasoning layers.</p>
+                  </div>
+                  <button mat-icon-button
+                          (click)="loadReasoningLayers(true)"
+                          [disabled]="!factSheetId || reasoningLayersLoading"
+                          matTooltip="Refresh reasoning layers">
+                    <mat-icon>{{reasoningLayersLoading ? 'hourglass_empty' : 'refresh'}}</mat-icon>
+                  </button>
+                </div>
+
+                <div class="attr-loading" *ngIf="reasoningLayersLoading">
+                  <mat-spinner diameter="24"></mat-spinner>
+                  <span>Loading reasoning layers...</span>
+                </div>
+
+                <div class="attr-error" *ngIf="reasoningLayersError && !reasoningLayersLoading">
+                  <mat-icon class="attr-error-icon">error_outline</mat-icon>
+                  <div class="attr-error-body">
+                    <div class="attr-error-title">Reasoning layers unavailable</div>
+                    <div class="attr-error-message">{{reasoningLayersError}}</div>
+                  </div>
+                </div>
+
+                <ng-container *ngIf="reasoningLayers">
+                  <div class="reasoning-actions">
+                    <mat-checkbox
+                      [checked]="reasoningLayerOverlayEnabled"
+                      (change)="toggleReasoningLayerOverlay($event.checked)">
+                      Show on canvas
+                    </mat-checkbox>
+                  </div>
+
+                  <h4>Visible Layers</h4>
+                  <div class="filter-chips reasoning-toggles">
+                    <mat-checkbox
+                      [checked]="reasoningLayerToggles.ontology"
+                      (change)="setReasoningLayer('ontology', $event.checked)">
+                      Ontology
+                      <span class="type-count" *ngIf="reasoningLayers.statistics?.ontologyCount">({{reasoningLayers.statistics?.ontologyCount}})</span>
+                    </mat-checkbox>
+                    <mat-checkbox
+                      [checked]="reasoningLayerToggles.psl"
+                      (change)="setReasoningLayer('psl', $event.checked)">
+                      PSL
+                      <span class="type-count" *ngIf="reasoningLayers.statistics?.pslCount">({{reasoningLayers.statistics?.pslCount}})</span>
+                    </mat-checkbox>
+                    <mat-checkbox
+                      [checked]="reasoningLayerToggles.mebn"
+                      (change)="setReasoningLayer('mebn', $event.checked)">
+                      MEBN
+                      <span class="type-count" *ngIf="reasoningLayers.statistics?.mebnCount">({{reasoningLayers.statistics?.mebnCount}})</span>
+                    </mat-checkbox>
+                    <mat-checkbox
+                      [checked]="reasoningLayerToggles.provenance"
+                      (change)="setReasoningLayer('provenance', $event.checked)">
+                      Provenance
+                      <span class="type-count" *ngIf="reasoningLayers.statistics?.provenanceCount">({{reasoningLayers.statistics?.provenanceCount}})</span>
+                    </mat-checkbox>
+                    <mat-checkbox
+                      [checked]="reasoningLayerToggles.opinion"
+                      (change)="setReasoningLayer('opinion', $event.checked)">
+                      Opinion
+                      <span class="type-count" *ngIf="reasoningLayers.statistics?.opinionCount">({{reasoningLayers.statistics?.opinionCount}})</span>
+                    </mat-checkbox>
+                    <mat-checkbox
+                      [checked]="reasoningLayerToggles.neural"
+                      (change)="setReasoningLayer('neural', $event.checked)">
+                      Neural Scores
+                      <span class="type-count" *ngIf="reasoningLayers.statistics?.neuralScoreCount">({{reasoningLayers.statistics?.neuralScoreCount}})</span>
+                    </mat-checkbox>
+                  </div>
+
+                  <h4>Summary</h4>
+                  <div class="reasoning-summary">
+                    <span class="reasoning-stat"><strong>{{reasoningLayers.statistics?.nodeCount || reasoningLayers.nodes.length}}</strong> nodes</span>
+                    <span class="reasoning-stat"><strong>{{reasoningLayers.statistics?.edgeCount || reasoningLayers.edges.length}}</strong> edges</span>
+                    <span class="reasoning-stat"><strong>{{reasoningViolationCount}}</strong> violations</span>
+                  </div>
+
+                  <h4>Selected Node</h4>
+                  <ng-container *ngIf="getSelectedNodeReasoning() as reasoning; else noReasoningSelection">
+                    <ng-container *ngTemplateOutlet="reasoningNodeDetails; context: {$implicit: reasoning}"></ng-container>
+                  </ng-container>
+                  <ng-template #noReasoningSelection>
+                    <div class="no-selection compact">
+                      <mat-icon>touch_app</mat-icon>
+                      <p>Select a node with reasoning metadata</p>
+                    </div>
+                  </ng-template>
+                </ng-container>
               </div>
             </mat-tab>
 
@@ -763,13 +963,10 @@ import {
                 </div>
 
                 <h4>Edge Types</h4>
-                <div class="filter-chips">
-                  <mat-checkbox
-                    *ngFor="let type of allEdgeTypes"
-                    [checked]="filter.edgeTypes.includes(type)"
-                    (change)="toggleEdgeTypeFilter(type)">
+                <div class="edge-type-summary" *ngIf="allEdgeTypes.length > 0">
+                  <span class="edge-type-chip" *ngFor="let type of allEdgeTypes">
                     {{formatEdgeType(type)}}<span class="type-count" *ngIf="edgeTypeCounts[type]"> ({{edgeTypeCounts[type] | number}})</span>
-                  </mat-checkbox>
+                  </span>
                 </div>
 
                 <h4>Depth</h4>
@@ -1104,9 +1301,257 @@ import {
                 </app-graph-ontology-panel>
               </div>
             </mat-tab>
+
+            <mat-tab label="Processes">
+              <div class="panel-content process-panel">
+                <div class="process-toolbar">
+                  <div class="process-toolbar-title">
+                    <mat-icon>account_tree</mat-icon>
+                    <span>Ranked candidates</span>
+                    <span class="process-count">{{ processCandidates.length }}</span>
+                  </div>
+                  <div class="process-toolbar-actions">
+                    <button mat-icon-button (click)="loadProcessCandidates()"
+                            [disabled]="processLoading || !factSheetId"
+                            matTooltip="Refresh process candidates">
+                      <mat-icon>refresh</mat-icon>
+                    </button>
+                    <button mat-icon-button (click)="runProcessDiscovery()"
+                            [disabled]="processMining || !factSheetId"
+                            matTooltip="Run graph process mining and reasoning">
+                      <mat-icon>{{ processMining ? 'hourglass_empty' : 'play_arrow' }}</mat-icon>
+                    </button>
+                  </div>
+                </div>
+
+                <mat-progress-bar *ngIf="processLoading || processMining" mode="indeterminate"></mat-progress-bar>
+                <div class="process-error" *ngIf="processError">{{ processError }}</div>
+                <div class="process-empty" *ngIf="!processLoading && !processCandidates.length">
+                  No process candidates
+                </div>
+
+                <div class="process-candidate-list" *ngIf="processCandidates.length">
+                  <button type="button" class="process-candidate-row"
+                          *ngFor="let candidate of processCandidates; trackBy: trackByProcessCandidate"
+                          [class.selected]="selectedProcessCandidate?.id === candidate.id"
+                          (click)="selectProcessCandidate(candidate)">
+                    <span class="process-rank" matTooltip="Composite process rank">#{{ candidate.reasoningRank || '-' }}</span>
+                    <span class="process-candidate-name">
+                      <strong>{{ candidate.name }}</strong>
+                      <small>
+                        {{ formatProcessLabel(candidate.reasoningProjection || candidate.discoverySource) }}
+                        <ng-container *ngIf="candidate.reasoningFamily"> / {{ formatProcessLabel(candidate.reasoningFamily) }}</ng-container>
+                      </small>
+                    </span>
+                    <span class="process-score" matTooltip="Composite process confidence">{{ (processCandidateScore(candidate) * 100) | number:'1.0-0' }}%</span>
+                  </button>
+                </div>
+
+                <div class="selected-process" *ngIf="selectedProcessCandidate as candidate">
+                  <div class="process-metrics">
+                    <div *ngIf="candidate.hybridScore != null"><span>Hybrid activation</span><strong>{{ (candidate.hybridScore * 100) | number:'1.0-1' }}%</strong></div>
+                    <div *ngIf="candidate.entailmentScore != null"><span>Entailment</span><strong>{{ (candidate.entailmentScore * 100) | number:'1.0-1' }}%</strong></div>
+                    <div *ngIf="candidate.processCaseCount != null"><span>Cases</span><strong>{{ candidate.processCaseCount }}</strong></div>
+                    <div *ngIf="candidate.processActivityCount != null"><span>Activities</span><strong>{{ candidate.processActivityCount }}</strong></div>
+                    <div *ngIf="candidate.directlyFollowsCount != null"><span>Direct follows</span><strong>{{ candidate.directlyFollowsCount }}</strong></div>
+                    <div *ngIf="candidate.acceptedPrecedenceCount != null"><span>Accepted order</span><strong>{{ candidate.acceptedPrecedenceCount }}</strong></div>
+                    <div *ngIf="candidate.entailedOnlyPrecedenceCount != null"><span>Entailed only</span><strong>{{ candidate.entailedOnlyPrecedenceCount }}</strong></div>
+                    <div><span>Evidence</span><strong>{{ processEvidenceNodeIds.size }} nodes / {{ processEvidenceEdgeIds.size }} edges</strong></div>
+                  </div>
+
+                  <details class="process-hybrid" *ngIf="candidate.hybridReasoning as hybrid">
+                    <summary>
+                      <span>Activity interpretation</span>
+                      <small>{{ processHybridMode(hybrid) }}</small>
+                      <small>{{ hybrid.embeddedActivityCount }}/{{ hybrid.activityCount }} embedded</small>
+                    </summary>
+                    <div class="process-hybrid-overview">
+                      <span>PSL <strong>{{ (hybrid.pslScore * 100) | number:'1.0-1' }}%</strong></span>
+                      <span>Bayes <strong>{{ (hybrid.bayesianScore * 100) | number:'1.0-1' }}%</strong></span>
+                      <span>Semantic <strong>{{ (hybrid.semanticScore * 100) | number:'1.0-1' }}%</strong></span>
+                      <span>S/M <strong>{{ (hybrid.structuralWeight * 100) | number:'1.0-0' }}/{{ (hybrid.semanticWeight * 100) | number:'1.0-0' }}</strong></span>
+                    </div>
+                    <div class="process-hybrid-source" *ngIf="hybrid.embeddingSource">
+                      <span>{{ formatProcessLabel(hybrid.embeddingSource) }}</span>
+                      <span *ngIf="hybrid.embeddingModel">{{ hybrid.embeddingModel }}</span>
+                      <span>{{ hybrid.directlyEmbeddedActivityCount || 0 }} direct</span>
+                      <span *ngIf="hybrid.inferredEmbeddingActivityCount">{{ hybrid.inferredEmbeddingActivityCount }} resolved</span>
+                      <span *ngIf="hybrid.contextualizedActivityCount">{{ hybrid.contextualizedActivityCount }} contextual</span>
+                    </div>
+                    <div class="process-hybrid-warning" *ngFor="let warning of hybrid.warnings">{{ warning }}</div>
+                    <div class="process-hybrid-activities">
+                      <div *ngFor="let activity of processHybridActivities(candidate); trackBy: trackProcessHybridActivity">
+                        <span>{{ activity.activity }}<small *ngIf="activity.embedded">embedded</small></span>
+                        <span>PSL {{ (activity.pslScore * 100) | number:'1.0-1' }}%</span>
+                        <span>Bayes {{ (activity.bayesianScore * 100) | number:'1.0-1' }}%</span>
+                        <strong>{{ (activity.score * 100) | number:'1.0-1' }}%</strong>
+                      </div>
+                    </div>
+                  </details>
+
+                  <button mat-stroked-button class="process-trace-button"
+                          *ngIf="candidate.reasoningTraceId"
+                          (click)="loadSelectedProcessTrace()"
+                          [disabled]="processTraceLoading">
+                    <mat-icon>account_tree</mat-icon>
+                    {{ processTraceLoading ? 'Loading trace...' :
+                       (selectedProcessTrace ? 'Hide reasoning trace' : 'Show reasoning trace') }}
+                  </button>
+                  <div class="process-error" *ngIf="processTraceError">{{ processTraceError }}</div>
+                  <div class="process-trace" *ngIf="selectedProcessTrace as trace">
+                    <div class="process-trace-summary">
+                      <span>{{ trace.size }} steps</span><span>Depth {{ trace.depth }}</span>
+                    </div>
+                    <div class="process-trace-step"
+                         *ngFor="let step of selectedProcessTraceSteps(); trackBy: trackProcessTraceStep"
+                         [style.padding-left.px]="8 + step.depthLevel * 12">
+                      <span class="process-trace-kind">{{ formatProcessLabel(step.kind) }}</span>
+                      <span class="process-trace-body">
+                        <span class="process-trace-conclusion">{{ step.conclusion }}</span>
+                        <small *ngIf="step.operation">{{ step.operation }}</small>
+                      </span>
+                      <strong>{{ (step.confidence * 100) | number:'1.0-0' }}%</strong>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </mat-tab>
           </mat-tab-group>
         </div>
       </div>
+
+      <ng-template #reasoningNodeDetails let-reasoning>
+        <div class="reasoning-detail-stack">
+          <section class="reasoning-detail" *ngIf="reasoning.ontology">
+            <div class="reasoning-detail-title">
+              <mat-icon>rule</mat-icon>
+              <span>Ontology</span>
+              <span class="reasoning-status"
+                    [class.ok]="reasoning.ontology.conformant === true"
+                    [class.warn]="reasoning.ontology.conformant === false">
+                {{formatConformance(reasoning.ontology.conformant)}}
+              </span>
+            </div>
+            <div class="reasoning-kv" *ngIf="reasoning.ontology.declaredType">
+              <span>Declared</span><strong>{{reasoning.ontology.declaredType}}</strong>
+            </div>
+            <div class="reasoning-chip-row" *ngIf="reasoning.ontology.inferredTypes?.length">
+              <span class="reasoning-chip" *ngFor="let type of reasoning.ontology.inferredTypes">{{type}}</span>
+            </div>
+            <div class="reasoning-type-candidates" *ngIf="reasoning.ontology.typeCandidates?.length">
+              <div class="reasoning-type-candidate" *ngFor="let candidate of reasoning.ontology.typeCandidates">
+                <div>
+                  <strong>{{candidate.type}}</strong>
+                  <small *ngIf="candidate.source || candidate.basis">
+                    {{candidate.source}}{{candidate.source && candidate.basis ? ' / ' : ''}}{{candidate.basis}}
+                  </small>
+                </div>
+                <span *ngIf="candidate.confidence != null">{{candidate.confidence | number:'1.2-2'}}</span>
+              </div>
+            </div>
+            <div class="reasoning-inferred-list" *ngIf="reasoning.ontology.typeHierarchy?.length">
+              <div class="reasoning-inferred-row hierarchy" *ngFor="let hierarchy of reasoning.ontology.typeHierarchy">
+                <div>
+                  <strong>{{formatTypeHierarchy(hierarchy)}}</strong>
+                  <small *ngIf="formatTypeHierarchyBasis(hierarchy)">{{formatTypeHierarchyBasis(hierarchy)}}</small>
+                </div>
+                <span *ngIf="hierarchy.confidence != null">{{hierarchy.confidence | number:'1.2-2'}}</span>
+              </div>
+            </div>
+            <div class="reasoning-inferred-list" *ngIf="reasoning.ontology.inferredRelations?.length">
+              <div class="reasoning-inferred-row" *ngFor="let relation of reasoning.ontology.inferredRelations">
+                <div>
+                  <strong>{{formatInferredRelation(relation)}}</strong>
+                  <small *ngIf="formatInferredRelationBasis(relation)">{{formatInferredRelationBasis(relation)}}</small>
+                </div>
+                <span *ngIf="relation.confidence != null">{{relation.confidence | number:'1.2-2'}}</span>
+              </div>
+            </div>
+            <div class="reasoning-violations" *ngIf="reasoning.ontology.violations?.length">
+              <div *ngFor="let violation of reasoning.ontology.violations">{{violation}}</div>
+            </div>
+          </section>
+
+          <section class="reasoning-detail" *ngIf="reasoning.psl">
+            <div class="reasoning-detail-title">
+              <mat-icon>functions</mat-icon>
+              <span>PSL</span>
+              <span class="reasoning-score" *ngIf="reasoning.psl.truthValue != null">{{reasoning.psl.truthValue | number:'1.2-2'}}</span>
+            </div>
+            <div class="reasoning-kv" *ngIf="reasoning.psl.ruleId">
+              <span>Rule</span><strong>{{reasoning.psl.ruleId}}</strong>
+            </div>
+            <p class="reasoning-rule" *ngIf="reasoning.psl.ruleText">{{reasoning.psl.ruleText}}</p>
+            <div class="reasoning-kv" *ngIf="reasoning.psl.incompatibility != null">
+              <span>Incompatibility</span><strong>{{reasoning.psl.incompatibility | number:'1.3-3'}}</strong>
+            </div>
+            <div class="reasoning-chip-row" *ngIf="reasoning.psl.bindings?.length">
+              <span class="reasoning-chip" *ngFor="let binding of reasoning.psl.bindings">{{binding}}</span>
+            </div>
+          </section>
+
+          <section class="reasoning-detail" *ngIf="reasoning.mebn">
+            <div class="reasoning-detail-title">
+              <mat-icon>device_hub</mat-icon>
+              <span>MEBN</span>
+              <span class="reasoning-score" *ngIf="reasoning.mebn.posterior != null">{{reasoning.mebn.posterior | number:'1.2-2'}}</span>
+            </div>
+            <div class="reasoning-kv" *ngIf="reasoning.mebn.mfrag">
+              <span>MFrag</span><strong>{{reasoning.mebn.mfrag}}</strong>
+            </div>
+            <div class="reasoning-kv" *ngIf="reasoning.mebn.residentVariable">
+              <span>Resident</span><strong>{{reasoning.mebn.residentVariable}}</strong>
+            </div>
+            <div class="reasoning-kv" *ngIf="reasoning.mebn.state">
+              <span>State</span><strong>{{reasoning.mebn.state}}</strong>
+            </div>
+            <div class="reasoning-kv" *ngIf="reasoning.mebn.prior != null">
+              <span>Prior</span><strong>{{reasoning.mebn.prior | number:'1.2-2'}}</strong>
+            </div>
+            <div class="reasoning-chip-row" *ngIf="reasoning.mebn.findings?.length">
+              <span class="reasoning-chip warning" *ngFor="let finding of reasoning.mebn.findings">{{finding}}</span>
+            </div>
+          </section>
+
+          <section class="reasoning-detail" *ngIf="reasoning.opinion">
+            <div class="reasoning-detail-title">
+              <mat-icon>verified</mat-icon>
+              <span>Opinion</span>
+              <span class="reasoning-score" *ngIf="reasoning.opinion.confidence != null">{{reasoning.opinion.confidence | number:'1.2-2'}}</span>
+            </div>
+            <div class="reasoning-bars">
+              <div *ngIf="reasoning.opinion.belief != null"><span>Belief</span><strong>{{reasoning.opinion.belief | number:'1.2-2'}}</strong></div>
+              <div *ngIf="reasoning.opinion.disbelief != null"><span>Disbelief</span><strong>{{reasoning.opinion.disbelief | number:'1.2-2'}}</strong></div>
+              <div *ngIf="reasoning.opinion.uncertainty != null"><span>Uncertainty</span><strong>{{reasoning.opinion.uncertainty | number:'1.2-2'}}</strong></div>
+            </div>
+            <p class="reasoning-rule" *ngIf="reasoning.opinion.basis">{{reasoning.opinion.basis}}</p>
+          </section>
+
+          <section class="reasoning-detail" *ngIf="reasoning.neuralScores">
+            <div class="reasoning-detail-title">
+              <mat-icon>memory</mat-icon>
+              <span>Neural Scores</span>
+              <span class="reasoning-status" *ngIf="reasoning.neuralScores.embeddingAlgorithm">{{reasoning.neuralScores.embeddingAlgorithm}}</span>
+            </div>
+            <div class="reasoning-kv" *ngIf="reasoning.neuralScores.embeddingVersion != null">
+              <span>Version</span><strong>{{reasoning.neuralScores.embeddingVersion}}</strong>
+            </div>
+            <div class="reasoning-bars" *ngIf="reasoning.neuralScores.scores">
+              <div *ngFor="let score of objectEntries(reasoning.neuralScores.scores)">
+                <span>{{score.key}}</span><strong>{{score.value | number:'1.3-3'}}</strong>
+              </div>
+            </div>
+          </section>
+
+          <section class="reasoning-detail" *ngIf="reasoning.provenance">
+            <div class="reasoning-detail-title">
+              <mat-icon>account_tree</mat-icon>
+              <span>Provenance</span>
+            </div>
+            <pre class="metadata compact-metadata">{{reasoning.provenance.details | json}}</pre>
+          </section>
+        </div>
+      </ng-template>
 
       <!-- Statistics Bar -->
       <div class="stats-bar" *ngIf="graphData">
@@ -1228,6 +1673,9 @@ import {
       display: flex;
       justify-content: space-between;
       align-items: center;
+      flex-wrap: wrap;
+      gap: 10px;
+      min-width: 0;
       padding: 12px 20px;
       background: var(--bg-surface, #ffffff);
       border-bottom: 1px solid var(--border-color, #e3e8ee);
@@ -1239,10 +1687,14 @@ import {
       display: flex;
       gap: 10px;
       align-items: center;
+      flex-wrap: wrap;
+      min-width: 0;
+      max-width: 100%;
     }
 
     .toolbar-center {
-      flex: 1;
+      flex: 1 1 220px;
+      min-width: 160px;
       max-width: 400px;
       margin: 0 20px;
     }
@@ -1368,6 +1820,17 @@ import {
       font-size: 14px;
     }
 
+    .no-selection.compact {
+      padding: 20px;
+    }
+
+    .no-selection.compact mat-icon {
+      font-size: 28px;
+      width: 28px;
+      height: 28px;
+      margin-bottom: 8px;
+    }
+
     .filter-chips {
       display: flex;
       flex-direction: column;
@@ -1376,6 +1839,25 @@ import {
 
     .filter-chips mat-checkbox {
       font-size: 13px;
+    }
+
+    .edge-type-summary {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .edge-type-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      padding: 3px 8px;
+      border: 1px solid var(--border-color, #e3e8ee);
+      border-radius: 4px;
+      background: var(--bg-body, #f8fafc);
+      color: var(--text-secondary, #697386);
+      font-size: 12px;
+      line-height: 18px;
     }
 
     .type-count {
@@ -1858,6 +2340,7 @@ import {
 
     .relation-item {
       display: flex;
+      flex-direction: column;
       align-items: center;
       gap: 12px;
       padding: 12px;
@@ -1871,6 +2354,13 @@ import {
     .relation-item:hover {
       box-shadow: var(--shadow-sm, 0 1px 2px 0 rgba(0, 0, 0, 0.05));
       border-color: #d1d5db;
+    }
+
+    .relation-main-row {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 12px;
     }
 
     .relation-nodes {
@@ -1906,6 +2396,267 @@ import {
       font-size: 12px;
       color: var(--text-secondary, #697386);
       font-weight: 500;
+    }
+
+    .relation-reasoning {
+      width: 100%;
+      border-top: 1px solid var(--border-color, #e3e8ee);
+      padding-top: 8px;
+    }
+
+    .reasoning-section {
+      margin: 10px 0 14px;
+    }
+
+    .reasoning-panel .reasoning-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .reasoning-panel .reasoning-header h4 {
+      margin-bottom: 4px;
+    }
+
+    .reasoning-actions {
+      margin: 8px 0 14px;
+    }
+
+    .reasoning-toggles {
+      margin-bottom: 12px;
+    }
+
+    .reasoning-summary {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+
+    .reasoning-stat {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px 8px;
+      border: 1px solid var(--border-color, #e3e8ee);
+      border-radius: 6px;
+      background: var(--bg-body, #f8fafc);
+      font-size: 11px;
+      color: var(--text-secondary, #697386);
+    }
+
+    .reasoning-detail-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .reasoning-detail {
+      border: 1px solid var(--border-color, #e3e8ee);
+      border-left: 3px solid #667eea;
+      border-radius: 6px;
+      padding: 10px;
+      background: var(--bg-surface, #ffffff);
+    }
+
+    .reasoning-detail-title {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 8px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-primary, #1a1f36);
+    }
+
+    .reasoning-detail-title mat-icon {
+      font-size: 16px;
+      width: 16px;
+      height: 16px;
+      color: #667eea;
+    }
+
+    .reasoning-status,
+    .reasoning-score {
+      margin-left: auto;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: var(--bg-body, #f1f5f9);
+      color: var(--text-secondary, #697386);
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+
+    .reasoning-status.ok {
+      background: rgba(34, 197, 94, 0.12);
+      color: #16a34a;
+    }
+
+    .reasoning-status.warn {
+      background: rgba(239, 68, 68, 0.12);
+      color: #dc2626;
+    }
+
+    .reasoning-kv,
+    .reasoning-bars div {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      font-size: 11px;
+      margin-bottom: 4px;
+    }
+
+    .reasoning-kv span,
+    .reasoning-bars span {
+      color: var(--text-tertiary, #8792a2);
+    }
+
+    .reasoning-kv strong,
+    .reasoning-bars strong {
+      color: var(--text-primary, #1a1f36);
+      font-family: var(--font-family-monospace, 'JetBrains Mono', monospace);
+      text-align: right;
+      word-break: break-word;
+    }
+
+    .reasoning-chip-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin-top: 6px;
+    }
+
+    .reasoning-chip {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: rgba(99, 102, 241, 0.12);
+      color: #4f46e5;
+      font-size: 10px;
+      font-weight: 500;
+    }
+
+    .reasoning-chip.warning {
+      background: rgba(245, 158, 11, 0.14);
+      color: #d97706;
+    }
+
+    .reasoning-type-candidates {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      margin-top: 6px;
+    }
+
+    .reasoning-type-candidate {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 5px 6px;
+      border-radius: 4px;
+      background: rgba(15, 118, 110, 0.08);
+      font-size: 11px;
+    }
+
+    .reasoning-type-candidate div {
+      min-width: 0;
+    }
+
+    .reasoning-type-candidate strong {
+      display: block;
+      color: var(--text-primary, #1a1f36);
+      word-break: break-word;
+    }
+
+    .reasoning-type-candidate small {
+      display: block;
+      margin-top: 2px;
+      color: var(--text-tertiary, #8792a2);
+      word-break: break-word;
+    }
+
+    .reasoning-type-candidate span {
+      flex: 0 0 auto;
+      color: #0f766e;
+      font-family: var(--font-family-monospace, 'JetBrains Mono', monospace);
+      font-weight: 600;
+    }
+
+    .reasoning-inferred-list {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      margin-top: 6px;
+    }
+
+    .reasoning-inferred-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 5px 6px;
+      border-radius: 4px;
+      background: rgba(124, 58, 237, 0.08);
+      border-left: 2px solid #7c3aed;
+      font-size: 11px;
+    }
+
+    .reasoning-inferred-row.hierarchy {
+      background: rgba(20, 184, 166, 0.08);
+      border-left-color: #14b8a6;
+    }
+
+    .reasoning-inferred-row div {
+      min-width: 0;
+    }
+
+    .reasoning-inferred-row strong {
+      display: block;
+      color: var(--text-primary, #1a1f36);
+      word-break: break-word;
+    }
+
+    .reasoning-inferred-row small {
+      display: block;
+      margin-top: 2px;
+      color: var(--text-tertiary, #8792a2);
+      word-break: break-word;
+    }
+
+    .reasoning-inferred-row span {
+      flex: 0 0 auto;
+      color: #7c3aed;
+      font-family: var(--font-family-monospace, 'JetBrains Mono', monospace);
+      font-weight: 600;
+    }
+
+    .reasoning-inferred-row.hierarchy span {
+      color: #0f766e;
+    }
+
+    .reasoning-rule {
+      margin: 6px 0 0;
+      font-size: 11px;
+      color: var(--text-secondary, #697386);
+      line-height: 1.4;
+      word-break: break-word;
+    }
+
+    .reasoning-violations {
+      margin-top: 6px;
+      padding: 6px 8px;
+      border-radius: 4px;
+      background: rgba(239, 68, 68, 0.08);
+      color: #dc2626;
+      font-size: 11px;
+      line-height: 1.4;
+    }
+
+    .compact-metadata {
+      max-height: 120px;
+      margin: 0;
     }
 
     /* Attribution & Prediction Styles */
@@ -2388,6 +3139,123 @@ import {
       color: var(--text-secondary, #697386);
     }
 
+    .process-panel { min-width: 0; }
+    .process-toolbar {
+      display: flex; align-items: center; justify-content: space-between;
+      min-height: 42px; border-bottom: 1px solid var(--border-color, #e3e8ee);
+    }
+    .process-toolbar-title, .process-toolbar-actions { display: flex; align-items: center; gap: 6px; }
+    .process-toolbar-title { min-width: 0; font-size: 12px; font-weight: 600; color: var(--text-primary, #1a1f36); }
+    .process-toolbar-title mat-icon { color: #00838f; font-size: 18px; width: 18px; height: 18px; }
+    .process-count {
+      min-width: 20px; padding: 1px 5px; text-align: center; font-size: 10px;
+      color: #006064; background: #e0f7fa; border-radius: 8px;
+    }
+    .process-toolbar-actions button { width: 48px; height: 48px; padding: 12px; flex: 0 0 48px; }
+    .process-toolbar-actions mat-icon { font-size: 18px; width: 18px; height: 18px; }
+    .process-error { padding: 8px 0; color: #c62828; font-size: 11px; overflow-wrap: anywhere; }
+    .process-empty { padding: 28px 4px; color: var(--text-secondary, #697386); text-align: center; font-size: 12px; }
+    .process-candidate-list { border-bottom: 1px solid var(--border-color, #e3e8ee); }
+    .process-candidate-row {
+      display: grid; grid-template-columns: 30px minmax(0, 1fr) auto;
+      align-items: center; gap: 7px; width: 100%; min-height: 50px;
+      padding: 7px 4px; color: inherit; text-align: left; font: inherit;
+      background: transparent; border: 0; border-bottom: 1px solid var(--border-color, #e3e8ee);
+      cursor: pointer;
+    }
+    .process-candidate-row:last-child { border-bottom: 0; }
+    .process-candidate-row:hover { background: var(--bg-hover, #f8fafc); }
+    .process-candidate-row.selected {
+      background: #eefbfc; box-shadow: inset 3px 0 0 #00838f;
+    }
+    .process-candidate-row:focus-visible { outline: 2px solid #00838f; outline-offset: -2px; }
+    .process-rank {
+      color: #00838f; font-size: 11px; font-weight: 700; text-align: center;
+    }
+    .process-candidate-name { display: flex; flex-direction: column; min-width: 0; gap: 2px; }
+    .process-candidate-name strong {
+      color: var(--text-primary, #1a1f36); font-size: 11px; font-weight: 600;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .process-candidate-name small {
+      color: var(--text-secondary, #697386); font-size: 9px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .process-score { color: #006064; font-size: 11px; font-weight: 700; font-family: monospace; }
+    .selected-process { padding-top: 10px; }
+    .process-metrics {
+      display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 1px; background: var(--border-color, #e3e8ee);
+      border-top: 1px solid var(--border-color, #e3e8ee);
+      border-bottom: 1px solid var(--border-color, #e3e8ee);
+    }
+    .process-metrics > div {
+      display: flex; flex-direction: column; gap: 2px; min-width: 0;
+      padding: 7px; background: var(--bg-surface, #fff);
+    }
+    .process-metrics span { color: var(--text-secondary, #697386); font-size: 9px; }
+    .process-metrics strong { color: var(--text-primary, #1a1f36); font-size: 11px; overflow-wrap: anywhere; }
+    .process-hybrid { margin-top: 8px; border-bottom: 1px solid var(--border-color, #e3e8ee); }
+    .process-hybrid summary {
+      display: flex; align-items: center; flex-wrap: wrap; gap: 6px; cursor: pointer;
+      padding: 7px 4px; color: var(--text-primary, #1a1f36); font-size: 10px; font-weight: 600;
+    }
+    .process-hybrid summary small {
+      color: #006064; border: 1px solid #b2dfdb; border-radius: 3px;
+      padding: 1px 4px; font-size: 8px; font-weight: 500;
+    }
+    .process-hybrid-overview {
+      display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 1px; background: var(--border-color, #e3e8ee);
+    }
+    .process-hybrid-overview > span {
+      display: flex; justify-content: space-between; gap: 5px; min-width: 0;
+      padding: 5px 7px; background: var(--bg-surface, #fff);
+      color: var(--text-secondary, #697386); font-size: 9px;
+    }
+    .process-hybrid-overview strong { color: var(--text-primary, #1a1f36); }
+    .process-hybrid-source { display: flex; flex-wrap: wrap; gap: 3px 8px; padding: 5px 4px; color: var(--text-secondary, #697386); font-size: 8px; overflow-wrap: anywhere; }
+    .process-hybrid-source span:first-child { color: #006064; font-weight: 600; }
+    .process-hybrid-warning { padding: 5px 4px; color: #b45309; font-size: 8px; overflow-wrap: anywhere; }
+    .process-hybrid-activities { max-height: 220px; overflow-y: auto; }
+    .process-hybrid-activities > div {
+      display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto;
+      align-items: center; gap: 5px; padding: 5px 4px;
+      border-top: 1px solid var(--border-color, #e3e8ee); font-size: 8px;
+    }
+    .process-hybrid-activities > div > span:first-child {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 4px; min-width: 0;
+      color: var(--text-primary, #1a1f36); overflow-wrap: anywhere;
+    }
+    .process-hybrid-activities small { color: #00796b; font-size: 7px; text-transform: uppercase; }
+    .process-hybrid-activities > div > span:not(:first-child) { color: var(--text-secondary, #697386); white-space: nowrap; }
+    .process-hybrid-activities strong { color: #00838f; white-space: nowrap; }
+    .process-trace-button { margin-top: 10px; }
+    .process-trace { max-height: 360px; overflow: auto; margin-top: 8px; }
+    .process-trace-summary {
+      display: flex; gap: 12px; padding: 6px 8px; color: #006064;
+      background: #e0f7fa; font-size: 10px;
+    }
+    .process-trace-step {
+      display: grid; grid-template-columns: minmax(58px, auto) minmax(0, 1fr) auto;
+      align-items: start; gap: 6px; padding-top: 6px; padding-bottom: 6px; padding-right: 4px;
+      border-bottom: 1px solid var(--border-color, #e3e8ee); font-size: 9px;
+    }
+    .process-trace-kind { color: #6a1b9a; font-weight: 600; overflow-wrap: anywhere; }
+    .process-trace-body { display: flex; flex-direction: column; min-width: 0; gap: 2px; }
+    .process-trace-conclusion { color: var(--text-primary, #1a1f36); overflow-wrap: anywhere; }
+    .process-trace-body small { color: var(--text-secondary, #697386); font-size: 8px; overflow-wrap: anywhere; }
+    .process-trace-step strong { color: #00838f; font-size: 9px; }
+
+    @media (max-width: 720px) {
+      .toolbar { align-items: flex-start; padding: 10px 12px; }
+      .toolbar-left, .toolbar-center, .toolbar-right {
+        width: 100%; max-width: none; margin: 0;
+      }
+      .toolbar-left button { flex: 1 1 auto; }
+      .toolbar-right { justify-content: flex-start; gap: 4px; }
+    }
+
     ::ng-deep .mat-mdc-tab-body-wrapper {
       flex: 1;
     }
@@ -2419,6 +3287,8 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
   @Input() factSheetId: number | null = null;
   @Input() factSheetName: string = '';
   @Input() focusNodeId: string | null = null;
+  /** Graph-simulator ground-truth compare overlay (nodeId → recovery status); null = off. */
+  @Input() simTruthNodeMap: Record<string, string> | null = null;
 
   // State
   loading = false;
@@ -2458,6 +3328,37 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
   conformanceOverlayEnabled = false;
   conformanceMap: Map<string, boolean | null> = new Map();  // nodeId -> true=conformant, false=violation, null=untagged
   conformanceLoading = false;
+
+  // Typed reasoning-layer overlay state
+  reasoningLayers: ReasoningLayers | null = null;
+  reasoningLayersLoading = false;
+  reasoningLayersError: string | null = null;
+  reasoningLayerOverlayEnabled = false;
+  reasoningLayerToggles: Record<ReasoningLayerKind, boolean> = {
+    ontology: true,
+    psl: true,
+    mebn: true,
+    provenance: true,
+    opinion: true,
+    neural: true
+  };
+  reasoningNodeMap: Map<string, NodeReasoningOverlay> = new Map();
+  reasoningEdgeMap: Map<string, EdgeReasoningOverlay> = new Map();
+  reasoningNodeLayerMap: Map<string, ReasoningLayerVisualOverlay> = new Map();
+  reasoningEdgeLayerMap: Map<string, ReasoningLayerVisualOverlay> = new Map();
+  reasoningViolationCount = 0;
+
+  // Ranked process candidates and their selected graph evidence overlay
+  processCandidates: ProcessSuggestionSummary[] = [];
+  processLoading = false;
+  processMining = false;
+  processError: string | null = null;
+  selectedProcessCandidate: ProcessSuggestionSummary | null = null;
+  selectedProcessTrace: ProcessReasoningTrace | null = null;
+  processTraceLoading = false;
+  processTraceError: string | null = null;
+  processEvidenceNodeIds: ReadonlySet<string> = new Set<string>();
+  processEvidenceEdgeIds: ReadonlySet<string> = new Set<string>();
 
   // Focal/subgraph view state (D2)
   focalViewActive = false;
@@ -2518,8 +3419,7 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
   nodeTypeCounts: { [type: string]: number } = {};
   edgeTypeCounts: { [type: string]: number } = {};
   filter: GraphFilter = {
-    nodeTypes: ['SOURCE', 'DOCUMENT', 'SNIPPET', 'ENTITY', 'CUSTOM', 'TABLE', 'ATTACHMENT', 'IDENTIFIER'],
-    edgeTypes: ['HIERARCHICAL', 'EMBEDDING_SIMILARITY', 'SHARED_ENTITY', 'USER_DEFINED', 'CITATION', 'TEMPORAL', 'CROSS_SOURCE', 'RESOLVES_TO']
+    nodeTypes: [...DEFAULT_NODE_TYPES]
   };
 
   // Temporal filtering
@@ -2553,8 +3453,8 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
   forceConfig: ForceConfig = { ...DEFAULT_FORCE_CONFIG };
 
   // Type lists
-  allNodeTypes: NodeLevel[] = ['SOURCE', 'DOCUMENT', 'SNIPPET', 'ENTITY', 'CUSTOM', 'TABLE', 'ATTACHMENT', 'IDENTIFIER'];
-  allEdgeTypes: EdgeType[] = ['HIERARCHICAL', 'EMBEDDING_SIMILARITY', 'SHARED_ENTITY', 'USER_DEFINED', 'CITATION', 'TEMPORAL', 'CROSS_SOURCE', 'RESOLVES_TO'];
+  allNodeTypes: NodeLevel[] = [...DEFAULT_NODE_TYPES];
+  allEdgeTypes: EdgeType[] = [...DEFAULT_EDGE_TYPES];
 
   // Node colors for display
   private nodeColors: Record<NodeLevel, string> = {
@@ -2576,16 +3476,74 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
     private graphService: GraphService,
     private weightService: SourceWeightService,
     private attributionService: AttributionService,
+    private processEngineService: ProcessEngineService,
     private kbGrounding: KbGroundingService,
     private snackBar: MatSnackBar,
     private dialog: MatDialog,
     private http: HttpClient
   ) {}
 
+  /** True while a .kgraph export/import is in flight (drives the toolbar spinner icons). */
+  exportingUnified = false;
+  importingUnified = false;
+
+  /** Download this fact sheet's full native graph (.kgraph) — all vector layers, opinions, weights. */
+  exportUnifiedGraph(): void {
+    this.exportingUnified = true;
+    this.graphService.exportNativeGraph(this.factSheetId).subscribe({
+      next: (resp) => {
+        this.exportingUnified = false;
+        const blob = resp.body;
+        if (!blob) { return; }
+        const cd = resp.headers.get('Content-Disposition') || '';
+        const match = /filename="?([^";]+)"?/.exec(cd);
+        const fallback = `graph-${this.factSheetId != null ? this.factSheetId : 'global'}.kgraph`;
+        const filename = match ? match[1] : fallback;
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        this.snackBar.open('Graph exported', 'OK', { duration: 2500 });
+      },
+      error: (e) => {
+        this.exportingUnified = false;
+        this.snackBar.open(`Export failed: ${e?.error?.message || e?.message || 'error'}`, 'Dismiss', { duration: 5000 });
+      }
+    });
+  }
+
+  /** Import a .kgraph file into this fact sheet, then reload the visualization. */
+  importUnifiedGraph(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    const file = input.files && input.files.length ? input.files[0] : null;
+    input.value = ''; // allow re-selecting the same file
+    if (!file) { return; }
+    this.importingUnified = true;
+    this.graphService.importNativeGraph(file, this.factSheetId).subscribe({
+      next: (summary) => {
+        this.importingUnified = false;
+        this.snackBar.open(
+          `Imported ${summary.nodes} nodes, ${summary.edges} edges, ${summary.embeddings} embeddings` +
+            (summary.atoms > 0 ? ` — ${summary.atoms} facts projected (reasoning-ready)` : ''),
+          'OK', { duration: 4000 });
+        this.loadGraph();
+      },
+      error: (e) => {
+        this.importingUnified = false;
+        this.snackBar.open(`Import failed: ${e?.error?.message || e?.message || 'error'}`, 'Dismiss', { duration: 5000 });
+      }
+    });
+  }
+
   ngOnInit(): void {
     this.loadGraph();
     this.loadSourceWeights();
     this.loadTemporalBounds();
+    this.loadProcessCandidates();
 
     // Debounce search input
     this.searchSubject.pipe(
@@ -2603,8 +3561,8 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
     //  • Skip when the browser tab is hidden (document.hidden) — zero-cost when backgrounded.
     //  • For large graphs (totalAvailableNodes > 2000), use the same LOD top-K path as loadGraph()
     //    instead of requesting the full visualization payload every tick.
-    interval(5000).pipe(takeUntil(this.destroy$)).subscribe(() => {
-      if (!this.autoRefresh || this.loading || document.hidden) return;
+    interval(5000).pipe(takeUntil(this.destroy$), pauseWhenHidden()).subscribe(() => {
+      if (!this.autoRefresh || this.loading) return;
       const from = this.temporalFilterActive && this.timeFrom ? this.timeFrom + 'T00:00:00' : undefined;
       const to = this.temporalFilterActive && this.timeTo ? this.timeTo + 'T23:59:59' : undefined;
 
@@ -2622,10 +3580,13 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
             if (sig === this.lastGraphSignature) return; // unchanged → skip re-render (no layout jank)
             this.lastGraphSignature = sig;
             this.fullGraphData = data;
+            this.mergeAvailableGraphTypes(data);
             this.graphData = this.applyFilters(data, this.lastQuery);
+            this.refreshProcessEvidenceOverlay();
             if (this.strengthOverlayEnabled) {
               this.scheduleVisibleNodeVerify();
             }
+            this.refreshReasoningLayersAfterGraphChange();
           },
           error: () => { /* transient — keep last render */ }
         });
@@ -2642,6 +3603,12 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
   }
 
   ngOnChanges(changes: SimpleChanges): void {
+    if (changes['factSheetId'] && !changes['factSheetId'].firstChange) {
+      this.clearReasoningLayers();
+      this.clearProcessSelection();
+      this.loadProcessCandidates();
+      this.loadGraph(this.lastQuery);
+    }
     if (changes['focusNodeId'] && this.focusNodeId) {
       this.expandNodeById(this.focusNodeId);
     }
@@ -2680,13 +3647,20 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
           this.edgeTypeCounts = meta?.edgeTypeCounts ?? {};
           // Cache full data for timeline snapshots
           this.fullGraphData = data;
+          this.mergeAvailableGraphTypes(data);
           // Apply filters (snapshot filter handled inside applyFilters)
           this.graphData = this.applyFilters(data, query);
+          this.refreshProcessEvidenceOverlay();
           this.lastGraphSignature = this.graphSignature(data);
           this.loading = false;
           // If strength overlay is active, verify newly visible nodes
           if (this.strengthOverlayEnabled) {
             this.scheduleVisibleNodeVerify();
+          }
+          if (this.factSheetId) {
+            this.loadReasoningLayers(true);
+          } else {
+            this.clearReasoningLayers();
           }
         },
         error: (err) => {
@@ -2702,6 +3676,190 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
     const n = data?.nodes?.length ?? 0;
     const e = data?.links?.length ?? data?.edges?.length ?? 0;
     return n + ':' + e;
+  }
+
+  loadProcessCandidates(): void {
+    if (this.factSheetId == null) {
+      this.processCandidates = [];
+      this.clearProcessSelection();
+      return;
+    }
+
+    const selectedId = this.selectedProcessCandidate?.id;
+    this.processLoading = true;
+    this.processError = null;
+    this.processEngineService.listStoredSuggestions(this.factSheetId)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (response) => {
+          this.processLoading = false;
+          this.processCandidates = sortProcessSuggestions(response.suggestions || []);
+          this.selectedProcessCandidate = selectedId
+            ? this.processCandidates.find(candidate => candidate.id === selectedId) ?? null
+            : this.processCandidates[0] ?? null;
+          this.selectedProcessTrace = null;
+          this.processTraceError = null;
+          this.refreshProcessEvidenceOverlay();
+        },
+        error: (err) => {
+          this.processLoading = false;
+          this.processCandidates = [];
+          this.clearProcessSelection();
+          this.processError = 'Candidates failed: ' + (err.error?.message || err.message);
+        }
+      });
+  }
+
+  runProcessDiscovery(): void {
+    if (this.factSheetId == null) {
+      return;
+    }
+    this.processMining = true;
+    this.processError = null;
+    this.processEngineService.mineProcesses(this.factSheetId)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: () => {
+          this.processMining = false;
+          this.loadGraph(this.lastQuery);
+          this.loadProcessCandidates();
+          this.snackBar.open('Process mining complete', 'OK', { duration: 2500 });
+        },
+        error: (err) => {
+          this.processMining = false;
+          this.processError = 'Mining failed: ' + (err.error?.message || err.message);
+        }
+      });
+  }
+
+  selectProcessCandidate(candidate: ProcessSuggestionSummary): void {
+    if (this.selectedProcessCandidate?.id === candidate.id) {
+      this.clearProcessSelection();
+      return;
+    }
+    this.selectedProcessCandidate = candidate;
+    this.selectedProcessTrace = null;
+    this.processTraceError = null;
+    this.refreshProcessEvidenceOverlay();
+  }
+
+  clearProcessSelection(): void {
+    this.selectedProcessCandidate = null;
+    this.selectedProcessTrace = null;
+    this.processTraceError = null;
+    this.processEvidenceNodeIds = new Set<string>();
+    this.processEvidenceEdgeIds = new Set<string>();
+  }
+
+  refreshProcessEvidenceOverlay(): void {
+    const candidate = this.selectedProcessCandidate;
+    if (!candidate) {
+      this.processEvidenceNodeIds = new Set<string>();
+      this.processEvidenceEdgeIds = new Set<string>();
+      return;
+    }
+
+    const nodeIds = new Set<string>(candidate.sourceGraphNodeIds || []);
+    const edgeIds = new Set<string>(candidate.sourceGraphRelationIds || []);
+    const data = this.fullGraphData ?? this.graphData;
+    for (const link of data?.links || []) {
+      const supportsCandidate = edgeIds.has(link.id)
+        || this.processSuggestionIdForEdge(link) === candidate.id;
+      if (!supportsCandidate) {
+        continue;
+      }
+      edgeIds.add(link.id);
+      const sourceId = this.graphEndpointId(link.source);
+      const targetId = this.graphEndpointId(link.target);
+      if (sourceId) nodeIds.add(sourceId);
+      if (targetId) nodeIds.add(targetId);
+    }
+    this.processEvidenceNodeIds = nodeIds;
+    this.processEvidenceEdgeIds = edgeIds;
+  }
+
+  loadSelectedProcessTrace(): void {
+    if (this.selectedProcessTrace) {
+      this.selectedProcessTrace = null;
+      return;
+    }
+    const candidate = this.selectedProcessCandidate;
+    if (!candidate?.reasoningTraceId) {
+      return;
+    }
+    this.processTraceLoading = true;
+    this.processTraceError = null;
+    this.processEngineService.getStoredSuggestionTrace(candidate.id)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (trace) => {
+          if (this.selectedProcessCandidate?.id === candidate.id) {
+            this.selectedProcessTrace = trace;
+          }
+          this.processTraceLoading = false;
+        },
+        error: (err) => {
+          this.processTraceLoading = false;
+          this.processTraceError = err.status === 404
+            ? 'No persisted trace is available'
+            : 'Trace failed: ' + (err.error?.message || err.message);
+        }
+      });
+  }
+
+  selectedProcessTraceSteps(): FlatProcessReasoningStep[] {
+    return flattenProcessReasoningTrace(this.selectedProcessTrace);
+  }
+
+  processHybridActivities(candidate: ProcessSuggestionSummary): ProcessHybridActivityReasoning[] {
+    return rankedProcessHybridActivities(candidate);
+  }
+
+  processHybridMode(reasoning: ProcessHybridReasoning): string {
+    return processHybridModeLabel(reasoning);
+  }
+
+  processCandidateScore(candidate: ProcessSuggestionSummary): number {
+    return candidate.learnedScore ?? candidate.confidence ?? 0;
+  }
+
+  formatProcessLabel(value: string | null | undefined): string {
+    return (value || '').replace(/_/g, ' ').toLowerCase();
+  }
+
+  trackByProcessCandidate(_index: number, candidate: ProcessSuggestionSummary): string {
+    return candidate.id;
+  }
+
+  trackProcessHybridActivity(_index: number, activity: ProcessHybridActivityReasoning): string {
+    return activity.activity;
+  }
+
+  trackProcessTraceStep(index: number, step: FlatProcessReasoningStep): string {
+    return `${index}:${step.kind}:${step.conclusion}`;
+  }
+
+  private processSuggestionIdForEdge(link: any): string | undefined {
+    if (link?.metadata?.suggestionId != null) {
+      return String(link.metadata.suggestionId);
+    }
+    if (typeof link?.metadataJson !== 'string' || !link.metadataJson.trim()) {
+      return undefined;
+    }
+    try {
+      const metadata = JSON.parse(link.metadataJson) as Record<string, unknown>;
+      return metadata['suggestionId'] == null ? undefined : String(metadata['suggestionId']);
+    } catch {
+      return undefined;
+    }
+  }
+
+  private graphEndpointId(endpoint: any): string | undefined {
+    if (typeof endpoint === 'string') {
+      return endpoint;
+    }
+    const id = endpoint?.id ?? endpoint?.nodeId;
+    return id == null ? undefined : String(id);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -2757,7 +3915,7 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
     this.stopBuildPolling();
 
     this.buildPollSubscription = interval(2000)
-      .pipe(takeUntil(this.destroy$))
+      .pipe(takeUntil(this.destroy$), pauseWhenHidden())
       .subscribe(() => {
         if (!this.factSheetId) return;
 
@@ -2895,9 +4053,39 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
       });
   }
 
+  private mergeAvailableGraphTypes(data: D3VisualizationData): void {
+    const previousNodeTypes = new Set(this.allNodeTypes);
+
+    const nodeTypes = new Set<NodeLevel>(this.allNodeTypes);
+    Object.keys(this.nodeTypeCounts || {}).forEach(type => nodeTypes.add(type as NodeLevel));
+    data.nodes.forEach(node => {
+      if (node.type) nodeTypes.add(node.type);
+    });
+    this.allNodeTypes = Array.from(nodeTypes);
+    for (const type of this.allNodeTypes) {
+      if (!previousNodeTypes.has(type) && !this.filter.nodeTypes.includes(type)) {
+        this.filter.nodeTypes.push(type);
+      }
+    }
+
+    const edgeTypes = new Set<EdgeType>(this.allEdgeTypes);
+    Object.keys(this.edgeTypeCounts || {}).forEach(type => edgeTypes.add(type));
+    data.links.forEach(link => {
+      if (link.type) edgeTypes.add(link.type);
+    });
+    this.allEdgeTypes = Array.from(edgeTypes);
+  }
+
+  private linkEndpointId(endpoint: string | D3Node | GraphNode | null | undefined): string | null {
+    if (!endpoint) return null;
+    if (typeof endpoint === 'string') return endpoint;
+    const candidate = endpoint as unknown as { id?: string | number; nodeId?: string };
+    return candidate.nodeId || (typeof candidate.id === 'string' ? candidate.id : null);
+  }
+
   applyFilters(data: D3VisualizationData, searchQuery?: string): D3VisualizationData {
     let nodes = data.nodes.filter(n => this.filter.nodeTypes.includes(n.type));
-    let links = data.links.filter(l => this.filter.edgeTypes.includes(l.type));
+    let links = data.links.slice();
 
     // Apply temporal filter on links with occurredAt
     if (this.temporalFilterActive && (this.timeFrom || this.timeTo)) {
@@ -2987,9 +4175,14 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
       });
     }
 
-    // Keep only links where both nodes are in filtered set
+    // Keep only links where both endpoint nodes are still visible. D3/Sigma callers may
+    // mutate source/target from ids into node objects, so normalize before membership checks.
     const nodeIds = new Set(nodes.map(n => n.id));
-    links = links.filter(l => nodeIds.has(l.source) && nodeIds.has(l.target));
+    links = links.filter(l => {
+      const sourceId = this.linkEndpointId(l.source);
+      const targetId = this.linkEndpointId(l.target);
+      return !!sourceId && !!targetId && nodeIds.has(sourceId) && nodeIds.has(targetId);
+    });
 
     // Update snapshot stats
     if (this.snapshotMode) {
@@ -3195,21 +4388,6 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
     }
   }
 
-  toggleEdgeTypeFilter(type: EdgeType): void {
-    const index = this.filter.edgeTypes.indexOf(type);
-    if (index >= 0) {
-      this.filter.edgeTypes.splice(index, 1);
-    } else {
-      this.filter.edgeTypes.push(type);
-    }
-    // Apply the type filter in-memory against the cached full data to avoid a
-    // network round-trip. Only fall back to loadGraph() when no data is cached yet.
-    if (this.fullGraphData) {
-      this.graphData = this.applyFilters(this.fullGraphData, this.lastQuery);
-    } else if (this.graphData) {
-      this.loadGraph();
-    }
-  }
 
   onDepthChange(): void {
     this.loadGraph();
@@ -3221,8 +4399,7 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
 
   resetFilters(): void {
     this.filter = {
-      nodeTypes: [...this.allNodeTypes],
-      edgeTypes: [...this.allEdgeTypes]
+      nodeTypes: [...this.allNodeTypes]
     };
     this.maxDepth = 2;
     this.maxNodes = 500;  // reset to bounded default — use slider to change
@@ -3637,6 +4814,275 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
   // ═══════════════════════════════════════════════════════════════════════════
   // PHASE-2: STRENGTH & PROVENANCE OVERLAYS
   // ═══════════════════════════════════════════════════════════════════════════
+
+  toggleReasoningLayerOverlay(checked?: boolean): void {
+    const next = checked !== undefined ? checked : !this.reasoningLayerOverlayEnabled;
+    if (next && !this.factSheetId) {
+      this.snackBar.open('Select a fact sheet first', 'Dismiss', { duration: 2000 });
+      return;
+    }
+    this.reasoningLayerOverlayEnabled = next;
+    if (next && !this.reasoningLayers) {
+      this.loadReasoningLayers(true);
+    } else {
+      this.rebuildReasoningLayerMaps();
+    }
+  }
+
+  loadReasoningLayers(force = false): void {
+    if (!this.factSheetId) {
+      this.clearReasoningLayers();
+      return;
+    }
+    if (this.reasoningLayersLoading) return;
+    if (this.reasoningLayers && !force && !this.reasoningLayerOverlayEnabled) {
+      this.rebuildReasoningLayerMaps();
+      return;
+    }
+
+    this.reasoningLayersLoading = true;
+    this.reasoningLayersError = null;
+    this.graphService.getReasoningLayers(this.factSheetId)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (layers) => {
+          this.reasoningLayers = layers;
+          this.reasoningLayersLoading = false;
+          this.rebuildReasoningLayerMaps();
+        },
+        error: (err) => {
+          this.reasoningLayersLoading = false;
+          this.reasoningLayersError = err?.error?.error || err?.message || 'Failed to load reasoning layers';
+          this.reasoningNodeMap = new Map();
+          this.reasoningEdgeMap = new Map();
+          this.reasoningNodeLayerMap = new Map();
+          this.reasoningEdgeLayerMap = new Map();
+        }
+      });
+  }
+
+  setReasoningLayer(kind: ReasoningLayerKind, enabled: boolean): void {
+    this.reasoningLayerToggles = {
+      ...this.reasoningLayerToggles,
+      [kind]: enabled
+    };
+    this.rebuildReasoningLayerMaps();
+  }
+
+  getSelectedNodeReasoning(): NodeReasoningOverlay | null {
+    if (!this.selectedNode) return null;
+    return this.reasoningNodeMap.get(this.selectedNode.id) || null;
+  }
+
+  getRelationReasoning(relation: GraphEdge): EdgeReasoningOverlay | null {
+    const direct = relation.edgeId ? this.reasoningEdgeMap.get(relation.edgeId) : null;
+    if (direct) return direct;
+    const byId = relation.id != null ? this.reasoningEdgeMap.get(String(relation.id)) : null;
+    if (byId) return byId;
+    return this.reasoningEdgeMap.get(this.reasoningEdgeCompositeKey(relation.sourceNodeId, relation.targetNodeId, relation.edgeType)) || null;
+  }
+
+  objectEntries(obj: Record<string, number> | null | undefined): Array<{ key: string; value: number }> {
+    if (!obj) return [];
+    return Object.entries(obj)
+      .filter((entry): entry is [string, number] => Number.isFinite(entry[1]))
+      .map(([key, value]) => ({ key, value }));
+  }
+
+  formatConformance(value: boolean | null | undefined): string {
+    if (value === true) return 'ok';
+    if (value === false) return 'violation';
+    if (value === null) return 'untagged';
+    return 'unknown';
+  }
+
+  formatTypeHierarchy(hierarchy: TypeHierarchyOverlay): string {
+    if (!hierarchy) return '';
+    return hierarchy.parentType ? `${hierarchy.type} -> ${hierarchy.parentType}` : hierarchy.type;
+  }
+
+  formatTypeHierarchyBasis(hierarchy: TypeHierarchyOverlay): string {
+    return this.joinReasoningParts(
+      hierarchy.source,
+      hierarchy.basis,
+      hierarchy.depth != null ? `depth ${hierarchy.depth}` : undefined
+    );
+  }
+
+  formatInferredRelation(relation: InferredRelationOverlay): string {
+    const relationType = relation.relationType || 'INFERRED';
+    const source = relation.sourceType || relation.sourceNodeId;
+    const target = relation.targetType || relation.targetNodeId;
+    if (source && target) return `${source} ${relationType} ${target}`;
+    if (source) return `${relationType} ${source}`;
+    if (target) return `${relationType} ${target}`;
+    return relationType;
+  }
+
+  formatInferredRelationBasis(relation: InferredRelationOverlay): string {
+    return this.joinReasoningParts(relation.inferenceSource, relation.basis);
+  }
+
+  private clearReasoningLayers(): void {
+    this.reasoningLayers = null;
+    this.reasoningLayersError = null;
+    this.reasoningLayerOverlayEnabled = false;
+    this.reasoningNodeMap = new Map();
+    this.reasoningEdgeMap = new Map();
+    this.reasoningNodeLayerMap = new Map();
+    this.reasoningEdgeLayerMap = new Map();
+    this.reasoningViolationCount = 0;
+  }
+
+  private rebuildReasoningLayerMaps(): void {
+    const nodeMap = new Map<string, NodeReasoningOverlay>();
+    const edgeMap = new Map<string, EdgeReasoningOverlay>();
+    const nodeVisualMap = new Map<string, ReasoningLayerVisualOverlay>();
+    const edgeVisualMap = new Map<string, ReasoningLayerVisualOverlay>();
+    let violations = 0;
+
+    if (!this.reasoningLayers) {
+      this.reasoningNodeMap = nodeMap;
+      this.reasoningEdgeMap = edgeMap;
+      this.reasoningNodeLayerMap = nodeVisualMap;
+      this.reasoningEdgeLayerMap = edgeVisualMap;
+      this.reasoningViolationCount = 0;
+      return;
+    }
+
+    for (const node of this.reasoningLayers.nodes || []) {
+      nodeMap.set(node.nodeId, node);
+      if (this.hasOntologyViolation(node)) violations++;
+      const visual = this.toVisualReasoningOverlay(node);
+      if (visual) nodeVisualMap.set(node.nodeId, visual);
+    }
+
+    for (const edge of this.reasoningLayers.edges || []) {
+      if (edge.edgeId) edgeMap.set(edge.edgeId, edge);
+      if (edge.edgeId) {
+        const visual = this.toVisualReasoningOverlay(edge);
+        if (visual) edgeVisualMap.set(edge.edgeId, visual);
+      }
+      if (edge.sourceNodeId && edge.targetNodeId && edge.edgeType) {
+        const visual = this.toVisualReasoningOverlay(edge);
+        for (const key of this.reasoningEdgeCompositeKeys(edge.sourceNodeId, edge.targetNodeId, edge.edgeType)) {
+          edgeMap.set(key, edge);
+          if (visual) edgeVisualMap.set(key, visual);
+        }
+      }
+      if (this.hasOntologyViolation(edge)) violations++;
+    }
+
+    this.reasoningNodeMap = nodeMap;
+    this.reasoningEdgeMap = edgeMap;
+    this.reasoningNodeLayerMap = nodeVisualMap;
+    this.reasoningEdgeLayerMap = edgeVisualMap;
+    this.reasoningViolationCount = violations;
+  }
+
+  private toVisualReasoningOverlay(reasoning: NodeReasoningOverlay | EdgeReasoningOverlay): ReasoningLayerVisualOverlay | null {
+    const activeLayers: ReasoningLayerKind[] = [];
+    const visual: ReasoningLayerVisualOverlay = { activeLayers };
+
+    if (this.reasoningLayerToggles.ontology && reasoning.ontology) {
+      activeLayers.push('ontology');
+      visual.ontologyConformant = reasoning.ontology.conformant;
+      visual.ontologyViolation = this.hasOntologyViolation(reasoning);
+      visual.inferredRelationship = this.hasInferredRelationship(reasoning.ontology);
+      visual.inferredRelationshipScore = this.maxInferredRelationshipScore(reasoning.ontology);
+      visual.hierarchyDepth = this.minHierarchyDepth(reasoning.ontology);
+    }
+    if (this.reasoningLayerToggles.psl && reasoning.psl) {
+      activeLayers.push('psl');
+      visual.pslTruthValue = this.firstFinite(reasoning.psl.truthValue, 0.5);
+      visual.pslIncompatibility = this.firstFinite(reasoning.psl.incompatibility);
+    }
+    if (this.reasoningLayerToggles.mebn && reasoning.mebn) {
+      activeLayers.push('mebn');
+      visual.mebnPosterior = this.firstFinite(reasoning.mebn.posterior);
+      visual.mebnPrior = this.firstFinite(reasoning.mebn.prior);
+      visual.mebnFinding = (reasoning.mebn.findings?.length || 0) > 0;
+    }
+    if (this.reasoningLayerToggles.provenance && reasoning.provenance) {
+      activeLayers.push('provenance');
+      visual.provenance = true;
+    }
+    if (this.reasoningLayerToggles.opinion && reasoning.opinion) {
+      activeLayers.push('opinion');
+      visual.opinionConfidence = this.firstFinite(
+        reasoning.opinion.confidence,
+        reasoning.opinion.belief,
+        reasoning.opinion.uncertainty != null ? 1 - reasoning.opinion.uncertainty : undefined
+      );
+    }
+    if (this.reasoningLayerToggles.neural && reasoning.neuralScores) {
+      activeLayers.push('neural');
+      visual.neuralScore = this.maxScore(reasoning.neuralScores.scores);
+    }
+
+    return activeLayers.length > 0 ? visual : null;
+  }
+
+  private hasOntologyViolation(reasoning: NodeReasoningOverlay | EdgeReasoningOverlay): boolean {
+    return reasoning.ontology?.conformant === false || (reasoning.ontology?.violations?.length || 0) > 0;
+  }
+
+  private hasInferredRelationship(ontology: OntologyOverlay | null | undefined): boolean {
+    return (ontology?.inferredRelations?.length || 0) > 0 || (ontology?.typeHierarchy?.length || 0) > 0;
+  }
+
+  private maxInferredRelationshipScore(ontology: OntologyOverlay): number | undefined {
+    const scores = [
+      ...(ontology.inferredRelations || []).map(relation => relation.confidence),
+      ...(ontology.typeHierarchy || []).map(hierarchy => hierarchy.confidence)
+    ].filter((value): value is number => Number.isFinite(value));
+    return scores.length ? Math.max(...scores) : undefined;
+  }
+
+  private minHierarchyDepth(ontology: OntologyOverlay): number | undefined {
+    const depths = (ontology.typeHierarchy || [])
+      .map(hierarchy => hierarchy.depth)
+      .filter((value): value is number => Number.isFinite(value));
+    return depths.length ? Math.min(...depths) : undefined;
+  }
+
+  private firstFinite(...values: Array<number | null | undefined>): number | undefined {
+    return values.find((value): value is number => Number.isFinite(value));
+  }
+
+  private maxScore(scores: Record<string, number> | undefined): number | undefined {
+    if (!scores) return undefined;
+    const finiteScores = Object.values(scores).filter((value): value is number => Number.isFinite(value));
+    return finiteScores.length ? Math.max(...finiteScores) : undefined;
+  }
+
+  private joinReasoningParts(...parts: Array<string | null | undefined>): string {
+    return parts
+      .map(part => typeof part === 'string' ? part.trim() : '')
+      .filter(part => part.length > 0)
+      .join(' / ');
+  }
+
+  private reasoningEdgeCompositeKey(sourceNodeId: string, targetNodeId: string, edgeType: EdgeType | string): string {
+    return `${sourceNodeId}->${targetNodeId}:${edgeType}`;
+  }
+
+  private reasoningEdgeCompositeKeys(sourceNodeId: string, targetNodeId: string, edgeType: EdgeType | string): string[] {
+    return [
+      this.reasoningEdgeCompositeKey(sourceNodeId, targetNodeId, edgeType),
+      `${sourceNodeId}→${targetNodeId}:${edgeType}`
+    ];
+  }
+
+  private refreshReasoningLayersAfterGraphChange(): void {
+    if (!this.factSheetId) {
+      this.clearReasoningLayers();
+      return;
+    }
+    if (this.reasoningLayers || this.reasoningLayerOverlayEnabled || this.selectedTabIndex === 3) {
+      this.loadReasoningLayers(true);
+    }
+  }
 
   toggleStrengthOverlay(): void {
     this.strengthOverlayEnabled = !this.strengthOverlayEnabled;

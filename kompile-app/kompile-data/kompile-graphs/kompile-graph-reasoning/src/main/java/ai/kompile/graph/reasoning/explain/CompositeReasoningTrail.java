@@ -12,6 +12,7 @@ package ai.kompile.graph.reasoning.explain;
 import ai.kompile.graph.reasoning.confidence.Opinion;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.List;
@@ -126,9 +127,9 @@ public record CompositeReasoningTrail(
      * </ul>
      */
     public ReasoningTrace toReasoningTrace() {
-        List<ReasoningTrace.Step> premises = new java.util.ArrayList<>();
+        List<ReasoningTrace.Step> premises = new ArrayList<>();
         for (ModalityEvidence m : modalities) {
-            List<ReasoningTrace.Step> details = new java.util.ArrayList<>();
+            List<ReasoningTrace.Step> details = new ArrayList<>();
             for (String d : m.details()) {
                 details.add(ReasoningTrace.Step.fact(d, ReasoningTrace.clamp01(m.confidence()), m.kind().name()));
             }

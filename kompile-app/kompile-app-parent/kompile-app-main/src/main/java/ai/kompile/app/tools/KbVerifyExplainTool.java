@@ -12,10 +12,8 @@ package ai.kompile.app.tools;
 import ai.kompile.app.services.agent.ReasoningTraceStore;
 import ai.kompile.app.web.controllers.explain.ExplainOrchestrator;
 import ai.kompile.knowledgegraph.grounding.KbGroundingService;
-import ai.kompile.graph.reasoning.explain.ConfidenceBreakdown;
+import ai.kompile.app.services.agent.ReasoningTrailMapper;
 import ai.kompile.graph.reasoning.explain.ReasoningTrail;
-import ai.kompile.graph.reasoning.fol.EntailmentRecord;
-import ai.kompile.graph.reasoning.fol.grounding.DerivationTree;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
@@ -100,7 +98,7 @@ public class KbVerifyExplainTool {
             // Push the full trail into the trace buffer so AgentChatService can
             // emit it as a reasoning_trace SSE event after the subprocess exits.
             if (traceStore != null) {
-                Map<String, Object> dto = toTrailDto(trail);
+                Map<String, Object> dto = ReasoningTrailMapper.toTrailDto(trail);
                 // Stamp the KB staleness so the chat trace card can show a "re-grounding pending"
                 // chip, matching the grounding-console behaviour on the /api/kb-grounding path.
                 if (groundingService != null) {
@@ -147,82 +145,8 @@ public class KbVerifyExplainTool {
      * deserialised directly in {@code local-agent-chat.service.ts}.
      */
     public static Map<String, Object> toTrailDto(ReasoningTrail trail) {
-        Map<String, Object> dto = new LinkedHashMap<>();
-        dto.put("targetId", trail.targetId());
-        dto.put("question", trail.question() != null ? trail.question() : "");
-        dto.put("confidence", trail.confidence());
-        dto.put("inferenceMode", trail.inferenceMode());
-        if (trail.naturalLanguageSummary() != null && !trail.naturalLanguageSummary().isBlank()) {
-            dto.put("naturalLanguageSummary", trail.naturalLanguageSummary());
-        }
-        if (!trail.evidence().isEmpty()) {
-            dto.put("evidence", trail.evidence());
-        }
-        if (!trail.activatedRules().isEmpty()) {
-            dto.put("activatedRules", trail.activatedRules());
-        }
-        if (trail.computedAt() != null) {
-            dto.put("computedAt", trail.computedAt().toString());
-        }
-        // breakdown — remap Java field names to frontend ConfidenceBreakdownDto names
-        Map<String, Object> bd = buildBreakdownDto(trail.breakdown());
-        if (!bd.isEmpty()) {
-            dto.put("breakdown", bd);
-        }
-        // derivationTree — map DerivationTree → DerivationTreeNodeDto shape
-        if (trail.derivationTree() != null) {
-            dto.put("derivationTree", toDerivationNodeDto(trail.derivationTree()));
-        }
-        // entailments → EntailmentRecordDto[]
-        if (!trail.entailments().isEmpty()) {
-            dto.put("entailments", toEntailmentDtos(trail.entailments()));
-        }
-        return dto;
-    }
-
-    private static Map<String, Object> buildBreakdownDto(ConfidenceBreakdown bd) {
-        Map<String, Object> result = new LinkedHashMap<>();
-        if (bd == null) return result;
-        if (!Double.isNaN(bd.groundingConfidence())) result.put("groundingScore", bd.groundingConfidence());
-        if (!Double.isNaN(bd.pslSoftTruth()))        result.put("pslScore",       bd.pslSoftTruth());
-        if (!Double.isNaN(bd.mebnPosterior()))        result.put("mebnScore",      bd.mebnPosterior());
-        // fusedScore = structural × weight + semantic × weight (hybrid mode)
-        if (!Double.isNaN(bd.structuralScore()) && !Double.isNaN(bd.semanticScore())) {
-            double sw = Double.isNaN(bd.structuralWeight()) ? 0.5 : bd.structuralWeight();
-            double ew = Double.isNaN(bd.semanticWeight())   ? 0.5 : bd.semanticWeight();
-            result.put("fusedScore", bd.structuralScore() * sw + bd.semanticScore() * ew);
-        }
-        return result;
-    }
-
-    private static Map<String, Object> toDerivationNodeDto(DerivationTree node) {
-        if (node == null) return Map.of();
-        Map<String, Object> n = new LinkedHashMap<>();
-        n.put("atom", node.atomKey());
-        n.put("confidence", node.confidence());
-        if (node.ruleApplied() != null)      n.put("rule", node.ruleApplied());
-        if (node.sourceProvenance() != null) n.put("source", node.sourceProvenance());
-        if (node.children() != null && !node.children().isEmpty()) {
-            List<Map<String, Object>> childDtos = new ArrayList<>();
-            for (DerivationTree child : node.children()) {
-                childDtos.add(toDerivationNodeDto(child));
-            }
-            n.put("children", childDtos);
-        }
-        return n;
-    }
-
-    private static List<Map<String, Object>> toEntailmentDtos(List<EntailmentRecord> records) {
-        List<Map<String, Object>> dtos = new ArrayList<>();
-        for (EntailmentRecord r : records) {
-            Map<String, Object> e = new LinkedHashMap<>();
-            e.put("conclusion", r.groundedRvOrAtomKey());
-            e.put("confidence", r.posterior());
-            if (r.activatedRules() != null && !r.activatedRules().isEmpty()) {
-                e.put("rule", String.join("; ", r.activatedRules()));
-            }
-            dtos.add(e);
-        }
-        return dtos;
+        // Mapping logic lives in ai.kompile.app.services.agent.ReasoningTrailMapper (single source of
+        // truth, shared with AgentChatService in the agent module). This tool delegates to it.
+        return ReasoningTrailMapper.toTrailDto(trail);
     }
 }

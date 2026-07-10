@@ -19,6 +19,7 @@ import ai.kompile.graph.reasoning.model.ReasoningGraph;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -159,7 +160,7 @@ public final class GraphPruner {
          *
          * @param cutoff entities timestamped before this instant are selected
          */
-        public Builder staleness(java.time.Instant cutoff) {
+        public Builder staleness(Instant cutoff) {
             StalenessPruningPolicy policy = new StalenessPruningPolicy(cutoff);
             policies.add(new PolicyEntry("staleness(cutoff=" + cutoff + ")", policy::evaluate));
             return this;

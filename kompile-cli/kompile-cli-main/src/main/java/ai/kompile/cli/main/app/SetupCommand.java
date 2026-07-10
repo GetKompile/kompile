@@ -24,6 +24,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import picocli.CommandLine;
 
 import java.io.IOException;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -233,8 +235,8 @@ public class SetupCommand implements Callable<Integer> {
             private int stageModelFromCatalog(int port, String modelId) {
                 System.out.println("Staging model '" + modelId + "' from catalog...");
                 try {
-                    java.net.URL url = new java.net.URL("http://localhost:" + port + "/api/staging/stage/catalog/" + modelId);
-                    java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
+                    URL url = new URL("http://localhost:" + port + "/api/staging/stage/catalog/" + modelId);
+                    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
                     conn.setRequestMethod("POST");
                     conn.setConnectTimeout(5000);
                     conn.setReadTimeout(60_000);
@@ -302,8 +304,8 @@ public class SetupCommand implements Callable<Integer> {
                 if ("running".equals(status.getStatus())) {
                     try {
                         int checkPort = status.getPort().orElse(port);
-                        java.net.URL url = new java.net.URL("http://localhost:" + checkPort + "/api/staging/catalog");
-                        java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
+                        URL url = new URL("http://localhost:" + checkPort + "/api/staging/catalog");
+                        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
                         conn.setConnectTimeout(3000);
                         conn.setReadTimeout(3000);
                         if (conn.getResponseCode() == 200) {
@@ -635,8 +637,8 @@ public class SetupCommand implements Callable<Integer> {
                     if (stageModel != null && sm.checkHealth(stagingPort)) {
                         System.out.println("  Staging model '" + stageModel + "' from catalog...");
                         try {
-                            java.net.URL url = new java.net.URL("http://localhost:" + stagingPort + "/api/staging/stage/catalog/" + stageModel);
-                            java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
+                            URL url = new URL("http://localhost:" + stagingPort + "/api/staging/stage/catalog/" + stageModel);
+                            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
                             conn.setRequestMethod("POST");
                             conn.setConnectTimeout(5000);
                             conn.setReadTimeout(60_000);

@@ -33,12 +33,14 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.stream.Stream;
 
 /**
  * Persistent memory tool that provides three complementary layers of
@@ -93,7 +95,7 @@ public class MemoryTool implements CliTool {
 
     @Override
     public String description() {
-        return "Persistent memory across chat sessions. Three layers: "
+        return "Persistent memory across chat sessions. Four layers: "
                 + "(1) FLAT FILES — 'read', 'write', 'append', 'list', 'search' raw markdown "
                 + "files under .kompile/memory/ (project) or ~/.kompile/memory/ (global). "
                 + "(2) TYPED MEMORIES — 'save' with memoryType=user|feedback|project|reference, "
@@ -101,7 +103,9 @@ public class MemoryTool implements CliTool {
                 + "memoryType filter; 'types' to browse by type. Typed memories are individual "
                 + "files with YAML frontmatter and are auto-indexed in MEMORY.md. Use for user "
                 + "preferences, workflow feedback, project facts, and external references. "
-                + "(3) KNOWLEDGE GRAPH — 'create_entity' with entities[{name,entityType,observations[]}], "
+                + "(3) PROVIDER SCAN — 'scan_providers' reads project memory files from "
+                + "Claude/Codex/Gemini/Qwen/OpenCode locations so MCP clients can reuse them. "
+                + "(4) KNOWLEDGE GRAPH — 'create_entity' with entities[{name,entityType,observations[]}], "
                 + "'create_relation' with relations[{from,to,relationType}], 'add_observation' with "
                 + "observations[{entityName,contents[]}], 'delete_entity' with names[], "
                 + "'delete_relation', 'delete_observation' with deletions[{entityName,observations[]}], "
@@ -120,6 +124,7 @@ public class MemoryTool implements CliTool {
         addStringProp(props, "action",
                 "Action. Flat: read|write|append|list|search. "
                         + "Typed: save|forget|recall|types. "
+                        + "Provider scan: scan_providers. "
                         + "Graph: create_entity|create_relation|add_observation|"
                         + "delete_entity|delete_relation|delete_observation|"
                         + "read_graph|search_nodes|open_nodes");
@@ -128,7 +133,8 @@ public class MemoryTool implements CliTool {
                 "File name for flat ops (default: MEMORY.md). Use topic files like "
                         + "'debugging.md' for detailed notes.");
         addStringProp(props, "content", "Content to write/append/save");
-        addStringProp(props, "query", "Search query for search/recall/search_nodes");
+        addStringProp(props, "query", "Search query for search/recall/search_nodes/scan_providers");
+        addStringProp(props, "source", "Provider filter for scan_providers: claude-code|codex|gemini|qwen|opencode");
         addStringProp(props, "memoryType",
                 "Memory type for save/recall/types: user|feedback|project|reference");
         addStringProp(props, "name",
@@ -205,6 +211,11 @@ public class MemoryTool implements CliTool {
                     return recallTypedMemory(memDir, params, scope);
                 case "types":
                     return listByType(memDir, params, scope);
+
+                // Project-local provider memory discovery for cross-CLI MCP use
+                case "scan_providers":
+                case "scan_provider":
+                    return scanProviderMemories(params, context.getWorkingDirectory());
 
                 // Knowledge graph operations (MCP memory server API)
                 case "create_entity":
@@ -446,6 +457,125 @@ public class MemoryTool implements CliTool {
             // Skip
         }
         return matches;
+    }
+
+    // ========================================================================
+    // Provider memory scanning (project-local external CLI files)
+    // ========================================================================
+
+    private ToolResult scanProviderMemories(JsonNode params, Path workDir) {
+        String sourceFilter = params.path("source").asText("").trim().toLowerCase();
+        String query = params.path("query").asText("").trim().toLowerCase();
+
+        List<ProviderFile> matches = new ArrayList<>();
+        for (ProviderSpec spec : providerMemorySpecs()) {
+            if (!sourceFilter.isEmpty() && !spec.source.equals(sourceFilter)) continue;
+            for (Path file : collectProviderFiles(workDir, spec)) {
+                String content = readProviderFile(file);
+                if (content == null || content.isBlank()) continue;
+                String haystack = (spec.source + " " + file + " " + content).toLowerCase();
+                if (!query.isEmpty() && !haystack.contains(query)) continue;
+                matches.add(new ProviderFile(spec.source, spec.label, workDir.relativize(file), content));
+            }
+        }
+
+        if (matches.isEmpty()) {
+            String suffix = sourceFilter.isEmpty() ? "" : " for source=" + sourceFilter;
+            return ToolResult.success("No provider memory files found" + suffix + " under " + workDir);
+        }
+
+        matches.sort(Comparator.comparing((ProviderFile f) -> f.source).thenComparing(f -> f.path.toString()));
+        StringBuilder sb = new StringBuilder();
+        sb.append("Project provider memory scan: ").append(workDir).append("\n\n");
+        for (ProviderFile match : matches) {
+            sb.append("## ").append(match.source).append(" - ").append(match.path).append("\n");
+            sb.append(trimForScan(match.content, 12_000)).append("\n\n");
+        }
+
+        return ToolResult.success("memory: scan_providers " + matches.size() + " file(s)",
+                sb.toString(),
+                Map.of("count", matches.size(), "project", workDir.toString()));
+    }
+
+    private List<ProviderSpec> providerMemorySpecs() {
+        return List.of(
+                new ProviderSpec("claude-code", "Claude Code", List.of(
+                        "CLAUDE.md", ".claude/CLAUDE.md", ".claude/memory")),
+                new ProviderSpec("codex", "Codex", List.of(
+                        "AGENTS.md", ".codex/AGENTS.md", ".codex/instructions.md", ".codex/memory")),
+                new ProviderSpec("gemini", "Gemini CLI", List.of(
+                        "GEMINI.md", ".gemini/GEMINI.md", ".gemini/memory")),
+                new ProviderSpec("qwen", "Qwen Code", List.of(
+                        "QWEN.md", ".qwen/QWEN.md", ".qwen/memory")),
+                new ProviderSpec("opencode", "OpenCode", List.of(
+                        ".opencode/AGENTS.md", ".opencode/memory", ".opencode/instructions.md"))
+        );
+    }
+
+    private List<Path> collectProviderFiles(Path workDir, ProviderSpec spec) {
+        Set<Path> files = new LinkedHashSet<>();
+        for (String rel : spec.paths) {
+            Path candidate = workDir.resolve(rel).normalize();
+            if (!candidate.startsWith(workDir.normalize())) continue;
+            if (Files.isRegularFile(candidate) && isProviderMemoryFile(candidate)) {
+                files.add(candidate);
+            } else if (Files.isDirectory(candidate)) {
+                try (Stream<Path> stream = Files.walk(candidate, 4)) {
+                    stream.filter(Files::isRegularFile)
+                            .filter(this::isProviderMemoryFile)
+                            .sorted()
+                            .forEach(files::add);
+                } catch (IOException ignored) {
+                    // Ignore unreadable provider directories.
+                }
+            }
+        }
+        return new ArrayList<>(files);
+    }
+
+    private boolean isProviderMemoryFile(Path file) {
+        String name = file.getFileName().toString().toLowerCase();
+        return name.endsWith(".md") || name.endsWith(".txt") || name.endsWith(".json");
+    }
+
+    private String readProviderFile(Path file) {
+        try {
+            if (Files.size(file) > MAX_MEMORY_FILE_SIZE * 4L) return null;
+            return Files.readString(file, StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    private String trimForScan(String content, int maxChars) {
+        if (content.length() <= maxChars) return content;
+        return content.substring(0, maxChars) + "\n\n... (truncated; source file is longer)";
+    }
+
+    private static class ProviderSpec {
+        final String source;
+        final String label;
+        final List<String> paths;
+
+        ProviderSpec(String source, String label, List<String> paths) {
+            this.source = source;
+            this.label = label;
+            this.paths = paths;
+        }
+    }
+
+    private static class ProviderFile {
+        final String source;
+        final String label;
+        final Path path;
+        final String content;
+
+        ProviderFile(String source, String label, Path path, String content) {
+            this.source = source;
+            this.label = label;
+            this.path = path;
+            this.content = content;
+        }
     }
 
     // ========================================================================

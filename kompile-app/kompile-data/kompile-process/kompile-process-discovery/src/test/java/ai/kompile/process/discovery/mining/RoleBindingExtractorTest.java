@@ -21,6 +21,7 @@ import ai.kompile.graph.reasoning.fol.grounding.QueryBinding;
 import ai.kompile.graph.reasoning.fol.grounding.VerifyResult;
 import ai.kompile.knowledgegraph.grounding.KbGroundingService;
 import ai.kompile.process.discovery.ProcessSuggestion.SuggestedStep;
+import ai.kompile.process.discovery.mining.extract.ActorResourceObservations;
 import ai.kompile.process.discovery.mining.extract.RoleBindingExtractor;
 import org.junit.jupiter.api.Test;
 
@@ -149,5 +150,79 @@ class RoleBindingExtractorTest {
         Map<String, String> result = RoleBindingExtractor.extractRoles(List.of(), null, 0L);
         assertNotNull(result);
         assertEquals(0, result.size());
+    }
+
+    // ── Observed tier (strategy 0) ───────────────────────────────────────────────
+
+    @Test
+    void observedActor_beatsKbAndKeywords() {
+        KbGroundingService kb = new KbGroundingService() {
+            @Override
+            public List<QueryBinding> query(long fsId,
+                                            List<ConjunctiveQueryEngine.AtomPattern> conjuncts,
+                                            int maxResults) {
+                return List.of(new QueryBinding(Map.of("Role", "FROM_THE_KB"), 0.9));
+            }
+            @Override
+            public VerifyResult verify(long fsId, String atomKey) {
+                return VerifyResult.unknown();
+            }
+        };
+        List<SuggestedStep> steps = List.of(step("Approve Budget"));
+        Map<String, ActorResourceObservations.ObservedRole> observed = Map.of(
+                "Approve Budget",
+                new ActorResourceObservations.ObservedRole("bob", "bob", "PERSON", 4, 4, 4));
+
+        RoleBindingExtractor.applyRoleBindings(steps, kb, 1L, observed);
+
+        assertEquals("bob", steps.get(0).getRoleBinding());
+        assertEquals(RoleBindingExtractor.SOURCE_OBSERVED, steps.get(0).getRoleSource());
+    }
+
+    @Test
+    void observedTier_worksWithoutAnyKb() {
+        List<SuggestedStep> steps = List.of(step("Invoice"), step("Approve Request"));
+        Map<String, ActorResourceObservations.ObservedRole> observed = Map.of(
+                "Invoice",
+                new ActorResourceObservations.ObservedRole("Accounts Payable", "carol", "PERSON", 3, 3, 4));
+
+        RoleBindingExtractor.applyRoleBindings(steps, null, 0L, observed);
+
+        assertEquals("Accounts Payable", steps.get(0).getRoleBinding());
+        assertEquals(RoleBindingExtractor.SOURCE_OBSERVED, steps.get(0).getRoleSource());
+        // No observation for the second step — keyword tier still answers, tagged HEURISTIC.
+        assertEquals("APPROVER", steps.get(1).getRoleBinding());
+        assertEquals(RoleBindingExtractor.SOURCE_HEURISTIC, steps.get(1).getRoleSource());
+    }
+
+    // ── roleSource provenance ────────────────────────────────────────────────────
+
+    @Test
+    void roleSource_kbForQueryAnswers_nullForUnassigned() {
+        KbGroundingService kb = new KbGroundingService() {
+            @Override
+            public List<QueryBinding> query(long fsId,
+                                            List<ConjunctiveQueryEngine.AtomPattern> conjuncts,
+                                            int maxResults) {
+                // Quoted binding, the shape real promoted facts produce — must unquote for display.
+                if (!conjuncts.isEmpty() && "performedBy".equals(conjuncts.get(0).predicate())
+                        && conjuncts.get(0).args().get(0).contains("Create PO")) {
+                    return List.of(new QueryBinding(Map.of("Performer", "\"carol\""), 0.7));
+                }
+                return List.of();
+            }
+            @Override
+            public VerifyResult verify(long fsId, String atomKey) {
+                return VerifyResult.unknown();
+            }
+        };
+        List<SuggestedStep> steps = List.of(step("Create PO"), step("Zzz Mystery"));
+
+        RoleBindingExtractor.applyRoleBindings(steps, kb, 2L, Map.of());
+
+        assertEquals("carol", steps.get(0).getRoleBinding());
+        assertEquals(RoleBindingExtractor.SOURCE_KB, steps.get(0).getRoleSource());
+        assertEquals("UNASSIGNED", steps.get(1).getRoleBinding());
+        assertNull(steps.get(1).getRoleSource());
     }
 }

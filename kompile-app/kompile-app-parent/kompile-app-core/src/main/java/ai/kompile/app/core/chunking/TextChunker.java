@@ -16,6 +16,7 @@
 
 package ai.kompile.app.core.chunking;
 
+import ai.kompile.core.language.LanguageSupport;
 import ai.kompile.core.retrievers.RetrievedDoc;
 import java.util.List;
 import java.util.Map;
@@ -44,7 +45,7 @@ import java.util.function.Consumer;
  * List<RetrievedDoc> chunks = chunker.chunk(document, options);
  * }</pre>
  */
-public interface TextChunker {
+public interface TextChunker extends LanguageSupport {
 
     /**
      * Chunks the given document into a list of smaller documents.

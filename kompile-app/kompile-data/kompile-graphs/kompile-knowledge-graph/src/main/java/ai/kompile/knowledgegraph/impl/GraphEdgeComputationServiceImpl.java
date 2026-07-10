@@ -91,10 +91,6 @@ public class GraphEdgeComputationServiceImpl implements GraphEdgeComputationServ
     @Override
     @Transactional
     public void computeEmbeddingSimilarityEdges(Long factSheetId, double minSimilarity, int maxEdgesPerNode) {
-        if (embeddingModel == null) {
-            log.warn("EmbeddingModel not available — cannot compute similarity edges");
-            return;
-        }
         if (!running.compareAndSet(false, true)) {
             log.warn("Edge computation already running");
             return;
@@ -119,21 +115,47 @@ public class GraphEdgeComputationServiceImpl implements GraphEdgeComputationServ
             log.info("Computing embedding similarity edges for {} document nodes (factSheetId={}, minSimilarity={})",
                     docNodes.size(), factSheetId, minSimilarity);
 
-            // Compute embeddings for all nodes in ONE minibatched call. Per-node embed() was a
-            // separate embedding-subprocess round-trip per node — the dominant crawl throughput cost
-            // (hundreds of batch-1 embeds). embedBatch hands the whole set to the subprocess (which
-            // sub-batches internally) and returns one float[] per text, so no INDArray is held here.
+            // Reuse vectors already persisted by crawl/KGE learning. Only missing documents are
+            // sent to the injected model, avoiding duplicate inference immediately after backfill and
+            // preserving similarity computation when the model is temporarily unavailable.
             Map<String, float[]> embeddings = new LinkedHashMap<>();
+            Map<String, INDArray> persisted = knowledgeGraphService.exportNodeEmbeddings(factSheetId);
+            if (persisted != null && !persisted.isEmpty()) {
+                try {
+                    for (GraphNode node : docNodes) {
+                        INDArray stored = persisted.get(node.getNodeId());
+                        float[] vector = toUsableEmbeddingVector(stored, node.getNodeId());
+                        if (vector != null) {
+                            embeddings.put(node.getNodeId(), vector);
+                        }
+                    }
+                } finally {
+                    closeEmbeddings(persisted.values());
+                }
+            }
+            for (GraphNode node : docNodes) {
+                if (embeddings.containsKey(node.getNodeId()) || node.getKgEmbedding() == null) {
+                    continue;
+                }
+                float[] vector = toUsableEmbeddingVector(node.getKgEmbedding(), node.getNodeId());
+                if (vector != null) {
+                    embeddings.put(node.getNodeId(), vector);
+                }
+            }
+
             List<String> batchTexts = new ArrayList<>(docNodes.size());
             List<String> batchNodeIds = new ArrayList<>(docNodes.size());
-            for (GraphNode node : docNodes) {
-                if (cancelled.get()) break;
-                String text = buildEmbeddingText(node);
-                if (text == null || text.isBlank()) continue;
-                batchTexts.add(text);
-                batchNodeIds.add(node.getNodeId());
+            if (embeddingModel != null) {
+                for (GraphNode node : docNodes) {
+                    if (cancelled.get()) break;
+                    if (embeddings.containsKey(node.getNodeId())) continue;
+                    String text = buildEmbeddingText(node);
+                    if (text == null || text.isBlank()) continue;
+                    batchTexts.add(text);
+                    batchNodeIds.add(node.getNodeId());
+                }
             }
-            if (!cancelled.get() && !batchTexts.isEmpty()) {
+            if (!cancelled.get() && embeddingModel != null && !batchTexts.isEmpty()) {
                 try {
                     List<float[]> vectors = embeddingModel.embedBatch(batchTexts);
                     int n = vectors == null ? 0 : Math.min(vectors.size(), batchNodeIds.size());
@@ -195,6 +217,85 @@ public class GraphEdgeComputationServiceImpl implements GraphEdgeComputationServ
             currentOperation = "idle";
             running.set(false);
         }
+    }
+
+    @Override
+    @Transactional
+    public int backfillDocumentNodeEmbeddings(Long factSheetId) {
+        if (embeddingModel == null || !embeddingModel.canEmbed()) {
+            log.info("Embedding model unavailable; DOCUMENT embedding backfill skipped");
+            return 0;
+        }
+
+        List<GraphNode> documentNodes = factSheetId != null
+                ? knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.DOCUMENT)
+                : knowledgeGraphService.getNodesByType(NodeLevel.DOCUMENT);
+        if (documentNodes.isEmpty()) {
+            return 0;
+        }
+
+        Set<String> existingNodeIds = new HashSet<>();
+        Map<String, INDArray> exported = knowledgeGraphService.exportNodeEmbeddings(factSheetId);
+        if (exported != null) {
+            existingNodeIds.addAll(exported.keySet());
+            closeEmbeddings(exported.values());
+        }
+        for (GraphNode node : documentNodes) {
+            if (node.getKgEmbedding() != null && !node.getKgEmbedding().isEmpty()) {
+                existingNodeIds.add(node.getNodeId());
+            }
+        }
+
+        List<GraphNode> missing = documentNodes.stream()
+                .filter(node -> node.getNodeId() != null && !existingNodeIds.contains(node.getNodeId()))
+                .filter(node -> {
+                    String text = buildEmbeddingText(node);
+                    return text != null && !text.isBlank();
+                })
+                .toList();
+        if (missing.isEmpty()) {
+            return 0;
+        }
+
+        int optimalBatch = Math.max(1, embeddingModel.getOptimalBatchSize());
+        int maximumBatch = Math.max(1, embeddingModel.getMaxBatchSize());
+        int batchSize = Math.min(optimalBatch, maximumBatch);
+        int applied = 0;
+
+        for (int start = 0; start < missing.size(); start += batchSize) {
+            int end = Math.min(start + batchSize, missing.size());
+            List<GraphNode> batchNodes = missing.subList(start, end);
+            List<String> texts = batchNodes.stream().map(this::buildEmbeddingText).toList();
+            INDArray matrix = null;
+            Map<String, INDArray> rows = new LinkedHashMap<>();
+            try {
+                matrix = embeddingModel.embed(texts);
+                if (matrix == null || matrix.isEmpty()) {
+                    continue;
+                }
+                int availableRows = matrix.rank() == 1 ? 1 : (int) matrix.rows();
+                int count = Math.min(batchNodes.size(), availableRows);
+                for (int i = 0; i < count; i++) {
+                    INDArray row = matrix.rank() == 1 ? matrix : matrix.getRow(i);
+                    if (toUsableEmbeddingVector(row, batchNodes.get(i).getNodeId()) != null) {
+                        rows.put(batchNodes.get(i).getNodeId(), row.dup());
+                    }
+                }
+                if (!rows.isEmpty()) {
+                    applied += knowledgeGraphService.applyNodeEmbeddings(rows);
+                }
+            } catch (RuntimeException ex) {
+                log.warn("DOCUMENT embedding backfill failed for batch {}..{}: {}",
+                        start, end, ex.getMessage());
+            } finally {
+                closeEmbeddings(rows.values());
+                closeEmbedding(matrix);
+            }
+        }
+
+        log.info("Backfilled {} of {} missing DOCUMENT node embeddings (factSheetId={})",
+                applied, missing.size(), factSheetId);
+        return applied;
     }
 
     @Override
@@ -337,6 +438,26 @@ public class GraphEdgeComputationServiceImpl implements GraphEdgeComputationServ
             return null;
         }
         return vector;
+    }
+
+    private void closeEmbeddings(Collection<INDArray> embeddings) {
+        if (embeddings == null) {
+            return;
+        }
+        for (INDArray embedding : embeddings) {
+            closeEmbedding(embedding);
+        }
+    }
+
+    private void closeEmbedding(INDArray embedding) {
+        if (embedding == null || embedding.wasClosed()) {
+            return;
+        }
+        try {
+            embedding.close();
+        } catch (RuntimeException ex) {
+            log.debug("Unable to release temporary embedding: {}", ex.getMessage());
+        }
     }
 
     private double cosineSimilarity(float[] left, float[] right) {

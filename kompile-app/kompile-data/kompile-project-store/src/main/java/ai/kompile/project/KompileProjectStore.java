@@ -15,6 +15,7 @@
  */
 package ai.kompile.project;
 
+import ai.kompile.cli.common.util.GitRunner;
 import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
@@ -90,7 +91,6 @@ public class KompileProjectStore {
         if (req.isIncludeStandardComponents()) {
             upsertStandardComponents(manifest);
             upsertStandardScripts(manifest);
-            upsertStandardWorkflows(manifest);
         }
         for (KompileProjectComponent component : req.getComponents()) {
             upsertComponent(manifest, component);
@@ -106,6 +106,9 @@ public class KompileProjectStore {
         }
         for (KompileProjectCrawlProfile crawlProfile : req.getCrawlProfiles()) {
             upsertCrawlProfile(manifest, crawlProfile);
+        }
+        if (req.isIncludeStandardComponents()) {
+            upsertStandardWorkflows(manifest);
         }
         for (KompileProjectWorkflow workflow : req.getWorkflows()) {
             upsertWorkflow(manifest, workflow);
@@ -397,7 +400,7 @@ public class KompileProjectStore {
                     String body = entry.getBody() == null ? "" : entry.getBody().toLowerCase(Locale.ROOT);
                     return title.contains(lowerQuery) || tags.contains(lowerQuery) || body.contains(lowerQuery);
                 })
-                .collect(java.util.stream.Collectors.toList());
+                .collect(Collectors.toList());
     }
 
     /**
@@ -949,7 +952,7 @@ public class KompileProjectStore {
     }
 
     public boolean isGitXetAvailable() {
-        return ai.kompile.cli.common.util.GitRunner.isGitXetAvailable();
+        return GitRunner.isGitXetAvailable();
     }
 
     public Path manifestPath(Path root) {
@@ -1498,11 +1501,18 @@ public class KompileProjectStore {
                 List.of("workflow", "automation", "crawl", "ingest"));
         KompileProjectWorkflowStep healthStep = workflowStep(
                 "wait-for-app", "Wait for app", "HEALTH_CHECK", null);
-        healthStep.setUrl("${appUrl}/actuator/health");
-        healthStep.setExpectedStatus(200);
+        // Do NOT set a hardcoded URL here. Generated kompile apps do not ship Spring Boot
+        // Actuator, so "${appUrl}/actuator/health" 404s. The runner (runHealthCheckStep)
+        // detects a null/default URL and uses KompileHttpClient.isHealthy() which probes
+        // /actuator/health OR /api/setup/status — whichever responds 200 first.
         healthStep.setTimeoutSeconds(120);
+        String crawlRef = manifest.getCrawlProfiles().stream()
+                .map(KompileProjectCrawlProfile::getId)
+                .filter(id -> id != null && !id.isBlank())
+                .findFirst()
+                .orElse("auto-ingest");
         KompileProjectWorkflowStep crawlStep = workflowStep(
-                "run-crawl", "Run crawl", "CRAWL", null);
+                "run-crawl", "Run crawl", "CRAWL", crawlRef);
         autoIngest.setSteps(List.of(healthStep, crawlStep));
         upsertWorkflow(manifest, autoIngest);
     }
@@ -2336,7 +2346,7 @@ public class KompileProjectStore {
         ProcessBuilder builder = new ProcessBuilder(command);
         builder.directory(directory.toAbsolutePath().normalize().toFile());
         builder.redirectErrorStream(true);
-        ai.kompile.cli.common.util.GitRunner.augmentPath(builder);
+        GitRunner.augmentPath(builder);
         try {
             Process process = builder.start();
             String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);

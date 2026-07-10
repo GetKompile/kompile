@@ -14,6 +14,7 @@ import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -82,7 +83,7 @@ public class TensorHlMrfInference implements HlMrfSolver {
             return new HlMrfMapInference.Result(values, ground, 0, 0.0, true);
         }
 
-        Map<String, Integer> index = new java.util.HashMap<>();
+        Map<String, Integer> index = new HashMap<>();
         for (int i = 0; i < a; i++) index.put(atoms.get(i), i);
 
         // Initial assignment + target mask.
@@ -172,8 +173,10 @@ public class TensorHlMrfInference implements HlMrfSolver {
             step *= 1.5;
         }
 
+        // Bulk-read the solution vector once (one host-sync on CUDA) instead of one JNI call per atom.
+        double[] vArr = v.toDoubleVector();
         Map<String, Double> values = new LinkedHashMap<>();
-        for (int i = 0; i < a; i++) values.put(atoms.get(i), v.getDouble(i, 0));
+        for (int i = 0; i < a; i++) values.put(atoms.get(i), vArr[i]);
         return new HlMrfMapInference.Result(values, ground, iter, objective, converged);
     }
 

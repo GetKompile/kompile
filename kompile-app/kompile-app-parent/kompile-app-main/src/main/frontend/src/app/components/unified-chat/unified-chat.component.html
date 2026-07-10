@@ -20,7 +20,10 @@
   <aside class="history-sidebar" [class.collapsed]="!showHistorySidebar" data-testid="history-sidebar">
     <div class="history-sidebar-header">
       <h3>Chats</h3>
-      <button class="new-chat-btn" (click)="newChat()" title="New Chat" data-testid="new-chat-btn">
+      <button class="new-chat-btn" (click)="newChat()"
+        [disabled]="isStreaming"
+        [title]="isStreaming ? 'Stop the current response before starting a new chat' : 'New Chat'"
+        data-testid="new-chat-btn">
         <span>+</span> New
       </button>
     </div>
@@ -58,11 +61,11 @@
         <div class="sync-progress-banner" *ngIf="syncSt.running">
           <div class="sync-progress-info">
             <span class="sync-progress-label">
-              Syncing {{ syncSt.currentSource || '...' }}
-              ({{ syncSt.sourceIndex }}/{{ syncSt.totalSources }})
+              Syncing {{ getSourceDisplayName(syncSt.currentSource || '') || '…' }} sessions
+              ({{ syncSt.sourceIndex }} of {{ syncSt.totalSources }})
             </span>
             <span class="sync-progress-detail" *ngIf="syncSt.sourcePending > 0">
-              {{ syncSt.sourceImported }}/{{ syncSt.sourcePending }} sessions
+              {{ syncSt.sourceImported }}/{{ syncSt.sourcePending }} imported
             </span>
           </div>
           <div class="sync-progress-bar">
@@ -124,17 +127,17 @@
 
         <!-- Divider -->
         <div class="chat-list-divider"
-          *ngIf="currentSession && (currentSession.messages?.length || 0) > 0 && getAllSessions().length > 0">
+          *ngIf="currentSession && (currentSession.messages?.length || 0) > 0 && getLocalSessions().length > 0">
           <span>Previous</span>
         </div>
 
-        <!-- All Sessions (local + synced) -->
-        <div class="chat-item" *ngFor="let session of getAllSessions()"
+        <!-- Local (app-created) sessions — flat list as before -->
+        <div class="chat-item" *ngFor="let session of getLocalSessions()"
           [class.active]="session.id === currentSession?.id" [class.archived]="session.archived"
-          [class.editing]="editingSessionId === session.id" [class.synced]="session.synced">
+          [class.editing]="editingSessionId === session.id">
 
           <div class="chat-item-content" *ngIf="editingSessionId !== session.id"
-            (click)="session.synced ? loadSyncedSession(session) : loadSession(session)">
+            (click)="loadSession(session)">
             <span class="cli-source-dot" *ngIf="getEffectiveSource(session)"
               [style.background-color]="getSourceColor(getEffectiveSource(session)!)"
               [title]="getSourceDisplayName(getEffectiveSource(session)!)"></span>
@@ -150,7 +153,7 @@
               <span class="chat-meta">
                 {{ session.messageCount ?? session.messages.length ?? 0 }} msgs · {{ formatSessionDate(session.updatedAt) }}
               </span>
-              <span class="chat-preview" *ngIf="!session.synced && getSessionPreview(session)">{{ getSessionPreview(session) }}</span>
+              <span class="chat-preview" *ngIf="getSessionPreview(session)">{{ getSessionPreview(session) }}</span>
             </div>
           </div>
 
@@ -162,7 +165,7 @@
             <button class="edit-action-btn cancel" (click)="cancelEditSessionName()" title="Cancel">✕</button>
           </div>
 
-          <div class="chat-item-actions" *ngIf="editingSessionId !== session.id && !session.synced">
+          <div class="chat-item-actions" *ngIf="editingSessionId !== session.id">
             <button class="chat-action-btn" (click)="startEditSessionName(session); $event.stopPropagation()"
               title="Rename">✏️</button>
             <button class="chat-action-btn" [matMenuTriggerFor]="folderMenu" (click)="$event.stopPropagation()"
@@ -184,6 +187,34 @@
           </div>
         </div>
 
+        <!-- Synced sessions grouped by source — collapsed by default -->
+        <ng-container *ngFor="let src of getSyncedSources()">
+          <ng-container *ngIf="sourceFilter === 'all' || sourceFilter === src">
+            <div class="synced-group-header" (click)="toggleSyncedGroup(src)">
+              <span class="synced-group-dot" [style.background-color]="getSourceColor(src)"></span>
+              <span class="synced-group-name">{{ getSourceDisplayName(src) }}</span>
+              <span class="synced-group-count">({{ getSyncedSourceTotal(src) }})</span>
+              <span class="synced-group-chevron">{{ isSyncedGroupExpanded(src) ? '▾' : '▸' }}</span>
+            </div>
+            <ng-container *ngIf="isSyncedGroupExpanded(src)">
+              <div class="chat-item synced" *ngFor="let session of getSyncedSessionsForSource(src)"
+                [class.active]="session.id === currentSession?.id">
+                <div class="chat-item-content" (click)="loadSyncedSession(session)">
+                  <div class="chat-details">
+                    <span class="chat-name">{{ session.name || 'Unnamed Chat' }}</span>
+                    <span class="chat-meta">
+                      {{ session.messageCount ?? 0 }} msgs · {{ formatSessionDate(session.updatedAt) }}
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <button class="show-more-btn" *ngIf="hasSyncedMore(src)" (click)="showMoreSynced(src)">
+                Show more…
+              </button>
+            </ng-container>
+          </ng-container>
+        </ng-container>
+
         <!-- Loading indicator for synced sessions -->
         <div class="cli-loading" *ngIf="syncedSessionsLoading">
           <span>Syncing conversations...</span>
@@ -191,7 +222,7 @@
 
         <!-- Empty State -->
         <div class="chat-list-empty"
-          *ngIf="getAllSessions().length === 0 && (!currentSession || (currentSession.messages?.length || 0) === 0) && !syncedSessionsLoading">
+          *ngIf="getLocalSessions().length === 0 && getSyncedSources().length === 0 && (!currentSession || (currentSession.messages?.length || 0) === 0) && !syncedSessionsLoading">
           <span class="empty-icon">💭</span>
           <span class="empty-text">No chats yet</span>
           <span class="empty-hint">Start a new conversation or wait for CLI sync</span>
@@ -997,10 +1028,23 @@
           <span class="token-usage-total" title="Total tokens">{{ formatTokenCount(getSessionTokenUsage().totalTokens) }}</span>
         </span>
 
+        <!-- Context window usage for the selected agent's model -->
+        <span class="context-usage" *ngIf="contextBudget && estimatedContextTokens > 0"
+          [class.context-usage-warn]="(contextUsagePercent || 0) >= 75"
+          title="Context usage: ~{{ formatTokenCount(estimatedContextTokens) }} of {{ formatTokenCount(contextBudget.inputBudgetTokens) }} input-budget tokens ({{ contextBudget.model }} — {{ formatTokenCount(contextBudget.contextWindow) }} window, source: {{ contextBudget.source }})">
+          Context: {{ formatTokenCount(estimatedContextTokens) }}/{{ formatTokenCount(contextBudget.inputBudgetTokens) }}
+          <ng-container *ngIf="contextUsagePercent !== null">({{ contextUsagePercent }}%)</ng-container>
+        </span>
+
         <button class="text-btn" (click)="newChat()" *ngIf="!isStreaming">+ New</button>
         <button class="text-btn" (click)="exportConversation()" *ngIf="messages.length > 0 && !isStreaming"
           title="Export conversation">
           Export
+        </button>
+        <button class="text-btn" (click)="compactContext()" *ngIf="messages.length > 0 && !isStreaming"
+          [disabled]="isCompacting"
+          title="Summarize older messages to free context — the model keeps a summary plus recent turns">
+          {{ isCompacting ? 'Compacting…' : 'Compact' }}
         </button>
         <button class="text-btn danger" (click)="clearConversation()" *ngIf="messages.length > 0 && !isStreaming">
           Clear
@@ -1063,9 +1107,35 @@
       <!-- Messages -->
       <div *ngFor="let message of messages; let i = index; trackBy: trackByMessageId" class="message-wrapper" data-testid="message-wrapper"
         [class.user-wrapper]="message.role === 'user'" [class.bot-wrapper]="message.role === 'assistant'"
-        [class.system-wrapper]="message.role === 'system'">
+        [class.system-wrapper]="message.role === 'system'"
+        [class.compaction-wrapper]="message.kind === 'compaction'">
 
-        <div class="message-bubble" data-testid="message-bubble" [attr.data-role]="message.role" [class.user-message]="message.role === 'user'"
+        <!-- Compaction divider: in-flow banner marking the point where older messages
+             were summarized for the model. The transcript above it stays intact. -->
+        <div *ngIf="message.kind === 'compaction'" class="compaction-divider" data-testid="compaction-divider">
+          <div class="compaction-divider-line">
+            <span class="compaction-divider-rule"></span>
+            <span class="compaction-divider-label">
+              🗜️ Context compacted
+              <ng-container *ngIf="message.compaction">
+                · ~{{ formatTokenCount(message.compaction.tokensBefore) }} → ~{{ formatTokenCount(message.compaction.tokensAfter) }} tokens
+                <ng-container *ngIf="message.compaction.model"> · {{ message.compaction.model }}</ng-container>
+                <ng-container *ngIf="message.compaction.contextWindow"> ({{ formatTokenCount(message.compaction.contextWindow) }} window)</ng-container>
+              </ng-container>
+            </span>
+            <span class="compaction-divider-rule"></span>
+          </div>
+          <div class="compaction-divider-note">
+            Older messages were summarized for the model — the transcript above is unchanged.
+            <span *ngIf="message.compaction?.usedFallback">(deterministic digest — summarization model unavailable)</span>
+          </div>
+          <details *ngIf="message.compaction?.summary" class="compaction-summary">
+            <summary>View summary sent to the model</summary>
+            <pre>{{ message.compaction?.summary }}</pre>
+          </details>
+        </div>
+
+        <div *ngIf="message.kind !== 'compaction'" class="message-bubble" data-testid="message-bubble" [attr.data-role]="message.role" [class.user-message]="message.role === 'user'"
           [class.bot-message]="message.role === 'assistant'"
           [class.system-message]="message.role === 'system'" [class.error-message]="message.error"
           [class.streaming]="message.isStreaming">
@@ -1077,7 +1147,7 @@
                 {{ message.agent?.displayName || 'Assistant' }}
                 <span class="agent-icon-small" *ngIf="message.agent">{{ getAgentIcon(message.agent.name) }}</span>
               </span>
-              <span *ngIf="message.role === 'system'">Monitor</span>
+              <span *ngIf="message.role === 'system'">{{ message.kind === 'monitor' ? 'Monitor' : 'System' }}</span>
             </strong>
             <div class="message-header-actions">
               <span *ngIf="message.isStreaming" class="streaming-indicator">typing...</span>
@@ -1112,7 +1182,7 @@
           <div class="message-content markdown-body" data-testid="message-content" [class.large-message]="isLargeMessage(message)">
             <!-- Assistant messages: render markdown with segment support -->
             <ng-container *ngIf="message.role === 'assistant'">
-              <ng-container *ngFor="let segment of getMessageSegments(message)">
+              <ng-container *ngFor="let segment of getMessageSegments(message); let si = index">
                 <!-- Text segments: rendered as markdown -->
                 <div *ngIf="segment.type === 'text'" class="md-rendered"
                   [innerHTML]="segment.renderedContent"></div>
@@ -1123,20 +1193,43 @@
                   <div class="thinking-content" [innerHTML]="segment.renderedContent"></div>
                 </details>
 
-                <!-- Tool use blocks -->
-                <div *ngIf="segment.type === 'tool_use'" class="tool-use-block">
-                  <div class="tool-use-header">
+                <!-- Tool use blocks: collapsed by default when content exceeds ~10 lines -->
+                <details *ngIf="segment.type === 'tool_use'" class="tool-use-block tool-use-collapsible"
+                  [attr.open]="(segment.toolInput && (segment.toolInput.split('\n').length <= 10)) ? '' : null">
+                  <summary class="tool-use-summary">
                     <span class="tool-use-icon">&#9881;</span>
                     <span class="tool-use-name">{{ segment.toolName }}</span>
+                    <span class="tool-use-preview" *ngIf="segment.toolInput">
+                      · {{ segment.toolInput.split('\n')[0] | slice:0:60 }}{{ segment.toolInput.split('\n')[0].length > 60 ? '…' : '' }}
+                    </span>
+                  </summary>
+                  <div class="tool-use-body">
+                    <pre *ngIf="segment.toolInput" class="tool-use-input">{{ segment.toolInput }}</pre>
+                    <pre *ngIf="segment.toolResult" class="tool-use-result">{{ segment.toolResult }}</pre>
+                    <button class="tool-copy-btn"
+                      *ngIf="segment.toolInput || segment.toolResult"
+                      (click)="copyToClipboardPublic((segment.toolInput || '') + (segment.toolResult ? '\n' + segment.toolResult : ''), i)"
+                      title="Copy tool content">
+                      📋
+                    </button>
                   </div>
-                  <pre *ngIf="segment.toolInput" class="tool-use-input">{{ segment.toolInput }}</pre>
-                  <pre *ngIf="segment.toolResult" class="tool-use-result">{{ segment.toolResult }}</pre>
-                </div>
+                </details>
               </ng-container>
 
               <!-- Source reference links (injected into rendered markdown) -->
               <div *ngIf="hasLinkableSourceRefs(message) && getMessageSegments(message).length === 0"
                 class="md-rendered" [innerHTML]="getContentWithSourceLinks(message)"></div>
+
+              <!-- Stopped badge: shown outside the markdown content when user cancelled -->
+              <span class="stopped-badge" *ngIf="message.stopped" data-testid="stopped-badge">Stopped</span>
+
+              <!-- Retry button for errored messages -->
+              <div class="error-retry-bar" *ngIf="message.error && !isStreaming">
+                <span class="error-label">Response failed</span>
+                <button class="retry-btn" (click)="retryMessage(i)" [disabled]="isLoading">
+                  ↺ Retry
+                </button>
+              </div>
             </ng-container>
 
             <!-- User messages: render markdown too -->

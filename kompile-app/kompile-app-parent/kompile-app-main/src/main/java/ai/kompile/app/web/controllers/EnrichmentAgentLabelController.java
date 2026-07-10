@@ -158,8 +158,9 @@ public class EnrichmentAgentLabelController {
             // Apply categorizations directly
             Map<String, EntityCategory> catMap = categories.stream()
                     .collect(Collectors.toMap(EntityCategory::getCategoryId, c -> c, (a, b) -> a));
-            int applied = 0;
+            List<KnowledgeGraphService.NodeUpdate> updates = new ArrayList<>();
             List<String> errors = new ArrayList<>();
+            Map<String, EntityCategory> assignmentsByNodeId = new LinkedHashMap<>();
 
             for (Map<String, Object> item : parsed) {
                 String nodeId = String.valueOf(item.getOrDefault("entityNodeId", ""));
@@ -169,11 +170,22 @@ public class EnrichmentAgentLabelController {
                     errors.add("Unknown category: " + categoryId + " for entity " + nodeId);
                     continue;
                 }
+                if (nodeId == null || nodeId.isBlank()) {
+                    errors.add("Missing entity node id for category " + categoryId);
+                    continue;
+                }
+                assignmentsByNodeId.put(nodeId, cat);
+            }
 
-                Optional<GraphNode> nodeOpt = knowledgeGraphService.getNode(nodeId);
-                if (nodeOpt.isEmpty()) continue;
+            Map<String, GraphNode> nodesById = knowledgeGraphService.getNodesByIds(
+                            new ArrayList<>(assignmentsByNodeId.keySet())).stream()
+                    .collect(Collectors.toMap(GraphNode::getNodeId, n -> n, (a, b) -> a, LinkedHashMap::new));
 
-                GraphNode node = nodeOpt.get();
+            for (Map.Entry<String, EntityCategory> assignment : assignmentsByNodeId.entrySet()) {
+                String nodeId = assignment.getKey();
+                GraphNode node = nodesById.get(nodeId);
+                if (node == null) continue;
+                EntityCategory cat = assignment.getValue();
                 try {
                     // Parse existing metadata JSON into a Map for vector-store update
                     @SuppressWarnings("unchecked")
@@ -182,14 +194,14 @@ public class EnrichmentAgentLabelController {
                             : new LinkedHashMap<>();
                     meta.put("taxonomyCategory", cat.getLabel());
                     meta.put("taxonomyDomain", findRootDomain(cat));
-                    // Persist via vector store (SSOT)
-                    knowledgeGraphService.updateNode(node.getNodeId(), node.getTitle(), node.getDescription(), meta);
-                    applied++;
+                    updates.add(new KnowledgeGraphService.NodeUpdate(
+                            node.getNodeId(), node.getTitle(), node.getDescription(), meta));
                 } catch (Exception e) {
                     errors.add("Failed to apply category to " + nodeId + ": " + e.getMessage());
                 }
             }
 
+            int applied = knowledgeGraphService.updateNodesBatch(updates);
             return ResponseEntity.ok(MassEditResult.builder()
                     .entitiesAffected(applied)
                     .errors(errors)

@@ -22,8 +22,13 @@ import ai.kompile.graph.reasoning.model.ReasoningGraph;
 import ai.kompile.graph.reasoning.model.TemporalInterval;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -45,11 +50,12 @@ import java.util.Set;
  *   <li>{@link #entityExists} → {@link ReasoningGraph#containsEntity}</li>
  *   <li>{@link #edgeExists} → any outgoing relation whose target matches</li>
  *   <li>{@link #edgeExistsOfType} → same, plus {@link GraphRelation#type()} must match (case-insensitive)</li>
- *   <li>{@link #getEntityType} → {@link GraphEntity#type()}, empty string returns empty Optional</li>
+ *   <li>{@link #getEntityType} → primary {@link GraphEntity#type()}, empty string returns empty Optional</li>
  *   <li>{@link #getMetadata} → first checks {@link GraphEntity#stringAttribute(String)},
  *       then {@link GraphEntity#tags()} membership (tag is treated as key=tag, value="true")</li>
  *   <li>{@link #getEdgeWeight} → highest-weight outgoing relation to target (if multiple edges exist)</li>
- *   <li>{@link #getEntitiesOfType} → all entities whose {@link GraphEntity#type()} matches (case-insensitive)</li>
+ *   <li>{@link #getEntitiesOfType} → all entities whose {@link GraphEntity#typeMemberships()}
+ *       contain the requested type (case-insensitive)</li>
  *   <li>{@link #getConnectedEntities} → union of source/target ids across
  *       {@link ReasoningGraph#relationsOf}</li>
  *   <li>{@link #shareProperty} → entities share a tag name, or share the same string value for an attribute key</li>
@@ -58,6 +64,20 @@ import java.util.Set;
 public final class ReasoningGraphKnowledgeBase implements KnowledgeBase {
 
     private final ReasoningGraph graph;
+
+    /**
+     * Lazily-built type→entityIds index (lower-cased type key → set of entity ids).
+     * Built at most once per KB instance — safe because {@code graph} is fixed for the
+     * lifetime of this KB and the reasoning engines are single-threaded per run.
+     */
+    private Map<String, Set<String>> typeToEntityIds;
+
+    /**
+     * Lazily-built entityId→entity index, built in the same single pass as
+     * {@link #typeToEntityIds} so callers like {@link FolInferenceService#scopedEntities}
+     * can map id sets back to {@link GraphEntity} objects without re-scanning the graph.
+     */
+    private Map<String, GraphEntity> entityById;
 
     /**
      * Construct a knowledge base backed by the given graph.
@@ -71,6 +91,74 @@ public final class ReasoningGraphKnowledgeBase implements KnowledgeBase {
     /** The underlying graph (for advanced callers that need raw access). */
     public ReasoningGraph graph() {
         return graph;
+    }
+
+    // ─── Memoized type index ─────────────────────────────────────────────────────
+
+    /**
+     * Build the type→entityIds and entityById indexes in a single pass over all entities.
+     * Each entity's {@link GraphEntity#typeMemberships()} is called exactly once.
+     * All type keys are lower-cased to reproduce the case-insensitive semantics of
+     * the original linear scan.
+     */
+    private void buildTypeIndex() {
+        List<GraphEntity> all = new ArrayList<>(graph.entities());
+        Map<String, Set<String>> idx  = new HashMap<>(32);
+        Map<String, GraphEntity>  byId = new HashMap<>(all.size() * 2);
+        for (GraphEntity e : all) {
+            byId.put(e.id(), e);
+            for (String membership : e.typeMemberships()) {
+                String key = membership.toLowerCase(Locale.ROOT);
+                idx.computeIfAbsent(key, k -> new HashSet<>()).add(e.id());
+            }
+        }
+        // Make value sets unmodifiable so callers cannot mutate the index.
+        idx.replaceAll((k, v) -> Collections.unmodifiableSet(v));
+        this.typeToEntityIds = Collections.unmodifiableMap(idx);
+        this.entityById      = Collections.unmodifiableMap(byId);
+    }
+
+    /** Ensure the index is built (idempotent; builds at most once per instance). */
+    private void ensureTypeIndex() {
+        if (typeToEntityIds == null) {
+            buildTypeIndex();
+        }
+    }
+
+    /**
+     * Return all {@link GraphEntity} objects whose {@link GraphEntity#typeMemberships()}
+     * contain {@code typeName} (case-insensitive), using the memoized index.
+     *
+     * <p>This is the fast path used by {@link FolInferenceService#scopedEntities} to avoid
+     * re-scanning all entities and re-building type memberships for every FOL rule.</p>
+     *
+     * @param typeName the type to look up (case-insensitive)
+     * @return a list of matching entities in graph-insertion order; empty if none match
+     */
+    public List<GraphEntity> getEntitiesOfTypeObjects(String typeName) {
+        if (typeName == null || typeName.isBlank()) return List.of();
+        ensureTypeIndex();
+        Set<String> ids = typeToEntityIds.getOrDefault(
+                typeName.toLowerCase(Locale.ROOT), Set.of());
+        if (ids.isEmpty()) return List.of();
+        List<GraphEntity> result = new ArrayList<>(ids.size());
+        for (String id : ids) {
+            GraphEntity e = entityById.get(id);
+            if (e != null) result.add(e);
+        }
+        return result;
+    }
+
+    /**
+     * Look up a single entity by id using the memoized index.
+     *
+     * @param entityId the entity id to look up
+     * @return the entity, or {@code null} if not found
+     */
+    public GraphEntity getEntityById(String entityId) {
+        if (entityId == null) return null;
+        ensureTypeIndex();
+        return entityById.get(entityId);
     }
 
     // ─── Entity predicates ──────────────────────────────────────────────────────
@@ -168,14 +256,12 @@ public final class ReasoningGraphKnowledgeBase implements KnowledgeBase {
 
     @Override
     public Set<String> getEntitiesOfType(String typeName) {
-        if (typeName == null) return Set.of();
-        Set<String> result = new HashSet<>();
-        for (GraphEntity e : graph.entities()) {
-            if (typeName.equalsIgnoreCase(e.type())) {
-                result.add(e.id());
-            }
-        }
-        return result;
+        if (typeName == null || typeName.isBlank()) return Set.of();
+        ensureTypeIndex();
+        // Return a defensive copy so callers can freely mutate without affecting the index.
+        Set<String> indexed = typeToEntityIds.getOrDefault(
+                typeName.toLowerCase(Locale.ROOT), Set.of());
+        return indexed.isEmpty() ? Set.of() : new HashSet<>(indexed);
     }
 
     @Override

@@ -61,6 +61,50 @@ export interface ChatStats {
 }
 
 /**
+ * Context budget for an agent's lane, from GET /agents/chat/context-budget.
+ * The window comes from the authoritative source for what the chat talks to:
+ * staging metadata for local models, the model catalogs otherwise.
+ */
+export interface ContextBudget {
+  agentName: string;
+  model: string;
+  contextWindow: number;
+  maxOutputTokens: number;
+  inputBudgetTokens: number;
+  source: string;
+  compactTriggerRatio: number;
+}
+
+/**
+ * Server-side compaction notice streamed as a `compaction` SSE event when the
+ * backend auto-compacted the history it was sent.
+ */
+export interface CompactionEvent {
+  tokensBefore: number;
+  tokensAfter: number;
+  contextWindow: number;
+  model: string;
+  summary?: string;
+  usedFallback?: boolean;
+}
+
+/**
+ * Result of POST /agents/chat/compact (manual compaction).
+ */
+export interface CompactChatResponse {
+  compacted: boolean;
+  tokensBefore?: number;
+  tokensAfter?: number;
+  contextWindow?: number;
+  model?: string;
+  summary?: string;
+  usedFallback?: boolean;
+  compactedHistory?: ChatHistoryEntry[];
+  reason?: string;
+  error?: string;
+}
+
+/**
  * Service for local agent chat with streaming support.
  *
  * Features:
@@ -88,6 +132,7 @@ export class LocalAgentChatService extends BaseService {
   private filesModified$ = new Subject<string[]>();
   private sources$ = new Subject<RetrievedSource[]>();
   private chatStats$ = new Subject<ChatStats>();
+  private compaction$ = new Subject<CompactionEvent>();
 
   // Array buffer for efficient string accumulation
   private contentChunks: string[] = [];
@@ -260,7 +305,10 @@ export class LocalAgentChatService extends BaseService {
    * Build chat history from session messages.
    */
   private buildChatHistory(session: LocalAgentSession, maxMessages: number): ChatHistoryEntry[] {
-    const messages = session.messages.slice(-maxMessages - 1, -1); // Exclude current streaming message
+    // Exclude the current turn — the user message just pushed plus the streaming
+    // assistant placeholder. The current message travels in request.message; keeping
+    // it here would send it to the model twice.
+    const messages = session.messages.slice(0, -2).slice(-maxMessages);
     return messages
       .filter(m => m.role === 'USER' || m.role === 'ASSISTANT')
       .map(m => ({
@@ -523,6 +571,13 @@ export class LocalAgentChatService extends BaseService {
                 if (this.currentStreamingMessage && stats.tokenMetrics) {
                   this.currentStreamingMessage.tokenMetrics = stats.tokenMetrics;
                 }
+                break;
+
+              case 'compaction':
+                // Backend auto-compacted the history it was sent — surface it so the
+                // chat window can mirror the compacted state and show a notice.
+                console.debug('[LocalAgentChat] Compaction event:', parsed);
+                this.ngZone.run(() => this.compaction$.next(parsed as CompactionEvent));
                 break;
 
               case 'complete':
@@ -1072,6 +1127,32 @@ export class LocalAgentChatService extends BaseService {
 
   getChatStats(): Observable<ChatStats> {
     return this.chatStats$.asObservable();
+  }
+
+  getCompaction(): Observable<CompactionEvent> {
+    return this.compaction$.asObservable();
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // CONTEXT BUDGET & COMPACTION
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /** The context budget of the model behind an agent (window, output cap, input budget). */
+  getContextBudget(agentName: string): Observable<ContextBudget> {
+    return this.http.get<ContextBudget>(
+      `${this.backendUrl}/agents/chat/context-budget`,
+      { params: { agentName } });
+  }
+
+  /**
+   * Manually compact a session's history: the backend summarizes older messages via
+   * the agent's own lane and returns the compacted history to adopt.
+   */
+  compactChat(agentName: string, chatHistory: ChatHistoryEntry[],
+              focusInstruction?: string): Observable<CompactChatResponse> {
+    return this.http.post<CompactChatResponse>(
+      `${this.backendUrl}/agents/chat/compact`,
+      { agentName, chatHistory, focusInstruction });
   }
 
   // Synchronous getters

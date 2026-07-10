@@ -193,6 +193,8 @@ public class GraphPostExtractionNormalizer {
         int mergedDups    = 0;
 
         // ── Pass 1: Canonicalize titles + drop degenerate nodes ───────────────
+        // Accumulate title-rename updates and flush in one batch RPC at the end of the pass.
+        List<KnowledgeGraphService.NodeUpdate> canonBatch = new ArrayList<>();
         List<GraphNode> survivors = new ArrayList<>(entityNodes.size());
         for (GraphNode node : entityNodes) {
             String rawTitle = node.getTitle();
@@ -203,6 +205,8 @@ public class GraphPostExtractionNormalizer {
                     // [FIX-3] Degenerate nodes: no useful survivor to re-point edges to, so just
                     // drop any edges to/from this node via deleteEdgesForNode before deleting.
                     // (Edges referencing a deleted node become dangling; this avoids that state.)
+                    // NOTE: dropEdgesForNode issues one getEdgesForNode RPC per degenerate node;
+                    // there is no batch-read-edges-for-many-nodes primitive in KnowledgeGraphService.
                     dropEdgesForNode(node.getNodeId());
                     knowledgeGraphService.deleteNode(node.getNodeId());
                     degenDropped++;
@@ -213,22 +217,29 @@ public class GraphPostExtractionNormalizer {
             }
 
             if (!canonical.equals(rawTitle)) {
-                try {
-                    knowledgeGraphService.updateNode(node.getNodeId(), canonical, node.getDescription(), null);
-                    canonicalized++;
-                    // Update the in-memory view for pass 2
-                    node.setTitle(canonical);
-                } catch (Exception e) {
-                    log.debug("Could not canonicalize node {}: {}", node.getNodeId(), e.getMessage());
-                }
+                // Buffer the title rename; update in-memory immediately so pass 2 sees canonical title
+                node.setTitle(canonical);
+                canonBatch.add(new KnowledgeGraphService.NodeUpdate(
+                        node.getNodeId(), canonical, null, null));
+                canonicalized++;
             }
             survivors.add(node);
+        }
+        // Flush all title renames in one batch RPC (replaces N individual updateNode RPCs)
+        if (!canonBatch.isEmpty()) {
+            try {
+                knowledgeGraphService.updateNodesBatch(canonBatch);
+            } catch (Exception e) {
+                log.debug("GraphPostExtractionNormalizer: batch title-rename flush failed: {}", e.getMessage());
+            }
         }
 
         // ── Pass 2: Merge trivially-duplicate nodes ───────────────────────────
         // Build canonical-title → first-seen node index
         Map<String, Integer> titleIndex = new LinkedHashMap<>();
         List<GraphNode> deduped = new ArrayList<>(survivors.size());
+        // Accumulate metadata merges for the survivor nodes; flush after the loop
+        List<KnowledgeGraphService.NodeUpdate> mergeMetaBatch = new ArrayList<>();
 
         for (GraphNode node : survivors) {
             String key = node.getTitle() == null ? "" : node.getTitle().toLowerCase().trim();
@@ -237,13 +248,16 @@ public class GraphPostExtractionNormalizer {
                 GraphNode original = deduped.get(origIdx);
                 // Merge metadata from duplicate into original, then delete duplicate
                 Map<String, Object> mergedMeta = mergeMetadata(original, node);
+                if (!mergedMeta.isEmpty()) {
+                    // Buffer metadata merge; will be flushed in one batch after loop
+                    mergeMetaBatch.add(new KnowledgeGraphService.NodeUpdate(
+                            original.getNodeId(), null, null, mergedMeta));
+                }
                 try {
-                    if (!mergedMeta.isEmpty()) {
-                        knowledgeGraphService.updateNode(original.getNodeId(),
-                                original.getTitle(), original.getDescription(), mergedMeta);
-                    }
                     // [FIX-3] Re-point duplicate's edges to the canonical survivor BEFORE deletion,
                     // so no edges are lost (previously deleteNode() dropped them silently).
+                    // NOTE: redirectEdgesToSurvivor issues one getEdgesForNode RPC per duplicate;
+                    // there is no batch-read-edges-for-many-nodes primitive in KnowledgeGraphService.
                     redirectEdgesToSurvivor(node.getNodeId(), original.getNodeId());
                     knowledgeGraphService.deleteNode(node.getNodeId());
                     mergedDups++;
@@ -254,6 +268,14 @@ public class GraphPostExtractionNormalizer {
             } else {
                 titleIndex.put(key, deduped.size());
                 deduped.add(node);
+            }
+        }
+        // Flush all survivor metadata merges in one batch RPC (replaces N individual updateNode RPCs)
+        if (!mergeMetaBatch.isEmpty()) {
+            try {
+                knowledgeGraphService.updateNodesBatch(mergeMetaBatch);
+            } catch (Exception e) {
+                log.debug("GraphPostExtractionNormalizer: batch metadata-merge flush failed: {}", e.getMessage());
             }
         }
 

@@ -18,6 +18,7 @@ package ai.kompile.staging.cli.archive;
 
 import ai.kompile.staging.archive.ArchiveCompatibility;
 import ai.kompile.staging.archive.ArchiveExporter;
+import ai.kompile.utils.FormatUtils;
 import ai.kompile.staging.archive.ArchivePublisher;
 import ai.kompile.staging.archive.KompileArchive;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -169,7 +170,7 @@ public class ArchiveExportCommand implements Callable<Integer> {
             System.out.println("Archive ID: " + result.getManifest().getArchiveId());
             System.out.println("Version:    " + result.getManifest().getContentVersion());
             System.out.println("Models:     " + result.getModelCount());
-            System.out.println("Size:       " + formatSize(result.getArchiveSize()));
+            System.out.println("Size:       " + FormatUtils.formatBytes(result.getArchiveSize()));
             System.out.println("Checksum:   " + result.getArchiveChecksum());
             return 0;
         } else {
@@ -201,10 +202,4 @@ public class ArchiveExportCommand implements Callable<Integer> {
         return sb.toString();
     }
 
-    private String formatSize(long bytes) {
-        if (bytes < 1024) return bytes + " B";
-        if (bytes < 1024 * 1024) return String.format("%.1f KB", bytes / 1024.0);
-        if (bytes < 1024 * 1024 * 1024) return String.format("%.1f MB", bytes / (1024.0 * 1024));
-        return String.format("%.2f GB", bytes / (1024.0 * 1024 * 1024));
-    }
 }

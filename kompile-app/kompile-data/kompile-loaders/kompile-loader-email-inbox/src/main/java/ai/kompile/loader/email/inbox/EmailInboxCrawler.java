@@ -876,7 +876,7 @@ public class EmailInboxCrawler extends AbstractCrawler {
         String name = file.getFileName().toString().toLowerCase();
         if (name.endsWith(".mbox") || name.endsWith(".mbx")) return true;
 
-        try (java.io.BufferedReader reader = Files.newBufferedReader(file)) {
+        try (BufferedReader reader = Files.newBufferedReader(file)) {
             String firstLine = reader.readLine();
             return firstLine != null && firstLine.startsWith("From ");
         } catch (IOException e) {

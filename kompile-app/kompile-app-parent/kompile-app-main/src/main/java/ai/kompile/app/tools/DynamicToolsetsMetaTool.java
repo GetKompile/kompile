@@ -178,7 +178,7 @@ public class DynamicToolsetsMetaTool {
                         "calling the tool directly but available even when the tool is not in the " +
                         "visible toolset (DYNAMIC mode). Returns the tool's raw result or an error " +
                         "map if the tool is unknown.")
-    public Object executeTool(ExecuteToolInput input) {
+    public Map<String, Object> executeTool(ExecuteToolInput input) {
         if (input == null || input.name() == null || input.name().isBlank()) {
             return error("name is required");
         }

@@ -88,8 +88,11 @@ public final class Constraints {
         return new AtomicConstraint("hasType(" + varName + ", " + typeName + ")",
                 Set.of(varName),
                 (kb, bindings) -> {
-                    Optional<String> type = kb.getEntityType(bindings.get(varName));
-                    return type.isPresent() && type.get().equals(typeName);
+                    String entityId = bindings.get(varName);
+                    if (entityId == null) return false;
+                    if (kb.getEntitiesOfType(typeName).contains(entityId)) return true;
+                    Optional<String> type = kb.getEntityType(entityId);
+                    return type.isPresent() && type.get().equalsIgnoreCase(typeName);
                 });
     }
 
@@ -104,6 +107,16 @@ public final class Constraints {
                     Optional<String> val = kb.getMetadata(bindings.get(varName), key);
                     return val.isPresent() && val.get().equals(value);
                 });
+    }
+
+    /**
+     * Check that a metadata field is present on an entity.
+     */
+    public static LogicalConstraint metadataExists(String varName, String key) {
+        return new AtomicConstraint(
+                "metadataExists(" + varName + ", " + key + ")",
+                Set.of(varName),
+                (kb, bindings) -> kb.getMetadata(bindings.get(varName), key).isPresent());
     }
 
     /**

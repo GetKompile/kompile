@@ -19,6 +19,7 @@ package ai.kompile.staging.service;
 import ai.kompile.staging.domain.TrainingJobHistory;
 import ai.kompile.staging.domain.TrainingJobHistory.*;
 import ai.kompile.staging.repository.TrainingJobHistoryRepository;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -33,6 +34,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import jakarta.annotation.PostConstruct;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
@@ -46,8 +49,10 @@ import java.util.*;
 public class TrainingJobHistoryService {
 
     private static final Logger log = LoggerFactory.getLogger(TrainingJobHistoryService.class);
+    private static final String TRAINING_ARTIFACT_MANIFEST_FILE = "training-artifact.json";
 
     private final TrainingJobHistoryRepository repository;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Value("${kompile.training.job-history.retention-days:30}")
     private int retentionDays;
@@ -177,6 +182,46 @@ public class TrainingJobHistoryService {
     @Transactional(readOnly = true)
     public Optional<TrainingJobHistory> getJob(String taskId) {
         return repository.findByTaskId(taskId);
+    }
+
+    @Transactional(readOnly = true)
+    public Optional<Map<String, Object>> getArtifactManifest(String taskId) {
+        return repository.findByTaskId(taskId).flatMap(this::readArtifactManifest);
+    }
+
+    @SuppressWarnings("unchecked")
+    private Optional<Map<String, Object>> readArtifactManifest(TrainingJobHistory job) {
+        if (job.getOutputModelPath() == null || job.getOutputModelPath().isBlank()) {
+            return Optional.empty();
+        }
+
+        Path manifestPath = resolveArtifactManifestPath(Path.of(job.getOutputModelPath()));
+        if (!Files.isRegularFile(manifestPath)) {
+            return Optional.empty();
+        }
+
+        try {
+            Map<String, Object> manifest = objectMapper.readValue(manifestPath.toFile(), Map.class);
+            manifest.putIfAbsent("taskId", job.getTaskId());
+            manifest.putIfAbsent("baseModelId", job.getModelId());
+            manifest.putIfAbsent("datasetId", job.getDatasetId());
+            manifest.put("artifactManifestPath", manifestPath.toString());
+            return Optional.of(manifest);
+        } catch (Exception e) {
+            log.warn("Failed to read training artifact manifest for taskId={} at {}",
+                    job.getTaskId(), manifestPath, e);
+            return Optional.empty();
+        }
+    }
+
+    private Path resolveArtifactManifestPath(Path outputModelPath) {
+        Path normalized = outputModelPath.toAbsolutePath().normalize();
+        if (Files.isDirectory(normalized)) {
+            return normalized.resolve(TRAINING_ARTIFACT_MANIFEST_FILE);
+        }
+        Path parent = normalized.getParent();
+        return parent != null ? parent.resolve(TRAINING_ARTIFACT_MANIFEST_FILE)
+                : normalized.resolveSibling(TRAINING_ARTIFACT_MANIFEST_FILE);
     }
 
     @Transactional(readOnly = true)

@@ -53,6 +53,9 @@ class CrossDocumentRelationExtractorTest {
     @BeforeEach
     void setUp() {
         extractor = new CrossDocumentRelationExtractor(knowledgeGraphService);
+        // createEdgesBatch is a default interface method that delegates to createEdgeWithMetadata;
+        // make the mock execute the real default so per-edge verify() calls remain observable.
+        doCallRealMethod().when(knowledgeGraphService).createEdgesBatch(anyList());
     }
 
     private Document makeDoc(String fileName, Map<String, Object> extraMeta) {

@@ -9,12 +9,13 @@
  */
 package ai.kompile.tool.graph;
 
+import ai.kompile.graph.reasoning.model.GraphEntity;
+import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
-import ai.kompile.knowledgegraph.repository.GraphEdgeRepository;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
+import ai.kompile.knowledgegraph.unified.UnifiedGraphBridge;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -32,8 +33,7 @@ import static org.mockito.Mockito.*;
 class GraphLabelToolTest {
 
     @Mock private KnowledgeGraphService graphService;
-    @Mock private GraphNodeRepository nodeRepository;
-    @Mock private GraphEdgeRepository edgeRepository;
+    @Mock private UnifiedGraphBridge unifiedGraphBridge;
 
     private GraphLabelTool tool;
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -57,7 +57,7 @@ class GraphLabelToolTest {
 
     @Test
     void addNodeLabels_nodeNotFound_returnsError() {
-        when(nodeRepository.findByNodeId("missing")).thenReturn(Optional.empty());
+        when(graphService.getNode("missing")).thenReturn(Optional.empty());
         var result = tool.addNodeLabels(new GraphLabelTool.AddNodeLabelsInput("missing", List.of("tag")));
         assertEquals("Node not found: missing", result.get("error"));
     }
@@ -66,8 +66,8 @@ class GraphLabelToolTest {
     void addNodeLabels_addsLabelsToMetadata() throws Exception {
         GraphNode node = GraphSearchToolTest.createNode("n1", "Node", NodeLevel.ENTITY);
         node.setMetadataJson("{}");
-        when(nodeRepository.findByNodeId("n1")).thenReturn(Optional.of(node));
-        when(nodeRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(graphService.getNode("n1")).thenReturn(Optional.of(node));
+        when(graphService.saveNode(any())).thenAnswer(inv -> inv.getArgument(0));
 
         var result = tool.addNodeLabels(
                 new GraphLabelTool.AddNodeLabelsInput("n1", List.of("reviewed", "priority-high")));
@@ -77,15 +77,15 @@ class GraphLabelToolTest {
         List<String> labels = (List<String>) result.get("labels");
         assertTrue(labels.contains("reviewed"));
         assertTrue(labels.contains("priority-high"));
-        verify(nodeRepository).save(any(GraphNode.class));
+        verify(graphService).saveNode(any(GraphNode.class));
     }
 
     @Test
     void addNodeLabels_deduplicates() throws Exception {
         GraphNode node = GraphSearchToolTest.createNode("n1", "Node", NodeLevel.ENTITY);
         node.setMetadataJson("{\"labels\":[\"existing\"]}");
-        when(nodeRepository.findByNodeId("n1")).thenReturn(Optional.of(node));
-        when(nodeRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(graphService.getNode("n1")).thenReturn(Optional.of(node));
+        when(graphService.saveNode(any())).thenAnswer(inv -> inv.getArgument(0));
 
         var result = tool.addNodeLabels(
                 new GraphLabelTool.AddNodeLabelsInput("n1", List.of("existing", "new-tag")));
@@ -101,8 +101,8 @@ class GraphLabelToolTest {
     void removeNodeLabels_removesCorrectly() throws Exception {
         GraphNode node = GraphSearchToolTest.createNode("n1", "Node", NodeLevel.ENTITY);
         node.setMetadataJson("{\"labels\":[\"keep\",\"remove-me\"]}");
-        when(nodeRepository.findByNodeId("n1")).thenReturn(Optional.of(node));
-        when(nodeRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(graphService.getNode("n1")).thenReturn(Optional.of(node));
+        when(graphService.saveNode(any())).thenAnswer(inv -> inv.getArgument(0));
 
         var result = tool.removeNodeLabels(
                 new GraphLabelTool.RemoveNodeLabelsInput("n1", List.of("remove-me")));
@@ -118,7 +118,7 @@ class GraphLabelToolTest {
     void getNodeLabels_returnsLabels() {
         GraphNode node = GraphSearchToolTest.createNode("n1", "Node", NodeLevel.ENTITY);
         node.setMetadataJson("{\"labels\":[\"a\",\"b\"]}");
-        when(nodeRepository.findByNodeId("n1")).thenReturn(Optional.of(node));
+        when(graphService.getNode("n1")).thenReturn(Optional.of(node));
 
         var result = tool.getNodeLabels(new GraphLabelTool.GetNodeLabelsInput("n1"));
 
@@ -131,7 +131,7 @@ class GraphLabelToolTest {
     @Test
     void getNodeLabels_emptyMetadata_returnsEmptyLabels() {
         GraphNode node = GraphSearchToolTest.createNode("n1", "Node", NodeLevel.ENTITY);
-        when(nodeRepository.findByNodeId("n1")).thenReturn(Optional.of(node));
+        when(graphService.getNode("n1")).thenReturn(Optional.of(node));
 
         var result = tool.getNodeLabels(new GraphLabelTool.GetNodeLabelsInput("n1"));
 
@@ -154,11 +154,61 @@ class GraphLabelToolTest {
     }
 
     @Test
+    void getNodeLabels_scopedFactSheetUsesUnifiedGraph() {
+        tool = new GraphLabelTool(graphService, objectMapper, unifiedGraphBridge);
+        UnifiedGraph unified = unifiedLabelGraph();
+        when(graphService.getNode("u1")).thenReturn(Optional.empty());
+        when(unifiedGraphBridge.export(7L)).thenReturn(unified);
+
+        var result = tool.getNodeLabels(new GraphLabelTool.GetNodeLabelsInput("u1", 7L));
+
+        assertEquals("unified_graph", result.get("source"));
+        @SuppressWarnings("unchecked")
+        List<String> labels = (List<String>) result.get("labels");
+        assertTrue(labels.contains("reviewed"));
+        assertTrue(labels.contains("analysis"));
+    }
+
+    @Test
+    void findByLabel_scopedFactSheetUsesUnifiedGraph() {
+        tool = new GraphLabelTool(graphService, objectMapper, unifiedGraphBridge);
+        when(unifiedGraphBridge.export(7L)).thenReturn(unifiedLabelGraph());
+
+        var result = tool.findByLabel(new GraphLabelTool.FindByLabelInput("analysis", null, 7L, 10));
+
+        assertEquals("unified_graph", result.get("source"));
+        assertEquals(1, result.get("resultCount"));
+        verify(graphService, never()).getNodesInFactSheet(7L);
+    }
+
+    @Test
+    void listAllLabels_scopedFactSheetUsesUnifiedGraph() {
+        tool = new GraphLabelTool(graphService, objectMapper, unifiedGraphBridge);
+        when(unifiedGraphBridge.export(7L)).thenReturn(unifiedLabelGraph());
+
+        var result = tool.listAllLabels(new GraphLabelTool.ListAllLabelsInput(7L));
+
+        assertEquals("unified_graph", result.get("source"));
+        assertEquals(2, result.get("distinctLabels"));
+        verify(graphService, never()).getNodesInFactSheet(7L);
+    }
+
+    @Test
     void bulkLabelNodes_missingInputs_returnsErrors() {
         var r1 = tool.bulkLabelNodes(new GraphLabelTool.BulkLabelNodesInput(List.of(), List.of("t")));
         assertEquals("nodeIds is required", r1.get("error"));
 
         var r2 = tool.bulkLabelNodes(new GraphLabelTool.BulkLabelNodesInput(List.of("n1"), List.of()));
         assertEquals("At least one label is required", r2.get("error"));
+    }
+
+    private UnifiedGraph unifiedLabelGraph() {
+        return new UnifiedGraph()
+                .addEntity(GraphEntity.builder("u1")
+                        .type("ENTITY")
+                        .label("Unified Labelled")
+                        .tag("reviewed")
+                        .attribute("labels", List.of("analysis"))
+                        .build());
     }
 }

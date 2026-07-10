@@ -31,6 +31,7 @@ import { GraphCanvasComponent } from './graph-canvas.component';
 import {
   D3VisualizationData,
   D3Node,
+  GraphNode,
   ForceConfig,
   DEFAULT_FORCE_CONFIG,
   NodeLevel,
@@ -464,9 +465,9 @@ export class GraphFullscreenDialogComponent implements AfterViewInit, OnDestroy 
   showFilters = false;
 
   nodeColors = NODE_COLORS;
-  allNodeTypes: NodeLevel[] = ['SOURCE', 'DOCUMENT', 'SNIPPET', 'ENTITY', 'ATTACHMENT', 'TABLE', 'CUSTOM'];
+  allNodeTypes: NodeLevel[] = ['SOURCE', 'DOCUMENT', 'SNIPPET', 'ENTITY', 'ATTACHMENT', 'TABLE', 'CUSTOM', 'IDENTIFIER', 'ALIAS'];
   activeNodeTypes = new Set<NodeLevel>(
-    ['SOURCE', 'DOCUMENT', 'SNIPPET', 'ENTITY', 'ATTACHMENT', 'TABLE', 'CUSTOM']
+    ['SOURCE', 'DOCUMENT', 'SNIPPET', 'ENTITY', 'ATTACHMENT', 'TABLE', 'CUSTOM', 'IDENTIFIER', 'ALIAS']
   );
 
   constructor(
@@ -549,8 +550,19 @@ export class GraphFullscreenDialogComponent implements AfterViewInit, OnDestroy 
     }
 
     const nodeIds = new Set(nodes.map(n => n.id));
-    const links = source.links.filter(l => nodeIds.has(l.source) && nodeIds.has(l.target));
+    const links = source.links.filter(l => {
+      const sourceId = this.linkEndpointId(l.source);
+      const targetId = this.linkEndpointId(l.target);
+      return !!sourceId && !!targetId && nodeIds.has(sourceId) && nodeIds.has(targetId);
+    });
 
     this.filteredData = { nodes, links };
+  }
+
+  private linkEndpointId(endpoint: string | D3Node | GraphNode | null | undefined): string | null {
+    if (!endpoint) return null;
+    if (typeof endpoint === 'string') return endpoint;
+    const candidate = endpoint as unknown as { id?: string | number; nodeId?: string };
+    return candidate.nodeId || (typeof candidate.id === 'string' ? candidate.id : null);
   }
 }

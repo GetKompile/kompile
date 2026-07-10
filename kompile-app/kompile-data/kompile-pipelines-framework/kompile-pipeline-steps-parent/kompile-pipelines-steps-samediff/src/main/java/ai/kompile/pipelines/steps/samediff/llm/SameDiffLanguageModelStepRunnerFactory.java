@@ -29,6 +29,7 @@ import ai.kompile.pipelines.framework.api.data.PipelineToolDefinition; // For to
 
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Map;
 import java.util.Optional;
 
 public class SameDiffLanguageModelStepRunnerFactory implements PipelineStepRunnerFactory, StepSchemaProvider {
@@ -63,7 +64,7 @@ public class SameDiffLanguageModelStepRunnerFactory implements PipelineStepRunne
                         ParameterSchema.builder().name("modelUri").type(ValueType.STRING).description("URI to the SameDiff language model file (.fb or .zip).").required(true).build(),
                         ParameterSchema.builder().name("tokenizerUri").type(ValueType.STRING).description("URI to the tokenizer vocabulary file (e.g., for WordPiece).").required(true).build(),
                         ParameterSchema.builder().name("tokenizerType").type(ValueType.STRING).description("(Optional) Type of tokenizer (e.g., 'wordpiece'). Defaults to 'wordpiece'.").defaultValue("wordpiece").required(false).build(),
-                        ParameterSchema.builder().name("tokenizerConfig").type(ValueType.OBJECT).description("(Optional) Map of configurations for the tokenizer (e.g., unkToken, subwordPrefix).").subTypeClassName(java.util.Map.class.getName()).required(false).build(),
+                        ParameterSchema.builder().name("tokenizerConfig").type(ValueType.OBJECT).description("(Optional) Map of configurations for the tokenizer (e.g., unkToken, subwordPrefix).").subTypeClassName(Map.class.getName()).required(false).build(),
                         ParameterSchema.builder().name("promptInputName").type(ValueType.STRING).description("Name of the input Data variable for the prompt (default: 'prompt').").defaultValue("prompt").required(false).build(),
                         ParameterSchema.builder().name("responseOutputName").type(ValueType.STRING).description("Name of the output Data variable for the LLM response (default: 'llm_response').").defaultValue("llm_response").required(false).build(),
                         ParameterSchema.builder().name("toolCallRequestOutputName").type(ValueType.STRING).description("Name of the output Data variable for tool call requests (default: 'tool_call_request').").defaultValue("tool_call_request").required(false).build(),
@@ -75,7 +76,7 @@ public class SameDiffLanguageModelStepRunnerFactory implements PipelineStepRunne
                         ParameterSchema.builder().name("toolCallOutputFormat").type(ValueType.STRING).description("Expected LLM output format for tool calls: JSON_MARKER_BASED, OPENAI_JSON, etc. (default: JSON_MARKER_BASED).").defaultValue(LLMStepConfig.ToolCallOutputFormat.JSON_MARKER_BASED.name()).required(false).build(),
                         ParameterSchema.builder().name("generationParameters").type(ValueType.OBJECT)
                                 .description("Map of generation parameters (e.g., temperature, maxNewTokens, topK, inputIdsPlaceholderName, logitsOutputName for SameDiff).")
-                                .subTypeClassName(java.util.Map.class.getName()).required(false).build()
+                                .subTypeClassName(Map.class.getName()).required(false).build()
                 ))
                 .inputs(Collections.singletonList(
                         ParameterSchema.builder().name("prompt").type(ValueType.STRING).description("Input prompt for the LLM (if 'promptInputName' is 'prompt').").required(true).build()

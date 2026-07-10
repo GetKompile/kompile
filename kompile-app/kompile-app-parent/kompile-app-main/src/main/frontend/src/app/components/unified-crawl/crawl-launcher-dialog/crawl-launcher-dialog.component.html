@@ -603,7 +603,7 @@
       </mat-expansion-panel-header>
 
       <mat-slide-toggle [(ngModel)]="hydrationCustomize" color="primary">Customize enrichment stages</mat-slide-toggle>
-      <p class="hint-text">Post-extraction hydration: derivation → prune/compact → health. Defaults run all stages.</p>
+      <p class="hint-text" title="Post-processing (hydration): runs derivation → prune/compact → health checks after extraction. Defaults run all stages.">Post-processing: derivation → prune/compact → health. Defaults run all stages.</p>
 
       <div *ngIf="hydrationCustomize" class="settings-section">
         <div class="toggle-row">

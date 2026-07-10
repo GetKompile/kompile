@@ -18,6 +18,7 @@ package ai.kompile.staging.cli;
 
 import ai.kompile.staging.export.BundleManifest;
 import ai.kompile.staging.export.ImportService;
+import ai.kompile.utils.FormatUtils;
 import ai.kompile.staging.export.ImportService.ImportResult;
 import ai.kompile.modelmanager.registry.ModelEntry;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -92,7 +93,7 @@ public class ImportCommand implements Callable<Integer> {
         System.out.println("Version: " + manifest.getVersion());
         System.out.println("Created: " + manifest.getCreatedAt());
         System.out.println("Description: " + manifest.getDescription());
-        System.out.println("Total size: " + formatSize(manifest.getTotalSizeBytes()));
+        System.out.println("Total size: " + FormatUtils.formatBytes(manifest.getTotalSizeBytes()));
         System.out.println();
 
         System.out.println("=== Models ===");
@@ -128,10 +129,4 @@ public class ImportCommand implements Callable<Integer> {
         }
     }
 
-    private String formatSize(long bytes) {
-        if (bytes < 1024) return bytes + " B";
-        if (bytes < 1024 * 1024) return String.format("%.1f KB", bytes / 1024.0);
-        if (bytes < 1024 * 1024 * 1024) return String.format("%.1f MB", bytes / (1024.0 * 1024));
-        return String.format("%.2f GB", bytes / (1024.0 * 1024 * 1024));
-    }
 }

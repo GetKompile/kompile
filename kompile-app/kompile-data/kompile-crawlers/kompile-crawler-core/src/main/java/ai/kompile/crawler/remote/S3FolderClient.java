@@ -17,6 +17,7 @@
 package ai.kompile.crawler.remote;
 
 import ai.kompile.core.loaders.DocumentSourceDescriptor.SourceType;
+import ai.kompile.utils.HashUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -31,7 +32,6 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.security.MessageDigest;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
@@ -292,12 +292,7 @@ public class S3FolderClient implements RemoteFolderClient {
     }
 
     private static String sha256Hex(String data) {
-        try {
-            MessageDigest md = MessageDigest.getInstance("SHA-256");
-            return hexEncode(md.digest(data.getBytes(StandardCharsets.UTF_8)));
-        } catch (Exception e) {
-            throw new RuntimeException("SHA-256 failed", e);
-        }
+        return HashUtils.sha256Hex(data);
     }
 
     private static String hexEncode(byte[] bytes) {

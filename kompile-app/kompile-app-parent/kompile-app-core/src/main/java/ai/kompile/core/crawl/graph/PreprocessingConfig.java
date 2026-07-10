@@ -67,7 +67,7 @@ public class PreprocessingConfig {
 
     /** Master switch — when false, the entire preprocessing phase is skipped */
     @Builder.Default
-    private boolean enabled = false;
+    private boolean enabled = true;
 
     /** Translation configuration */
     private TranslationConfig translation;
@@ -194,7 +194,7 @@ public class PreprocessingConfig {
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class LanguageDetectionConfig {
         @Builder.Default
-        private boolean enabled = false;
+        private boolean enabled = true;
 
         /**
          * Minimum text length (chars) required for reliable detection.
@@ -225,7 +225,7 @@ public class PreprocessingConfig {
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class UnicodeNormalizationConfig {
         @Builder.Default
-        private boolean enabled = false;
+        private boolean enabled = true;
 
         /**
          * Unicode normalization form: NFC, NFD, NFKC, or NFKD.
@@ -322,7 +322,7 @@ public class PreprocessingConfig {
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class BoilerplateRemovalConfig {
         @Builder.Default
-        private boolean enabled = false;
+        private boolean enabled = true;
 
         /** Remove common web boilerplate (nav, footer, cookie banners) */
         @Builder.Default
@@ -362,7 +362,7 @@ public class PreprocessingConfig {
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class DeduplicationConfig {
         @Builder.Default
-        private boolean enabled = false;
+        private boolean enabled = true;
 
         /** Similarity threshold for near-duplicate detection (0.0–1.0). 1.0 = exact only. */
         @Builder.Default
@@ -395,7 +395,7 @@ public class PreprocessingConfig {
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class DateNumberNormalizationConfig {
         @Builder.Default
-        private boolean enabled = false;
+        private boolean enabled = true;
 
         /** Target date format (e.g., "ISO8601", "US", "EU") */
         @Builder.Default

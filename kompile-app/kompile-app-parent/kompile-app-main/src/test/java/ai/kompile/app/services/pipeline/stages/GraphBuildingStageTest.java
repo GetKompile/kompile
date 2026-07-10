@@ -50,29 +50,37 @@ class GraphBuildingStageTest {
         assertEquals("graph-building", stage.getName());
     }
 
-    // --- process: disabled ---
+    // --- process: legacy disable options ---
 
     @Test
-    void processReturnsEmptyWhenDisabled() throws Exception {
-        stage.setEnabled(false);
-        IndexingStage.IndexingOutput input = indexingOutput("task-1");
+    void processIgnoresLegacyDisableOptions() throws Exception {
+        List<RetrievedDoc> chunks = List.of(chunk("c1"));
+        stage.setChunksToProcess(chunks);
+        stage.configure(Map.of("enabled", false, "graphBuildingEnabled", false));
 
-        GraphBuildingStage.GraphBuildingOutput output = stage.process(input);
-        assertEquals(0, output.entitiesExtracted());
-        assertEquals(0, output.relationshipsExtracted());
-        verify(graphConstructor, never()).constructGraphFromDocs(any(), any(), any());
+        Graph graph = new Graph();
+        Entity e1 = new Entity();
+        e1.setTitle("Alice");
+        e1.setType("PERSON");
+        graph.setEntities(List.of(e1));
+        graph.setRelationships(List.of());
+        when(graphConstructor.constructGraphFromDocs(anyList(), any(), any())).thenReturn(graph);
+
+        GraphBuildingStage.GraphBuildingOutput output = stage.process(indexingOutput("task-1"));
+        assertEquals(1, output.entitiesExtracted());
+        verify(graphConstructor).constructGraphFromDocs(anyList(), any(), any());
     }
 
     // --- process: no constructor ---
 
     @Test
-    void processReturnsEmptyWhenNoGraphConstructor() throws Exception {
+    void processFailsWhenNoGraphConstructor() {
         GraphBuildingStage noConstructor = new GraphBuildingStage(null);
         noConstructor.setChunksToProcess(List.of(chunk("chunk-1")));
-        IndexingStage.IndexingOutput input = indexingOutput("task-1");
 
-        GraphBuildingStage.GraphBuildingOutput output = noConstructor.process(input);
-        assertEquals(0, output.entitiesExtracted());
+        IllegalStateException thrown = assertThrows(IllegalStateException.class,
+                () -> noConstructor.process(indexingOutput("task-1")));
+        assertTrue(thrown.getMessage().contains("no GraphConstructor"));
     }
 
     // --- process: no chunks ---
@@ -157,19 +165,19 @@ class GraphBuildingStageTest {
     // --- process: null graph returned ---
 
     @Test
-    void processHandlesNullGraphFromConstructor() throws Exception {
+    void processFailsOnNullGraphFromConstructor() {
         stage.setChunksToProcess(List.of(chunk("c1")));
         when(graphConstructor.constructGraphFromDocs(anyList(), any(), any())).thenReturn(null);
 
-        GraphBuildingStage.GraphBuildingOutput output = stage.process(indexingOutput("task-1"));
-        assertEquals(0, output.entitiesExtracted());
-        assertEquals(0, output.relationshipsExtracted());
+        IllegalStateException thrown = assertThrows(IllegalStateException.class,
+                () -> stage.process(indexingOutput("task-1")));
+        assertTrue(thrown.getMessage().contains("empty extraction graph"));
     }
 
-    // --- process: batch failure continues ---
+    // --- process: batch failure aborts ---
 
     @Test
-    void processSkipsFailedBatchAndContinues() throws Exception {
+    void processFailsOnBatchError() throws Exception {
         List<RetrievedDoc> chunks = new ArrayList<>();
         for (int i = 0; i < 6; i++) chunks.add(chunk("c" + i));
         stage.setChunksToProcess(chunks);
@@ -182,13 +190,15 @@ class GraphBuildingStageTest {
         successGraph.setEntities(List.of(entity));
         successGraph.setRelationships(List.of());
 
-        // First batch fails, second succeeds
+        // First batch fails; graph building must abort instead of reporting a partial success.
         when(graphConstructor.constructGraphFromDocs(anyList(), any(), any()))
                 .thenThrow(new RuntimeException("LLM error"))
                 .thenReturn(successGraph);
 
-        GraphBuildingStage.GraphBuildingOutput output = stage.process(indexingOutput("task-1"));
-        assertEquals(1, output.entitiesExtracted()); // only from second batch
+        IllegalStateException thrown = assertThrows(IllegalStateException.class,
+                () -> stage.process(indexingOutput("task-1")));
+        assertTrue(thrown.getMessage().contains("Graph building batch 1 failed"));
+        verify(graphConstructor, times(1)).constructGraphFromDocs(anyList(), any(), any());
     }
 
     // --- process: cancellation ---
@@ -204,12 +214,9 @@ class GraphBuildingStageTest {
     // --- configure ---
 
     @Test
-    void configureSetsEnabled() {
-        stage.configure(Map.of("enabled", false));
-        assertFalse(stage.isEnabled());
-
-        stage.configure(Map.of("graphBuildingEnabled", true));
-        assertTrue(stage.isEnabled());
+    void configureIgnoresLegacyEnableKeys() {
+        assertDoesNotThrow(() -> stage.configure(Map.of("enabled", false)));
+        assertDoesNotThrow(() -> stage.configure(Map.of("graphBuildingEnabled", false)));
     }
 
     @Test
@@ -275,7 +282,10 @@ class GraphBuildingStageTest {
     void metricsRecordSuccess() throws Exception {
         stage.setChunksToProcess(List.of(chunk("c1")));
         Graph graph = new Graph();
-        graph.setEntities(List.of());
+        Entity entity = new Entity();
+        entity.setTitle("Metrics Entity");
+        entity.setType("THING");
+        graph.setEntities(List.of(entity));
         graph.setRelationships(List.of());
         when(graphConstructor.constructGraphFromDocs(anyList(), any(), any())).thenReturn(graph);
 

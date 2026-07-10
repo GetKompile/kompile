@@ -24,6 +24,7 @@ import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphProvenanceKeys;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -58,7 +59,7 @@ public class OpinionPrunePass {
     // Field injection (not constructor): when Spring wires this bean via a CGLIB proxy (the native-image
     // / proxy path), a no-arg proxy constructor leaves a constructor-final field null and P6 silently
     // no-ops. Field injection lets Spring populate it on the proxy too, so the opinion prune actually runs.
-    @org.springframework.beans.factory.annotation.Autowired
+    @Autowired
     private KnowledgeGraphService knowledgeGraphService;
 
     /**

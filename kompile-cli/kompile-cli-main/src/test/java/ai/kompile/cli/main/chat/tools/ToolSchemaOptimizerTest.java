@@ -270,6 +270,29 @@ class ToolSchemaOptimizerTest {
         }
 
         @Test
+        void compactLevel_preservesLargeActionEnums() {
+            ObjectNode params = MAPPER.createObjectNode();
+            params.put("type", "object");
+            ObjectNode properties = MAPPER.createObjectNode();
+            ObjectNode action = MAPPER.createObjectNode();
+            action.put("type", "string");
+            ArrayNode enumValues = MAPPER.createArrayNode();
+            for (int i = 0; i < 8; i++) enumValues.add("action_" + i);
+            action.set("enum", enumValues);
+            properties.set("action", action);
+            params.set("properties", properties);
+
+            ArrayNode tools = createOpenAiToolArray("Tool", "A tool.", params);
+            ArrayNode result = ToolSchemaOptimizer.optimize(tools,
+                    ToolSchemaOptimizer.OptimizationLevel.COMPACT);
+
+            JsonNode resultProp = result.get(0).get("function").get("parameters")
+                    .get("properties").get("action");
+            assertTrue(resultProp.has("enum"),
+                    "COMPACT keeps large action enums because descriptions are stripped");
+        }
+
+        @Test
         void compactLevel_preservesSmallEnums() {
             ObjectNode params = MAPPER.createObjectNode();
             params.put("type", "object");
@@ -541,6 +564,122 @@ class ToolSchemaOptimizerTest {
 
             assertEquals(originalStr, tools.toString(),
                     "Original tool definitions should not be modified");
+        }
+    }
+
+    // ===================================================================
+    // Curated per-tool compact hints (CliTool#compactHint)
+    // ===================================================================
+
+    @Nested
+    class CompactHints {
+
+        private static final String HINT =
+                "Regex over file CONTENTS (rg, else grep -E). Scope big trees via path|glob.";
+
+        @Test
+        void compactLevel_usesHintInsteadOfTruncation() {
+            ArrayNode tools = createOpenAiToolArray("grep", "Y".repeat(300), createSimpleParams());
+
+            ArrayNode result = ToolSchemaOptimizer.optimize(tools,
+                    ToolSchemaOptimizer.OptimizationLevel.COMPACT,
+                    java.util.Map.of("grep", HINT));
+
+            assertEquals(HINT, result.get(0).get("function").get("description").asText(),
+                    "COMPACT should use the curated hint verbatim, not a blind truncation");
+        }
+
+        @Test
+        void aggressiveLevel_usesHint() {
+            ArrayNode tools = createOpenAiToolArray("grep", "Y".repeat(300), createSimpleParams());
+
+            ArrayNode result = ToolSchemaOptimizer.optimize(tools,
+                    ToolSchemaOptimizer.OptimizationLevel.AGGRESSIVE,
+                    java.util.Map.of("grep", HINT));
+
+            assertEquals(HINT, result.get(0).get("function").get("description").asText());
+        }
+
+        @Test
+        void mcpFormat_usesHint() {
+            ObjectNode tool = MAPPER.createObjectNode();
+            tool.put("name", "grep");
+            tool.put("description", "D".repeat(300));
+            ObjectNode inputSchema = MAPPER.createObjectNode();
+            inputSchema.put("type", "object");
+            tool.set("inputSchema", inputSchema);
+            ArrayNode tools = MAPPER.createArrayNode();
+            tools.add(tool);
+
+            ArrayNode result = ToolSchemaOptimizer.optimize(tools,
+                    ToolSchemaOptimizer.OptimizationLevel.COMPACT,
+                    java.util.Map.of("grep", HINT));
+
+            assertEquals(HINT, result.get(0).get("description").asText());
+        }
+
+        @Test
+        void moderateLevel_ignoresHint() {
+            // MODERATE keeps full param docs; the hint is only for the stripping levels.
+            ArrayNode tools = createOpenAiToolArray("grep", "A short description.", createSimpleParams());
+
+            ArrayNode result = ToolSchemaOptimizer.optimize(tools,
+                    ToolSchemaOptimizer.OptimizationLevel.MODERATE,
+                    java.util.Map.of("grep", HINT));
+
+            assertEquals("A short description.",
+                    result.get(0).get("function").get("description").asText(),
+                    "MODERATE must ignore compact hints");
+        }
+
+        @Test
+        void noneLevel_ignoresHint() {
+            ArrayNode tools = createOpenAiToolArray("grep", "A short description.", createSimpleParams());
+
+            ArrayNode result = ToolSchemaOptimizer.optimize(tools,
+                    ToolSchemaOptimizer.OptimizationLevel.NONE,
+                    java.util.Map.of("grep", HINT));
+
+            assertEquals(tools.toString(), result.toString(), "NONE must ignore compact hints");
+        }
+
+        @Test
+        void hintOnlyAppliesToMatchingToolName() {
+            ArrayNode tools = createOpenAiToolArray("grep", "Y".repeat(100), createSimpleParams());
+
+            // Hint registered for a different tool → this tool falls back to blind truncation.
+            ArrayNode result = ToolSchemaOptimizer.optimize(tools,
+                    ToolSchemaOptimizer.OptimizationLevel.COMPACT,
+                    java.util.Map.of("patch", HINT));
+
+            String desc = result.get(0).get("function").get("description").asText();
+            assertNotEquals(HINT, desc);
+            assertTrue(desc.length() <= 63, "Falls back to the 60-char blind truncation");
+        }
+
+        @Test
+        void overlongHint_isCappedAtWordBoundary() {
+            String longHint = "word ".repeat(60).trim(); // 299 chars, a space every 5th char
+            ArrayNode tools = createOpenAiToolArray("grep", "Y".repeat(100), createSimpleParams());
+
+            ArrayNode result = ToolSchemaOptimizer.optimize(tools,
+                    ToolSchemaOptimizer.OptimizationLevel.COMPACT,
+                    java.util.Map.of("grep", longHint));
+
+            String desc = result.get(0).get("function").get("description").asText();
+            assertTrue(desc.length() <= 203, "Curated hint capped at 200 chars + ellipsis");
+            assertTrue(desc.endsWith("..."), "Over-long hint is trimmed with an ellipsis");
+        }
+
+        @Test
+        void nullHintsMap_behavesLikeNoHints() {
+            ArrayNode tools = createOpenAiToolArray("grep", "Y".repeat(100), createSimpleParams());
+
+            ArrayNode result = ToolSchemaOptimizer.optimize(tools,
+                    ToolSchemaOptimizer.OptimizationLevel.COMPACT, null);
+
+            String desc = result.get(0).get("function").get("description").asText();
+            assertTrue(desc.length() <= 63, "null hints map must not throw and falls back to truncation");
         }
     }
 

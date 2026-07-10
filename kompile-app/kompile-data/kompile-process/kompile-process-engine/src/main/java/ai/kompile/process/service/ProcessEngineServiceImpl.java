@@ -34,16 +34,22 @@ import ai.kompile.process.ontology.FieldType;
 import ai.kompile.process.ontology.OntologyConformanceValidator;
 import ai.kompile.process.ontology.OntologySchema;
 import ai.kompile.process.ontology.ValidationRule;
+import ai.kompile.process.release.ExecutableArtifactResolver;
+import ai.kompile.process.release.ExecutableKind;
+import ai.kompile.process.release.ProcessRelease;
+import ai.kompile.process.release.ProcessReleaseRepository;
 import ai.kompile.process.workflow.ProcessDefinition;
 import ai.kompile.process.workflow.ProcessPhase;
 import ai.kompile.process.workflow.ProcessStatus;
 import ai.kompile.process.workflow.ProcessStep;
 import ai.kompile.process.workflow.StepType;
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.utils.HashUtils;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.expression.Expression;
 import org.springframework.expression.spel.standard.SpelExpressionParser;
@@ -52,21 +58,19 @@ import org.springframework.stereotype.Service;
 
 import jakarta.annotation.PostConstruct;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
+import java.lang.reflect.Array;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
-import java.util.HexFormat;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -148,11 +152,15 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
     /** Optional dispatcher for TOOL_CALL and HTTP_CALL steps. Null if not wired. */
     private StepExecutionDispatcher stepExecutionDispatcher;
 
+    /** Optional release services; legacy installations continue to execute inline definitions. */
+    private ProcessReleaseRepository processReleaseRepository;
+    private ExecutableArtifactResolver executableArtifactResolver;
+
     /** Optional callbacks for writing execution results to the knowledge graph. Multiple
      * {@link ProcessGraphCallback} beans (e.g. KG writeback + step-event observation) coexist. */
-    private java.util.List<ProcessGraphCallback> processGraphCallbacks = java.util.Collections.emptyList();
+    private List<ProcessGraphCallback> processGraphCallbacks = Collections.emptyList();
 
-    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    @Autowired(required = false)
     public void setStepExecutionDispatcher(StepExecutionDispatcher dispatcher) {
         this.stepExecutionDispatcher = dispatcher;
         if (dispatcher != null) {
@@ -160,10 +168,20 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
         }
     }
 
-    @org.springframework.beans.factory.annotation.Autowired(required = false)
-    public void setProcessGraphCallbacks(java.util.List<ProcessGraphCallback> callbacks) {
+    @Autowired(required = false)
+    public void setProcessReleaseRepository(ProcessReleaseRepository repository) {
+        this.processReleaseRepository = repository;
+    }
+
+    @Autowired(required = false)
+    public void setExecutableArtifactResolver(ExecutableArtifactResolver resolver) {
+        this.executableArtifactResolver = resolver;
+    }
+
+    @Autowired(required = false)
+    public void setProcessGraphCallbacks(List<ProcessGraphCallback> callbacks) {
         this.processGraphCallbacks = (callbacks == null)
-                ? java.util.Collections.emptyList() : java.util.List.copyOf(callbacks);
+                ? Collections.emptyList() : List.copyOf(callbacks);
         if (!this.processGraphCallbacks.isEmpty()) {
             log.info("ProcessGraphCallback wired ({} callback(s)) — execution results will be written to KG",
                     this.processGraphCallbacks.size());
@@ -173,7 +191,7 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
     /** Backward-compatible single-callback setter (used by tests / programmatic wiring). */
     public void setProcessGraphCallback(ProcessGraphCallback callback) {
         this.processGraphCallbacks = (callback == null)
-                ? java.util.Collections.emptyList() : java.util.List.of(callback);
+                ? Collections.emptyList() : List.of(callback);
     }
 
     public ProcessEngineServiceImpl() {
@@ -363,6 +381,45 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
     }
 
     @Override
+    public ProcessDefinition reviseProcess(String id, ProcessDefinition definition) {
+        int currentVersion = definitionVersions.getOrDefault(id, 0);
+        if (currentVersion == 0) {
+            throw new IllegalArgumentException("Cannot revise unknown process definition: id=" + id);
+        }
+        int nextVersion = currentVersion + 1;
+        ProcessDefinition revised = cloneDefinitionWithIdVersionStatus(
+                definition, id, nextVersion, ProcessStatus.DRAFT);
+
+        definitions.put(versionedKey(id, nextVersion), revised);
+        definitionVersions.put(id, nextVersion);
+        persistDefinition(revised);
+        log.info("Revised process definition id={} version={} (previous versions stay immutable)",
+                id, nextVersion);
+        return revised;
+    }
+
+    @Override
+    public ProcessDefinition restoreProcessDefinition(ProcessDefinition definition) {
+        if (definition == null) {
+            throw new IllegalArgumentException("Process definition snapshot must not be null");
+        }
+        if (definition.getId() == null || definition.getId().isBlank()) {
+            return createProcess(definition);
+        }
+        int version = Math.max(1, definition.getVersion());
+        ProcessStatus status = definition.getStatus() != null ? definition.getStatus() : ProcessStatus.DRAFT;
+        ProcessDefinition restored = cloneDefinitionWithIdVersionStatus(
+                definition, definition.getId(), version, status);
+
+        definitions.put(versionedKey(restored.getId(), restored.getVersion()), restored);
+        definitionVersions.merge(restored.getId(), restored.getVersion(), Math::max);
+        persistDefinition(restored);
+        log.info("Restored process definition id={} version={} status={}",
+                restored.getId(), restored.getVersion(), restored.getStatus());
+        return restored;
+    }
+
+    @Override
     public ProcessDefinition approveProcess(String id, String approvedBy) {
         int currentVersion = definitionVersions.getOrDefault(id, 0);
         if (currentVersion == 0) {
@@ -374,6 +431,7 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
         ProcessDefinition approved = ProcessDefinition.builder()
                 .id(id)
                 .name(existing.getName())
+                .description(existing.getDescription())
                 .version(newVersion)
                 .ontologySchemaId(existing.getOntologySchemaId())
                 .ontologyVersion(existing.getOntologyVersion())
@@ -384,6 +442,16 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
                 .controls(existing.getControls())
                 .agentSpecs(existing.getAgentSpecs())
                 .metadata(existing.getMetadata())
+                .narrative(existing.getNarrative())
+                .narrativeSource(existing.getNarrativeSource())
+                .processDocument(existing.getProcessDocument())
+                .processDocumentSource(existing.getProcessDocumentSource())
+                .factSheetId(existing.getFactSheetId())
+                .sourceSuggestionId(existing.getSourceSuggestionId())
+                .sourceGraphNodeIds(existing.getSourceGraphNodeIds())
+                .discoveryConfidence(existing.getDiscoveryConfidence())
+                .parentProcessId(existing.getParentProcessId())
+                .childProcessIds(existing.getChildProcessIds())
                 .build();
 
         String key = versionedKey(id, newVersion);
@@ -400,7 +468,13 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
 
     @Override
     public WorkflowRun startRun(String processDefinitionId, Map<String, Object> initialData) {
-        int version = definitionVersions.getOrDefault(processDefinitionId, 0);
+        Map<String, Object> runData = initialData != null ? new HashMap<>(initialData) : new HashMap<>();
+        String environment = Objects.toString(runData.getOrDefault("_environment", "production"));
+        ProcessRelease pinnedRelease = processReleaseRepository == null ? null
+                : processReleaseRepository.findActive(processDefinitionId, environment).orElse(null);
+
+        int version = pinnedRelease != null ? pinnedRelease.getProcessDefinitionVersion()
+                : definitionVersions.getOrDefault(processDefinitionId, 0);
         if (version == 0) {
             throw new IllegalArgumentException("Process definition not found: " + processDefinitionId);
         }
@@ -409,10 +483,12 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
             throw new IllegalStateException(
                     "Process definition " + processDefinitionId + " is not approved (status=" + def.getStatus() + ")");
         }
+        if (pinnedRelease != null) {
+            runData.put("_processReleaseId", pinnedRelease.getId());
+        }
 
         String runId = "wf-" + Instant.now().toString().substring(0, 10) + "-" + shortId();
         Instant now = Instant.now();
-        Map<String, Object> runData = initialData != null ? new HashMap<>(initialData) : new HashMap<>();
 
         // Build step executions from every phase/step in definition order
         List<StepExecution> stepExecutions = new ArrayList<>();
@@ -437,6 +513,8 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
                 .id(runId)
                 .processDefinitionId(processDefinitionId)
                 .processVersion(version)
+                .processReleaseId(pinnedRelease != null ? pinnedRelease.getId() : null)
+                .releaseEnvironment(environment)
                 .ontologySnapshotId(def.getOntologySchemaId())
                 .status(RunStatus.RUNNING)
                 .startedAt(now)
@@ -495,7 +573,7 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
         WorkflowRun cancelled = WorkflowRun.builder()
                 .id(run.getId())
                 .processDefinitionId(run.getProcessDefinitionId())
-                .processVersion(run.getProcessVersion())
+                .processVersion(run.getProcessVersion()).processReleaseId(run.getProcessReleaseId()).releaseEnvironment(run.getReleaseEnvironment())
                 .ontologySnapshotId(run.getOntologySnapshotId())
                 .status(RunStatus.CANCELLED)
                 .startedAt(run.getStartedAt())
@@ -535,7 +613,7 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
         WorkflowRun updated = WorkflowRun.builder()
                 .id(run.getId())
                 .processDefinitionId(run.getProcessDefinitionId())
-                .processVersion(run.getProcessVersion())
+                .processVersion(run.getProcessVersion()).processReleaseId(run.getProcessReleaseId()).releaseEnvironment(run.getReleaseEnvironment())
                 .ontologySnapshotId(run.getOntologySnapshotId())
                 .status(run.getStatus())
                 .startedAt(run.getStartedAt())
@@ -600,7 +678,7 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
         WorkflowRun resumed = WorkflowRun.builder()
                 .id(run.getId())
                 .processDefinitionId(run.getProcessDefinitionId())
-                .processVersion(run.getProcessVersion())
+                .processVersion(run.getProcessVersion()).processReleaseId(run.getProcessReleaseId()).releaseEnvironment(run.getReleaseEnvironment())
                 .ontologySnapshotId(run.getOntologySnapshotId())
                 .status(RunStatus.RUNNING)
                 .startedAt(run.getStartedAt())
@@ -750,7 +828,7 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
         WorkflowRun resumed = WorkflowRun.builder()
                 .id(run.getId())
                 .processDefinitionId(run.getProcessDefinitionId())
-                .processVersion(run.getProcessVersion())
+                .processVersion(run.getProcessVersion()).processReleaseId(run.getProcessReleaseId()).releaseEnvironment(run.getReleaseEnvironment())
                 .ontologySnapshotId(run.getOntologySnapshotId())
                 .status(nextRunStatus)
                 .startedAt(run.getStartedAt())
@@ -825,7 +903,7 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
             WorkflowRun updated = WorkflowRun.builder()
                     .id(run.getId())
                     .processDefinitionId(run.getProcessDefinitionId())
-                    .processVersion(run.getProcessVersion())
+                    .processVersion(run.getProcessVersion()).processReleaseId(run.getProcessReleaseId()).releaseEnvironment(run.getReleaseEnvironment())
                     .ontologySnapshotId(run.getOntologySnapshotId())
                     .status(run.getStatus())
                     .startedAt(run.getStartedAt())
@@ -1030,7 +1108,7 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
         RunStatus runStatus = RunStatus.RUNNING;
 
         // Build a set of completed step IDs for dependency checking
-        java.util.Set<String> completedStepIds = stepExecutions.stream()
+        Set<String> completedStepIds = stepExecutions.stream()
                 .filter(s -> s.getStatus() == StepExecutionStatus.COMPLETED
                           || s.getStatus() == StepExecutionStatus.SKIPPED)
                 .map(StepExecution::getStepId)
@@ -1147,7 +1225,7 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
                         metrics.put("ontologyViolations_" + se.getStepId(), validationErrors);
                         run = WorkflowRun.builder()
                                 .id(run.getId()).processDefinitionId(run.getProcessDefinitionId())
-                                .processVersion(run.getProcessVersion()).ontologySnapshotId(run.getOntologySnapshotId())
+                                .processVersion(run.getProcessVersion()).processReleaseId(run.getProcessReleaseId()).releaseEnvironment(run.getReleaseEnvironment()).ontologySnapshotId(run.getOntologySnapshotId())
                                 .status(run.getStatus()).startedAt(run.getStartedAt()).completedAt(run.getCompletedAt())
                                 .estimatedCompletion(run.getEstimatedCompletion()).stepExecutions(run.getStepExecutions())
                                 .pendingApprovals(run.getPendingApprovals()).controlResults(run.getControlResults())
@@ -1381,13 +1459,36 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
 
                     Map<String, Object> inputs = extractInputs(stepDef, runData);
                     String inputHash = sha256(inputs);
+                    String scriptBody = stepDef.getScriptBody();
+                    String language = stepDef.getScriptLanguage() != null
+                            ? stepDef.getScriptLanguage() : "javascript";
+                    String executableIdentity = "inline";
+                    try {
+                        if (stepDef.getExecutableRef() != null) {
+                            ExecutableArtifactResolver.ResolvedExecutable resolved =
+                                    resolvePinnedExecutable(run, stepDef, ExecutableKind.SCRIPT);
+                            scriptBody = resolved.content();
+                            language = resolved.language();
+                            executableIdentity = resolved.manifest().getArtifactId() + "@"
+                                    + resolved.manifest().getVersion();
+                        }
+                    } catch (Exception e) {
+                        StepExecution failed = StepExecution.builder()
+                                .stepId(se.getStepId()).stepName(se.getStepName())
+                                .status(StepExecutionStatus.FAILED).startedAt(now).completedAt(Instant.now())
+                                .inputs(inputs).inputHash(inputHash)
+                                .graphNodeIds(stepDef.getGraphNodeIds())
+                                .error("Executable resolution failed: " + e.getMessage())
+                                .build();
+                        stepExecutions.set(i, failed);
+                        runStatus = RunStatus.FAILED;
+                        return buildRun(run, stepExecutions, pendingApprovals, controlResults, runData, runStatus);
+                    }
 
-                    if (stepDef.getScriptBody() != null && !stepDef.getScriptBody().isBlank()) {
+                    if (scriptBody != null && !scriptBody.isBlank()) {
                         try {
-                            String language = stepDef.getScriptLanguage() != null
-                                    ? stepDef.getScriptLanguage() : "javascript";
                             Map<String, Object> scriptOutputs = stepExecutionDispatcher.executeScript(
-                                    language, stepDef.getScriptBody(), runData);
+                                    language, scriptBody, runData);
 
                             // Store outputs under scriptOutputKey or merge directly
                             String outputKey = stepDef.getScriptOutputKey();
@@ -1414,7 +1515,7 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
                                     .stepId(se.getStepId()).stepName(se.getStepName())
                                     .status(StepExecutionStatus.COMPLETED)
                                     .startedAt(now).completedAt(Instant.now())
-                                    .executedBy("script:" + language)
+                                    .executedBy("script:" + language + ":" + executableIdentity)
                                     .inputs(inputs).outputs(outputs)
                                     .inputHash(inputHash).outputHash(outputHash)
                                     .graphNodeIds(stepDef.getGraphNodeIds())
@@ -1445,6 +1546,74 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
                                 .build();
                         stepExecutions.set(i, completed);
                         completedStepIds.add(se.getStepId());
+                    }
+                    controlResults.addAll(evaluateStepControls(stepDef, run.getId(), runData));
+                    break;
+                }
+
+                case AGENT_SESSION: {
+                    if (stepExecutionDispatcher == null) {
+                        StepExecution failed = StepExecution.builder()
+                                .stepId(se.getStepId()).stepName(se.getStepName())
+                                .status(StepExecutionStatus.FAILED).startedAt(now).completedAt(now)
+                                .graphNodeIds(stepDef.getGraphNodeIds())
+                                .error("AGENT_SESSION step requires StepExecutionDispatcher but none is wired")
+                                .build();
+                        stepExecutions.set(i, failed);
+                        runStatus = RunStatus.FAILED;
+                        return buildRun(run, stepExecutions, pendingApprovals, controlResults, runData, runStatus);
+                    }
+                    Map<String, Object> inputs = extractInputs(stepDef, runData);
+                    String inputHash = sha256(inputs);
+                    try {
+                        String prompt = stepDef.getAgentPromptTemplate();
+                        String identity = "inline";
+                        if (stepDef.getExecutableRef() != null) {
+                            ExecutableArtifactResolver.ResolvedExecutable resolved =
+                                    resolvePinnedExecutable(run, stepDef, ExecutableKind.AGENT_SESSION);
+                            prompt = resolved.content();
+                            identity = resolved.manifest().getArtifactId() + "@"
+                                    + resolved.manifest().getVersion();
+                        }
+                        if (prompt == null || prompt.isBlank()) {
+                            throw new IllegalStateException("Agent prompt template is required");
+                        }
+                        String conversationId = stepDef.getConversationIdKey() == null ? null
+                                : String.valueOf(runData.get(stepDef.getConversationIdKey()));
+                        if ("null".equals(conversationId)) {
+                            conversationId = null;
+                        }
+                        Map<String, Object> agentResult = stepExecutionDispatcher.executeAgentSession(
+                                stepDef.getAgentSpecId(), prompt, conversationId, new HashMap<>(runData));
+                        Map<String, Object> outputs = new HashMap<>();
+                        String outputKey = stepDef.getConversationOutputKey() == null
+                                ? "conversationResult" : stepDef.getConversationOutputKey();
+                        outputs.put(outputKey, agentResult);
+                        if (stepDef.getConversationIdKey() != null
+                                && agentResult.get("conversationId") != null) {
+                            outputs.put(stepDef.getConversationIdKey(), agentResult.get("conversationId"));
+                        }
+                        runData.putAll(outputs);
+                        StepExecution completed = StepExecution.builder()
+                                .stepId(se.getStepId()).stepName(se.getStepName())
+                                .status(StepExecutionStatus.COMPLETED)
+                                .startedAt(now).completedAt(Instant.now())
+                                .executedBy("agent:" + stepDef.getAgentSpecId() + ":" + identity)
+                                .inputs(inputs).outputs(outputs)
+                                .inputHash(inputHash).outputHash(sha256(outputs))
+                                .graphNodeIds(stepDef.getGraphNodeIds()).build();
+                        stepExecutions.set(i, completed);
+                        completedStepIds.add(se.getStepId());
+                    } catch (Exception e) {
+                        StepExecution failed = StepExecution.builder()
+                                .stepId(se.getStepId()).stepName(se.getStepName())
+                                .status(StepExecutionStatus.FAILED).startedAt(now).completedAt(Instant.now())
+                                .inputs(inputs).inputHash(inputHash)
+                                .graphNodeIds(stepDef.getGraphNodeIds())
+                                .error("Agent session execution failed: " + e.getMessage()).build();
+                        stepExecutions.set(i, failed);
+                        runStatus = RunStatus.FAILED;
+                        return buildRun(run, stepExecutions, pendingApprovals, controlResults, runData, runStatus);
                     }
                     controlResults.addAll(evaluateStepControls(stepDef, run.getId(), runData));
                     break;
@@ -1877,9 +2046,18 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
                     String inputHash = sha256(workflowInputs);
 
                     try {
+                        String workflowContent = stepDef.getWorkflowInlineContent();
+                        String executableIdentity = "inline";
+                        if (stepDef.getExecutableRef() != null) {
+                            ExecutableArtifactResolver.ResolvedExecutable resolved =
+                                    resolvePinnedExecutable(run, stepDef, ExecutableKind.WORKFLOW);
+                            workflowContent = resolved.content();
+                            executableIdentity = resolved.manifest().getArtifactId() + "@"
+                                    + resolved.manifest().getVersion();
+                        }
                         Map<String, Object> workflowOutputs = stepExecutionDispatcher.executeWorkflow(
                                 stepDef.getWorkflowEngineType(), stepDef.getWorkflowName(),
-                                stepDef.getWorkflowInlineContent(), workflowInputs,
+                                workflowContent, workflowInputs,
                                 stepDef.getWorkflowTimeoutSeconds());
                         Map<String, Object> outputs = applyOutputKey(stepDef.getWorkflowOutputKey(), workflowOutputs);
                         runData.putAll(outputs);
@@ -1888,7 +2066,7 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
                                 .stepId(se.getStepId()).stepName(se.getStepName())
                                 .status(StepExecutionStatus.COMPLETED)
                                 .startedAt(now).completedAt(Instant.now())
-                                .executedBy("workflow:" + firstNonBlank(stepDef.getWorkflowEngineType(), "unknown"))
+                                .executedBy("workflow:" + firstNonBlank(stepDef.getWorkflowEngineType(), "unknown") + ":" + executableIdentity)
                                 .inputs(workflowInputs).outputs(outputs)
                                 .inputHash(inputHash).outputHash(sha256(outputs))
                                 .graphNodeIds(stepDef.getGraphNodeIds())
@@ -2028,6 +2206,24 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
         return buildRun(run, stepExecutions, pendingApprovals, controlResults, runData, runStatus);
     }
 
+    private ExecutableArtifactResolver.ResolvedExecutable resolvePinnedExecutable(
+            WorkflowRun run, ProcessStep step, ExecutableKind expectedKind) {
+        if (processReleaseRepository == null || executableArtifactResolver == null) {
+            throw new IllegalStateException("Pinned executable runtime services are not available");
+        }
+        if (run.getProcessReleaseId() == null || run.getProcessReleaseId().isBlank()) {
+            throw new IllegalStateException("Process run is not pinned to an active release");
+        }
+        if (step.getExecutableRef().getKind() != expectedKind) {
+            throw new IllegalStateException("Step executable kind " + step.getExecutableRef().getKind()
+                    + " cannot execute as " + expectedKind);
+        }
+        ProcessRelease release = processReleaseRepository.findById(run.getProcessReleaseId())
+                .orElseThrow(() -> new IllegalStateException(
+                        "Pinned process release no longer exists: " + run.getProcessReleaseId()));
+        return executableArtifactResolver.resolve(release, step.getExecutableRef());
+    }
+
     // ---------------------------------------------------------------------------
     // Private helpers — run construction
     // ---------------------------------------------------------------------------
@@ -2059,7 +2255,7 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
         WorkflowRun run = WorkflowRun.builder()
                 .id(original.getId())
                 .processDefinitionId(original.getProcessDefinitionId())
-                .processVersion(original.getProcessVersion())
+                .processVersion(original.getProcessVersion()).processReleaseId(original.getProcessReleaseId()).releaseEnvironment(original.getReleaseEnvironment())
                 .ontologySnapshotId(original.getOntologySnapshotId())
                 .status(status)
                 .startedAt(original.getStartedAt())
@@ -2335,9 +2531,9 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
             return;
         }
         if (value.getClass().isArray()) {
-            int length = java.lang.reflect.Array.getLength(value);
+            int length = Array.getLength(value);
             for (int i = 0; i < length; i++) {
-                collectStrings(target, java.lang.reflect.Array.get(value, i));
+                collectStrings(target, Array.get(value, i));
             }
             return;
         }
@@ -2366,10 +2562,10 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
             return true;
         }
         Set<String> normalizedActual = actual.stream()
-                .map(value -> value.toLowerCase(java.util.Locale.ROOT))
+                .map(value -> value.toLowerCase(Locale.ROOT))
                 .collect(Collectors.toSet());
         return required.stream()
-                .map(value -> value.toLowerCase(java.util.Locale.ROOT))
+                .map(value -> value.toLowerCase(Locale.ROOT))
                 .anyMatch(normalizedActual::contains);
     }
 
@@ -2378,10 +2574,10 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
             return List.of();
         }
         Set<String> normalizedActual = actual.stream()
-                .map(value -> value.toLowerCase(java.util.Locale.ROOT))
+                .map(value -> value.toLowerCase(Locale.ROOT))
                 .collect(Collectors.toSet());
         return required.stream()
-                .filter(value -> !normalizedActual.contains(value.toLowerCase(java.util.Locale.ROOT)))
+                .filter(value -> !normalizedActual.contains(value.toLowerCase(Locale.ROOT)))
                 .collect(Collectors.toList());
     }
 
@@ -2639,6 +2835,7 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
         return ProcessDefinition.builder()
                 .id(id)
                 .name(src.getName())
+                .description(src.getDescription())
                 .version(version)
                 .ontologySchemaId(src.getOntologySchemaId())
                 .ontologyVersion(src.getOntologyVersion())
@@ -2649,6 +2846,16 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
                 .controls(src.getControls())
                 .agentSpecs(src.getAgentSpecs())
                 .metadata(src.getMetadata())
+                .narrative(src.getNarrative())
+                .narrativeSource(src.getNarrativeSource())
+                .processDocument(src.getProcessDocument())
+                .processDocumentSource(src.getProcessDocumentSource())
+                .factSheetId(src.getFactSheetId())
+                .sourceSuggestionId(src.getSourceSuggestionId())
+                .sourceGraphNodeIds(src.getSourceGraphNodeIds())
+                .discoveryConfidence(src.getDiscoveryConfidence())
+                .parentProcessId(src.getParentProcessId())
+                .childProcessIds(src.getChildProcessIds())
                 .build();
     }
 
@@ -2737,9 +2944,7 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
     private String sha256(Map<String, Object> data) {
         try {
             String json = data == null ? "{}" : objectMapper.writeValueAsString(data);
-            MessageDigest md = MessageDigest.getInstance("SHA-256");
-            byte[] digest = md.digest(json.getBytes(StandardCharsets.UTF_8));
-            return HexFormat.of().formatHex(digest);
+            return HashUtils.sha256Hex(json);
         } catch (Exception e) {
             log.warn("SHA-256 computation failed: {}", e.getMessage());
             return "error";
@@ -2752,9 +2957,7 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
     private String sha256Object(Object obj) {
         try {
             String json = objectMapper.writeValueAsString(obj);
-            MessageDigest md = MessageDigest.getInstance("SHA-256");
-            byte[] digest = md.digest(json.getBytes(StandardCharsets.UTF_8));
-            return HexFormat.of().formatHex(digest);
+            return HashUtils.sha256Hex(json);
         } catch (Exception e) {
             log.warn("SHA-256 computation failed: {}", e.getMessage());
             return "error";

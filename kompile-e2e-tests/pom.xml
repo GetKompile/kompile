@@ -36,6 +36,12 @@
     <!-- ═══════════════════════════════════════════════════════════════ -->
     <dependency>
       <groupId>ai.kompile</groupId>
+      <artifactId>kompile-utils</artifactId>
+      <version>${project.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-app-core</artifactId>
       <scope>test</scope>
     </dependency>

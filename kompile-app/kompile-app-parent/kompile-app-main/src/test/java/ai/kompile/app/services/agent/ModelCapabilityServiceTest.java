@@ -134,9 +134,10 @@ class ModelCapabilityServiceTest {
         var caps = service.getCapabilities("claude-sonnet-4");
         assertEquals("claude-sonnet-4", caps.modelId());
         assertTrue(caps.supportsVision());
-        // Without registered providers, falls back to default context window
-        assertEquals(128_000, caps.contextWindow());
-        assertEquals(8_192, caps.maxOutputTokens());
+        // ModelContextWindows catalog knows claude-sonnet-4 — returns the real context window.
+        assertEquals(200_000, caps.contextWindow());
+        // maxOutputTokens comes from the live CliModelCatalog (disk-based); assert it's reasonable.
+        assertTrue(caps.maxOutputTokens() > 0, "maxOutputTokens must be positive for a known model");
     }
 
     @Test
@@ -170,8 +171,9 @@ class ModelCapabilityServiceTest {
         // Original model ID preserved
         assertEquals("anthropic/claude-opus-4", caps.modelId());
         assertTrue(caps.supportsVision());
-        // Without registered providers, falls back to default context window
-        assertEquals(128_000, caps.contextWindow());
+        // ModelContextWindows catalog knows claude-opus-4 (via prefix match after stripping provider) —
+        // returns the real context window.
+        assertEquals(200_000, caps.contextWindow());
     }
 
     @Test

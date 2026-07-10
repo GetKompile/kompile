@@ -58,6 +58,199 @@
     </mat-card-actions>
   </mat-card>
 
+  <!-- Single-source crawl panel -->
+  <mat-accordion class="ss-accordion">
+    <mat-expansion-panel (opened)="onSsPanelOpened()">
+      <mat-expansion-panel-header>
+        <mat-panel-title><mat-icon>bolt</mat-icon>&nbsp;Single source crawl</mat-panel-title>
+        <mat-panel-description>Load one file, URL or text snippet — dry-run or persist</mat-panel-description>
+      </mat-expansion-panel-header>
+
+      <!-- Mode + input -->
+      <div class="ss-form-row">
+        <mat-form-field appearance="outline" class="ss-mode-field">
+          <mat-label>Input type</mat-label>
+          <mat-select [(ngModel)]="ssMode">
+            <mat-option value="file">File path</mat-option>
+            <mat-option value="url">URL</mat-option>
+            <mat-option value="text">Inline text</mat-option>
+          </mat-select>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" class="ss-path-field" *ngIf="ssMode !== 'text'">
+          <mat-label>{{ ssMode === 'url' ? 'URL' : 'File path' }}</mat-label>
+          <input matInput [(ngModel)]="ssPathOrUrl"
+                 [placeholder]="ssMode === 'url' ? 'https://example.com/document.pdf' : '/path/to/document.pdf'">
+        </mat-form-field>
+
+        <ng-container *ngIf="ssMode === 'text'">
+          <mat-form-field appearance="outline" class="ss-label-field">
+            <mat-label>Label (optional)</mat-label>
+            <input matInput [(ngModel)]="ssLabel" placeholder="My document">
+          </mat-form-field>
+          <mat-form-field appearance="outline" class="ss-text-field">
+            <mat-label>Content</mat-label>
+            <textarea matInput [(ngModel)]="ssText" rows="4" placeholder="Paste document text here…"></textarea>
+          </mat-form-field>
+        </ng-container>
+      </div>
+
+      <!-- Dry-run toggle -->
+      <div class="ss-options-row">
+        <mat-slide-toggle [(ngModel)]="ssDryRun">Dry run (preview only — do not persist)</mat-slide-toggle>
+      </div>
+
+      <!-- Step selector (only shown when NOT dry-run) -->
+      <div class="ss-steps-section" *ngIf="!ssDryRun && ssStepCatalog.length > 0">
+        <div class="ss-steps-label">Pipeline steps</div>
+        <div class="ss-step-grid">
+          <div class="ss-step-row" *ngFor="let step of ssStepCatalog">
+            <span class="ss-step-name">{{ step.displayName }}</span>
+            <span class="ss-step-required" *ngIf="step.foundational">Run (required)</span>
+            <ng-container *ngIf="!step.foundational">
+              <button mat-stroked-button class="ss-step-btn"
+                      [class.ss-step-btn-active]="ssStepSelections[step.id] === 'run'"
+                      [disabled]="ssIsStepDependencyBlocked(step)"
+                      (click)="ssSetsStepSelection(step.id, 'run')">Run</button>
+              <button mat-stroked-button class="ss-step-btn"
+                      [class.ss-step-btn-muted]="ssStepSelections[step.id] === 'skip'"
+                      (click)="ssSetsStepSelection(step.id, 'skip')">Skip</button>
+            </ng-container>
+          </div>
+        </div>
+      </div>
+
+      <!-- Run button -->
+      <div class="ss-actions-row">
+        <button mat-raised-button color="primary"
+                [disabled]="!ssCanRun"
+                (click)="runSingleSource()">
+          <mat-spinner diameter="18" *ngIf="ssRunning" class="ss-spinner"></mat-spinner>
+          <mat-icon *ngIf="!ssRunning">{{ ssDryRun ? 'travel_explore' : 'play_arrow' }}</mat-icon>
+          {{ ssDryRun ? 'Preview' : 'Run' }}
+        </button>
+      </div>
+
+      <!-- Error -->
+      <div class="ss-error" *ngIf="ssError">
+        <mat-icon>warning</mat-icon>
+        <span>{{ ssError }}</span>
+      </div>
+
+      <!-- Result panel -->
+      <div class="ss-result-panel" *ngIf="ssResult">
+        <!-- Header row -->
+        <div class="ss-result-header">
+          <mat-icon>{{ ssResult.errorCount > 0 ? 'error_outline' : 'check_circle_outline' }}</mat-icon>
+          <span class="ss-result-title">Result</span>
+          <mat-chip class="ss-chip-dryrun" *ngIf="ssResult.dryRun">Dry Run</mat-chip>
+          <mat-chip class="ss-chip-status"
+                    [class.ss-chip-ok]="ssResult.status === 'COMPLETED' || ssResult.status === 'DRY_RUN_COMPLETE'"
+                    [class.ss-chip-err]="ssResult.errorCount > 0">
+            {{ ssResult.status }}
+          </mat-chip>
+        </div>
+
+        <!-- Stat grid -->
+        <div class="ss-stat-grid">
+          <div class="ss-stat">
+            <span>Documents</span>
+            <strong>{{ ssResult.documentsLoaded }}</strong>
+          </div>
+          <div class="ss-stat">
+            <span>Chunks</span>
+            <strong>{{ ssResult.chunksCreated }}</strong>
+          </div>
+          <div class="ss-stat">
+            <span>Entities</span>
+            <strong>{{ ssResult.entityCount }}</strong>
+          </div>
+          <div class="ss-stat">
+            <span>Relations</span>
+            <strong>{{ ssResult.relationCount }}</strong>
+          </div>
+          <div class="ss-stat" *ngIf="ssResult.elapsedMs">
+            <span>Elapsed</span>
+            <strong>{{ ssResult.elapsedMs | number:'1.0-0' }} ms</strong>
+          </div>
+        </div>
+
+        <!-- Step snapshots -->
+        <div class="ss-steps-snapshots" *ngIf="ssResult.steps?.length">
+          <div class="ss-snapshot-row" *ngFor="let s of ssResult.steps">
+            <span class="ss-snap-name">{{ s.displayName }}</span>
+            <span class="ss-snap-status" [class]="'ss-snap-' + s.status.toLowerCase()">{{ s.status }}</span>
+            <span class="ss-snap-ms">{{ s.elapsedMs | number:'1.0-0' }} ms</span>
+          </div>
+        </div>
+
+        <!-- Steps planned chips (from stepsPlanned map) -->
+        <div class="ss-steps-planned" *ngIf="ssResult.stepsPlanned">
+          <span *ngFor="let entry of (ssResult.stepsPlanned | keyvalue)">
+            <mat-chip class="ss-plan-chip"
+                      [class.ss-plan-skip]="entry.value === 'SKIP'"
+                      [class.ss-plan-run]="entry.value === 'RUN'">
+              {{ entry.value === 'SKIP' ? 'skipped: ' + entry.key : 'auto: ' + entry.key }}
+            </mat-chip>
+          </span>
+        </div>
+
+        <!-- Sample entities + relations (two-column) -->
+        <div class="ss-graph-columns" *ngIf="ssResult.sampleEntities?.length || ssResult.sampleRelations?.length">
+          <div class="ss-graph-list" *ngIf="ssResult.sampleEntities?.length">
+            <h4>Sample entities</h4>
+            <div class="ss-graph-row" *ngFor="let entity of ssResult.sampleEntities | slice:0:8">
+              <div class="ss-graph-row-main">
+                <span class="ss-graph-name" [matTooltip]="entity.name || entity.id || ''">
+                  {{ entity.name || entity.id || 'Unnamed' }}
+                </span>
+                <span class="ss-graph-desc" *ngIf="entity.description">{{ entity.description }}</span>
+              </div>
+              <div class="ss-graph-tags">
+                <span *ngIf="entity.type">{{ entity.type }}</span>
+                <span *ngIf="entity.confidence !== undefined && entity.confidence !== null">{{ entity.confidence | percent:'1.0-0' }}</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="ss-graph-list" *ngIf="ssResult.sampleRelations?.length">
+            <h4>Sample relations</h4>
+            <div class="ss-graph-row" *ngFor="let rel of ssResult.sampleRelations | slice:0:8">
+              <div class="ss-graph-row-main">
+                <span class="ss-graph-name"
+                      [matTooltip]="(rel.sourceName || rel.source || '') + ' -> ' + (rel.targetName || rel.target || '')">
+                  {{ rel.sourceName || rel.source }} &#x2192; {{ rel.targetName || rel.target }}
+                </span>
+                <span class="ss-graph-desc" *ngIf="rel.description">{{ rel.description }}</span>
+              </div>
+              <div class="ss-graph-tags">
+                <span *ngIf="rel.type">{{ rel.type }}</span>
+                <span *ngIf="rel.confidence !== undefined && rel.confidence !== null">{{ rel.confidence | percent:'1.0-0' }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Warnings -->
+        <div class="ss-warnings" *ngIf="ssResult.warnings?.length">
+          <div class="ss-warning-row" *ngFor="let w of ssResult.warnings | slice:0:5">
+            <mat-icon>info</mat-icon>
+            <span>{{ w }}</span>
+          </div>
+        </div>
+
+        <!-- Errors -->
+        <div class="ss-warnings" *ngIf="ssResult.errors?.length">
+          <div class="ss-warning-row ss-error-row" *ngFor="let e of ssResult.errors | slice:0:5">
+            <mat-icon>error</mat-icon>
+            <span>{{ e }}</span>
+          </div>
+        </div>
+      </div>
+
+    </mat-expansion-panel>
+  </mat-accordion>
+
   <!-- Jobs list -->
   <mat-card class="jobs-card">
     <mat-card-header>

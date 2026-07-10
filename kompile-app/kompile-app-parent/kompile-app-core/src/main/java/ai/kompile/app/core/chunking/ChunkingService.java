@@ -16,6 +16,7 @@
 
 package ai.kompile.app.core.chunking;
 
+import ai.kompile.core.language.LanguageSupport;
 import ai.kompile.core.retrievers.RetrievedDoc;
 import jakarta.annotation.PostConstruct;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -184,16 +185,16 @@ public class ChunkingService {
      * @return the name of the best chunker for the language
      */
     public String getBestChunkerForLanguage(String language) {
-        // First, look for chunkers that specifically support the language
+        // First, look for chunkers that specifically support the language.
         for (TextChunker chunker : chunkers.values()) {
-            if (chunker.getSupportedLanguages().contains(language)) {
+            if (chunker.supportsLanguage(language) && !LanguageSupport.isUniversal(chunker.getSupportedLanguages())) {
                 return chunker.getName();
             }
         }
         
         // Fallback to language-agnostic chunkers
         for (TextChunker chunker : chunkers.values()) {
-            if (chunker.getSupportedLanguages().contains("*")) {
+            if (chunker.supportsLanguage(language)) {
                 return chunker.getName();
             }
         }

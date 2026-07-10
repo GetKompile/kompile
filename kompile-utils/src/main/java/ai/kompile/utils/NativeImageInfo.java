@@ -16,7 +16,9 @@
 
 package ai.kompile.utils;
 
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
@@ -28,27 +30,39 @@ import java.nio.file.Paths;
  */
 public final class NativeImageInfo {
 
-    private static final Boolean IS_NATIVE_IMAGE;
-    private static final String EXECUTABLE_PATH;
-
-    static {
-        IS_NATIVE_IMAGE = detectNativeImage();
-        EXECUTABLE_PATH = detectExecutablePath();
-    }
+    // Lazily computed at first use — NEVER in a static initializer: when GraalVM
+    // class-initializes this class at image BUILD time, values captured then
+    // describe the builder's process (executable path = builder java / null),
+    // which is how subprocess self-exec ended up probing "./kompile-app".
+    // Same bug family as ND4JClassLoading's baked classloader. The detection is
+    // idempotent, so racy double-computation under the volatile reads is fine.
+    private static volatile Boolean isNativeImage;
+    private static volatile String executablePath;
+    private static volatile boolean executablePathResolved;
 
     private NativeImageInfo() {
     }
 
     public static boolean isRunningInNativeImage() {
-        return IS_NATIVE_IMAGE != null && IS_NATIVE_IMAGE;
+        Boolean detected = isNativeImage;
+        if (detected == null) {
+            detected = detectNativeImage();
+            isNativeImage = detected;
+        }
+        return Boolean.TRUE.equals(detected);
     }
 
     public static String getExecutablePath() {
-        return EXECUTABLE_PATH;
+        if (!executablePathResolved) {
+            executablePath = detectExecutablePath();
+            executablePathResolved = true;
+        }
+        return executablePath;
     }
 
     public static Path getExecutablePathAsPath() {
-        return EXECUTABLE_PATH != null ? Paths.get(EXECUTABLE_PATH) : null;
+        String path = getExecutablePath();
+        return path != null ? Paths.get(path) : null;
     }
 
     public static boolean hasClasspath() {
@@ -89,7 +103,7 @@ public final class NativeImageInfo {
     }
 
     private static String detectExecutablePath() {
-        if (!Boolean.TRUE.equals(IS_NATIVE_IMAGE)) {
+        if (!isRunningInNativeImage()) {
             return null;
         }
 

@@ -22,6 +22,7 @@ import java.nio.file.Paths;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -29,6 +30,9 @@ import java.util.Set;
  * Constants and descriptors for commonly used models.
  */
 public class ModelConstants {
+
+    private static final List<String> ENGLISH_LANGUAGES = List.of("en");
+    private static final List<String> MULTILINGUAL_LANGUAGES = List.of("*");
 
     /**
      * Returns architecture metadata for a model (num_layers, num_heads, model_size_bytes, etc.).
@@ -249,6 +253,7 @@ public class ModelConstants {
                         "framework", "samediff",
                         "model_type", "dense",
                         "embedding_dim", 768,
+                        "supported_languages", ENGLISH_LANGUAGES,
                         "tokenizer_do_lower_case", true,
                         "tokenizer_add_special_tokens", true,
                         "tokenizer_max_sequence_length", 512,
@@ -277,6 +282,7 @@ public class ModelConstants {
                         "framework", "samediff",
                         "model_type", "dense",
                         "embedding_dim", 1024,
+                        "supported_languages", MULTILINGUAL_LANGUAGES,
                         "tokenizer_do_lower_case", false, // XLM-RoBERTa typically doesn't lowercase
                         "tokenizer_add_special_tokens", true,
                         "tokenizer_max_sequence_length", 8192, // Arctic supports 8k context
@@ -305,6 +311,7 @@ public class ModelConstants {
                         "framework", "samediff",
                         "model_type", "dense",
                         "embedding_dim", 768,
+                        "supported_languages", ENGLISH_LANGUAGES,
                         "tokenizer_do_lower_case", true, // DPR typically uses BERT-style tokenization
                         "tokenizer_add_special_tokens", true,
                         "tokenizer_max_sequence_length", 512,
@@ -333,6 +340,7 @@ public class ModelConstants {
                         "framework", "samediff",
                         "model_type", "sparse",
                         "embedding_dim", 30522, // BERT vocabulary size
+                        "supported_languages", ENGLISH_LANGUAGES,
                         "tokenizer_do_lower_case", true, // SPLADE typically uses BERT-style tokenization
                         "tokenizer_add_special_tokens", true,
                         "tokenizer_max_sequence_length", 512, // Standard BERT max length
@@ -361,6 +369,7 @@ public class ModelConstants {
                         "framework", "samediff",
                         "model_type", "sparse",
                         "embedding_dim", 30522, // BERT vocabulary size
+                        "supported_languages", ENGLISH_LANGUAGES,
                         "tokenizer_do_lower_case", true, // SPLADE typically uses BERT-style tokenization
                         "tokenizer_add_special_tokens", true,
                         "tokenizer_max_sequence_length", 512, // Standard BERT max length
@@ -544,6 +553,7 @@ public class ModelConstants {
                         Map.entry("num_layers", 6),
                         Map.entry("max_sequence_length", 512),
                         Map.entry("embedding_dim", 384),
+                        Map.entry("supported_languages", ENGLISH_LANGUAGES),
                         Map.entry("tokenizer_do_lower_case", true),
                         Map.entry("tokenizer_add_special_tokens", true),
                         Map.entry("tokenizer_max_sequence_length", 512),
@@ -579,6 +589,7 @@ public class ModelConstants {
                         Map.entry("num_layers", 12),
                         Map.entry("max_sequence_length", 512),
                         Map.entry("embedding_dim", 384),
+                        Map.entry("supported_languages", ENGLISH_LANGUAGES),
                         Map.entry("tokenizer_do_lower_case", true),
                         Map.entry("tokenizer_add_special_tokens", true),
                         Map.entry("tokenizer_max_sequence_length", 512),
@@ -614,6 +625,7 @@ public class ModelConstants {
                         Map.entry("num_layers", 4),
                         Map.entry("max_sequence_length", 512),
                         Map.entry("embedding_dim", 312),
+                        Map.entry("supported_languages", ENGLISH_LANGUAGES),
                         Map.entry("tokenizer_do_lower_case", true),
                         Map.entry("tokenizer_add_special_tokens", true),
                         Map.entry("tokenizer_max_sequence_length", 512),
@@ -649,6 +661,7 @@ public class ModelConstants {
                         Map.entry("num_layers", 12),
                         Map.entry("max_sequence_length", 512),
                         Map.entry("embedding_dim", 384),
+                        Map.entry("supported_languages", MULTILINGUAL_LANGUAGES),
                         Map.entry("tokenizer_do_lower_case", false),
                         Map.entry("tokenizer_add_special_tokens", true),
                         Map.entry("tokenizer_max_sequence_length", 512),
@@ -686,6 +699,7 @@ public class ModelConstants {
                         Map.entry("num_layers", 6),
                         Map.entry("max_sequence_length", 512),
                         Map.entry("embedding_dim", 768),
+                        Map.entry("supported_languages", ENGLISH_LANGUAGES),
                         Map.entry("tokenizer_do_lower_case", false),
                         Map.entry("tokenizer_add_special_tokens", true),
                         Map.entry("tokenizer_max_sequence_length", 512),

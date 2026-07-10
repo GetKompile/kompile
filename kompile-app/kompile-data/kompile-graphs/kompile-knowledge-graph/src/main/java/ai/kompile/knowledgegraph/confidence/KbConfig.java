@@ -98,6 +98,38 @@ public class KbConfig {
      */
     private boolean mebnTheoryRegistrationOnCrawlEnabled = false;
 
+    /**
+     * Auto-register a bounded MTheory when the fact sheet deliberately binds an ontology.
+     * This keeps MEBN off for unconstrained crawls while making it available for typed graphs.
+     */
+    private boolean mebnAutoEnableWhenOntologyBound = true;
+
+    // ── Graph-neural crawl overlay ─────────────────────────────────────────────────
+    /** Score retained crawl edges after derivation using graph-resident features and embeddings. */
+    private boolean gnnScoringOnCrawlEnabled = true;
+    /** Safety bound for graph-neural scoring; larger graphs skip the stage intact. */
+    private int gnnMaxNodes = 10_000;
+    /** Safety bound for retained edges presented to graph-neural scoring. */
+    private int gnnMaxEdges = 100_000;
+    /** Number of score metadata updates written in one store call. */
+    private int gnnScoreBatchSize = 500;
+    /** Contribution of a node's own features during one-hop aggregation. */
+    private double gnnSelfWeight = 0.7;
+    /** Contribution of the weighted neighbor mean during one-hop aggregation. */
+    private double gnnNeighborWeight = 0.3;
+
+    // ── Staging → serving auto-load bridge ─────────────────────────────────────────
+    /** Poll staging for the active model and auto-load it into the serving subprocess. */
+    private boolean servingAutoLoadEnabled = true;
+    /** Poll interval for the staging auto-load bridge, in seconds. */
+    private int servingAutoLoadPollIntervalSeconds = 15;
+
+    // ── Graph simulator safety bounds ──────────────────────────────────────────────
+    /** Maximum synthetic nodes hydrated by one simulator run. */
+    private int simMaxNodesPerRun = 25_000;
+    /** Maximum synthetic edges hydrated by one simulator run. */
+    private int simMaxEdgesPerRun = 250_000;
+
     // ── Prior-based Opinion prune (Pillar 6 — P6 in PruneCompactOrchestrator) ──────
     /** P6: prune edges whose subjective-logic belief is below this. */
     private double prunePolicyMinBelief = 0.10;
@@ -211,6 +243,38 @@ public class KbConfig {
      */
     private boolean crossDocStarTopology = true;
 
+    // ── Evidence sufficiency gate ──────────────────────────────────────────────────
+    /** When true, the retrieval sufficiency gate is active and will block answers with insufficient evidence. */
+    private boolean evidenceSufficiencyEnabled = true;
+    /** Minimum composite sufficiency score [0,1] required to proceed without retrieval expansion. */
+    private double evidenceSufficiencyThreshold = 0.4;
+    /** Minimum number of distinct sources required before sufficiency score reaches its upper bound. */
+    private int evidenceSufficiencyMinSources = 2;
+
+    // ── Corrective retrieval ───────────────────────────────────────────────────────
+    /** When true, the corrective-retrieval loop re-fetches when the sufficiency gate fails. */
+    private boolean correctiveRetrievalEnabled = true;
+
+    // ── Grounded answer verification ──────────────────────────────────────────────
+    /** When true, generated answers are verified against retrieved evidence before being returned. */
+    private boolean answerVerificationEnabled = true;
+
+    // ── Citation contract enforcement ─────────────────────────────────────────────
+    /** When true, answers must cite sources; uncited claims trigger a post-processing attribution pass. */
+    private boolean citationContractEnabled = true;
+
+    // ── Reasoning-trail prompt injection ──────────────────────────────────────────
+    /**
+     * When true, the reasoning trail (evidence chain) is appended to the LLM prompt
+     * during graph-reasoning retrieval so the model can cite its reasoning steps.
+     */
+    private boolean reasoningTrailInPromptEnabled = true;
+    /**
+     * Maximum number of trail lines to inject into the LLM prompt.
+     * Keeps the prompt within token budget even for deep derivation chains.
+     */
+    private int reasoningTrailPromptMaxLines = 30;
+
     // ── Personal / free email providers (belongs_to_org exclusion list) ───────────
     private List<String> personalEmailDomains = new ArrayList<>(List.of(
             "gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com",
@@ -249,6 +313,15 @@ public class KbConfig {
         m.put("kbBelongsToOrgStrength", belongsToOrgStrength);
         m.put("kbMebnLearningInterval", mebnLearningInterval);
         m.put("kbMebnTheoryRegistrationOnCrawlEnabled", mebnTheoryRegistrationOnCrawlEnabled);
+        m.put("kbMebnAutoEnableWhenOntologyBound", mebnAutoEnableWhenOntologyBound);
+        m.put("kbGnnScoringOnCrawlEnabled", gnnScoringOnCrawlEnabled);
+        m.put("kbGnnMaxNodes", gnnMaxNodes);
+        m.put("kbGnnMaxEdges", gnnMaxEdges);
+        m.put("kbGnnScoreBatchSize", gnnScoreBatchSize);
+        m.put("kbGnnSelfWeight", gnnSelfWeight);
+        m.put("kbGnnNeighborWeight", gnnNeighborWeight);
+        m.put("kbSimMaxNodesPerRun", simMaxNodesPerRun);
+        m.put("kbSimMaxEdgesPerRun", simMaxEdgesPerRun);
         m.put("kbPrunePolicyMinBelief", prunePolicyMinBelief);
         m.put("kbPrunePolicyMaxUncertainty", prunePolicyMaxUncertainty);
         m.put("kbPrunePolicyMinExpectation", prunePolicyMinExpectation);
@@ -266,6 +339,14 @@ public class KbConfig {
         m.put("kbRuleWeightProbableMean", ruleWeightProbableMean);
         m.put("kbRuleWeightSpeculativeMean", ruleWeightSpeculativeMean);
         m.put("kbPersonalEmailDomains", personalEmailDomains);
+        m.put("kbReasoningTrailInPromptEnabled", reasoningTrailInPromptEnabled);
+        m.put("kbReasoningTrailPromptMaxLines", reasoningTrailPromptMaxLines);
+        m.put("kbEvidenceSufficiencyEnabled", evidenceSufficiencyEnabled);
+        m.put("kbEvidenceSufficiencyThreshold", evidenceSufficiencyThreshold);
+        m.put("kbEvidenceSufficiencyMinSources", evidenceSufficiencyMinSources);
+        m.put("kbCorrectiveRetrievalEnabled", correctiveRetrievalEnabled);
+        m.put("kbAnswerVerificationEnabled", answerVerificationEnabled);
+        m.put("kbCitationContractEnabled", citationContractEnabled);
         return m;
     }
 
@@ -302,6 +383,15 @@ public class KbConfig {
         c.belongsToOrgStrength = dbl(root, "kbBelongsToOrgStrength", c.belongsToOrgStrength, 0.0, 1000.0);
         c.mebnLearningInterval = intf(root, "kbMebnLearningInterval", c.mebnLearningInterval, 1, 100_000);
         c.mebnTheoryRegistrationOnCrawlEnabled = bool(root, "kbMebnTheoryRegistrationOnCrawlEnabled", c.mebnTheoryRegistrationOnCrawlEnabled);
+        c.mebnAutoEnableWhenOntologyBound = bool(root, "kbMebnAutoEnableWhenOntologyBound", c.mebnAutoEnableWhenOntologyBound);
+        c.gnnScoringOnCrawlEnabled = bool(root, "kbGnnScoringOnCrawlEnabled", c.gnnScoringOnCrawlEnabled);
+        c.gnnMaxNodes = intf(root, "kbGnnMaxNodes", c.gnnMaxNodes, 1, 10_000_000);
+        c.gnnMaxEdges = intf(root, "kbGnnMaxEdges", c.gnnMaxEdges, 1, 100_000_000);
+        c.gnnScoreBatchSize = intf(root, "kbGnnScoreBatchSize", c.gnnScoreBatchSize, 1, 100_000);
+        c.gnnSelfWeight = dbl(root, "kbGnnSelfWeight", c.gnnSelfWeight, 0.0, 1.0);
+        c.gnnNeighborWeight = dbl(root, "kbGnnNeighborWeight", c.gnnNeighborWeight, 0.0, 1.0);
+        c.simMaxNodesPerRun = intf(root, "kbSimMaxNodesPerRun", c.simMaxNodesPerRun, 1, 10_000_000);
+        c.simMaxEdgesPerRun = intf(root, "kbSimMaxEdgesPerRun", c.simMaxEdgesPerRun, 1, 100_000_000);
         c.prunePolicyMinBelief = dbl(root, "kbPrunePolicyMinBelief", c.prunePolicyMinBelief, 0.0, 1.0);
         c.prunePolicyMaxUncertainty = dbl(root, "kbPrunePolicyMaxUncertainty", c.prunePolicyMaxUncertainty, 0.0, 1.0);
         c.prunePolicyMinExpectation = dbl(root, "kbPrunePolicyMinExpectation", c.prunePolicyMinExpectation, 0.0, 1.0);
@@ -323,6 +413,14 @@ public class KbConfig {
         if (domains != null) {
             c.personalEmailDomains = domains;
         }
+        c.reasoningTrailInPromptEnabled = bool(root, "kbReasoningTrailInPromptEnabled", c.reasoningTrailInPromptEnabled);
+        c.reasoningTrailPromptMaxLines = intf(root, "kbReasoningTrailPromptMaxLines", c.reasoningTrailPromptMaxLines, 1, 10_000);
+        c.evidenceSufficiencyEnabled = bool(root, "kbEvidenceSufficiencyEnabled", c.evidenceSufficiencyEnabled);
+        c.evidenceSufficiencyThreshold = dbl(root, "kbEvidenceSufficiencyThreshold", c.evidenceSufficiencyThreshold, 0.0, 1.0);
+        c.evidenceSufficiencyMinSources = intf(root, "kbEvidenceSufficiencyMinSources", c.evidenceSufficiencyMinSources, 1, 100);
+        c.correctiveRetrievalEnabled = bool(root, "kbCorrectiveRetrievalEnabled", c.correctiveRetrievalEnabled);
+        c.answerVerificationEnabled = bool(root, "kbAnswerVerificationEnabled", c.answerVerificationEnabled);
+        c.citationContractEnabled = bool(root, "kbCitationContractEnabled", c.citationContractEnabled);
         return c;
     }
 

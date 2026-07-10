@@ -46,7 +46,7 @@ public class StdioQuorumTaskTool {
             "to compare, vote on, or synthesize into a consensus.\n\n" +
             "Each agent runs independently with the same prompt. Results are returned together " +
             "so you can identify agreement/disagreement across agents.\n\n" +
-            "Available agents: qwen, claude, codex, gemini, opencode.";
+            "Available agents: opencode, claude, codex, gemini, qwen.";
     }
 
     public JsonNode parameterSchema() {
@@ -192,8 +192,8 @@ public class StdioQuorumTaskTool {
                 .roleName(roleName)
                 .build();
 
-            String result = subagentRunner.runSubagent(agentConfig, prompt);
-            if (result.contains("not found in PATH")) {
+            String result = subagentRunner.forkForSubagent().runSubagent(agentConfig, prompt);
+            if (StdioTaskTool.isAgentMissing(result)) {
                 return new AgentResult(false, agentName + " is not installed.");
             }
             return new AgentResult(true, result);

@@ -36,11 +36,11 @@ class TemporalChainExtractorTest {
     void extractPredecessors_findsPriorEvents() {
         LocalDateTime now = LocalDateTime.now();
         GraphNode target = GraphNode.builder()
-                .id(1L).nodeId("target").title("Target Event")
+                .nodeId("target").title("Target Event")
                 .nodeType(NodeLevel.ENTITY).externalId("t")
                 .createdAt(now).updatedAt(now).build();
         GraphNode predecessor = GraphNode.builder()
-                .id(2L).nodeId("pred").title("Prior Event")
+                .nodeId("pred").title("Prior Event")
                 .nodeType(NodeLevel.ENTITY).externalId("p")
                 .createdAt(now.minusHours(1)).updatedAt(now.minusHours(1)).build();
 

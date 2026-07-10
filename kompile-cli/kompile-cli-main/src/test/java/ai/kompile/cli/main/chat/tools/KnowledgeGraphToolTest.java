@@ -19,7 +19,13 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import com.sun.net.httpserver.HttpServer;
+
+import java.io.OutputStream;
+import java.net.InetSocketAddress;
 import java.nio.file.Paths;
+import java.nio.charset.StandardCharsets;
+import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -173,11 +179,11 @@ class KnowledgeGraphToolTest {
             "extract", "build_graph", "report", "cypher",
             "list_builders", "start_job", "list_jobs", "job_status", "cancel_job", "job_logs",
             "list_proposals", "accept_proposal", "reject_proposal", "manual_proposal",
-            "get_config", "set_config", "toggle_extraction", "list_providers", "list_presets", "apply_preset",
+            "get_config", "set_config", "list_providers", "list_presets", "apply_preset",
             // NEW actions
             "owl_reasoning", "ontology_conformance", "bind_ontology", "unbind_ontology",
             "opinions", "facts_by_tier", "graph_health", "list_rules", "reactive_rules",
-            "node_provenance", "list_pipelines"
+            "node_provenance", "list_pipelines", "reasoning_layers"
     })
     void testNoUrlReturnsError(String action) throws Exception {
         ObjectNode params = om.createObjectNode();
@@ -605,7 +611,7 @@ class KnowledgeGraphToolTest {
         JsonNode props = tool.parameterSchema().path("properties");
         assertTrue(props.has("schema_mode"), "missing 'schema_mode' property");
         assertTrue(props.has("preset_id"), "missing 'preset_id' property");
-        assertTrue(props.has("enabled"), "missing 'enabled' property");
+        assertFalse(props.has("enabled"), "graph extraction is mandatory and must not expose 'enabled'");
     }
 
     @Test
@@ -743,15 +749,6 @@ class KnowledgeGraphToolTest {
         KnowledgeGraphTool unreachable = new KnowledgeGraphTool("http://localhost:19999", om);
         ObjectNode params = om.createObjectNode();
         params.put("action", "get_config");
-        ToolResult result = unreachable.execute(params, context);
-        assertTrue(result.isError());
-    }
-
-    @Test
-    void testToggleExtractionConnectionRefusedGraceful() throws Exception {
-        KnowledgeGraphTool unreachable = new KnowledgeGraphTool("http://localhost:19999", om);
-        ObjectNode params = om.createObjectNode();
-        params.put("action", "toggle_extraction");
         ToolResult result = unreachable.execute(params, context);
         assertTrue(result.isError());
     }
@@ -908,6 +905,15 @@ class KnowledgeGraphToolTest {
         assertTrue(result.getOutput().contains("node_id"));
     }
 
+    @Test
+    void testReasoningLayersRequiresFactSheetId() throws Exception {
+        ObjectNode params = om.createObjectNode();
+        params.put("action", "reasoning_layers");
+        ToolResult result = tool.execute(params, context);
+        assertTrue(result.isError());
+        assertTrue(result.getOutput().contains("fact_sheet_id"));
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // NEW ACTIONS — CONNECTION REFUSED GRACEFUL
     // ═══════════════════════════════════════════════════════════════════════════
@@ -951,6 +957,89 @@ class KnowledgeGraphToolTest {
     }
 
     @Test
+    void testReasoningLayersConnectionRefusedGraceful() throws Exception {
+        KnowledgeGraphTool unreachable = new KnowledgeGraphTool("http://localhost:19999", om);
+        ObjectNode params = om.createObjectNode();
+        params.put("action", "reasoning_layers");
+        params.put("fact_sheet_id", 1);
+        ToolResult result = unreachable.execute(params, context);
+        assertTrue(result.isError());
+    }
+
+    @Test
+    void testReasoningLayersReturnsStructuredMetadata() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
+        server.createContext("/api/graph/42/reasoning-layers", exchange -> {
+            String body = """
+                    {
+                      "factSheetId": 42,
+                      "nodes": [
+                        {
+                          "nodeId": "node-1",
+                          "ontology": { "violations": ["missing type"] },
+                          "mebn": { "posterior": 0.73 },
+                          "neuralScores": { "scores": { "gnn": 0.44 } }
+                        }
+                      ],
+                      "edges": [
+                        {
+                          "edgeId": "edge-1",
+                          "psl": { "groundingId": "g-1" },
+                          "neuralScores": { "scores": { "kge": 0.59 } }
+                        }
+                      ],
+                      "statistics": {
+                        "nodeCount": 1,
+                        "edgeCount": 1,
+                        "ontologyCount": 1,
+                        "pslCount": 1,
+                        "mebnCount": 1,
+                        "provenanceCount": 0,
+                        "opinionCount": 0,
+                        "neuralScoreCount": 2
+                      }
+                    }
+                    """;
+            byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().add("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, bytes.length);
+            try (OutputStream out = exchange.getResponseBody()) {
+                out.write(bytes);
+            }
+        });
+        server.start();
+        try {
+            KnowledgeGraphTool localTool = new KnowledgeGraphTool(
+                    "http://localhost:" + server.getAddress().getPort(), om);
+            ObjectNode params = om.createObjectNode();
+            params.put("action", "reasoning_layers");
+            params.put("fact_sheet_id", 42);
+
+            ToolResult result = localTool.execute(params, context);
+
+            assertFalse(result.isError(), result.getOutput());
+            assertEquals("reasoning_layers: 42", result.getTitle());
+            assertTrue(result.getOutput().contains("Ontology overlays: 1"));
+            assertTrue(result.getOutput().contains("MEBN posteriors"));
+            assertTrue(result.getOutput().contains("Neural edge scores"));
+            assertEquals(42L, result.getMetadata().get("factSheetId"));
+            assertEquals(1, result.getMetadata().get("nodeCount"));
+            assertEquals(1, result.getMetadata().get("edgeCount"));
+
+            assertInstanceOf(Map.class, result.getMetadata().get("statistics"));
+            assertInstanceOf(Map.class, result.getMetadata().get("reasoningLayers"));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> reasoningLayers =
+                    (Map<String, Object>) result.getMetadata().get("reasoningLayers");
+            assertEquals(42, reasoningLayers.get("factSheetId"));
+            assertTrue(reasoningLayers.containsKey("nodes"));
+            assertTrue(reasoningLayers.containsKey("edges"));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
     void testDescriptionMentionsNewActions() {
         String desc = tool.description();
         assertTrue(desc.contains("owl_reasoning"), "description should mention 'owl_reasoning'");
@@ -962,5 +1051,6 @@ class KnowledgeGraphToolTest {
         assertTrue(desc.contains("reactive_rules"), "description should mention 'reactive_rules'");
         assertTrue(desc.contains("node_provenance"), "description should mention 'node_provenance'");
         assertTrue(desc.contains("list_pipelines"), "description should mention 'list_pipelines'");
+        assertTrue(desc.contains("reasoning_layers"), "description should mention 'reasoning_layers'");
     }
 }

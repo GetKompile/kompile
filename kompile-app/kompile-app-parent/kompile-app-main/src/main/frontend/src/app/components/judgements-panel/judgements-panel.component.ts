@@ -47,8 +47,9 @@ import {
       <div class="jp-sessions">
         <div class="jp-sessions-head">Sessions ({{ sessions.length }})</div>
         <div *ngIf="sessions.length === 0" class="jp-empty">
-          No judgements yet. Start an enforced session (kompile chat → passthrough → enable
-          enforcement, or kompile enforcer).
+          No judgements yet. Enforcement evaluates agent sessions against your rules — start one
+          from the <strong>Sessions</strong> tab (New Session button), or configure a project judge
+          in the <strong>Project Judge</strong> tab.
         </div>
         <div *ngFor="let s of sessions"
              class="jp-session" [class.active]="s.sessionId === selectedSession"

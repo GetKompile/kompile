@@ -34,6 +34,7 @@ import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -51,6 +52,7 @@ import java.lang.reflect.Parameter;
 import java.lang.reflect.RecordComponent;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 
 /**
  * Implementation of {@link StepExecutionDispatcher} that bridges the process engine
@@ -96,6 +98,8 @@ public class StepExecutionDispatcherImpl implements StepExecutionDispatcher, Sma
 
     /** toolName → ToolEntry (bean + method + metadata) */
     private final Map<String, ToolEntry> toolRegistry = new ConcurrentHashMap<>();
+    /** Lightweight per-runtime conversation transcript keyed by workflow conversation ID. */
+    private final Map<String, List<Map<String, String>>> conversationHistory = new ConcurrentHashMap<>();
 
     @Autowired
     public StepExecutionDispatcherImpl(ApplicationContext applicationContext,
@@ -385,6 +389,54 @@ public class StepExecutionDispatcherImpl implements StepExecutionDispatcher, Sma
         }
     }
 
+    @Override
+    public Map<String, Object> executeAgentSession(String agentSpecId, String promptTemplate,
+                                                   String conversationId,
+                                                   Map<String, Object> context) {
+        var provider = applicationContext.getBeanProvider(ChatClient.Builder.class);
+        ChatClient.Builder builder = provider == null ? null : provider.getIfAvailable();
+        if (builder == null) {
+            throw new IllegalStateException("Agent session execution requires a configured ChatClient.Builder");
+        }
+        String sessionId = conversationId == null || conversationId.isBlank()
+                ? UUID.randomUUID().toString() : conversationId;
+        List<Map<String, String>> history = conversationHistory.computeIfAbsent(
+                sessionId, ignored -> Collections.synchronizedList(new ArrayList<>()));
+        try {
+            String contextJson = objectMapper.writeValueAsString(context == null ? Map.of() : context);
+            String historyJson = objectMapper.writeValueAsString(history);
+            String userMessage = "Agent spec: " + String.valueOf(agentSpecId)
+                    + "\nConversation history: " + historyJson
+                    + "\nWorkflow context: " + contextJson
+                    + "\nReturn a JSON object when structured output is possible.";
+            String response = builder.build().prompt()
+                    .system(promptTemplate)
+                    .user(userMessage)
+                    .call()
+                    .content();
+            history.add(Map.of("role", "user", "content", userMessage));
+            history.add(Map.of("role", "assistant", "content", response == null ? "" : response));
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("conversationId", sessionId);
+            result.put("agentSpecId", agentSpecId);
+            result.put("response", response);
+            if (response != null) {
+                try {
+                    Object structured = objectMapper.readValue(response, Object.class);
+                    result.put("structured", structured);
+                    if (structured instanceof Map<?, ?> map) {
+                        map.forEach((key, value) -> result.put(String.valueOf(key), value));
+                    }
+                } catch (Exception ignored) {
+                    // Natural-language responses remain valid and are available under response.
+                }
+            }
+            return result;
+        } catch (Exception exception) {
+            throw new IllegalStateException("Agent session execution failed: " + exception.getMessage(), exception);
+        }
+    }
+
     private Map<String, Object> executeWithExecutor(NodeExecutor executor, NodeExecutionType execType,
                                                      String scriptBody, Map<String, Object> runData) {
         String nodeId = "script-" + UUID.randomUUID().toString().substring(0, 8);
@@ -515,44 +567,67 @@ public class StepExecutionDispatcherImpl implements StepExecutionDispatcher, Sma
                 Map<String, Object> graph = objectMapper.readValue(spreadsheetGraphJson, Map.class);
                 Set<String> seen = new LinkedHashSet<>();
 
-                // Collect entity node IDs
                 @SuppressWarnings("unchecked")
                 List<Map<String, Object>> entities = (List<Map<String, Object>>) graph.get("entities");
+                @SuppressWarnings("unchecked")
+                List<Map<String, Object>> relationships = (List<Map<String, Object>>) graph.get("relationships");
+
+                List<KnowledgeGraphService.ExternalNodeLookup> lookups = new ArrayList<>();
                 if (entities != null) {
                     for (Map<String, Object> entity : entities) {
                         String extId = (String) entity.get("id");
                         if (extId != null) {
-                            String typeStr = (String) entity.getOrDefault("type", "CELL");
-                            NodeLevel level = ("SHEET".equals(typeStr) || "TABLE".equals(typeStr))
-                                    ? NodeLevel.TABLE : NodeLevel.ENTITY;
-                            knowledgeGraphService.getNodeByExternalId(extId, level)
-                                    .ifPresent(n -> {
-                                        if (seen.add(n.getNodeId())) {
-                                            discoveredIds.add(n.getNodeId());
-                                        }
-                                    });
+                            lookups.add(new KnowledgeGraphService.ExternalNodeLookup(
+                                    extId, excelEntityNodeLevel(entity), null));
                         }
                     }
                 }
-
-                // Also collect node IDs referenced by relationship source/target
-                @SuppressWarnings("unchecked")
-                List<Map<String, Object>> relationships = (List<Map<String, Object>>) graph.get("relationships");
                 if (relationships != null) {
                     for (Map<String, Object> rel : relationships) {
                         for (String key : List.of("source", "target")) {
                             String refId = (String) rel.get(key);
                             if (refId != null) {
-                                // Try ENTITY first (cells), then TABLE (sheets/tables)
-                                Optional<GraphNode> nodeOpt = knowledgeGraphService.getNodeByExternalId(refId, NodeLevel.ENTITY);
-                                if (nodeOpt.isEmpty()) {
-                                    nodeOpt = knowledgeGraphService.getNodeByExternalId(refId, NodeLevel.TABLE);
+                                lookups.add(new KnowledgeGraphService.ExternalNodeLookup(refId, NodeLevel.ENTITY, null));
+                                lookups.add(new KnowledgeGraphService.ExternalNodeLookup(refId, NodeLevel.TABLE, null));
+                            }
+                        }
+                    }
+                }
+
+                Map<String, GraphNode> nodesById = lookups.isEmpty()
+                        ? Map.of()
+                        : knowledgeGraphService.getNodesByExternalIds(lookups).stream()
+                                .filter(Objects::nonNull)
+                                .filter(n -> n.getNodeId() != null)
+                                .collect(Collectors.toMap(
+                                        GraphNode::getNodeId,
+                                        n -> n,
+                                        (first, ignored) -> first,
+                                        LinkedHashMap::new));
+
+                // Collect entity node IDs
+                if (entities != null) {
+                    for (Map<String, Object> entity : entities) {
+                        String extId = (String) entity.get("id");
+                        if (extId != null) {
+                            addDiscoveredNode(nodesById.get(externalNodeId(excelEntityNodeLevel(entity), extId)),
+                                    seen, discoveredIds);
+                        }
+                    }
+                }
+
+                // Also collect node IDs referenced by relationship source/target.
+                // Preserve the previous resolution order: ENTITY first, then TABLE.
+                if (relationships != null) {
+                    for (Map<String, Object> rel : relationships) {
+                        for (String key : List.of("source", "target")) {
+                            String refId = (String) rel.get(key);
+                            if (refId != null) {
+                                GraphNode node = nodesById.get(externalNodeId(NodeLevel.ENTITY, refId));
+                                if (node == null) {
+                                    node = nodesById.get(externalNodeId(NodeLevel.TABLE, refId));
                                 }
-                                nodeOpt.ifPresent(n -> {
-                                    if (seen.add(n.getNodeId())) {
-                                        discoveredIds.add(n.getNodeId());
-                                    }
-                                });
+                                addDiscoveredNode(node, seen, discoveredIds);
                             }
                         }
                     }
@@ -562,6 +637,21 @@ public class StepExecutionDispatcherImpl implements StepExecutionDispatcher, Sma
             }
         }
         return DispatchResult.of(outputs, discoveredIds);
+    }
+
+    private static NodeLevel excelEntityNodeLevel(Map<String, Object> entity) {
+        String typeStr = (String) entity.getOrDefault("type", "CELL");
+        return ("SHEET".equals(typeStr) || "TABLE".equals(typeStr)) ? NodeLevel.TABLE : NodeLevel.ENTITY;
+    }
+
+    private static String externalNodeId(NodeLevel level, String externalId) {
+        return level.name().toLowerCase(Locale.ROOT) + "_" + externalId;
+    }
+
+    private static void addDiscoveredNode(GraphNode node, Set<String> seen, List<String> discoveredIds) {
+        if (node != null && node.getNodeId() != null && seen.add(node.getNodeId())) {
+            discoveredIds.add(node.getNodeId());
+        }
     }
 
     @Override
@@ -779,11 +869,12 @@ public class StepExecutionDispatcherImpl implements StepExecutionDispatcher, Sma
         // "formulaGraph" key on DOCUMENT nodes for both Excel (SpreadsheetGraph)
         // and non-Excel (TableCellGraphBuilder) table sources.
         // Also check "tableGraph" in case the raw loader metadata is present.
+        Map<String, GraphNode> nodesById = knowledgeGraphService.getNodesByIds(graphNodeIds).stream()
+                .collect(Collectors.toMap(GraphNode::getNodeId, n -> n, (a, b) -> a, LinkedHashMap::new));
         for (String nodeId : graphNodeIds) {
             try {
-                Optional<GraphNode> nodeOpt = knowledgeGraphService.getNode(nodeId);
-                if (nodeOpt.isEmpty()) continue;
-                GraphNode node = nodeOpt.get();
+                GraphNode node = nodesById.get(nodeId);
+                if (node == null) continue;
 
                 // Check if this node's metadata directly contains a graph
                 String resolved = extractGraphJsonFromMeta(node.getMetadataJson());
@@ -800,14 +891,24 @@ public class StepExecutionDispatcherImpl implements StepExecutionDispatcher, Sma
                             || entityMeta.contains("\"entity_subtype\":\"table\""))) {
                         try {
                             List<GraphEdge> edges = knowledgeGraphService.getEdgesForNode(nodeId);
-                            if (edges != null) {
+                            if (edges != null && !edges.isEmpty()) {
+                                Set<String> endpointIds = new LinkedHashSet<>();
+                                for (GraphEdge edge : edges) {
+                                    collectEndpointId(endpointIds, edge.getSourceNode(), nodeId);
+                                    collectEndpointId(endpointIds, edge.getTargetNode(), nodeId);
+                                }
+                                Map<String, GraphNode> endpointsById = knowledgeGraphService.getNodesByIds(
+                                                new ArrayList<>(endpointIds)).stream()
+                                        .collect(Collectors.toMap(GraphNode::getNodeId, n -> n,
+                                                (a, b) -> a, LinkedHashMap::new));
+
                                 for (GraphEdge edge : edges) {
                                     // Check both source and target — CONTAINS edges are stored
                                     // as DOCUMENT→TABLE, so the DOCUMENT is the source when
                                     // we're looking from the TABLE side. But other edge types
                                     // or directions may have the DOCUMENT as target.
-                                    GraphNode source = edge.getSourceNode();
-                                    GraphNode target = edge.getTargetNode();
+                                    GraphNode source = hydrateEndpoint(edge.getSourceNode(), endpointsById);
+                                    GraphNode target = hydrateEndpoint(edge.getTargetNode(), endpointsById);
                                     GraphNode candidate = null;
                                     if (source != null && !source.getNodeId().equals(nodeId)
                                             && source.getNodeType() == NodeLevel.DOCUMENT) {
@@ -836,6 +937,20 @@ public class StepExecutionDispatcherImpl implements StepExecutionDispatcher, Sma
         }
 
         return null;
+    }
+
+    private void collectEndpointId(Set<String> endpointIds, GraphNode endpoint, String currentNodeId) {
+        if (endpoint != null && endpoint.getNodeId() != null && !endpoint.getNodeId().equals(currentNodeId)) {
+            endpointIds.add(endpoint.getNodeId());
+        }
+    }
+
+    /** Real store node for an edge endpoint; embedded nodes are hollow (id-only) on store edges. */
+    private GraphNode hydrateEndpoint(GraphNode embedded, Map<String, GraphNode> endpointsById) {
+        if (embedded == null || embedded.getNodeId() == null || !embedded.isHollow()) {
+            return embedded;
+        }
+        return endpointsById.getOrDefault(embedded.getNodeId(), embedded);
     }
 
     /**

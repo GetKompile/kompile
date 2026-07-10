@@ -416,3 +416,277 @@
   font-size: 11px; color: var(--text-tertiary); padding: 6px;
   font-style: italic;
 }
+
+/* ── Single-source crawl panel ─────────────────────────────────────────────── */
+.ss-accordion { display: block; }
+
+.ss-form-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 8px;
+}
+.ss-mode-field  { flex: 0 0 160px; }
+.ss-path-field  { flex: 1; min-width: 260px; }
+.ss-label-field { flex: 0 0 200px; }
+.ss-text-field  { flex: 1; min-width: 260px; }
+
+.ss-options-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.ss-actions-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+  margin-bottom: 8px;
+}
+.ss-spinner { display: inline-block; margin-right: 6px; }
+
+.ss-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: #fff5f5;
+  border: 1px solid #fed7d7;
+  border-radius: 4px;
+  color: #c53030;
+  font-size: 13px;
+  margin-top: 8px;
+}
+
+/* Step selector */
+.ss-steps-section {
+  margin: 10px 0;
+}
+.ss-steps-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+.ss-step-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ss-step-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.ss-step-name {
+  flex: 0 0 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ss-step-required {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+.ss-step-btn {
+  min-width: 56px;
+  font-size: 11px;
+  padding: 0 8px;
+  line-height: 24px;
+  height: 24px;
+}
+.ss-step-btn-active {
+  background: var(--bg-selected, #e3f2fd);
+  color: var(--color-primary, #1976d2);
+  border-color: var(--color-primary, #1976d2);
+}
+.ss-step-btn-muted {
+  color: var(--text-tertiary);
+}
+
+/* Result panel */
+.ss-result-panel {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-surface);
+}
+.ss-result-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.ss-result-title {
+  font-weight: 600;
+  font-size: 14px;
+  flex: 1;
+}
+.ss-chip-dryrun {
+  background: #e0f2f1 !important;
+  color: #00695c !important;
+  font-size: 11px !important;
+  font-weight: 600;
+}
+.ss-chip-status {
+  font-size: 11px !important;
+  font-weight: 600;
+}
+.ss-chip-ok {
+  background: #e8f5e9 !important;
+  color: #2e7d32 !important;
+}
+.ss-chip-err {
+  background: #ffebee !important;
+  color: #c62828 !important;
+}
+
+.ss-stat-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+.ss-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 70px;
+}
+.ss-stat span {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.ss-stat strong {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+/* Step snapshots */
+.ss-steps-snapshots {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-bottom: 10px;
+}
+.ss-snapshot-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  padding: 2px 0;
+}
+.ss-snap-name { flex: 1; font-weight: 500; }
+.ss-snap-ms   { color: var(--text-tertiary); font-size: 11px; }
+.ss-snap-completed { color: #2e7d32; font-weight: 600; }
+.ss-snap-failed    { color: #c62828; font-weight: 600; }
+.ss-snap-skipped   { color: var(--text-tertiary); }
+.ss-snap-running   { color: #00695c; }
+
+/* Steps planned chips */
+.ss-steps-planned {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+.ss-plan-chip {
+  font-size: 10px !important;
+  min-height: 20px !important;
+  padding: 0 6px !important;
+}
+.ss-plan-run  { background: #e8f5e9 !important; color: #2e7d32 !important; }
+.ss-plan-skip { background: var(--bg-surface-elevated, #f5f5f5) !important; color: var(--text-tertiary) !important; }
+
+/* Entity / relation columns */
+.ss-graph-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-top: 10px;
+}
+@media (max-width: 600px) {
+  .ss-graph-columns { grid-template-columns: 1fr; }
+}
+.ss-graph-list h4 {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  margin: 0 0 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+.ss-graph-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 4px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border-color);
+}
+.ss-graph-row:last-child { border-bottom: none; }
+.ss-graph-row-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+.ss-graph-name {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 160px;
+}
+.ss-graph-desc {
+  font-size: 11px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 160px;
+}
+.ss-graph-tags {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  margin-left: 6px;
+  flex-shrink: 0;
+}
+.ss-graph-tags span {
+  background: var(--bg-surface-elevated, #f0f0f0);
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-size: 10px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+/* Warnings/errors list */
+.ss-warnings {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ss-warning-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.ss-warning-row mat-icon { font-size: 16px; width: 16px; height: 16px; color: #8a5d00; }
+.ss-error-row { color: #c62828; }
+.ss-error-row mat-icon { color: #c62828; }

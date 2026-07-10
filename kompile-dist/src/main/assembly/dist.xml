@@ -13,6 +13,9 @@
   ~  See the License for the specific language governing permissions and
   ~ limitations under the License.
   -->
+<!-- NOTE: build-dist.sh is the canonical dist packager (see repo root). Keep this
+     Maven assembly descriptor in sync with build-dist.sh, or prefer build-dist.sh for
+     CI and release packaging. dist.xml is retained for Maven assembly plugin compatibility. -->
 <assembly xmlns="http://maven.apache.org/ASSEMBLY/2.2.0"
           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
           xsi:schemaLocation="http://maven.apache.org/ASSEMBLY/2.2.0
@@ -66,14 +69,6 @@
             <fileMode>0755</fileMode>
         </file>
 
-        <!-- ============ kompile-app-lite native ============ -->
-        <file>
-            <source>${project.parent.basedir}/kompile-app/kompile-app-parent/kompile-app-lite/target/kompile-app-lite-native</source>
-            <outputDirectory>bin</outputDirectory>
-            <destName>kompile-app-lite</destName>
-            <fileMode>0755</fileMode>
-        </file>
-
         <!-- ============ kompile-sdk-serving shaded JAR (Vert.x OpenAI-compatible server) ============ -->
         <file>
             <source>${project.parent.basedir}/kompile-app/kompile-middleware/kompile-sdk-serving/target/kompile-sdk-serving-${project.version}-shaded.jar</source>
@@ -92,6 +87,38 @@
             <source>${project.build.directory}/staging-deps/kompile-model-staging-${project.version}-exec.jar</source>
             <outputDirectory>lib</outputDirectory>
             <destName>kompile-model-staging.jar</destName>
+        </file>
+
+        <!-- ============ kompile-server exec JAR (JBang/jar fallback) ============
+             Produced by kompile-app-main's repackage-exec execution, which runs in both
+             the `native` profile (kompile.dist) and the `uber` profile (kompile.uber).
+             jbang-catalog.json points every server/subprocess alias at this jar; the
+             unified subprocess flag works identically on jar and native binary. -->
+        <file>
+            <source>${project.parent.basedir}/kompile-app/kompile-app-parent/kompile-app-main/target/kompile-app-main-${project.version}-exec.jar</source>
+            <outputDirectory>lib</outputDirectory>
+            <destName>kompile-server.jar</destName>
+        </file>
+
+        <!-- ============ kompile-cli shaded JAR (JBang/jar fallback) ============
+             Attached by the kompile-cli-main shade plugin on every package. -->
+        <file>
+            <source>${project.parent.basedir}/kompile-cli/kompile-cli-main/target/kompile-cli-main-${project.version}-shaded.jar</source>
+            <outputDirectory>lib</outputDirectory>
+            <destName>kompile-cli.jar</destName>
+        </file>
+
+        <!-- ============ JBang catalog and quick-start guide (at archive root) ============
+             These files always exist (checked into src/main/resources). -->
+        <file>
+            <source>${project.basedir}/src/main/resources/jbang-catalog.json</source>
+            <outputDirectory></outputDirectory>
+            <destName>jbang-catalog.json</destName>
+        </file>
+        <file>
+            <source>${project.basedir}/src/main/resources/JBANG.md</source>
+            <outputDirectory></outputDirectory>
+            <destName>JBANG.md</destName>
         </file>
     </files>
 
@@ -134,6 +161,19 @@
             <outputDirectory>bin</outputDirectory>
             <includes>
                 <include>kompile-model-staging</include>
+            </includes>
+            <fileMode>0755</fileMode>
+        </fileSet>
+
+        <!-- ============ Optional kompile-app-lite native binary ============
+             Built when the kompile-app-lite native profile is activated.
+             When absent (the default), no native binary is present; users can
+             run the exec jar directly with java -jar. -->
+        <fileSet>
+            <directory>${project.parent.basedir}/kompile-app/kompile-app-parent/kompile-app-lite/target</directory>
+            <outputDirectory>bin</outputDirectory>
+            <includes>
+                <include>kompile-app-lite</include>
             </includes>
             <fileMode>0755</fileMode>
         </fileSet>

@@ -16,7 +16,13 @@
 
 package ai.kompile.cli.main.chat;
 
+import ai.kompile.cli.main.chat.agent.AgentFlagOverrides;
 import ai.kompile.cli.main.chat.agent.SubprocessAgentRunner;
+import ai.kompile.cli.main.chat.config.ChatConfig;
+import ai.kompile.cli.main.chat.enforcer.EnforcerActivationPrompt;
+import ai.kompile.cli.main.chat.enforcer.EnforcerConfig;
+import ai.kompile.cli.main.chat.enforcer.RealtimeEnforcementTap;
+import ai.kompile.cli.main.chat.mcp.McpToolInjection;
 import ai.kompile.utils.FormatUtils;
 import ai.kompile.cli.main.chat.config.SystemPromptManager;
 import ai.kompile.cli.main.chat.skill.CustomSkillLoader;
@@ -28,6 +34,12 @@ import ai.kompile.cli.main.chat.render.AsciiRenderer;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import picocli.CommandLine;
+
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.Statement;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
@@ -47,7 +59,7 @@ import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
 
 /**
- * Passthrough command that launches a CLI agent (Claude Code, Codex, Gemini)
+ * Passthrough command that launches a CLI agent (Claude Code, Codex, OpenCode, Gemini)
  * with direct terminal inheritance. The agent owns the terminal and provides
  * its full native interactive experience (colors, spinners, prompts, etc.).
  * <p>
@@ -57,7 +69,7 @@ import org.jline.terminal.TerminalBuilder;
  */
 @CommandLine.Command(
         name = "passthrough",
-        description = "Interactive passthrough to a CLI agent (claude, codex, gemini)",
+        description = "Interactive passthrough to a CLI agent (claude, codex, opencode, gemini)",
         mixinStandardHelpOptions = true
 )
 public class PassthroughCommand implements Callable<Integer> {
@@ -83,11 +95,23 @@ public class PassthroughCommand implements Callable<Integer> {
     @CommandLine.Option(names = {"--mcp-port"}, description = "Port for embedded MCP server (0 = auto-detect kompile-app)", defaultValue = "0")
     int mcpPort;
 
+    @CommandLine.Option(names = {"--model", "-m"}, description = {
+            "Model passed to the agent CLI.",
+            "Examples: haiku, gpt-5.2-codex, anthropic/claude-haiku-4-5"
+    })
+    String model;
+
     /** System prompt manager — set by ChatCommand when launching passthrough mode. */
     SystemPromptManager systemPromptManager;
 
     // Cached resolved MCP URL (to avoid double-probing)
     private McpUrlResolver mcpUrlResolver = new McpUrlResolver();
+
+    /**
+     * The user's per-session answer to the enforcer activation prompt. Asked at most
+     * once per process; a project enforcer config never activates without a "y" here.
+     */
+    private Boolean enforcerSessionChoice;
 
     private final ObjectMapper objectMapper = JsonUtils.standardMapper();
 
@@ -113,7 +137,7 @@ public class PassthroughCommand implements Callable<Integer> {
                 if (agentBinary == null) {
                     System.err.println("Agent '" + agent + "' not found on PATH.");
                     System.err.println("Supported agents: " + String.join(", ",
-                            ai.kompile.cli.main.chat.config.ChatConfig.getPassthroughAgentOrder()));
+                            ChatConfig.getPassthroughAgentOrder()));
                     System.err.println("Install the agent and make sure it is on your PATH.");
                     return 1;
                 }
@@ -128,12 +152,12 @@ public class PassthroughCommand implements Callable<Integer> {
                     // Pre-configure Claude Code hooks BEFORE injection/launch so that
                     // settings.local.json is stable when Claude starts watching it.
                     if (agent.toLowerCase(Locale.ROOT).contains("claude")) {
-                        ai.kompile.cli.main.chat.mcp.McpToolInjection.ensureHooksPreConfigured(
+                        McpToolInjection.ensureHooksPreConfigured(
                                 Path.of(workingDir).toAbsolutePath().normalize());
                     }
                     try {
                         String sseUrl = resolveMcpUrl();
-                        injectedSettingsFile = ai.kompile.cli.main.chat.mcp.McpToolInjection.injectTools(
+                        injectedSettingsFile = McpToolInjection.injectTools(
                                 Path.of(workingDir), agent, sseUrl);
                         if (injectedSettingsFile != null) {
                             String mode = (sseUrl != null && !sseUrl.isBlank()) ? "sse" : "stdio";
@@ -167,10 +191,21 @@ public class PassthroughCommand implements Callable<Integer> {
                         System.out.println(GREEN + "Skills installed (" + installed + " into " + agent + " native commands)" + RESET);
                     }
                 }
-                // Auto-inject enforcer rules into agent system prompt if config exists
+                // Enforcer is per-session opt-in: a project config on disk never activates
+                // silently — prompt the user (once per process) before enforcing.
                 Path enforcerRulesFile = null;
-                ai.kompile.cli.main.chat.enforcer.EnforcerConfig enforcerConfig =
-                        ai.kompile.cli.main.chat.enforcer.EnforcerConfig.load(Path.of(workingDir).toAbsolutePath());
+                RealtimeEnforcementTap realtimeTap =
+                        RealtimeEnforcementTap.inactive();
+                EnforcerConfig enforcerConfig =
+                        EnforcerConfig.load(Path.of(workingDir).toAbsolutePath());
+                if (enforcerConfig != null && enforcerConfig.isEnforcementEnabled()
+                        && enforcerSessionChoice == null) {
+                    enforcerSessionChoice = EnforcerActivationPrompt
+                            .confirmViaReader(lineReader, enforcerConfig);
+                }
+                if (enforcerConfig != null && !Boolean.TRUE.equals(enforcerSessionChoice)) {
+                    enforcerConfig = null; // declined (or nothing to enforce) — run un-enforced
+                }
                 if (enforcerConfig != null && enforcerConfig.isKeywordMode()) {
                     try {
                         String rulesText = enforcerConfig.buildRulesText(Path.of(workingDir).toAbsolutePath());
@@ -184,6 +219,20 @@ public class PassthroughCommand implements Callable<Integer> {
                         }
                     } catch (Exception e) {
                         // Don't block on enforcer init failure
+                    }
+                } else if (enforcerConfig != null) {
+                    // Judge mode: the pixel-perfect inheritIO passthrough gains realtime judge-based
+                    // enforcement via the shared JSONL tap (WP12/F3) — previously it had NONE. The tap
+                    // observes the agent's native session log, has the judge evaluate text + tool calls,
+                    // and logs to judgements.jsonl; violations are surfaced to stderr. It never signals
+                    // the agent (the agent owns the terminal); actuation stays with the rule pre-injection.
+                    realtimeTap = RealtimeEnforcementTap.fromConfig(
+                            agent, Path.of(workingDir).toAbsolutePath(), enforcerConfig, objectMapper,
+                            (reason, correction, toolCall) -> System.err.println(YELLOW
+                                    + "[enforcer] realtime " + (toolCall ? "tool call" : "output")
+                                    + " violation: " + reason + RESET));
+                    if (realtimeTap.isActive()) {
+                        System.out.println(GREEN + "Enforcer active" + RESET + DIM + " (judge mode, realtime)" + RESET);
                     }
                 }
                 System.out.println();
@@ -221,6 +270,9 @@ public class PassthroughCommand implements Callable<Integer> {
                     }
 
                     Process process = pb.start();
+                    // Begin realtime enforcement tailing now that the agent (and its native session
+                    // log) is starting. No-op unless a judge-mode enforcer config is present.
+                    realtimeTap.start();
                     try {
                         lastExitCode = process.waitFor();
                     } catch (InterruptedException ie) {
@@ -234,8 +286,10 @@ public class PassthroughCommand implements Callable<Integer> {
                     System.err.println("Error running agent: " + e.getMessage());
                     lastExitCode = 1;
                 } finally {
+                    // Stop the realtime enforcement tap (joins its poll thread, closes the judge it owns).
+                    realtimeTap.close();
                     // Restore original settings to prevent pollution
-                    ai.kompile.cli.main.chat.mcp.McpToolInjection.removeTools(injectedSettingsFile);
+                    McpToolInjection.removeTools(injectedSettingsFile);
                     // Restore instruction files modified by system prompt injection
                     if (systemPromptManager != null) {
                         systemPromptManager.cleanup();
@@ -870,17 +924,17 @@ public class PassthroughCommand implements Callable<Integer> {
 
         String absWorkDir = new File(workingDir).getAbsoluteFile().toPath().normalize().toString();
 
-        try (java.sql.Connection conn = java.sql.DriverManager.getConnection("jdbc:sqlite:" + opencodeDb.toAbsolutePath())) {
-            try (java.sql.Statement pragmaStmt = conn.createStatement()) {
+        try (Connection conn = DriverManager.getConnection("jdbc:sqlite:" + opencodeDb.toAbsolutePath())) {
+            try (Statement pragmaStmt = conn.createStatement()) {
                 pragmaStmt.execute("PRAGMA busy_timeout = 5000");
             }
 
             // Find project ID for current working directory
             String projectId = null;
-            try (java.sql.PreparedStatement stmt = conn.prepareStatement(
+            try (PreparedStatement stmt = conn.prepareStatement(
                     "SELECT id FROM project WHERE worktree = ?")) {
                 stmt.setString(1, absWorkDir);
-                try (java.sql.ResultSet rs = stmt.executeQuery()) {
+                try (ResultSet rs = stmt.executeQuery()) {
                     if (rs.next()) projectId = rs.getString("id");
                 }
             }
@@ -893,11 +947,11 @@ public class PassthroughCommand implements Callable<Integer> {
             // Find the most recent session modified after our passthrough started
             long startMs = sessionStart.toEpochMilli();
             String openCodeSessionId = null;
-            try (java.sql.PreparedStatement stmt = conn.prepareStatement(
+            try (PreparedStatement stmt = conn.prepareStatement(
                     "SELECT id FROM session WHERE project_id = ? AND time_updated >= ? ORDER BY time_updated DESC LIMIT 1")) {
                 stmt.setString(1, projectId);
                 stmt.setLong(2, startMs - 30000); // 30s tolerance
-                try (java.sql.ResultSet rs = stmt.executeQuery()) {
+                try (ResultSet rs = stmt.executeQuery()) {
                     if (rs.next()) openCodeSessionId = rs.getString("id");
                 }
             }
@@ -910,10 +964,10 @@ public class PassthroughCommand implements Callable<Integer> {
             history.logHarvestedSource(openCodeSessionId);
 
             // Read all messages for this session, ordered by creation time
-            try (java.sql.PreparedStatement stmt = conn.prepareStatement(
+            try (PreparedStatement stmt = conn.prepareStatement(
                     "SELECT role, data FROM message WHERE session_id = ? ORDER BY time_created ASC")) {
                 stmt.setString(1, openCodeSessionId);
-                try (java.sql.ResultSet rs = stmt.executeQuery()) {
+                try (ResultSet rs = stmt.executeQuery()) {
                     while (rs.next()) {
                         String role = rs.getString("role");
                         String data = rs.getString("data");
@@ -1503,20 +1557,13 @@ public class PassthroughCommand implements Callable<Integer> {
         List<String> cmd = new ArrayList<>();
         cmd.add(binary);
 
-        String name = agent.toLowerCase();
+        // Interactive-TUI permission bypass — the single shared builder (WP2). For opencode this
+        // adds nothing (it auto-approves in the TUI; the flag is only valid on `opencode run`).
+        AgentFlagOverrides.addInteractivePermissionBypassFlags(
+                cmd, agent, skipPermissions,
+                workingDir == null ? null : Path.of(workingDir));
 
-        if (skipPermissions) {
-            if (name.contains("claude")) {
-                cmd.add("--dangerously-skip-permissions");
-            } else if (name.contains("codex")) {
-                cmd.add("--dangerously-bypass-approvals-and-sandbox");
-            } else if (name.contains("qwen")) {
-                cmd.add("--yolo");
-            } else if (name.contains("gemini")) {
-                cmd.add("--yolo");
-            }
-            // opencode: auto-approves in interactive TUI and in `run` mode
-        }
+        AgentFlagOverrides.addModelFlag(cmd, agent, model);
 
         // Append system prompt args (Claude: --append-system-prompt-file, Qwen: --append-system-prompt)
         if (systemPromptManager != null) {

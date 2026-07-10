@@ -15,7 +15,7 @@
  */
 
 import { Injectable } from '@angular/core';
-import { HttpClient, HttpErrorResponse, HttpParams } from '@angular/common/http';
+import { HttpClient, HttpErrorResponse, HttpParams, HttpResponse } from '@angular/common/http';
 import { Observable, throwError } from 'rxjs';
 import { catchError, map } from 'rxjs/operators';
 import { BaseService } from './base.service';
@@ -37,7 +37,8 @@ import {
   GraphMetadataPatchRequest,
   GraphMetadataPatchResult,
   MoveGraphResult,
-  TemporalBounds
+  TemporalBounds,
+  ReasoningLayers
 } from '../models/graph-models';
 
 // ─── Fact-sheet graph operation result types ───────────────────────────────
@@ -58,6 +59,13 @@ export interface GraphBuildStatus {
 export interface GraphBuildCancelResult {
   cancelled: boolean;
   jobId?: string;
+}
+
+export interface UnifiedImportSummary {
+  nodes: number;
+  edges: number;
+  embeddings: number;
+  atoms: number;
 }
 
 export interface FactSheetGraphStatistics {
@@ -325,6 +333,44 @@ export class GraphService extends BaseService {
         map(response => this.transformVisualizationData(response)),
         catchError(this.handleError)
       );
+  }
+
+  /**
+   * Get typed reasoning overlays for a fact sheet.
+   * Backend: GET /api/graph/{factSheetId}/reasoning-layers
+   */
+  getReasoningLayers(factSheetId: number): Observable<ReasoningLayers> {
+    return this.http.get<ReasoningLayers>(`${this.backendUrl}/api/graph/${factSheetId}/reasoning-layers`)
+      .pipe(catchError(this.handleError));
+  }
+
+  /**
+   * Download the live graph as the native .kgraph transport format.
+   * The .kgraph file is import/export only; live graph access remains on this service.
+   */
+  exportNativeGraph(factSheetId?: number | null): Observable<HttpResponse<Blob>> {
+    const params: { [key: string]: string | number } = {};
+    if (factSheetId != null) {
+      params['factSheetId'] = factSheetId;
+    }
+    return this.http.get(`${this.backendUrl}/graph/unified/export`, {
+      params,
+      responseType: 'blob',
+      observe: 'response'
+    }).pipe(catchError(this.handleError));
+  }
+
+  /**
+   * Import a native .kgraph file into the live graph, scoped to the active fact sheet when provided.
+   */
+  importNativeGraph(file: File, factSheetId?: number | null): Observable<UnifiedImportSummary> {
+    const form = new FormData();
+    form.append('file', file);
+    if (factSheetId != null) {
+      form.append('factSheetId', String(factSheetId));
+    }
+    return this.http.post<UnifiedImportSummary>(`${this.backendUrl}/graph/unified/import`, form)
+      .pipe(catchError(this.handleError));
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

@@ -15,11 +15,15 @@
  */
 package ai.kompile.tool.graphlocalization;
 
+import ai.kompile.graph.algorithms.DegreeCentrality;
 import ai.kompile.graph.algorithms.adjacency.AdjacencyView;
-import ai.kompile.utils.StringUtils;
 import ai.kompile.graph.algorithms.service.GraphAlgorithmService;
+import ai.kompile.graph.reasoning.model.GraphRelation;
+import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import ai.kompile.knowledgegraph.domain.*;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
+import ai.kompile.knowledgegraph.unified.UnifiedGraphBridge;
+import ai.kompile.utils.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -41,12 +45,20 @@ public class GraphLocalizationService {
 
     private final KnowledgeGraphService graphService;
     private final GraphAlgorithmService algorithmService;
+    private final UnifiedGraphBridge unifiedGraphBridge;
+
+    public GraphLocalizationService(KnowledgeGraphService graphService,
+                                    GraphAlgorithmService algorithmService) {
+        this(graphService, algorithmService, null);
+    }
 
     @Autowired
     public GraphLocalizationService(KnowledgeGraphService graphService,
-                                    GraphAlgorithmService algorithmService) {
+                                    GraphAlgorithmService algorithmService,
+                                    @org.springframework.lang.Nullable UnifiedGraphBridge unifiedGraphBridge) {
         this.graphService = graphService;
         this.algorithmService = algorithmService;
+        this.unifiedGraphBridge = unifiedGraphBridge;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -64,12 +76,12 @@ public class GraphLocalizationService {
                                                     List<String> edgeTypeFilter,
                                                     Double minEdgeWeight,
                                                     Long factSheetId) {
+        UnifiedGraph unified = unifiedGraph(factSheetId);
         Optional<GraphNode> seedOpt = resolveNode(seedNodeId);
-        if (seedOpt.isEmpty()) {
+        if (seedOpt.isEmpty() && (unified == null || unified.entity(seedNodeId).isEmpty())) {
             return Map.of("error", "Node not found: " + seedNodeId);
         }
 
-        GraphNode seed = seedOpt.get();
         int depth = Math.min(maxDepth, 4);
         int limit = Math.min(maxNodes, 200);
 
@@ -79,11 +91,20 @@ public class GraphLocalizationService {
         Set<EdgeType> edgeTypes = parseEdgeTypes(edgeTypeFilter);
         double minWeight = minEdgeWeight != null ? minEdgeWeight : 0.0;
 
+        if (unified != null) {
+            return exploreUnifiedNeighborhood(seedNodeId, seedOpt.orElse(null), depth, limit,
+                    entityTypes, edgeTypes, minWeight, unified);
+        }
+
+        GraphNode seed = seedOpt.get();
+
         // BFS traversal with filters
         Map<String, GraphNode> visited = new LinkedHashMap<>();
         Map<String, Integer> nodeDepths = new LinkedHashMap<>();
         List<Map<String, Object>> edgeResults = new ArrayList<>();
         Queue<String> frontier = new LinkedList<>();
+        // Store-loaded edges embed hollow id-only endpoint nodes — resolve real ones once each.
+        Map<String, GraphNode> resolvedNeighbors = new HashMap<>();
 
         visited.put(seed.getNodeId(), seed);
         nodeDepths.put(seed.getNodeId(), 0);
@@ -108,9 +129,11 @@ public class GraphLocalizationService {
                         ? edge.getTargetNode().getNodeId()
                         : edge.getSourceNode().getNodeId();
 
-                GraphNode neighbor = edge.getSourceNode().getNodeId().equals(currentId)
-                        ? edge.getTargetNode()
-                        : edge.getSourceNode();
+                GraphNode neighbor = resolveEndpoint(neighborId,
+                        edge.getSourceNode().getNodeId().equals(currentId)
+                                ? edge.getTargetNode()
+                                : edge.getSourceNode(),
+                        resolvedNeighbors);
 
                 // Entity type filter
                 if (entityTypes != null && neighbor.getNodeType() == NodeLevel.ENTITY) {
@@ -170,33 +193,49 @@ public class GraphLocalizationService {
                 : null;
         NodeLevel nodeType = parseNodeLevel(nodeTypeFilter);
 
+        UnifiedGraph unified = unifiedGraph(factSheetId);
+
         // Determine candidate node set
         Set<String> candidateIds;
+        Map<String, GraphNode> candidateNodes = new LinkedHashMap<>();
         if (withinNeighborhoodOf != null && !withinNeighborhoodOf.isBlank()) {
             int hops = neighborhoodHops != null ? Math.min(neighborhoodHops, 4) : 2;
-            Map<Integer, List<String>> bfsLayers = algorithmService.bfsTraversal(factSheetId,
-                    withinNeighborhoodOf, hops);
+            Map<Integer, List<String>> bfsLayers = bfsTraversal(factSheetId,
+                    withinNeighborhoodOf, hops, unified);
             candidateIds = bfsLayers.values().stream()
                     .flatMap(Collection::stream)
                     .collect(Collectors.toSet());
+            for (GraphNode node : graphService.getNodesByIds(new ArrayList<>(candidateIds))) {
+                if (node != null && node.getNodeId() != null) {
+                    candidateNodes.putIfAbsent(node.getNodeId(), node);
+                }
+            }
         } else {
             // Use all nodes (paginated to avoid loading entire graph)
             List<GraphNode> allNodes = nodeType != null
                     ? graphService.getNodesByType(nodeType, 5000)
                     : graphService.getNodesByType(null, 5000);
-            candidateIds = allNodes.stream()
-                    .map(GraphNode::getNodeId)
-                    .collect(Collectors.toSet());
+            for (GraphNode node : allNodes) {
+                if (node != null && node.getNodeId() != null) {
+                    candidateNodes.putIfAbsent(node.getNodeId(), node);
+                }
+            }
+            candidateIds = candidateNodes.keySet();
         }
 
         // Evaluate structural predicates on each candidate
         List<Map<String, Object>> matches = new ArrayList<>();
+        // Neighbors repeat across candidates; resolve each hollow edge endpoint at most once.
+        Map<String, GraphNode> resolvedNeighbors = new HashMap<>();
         for (String nodeId : candidateIds) {
             if (matches.size() >= limit) break;
 
-            Optional<GraphNode> nodeOpt = resolveNode(nodeId);
-            if (nodeOpt.isEmpty()) continue;
-            GraphNode node = nodeOpt.get();
+            GraphNode node = candidateNodes.get(nodeId);
+            if (node == null) {
+                Optional<GraphNode> nodeOpt = resolveNode(nodeId);
+                if (nodeOpt.isEmpty()) continue;
+                node = nodeOpt.get();
+            }
 
             // Node type filter
             if (nodeType != null && node.getNodeType() != nodeType) continue;
@@ -220,8 +259,9 @@ public class GraphLocalizationService {
             if (reqEntityTypes != null) {
                 Set<String> connectedEntityTypes = new HashSet<>();
                 for (GraphEdge edge : edges) {
-                    GraphNode neighbor = edge.getSourceNode().getNodeId().equals(nodeId)
+                    GraphNode embedded = edge.getSourceNode().getNodeId().equals(nodeId)
                             ? edge.getTargetNode() : edge.getSourceNode();
+                    GraphNode neighbor = resolveEndpoint(embedded.getNodeId(), embedded, resolvedNeighbors);
                     if (neighbor.getNodeType() == NodeLevel.ENTITY) {
                         List<EntityMention> mentions = graphService.getEntityMentionsForNode(neighbor);
                         mentions.stream()
@@ -245,6 +285,7 @@ public class GraphLocalizationService {
         }
 
         Map<String, Object> result = new LinkedHashMap<>();
+        result.put("source", sourceLabel(unified));
         result.put("matchCount", matches.size());
         result.put("filters", buildFilterSummary(minDegree, maxDegree, requiredEdgeTypes,
                 requiredEntityTypes, nodeTypeFilter, withinNeighborhoodOf));
@@ -263,73 +304,43 @@ public class GraphLocalizationService {
     public Map<String, Object> profileNeighborhood(String seedNodeId,
                                                     int depth,
                                                     Long factSheetId) {
+        UnifiedGraph unified = unifiedGraph(factSheetId);
         Optional<GraphNode> seedOpt = resolveNode(seedNodeId);
-        if (seedOpt.isEmpty()) {
+        if (seedOpt.isEmpty() && (unified == null || unified.entity(seedNodeId).isEmpty())) {
             return Map.of("error", "Node not found: " + seedNodeId);
         }
 
-        GraphNode seed = seedOpt.get();
+        String seedGraphId = seedOpt.map(GraphNode::getNodeId).orElse(seedNodeId);
+        String seedTitle = seedOpt.map(GraphNode::getTitle)
+                .orElseGet(() -> nodeTitle(seedNodeId, null, unified));
         int maxDepth = Math.min(depth, 3);
 
         // Get neighborhood via BFS
-        Map<Integer, List<String>> bfsLayers = algorithmService.bfsTraversal(factSheetId,
-                seed.getNodeId(), maxDepth);
+        Map<Integer, List<String>> bfsLayers = bfsTraversal(factSheetId,
+                seedGraphId, maxDepth, unified);
         Set<String> neighborhoodIds = bfsLayers.values().stream()
                 .flatMap(Collection::stream)
                 .collect(Collectors.toSet());
 
         if (neighborhoodIds.isEmpty()) {
-            return Map.of("seedNode", seed.getNodeId(), "seedTitle", seed.getTitle(),
+            return Map.of("source", sourceLabel(unified),
+                    "seedNode", seedGraphId, "seedTitle", seedTitle,
                     "message", "No connected nodes found");
         }
 
-        // Node type distribution
+        // Node and edge distributions within neighborhood
         Map<String, Integer> nodeTypeDistribution = new LinkedHashMap<>();
         Map<String, Integer> entityTypeDistribution = new LinkedHashMap<>();
-        int totalEdges = 0;
-
-        for (String nodeId : neighborhoodIds) {
-            Optional<GraphNode> nOpt = resolveNode(nodeId);
-            if (nOpt.isEmpty()) continue;
-            GraphNode n = nOpt.get();
-
-            nodeTypeDistribution.merge(n.getNodeType().name(), 1, Integer::sum);
-
-            if (n.getNodeType() == NodeLevel.ENTITY) {
-                List<EntityMention> mentions = graphService.getEntityMentionsForNode(n);
-                for (EntityMention m : mentions) {
-                    if (m.getEntityType() != null) {
-                        entityTypeDistribution.merge(m.getEntityType().toUpperCase(), 1, Integer::sum);
-                    }
-                }
-            }
-
-            totalEdges += graphService.getEdgesForNode(nodeId).size();
-        }
-        // Each edge counted from both ends
-        totalEdges = totalEdges / 2;
-
-        // Edge type distribution within neighborhood
         Map<String, Integer> edgeTypeDistribution = new LinkedHashMap<>();
-        Set<String> countedEdges = new HashSet<>();
-        for (String nodeId : neighborhoodIds) {
-            List<GraphEdge> edges = graphService.getEdgesForNode(nodeId);
-            for (GraphEdge edge : edges) {
-                if (countedEdges.add(edge.getEdgeId())) {
-                    String otherNode = edge.getSourceNode().getNodeId().equals(nodeId)
-                            ? edge.getTargetNode().getNodeId()
-                            : edge.getSourceNode().getNodeId();
-                    if (neighborhoodIds.contains(otherNode)) {
-                        edgeTypeDistribution.merge(edge.getEdgeType().name(), 1, Integer::sum);
-                    }
-                }
-            }
-        }
+        int totalEdges = unified != null
+                ? populateUnifiedProfileDistributions(neighborhoodIds, unified,
+                        nodeTypeDistribution, entityTypeDistribution, edgeTypeDistribution)
+                : populateLiveProfileDistributions(neighborhoodIds,
+                        nodeTypeDistribution, entityTypeDistribution, edgeTypeDistribution);
 
         // Centrality scores for neighborhood nodes
-        Map<String, Double> pageRank = algorithmService.pageRank(factSheetId, 0.85, 50, 1e-6);
-        Map<String, Double> degreeCentrality = algorithmService.degreeCentrality(factSheetId,
-                ai.kompile.graph.algorithms.DegreeCentrality.Type.TOTAL);
+        Map<String, Double> pageRank = pageRank(factSheetId, unified);
+        Map<String, Double> degreeCentrality = degreeCentrality(factSheetId, unified);
 
         // Top nodes by centrality within neighborhood
         List<Map<String, Object>> topByPageRank = neighborhoodIds.stream()
@@ -340,7 +351,7 @@ public class GraphLocalizationService {
                 .map(id -> {
                     Map<String, Object> m = new LinkedHashMap<>();
                     m.put("nodeId", id);
-                    resolveNode(id).ifPresent(n -> m.put("title", n.getTitle()));
+                    putNodeDetails(m, id, unified, 150);
                     m.put("pageRank", Math.round(pageRank.getOrDefault(id, 0.0) * 10000.0) / 10000.0);
                     m.put("degree", degreeCentrality.getOrDefault(id, 0.0).intValue());
                     return m;
@@ -358,11 +369,12 @@ public class GraphLocalizationService {
                 : 0.0;
 
         // Bridge nodes: nodes whose removal would disconnect components
-        List<String> bridgeNodes = findBridgeNodes(neighborhoodIds, factSheetId);
+        List<String> bridgeNodes = findBridgeNodes(neighborhoodIds, factSheetId, unified);
 
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("seedNode", seed.getNodeId());
-        result.put("seedTitle", seed.getTitle());
+        result.put("source", sourceLabel(unified));
+        result.put("seedNode", seedGraphId);
+        result.put("seedTitle", seedTitle);
         result.put("depth", maxDepth);
         result.put("totalNodes", n);
         result.put("totalEdges", totalEdges);
@@ -392,28 +404,17 @@ public class GraphLocalizationService {
                                          Long factSheetId) {
         int limit = Math.min(topK, 50);
         NodeLevel nodeType = parseNodeLevel(nodeTypeFilter);
+        UnifiedGraph unified = unifiedGraph(factSheetId);
 
         // Compute the requested centrality metric
-        Map<String, Double> scores;
-        switch (metric != null ? metric.toLowerCase() : "degree") {
-            case "pagerank":
-                scores = algorithmService.pageRank(factSheetId, 0.85, 50, 1e-6);
-                break;
-            case "betweenness":
-                scores = algorithmService.betweennessCentrality(factSheetId, 500, 42L);
-                break;
-            default: // "degree"
-                scores = algorithmService.degreeCentrality(factSheetId,
-                        ai.kompile.graph.algorithms.DegreeCentrality.Type.TOTAL);
-                break;
-        }
+        Map<String, Double> scores = centralityScores(metric, factSheetId, unified);
 
         // If scoped, restrict to neighborhood
         Set<String> scope = null;
         if (scopeNodeId != null && !scopeNodeId.isBlank()) {
             int hops = scopeHops != null ? Math.min(scopeHops, 4) : 2;
-            Map<Integer, List<String>> bfsLayers = algorithmService.bfsTraversal(factSheetId,
-                    scopeNodeId, hops);
+            Map<Integer, List<String>> bfsLayers = bfsTraversal(factSheetId,
+                    scopeNodeId, hops, unified);
             scope = bfsLayers.values().stream()
                     .flatMap(Collection::stream)
                     .collect(Collectors.toSet());
@@ -422,27 +423,20 @@ public class GraphLocalizationService {
         Set<String> finalScope = scope;
         List<Map<String, Object>> hubs = scores.entrySet().stream()
                 .filter(e -> finalScope == null || finalScope.contains(e.getKey()))
-                .filter(e -> {
-                    if (nodeType == null) return true;
-                    Optional<GraphNode> nOpt = resolveNode(e.getKey());
-                    return nOpt.isPresent() && nOpt.get().getNodeType() == nodeType;
-                })
+                .filter(e -> matchesNodeType(e.getKey(), nodeType, unified))
                 .sorted((a, b) -> Double.compare(b.getValue(), a.getValue()))
                 .limit(limit)
                 .map(e -> {
                     Map<String, Object> hub = new LinkedHashMap<>();
                     hub.put("nodeId", e.getKey());
-                    resolveNode(e.getKey()).ifPresent(n -> {
-                        hub.put("title", n.getTitle());
-                        hub.put("nodeType", n.getNodeType().name());
-                        hub.put("description", StringUtils.truncate(n.getDescription(), 150));
-                    });
+                    putNodeDetails(hub, e.getKey(), unified, 150);
                     hub.put("score", Math.round(e.getValue() * 10000.0) / 10000.0);
                     return hub;
                 })
                 .collect(Collectors.toList());
 
         Map<String, Object> result = new LinkedHashMap<>();
+        result.put("source", sourceLabel(unified));
         result.put("metric", metric != null ? metric : "degree");
         result.put("hubCount", hubs.size());
         if (scopeNodeId != null) result.put("scopeNode", scopeNodeId);
@@ -465,16 +459,26 @@ public class GraphLocalizationService {
                                                       int maxPathLength,
                                                       boolean weighted,
                                                       Long factSheetId) {
+        UnifiedGraph unified = unifiedGraph(factSheetId);
         Optional<GraphNode> fromOpt = resolveNode(fromNodeId);
         Optional<GraphNode> toOpt = resolveNode(toNodeId);
-        if (fromOpt.isEmpty()) return Map.of("error", "Source node not found: " + fromNodeId);
-        if (toOpt.isEmpty()) return Map.of("error", "Target node not found: " + toNodeId);
+        if (fromOpt.isEmpty() && (unified == null || unified.entity(fromNodeId).isEmpty())) {
+            return Map.of("error", "Source node not found: " + fromNodeId);
+        }
+        if (toOpt.isEmpty() && (unified == null || unified.entity(toNodeId).isEmpty())) {
+            return Map.of("error", "Target node not found: " + toNodeId);
+        }
 
         int maxLen = Math.min(maxPathLength, 6);
         Set<EdgeType> allowedTypes = parseEdgeTypes(allowedEdgeTypes);
         Set<String> requiredTypes = requiredIntermediateTypes != null
                 ? requiredIntermediateTypes.stream().map(String::toUpperCase).collect(Collectors.toSet())
                 : null;
+
+        if (unified != null) {
+            return constrainedUnifiedPathSearch(fromNodeId, toNodeId, fromOpt.orElse(null), toOpt.orElse(null),
+                    allowedTypes, requiredTypes, maxLen, unified);
+        }
 
         // BFS path search with edge type filtering
         Map<String, String> parentMap = new LinkedHashMap<>();
@@ -590,10 +594,11 @@ public class GraphLocalizationService {
         if (bOpt.isEmpty()) return Map.of("error", "Node B not found: " + nodeBId);
 
         int maxDepth = Math.min(depth, 3);
+        UnifiedGraph unified = unifiedGraph(factSheetId);
 
         // Get neighborhoods via BFS
-        Map<Integer, List<String>> aLayers = algorithmService.bfsTraversal(factSheetId, nodeAId, maxDepth);
-        Map<Integer, List<String>> bLayers = algorithmService.bfsTraversal(factSheetId, nodeBId, maxDepth);
+        Map<Integer, List<String>> aLayers = bfsTraversal(factSheetId, nodeAId, maxDepth, unified);
+        Map<Integer, List<String>> bLayers = bfsTraversal(factSheetId, nodeBId, maxDepth, unified);
 
         Set<String> aNeighborhood = aLayers.values().stream()
                 .flatMap(Collection::stream).collect(Collectors.toSet());
@@ -609,7 +614,7 @@ public class GraphLocalizationService {
         uniqueToB.removeAll(aNeighborhood);
 
         // Jaccard similarity
-        double jaccard = algorithmService.jaccardSimilarity(factSheetId, nodeAId, nodeBId);
+        double jaccard = jaccardSimilarity(factSheetId, nodeAId, nodeBId, unified);
 
         // Entity type overlap
         Map<String, Set<String>> aEntityTypes = collectEntityTypes(aNeighborhood);
@@ -626,17 +631,18 @@ public class GraphLocalizationService {
         sharedEntityNames.retainAll(bEntityNames);
 
         // Format shared nodes with titles
-        List<Map<String, String>> sharedNodeDetails = shared.stream()
+        List<Map<String, Object>> sharedNodeDetails = shared.stream()
                 .limit(20)
                 .map(id -> {
-                    Map<String, String> m = new LinkedHashMap<>();
+                    Map<String, Object> m = new LinkedHashMap<>();
                     m.put("nodeId", id);
-                    resolveNode(id).ifPresent(n -> m.put("title", n.getTitle() != null ? n.getTitle() : "Untitled"));
+                    putNodeDetails(m, id, unified, 150);
                     return m;
                 })
                 .collect(Collectors.toList());
 
         Map<String, Object> result = new LinkedHashMap<>();
+        result.put("source", sourceLabel(unified));
         result.put("nodeA", Map.of("nodeId", nodeAId, "title", aOpt.get().getTitle(),
                 "neighborhoodSize", aNeighborhood.size()));
         result.put("nodeB", Map.of("nodeId", nodeBId, "title", bOpt.get().getTitle(),
@@ -670,13 +676,9 @@ public class GraphLocalizationService {
 
         int limit = Math.min(maxMembers, 100);
         String algo = algorithm != null ? algorithm.toLowerCase() : "louvain";
+        UnifiedGraph unified = unifiedGraph(factSheetId);
 
-        Map<String, Integer> assignments;
-        if ("wcc".equals(algo)) {
-            assignments = algorithmService.weaklyConnectedComponents(factSheetId);
-        } else {
-            assignments = algorithmService.louvainCommunities(factSheetId, 20);
-        }
+        Map<String, Integer> assignments = communityAssignments(factSheetId, algo, unified);
 
         Integer seedCommunity = assignments.get(seedNodeId);
         if (seedCommunity == null) {
@@ -691,7 +693,7 @@ public class GraphLocalizationService {
                 .collect(Collectors.toList());
 
         // Get PageRank for ranking within community
-        Map<String, Double> pageRank = algorithmService.pageRank(factSheetId, 0.85, 50, 1e-6);
+        Map<String, Double> pageRank = pageRank(factSheetId, unified);
 
         List<Map<String, Object>> members = communityMembers.stream()
                 .sorted((a, b) -> Double.compare(
@@ -701,11 +703,7 @@ public class GraphLocalizationService {
                 .map(id -> {
                     Map<String, Object> m = new LinkedHashMap<>();
                     m.put("nodeId", id);
-                    resolveNode(id).ifPresent(n -> {
-                        m.put("title", n.getTitle());
-                        m.put("nodeType", n.getNodeType().name());
-                        m.put("description", StringUtils.truncate(n.getDescription(), 120));
-                    });
+                    putNodeDetails(m, id, unified, 120);
                     m.put("pageRank", Math.round(pageRank.getOrDefault(id, 0.0) * 10000.0) / 10000.0);
                     return m;
                 })
@@ -729,6 +727,7 @@ public class GraphLocalizationService {
         long totalCommunities = assignments.values().stream().distinct().count();
 
         Map<String, Object> result = new LinkedHashMap<>();
+        result.put("source", sourceLabel(unified));
         result.put("seedNode", seedNodeId);
         result.put("algorithm", algo);
         result.put("communityId", seedCommunity);
@@ -743,6 +742,448 @@ public class GraphLocalizationService {
     // HELPERS
     // ═══════════════════════════════════════════════════════════════════════════
 
+    private UnifiedGraph unifiedGraph(Long factSheetId) {
+        if (unifiedGraphBridge == null || factSheetId == null) {
+            return null;
+        }
+        try {
+            return unifiedGraphBridge.export(factSheetId);
+        } catch (RuntimeException ex) {
+            log.warn("Falling back to live graph-localization algorithms; unified export failed for factSheet={}",
+                    factSheetId, ex);
+            return null;
+        }
+    }
+
+    private String sourceLabel(UnifiedGraph unified) {
+        return unified != null ? "unified_graph" : "knowledge_graph_service";
+    }
+
+    private Map<Integer, List<String>> bfsTraversal(Long factSheetId, String startNodeId, int maxDepth,
+                                                    UnifiedGraph unified) {
+        return unified != null
+                ? algorithmService.bfsTraversalGraph(unified, startNodeId, maxDepth)
+                : algorithmService.bfsTraversal(factSheetId, startNodeId, maxDepth);
+    }
+
+    private Map<String, Double> centralityScores(String metric, Long factSheetId, UnifiedGraph unified) {
+        switch (metric != null ? metric.toLowerCase() : "degree") {
+            case "pagerank":
+                return pageRank(factSheetId, unified);
+            case "betweenness":
+                return betweennessCentrality(factSheetId, unified);
+            default:
+                return degreeCentrality(factSheetId, unified);
+        }
+    }
+
+    private Map<String, Double> pageRank(Long factSheetId, UnifiedGraph unified) {
+        return unified != null
+                ? algorithmService.pageRankGraph(unified, 0.85, 50, 1e-6)
+                : algorithmService.pageRank(factSheetId, 0.85, 50, 1e-6);
+    }
+
+    private Map<String, Double> degreeCentrality(Long factSheetId, UnifiedGraph unified) {
+        return unified != null
+                ? algorithmService.degreeCentralityGraph(unified, DegreeCentrality.Type.TOTAL)
+                : algorithmService.degreeCentrality(factSheetId, DegreeCentrality.Type.TOTAL);
+    }
+
+    private Map<String, Double> betweennessCentrality(Long factSheetId, UnifiedGraph unified) {
+        return unified != null
+                ? algorithmService.betweennessCentralityGraph(unified, 500, 42L)
+                : algorithmService.betweennessCentrality(factSheetId, 500, 42L);
+    }
+
+    private double jaccardSimilarity(Long factSheetId, String nodeAId, String nodeBId, UnifiedGraph unified) {
+        return unified != null
+                ? algorithmService.jaccardSimilarityGraph(unified, nodeAId, nodeBId)
+                : algorithmService.jaccardSimilarity(factSheetId, nodeAId, nodeBId);
+    }
+
+    private Map<String, Integer> communityAssignments(Long factSheetId, String algorithm, UnifiedGraph unified) {
+        if ("wcc".equals(algorithm)) {
+            return unified != null
+                    ? algorithmService.weaklyConnectedComponentsGraph(unified)
+                    : algorithmService.weaklyConnectedComponents(factSheetId);
+        }
+        return unified != null
+                ? algorithmService.louvainCommunitiesGraph(unified, 20)
+                : algorithmService.louvainCommunities(factSheetId, 20);
+    }
+
+    private boolean matchesNodeType(String nodeId, NodeLevel nodeType, UnifiedGraph unified) {
+        if (nodeType == null) return true;
+        Optional<GraphNode> live = resolveNode(nodeId);
+        if (live.isPresent()) {
+            return live.get().getNodeType() == nodeType;
+        }
+        if (unified == null) return false;
+        return unified.entity(nodeId)
+                .map(entity -> entity.hasTypeMembership(nodeType.name()) || nodeType.name().equalsIgnoreCase(entity.type()))
+                .orElse(false);
+    }
+
+    private void putNodeDetails(Map<String, Object> target, String nodeId, UnifiedGraph unified, int descriptionLimit) {
+        Optional<GraphNode> live = resolveNode(nodeId);
+        if (live.isPresent()) {
+            GraphNode node = live.get();
+            target.put("title", node.getTitle());
+            target.put("nodeType", node.getNodeType().name());
+            if (node.getDescription() != null) {
+                target.put("description", StringUtils.truncate(node.getDescription(), descriptionLimit));
+            }
+            return;
+        }
+        if (unified == null) {
+            return;
+        }
+        unified.entity(nodeId).ifPresent(entity -> {
+            String label = entity.label();
+            target.put("title", label == null || label.isBlank() ? entity.id() : label);
+            if (entity.type() != null && !entity.type().isBlank()) {
+                target.put("nodeType", entity.type());
+            }
+            Object description = entity.attributes().get("description");
+            if (description != null && !description.toString().isBlank()) {
+                target.put("description", StringUtils.truncate(description.toString(), descriptionLimit));
+            }
+        });
+    }
+
+    private int populateLiveProfileDistributions(Set<String> neighborhoodIds,
+                                                 Map<String, Integer> nodeTypeDistribution,
+                                                 Map<String, Integer> entityTypeDistribution,
+                                                 Map<String, Integer> edgeTypeDistribution) {
+        Set<String> countedEdges = new HashSet<>();
+        for (String nodeId : neighborhoodIds) {
+            Optional<GraphNode> nOpt = resolveNode(nodeId);
+            if (nOpt.isPresent()) {
+                GraphNode n = nOpt.get();
+                nodeTypeDistribution.merge(n.getNodeType().name(), 1, Integer::sum);
+                if (n.getNodeType() == NodeLevel.ENTITY) {
+                    List<EntityMention> mentions = graphService.getEntityMentionsForNode(n);
+                    for (EntityMention m : mentions) {
+                        if (m.getEntityType() != null) {
+                            entityTypeDistribution.merge(m.getEntityType().toUpperCase(), 1, Integer::sum);
+                        }
+                    }
+                }
+            }
+
+            for (GraphEdge edge : graphService.getEdgesForNode(nodeId)) {
+                if (countedEdges.add(edge.getEdgeId())) {
+                    String otherNode = edge.getSourceNode().getNodeId().equals(nodeId)
+                            ? edge.getTargetNode().getNodeId()
+                            : edge.getSourceNode().getNodeId();
+                    if (neighborhoodIds.contains(otherNode)) {
+                        edgeTypeDistribution.merge(edge.getEdgeType().name(), 1, Integer::sum);
+                    }
+                }
+            }
+        }
+        return edgeTypeDistribution.values().stream().mapToInt(Integer::intValue).sum();
+    }
+
+    private int populateUnifiedProfileDistributions(Set<String> neighborhoodIds,
+                                                    UnifiedGraph unified,
+                                                    Map<String, Integer> nodeTypeDistribution,
+                                                    Map<String, Integer> entityTypeDistribution,
+                                                    Map<String, Integer> edgeTypeDistribution) {
+        for (String nodeId : neighborhoodIds) {
+            Optional<GraphNode> live = resolveNode(nodeId);
+            if (live.isPresent()) {
+                GraphNode node = live.get();
+                nodeTypeDistribution.merge(node.getNodeType().name(), 1, Integer::sum);
+                if (node.getNodeType() == NodeLevel.ENTITY) {
+                    graphService.getEntityMentionsForNode(node).stream()
+                            .filter(m -> m.getEntityType() != null)
+                            .forEach(m -> entityTypeDistribution.merge(m.getEntityType().toUpperCase(), 1, Integer::sum));
+                }
+                continue;
+            }
+
+            unified.entity(nodeId).ifPresent(entity -> {
+                String type = entity.type() == null || entity.type().isBlank() ? "UNKNOWN" : entity.type().toUpperCase();
+                nodeTypeDistribution.merge(type, 1, Integer::sum);
+                NodeLevel level = parseNodeLevel(entity.type());
+                if (level == null || level == NodeLevel.ENTITY) {
+                    entity.typeMemberships().stream()
+                            .filter(t -> t != null && !t.isBlank())
+                            .map(String::toUpperCase)
+                            .filter(t -> parseNodeLevel(t) == null || "ENTITY".equals(t))
+                            .forEach(t -> entityTypeDistribution.merge(t, 1, Integer::sum));
+                }
+            });
+        }
+
+        Set<String> countedRelations = new HashSet<>();
+        for (String nodeId : neighborhoodIds) {
+            for (GraphRelation relation : incidentRelations(unified, nodeId)) {
+                String otherNode = otherNodeId(relation, nodeId);
+                if (otherNode != null && neighborhoodIds.contains(otherNode) && countedRelations.add(relation.id())) {
+                    String type = relation.type() == null || relation.type().isBlank() ? "UNKNOWN" : relation.type();
+                    edgeTypeDistribution.merge(type, 1, Integer::sum);
+                }
+            }
+        }
+        return countedRelations.size();
+    }
+
+    private Map<String, Object> exploreUnifiedNeighborhood(String seedNodeId,
+                                                            GraphNode liveSeed,
+                                                            int depth,
+                                                            int limit,
+                                                            Set<String> entityTypes,
+                                                            Set<EdgeType> edgeTypes,
+                                                            double minWeight,
+                                                            UnifiedGraph unified) {
+        Map<String, Integer> nodeDepths = new LinkedHashMap<>();
+        List<Map<String, Object>> edgeResults = new ArrayList<>();
+        Set<String> countedRelations = new HashSet<>();
+        Queue<String> frontier = new LinkedList<>();
+
+        nodeDepths.put(seedNodeId, 0);
+        frontier.add(seedNodeId);
+
+        while (!frontier.isEmpty() && nodeDepths.size() < limit) {
+            String currentId = frontier.poll();
+            int currentDepth = nodeDepths.get(currentId);
+            if (currentDepth >= depth) continue;
+
+            for (GraphRelation relation : incidentRelations(unified, currentId)) {
+                if (!matchesRelationType(relation, edgeTypes)) continue;
+                if (relation.weight() < minWeight) continue;
+
+                String neighborId = otherNodeId(relation, currentId);
+                if (neighborId == null || !passesUnifiedEntityTypeFilter(neighborId, entityTypes, unified)) {
+                    continue;
+                }
+
+                if (countedRelations.add(relation.id())) {
+                    edgeResults.add(formatUnifiedRelation(relation));
+                }
+
+                if (!nodeDepths.containsKey(neighborId) && nodeDepths.size() < limit) {
+                    nodeDepths.put(neighborId, currentDepth + 1);
+                    frontier.add(neighborId);
+                }
+            }
+        }
+
+        List<Map<String, Object>> nodeResults = nodeDepths.entrySet().stream()
+                .map(e -> formatUnifiedNode(e.getKey(), e.getKey().equals(seedNodeId) ? liveSeed : null,
+                        e.getValue(), unified))
+                .collect(Collectors.toList());
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("source", sourceLabel(unified));
+        result.put("seedNode", seedNodeId);
+        result.put("seedTitle", nodeTitle(seedNodeId, liveSeed, unified));
+        result.put("maxDepth", depth);
+        result.put("nodeCount", nodeResults.size());
+        result.put("edgeCount", edgeResults.size());
+        result.put("nodes", nodeResults);
+        result.put("edges", edgeResults);
+        return result;
+    }
+
+    private Map<String, Object> constrainedUnifiedPathSearch(String fromNodeId,
+                                                             String toNodeId,
+                                                             GraphNode liveFrom,
+                                                             GraphNode liveTo,
+                                                             Set<EdgeType> allowedTypes,
+                                                             Set<String> requiredTypes,
+                                                             int maxLen,
+                                                             UnifiedGraph unified) {
+        Map<String, String> parentMap = new LinkedHashMap<>();
+        Map<String, String> parentEdgeMap = new LinkedHashMap<>();
+        Map<String, Integer> depthMap = new LinkedHashMap<>();
+        Queue<String> queue = new LinkedList<>();
+
+        queue.add(fromNodeId);
+        depthMap.put(fromNodeId, 0);
+        boolean found = false;
+
+        while (!queue.isEmpty() && !found) {
+            String current = queue.poll();
+            int currentDepth = depthMap.get(current);
+            if (currentDepth >= maxLen) continue;
+
+            for (GraphRelation relation : incidentRelations(unified, current)) {
+                if (!matchesRelationType(relation, allowedTypes)) continue;
+
+                String neighborId = otherNodeId(relation, current);
+                if (neighborId == null || depthMap.containsKey(neighborId)) continue;
+
+                parentMap.put(neighborId, current);
+                parentEdgeMap.put(neighborId, relation.type() + "(" + String.format("%.2f", relation.weight()) + ")");
+                depthMap.put(neighborId, currentDepth + 1);
+
+                if (neighborId.equals(toNodeId)) {
+                    found = true;
+                    break;
+                }
+                queue.add(neighborId);
+            }
+        }
+
+        if (!found) {
+            return Map.of(
+                    "source", sourceLabel(unified),
+                    "from", fromNodeId,
+                    "to", toNodeId,
+                    "found", false,
+                    "message", "No path found within " + maxLen + " hops with the given constraints"
+            );
+        }
+
+        List<String> pathIds = new ArrayList<>();
+        List<Map<String, Object>> pathNodes = new ArrayList<>();
+        List<String> pathEdgeLabels = new ArrayList<>();
+        String cursor = toNodeId;
+        while (cursor != null) {
+            pathIds.add(0, cursor);
+            GraphNode live = cursor.equals(fromNodeId) ? liveFrom : cursor.equals(toNodeId) ? liveTo : null;
+            pathNodes.add(0, formatUnifiedNode(cursor, live, null, unified));
+            if (parentEdgeMap.containsKey(cursor)) {
+                pathEdgeLabels.add(0, parentEdgeMap.get(cursor));
+            }
+            cursor = parentMap.get(cursor);
+        }
+
+        if (requiredTypes != null && !requiredTypes.isEmpty()) {
+            Set<String> intermediateTypes = new HashSet<>();
+            for (int i = 1; i < pathIds.size() - 1; i++) {
+                collectTypeNames(pathIds.get(i), unified, intermediateTypes);
+            }
+            if (!intermediateTypes.containsAll(requiredTypes)) {
+                return Map.of(
+                        "source", sourceLabel(unified),
+                        "from", fromNodeId,
+                        "to", toNodeId,
+                        "found", false,
+                        "message", "Path found but missing required intermediate types: " + requiredTypes
+                );
+            }
+        }
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("source", sourceLabel(unified));
+        result.put("from", fromNodeId);
+        result.put("to", toNodeId);
+        result.put("found", true);
+        result.put("pathLength", pathNodes.size() - 1);
+        result.put("path", pathNodes);
+        result.put("edgeLabels", pathEdgeLabels);
+        return result;
+    }
+
+    private List<GraphRelation> incidentRelations(UnifiedGraph unified, String nodeId) {
+        Map<String, GraphRelation> relations = new LinkedHashMap<>();
+        for (GraphRelation relation : unified.outgoing(nodeId)) {
+            relations.put(relation.id(), relation);
+        }
+        for (GraphRelation relation : unified.incoming(nodeId)) {
+            relations.put(relation.id(), relation);
+        }
+        return new ArrayList<>(relations.values());
+    }
+
+    private String otherNodeId(GraphRelation relation, String nodeId) {
+        if (relation.sourceId().equals(nodeId)) return relation.targetId();
+        if (relation.targetId().equals(nodeId)) return relation.sourceId();
+        return null;
+    }
+
+    private boolean matchesRelationType(GraphRelation relation, Set<EdgeType> edgeTypes) {
+        if (edgeTypes == null) return true;
+        for (EdgeType edgeType : edgeTypes) {
+            if (edgeType.name().equalsIgnoreCase(relation.type())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean passesUnifiedEntityTypeFilter(String nodeId, Set<String> entityTypes, UnifiedGraph unified) {
+        if (entityTypes == null || entityTypes.isEmpty()) return true;
+        return unified.entity(nodeId)
+                .map(entity -> {
+                    Set<String> typeNames = new HashSet<>();
+                    collectTypeNames(nodeId, unified, typeNames);
+                    if (typeNames.stream().anyMatch(entityTypes::contains)) {
+                        return true;
+                    }
+                    NodeLevel level = parseNodeLevel(entity.type());
+                    return level != null && level != NodeLevel.ENTITY;
+                })
+                .orElse(false);
+    }
+
+    private Map<String, Object> formatUnifiedNode(String nodeId, GraphNode liveNode, Integer depth, UnifiedGraph unified) {
+        Map<String, Object> node = new LinkedHashMap<>();
+        node.put("nodeId", nodeId);
+        if (liveNode != null) {
+            node.put("title", liveNode.getTitle() != null ? liveNode.getTitle() : "Untitled");
+            node.put("nodeType", liveNode.getNodeType().name());
+            if (depth != null) node.put("depth", depth);
+            if (liveNode.getDescription() != null) {
+                node.put("description", StringUtils.truncate(liveNode.getDescription(), 150));
+            }
+            if (liveNode.getEdgeCount() > 0) {
+                node.put("edgeCount", liveNode.getEdgeCount());
+            }
+            return node;
+        }
+        putNodeDetails(node, nodeId, unified, 150);
+        if (depth != null) node.put("depth", depth);
+        if (!node.containsKey("title")) node.put("title", "Untitled");
+        if (!node.containsKey("nodeType")) node.put("nodeType", "UNKNOWN");
+        node.put("edgeCount", incidentRelations(unified, nodeId).size());
+        return node;
+    }
+
+    private Map<String, Object> formatUnifiedRelation(GraphRelation relation) {
+        Map<String, Object> edge = new LinkedHashMap<>();
+        edge.put("edgeId", relation.id());
+        edge.put("edgeType", relation.type());
+        edge.put("from", relation.sourceId());
+        edge.put("to", relation.targetId());
+        edge.put("weight", relation.weight());
+        edge.put("confidence", relation.confidence());
+        Object label = relation.attributes().get("label");
+        if (label != null) edge.put("label", label.toString());
+        Object description = relation.attributes().get("description");
+        if (description != null) edge.put("description", StringUtils.truncate(description.toString(), 100));
+        return edge;
+    }
+
+    private String nodeTitle(String nodeId, GraphNode liveNode, UnifiedGraph unified) {
+        if (liveNode != null && liveNode.getTitle() != null) {
+            return liveNode.getTitle();
+        }
+        return unified.entity(nodeId)
+                .map(entity -> entity.label() == null || entity.label().isBlank() ? entity.id() : entity.label())
+                .orElse("Untitled");
+    }
+
+    private void collectTypeNames(String nodeId, UnifiedGraph unified, Set<String> sink) {
+        Optional<GraphNode> live = resolveNode(nodeId);
+        if (live.isPresent() && live.get().getNodeType() != null) {
+            sink.add(live.get().getNodeType().name());
+        }
+        unified.entity(nodeId).ifPresent(entity -> {
+            if (entity.type() != null && !entity.type().isBlank()) {
+                sink.add(entity.type().toUpperCase());
+            }
+            entity.typeMemberships().stream()
+                    .filter(type -> type != null && !type.isBlank())
+                    .map(String::toUpperCase)
+                    .forEach(sink::add);
+        });
+    }
+
     private Optional<GraphNode> resolveNode(String nodeId) {
         Optional<GraphNode> opt = graphService.getNode(nodeId);
         if (opt.isEmpty()) {
@@ -753,6 +1194,22 @@ public class GraphLocalizationService {
             }
         }
         return opt;
+    }
+
+    /**
+     * Resolve an edge endpoint to the REAL store node when the embedded one is hollow.
+     * {@code GraphEdge.getSourceNode()/getTargetNode()} synthesize an id-only node when the store
+     * didn't embed one (matrix edges never do) — its null nodeType/title silently disabled the
+     * entity-type filters and produced untitled results. Cached so each endpoint is looked up once.
+     */
+    private GraphNode resolveEndpoint(String nodeId, GraphNode embedded, Map<String, GraphNode> cache) {
+        if (embedded != null && !embedded.isHollow()) {
+            return embedded;
+        }
+        if (nodeId == null) {
+            return embedded;
+        }
+        return cache.computeIfAbsent(nodeId, id -> graphService.getNode(id).orElse(embedded));
     }
 
     private Map<String, Object> formatNode(GraphNode node, Integer depth) {
@@ -821,10 +1278,10 @@ public class GraphLocalizationService {
         return typeToNames;
     }
 
-    private List<String> findBridgeNodes(Set<String> neighborhoodIds, Long factSheetId) {
+    private List<String> findBridgeNodes(Set<String> neighborhoodIds, Long factSheetId, UnifiedGraph unified) {
         if (neighborhoodIds.size() < 3) return List.of();
 
-        AdjacencyView view = algorithmService.view(factSheetId);
+        AdjacencyView view = unified != null ? algorithmService.viewGraph(unified) : algorithmService.view(factSheetId);
         List<String> bridges = new ArrayList<>();
 
         for (String candidate : neighborhoodIds) {

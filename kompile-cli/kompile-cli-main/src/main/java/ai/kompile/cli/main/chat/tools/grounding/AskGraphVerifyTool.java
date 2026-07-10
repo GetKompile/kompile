@@ -10,7 +10,6 @@
 package ai.kompile.cli.main.chat.tools.grounding;
 
 import ai.kompile.cli.main.chat.tools.CliTool;
-import ai.kompile.cli.main.chat.tools.KompileBackendClient;
 import ai.kompile.cli.main.chat.tools.McpToolAnnotations;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolExecutionException;
@@ -19,8 +18,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
-import java.net.ConnectException;
-import java.time.Duration;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -32,15 +30,18 @@ import java.util.Map;
  */
 public class AskGraphVerifyTool implements CliTool {
 
-    private final KompileBackendClient backend;
+    private final GroundingBackendClient groundingClient;
     private final ObjectMapper objectMapper;
 
     public AskGraphVerifyTool(String baseUrl, ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
-        this.backend = KompileBackendClient.getInstance();
-        if (baseUrl != null && !baseUrl.isEmpty()) {
-            backend.setBaseUrl(baseUrl);
-        }
+        this.groundingClient = new GroundingBackendClient(baseUrl);
+    }
+
+    /** Visible for testing — lets a {@code MockRestServiceServer} intercept HTTP calls. */
+    AskGraphVerifyTool(GroundingBackendClient groundingClient, ObjectMapper objectMapper) {
+        this.objectMapper = objectMapper;
+        this.groundingClient = groundingClient;
     }
 
     @Override
@@ -89,6 +90,21 @@ public class AskGraphVerifyTool implements CliTool {
     public McpToolAnnotations mcpAnnotations() { return McpToolAnnotations.READ_ONLY; }
 
     @Override
+    public String compactHint() {
+        return "Verify a factual claim: POST /api/kb-grounding/verify {atom, factSheetId?, minConfidence?}. " +
+               "atom format: 'predicate(arg1, arg2)' — case-sensitive predicate name, e.g. 'worksFor(Alice, Acme)'. " +
+               "Discover predicate names with knowledge_graph list_predicates. " +
+               "Returns verdict (SUPPORTED/REFUTED/UNKNOWN), confidence, supporting evidence, counter-evidence, " +
+               "unknownReason (entity-not-in-graph|no-evidence|contested|near-miss), " +
+               "opinion (support/counter-evidence/uncertainty), " +
+               "nearMissSuggestions (facts to assert to make this claim provable — appears once the knowledge base " +
+               "has learned reasoning rules), " +
+               "fragility{wouldFlipIf,minimalSupportSize,robustness} (for SUPPORTED verdicts: " +
+               "robustness 0=only one fact supports it, 1=many independent supports). " +
+               "factSheetId optional — discover via knowledge_graph list_fact_sheets.";
+    }
+
+    @Override
     public ToolResult execute(JsonNode params, ToolContext context) throws ToolExecutionException {
         context.checkPermission(permissionKey(), "Verify KB claim");
 
@@ -97,7 +113,7 @@ public class AskGraphVerifyTool implements CliTool {
             return ToolResult.error("atom is required");
         }
 
-        if (!backend.isAvailable()) {
+        if (!groundingClient.isAvailable()) {
             return ToolResult.error("ask_graph_verify requires a running kompile-app. " +
                     "Start kompile-app or use --url to connect.");
         }
@@ -110,8 +126,8 @@ public class AskGraphVerifyTool implements CliTool {
             if (!params.path("minConfidence").isMissingNode()) body.set("minConfidence", params.get("minConfidence"));
             if (!params.path("sessionId").isMissingNode())   body.set("sessionId", params.get("sessionId"));
 
-            var resp = backend.post("/api/kb-grounding/verify",
-                    objectMapper.writeValueAsString(body), Duration.ofSeconds(30));
+            var resp = groundingClient.post("/api/kb-grounding/verify",
+                    objectMapper.writeValueAsString(body));
 
             if (resp.statusCode() != 200) {
                 return ToolResult.error("ask_graph_verify failed (HTTP " + resp.statusCode() + "): "
@@ -125,16 +141,49 @@ public class AskGraphVerifyTool implements CliTool {
             String strengthBand         = result.path("strengthBand").asText("");
             JsonNode evidence           = result.path("evidenceAtoms");
             boolean stale               = result.path("meta").path("stale").asBoolean(false);
+            // New fields (E4/E5/fix #3/#4/#6)
+            int derivationDepth         = result.path("derivationDepth").asInt(0);
+            int evidenceCount           = result.path("evidenceCount").asInt(evidence.size());
+            JsonNode counterEvidence    = result.path("counterEvidence");
+            String refutationBasis      = result.path("refutationBasis").asText(null);
+            JsonNode sourceProvenance   = result.path("sourceProvenance");
+            String unknownReason        = result.path("unknownReason").asText(null);
+            boolean openWorld           = result.path("openWorld").asBoolean(false);
+            boolean entityKnown         = result.path("entityKnown").asBoolean(true);
+            JsonNode contradictions     = result.path("contradictions");
+            JsonNode opinion            = result.path("opinion");
+            // E9: near-miss suggestions
+            JsonNode nearMissSuggestions = result.path("nearMissSuggestions");
+            // E12: fragility (only present for SUPPORTED verdicts)
+            JsonNode fragility = result.path("fragility");
+            // deepWhyNot: multi-hop completion sets (defensive — present only in enriched backends)
+            JsonNode deepWhyNot = result.path("deepWhyNot");
+
+            // Build structured result map
+            Map<String, Object> structured = new LinkedHashMap<>();
+            structured.put("verdict", verdict);
+            structured.put("confidence", conf);
+            structured.put("calibratedConfidence", calibratedConfidence);
+            structured.put("strengthBand", strengthBand);
+            structured.put("stale", stale);
+            structured.put("derivationDepth", derivationDepth);
+            structured.put("evidenceCount", evidenceCount);
+            structured.put("refutationBasis", refutationBasis != null ? refutationBasis : "");
+            structured.put("unknownReason", unknownReason != null ? unknownReason : "");
+            structured.put("entityKnown", entityKnown);
+            if (!fragility.isMissingNode() && !fragility.isNull()) {
+                structured.put("fragilityRobustness", fragility.path("robustness").asDouble(1.0));
+                structured.put("fragilityMinimalSupportSize", fragility.path("minimalSupportSize").asInt(0));
+            }
 
             return ToolResult.success("ask_graph_verify: " + atom,
                     formatVerifyResult(atom, verdict, conf, calibratedConfidence,
-                            strengthBand, evidence, stale),
-                    Map.of("verdict", verdict, "confidence", conf,
-                           "calibratedConfidence", calibratedConfidence,
-                           "strengthBand", strengthBand, "stale", stale));
+                            strengthBand, evidence, stale, derivationDepth, evidenceCount,
+                            counterEvidence, refutationBasis, sourceProvenance, unknownReason,
+                            openWorld, entityKnown, contradictions, opinion, nearMissSuggestions,
+                            fragility, deepWhyNot),
+                    structured);
 
-        } catch (ConnectException e) {
-            return ToolResult.error("Cannot connect to kompile-app. " + e.getMessage());
         } catch (Exception e) {
             return ToolResult.error("ask_graph_verify error: " + e.getMessage());
         }
@@ -142,7 +191,14 @@ public class AskGraphVerifyTool implements CliTool {
 
     private String formatVerifyResult(String atom, String verdict, double conf,
                                        double calibratedConfidence, String strengthBand,
-                                       JsonNode evidence, boolean stale) {
+                                       JsonNode evidence, boolean stale,
+                                       int derivationDepth, int evidenceCount,
+                                       JsonNode counterEvidence, String refutationBasis,
+                                       JsonNode sourceProvenance, String unknownReason,
+                                       boolean openWorld, boolean entityKnown,
+                                       JsonNode contradictions, JsonNode opinion,
+                                       JsonNode nearMissSuggestions,
+                                       JsonNode fragility, JsonNode deepWhyNot) {
         StringBuilder sb = new StringBuilder();
         sb.append("**").append(verdict).append("** — ").append(atom);
         sb.append("\nConfidence: ").append(String.format("%.3f", conf));
@@ -150,10 +206,99 @@ public class AskGraphVerifyTool implements CliTool {
         if (!strengthBand.isBlank()) {
             sb.append("\nStrength band: ").append(strengthBand);
         }
+
+        // Fix #3: real depth + count
+        sb.append("\nDerivation depth: ").append(derivationDepth);
+        sb.append(" | Evidence count: ").append(evidenceCount);
+
         if (evidence.isArray() && evidence.size() > 0) {
             sb.append("\nEvidence:");
             evidence.forEach(e -> sb.append("\n  - ").append(e.asText()));
         }
+
+        // Fix #4: real sourceProvenance
+        if (sourceProvenance.isArray() && sourceProvenance.size() > 0) {
+            sb.append("\nSource provenance:");
+            sourceProvenance.forEach(s -> sb.append("\n  - ").append(s.asText()));
+        }
+
+        // E4/E5: counter-evidence and refutation basis
+        if (counterEvidence.isArray() && counterEvidence.size() > 0) {
+            sb.append("\nCounter-evidence:");
+            counterEvidence.forEach(c -> sb.append("\n  - ").append(c.asText()));
+        }
+        if (refutationBasis != null && !refutationBasis.isBlank()) {
+            sb.append("\nRefutation basis: ").append(refutationBasis);
+        }
+
+        // E4: contradiction descriptions
+        if (contradictions.isArray() && contradictions.size() > 0) {
+            sb.append("\nContradictions detected:");
+            contradictions.forEach(c -> sb.append("\n  ⊗ ").append(c.asText()));
+        }
+
+        // Subjective-logic opinion in plain language — rendered for every verdict
+        if (opinion != null && !opinion.isMissingNode() && !opinion.isNull()) {
+            sb.append("\nOpinion:")
+              .append(" support=").append(String.format("%.3f", opinion.path("b").asDouble()))
+              .append(" counter-evidence=").append(String.format("%.3f", opinion.path("d").asDouble()))
+              .append(" uncertainty=").append(String.format("%.3f", opinion.path("u").asDouble()));
+        }
+
+        // Fix #6: UNKNOWN detail
+        if ("UNKNOWN".equals(verdict)) {
+            if (unknownReason != null && !unknownReason.isBlank()) {
+                sb.append("\nUnknown reason: ").append(unknownReason);
+            }
+            sb.append("\nEntity known in graph: ").append(entityKnown);
+            sb.append("\nOpen-world assessment: ").append(openWorld);
+        }
+
+        // E9: near-miss suggestions
+        if ("UNKNOWN".equals(verdict)
+                && nearMissSuggestions != null
+                && nearMissSuggestions.isArray()
+                && nearMissSuggestions.size() > 0) {
+            sb.append("\nWould be provable if:");
+            nearMissSuggestions.forEach(s -> sb.append("\n  + ").append(s.asText()));
+        }
+
+        // deepWhyNot: completion sets (defensive — present only in enriched backends)
+        if (deepWhyNot != null && !deepWhyNot.isMissingNode() && deepWhyNot.isArray() && deepWhyNot.size() > 0) {
+            sb.append("\nTo make this provable, you would also need:");
+            int sets = Math.min(deepWhyNot.size(), 3);
+            for (int i = 0; i < sets; i++) {
+                JsonNode completionSet = deepWhyNot.get(i);
+                if (completionSet.isArray() && completionSet.size() > 0) {
+                    StringBuilder chain = new StringBuilder();
+                    for (JsonNode fact : completionSet) {
+                        if (chain.length() > 0) chain.append(" -> ");
+                        chain.append(fact.asText());
+                    }
+                    sb.append("\n  ").append(chain);
+                } else if (!completionSet.isMissingNode()) {
+                    sb.append("\n  ").append(completionSet.asText());
+                }
+            }
+            if (deepWhyNot.size() > 3) {
+                sb.append("\n  ... and ").append(deepWhyNot.size() - 3).append(" more paths.");
+            }
+        }
+
+        // E12: fragility (SUPPORTED verdicts only)
+        if ("SUPPORTED".equals(verdict)
+                && fragility != null && !fragility.isMissingNode() && !fragility.isNull()) {
+            double robustness = fragility.path("robustness").asDouble(1.0);
+            JsonNode wouldFlipIf = fragility.path("wouldFlipIf");
+            sb.append(String.format("\nFragility: robustness %.2f", robustness));
+            if (wouldFlipIf.isArray() && wouldFlipIf.size() > 0) {
+                sb.append(" — would flip if:");
+                wouldFlipIf.forEach(w -> sb.append("\n  - ").append(w.asText()));
+            } else {
+                sb.append(" — no single-fact flip point found (robust)");
+            }
+        }
+
         if (stale) {
             sb.append("\nWARNING: KB is pending a cascade update — consider retrying.");
         }

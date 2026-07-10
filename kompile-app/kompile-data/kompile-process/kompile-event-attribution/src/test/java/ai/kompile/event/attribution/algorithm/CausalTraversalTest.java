@@ -40,17 +40,17 @@ class CausalTraversalTest {
     @BeforeEach
     void setUp() {
         nodeA = GraphNode.builder()
-                .id(1L).nodeId("node-a").title("Root Cause Event")
+                .nodeId("node-a").title("Root Cause Event")
                 .nodeType(NodeLevel.ENTITY).externalId("ext-a")
                 .createdAt(LocalDateTime.now()).updatedAt(LocalDateTime.now())
                 .build();
         nodeB = GraphNode.builder()
-                .id(2L).nodeId("node-b").title("Intermediate Event")
+                .nodeId("node-b").title("Intermediate Event")
                 .nodeType(NodeLevel.ENTITY).externalId("ext-b")
                 .createdAt(LocalDateTime.now()).updatedAt(LocalDateTime.now())
                 .build();
         nodeC = GraphNode.builder()
-                .id(3L).nodeId("node-c").title("Target Event")
+                .nodeId("node-c").title("Target Event")
                 .nodeType(NodeLevel.ENTITY).externalId("ext-c")
                 .createdAt(LocalDateTime.now()).updatedAt(LocalDateTime.now())
                 .build();
@@ -60,7 +60,7 @@ class CausalTraversalTest {
     void traverseBackward_singleHopChain() {
         // A -> C (A causes C)
         GraphEdge edgeAC = GraphEdge.builder()
-                .id(1L).edgeId("edge-ac")
+                .edgeId("edge-ac")
                 .sourceNode(nodeA).targetNode(nodeC)
                 .edgeType(EdgeType.TEMPORAL).weight(0.9).confidence(0.8)
                 .bidirectional(false)
@@ -87,13 +87,13 @@ class CausalTraversalTest {
     void traverseBackward_multiHopChain() {
         // A -> B -> C
         GraphEdge edgeAB = GraphEdge.builder()
-                .id(1L).edgeId("edge-ab")
+                .edgeId("edge-ab")
                 .sourceNode(nodeA).targetNode(nodeB)
                 .edgeType(EdgeType.TEMPORAL).weight(0.8).confidence(0.9)
                 .bidirectional(false).createdAt(LocalDateTime.now())
                 .build();
         GraphEdge edgeBC = GraphEdge.builder()
-                .id(2L).edgeId("edge-bc")
+                .edgeId("edge-bc")
                 .sourceNode(nodeB).targetNode(nodeC)
                 .edgeType(EdgeType.CITATION).weight(0.7).confidence(0.8)
                 .bidirectional(false).createdAt(LocalDateTime.now())
@@ -133,13 +133,13 @@ class CausalTraversalTest {
     void traverseBackward_respectsMaxDepth() {
         // A -> B -> C, but maxDepth=1 should only find B->C
         GraphEdge edgeAB = GraphEdge.builder()
-                .id(1L).edgeId("edge-ab")
+                .edgeId("edge-ab")
                 .sourceNode(nodeA).targetNode(nodeB)
                 .edgeType(EdgeType.TEMPORAL).weight(0.9).confidence(0.9)
                 .bidirectional(false).createdAt(LocalDateTime.now())
                 .build();
         GraphEdge edgeBC = GraphEdge.builder()
-                .id(2L).edgeId("edge-bc")
+                .edgeId("edge-bc")
                 .sourceNode(nodeB).targetNode(nodeC)
                 .edgeType(EdgeType.TEMPORAL).weight(0.9).confidence(0.9)
                 .bidirectional(false).createdAt(LocalDateTime.now())
@@ -171,6 +171,21 @@ class CausalTraversalTest {
     }
 
     @Test
+    void classifyEdge_prefersSemanticRelationType() {
+        GraphEdge precedence = GraphEdge.builder()
+                .edgeType(EdgeType.USER_DEFINED)
+                .relationType("PRECEDES")
+                .build();
+        GraphEdge ownership = GraphEdge.builder()
+                .edgeType(EdgeType.USER_DEFINED)
+                .relationType("OWNED_BY")
+                .build();
+
+        assertEquals(CausalEdgeType.TRIGGERS, CausalTraversal.classifyEdge(precedence));
+        assertEquals(CausalEdgeType.INFLUENCES, CausalTraversal.classifyEdge(ownership));
+    }
+
+    @Test
     void classifyEdge_fallsBackToEdgeType() {
         GraphEdge edge = GraphEdge.builder()
                 .edgeType(EdgeType.EMBEDDING_SIMILARITY)
@@ -198,7 +213,7 @@ class CausalTraversalTest {
         // traversal behind the attribution "Explain Why?" endpoint must still produce
         // a chain rather than throwing an opaque 500.
         GraphEdge edgeAC = GraphEdge.builder()
-                .id(1L).edgeId("edge-ac-null")
+                .edgeId("edge-ac-null")
                 .sourceNode(nodeA).targetNode(nodeC)
                 .edgeType(null).weight(0.9).confidence(0.8)
                 .bidirectional(false)
@@ -234,13 +249,13 @@ class CausalTraversalTest {
     void traverseForward_findsDescendants() {
         // A -> B -> C
         GraphEdge edgeAB = GraphEdge.builder()
-                .id(1L).edgeId("edge-ab")
+                .edgeId("edge-ab")
                 .sourceNode(nodeA).targetNode(nodeB)
                 .edgeType(EdgeType.TEMPORAL).weight(0.8).confidence(0.9)
                 .bidirectional(false).createdAt(LocalDateTime.now())
                 .build();
         GraphEdge edgeBC = GraphEdge.builder()
-                .id(2L).edgeId("edge-bc")
+                .edgeId("edge-bc")
                 .sourceNode(nodeB).targetNode(nodeC)
                 .edgeType(EdgeType.TEMPORAL).weight(0.7).confidence(0.8)
                 .bidirectional(false).createdAt(LocalDateTime.now())

@@ -126,9 +126,12 @@ public class SameDiffLanguageModelImpl implements LanguageModel, ChatModel {
         ChatResponse response = generateResponseWithPotentialToolCalls(userQuery, context);
         if (response != null && response.getResult() != null
                 && response.getResult().getOutput() != null) {
-            return response.getResult().getOutput().getText();
+            String text = response.getResult().getOutput().getText();
+            if (text != null && !text.isBlank()) {
+                return text;
+            }
         }
-        return "";
+        throw new IllegalStateException("SameDiff language model did not produce a textual response");
     }
 
     @Override
@@ -156,15 +159,19 @@ public class SameDiffLanguageModelImpl implements LanguageModel, ChatModel {
         try {
             Data output = current.runner.exec(input, ctx);
             String text = output.getString(current.config.getResponseOutputName(), "");
+            if (text == null || text.isBlank()) {
+                throw new IllegalStateException("SameDiff LLM output did not contain required response field '"
+                        + current.config.getResponseOutputName() + "'");
+            }
             AssistantMessage assistant = new AssistantMessage(text);
             return new ChatResponse(List.of(
                     new Generation(assistant, ChatGenerationMetadata.NULL)));
+        } catch (RuntimeException e) {
+            logger.error("Generation failed for modelId='{}'", current.modelId, e);
+            throw e;
         } catch (Exception e) {
             logger.error("Generation failed for modelId='{}'", current.modelId, e);
-            AssistantMessage error = new AssistantMessage(
-                    "Error generating response: " + e.getMessage());
-            return new ChatResponse(List.of(
-                    new Generation(error, ChatGenerationMetadata.NULL)));
+            throw new IllegalStateException("SameDiff LLM generation failed for modelId='" + current.modelId + "'", e);
         }
     }
 
@@ -490,7 +497,7 @@ public class SameDiffLanguageModelImpl implements LanguageModel, ChatModel {
     private static String extractPromptText(Prompt prompt) {
         if (prompt == null || prompt.getInstructions() == null
                 || prompt.getInstructions().isEmpty()) {
-            return "";
+            throw new IllegalArgumentException("SameDiff language model prompt must contain at least one instruction");
         }
         StringBuilder sb = new StringBuilder();
         String userText = null;
@@ -506,11 +513,17 @@ public class SameDiffLanguageModelImpl implements LanguageModel, ChatModel {
             sb.append("\n");
         }
         if (userText != null) sb.append(userText);
-        return sb.toString().trim();
+        String text = sb.toString().trim();
+        if (text.isEmpty()) {
+            throw new IllegalArgumentException("SameDiff language model prompt did not contain textual content");
+        }
+        return text;
     }
 
     private static String composePrompt(String userQuery, List<String> context) {
-        if (userQuery == null) userQuery = "";
+        if (userQuery == null || userQuery.isBlank()) {
+            throw new IllegalArgumentException("SameDiff language model user query cannot be empty");
+        }
         if (context == null || context.isEmpty()) return userQuery;
         StringBuilder sb = new StringBuilder("Context:\n");
         List<String> filtered = new ArrayList<>();

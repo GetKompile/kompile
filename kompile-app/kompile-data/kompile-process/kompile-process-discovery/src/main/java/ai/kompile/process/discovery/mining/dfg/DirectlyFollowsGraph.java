@@ -16,6 +16,7 @@
 
 package ai.kompile.process.discovery.mining.dfg;
 
+import java.io.Serializable;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -35,10 +36,14 @@ import java.util.Set;
  * <p>Instances are immutable; build with {@link DfgBuilder} and derive filtered copies with
  * {@link #filter(long)}.
  */
-public final class DirectlyFollowsGraph {
+public final class DirectlyFollowsGraph implements Serializable {
+
+    private static final long serialVersionUID = 1L;
 
     /** A directed directly-follows arc between two activities. */
-    public record Arc(String from, String to) {}
+    public record Arc(String from, String to) implements Serializable {
+        private static final long serialVersionUID = 1L;
+    }
 
     private final Set<String> activities;
     private final Map<String, Map<String, Long>> follows; // from -> (to -> count)

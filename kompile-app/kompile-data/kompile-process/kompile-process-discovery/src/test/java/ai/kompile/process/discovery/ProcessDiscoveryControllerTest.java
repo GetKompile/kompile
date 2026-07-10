@@ -286,7 +286,7 @@ class ProcessDiscoveryControllerTest {
         // controller has no store injected (null)
         ProcessDiscoveryController c = new ProcessDiscoveryController(discoveryService);
 
-        ResponseEntity<Map<String, Object>> response = c.listSuggestions(null, false);
+        ResponseEntity<Map<String, Object>> response = c.listSuggestions(null, false, false);
 
         assertEquals(200, response.getStatusCode().value());
         assertEquals(0, response.getBody().get("count"));
@@ -302,7 +302,7 @@ class ProcessDiscoveryControllerTest {
         store.save(buildTestSuggestion("s-list-2", "Flow B"));
 
         ProcessDiscoveryController c = controllerWithStore(store);
-        ResponseEntity<Map<String, Object>> response = c.listSuggestions(null, false);
+        ResponseEntity<Map<String, Object>> response = c.listSuggestions(null, false, false);
 
         assertEquals(200, response.getStatusCode().value());
         assertEquals(2, response.getBody().get("count"));
@@ -312,6 +312,31 @@ class ProcessDiscoveryControllerTest {
 
         store.delete("s-list-1");
         store.delete("s-list-2");
+    }
+
+    @Test
+    void listSuggestions_honorsPersistedReasoningRankBeforeScore() {
+        ProcessSuggestionStore store = new ProcessSuggestionStore(tempDir.resolve("suggestions"));
+        ProcessSuggestion second = buildTestSuggestion("s-rank-2", "Second");
+        second.setReasoningRank(2);
+        second.setConfidence(0.99);
+        ProcessSuggestion first = buildTestSuggestion("s-rank-1", "First");
+        first.setReasoningRank(1);
+        first.setConfidence(0.60);
+        ProcessSuggestion unranked = buildTestSuggestion("s-unranked", "Unranked");
+        unranked.setConfidence(1.0);
+        store.save(second);
+        store.save(first);
+        store.save(unranked);
+
+        ProcessDiscoveryController c = controllerWithStore(store);
+        ResponseEntity<Map<String, Object>> response = c.listSuggestions(null, false, false);
+
+        @SuppressWarnings("unchecked")
+        List<ProcessSuggestion> suggestions =
+                (List<ProcessSuggestion>) response.getBody().get("suggestions");
+        assertEquals(List.of("s-rank-1", "s-rank-2", "s-unranked"),
+                suggestions.stream().map(ProcessSuggestion::getId).toList());
     }
 
     @Test
@@ -325,7 +350,7 @@ class ProcessDiscoveryControllerTest {
         store.save(s2);
 
         ProcessDiscoveryController c = controllerWithStore(store);
-        ResponseEntity<Map<String, Object>> response = c.listSuggestions(42L, false);
+        ResponseEntity<Map<String, Object>> response = c.listSuggestions(42L, false, false);
 
         assertEquals(200, response.getStatusCode().value());
         @SuppressWarnings("unchecked")
@@ -345,7 +370,7 @@ class ProcessDiscoveryControllerTest {
         store.markAccepted("s-accepted-1", "proc-def-999");
 
         ProcessDiscoveryController c = controllerWithStore(store);
-        ResponseEntity<Map<String, Object>> response = c.listSuggestions(null, true);
+        ResponseEntity<Map<String, Object>> response = c.listSuggestions(null, true, false);
 
         assertEquals(200, response.getStatusCode().value());
         @SuppressWarnings("unchecked")

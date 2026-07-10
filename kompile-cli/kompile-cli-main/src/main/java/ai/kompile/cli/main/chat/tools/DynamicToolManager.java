@@ -55,7 +55,7 @@ public class DynamicToolManager {
             "read", "write", "edit", "grep", "glob", "bash", "list",
             "fetch_result", "activate_tools",
             "patch", "explore", "memory", "transcript_search",
-            "conversation_import", "code_search", "code_graph", "local_code_index"
+            "conversation_import", "code_search", "code_graph", "local_code_index", "lsp"
     );
 
     /** Tool group definitions: group name → set of tool IDs. */
@@ -64,7 +64,7 @@ public class DynamicToolManager {
     static {
         GROUPS.put("search", new ToolGroup("search",
                 "Unified code search (indexing, graph, impact, signatures) and knowledge search (documents, graph, memory)",
-                Set.of("code_search", "search", "tool_call_catalog")));
+                Set.of("code_search", "search", "tool_call_catalog", "lsp")));
 
         GROUPS.put("workflow", new ToolGroup("workflow",
                 "Todo lists, memory, config archives, test milestones",

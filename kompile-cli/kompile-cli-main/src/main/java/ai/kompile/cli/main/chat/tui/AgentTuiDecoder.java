@@ -146,6 +146,58 @@ public interface AgentTuiDecoder {
     }
 
     /**
+     * True when the agent has PAUSED mid-turn to ask the user a decision — a confirmation, a
+     * selection menu, a yes/no, or a free-text question — and is blocked reading its stdin for the
+     * answer. Distinct from {@link #isResponding} (still generating) and {@link #isIdle} (turn
+     * done, composer ready for a new message). Lets the managed REPL keep the turn alive and route
+     * the user's next input straight to the agent's stdin, so answering a prompt behaves like the
+     * native app. Must be conservative — a false positive would trap normal input.
+     */
+    default boolean isAwaitingUserInput(VirtualTerminal vt) {
+        return false;
+    }
+
+    /**
+     * Extract the current decision prompt — the question line plus its numbered options — as clean
+     * text, so the managed REPL can render the choices explicitly next to its "waiting" hint rather
+     * than relying on the (sometimes flaky) decoded transcript to show them. Returns "" if no
+     * numbered-option prompt is on screen. Only meaningful when {@link #isAwaitingUserInput} is true.
+     */
+    default String extractPromptText(VirtualTerminal vt) {
+        return "";
+    }
+
+    /**
+     * The number of the currently-highlighted option in a numbered selection menu — the {@code
+     * ❯}-marked {@code "<n>. text"} row — or {@code null} if the dialog isn't a numbered menu (a
+     * pure arrow/tab dialog). Lets the REPL confirm an arrow-selected option by sending its digit,
+     * since some agents (claude's plan menu) act on the number key rather than a bare Enter.
+     */
+    default String selectedOptionDigit(VirtualTerminal vt) {
+        return null;
+    }
+
+    /**
+     * Detect a terminal blocking notice — quota/credit exhaustion, rate limiting, or an auth
+     * failure the agent surfaces instead of a response. Lets the managed REPL show the reason
+     * and end the turn immediately instead of waiting out the idle timeout with nothing rendered
+     * (the symptom when e.g. codex is out of quota). Returns a short user-facing message, or
+     * {@code null} when the agent is operating normally.
+     */
+    default String detectBlockingNotice(VirtualTerminal vt) {
+        return null;
+    }
+
+    /**
+     * Same detection as {@link #detectBlockingNotice} but against already-rendered transcript
+     * text — the authoritative record of what was shown, immune to viewport scrolling and to
+     * how a line was classified. Returns the offending line, or {@code null}.
+     */
+    default String detectBlockingNoticeInText(String renderedText) {
+        return null;
+    }
+
+    /**
      * Minimum quiet period after the decoder observes idle before a turn ends.
      */
     default long turnIdleMillis() {
@@ -162,6 +214,16 @@ public interface AgentTuiDecoder {
      * @return response bytes to write back to subprocess stdin, or empty string
      */
     String buildResponses(String rawChunk, VirtualTerminal vt);
+
+    /**
+     * Per-agent knobs for the shared {@link TerminalQueryResponder}. Decoders that answer the full
+     * set of queries return {@link QueryPolicy#DEFAULT}; conservative/stub decoders return
+     * {@link QueryPolicy#CONSERVATIVE}. Supplied by the decoder so query answering has a single
+     * implementation (design finding F5d).
+     */
+    default QueryPolicy queryPolicy() {
+        return QueryPolicy.DEFAULT;
+    }
 
     /**
      * Build agent-specific bootstrap/input responses for known TUI prompts that

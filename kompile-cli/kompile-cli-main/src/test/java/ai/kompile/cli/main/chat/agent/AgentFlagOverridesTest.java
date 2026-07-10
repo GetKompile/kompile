@@ -79,6 +79,34 @@ class AgentFlagOverridesTest {
     }
 
     @Test
+    void openCodeGetsBypassFlagInRunModeButNotInteractive() {
+        // Run/-p mode: opencode accepts --dangerously-skip-permissions.
+        List<String> runCmd = new java.util.ArrayList<>(List.of("opencode"));
+        AgentFlagOverrides.addPermissionBypassFlags(runCmd, "opencode", true, tempDir);
+        assertEquals(List.of("opencode", "--dangerously-skip-permissions"), runCmd);
+
+        // Interactive TUI: opencode auto-approves; the flag is only valid on `opencode run`, so
+        // the interactive builder must add nothing (adding it would break the launch).
+        List<String> tuiCmd = new java.util.ArrayList<>(List.of("opencode"));
+        AgentFlagOverrides.addInteractivePermissionBypassFlags(tuiCmd, "opencode", true, tempDir);
+        assertEquals(List.of("opencode"), tuiCmd);
+    }
+
+    @Test
+    void claudeGetsSkipPermissionsInInteractiveMode() {
+        List<String> cmd = new java.util.ArrayList<>(List.of("claude"));
+        AgentFlagOverrides.addInteractivePermissionBypassFlags(cmd, "claude", true, tempDir);
+        assertEquals(List.of("claude", "--dangerously-skip-permissions"), cmd);
+    }
+
+    @Test
+    void interactiveBypassDisabledAddsNothing() {
+        List<String> cmd = new java.util.ArrayList<>(List.of("claude"));
+        AgentFlagOverrides.addInteractivePermissionBypassFlags(cmd, "claude", false, tempDir);
+        assertEquals(List.of("claude"), cmd);
+    }
+
+    @Test
     void splitFlagsHandlesQuotedValues() {
         assertEquals(
                 List.of("--config", "model=\"gpt-5 codex\"", "--flag"),

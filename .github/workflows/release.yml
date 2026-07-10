@@ -175,9 +175,370 @@ jobs:
             ${{ steps.pkg.outputs.archive }}.sha256
           if-no-files-found: error
 
+  # ── Full distribution: CLI native + server jar + staging jar + jlink runtime ──
+  full-dist-linux:
+    name: build full (linux-x86_64)
+    runs-on: ${{ vars.KOMPILE_LINUX_X64_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up GraalVM ${{ env.GRAALVM_JAVA_VERSION }} (for CLI native image)
+        uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: ${{ env.GRAALVM_JAVA_VERSION }}
+          distribution: 'graalvm-community'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          native-image-job-reports: 'true'
+          cache: 'maven'
+
+      - name: Set up Temurin JDK 21 (for jlink runtime + jar builds)
+        id: temurin21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            V="${GITHUB_REF_NAME#v}"
+          else
+            V="${{ github.event.inputs.version }}"
+          fi
+          echo "version=${V}" >> "$GITHUB_OUTPUT"
+          echo "Building version ${V}"
+
+      - name: Build CLI native image (GraalVM)
+        shell: bash
+        env:
+          # GraalVM is JAVA_HOME at this point (set up first by graalvm/setup-graalvm).
+          GRAALVM_HOME: ${{ env.JAVA_HOME }}
+        run: |
+          mvn -B -ntp -Dkompile.dist=true -DskipTests \
+            -pl kompile-cli/kompile-cli-main -am \
+            clean package
+
+      - name: Build server + staging jars with UI (Temurin)
+        shell: bash
+        env:
+          JAVA_HOME: ${{ steps.temurin21.outputs.path }}
+        run: |
+          # Build kompile-app-main exec jar (includes Angular UI — do NOT pass -Dskip.ui).
+          mvn -B -ntp -DskipTests -Dkompile.dist=true -Dkompile.uber \
+            -pl kompile-app/kompile-app-parent/kompile-app-main -am \
+            clean package
+          # Build kompile-model-staging exec jar.
+          mvn -B -ntp -DskipTests \
+            -pl kompile-app/kompile-models/kompile-model-staging -am \
+            clean package
+
+      - name: Build jlink runtime (Temurin)
+        id: jlink
+        shell: bash
+        env:
+          TEMURIN_HOME: ${{ steps.temurin21.outputs.path }}
+        run: |
+          set -euo pipefail
+          JLINK="${TEMURIN_HOME}/bin/jlink"
+          MODULES="java.se,jdk.unsupported,jdk.crypto.ec,jdk.crypto.cryptoki,jdk.zipfs,jdk.management,jdk.management.agent,jdk.security.auth,jdk.naming.dns,jdk.charsets,jdk.localedata,jdk.httpserver,jdk.jfr"
+          DEST="$(pwd)/dist-runtime"
+          ok=false
+          if "${JLINK}" --add-modules "${MODULES}" --include-locales=en \
+              --strip-debug --no-header-files --no-man-pages \
+              --compress=zip-6 --output "${DEST}" 2>/tmp/jlink.log; then
+            ok=true
+          else
+            rm -rf "${DEST}"
+            if "${JLINK}" --add-modules "${MODULES}" \
+                --strip-debug --no-header-files --no-man-pages \
+                --compress=zip-6 --output "${DEST}" 2>>/tmp/jlink.log; then
+              ok=true
+            else
+              rm -rf "${DEST}"
+              if "${JLINK}" --add-modules "${MODULES}" \
+                  --strip-debug --no-header-files --no-man-pages \
+                  --compress=2 --output "${DEST}" 2>>/tmp/jlink.log; then
+                ok=true
+              else
+                rm -rf "${DEST}" 2>/dev/null || true
+              fi
+            fi
+          fi
+          if [ "${ok}" = true ] && "${DEST}/bin/java" -version 2>/dev/null; then
+            echo "runtime-path=${DEST}" >> "$GITHUB_OUTPUT"
+            echo "bundled-runtime=true" >> "$GITHUB_OUTPUT"
+            echo "jlink runtime built: $("${DEST}/bin/java" -version 2>&1 | head -1)"
+          else
+            echo "bundled-runtime=false" >> "$GITHUB_OUTPUT"
+            echo "WARN: jlink runtime build failed; jar tier will need system JDK"
+            cat /tmp/jlink.log || true
+          fi
+
+      - name: Assemble full distribution archive
+        id: pkg
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.ver.outputs.version }}"
+          VARIANT="full"
+          OS_ID="linux"
+          ARCH="x86_64"
+          EXT="tar.gz"
+          NAME="kompile-dist-${VERSION}-${VARIANT}-${OS_ID}-${ARCH}"
+          TOP="kompile-${VERSION}"
+          STAGE="staging-full/${TOP}"
+
+          mkdir -p "${STAGE}/bin" "${STAGE}/lib" \
+                   "${STAGE}/data/input_documents/uploads" \
+                   "${STAGE}/data/shared_files" \
+                   "${STAGE}/data/prompt-templates" \
+                   "${STAGE}/data/models/.staging" \
+                   "${STAGE}/data/logs" \
+                   "${STAGE}/data/tool-definitions" \
+                   "${STAGE}/data/folders" \
+                   "${STAGE}/data/mcp-servers" \
+                   "${STAGE}/data/mcp-bridges" \
+                   "${STAGE}/data/pids" \
+                   "${STAGE}/anserini/indexes" \
+                   "${STAGE}/components" \
+                   "${STAGE}/fact-sheets" \
+                   "${STAGE}/archives"
+
+          # CLI native binary.
+          CLI_BIN="kompile-cli/kompile-cli-main/target/kompile-cli-main"
+          if [ -f "${CLI_BIN}" ]; then
+            cp "${CLI_BIN}" "${STAGE}/bin/kompile"
+            chmod +x "${STAGE}/bin/kompile"
+            ln -sf kompile "${STAGE}/bin/kompile-cli"
+          fi
+
+          # CLI shaded jar → lib/kompile-cli.jar.
+          CLI_JAR=$(find kompile-cli/kompile-cli-main/target -maxdepth 1 -name '*-shaded.jar' 2>/dev/null | head -1)
+          if [ -n "${CLI_JAR}" ]; then
+            cp "${CLI_JAR}" "${STAGE}/lib/kompile-cli.jar"
+          fi
+
+          # Server exec jar → lib/kompile-server.jar.
+          SERVER_JAR=$(find kompile-app/kompile-app-parent/kompile-app-main/target \
+            -maxdepth 1 \( -name '*-exec.jar' -o -name '*.jar' ! -name '*-sources.jar' ! -name '*-javadoc.jar' \) \
+            2>/dev/null | grep -v 'original' | head -1)
+          if [ -n "${SERVER_JAR}" ]; then
+            cp "${SERVER_JAR}" "${STAGE}/lib/kompile-server.jar"
+          fi
+
+          # Staging exec jar → lib/kompile-model-staging.jar.
+          STAGING_JAR=$(find kompile-app/kompile-models/kompile-model-staging/target \
+            -maxdepth 1 \( -name '*-exec.jar' -o -name '*.jar' ! -name '*-sources.jar' ! -name '*-javadoc.jar' \) \
+            2>/dev/null | grep -v 'original' | head -1)
+          if [ -n "${STAGING_JAR}" ]; then
+            cp "${STAGING_JAR}" "${STAGE}/lib/kompile-model-staging.jar"
+          fi
+
+          # Bundled jlink runtime.
+          RUNTIME_PATH="${{ steps.jlink.outputs.runtime-path }}"
+          if [ -n "${RUNTIME_PATH}" ] && [ -d "${RUNTIME_PATH}" ]; then
+            cp -a "${RUNTIME_PATH}" "${STAGE}/runtime"
+          fi
+
+          # Launcher scripts.
+          cp kompile-dist/src/main/scripts/*.sh "${STAGE}/bin/" 2>/dev/null || true
+          chmod +x "${STAGE}/bin/"*.sh 2>/dev/null || true
+
+          # JBang catalog + quick-start guide.
+          cp kompile-dist/src/main/resources/jbang-catalog.json "${STAGE}/" 2>/dev/null || true
+          cp kompile-dist/src/main/resources/JBANG.md "${STAGE}/" 2>/dev/null || true
+
+          # Seed files.
+          echo '{"mcpServers":{}}' > "${STAGE}/data/mcp-config.json"
+          echo "${VERSION}" > "${STAGE}/.version"
+          echo "${VARIANT}" > "${STAGE}/.variant"
+          cat > "${STAGE}/.dist-info.json" << EOFJSON
+          {
+            "version": "${VERSION}",
+            "variant": "${VARIANT}",
+            "platform": "${OS_ID}-${ARCH}",
+            "buildDate": "$(date -Iseconds)",
+            "components": {
+              "cli": $([ -f "${STAGE}/bin/kompile" ] && echo true || echo false),
+              "server": $([ -f "${STAGE}/lib/kompile-server.jar" ] && echo true || echo false),
+              "model-staging": $([ -f "${STAGE}/lib/kompile-model-staging.jar" ] && echo true || echo false),
+              "bundled-runtime": $([ -d "${STAGE}/runtime" ] && echo true || echo false)
+            },
+            "backend": "hosted"
+          }
+          EOFJSON
+
+          # Archive.
+          tar -C staging-full -czf "${NAME}.tar.gz" "${TOP}"
+          sha256sum "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256"
+
+          echo "archive=${NAME}.tar.gz" >> "$GITHUB_OUTPUT"
+          ls -lh "${NAME}.tar.gz" "${NAME}.tar.gz.sha256"
+
+      - name: Upload full-dist artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pkg.outputs.archive }}
+          path: |
+            ${{ steps.pkg.outputs.archive }}
+            ${{ steps.pkg.outputs.archive }}.sha256
+          if-no-files-found: error
+
+  # ── Smoke-test the full-dist archive before publishing ───────────────────
+  smoke-full-dist:
+    name: Smoke-test full distribution (linux-x86_64)
+    needs: full-dist-linux
+    runs-on: ${{ vars.KOMPILE_LINUX_X64_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            V="${GITHUB_REF_NAME#v}"
+          else
+            V="${{ github.event.inputs.version }}"
+          fi
+          echo "version=${V}" >> "$GITHUB_OUTPUT"
+
+      - name: Download full-dist artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: kompile-dist-${{ steps.ver.outputs.version }}-full-linux-x86_64.tar.gz
+          path: full-dist-download
+
+      - name: Extract distribution to $HOME/.kompile
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARCHIVE=$(find full-dist-download -name '*.tar.gz' | head -1)
+          if [ -z "${ARCHIVE}" ]; then
+            echo "ERROR: no .tar.gz found in full-dist-download/"
+            ls -la full-dist-download/ || true
+            exit 1
+          fi
+          echo "Extracting ${ARCHIVE} ..."
+          mkdir -p "$HOME/.kompile"
+          tar -xzf "${ARCHIVE}" --strip-components=1 -C "$HOME/.kompile"
+          echo "Extracted layout:"
+          ls -la "$HOME/.kompile/" || true
+
+      - name: Set permissions
+        shell: bash
+        run: |
+          chmod +x "$HOME/.kompile/bin/"* 2>/dev/null || true
+          if [ -d "$HOME/.kompile/runtime/bin" ]; then
+            chmod +x "$HOME/.kompile/runtime/bin/"* 2>/dev/null || true
+          fi
+
+      - name: Assert kompile --version
+        shell: bash
+        run: |
+          export PATH="$HOME/.kompile/bin:$PATH"
+          echo "Testing: kompile --version"
+          kompile --version
+          echo "kompile --version OK"
+
+      - name: Assert bundled runtime java -version (when present)
+        shell: bash
+        run: |
+          if [ -x "$HOME/.kompile/runtime/bin/java" ]; then
+            echo "Testing: runtime/bin/java -version"
+            "$HOME/.kompile/runtime/bin/java" -version
+            echo "runtime/bin/java OK"
+          else
+            echo "INFO: no bundled runtime found at $HOME/.kompile/runtime/bin/java — skipping"
+          fi
+
+      - name: Assert project init creates expected files
+        shell: bash
+        run: |
+          export PATH="$HOME/.kompile/bin:$PATH"
+          PROJ_DIR="$RUNNER_TEMP/smoke-proj"
+          mkdir -p "$PROJ_DIR"
+          printf '# Smoke test\n\nThis is a smoke test document.\n' > "$PROJ_DIR/README.md"
+          echo "Running: kompile project init --root $PROJ_DIR --name smoke --backend local"
+          kompile project init --root "$PROJ_DIR" --name smoke --backend local
+          for f in kompile.project.json config/project-runtime.json .mcp.json; do
+            if [ ! -f "$PROJ_DIR/$f" ]; then
+              echo "ERROR: expected file missing: $PROJ_DIR/$f"
+              ls -la "$PROJ_DIR/" || true
+              exit 1
+            fi
+            echo "  OK: $f"
+          done
+          echo "project init assertions passed"
+
+      - name: Smoke-test staging server startup
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGING_LOG="$RUNNER_TEMP/staging-server.log"
+          STAGING_JAR="$HOME/.kompile/lib/kompile-model-staging.jar"
+          if [ ! -f "${STAGING_JAR}" ]; then
+            echo "INFO: ${STAGING_JAR} not found in dist — skipping staging server smoke test"
+            exit 0
+          fi
+
+          # Prefer the bundled runtime java; fall back to system java
+          if [ -x "$HOME/.kompile/runtime/bin/java" ]; then
+            JAVA="$HOME/.kompile/runtime/bin/java"
+          else
+            JAVA="java"
+          fi
+          echo "Java: $("${JAVA}" -version 2>&1 | head -1)"
+
+          echo "Starting staging server on port 18090 (log: ${STAGING_LOG}) ..."
+          "${JAVA}" -jar "${STAGING_JAR}" \
+            --server.port=18090 \
+            --spring.main.web-application-type=servlet \
+            >> "${STAGING_LOG}" 2>&1 &
+          STAGING_PID=$!
+          echo "Staging server PID: ${STAGING_PID}"
+
+          # Poll /actuator/health for up to 90s
+          DEADLINE=$(( $(date +%s) + 90 ))
+          HEALTHY=false
+          while [ "$(date +%s)" -lt "${DEADLINE}" ]; do
+            HTTP_CODE=$(curl -sf -o /dev/null -w '%{http_code}' \
+              http://localhost:18090/actuator/health 2>/dev/null || echo "000")
+            if [ "${HTTP_CODE}" = "200" ]; then
+              HEALTHY=true
+              echo "Staging server healthy (HTTP 200)"
+              break
+            fi
+            if ! kill -0 "${STAGING_PID}" 2>/dev/null; then
+              echo "ERROR: staging server process exited prematurely"
+              cat "${STAGING_LOG}" || true
+              exit 1
+            fi
+            sleep 3
+          done
+
+          # Terminate the server
+          kill "${STAGING_PID}" 2>/dev/null || true
+          wait "${STAGING_PID}" 2>/dev/null || true
+
+          if [ "${HEALTHY}" = false ]; then
+            echo "ERROR: staging server did not become healthy within 90s"
+            exit 1
+          fi
+          echo "Staging server smoke test passed"
+
+      - name: Upload staging server log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-staging-log
+          path: ${{ runner.temp }}/staging-server.log
+          if-no-files-found: ignore
+
   release:
     name: Publish GitHub Release
-    needs: build
+    needs: [build, full-dist-linux, smoke-full-dist]
     runs-on: ${{ vars.KOMPILE_RELEASE_RUNNER || 'ubuntu-latest' }}
     if: github.event_name == 'push'        # tags publish; manual dispatch only builds
     steps:
@@ -193,6 +554,35 @@ jobs:
           files: dist/*
           generate_release_notes: true
           fail_on_unmatched_files: true
+
+      - name: Upload stable-named jar assets
+        # Uploads well-known jar names so downstream tooling can reference them
+        # without version strings. Searches downloaded dist/ artifacts and workspace.
+        # Missing jars are skipped gracefully (jars only present in full builds).
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          upload_jar_pattern() {
+            local pattern="$1"
+            local asset_name="$2"
+            local match
+            match="$(find dist . -maxdepth 8 -path "${pattern}" 2>/dev/null | head -1)"
+            if [ -f "${match}" ]; then
+              echo "Uploading ${match} as ${asset_name}"
+              gh release upload "${TAG}" "${match}#${asset_name}" --clobber
+            else
+              echo "Skipping ${asset_name} (no file matched ${pattern})"
+            fi
+          }
+          # Stable-named jars from the full-dist artifact (extracted into dist/).
+          upload_jar_pattern "*/lib/kompile-cli.jar"             "kompile-cli.jar"
+          upload_jar_pattern "*/lib/kompile-server.jar"          "kompile-server.jar"
+          upload_jar_pattern "*/lib/kompile-model-staging.jar"   "kompile-model-staging.jar"
+          # Fallback: look in build target dirs if full-dist wasn't included in upload.
+          upload_jar_pattern "*/kompile-cli-main/*-shaded.jar"   "kompile-cli.jar"
+          upload_jar_pattern "*/kompile-app-main/*-exec.jar"     "kompile-server.jar"
+          upload_jar_pattern "*/kompile-model-staging/*-exec.jar" "kompile-model-staging.jar"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Template: hosted / GPU variants (needs a dedicated or self-hosted runner)

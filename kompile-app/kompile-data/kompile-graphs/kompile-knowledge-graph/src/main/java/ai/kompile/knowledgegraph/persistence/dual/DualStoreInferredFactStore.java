@@ -24,6 +24,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.lang.Nullable;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
@@ -135,7 +136,7 @@ public class DualStoreInferredFactStore implements InferredFactStore {
      * <p>The interrupt flag is cleared before I/O and re-set on exit (see {@link #store}).</p>
      */
     @Override
-    public void storeAll(java.util.Collection<InferredFact> facts) {
+    public void storeAll(Collection<InferredFact> facts) {
         if (facts == null || facts.isEmpty()) return;
 
         // 1. In-memory writes (fast; no interrupt risk)
@@ -146,7 +147,7 @@ public class DualStoreInferredFactStore implements InferredFactStore {
         // 2. Bulk DB persist — clear interrupt to avoid ClosedByInterruptException
         boolean interrupted = Thread.interrupted();
         try {
-            List<InferredFactRow> rows = new java.util.ArrayList<>(facts.size());
+            List<InferredFactRow> rows = new ArrayList<>(facts.size());
             for (InferredFact fact : facts) {
                 String band = StrengthBand.fromScalar(fact.confidence()).name();
                 rows.add(InferredFactRow.builder()
@@ -173,7 +174,7 @@ public class DualStoreInferredFactStore implements InferredFactStore {
         // 3. Async graph materialization (non-blocking)
         if (materializer != null) {
             try {
-                materializer.materialize(new java.util.ArrayList<>(facts), factSheetId);
+                materializer.materialize(new ArrayList<>(facts), factSheetId);
             } catch (Exception e) {
                 log.warn("DualStoreInferredFactStore: bulk graph materialization failed factSheet={} — {}",
                         factSheetId, e.getMessage());
@@ -268,7 +269,7 @@ public class DualStoreInferredFactStore implements InferredFactStore {
      * @param band the StrengthBand to filter on
      * @return facts at that tier, unordered
      */
-    public java.util.Collection<InferredFact> allLatestByBand(StrengthBand band) {
+    public Collection<InferredFact> allLatestByBand(StrengthBand band) {
         try {
             return repo.findLatestByFactSheetIdAndBand(factSheetId, band.name())
                     .stream()
@@ -277,7 +278,7 @@ public class DualStoreInferredFactStore implements InferredFactStore {
         } catch (Exception e) {
             log.warn("DualStoreInferredFactStore: allLatestByBand query failed for factSheet={} band={} — {}",
                     factSheetId, band, e.getMessage());
-            return java.util.List.of();
+            return List.of();
         }
     }
 

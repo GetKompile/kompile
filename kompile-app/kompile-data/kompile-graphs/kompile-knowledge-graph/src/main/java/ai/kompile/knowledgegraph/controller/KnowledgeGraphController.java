@@ -31,6 +31,8 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -140,7 +142,7 @@ public class KnowledgeGraphController {
         if (!dryRun) {
             matches.forEach(graphService::deleteNode);
         }
-        Map<String, Object> body = new java.util.LinkedHashMap<>();
+        Map<String, Object> body = new LinkedHashMap<>();
         body.put("key", key);
         body.put("value", value);
         body.put("matched", matches.size());
@@ -150,7 +152,7 @@ public class KnowledgeGraphController {
     }
 
     private List<String> findNodeIdsByProvenance(String key, String value, Long factSheetId) {
-        List<GraphNode> candidates = new java.util.ArrayList<>();
+        List<GraphNode> candidates = new ArrayList<>();
         if (factSheetId != null) {
             candidates.addAll(graphService.getNodesInFactSheet(factSheetId));
         } else {
@@ -158,7 +160,7 @@ public class KnowledgeGraphController {
                 candidates.addAll(graphService.getNodesByType(level));
             }
         }
-        List<String> ids = new java.util.ArrayList<>();
+        List<String> ids = new ArrayList<>();
         for (GraphNode n : candidates) {
             Map<String, Object> meta = n.getMetadata();
             if (meta != null && value.equals(meta.get(key))) {

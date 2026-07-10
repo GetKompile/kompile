@@ -75,6 +75,7 @@ public class CatalogService {
                         .encoders(new ArrayList<>())
                         .crossEncoders(new ArrayList<>())
                         .vlm(new ArrayList<>())
+                        .llm(new ArrayList<>())
                         .build();
                 return;
             }
@@ -101,6 +102,8 @@ public class CatalogService {
                 List<CatalogModel> crossEncoders = new ArrayList<>();
                 List<CatalogModel> vlm = new ArrayList<>();
 
+                List<CatalogModel> llm = new ArrayList<>();
+
                 if (modelCatalogMap != null) {
                     // Parse encoders
                     List<Map<String, Object>> encodersList = (List<Map<String, Object>>) modelCatalogMap.get("encoders");
@@ -125,6 +128,14 @@ public class CatalogService {
                             vlm.add(parseModel(modelData));
                         }
                     }
+
+                    // Parse LLM models (llm_ggml type; StagingServingBridge auto-loads these)
+                    List<Map<String, Object>> llmList = (List<Map<String, Object>>) modelCatalogMap.get("llm");
+                    if (llmList != null) {
+                        for (Map<String, Object> modelData : llmList) {
+                            llm.add(parseModel(modelData));
+                        }
+                    }
                 }
 
                 staticCatalog = ModelCatalog.builder()
@@ -132,10 +143,11 @@ public class CatalogService {
                         .encoders(encoders)
                         .crossEncoders(crossEncoders)
                         .vlm(vlm)
+                        .llm(llm)
                         .build();
 
-                log.info("Loaded static catalog: {} encoders, {} cross-encoders, {} vlm",
-                        encoders.size(), crossEncoders.size(), vlm.size());
+                log.info("Loaded static catalog: {} encoders, {} cross-encoders, {} vlm, {} llm",
+                        encoders.size(), crossEncoders.size(), vlm.size(), llm.size());
             }
         } catch (IOException e) {
             log.error("Failed to load catalog", e);
@@ -144,6 +156,7 @@ public class CatalogService {
                     .encoders(new ArrayList<>())
                     .crossEncoders(new ArrayList<>())
                     .vlm(new ArrayList<>())
+                    .llm(new ArrayList<>())
                     .build();
         }
     }
@@ -160,6 +173,9 @@ public class CatalogService {
                     .maxSequenceLength((Integer) metadataMap.get("max_sequence_length"))
                     .trainingData((String) metadataMap.get("training_data"))
                     .description((String) metadataMap.get("description"))
+                    .ramMb((Integer) metadataMap.get("ram_mb"))
+                    .vramMb((Integer) metadataMap.get("vram_mb"))
+                    .diskMb((Integer) metadataMap.get("disk_mb"))
                     .build();
         }
 
@@ -190,6 +206,7 @@ public class CatalogService {
                 .encoders(getEncoders())
                 .crossEncoders(getCrossEncoders())
                 .vlm(getVlm())
+                .llm(getLlm())
                 .build();
         return merged;
     }
@@ -252,6 +269,27 @@ public class CatalogService {
     }
 
     /**
+     * Get all LLM models (static catalog + registry llm_ggml entries).
+     * StagingServingBridge uses this to auto-load local chat models at serve time.
+     */
+    public List<CatalogModel> getLlm() {
+        List<CatalogModel> result = new ArrayList<>(
+                staticCatalog.getLlm() != null ? staticCatalog.getLlm() : new ArrayList<>());
+        Set<String> staticIds = new HashSet<>();
+        for (CatalogModel m : result) {
+            staticIds.add(m.getId());
+        }
+        for (ModelEntry entry : getRegistryModels()) {
+            if (entry.getType() != null && ModelType.LLM_GGML.equals(entry.getType())
+                    && !staticIds.contains(entry.getModelId())) {
+                result.add(registryEntryToCatalogModel(entry));
+            }
+        }
+        markInstalled(result);
+        return result;
+    }
+
+    /**
      * Get a model by ID.
      */
     public Optional<CatalogModel> getModel(String modelId) {
@@ -266,6 +304,11 @@ public class CatalogService {
             }
         }
         for (CatalogModel model : getVlm()) {
+            if (model.getId().equals(modelId)) {
+                return Optional.of(model);
+            }
+        }
+        for (CatalogModel model : getLlm()) {
             if (model.getId().equals(modelId)) {
                 return Optional.of(model);
             }
@@ -444,18 +487,18 @@ public class CatalogService {
      * Check if a directory contains any recognized model file.
      */
     private boolean hasAnyModelFile(Path dir) {
-        return dirContainsFileType(dir, ".fb", ".sdz", ".onnx", ".pb", ".h5", ".keras", ".ggml", ".gguf", ".bin", ".safetensors");
+        return dirContainsFileType(dir, ".fb", ".sdz", ".onnx", ".pb", ".h5", ".keras", ".ggml", ".gguf", ".bin", ".safetensors", "pipeline.json");
     }
 
     /**
-     * Check if a directory contains files with any of the given extensions.
+     * Check if a directory contains files with any of the given extensions or exact file names.
      */
     private boolean dirContainsFileType(Path dir, String... extensions) {
         try (var stream = Files.list(dir)) {
             return stream.anyMatch(p -> {
                 String name = p.getFileName().toString().toLowerCase();
                 for (String ext : extensions) {
-                    if (name.endsWith(ext)) return true;
+                    if (ext.startsWith(".") ? name.endsWith(ext) : name.equals(ext)) return true;
                 }
                 return false;
             });

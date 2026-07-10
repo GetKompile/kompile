@@ -21,7 +21,9 @@ import ai.kompile.cli.common.registry.InstanceInfo;
 import ai.kompile.cli.common.registry.InstanceRegistry;
 import picocli.CommandLine;
 
+import java.util.Optional;
 import java.util.concurrent.Callable;
+import java.util.concurrent.TimeUnit;
 
 @CommandLine.Command(name = "stop", description = "Gracefully stop a running Kompile application.")
 public class AppStopCommand implements Callable<Integer> {
@@ -37,9 +39,13 @@ public class AppStopCommand implements Callable<Integer> {
 
     @Override
     public Integer call() throws Exception {
+        InstanceInfo info = null;
         String targetUrl = url;
-        if (targetUrl == null) {
-            InstanceInfo info = InstanceRegistry.get(name);
+        if (targetUrl == null || targetUrl.isBlank()) {
+            info = InstanceRegistry.get(name);
+            if (info == null) {
+                info = InstanceRegistry.findByPort(port);
+            }
             if (info != null) {
                 targetUrl = info.getUrl();
             } else {
@@ -51,11 +57,44 @@ public class AppStopCommand implements Callable<Integer> {
         try {
             client.postEmpty("/actuator/shutdown");
             System.out.println("Shutdown signal sent to " + targetUrl);
-            InstanceRegistry.unregister(name);
+            InstanceRegistry.unregister(info != null ? info.getName() : name);
             return 0;
         } catch (Exception e) {
-            System.err.println("Failed to stop application at " + targetUrl + ": " + e.getMessage());
+            return stopRegisteredProcess(targetUrl, info, e);
+        }
+    }
+
+    private Integer stopRegisteredProcess(String targetUrl, InstanceInfo info, Exception shutdownFailure) {
+        if (info == null) {
+            System.err.println("Failed to stop application at " + targetUrl + ": " + shutdownFailure.getMessage());
+            System.err.println("No registered PID found for --name '" + name + "' or port " + port + ".");
             return 1;
         }
+
+        Optional<ProcessHandle> process = ProcessHandle.of(info.getPid());
+        if (process.isEmpty() || !process.get().isAlive()) {
+            InstanceRegistry.unregister(info.getName());
+            System.out.println("Application process was already stopped; removed stale registry entry for " + info.getName());
+            return 0;
+        }
+
+        System.out.println("Actuator shutdown unavailable at " + targetUrl + ": " + shutdownFailure.getMessage());
+        System.out.println("Stopping registered process " + info.getPid() + " for instance '" + info.getName() + "'...");
+        ProcessHandle handle = process.get();
+        handle.destroy();
+        try {
+            handle.onExit().get(10, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            System.out.println("Graceful stop timed out; force killing PID " + info.getPid());
+            handle.destroyForcibly();
+            try {
+                handle.onExit().get(5, TimeUnit.SECONDS);
+            } catch (Exception ignored) {
+                // ProcessHandle.destroyForcibly is best-effort on some platforms.
+            }
+        }
+        InstanceRegistry.unregister(info.getName());
+        System.out.println("Stopped application '" + info.getName() + "'");
+        return 0;
     }
 }

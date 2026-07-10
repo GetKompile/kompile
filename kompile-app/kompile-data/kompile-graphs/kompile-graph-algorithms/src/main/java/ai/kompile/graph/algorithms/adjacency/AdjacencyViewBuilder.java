@@ -9,12 +9,15 @@
  */
 package ai.kompile.graph.algorithms.adjacency;
 
+import ai.kompile.graph.reasoning.model.GraphRelation;
+import ai.kompile.graph.reasoning.model.ReasoningGraph;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 
 import java.util.List;
+import java.util.Optional;
 
 /**
  * Materializes an {@link AdjacencyView} from the JPA-backed
@@ -40,8 +43,8 @@ public final class AdjacencyViewBuilder {
         } else {
             sources = sourceNodeIds.stream()
                     .map(kgs::getNode)
-                    .filter(java.util.Optional::isPresent)
-                    .map(java.util.Optional::get)
+                    .filter(Optional::isPresent)
+                    .map(Optional::get)
                     .toList();
         }
 
@@ -66,6 +69,24 @@ public final class AdjacencyViewBuilder {
     }
 
     /**
+     * Builds an adjacency view from any store-agnostic reasoning graph, including UnifiedGraph.
+     */
+    public static AdjacencyView fromReasoningGraph(ReasoningGraph graph) {
+        AdjacencyView.Builder b = AdjacencyView.builder();
+        if (graph == null) return b.build();
+        for (var entity : graph.entities()) {
+            b.addNode(entity.id());
+        }
+        for (GraphRelation relation : graph.relations()) {
+            b.addEdge(relation.sourceId(), relation.targetId(), relation.weight());
+            if (!relation.directed()) {
+                b.addEdge(relation.targetId(), relation.sourceId(), relation.weight());
+            }
+        }
+        return b.build();
+    }
+
+    /**
      * Builds an adjacency view for all nodes of a given type.
      */
     public static AdjacencyView fromNodes(KnowledgeGraphService kgs,
@@ -76,8 +97,8 @@ public final class AdjacencyViewBuilder {
         for (GraphNode n : nodes) {
             b.addNode(n.getNodeId());
             for (GraphEdge edge : kgs.getEdgesForNode(n.getNodeId())) {
-                String src = edge.getSourceNode().getNodeId();
-                String tgt = edge.getTargetNode().getNodeId();
+                String src = edge.getSourceNodeId();
+                String tgt = edge.getTargetNodeId();
                 double w = edge.getWeight() != null ? edge.getWeight() : 1.0;
                 b.addEdge(src, tgt, w);
                 if (Boolean.TRUE.equals(edge.getBidirectional())) {
@@ -96,8 +117,8 @@ public final class AdjacencyViewBuilder {
         if (depth > maxDepth) return;
         b.addNode(node.getNodeId());
         for (GraphEdge edge : kgs.getEdgesForNode(node.getNodeId())) {
-            String src = edge.getSourceNode().getNodeId();
-            String tgt = edge.getTargetNode().getNodeId();
+            String src = edge.getSourceNodeId();
+            String tgt = edge.getTargetNodeId();
             double w = edge.getWeight() != null ? edge.getWeight() : 1.0;
             b.addEdge(src, tgt, w);
             if (Boolean.TRUE.equals(edge.getBidirectional())) {

@@ -20,15 +20,18 @@ import ai.kompile.graph.reasoning.mebn.MTheory;
 import ai.kompile.graph.reasoning.mebn.MTheoryValidator;
 import ai.kompile.graph.reasoning.mebn.RelationalMTheoryBuilder;
 import ai.kompile.graph.reasoning.mebn.RelationalMTheoryBuilder.RelationDescriptor;
-import ai.kompile.graph.reasoning.model.MutableReasoningGraph;
+import ai.kompile.graph.reasoning.model.ReasoningGraph;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
+import ai.kompile.knowledgegraph.staging.ModelTrainedEvent;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -82,6 +85,46 @@ public class MebnTheoryRegistrationService {
     }
 
     /**
+     * Refresh only the store-agnostic reasoning graph for a fact sheet.
+     * This keeps semantic consensus available even when no MEBN theory is requested.
+     *
+     * @return the number of entities registered
+     */
+    public int registerReasoningGraphForFactSheet(long factSheetId) {
+        if (knowledgeGraphService == null) {
+            log.warn("[MebnTheoryRegistrationService] KnowledgeGraphService not wired - "
+                    + "cannot register reasoning graph for factSheet={}", factSheetId);
+            return 0;
+        }
+
+        List<GraphNode> nodes = knowledgeGraphService.getNodesInFactSheet(factSheetId);
+        List<GraphEdge> edges = knowledgeGraphService.getEdgesInFactSheet(factSheetId);
+        ReasoningGraph graph = buildReasoningGraph(
+                nodes != null ? nodes : List.of(),
+                edges != null ? edges : List.of());
+        orchestrator.registerReasoningGraph(factSheetId, graph);
+        log.info("[MebnTheoryRegistrationService] Registered reasoning graph for factSheet={}: "
+                        + "{} entities, {} relations",
+                factSheetId, graph.entityCount(), graph.relationCount());
+        return graph.entityCount();
+    }
+
+    /** Refresh semantic reasoning as soon as a completed KGE job has persisted its vectors. */
+    @EventListener
+    public void refreshReasoningGraphAfterKge(ModelTrainedEvent event) {
+        if (event == null || !"kge".equalsIgnoreCase(event.getModelType())) {
+            return;
+        }
+        try {
+            registerReasoningGraphForFactSheet(event.getFactSheetId());
+        } catch (RuntimeException ex) {
+            log.warn("[MebnTheoryRegistrationService] Could not refresh reasoning graph after KGE "
+                            + "for factSheet={}: {}",
+                    event.getFactSheetId(), ex.getMessage());
+        }
+    }
+
+    /**
      * Build and register an {@link MTheory} for the given fact sheet.
      *
      * <p>Steps:</p>
@@ -93,8 +136,8 @@ public class MebnTheoryRegistrationService {
      *   <li>Call {@link #buildEnrichedMTheory} which delegates pure MEBN construction to
      *       {@link RelationalMTheoryBuilder}.</li>
      *   <li>Validate the resulting MTheory and log any violations (does not abort a valid theory).</li>
-     *   <li>Build a {@link MutableReasoningGraph} and call
-     *       {@link IncrementalReasoningOrchestrator#registerMTheory}.</li>
+     *   <li>Build a full-fidelity {@link ReasoningGraph}, including learned node and relation
+     *       embeddings, and call {@link IncrementalReasoningOrchestrator#registerMTheory}.</li>
      * </ol>
      *
      * @param factSheetId the fact sheet to build and register an MTheory for
@@ -107,8 +150,13 @@ public class MebnTheoryRegistrationService {
             return 0;
         }
 
+        List<GraphNode> allNodes = knowledgeGraphService.getNodesInFactSheet(factSheetId);
+        if (allNodes == null) {
+            allNodes = List.of();
+        }
         List<GraphEdge> edges = knowledgeGraphService.getEdgesInFactSheet(factSheetId);
         if (edges == null || edges.isEmpty()) {
+            orchestrator.registerReasoningGraph(factSheetId, buildReasoningGraph(allNodes, List.of()));
             log.info("[MebnTheoryRegistrationService] No edges found for factSheet={} — "
                     + "skipping MTheory registration", factSheetId);
             return 0;
@@ -140,28 +188,8 @@ public class MebnTheoryRegistrationService {
                     factSheetId, validation.violations().size(), validation.violations());
         }
 
-        // ── Build ReasoningGraph from the edge list ───────────────────────────────────
-        MutableReasoningGraph reasoningGraph = new MutableReasoningGraph();
-        for (GraphEdge edge : edges) {
-            GraphNode src = edge.getSourceNode();
-            GraphNode tgt = edge.getTargetNode();
-            if (src == null || tgt == null) continue;
-
-            String srcId = src.getNodeId();
-            String srcType = src.getNodeType() != null ? src.getNodeType().name() : "NODE";
-            String srcLabel = src.getTitle() != null ? src.getTitle() : srcId;
-            reasoningGraph.addEntity(srcId, srcType, srcLabel);
-
-            String tgtId = tgt.getNodeId();
-            String tgtType = tgt.getNodeType() != null ? tgt.getNodeType().name() : "NODE";
-            String tgtLabel = tgt.getTitle() != null ? tgt.getTitle() : tgtId;
-            reasoningGraph.addEntity(tgtId, tgtType, tgtLabel);
-
-            String relId = edge.getEdgeId() != null ? edge.getEdgeId() : srcId + "->" + tgtId;
-            String relType = edgeTypeLabel(edge);
-            double weight = edge.getWeight() != null ? edge.getWeight() : 0.5;
-            reasoningGraph.addRelation(relId, srcId, tgtId, relType != null ? relType : "UNKNOWN", weight);
-        }
+        // Build from all stored nodes so isolated semantic anchors and learned vectors are retained.
+        ReasoningGraph reasoningGraph = buildReasoningGraph(allNodes, edges);
 
         // ── Register with the orchestrator ────────────────────────────────────────────
         orchestrator.registerMTheory(factSheetId, mTheory, reasoningGraph);
@@ -255,6 +283,36 @@ public class MebnTheoryRegistrationService {
     // ─────────────────────────────────────────────────────────────────────────────
     // Helpers
     // ─────────────────────────────────────────────────────────────────────────────
+
+    private ReasoningGraph buildReasoningGraph(Collection<GraphNode> nodes,
+                                                Collection<GraphEdge> edges) {
+        Map<String, GraphNode> reasoningNodes = new LinkedHashMap<>();
+        if (nodes != null) {
+            for (GraphNode node : nodes) {
+                if (node != null && node.getNodeId() != null) {
+                    reasoningNodes.put(node.getNodeId(), node);
+                }
+            }
+        }
+        if (edges != null) {
+            for (GraphEdge edge : edges) {
+                addEndpoint(reasoningNodes, edge != null ? edge.getSourceNode() : null);
+                addEndpoint(reasoningNodes, edge != null ? edge.getTargetNode() : null);
+            }
+        }
+
+        return new KnowledgeGraphReasoningAdapter(knowledgeGraphService)
+                .maxNodes(reasoningNodes.size())
+                .minEdgeWeight(0.0)
+                .preserveParallelRelations(true)
+                .graphFrom(reasoningNodes.values(), edges);
+    }
+
+    private static void addEndpoint(Map<String, GraphNode> nodes, GraphNode candidate) {
+        if (candidate != null && candidate.getNodeId() != null) {
+            nodes.putIfAbsent(candidate.getNodeId(), candidate);
+        }
+    }
 
     /**
      * Derive a human-readable label for an edge's type. Prefers the semantic

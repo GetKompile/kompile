@@ -16,36 +16,31 @@
 
 package ai.kompile.app.services;
 
-import ai.kompile.app.services.scheduler.ResourceSchedulerConfigService;
+import ai.kompile.core.crawl.graph.DeferredWorkSource;
 import ai.kompile.core.crawl.graph.UnifiedCrawlJob;
 import ai.kompile.core.crawl.graph.UnifiedCrawlService;
-import jakarta.annotation.PostConstruct;
-import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
-
 /**
- * Drains crawl jobs left in {@code COMPLETED_PENDING_EMBEDDING}, completing their deferred embedding
- * once the embedding model and GPU capacity are available.
+ * {@link DeferredWorkSource} that drains crawl jobs left in {@code COMPLETED_PENDING_EMBEDDING},
+ * completing their deferred embedding once the embedding model and GPU capacity are available.
  *
  * <p>Closes the gap where deferred chunks were stranded forever: a heavy local workload (embedding)
- * is deferred under GPU pressure (or when the model isn't ready) and this resumer re-runs it later,
+ * is deferred under GPU pressure (or when the model isn't ready) and this source re-runs it later,
  * flipping the job to {@code COMPLETED}. It consults the {@link ResourceGovernor} for GPU headroom so
  * it never competes with an active crawl for VRAM, and relies on the in-pipeline memory backpressure
  * inside {@code indexDocuments()} as a second guard.</p>
+ *
+ * <p>The polling schedule is owned by the shared {@link DeferredWorkDrainer}; this class only
+ * declares its capacity gate ({@link #hasCapacity()}) and drain action ({@link #drainAvailable()}).</p>
  */
 @Service
-public class DeferredEmbeddingResumer {
+public class DeferredEmbeddingResumer implements DeferredWorkSource {
 
     private static final Logger log = LoggerFactory.getLogger(DeferredEmbeddingResumer.class);
-    private static final long MIN_PERIOD_MS = 10_000L;
 
     @Autowired(required = false)
     private UnifiedCrawlService unifiedCrawlService;
@@ -53,47 +48,21 @@ public class DeferredEmbeddingResumer {
     @Autowired(required = false)
     private ResourceGovernor governor;
 
-    @Autowired
-    private ResourceSchedulerConfigService configService;
-
-    private final AtomicBoolean running = new AtomicBoolean(false);
-    private ScheduledExecutorService scheduler;
-
-    @PostConstruct
-    public void start() {
-        if (unifiedCrawlService == null) {
-            log.info("DeferredEmbeddingResumer disabled — no UnifiedCrawlService present");
-            return;
-        }
-        long periodMs = Math.max(MIN_PERIOD_MS,
-                configService.getConfiguration().getGovernorDeferredEmbeddingResumeMs());
-        scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-            Thread t = new Thread(r, "deferred-embedding-resumer");
-            t.setDaemon(true);
-            return t;
-        });
-        scheduler.scheduleWithFixedDelay(this::tick, periodMs, periodMs, TimeUnit.MILLISECONDS);
-        log.info("DeferredEmbeddingResumer started (period={}ms)", periodMs);
+    @Override
+    public String name() {
+        return "embedding";
     }
 
-    @PreDestroy
-    public void stop() {
-        if (scheduler != null) {
-            scheduler.shutdownNow();
-        }
+    @Override
+    public boolean hasCapacity() {
+        // Need the crawl service to resume, and GPU headroom so we don't starve an active crawl of VRAM.
+        return unifiedCrawlService != null
+                && (governor == null || governor.hasGpuHeadroom("EMBEDDING"));
     }
 
-    private void tick() {
-        if (!running.compareAndSet(false, true)) {
-            return; // a prior tick is still running (also impossible with fixed-delay, but be safe)
-        }
-        try {
-            resumeEligibleJobs();
-        } catch (Exception e) {
-            log.debug("Deferred embedding resume tick failed: {}", e.getMessage());
-        } finally {
-            running.set(false);
-        }
+    @Override
+    public int drainAvailable() {
+        return resumeEligibleJobs();
     }
 
     /** Scan all jobs and resume eligible deferred embeddings. Returns the number of jobs resumed. */

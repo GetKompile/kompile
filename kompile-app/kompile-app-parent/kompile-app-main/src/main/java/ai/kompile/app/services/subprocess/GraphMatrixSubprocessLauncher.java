@@ -17,8 +17,8 @@ package ai.kompile.app.services.subprocess;
 
 import ai.kompile.app.subprocess.ManagedSubprocessLauncher;
 import jakarta.annotation.PostConstruct;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -48,19 +48,20 @@ import java.util.concurrent.atomic.AtomicReference;
  * {@code VectorStoreMatrixGraphStore} remains {@code @Primary} (current behaviour; dev/small graphs).</p>
  */
 @Service
-@ConditionalOnProperty(
-        name = "kompile.graph.subprocess.enabled",
-        havingValue = "true",
-        matchIfMissing = false)
+// Always starts the graph-matrix subprocess at boot — isolation is the default, not a Spring-gated opt-in.
+// Enable/disable + heap are kompile JSON managed-config (SubprocessConfigService), never a Spring property.
 public class GraphMatrixSubprocessLauncher extends ManagedSubprocessLauncher {
 
     private static final String SUBPROCESS_ID = "graph-matrix";
     private static final String MAIN_CLASS =
             "ai.kompile.app.subprocess.GraphMatrixSubprocessMain";
 
-    /** Heap for the matrix subsystem — the in-heap matrix lives HERE now (default 32 g). */
-    @Value("${kompile.graph.subprocess.heap-mb:32768}")
-    private int heapMb;
+    /** Default heap for the matrix subsystem (32 g); overridden per-type via the SubprocessConfigService JSON. */
+    private static final int DEFAULT_HEAP_MB = 32768;
+
+    /** UI-controllable managed-config (subprocess-ingest-config.json → subprocessTypes.graph-matrix). */
+    @Autowired(required = false)
+    private SubprocessConfigService subprocessConfig;
 
     /** Loopback HTTP port the subprocess serves graph operations on. */
     @Value("${kompile.graph.subprocess.port:8094}")
@@ -103,7 +104,22 @@ public class GraphMatrixSubprocessLauncher extends ManagedSubprocessLauncher {
 
     @Override
     protected int getHeapMb() {
-        return heapMb;
+        return subprocessConfig != null
+                ? parseHeapMb(subprocessConfig.heapSizeForType("graph-matrix", "32g"), DEFAULT_HEAP_MB)
+                : DEFAULT_HEAP_MB;
+    }
+
+    /** Parse a heap-size string ({@code "32g"}, {@code "4096m"}, {@code "2048"}) to MB. */
+    private static int parseHeapMb(String heap, int defaultMb) {
+        if (heap == null || heap.isBlank()) return defaultMb;
+        String h = heap.trim().toLowerCase();
+        try {
+            if (h.endsWith("g")) return (int) (Double.parseDouble(h.substring(0, h.length() - 1)) * 1024);
+            if (h.endsWith("m")) return (int) Double.parseDouble(h.substring(0, h.length() - 1));
+            return Integer.parseInt(h);
+        } catch (NumberFormatException e) {
+            return defaultMb;
+        }
     }
 
     @Override
@@ -113,14 +129,24 @@ public class GraphMatrixSubprocessLauncher extends ManagedSubprocessLauncher {
         return maxPhysicalMbConfig > 0 ? maxPhysicalMbConfig : 0L;
     }
 
+    /**
+     * The matrix store does no GPU compute (sparse JVM-heap maps + trivial INDArray node embeddings);
+     * it must select the CPU ND4J backend so it neither contends for GPU memory with the embedding
+     * lane nor crashes loading a CUDA context it never set up. Declared via the device-abstract
+     * backend-preference mechanism — the base emits the real {@code org.nd4j.*.priority} selection
+     * flags, no CUDA env vars. (Before: it set the inert {@code nd4j.backend.priority=CPU} and loaded
+     * CUDA anyway on the dual-backend jar — 2026-07-05.)
+     */
+    @Override
+    protected BackendPreference getBackendPreference() {
+        return BackendPreference.CPU;
+    }
+
     @Override
     protected List<String> getExtraJvmArgs() {
-        // CPU-safe ND4J defaults when the parent didn't set them (mirrors LearningSubprocessLauncher):
-        // a no-GPU host otherwise probes CUDA at Nd4j.<clinit> and crashes the subprocess.
         List<String> args = new ArrayList<>();
-        if (System.getProperty("nd4j.backend.priority") == null) {
-            args.add("-Dnd4j.backend.priority=CPU");
-        }
+        // Keep multi-backend probing off so no code path re-initialises a second (CUDA) backend after
+        // the CPU one is selected. Backend SELECTION itself is handled by getBackendPreference().
         if (System.getProperty("nd4j.multibackend.enabled") == null) {
             args.add("-Dnd4j.multibackend.enabled=false");
         }
@@ -162,11 +188,15 @@ public class GraphMatrixSubprocessLauncher extends ManagedSubprocessLauncher {
      */
     @PostConstruct
     public void start() {
+        if (subprocessConfig != null && !subprocessConfig.isTypeEnabled("graph-matrix", true)) {
+            log.info("[graph-matrix] disabled via subprocess-ingest-config.json (subprocessTypes.graph-matrix.enabled=false) — not spawning");
+            return;
+        }
         try {
             ManagedRun r = startProcess(SUBPROCESS_ID, null, List.of("--port=" + port), payload -> { });
             run.set(r);
             log.info("[graph-matrix] persistent subprocess started on port {} (heap {} MB) — owns the in-heap matrix",
-                    port, heapMb);
+                    port, getHeapMb());
         } catch (Exception e) {
             log.error("[graph-matrix] failed to start persistent subprocess: {}", e.getMessage(), e);
         }

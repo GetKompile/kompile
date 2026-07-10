@@ -102,9 +102,9 @@ public abstract class AbstractConversationalLanguageModel implements Conversatio
             return response;
             
         } catch (Exception e) {
-            logger.error("Error generating conversational response for conversation {}: {}", 
+            logger.error("Error generating conversational response for conversation {}: {}",
                     conversationId, e.getMessage(), e);
-            return "Error: Unable to generate response. " + e.getMessage();
+            throw new IllegalStateException("Unable to generate conversational response", e);
         }
     }
 
@@ -128,10 +128,9 @@ public abstract class AbstractConversationalLanguageModel implements Conversatio
             return response;
             
         } catch (Exception e) {
-            logger.error("Error generating conversational response with tool calls for conversation {}: {}", 
+            logger.error("Error generating conversational response with tool calls for conversation {}: {}",
                     conversationId, e.getMessage(), e);
-            // Return error response
-            return createErrorResponse("Error: Unable to generate response. " + e.getMessage());
+            throw new IllegalStateException("Unable to generate conversational response with tool calls", e);
         }
     }
 
@@ -211,9 +210,9 @@ public abstract class AbstractConversationalLanguageModel implements Conversatio
                             conversationId, error.getMessage(), error));
             
         } catch (Exception e) {
-            logger.error("Error starting streaming conversational response for conversation {}: {}", 
+            logger.error("Error starting streaming conversational response for conversation {}: {}",
                     conversationId, e.getMessage(), e);
-            return reactor.core.publisher.Flux.just("Error: Unable to generate streaming response. " + e.getMessage());
+            return reactor.core.publisher.Flux.error(new IllegalStateException("Unable to generate streaming response", e));
         }
     }
 
@@ -257,9 +256,9 @@ public abstract class AbstractConversationalLanguageModel implements Conversatio
             return generateConversationalResponse(conversationId, userQuery, context);
             
         } catch (Exception e) {
-            logger.error("Error generating enhanced conversational response for conversation {}: {}", 
+            logger.error("Error generating enhanced conversational response for conversation {}: {}",
                     conversationId, e.getMessage(), e);
-            return "Error: Unable to generate enhanced response. " + e.getMessage();
+            throw new IllegalStateException("Unable to generate enhanced conversational response", e);
         }
     }
 
@@ -278,15 +277,6 @@ public abstract class AbstractConversationalLanguageModel implements Conversatio
         
         return String.format("Context:\n%s\n\nUser Query: %s", context.trim(), userQuery);
     }
-
-    /**
-     * Creates an error response for exceptional cases.
-     * Subclasses can override this to customize error handling.
-     * 
-     * @param errorMessage the error message
-     * @return the error chat response
-     */
-    protected abstract ChatResponse createErrorResponse(String errorMessage);
 
     /**
      * Gets the underlying LLMChat for advanced operations.

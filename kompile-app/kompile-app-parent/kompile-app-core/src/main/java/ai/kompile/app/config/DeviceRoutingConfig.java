@@ -24,7 +24,7 @@ import java.util.Map;
 /**
  * Configuration for per-service device routing.
  * Allows different subprocess types (embedding, ingest, vectorPopulation, modelInit)
- * to run on different devices (CPU, specific GPU).
+ * to optionally override backend/device settings while leaving defaults to ND4J.
  *
  * <p>When enabled, the global {@link Nd4jEnvironmentConfig} is merged with
  * per-service overrides before being passed to each subprocess.</p>
@@ -55,8 +55,8 @@ public record DeviceRoutingConfig(
      */
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record ServiceDeviceConfig(
-            @JsonProperty("deviceType") String deviceType,       // "cpu", "cuda", or null (use global)
-            @JsonProperty("cudaDeviceId") Integer cudaDeviceId,  // GPU index when deviceType="cuda"
+            @JsonProperty("deviceType") String deviceType,       // "cpu", "cuda", or null (use ND4J default)
+            @JsonProperty("cudaDeviceId") Integer cudaDeviceId,  // optional GPU index; null leaves selection to ND4J
             @JsonProperty("maxThreads") Integer maxThreads,      // Override thread count
             @JsonProperty("maxDeviceMemory") Long maxDeviceMemory // Memory limit override (bytes)
     ) {}

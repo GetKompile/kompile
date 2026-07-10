@@ -26,8 +26,10 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * Repository for GraphNode entities.
@@ -214,7 +216,7 @@ public interface GraphNodeRepository extends JpaRepository<GraphNode, Long> {
      */
     @Query("SELECT n FROM GraphNode n WHERE n.externalId IN :externalIds AND n.nodeType = :nodeType AND n.factSheetId = :factSheetId")
     List<GraphNode> findByExternalIdInAndNodeTypeAndFactSheetId(
-        @Param("externalIds") java.util.Set<String> externalIds,
+        @Param("externalIds") Set<String> externalIds,
         @Param("nodeType") NodeLevel nodeType,
         @Param("factSheetId") Long factSheetId
     );
@@ -224,7 +226,7 @@ public interface GraphNodeRepository extends JpaRepository<GraphNode, Long> {
      */
     @Query("SELECT n FROM GraphNode n WHERE n.externalId IN :externalIds AND n.nodeType = :nodeType")
     List<GraphNode> findByExternalIdInAndNodeType(
-        @Param("externalIds") java.util.Set<String> externalIds,
+        @Param("externalIds") Set<String> externalIds,
         @Param("nodeType") NodeLevel nodeType
     );
 
@@ -232,7 +234,7 @@ public interface GraphNodeRepository extends JpaRepository<GraphNode, Long> {
      * Find nodes by a list of node UUIDs
      */
     @Query("SELECT n FROM GraphNode n WHERE n.nodeId IN :nodeIds")
-    List<GraphNode> findByNodeIdIn(@Param("nodeIds") java.util.List<String> nodeIds);
+    List<GraphNode> findByNodeIdIn(@Param("nodeIds") List<String> nodeIds);
 
     /**
      * Find nodes with KG embeddings in a fact sheet
@@ -294,7 +296,7 @@ public interface GraphNodeRepository extends JpaRepository<GraphNode, Long> {
            "AND n.nodeType IN :types AND (n.stale IS NULL OR n.stale = false) " +
            "AND NOT EXISTS (SELECT e FROM GraphEdge e WHERE e.sourceNode = n OR e.targetNode = n)")
     List<GraphNode> findGraphOrphanNodes(@Param("factSheetId") Long factSheetId,
-                                         @Param("types") java.util.Collection<NodeLevel> types);
+                                         @Param("types") Collection<NodeLevel> types);
 
     /**
      * Find entities with low confidence in a fact sheet

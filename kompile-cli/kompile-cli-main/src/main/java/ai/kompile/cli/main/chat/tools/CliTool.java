@@ -55,4 +55,19 @@ public interface CliTool {
     default McpToolAnnotations mcpAnnotations() {
         return McpToolAnnotations.WRITE;
     }
+
+    /**
+     * A curated one-line "compact form" of this tool, used when the MCP schema
+     * optimizer compresses tool definitions at the COMPACT/AGGRESSIVE levels —
+     * which otherwise blind-truncate {@link #description()} to a few dozen
+     * characters and strip every parameter description. Return the single most
+     * useful line an agent needs to call the tool correctly: its purpose plus
+     * its #1 gotcha (valid parameter values, the common failure mode). Keep it
+     * to one dense line (≲180 chars); it is substituted verbatim for the
+     * truncated description. Return {@code null} (the default) to fall back to
+     * blind truncation of {@link #description()}.
+     */
+    default String compactHint() {
+        return null;
+    }
 }

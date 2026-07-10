@@ -23,6 +23,7 @@ import ai.kompile.process.discovery.mining.log.EventLog;
 import ai.kompile.process.discovery.mining.tree.ProcessTree;
 import ai.kompile.process.discovery.mining.tree.ProcessTreeNode;
 
+import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -134,7 +135,7 @@ public final class ConformanceChecker {
                 Set<String> end = new LinkedHashSet<>();
                 Set<Arc> df = new LinkedHashSet<>();
                 boolean empty = true;
-                List<Set<String>> branchActivities = new java.util.ArrayList<>();
+                List<Set<String>> branchActivities = new ArrayList<>();
                 for (ProcessTreeNode c : node.children()) {
                     Footprint f = footprint(c);
                     start.addAll(f.start);
@@ -160,7 +161,7 @@ public final class ConformanceChecker {
                 Set<String> start = new LinkedHashSet<>(body.start);
                 Set<String> end = new LinkedHashSet<>(body.end);
 
-                List<Footprint> redos = new java.util.ArrayList<>();
+                List<Footprint> redos = new ArrayList<>();
                 for (int i = 1; i < children.size(); i++) {
                     Footprint redo = footprint(children.get(i));
                     redos.add(redo);

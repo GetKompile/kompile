@@ -218,9 +218,15 @@ public class CRNNRecognizer extends AbstractSameDiffOcrModel implements TextReco
             // Apply softmax if not already
             INDArray softmax = Nd4j.nn().softmax(probs, 0);
 
-            // Get best index
-            int bestIndex = Nd4j.argMax(softmax, 0).getInt(0);
-            double bestProb = softmax.getDouble(bestIndex);
+            double[] probValues = toHostDoubleVector(softmax);
+            int bestIndex = 0;
+            double bestProb = probValues.length > 0 ? probValues[0] : 0.0;
+            for (int i = 1; i < probValues.length; i++) {
+                if (probValues[i] > bestProb) {
+                    bestProb = probValues[i];
+                    bestIndex = i;
+                }
+            }
 
             // CTC decoding: skip blanks and repeated characters
             if (bestIndex != blankIndex && bestIndex != prevIndex) {
@@ -228,7 +234,7 @@ public class CRNNRecognizer extends AbstractSameDiffOcrModel implements TextReco
                 text.append(c);
 
                 // Get alternatives
-                List<CharAlternative> alternatives = getAlternatives(softmax, bestIndex);
+                List<CharAlternative> alternatives = getAlternatives(probValues, bestIndex);
 
                 predictions.add(new CharPrediction(
                         c.isEmpty() ? ' ' : c.charAt(0),
@@ -251,13 +257,13 @@ public class CRNNRecognizer extends AbstractSameDiffOcrModel implements TextReco
     /**
      * Gets top-k alternative predictions for a character.
      */
-    private List<CharAlternative> getAlternatives(INDArray probs, int bestIndex) {
+    private List<CharAlternative> getAlternatives(double[] probs, int bestIndex) {
         List<CharAlternative> alternatives = new ArrayList<>();
 
         // Create list of (index, probability) pairs
-        List<int[]> indexedProbs = new ArrayList<>();
-        for (int i = 0; i < probs.length(); i++) {
-            indexedProbs.add(new int[]{i, (int)(probs.getDouble(i) * 10000)});
+        List<int[]> indexedProbs = new ArrayList<>(probs.length);
+        for (int i = 0; i < probs.length; i++) {
+            indexedProbs.add(new int[]{i, (int) (probs[i] * 10000)});
         }
 
         // Sort by probability descending
@@ -270,7 +276,7 @@ public class CRNNRecognizer extends AbstractSameDiffOcrModel implements TextReco
             int idx = pair[0];
             if (idx != bestIndex && idx != blankIndex) {
                 String c = indexToChar.getOrDefault(idx, "?");
-                double prob = probs.getDouble(idx);
+                double prob = probs[idx];
                 if (prob > 0.01) {
                     alternatives.add(new CharAlternative(
                             c.isEmpty() ? ' ' : c.charAt(0),
@@ -282,5 +288,25 @@ public class CRNNRecognizer extends AbstractSameDiffOcrModel implements TextReco
         }
 
         return alternatives;
+    }
+
+    private double[] toHostDoubleVector(INDArray array) {
+        if (array == null) return new double[0];
+        long length = array.length();
+        if (length > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException("INDArray too large to materialize as double[]: " + length);
+        }
+        if (array.elementWiseStride() == 1) {
+            return array.data().getDoublesAt(array.offset(), (int) length);
+        }
+        INDArray copy = null;
+        try {
+            copy = array.dup('c');
+            return copy.data().getDoublesAt(copy.offset(), (int) length);
+        } finally {
+            if (copy != null && !copy.wasClosed()) {
+                copy.close();
+            }
+        }
     }
 }

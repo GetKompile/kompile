@@ -321,7 +321,9 @@ public sealed interface SubprocessMessage
                     new java.util.ArrayList<>(jvmArgs),
                     inputFiles != null ? inputFiles : java.util.List.of(),
                     System.getenv("ND4J_BACKEND"),
-                    System.getenv("CUDA_VISIBLE_DEVICES"),
+                    // Device-agnostic placement diagnostic (NOT the vendor CUDA_VISIBLE_DEVICES env):
+                    // report the ND4J placement default the scheduler actually pins with.
+                    System.getProperty("nd4j.placement.defaultDevice"),
                     System.getenv("OMP_NUM_THREADS"),
                     System.getenv("MKL_NUM_THREADS"),
                     nd4jEnvironmentInvoked,

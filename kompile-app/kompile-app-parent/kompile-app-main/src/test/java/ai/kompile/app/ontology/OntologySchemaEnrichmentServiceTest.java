@@ -30,15 +30,38 @@ class OntologySchemaEnrichmentServiceTest {
     void generateSchemaAndTypes_rerunsOwlOnlyWhenTypeInductionChangedSchema() {
         OwlReasoningService owl = mock(OwlReasoningService.class);
         OntologyTypeInductionService induction = mock(OntologyTypeInductionService.class);
+        RelationSchemaResolutionService relations = mock(RelationSchemaResolutionService.class);
         OwlClassificationResponse first = response(1);
         OwlClassificationResponse second = response(2);
         when(owl.classify(7L)).thenReturn(first, second);
         when(induction.enrichAfterOwl(7L)).thenReturn(new OntologyTypeInductionResult(true, 1, 1, 2));
+        when(relations.resolveRelationSchema(7L))
+                .thenReturn(RelationSchemaResolutionService.Result.unchanged(0, 2));
 
-        OwlClassificationResponse result = new OntologySchemaEnrichmentService(owl, induction)
+        OwlClassificationResponse result = new OntologySchemaEnrichmentService(owl, induction, relations)
                 .generateSchemaAndTypes(7L);
 
         assertSame(second, result);
+        verify(owl, times(2)).classify(7L);
+    }
+
+    @Test
+    void generateSchemaAndTypes_rerunsOwlWhenOnlyRelationResolutionChangedSchema() {
+        OwlReasoningService owl = mock(OwlReasoningService.class);
+        OntologyTypeInductionService induction = mock(OntologyTypeInductionService.class);
+        RelationSchemaResolutionService relations = mock(RelationSchemaResolutionService.class);
+        OwlClassificationResponse first = response(1);
+        OwlClassificationResponse second = response(2);
+        when(owl.classify(7L)).thenReturn(first, second);
+        when(induction.enrichAfterOwl(7L)).thenReturn(OntologyTypeInductionResult.unchanged(2));
+        when(relations.resolveRelationSchema(7L))
+                .thenReturn(new RelationSchemaResolutionService.Result(true, 5, 2, 1, 3));
+
+        OwlClassificationResponse result = new OntologySchemaEnrichmentService(owl, induction, relations)
+                .generateSchemaAndTypes(7L);
+
+        assertSame(second, result,
+                "new domain/range/transitive metadata must re-run OWL so the TBox picks it up");
         verify(owl, times(2)).classify(7L);
     }
 

@@ -23,7 +23,7 @@
         <mat-icon>psychology</mat-icon>
         KB Confidence / Learning
       </h3>
-      <p>Configure PSL learning, evidence priors, source trust weights, and MEBN parameters for the knowledge-base confidence model.</p>
+      <p>Configure rule weight learning (PSL), evidence priors, source trust weights, and Bayesian relational model (MEBN) parameters for the knowledge-base confidence model.</p>
     </div>
     <button mat-icon-button matTooltip="Refresh" (click)="loadConfiguration()">
       <mat-icon>refresh</mat-icon>
@@ -58,14 +58,14 @@
           <mat-icon>school</mat-icon>
           Learner
         </mat-panel-title>
-        <mat-panel-description>PSL weight-learning hyperparameters</mat-panel-description>
+        <mat-panel-description matTooltip="Probabilistic Soft Logic — learns rule weights from data">Rule weights (PSL) hyperparameters</mat-panel-description>
       </mat-expansion-panel-header>
 
       <!-- Learning enabled master toggle -->
       <div class="config-row toggle-row">
         <div class="config-info">
           <span class="config-label">Enable KB Learning</span>
-          <span class="config-description">Master switch for PSL weight learning. When off, rule weights are frozen at their current values.</span>
+          <span class="config-description">Master switch for rule weight learning (PSL). When off, rule weights are frozen at their current values.</span>
         </div>
         <mat-slide-toggle
           [(ngModel)]="config.kbLearningEnabled"
@@ -263,17 +263,17 @@
       <mat-expansion-panel-header>
         <mat-panel-title>
           <mat-icon>hub</mat-icon>
-          MEBN
+          Bayesian relational model (MEBN)
         </mat-panel-title>
-        <mat-panel-description>Multi-entity Bayesian Network learning schedule</mat-panel-description>
+        <mat-panel-description matTooltip="Multi-Entity Bayesian Networks — probabilistic relational model for the knowledge graph">Bayesian Network learning schedule</mat-panel-description>
       </mat-expansion-panel-header>
 
       <div class="fields-grid">
         <mat-form-field appearance="outline">
-          <mat-label>MEBN Learning Interval</mat-label>
+          <mat-label>Bayesian Model Learning Interval</mat-label>
           <input matInput type="number" [(ngModel)]="config.kbMebnLearningInterval"
                  [ngModelOptions]="{standalone: true}" min="1" step="1">
-          <mat-hint>Run MEBN parameter update every N graph mutations</mat-hint>
+          <mat-hint>Run Bayesian relational model (MEBN) parameter update every N graph mutations</mat-hint>
         </mat-form-field>
       </div>
     </mat-expansion-panel>
@@ -315,6 +315,43 @@
                         [ngModelOptions]="{standalone: true}" class="toggle-row">
         Always prune SUPPRESSED-band edges
       </mat-slide-toggle>
+    </mat-expansion-panel>
+
+    <!-- ── Section: Alias Unification (WP14b) ─────────────────────── -->
+    <mat-expansion-panel class="section-panel">
+      <mat-expansion-panel-header>
+        <mat-panel-title>
+          <mat-icon>join_full</mat-icon>
+          Alias Unification
+        </mat-panel-title>
+        <mat-panel-description>Reasoning-time identity: aliased entities share KB atoms so corroboration accumulates (non-destructive)</mat-panel-description>
+      </mat-expansion-panel-header>
+
+      <mat-slide-toggle [(ngModel)]="config.kbAliasUnifyEnabled"
+                        [ngModelOptions]="{standalone: true}" class="toggle-row">
+        Unify ALIAS_OF / RESOLVES_TO clusters at projection time
+      </mat-slide-toggle>
+
+      <mat-slide-toggle [(ngModel)]="config.kbAliasEmbeddingUnifyEnabled"
+                        [ngModelOptions]="{standalone: true}" class="toggle-row">
+        Also unify near-identical embeddings (same entity_type only)
+      </mat-slide-toggle>
+
+      <div class="fields-grid">
+        <mat-form-field appearance="outline">
+          <mat-label>Min alias-edge confidence</mat-label>
+          <input matInput type="number" [(ngModel)]="config.kbAliasUnifyMinConfidence"
+                 [ngModelOptions]="{standalone: true}" min="0" max="1" step="0.05">
+          <mat-hint>ALIAS_OF/RESOLVES_TO edges below this never unify (e.g. 0.75)</mat-hint>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Min embedding similarity</mat-label>
+          <input matInput type="number" [(ngModel)]="config.kbAliasEmbeddingMinSimilarity"
+                 [ngModelOptions]="{standalone: true}" min="0.5" max="1" step="0.01">
+          <mat-hint>Identity needs near-duplicates (0.95) — far above topic relatedness (~0.7)</mat-hint>
+        </mat-form-field>
+      </div>
     </mat-expansion-panel>
 
     <!-- ── Section: Ontology Tie-in ──────────────────────────────── -->

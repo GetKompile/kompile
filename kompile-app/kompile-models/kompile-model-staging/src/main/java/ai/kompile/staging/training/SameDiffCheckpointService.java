@@ -29,7 +29,7 @@ import java.util.Optional;
  * Optional integration layer for SameDiff FlatBuffers (.fb) checkpoint persistence.
  *
  * <p>This service wraps the ND4J {@link SameDiff} API directly (typed, no reflection) and
- * provides a {@link #isAvailable()} guard so callers can fall back to simulation when a
+ * provides a {@link #isAvailable()} guard so callers can fail before checkpoint work when a
  * native ND4J backend is absent.  The compile-time dependency on {@code nd4j-api} is
  * already satisfied transitively via {@code nd4j-native} in the pom; no extra dep is
  * needed.  A running backend (CPU or CUDA) is required only at runtime for actual
@@ -72,7 +72,7 @@ public class SameDiffCheckpointService {
                 log.info("ND4J backend available — SameDiff checkpoint integration enabled");
             } catch (ClassNotFoundException e) {
                 available = false;
-                log.info("ND4J Nd4j factory class not found — SameDiff checkpoint integration disabled (simulation mode)");
+                log.info("ND4J Nd4j factory class not found — SameDiff checkpoint integration disabled");
             } catch (Throwable t) {
                 // UnsatisfiedLinkError, ExceptionInInitializerError, etc. when native lib absent
                 available = false;

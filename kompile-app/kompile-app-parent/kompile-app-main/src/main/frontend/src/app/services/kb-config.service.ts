@@ -57,6 +57,12 @@ export interface KbConfig {
   kbPrunePolicyMinExpectation: number;
   kbPrunePolicyPruneSuppressedBand: boolean;
 
+  // WP14b alias unification (projection-time, non-destructive)
+  kbAliasUnifyEnabled: boolean;
+  kbAliasUnifyMinConfidence: number;
+  kbAliasEmbeddingUnifyEnabled: boolean;
+  kbAliasEmbeddingMinSimilarity: number;
+
   // Ontology tie-in (P1 extraction guidance, P3 rule weight)
   kbOntologyGuidedExtractionEnabled: boolean;
   kbOntologyRuleWeight: number;
@@ -119,6 +125,10 @@ export class KbConfigService {
       kbPrunePolicyMaxUncertainty: 0.80,
       kbPrunePolicyMinExpectation: 0.15,
       kbPrunePolicyPruneSuppressedBand: true,
+      kbAliasUnifyEnabled: true,
+      kbAliasUnifyMinConfidence: 0.75,
+      kbAliasEmbeddingUnifyEnabled: true,
+      kbAliasEmbeddingMinSimilarity: 0.95,
       kbOntologyGuidedExtractionEnabled: true,
       kbOntologyRuleWeight: 0.8,
       kbRuleWeightEstablishedMean: 0.9,

@@ -48,6 +48,24 @@ public class ComponentRegistryTest {
     }
 
     @Test
+    public void testResolveInstallBaseDirHonorsSystemProperty() {
+        String prev = System.getProperty("kompile.install.dir");
+        try {
+            System.setProperty("kompile.install.dir", "/opt/kompile-test-install");
+            assertEquals("/opt/kompile-test-install",
+                    ComponentRegistry.resolveInstallBaseDir().getPath());
+        } finally {
+            if (prev == null) {
+                System.clearProperty("kompile.install.dir");
+            } else {
+                System.setProperty("kompile.install.dir", prev);
+            }
+        }
+        // Without the property, falls back to env or ~/.kompile — never null.
+        assertNotNull(ComponentRegistry.resolveInstallBaseDir());
+    }
+
+    @Test
     public void testComponentLookup() {
         ComponentRegistry registry = new ComponentRegistry();
         assertTrue(registry.getComponent(ComponentRegistry.KOMPILE_APP_MAIN).isPresent());

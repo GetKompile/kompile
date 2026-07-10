@@ -33,7 +33,7 @@ The `bash` tool is RESTRICTED to system commands only: compiling, testing, git o
 ## AVAILABLE TOOLS
 
 File I/O: `read`, `write`, `edit`, `patch`
-Search: `grep`, `glob`, `list`, `code_search`, `code_graph`, `local_code_index`
+Search: `grep`, `glob`, `list`, `code_search`, `code_graph`, `local_code_index`, `lsp`
 Execution: `bash` (restricted), `process`
 Knowledge: `rag_search`, `graph_search`, `memory`
 Tasks: `todowrite`, `todoread`

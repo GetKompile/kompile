@@ -46,6 +46,11 @@
             </div>
           </div>
           <div class="header-actions">
+            <button mat-raised-button color="accent" (click)="openStartCrawlDialog()" [disabled]="hasActiveProcessing()"
+              matTooltip="Start a web or directory crawl into this fact sheet">
+              <mat-icon>travel_explore</mat-icon>
+              Start Crawl
+            </button>
             <button mat-raised-button color="primary" (click)="openAddFactDialog()" [disabled]="hasActiveProcessing()">
               <mat-icon>add_circle</mat-icon>
               Add Facts
@@ -452,9 +457,11 @@
                       <span *ngIf="upload.stats?.memoryUsagePercent"> | {{ upload.stats?.memoryUsagePercent |
                         number:'1.0-0' }}% mem</span>
                       <mat-chip *ngIf="upload.stats?.subprocessRuntimeInfo?.processMode === 'SUBPROCESS'"
-                        class="mode-chip-small subprocess-mode">SUBPROCESS</mat-chip>
+                        class="mode-chip-small subprocess-mode"
+                        matTooltip="Runs in an isolated worker process">SUBPROCESS</mat-chip>
                       <mat-chip *ngIf="upload.stats?.subprocessRuntimeInfo?.processMode !== 'SUBPROCESS'"
-                        class="mode-chip-small in-memory-mode">IN-PROCESS</mat-chip>
+                        class="mode-chip-small in-memory-mode"
+                        matTooltip="Runs inside the server process">IN-PROCESS</mat-chip>
                     </span>
                   </div>
 
@@ -959,7 +966,8 @@
                         <span class="logs-title">Process Logs</span>
                         <mat-chip class="live-chip" *ngIf="upload.status === 'IN_PROGRESS'">LIVE</mat-chip>
                         <mat-chip class="mode-chip-small subprocess-mode"
-                          *ngIf="upload.stats?.subprocessRuntimeInfo?.processMode === 'SUBPROCESS'">SUBPROCESS</mat-chip>
+                          *ngIf="upload.stats?.subprocessRuntimeInfo?.processMode === 'SUBPROCESS'"
+                          matTooltip="Runs in an isolated worker process">SUBPROCESS</mat-chip>
                       </div>
                       <div class="logs-viewer-container" *ngIf="isSubprocessLogsExpanded(upload.taskId)">
                         <app-subprocess-logs [taskId]="upload.taskId"
@@ -975,7 +983,7 @@
                       <div class="environment-panel-header" (click)="toggleEnvironment(upload.taskId)">
                         <mat-icon>{{ isEnvironmentExpanded(upload.taskId) ? 'expand_less' : 'expand_more' }}</mat-icon>
                         <mat-icon class="environment-icon">memory</mat-icon>
-                        <span class="environment-title">ND4J Environment</span>
+                        <span class="environment-title" matTooltip="ND4J compute environment settings captured from the worker process">Compute Environment</span>
                         <span class="environment-status">
                           <mat-icon class="captured-icon">check_circle</mat-icon>
                           Captured
@@ -1118,7 +1126,7 @@
               <mat-icon class="spinning-icon">language</mat-icon>
               Crawl In Progress ({{ activeCrawlJobs.length }})
             </mat-card-title>
-            <mat-card-subtitle>Source crawl, embedding, and indexing pipeline</mat-card-subtitle>
+            <mat-card-subtitle>Source crawl, incremental updates, graph extraction, embedding, and indexing</mat-card-subtitle>
           </mat-card-header>
           <mat-card-content>
             <div *ngFor="let job of activeCrawlJobs; trackBy: trackByCrawlJobId" class="crawl-job-item">
@@ -1153,6 +1161,14 @@
                     </span>
                     <mat-chip *ngIf="job.graphExtractionEnabled" class="mode-chip-small" style="background:#f3e5f5;color:#7b1fa2;font-size:0.6rem;height:18px;min-height:18px">Graph</mat-chip>
                     <mat-chip *ngIf="job.vectorIndexEnabled" class="mode-chip-small" style="background:#e8f5e9;color:#2e7d32;font-size:0.6rem;height:18px;min-height:18px">Vector</mat-chip>
+                    <mat-chip *ngIf="(job.filesSkippedUnchanged || 0) > 0" class="mode-chip-small" style="background:#fff8e1;color:#8a5a00;font-size:0.6rem;height:18px;min-height:18px"
+                              matTooltip="Files skipped because their content hash was unchanged">
+                      Skipped {{ job.filesSkippedUnchanged }}
+                    </mat-chip>
+                    <mat-chip *ngIf="(job.filesReprocessed || 0) > 0" class="mode-chip-small" style="background:#e0f2f1;color:#00695c;font-size:0.6rem;height:18px;min-height:18px"
+                              matTooltip="Files loaded because they were new or changed">
+                      Reprocessed {{ job.filesReprocessed }}
+                    </mat-chip>
                     <mat-chip *ngIf="job.llmProvider" class="mode-chip-small" style="background:#e3f2fd;color:#1565c0;font-size:0.6rem;height:18px;min-height:18px"
                               [matTooltip]="'LLM: ' + job.llmProvider + (job.llmModel ? ' / ' + job.llmModel : '')">
                       LLM: {{ job.llmProvider }}
@@ -1312,7 +1328,8 @@
         <div class="empty-state" *ngIf="!activeSheet && !isLoading">
           <mat-icon>folder_off</mat-icon>
           <h3>No Fact Sheet Selected</h3>
-          <p>Create a fact sheet to start adding facts</p>
+          <p>Create a fact sheet to start adding facts.</p>
+          <p class="empty-state-hint">A fact sheet is an isolated knowledge collection — documents you add are indexed and become searchable and askable in Chat.</p>
           <button mat-raised-button color="primary" (click)="selectedTabIndex = 1; openCreateForm()">
             <mat-icon>add</mat-icon>
             Create Fact Sheet
@@ -1332,10 +1349,17 @@
             <mat-icon>cloud_upload</mat-icon>
             <h3>No facts yet</h3>
             <p>Add documents, URLs, or other sources to "{{ activeSheet.name }}"</p>
-            <button mat-raised-button color="primary" (click)="openAddFactDialog()">
-              <mat-icon>add_circle</mat-icon>
-              Add Facts
-            </button>
+            <p class="empty-facts-hint">A fact sheet is an isolated knowledge collection — documents you add are indexed and become searchable and askable in Chat.</p>
+            <div class="empty-facts-actions">
+              <button mat-raised-button color="accent" (click)="openStartCrawlDialog()">
+                <mat-icon>travel_explore</mat-icon>
+                Start Crawl
+              </button>
+              <button mat-raised-button color="primary" (click)="openAddFactDialog()">
+                <mat-icon>add_circle</mat-icon>
+                Add Facts
+              </button>
+            </div>
           </div>
 
           <!-- Facts Grid -->

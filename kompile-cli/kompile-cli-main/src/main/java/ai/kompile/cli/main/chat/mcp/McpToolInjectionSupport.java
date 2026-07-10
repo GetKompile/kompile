@@ -215,4 +215,29 @@ public final class McpToolInjectionSupport {
     }
 
     public record McpConfig(String path, String displayTarget, String transport) {}
+
+    // ── Public accessors for persistent config writers ─────────────────────
+
+    /**
+     * Returns the command of the resolved CLI launcher, or {@code null} when no
+     * launcher can be found. Callers that need the full argument list should also
+     * call {@link #findCliLauncherArgs(Path)}.
+     *
+     * <p>This is an additive helper that exposes the package-private {@link CliLauncher}
+     * for use by classes outside this package (e.g. {@code InitAgentProvisioner}).</p>
+     */
+    public static String findCliLauncherCommand() {
+        CliLauncher l = findCliLauncher();
+        return l == null ? null : l.command();
+    }
+
+    /**
+     * Returns the full argument list for the CLI stdio MCP server, resolved for the
+     * given working directory.  Returns {@code null} when no launcher is available.
+     */
+    public static List<String> findCliLauncherArgs(Path workingDir) {
+        CliLauncher l = findCliLauncher();
+        if (l == null) return null;
+        return l.buildArgs(normalizeWorkingDir(workingDir));
+    }
 }

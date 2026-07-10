@@ -8,9 +8,14 @@ import org.eclipse.deeplearning4j.llm.generation.kvcache.*;
 import org.nd4j.linalg.api.buffer.DataType;
 import org.nd4j.linalg.api.ndarray.INDArray;
 
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 @Slf4j
 public class ManagedKVCache implements AutoCloseable {
@@ -42,8 +47,10 @@ public class ManagedKVCache implements AutoCloseable {
     private PerLayerPagedKVCache perLayerCache;
     private UnifiedKvCacheManager turboQuantCache;
 
-    // Track tokens appended per sequence for prefix indexing
-    private final Map<Integer, java.util.List<int[]>> sequenceTokenHistory = new java.util.concurrent.ConcurrentHashMap<>();
+    // Track tokens appended per sequence for prefix indexing.
+    private final Map<Integer, List<int[]>> sequenceTokenHistory = new ConcurrentHashMap<>();
+    private final Map<Integer, List<Integer>> sequencePrefixBlockIds = new ConcurrentHashMap<>();
+    private final AtomicInteger nextPrefixBlockId = new AtomicInteger(1);
     private volatile int activeSequenceCount = 0;
 
     public ManagedKVCache(String name, KVCacheConfig config, KVCacheStatisticsCollector statsCollector) {
@@ -127,7 +134,7 @@ public class ManagedKVCache implements AutoCloseable {
         // Track tokens for content-hash prefix indexing
         if (contentHashPrefixIndex != null && tokenIds != null) {
             int blockSize = config.getBlockSize() != null ? config.getBlockSize() : 64;
-            sequenceTokenHistory.computeIfAbsent(seqIdx, k -> new java.util.ArrayList<>());
+            sequenceTokenHistory.computeIfAbsent(seqIdx, k -> new ArrayList<>());
             var history = sequenceTokenHistory.get(seqIdx);
             history.add(tokenIds);
 
@@ -136,19 +143,22 @@ public class ManagedKVCache implements AutoCloseable {
             if (totalTokens >= blockSize) {
                 // Flatten and notify for each block-sized chunk
                 int[] allTokens = history.stream()
-                        .flatMapToInt(java.util.Arrays::stream)
+                        .flatMapToInt(Arrays::stream)
                         .toArray();
                 int blocksFilled = totalTokens / blockSize;
+                List<Integer> prefixBlockIds = sequencePrefixBlockIds.computeIfAbsent(
+                        seqIdx, k -> Collections.synchronizedList(new ArrayList<>()));
                 for (int b = 0; b < blocksFilled; b++) {
-                    int[] blockTokens = java.util.Arrays.copyOfRange(allTokens, b * blockSize, (b + 1) * blockSize);
-                    int blockId = seqIdx * 1000 + b; // synthetic block ID
+                    int[] blockTokens = Arrays.copyOfRange(allTokens, b * blockSize, (b + 1) * blockSize);
+                    int blockId = nextPrefixBlockId.getAndIncrement();
+                    prefixBlockIds.add(blockId);
                     contentHashPrefixIndex.onBlockFilled(blockId, blockTokens);
                 }
                 // Keep remainder
                 int consumed = blocksFilled * blockSize;
                 history.clear();
                 if (consumed < allTokens.length) {
-                    history.add(java.util.Arrays.copyOfRange(allTokens, consumed, allTokens.length));
+                    history.add(Arrays.copyOfRange(allTokens, consumed, allTokens.length));
                 }
             }
         }
@@ -167,11 +177,14 @@ public class ManagedKVCache implements AutoCloseable {
 
         // Clean up prefix index entries for this sequence
         if (contentHashPrefixIndex != null) {
-            var history = sequenceTokenHistory.remove(seqIdx);
-            // Free synthetic block IDs (seqIdx * 1000 + blockNum)
-            // We don't track exact block count, so sweep a reasonable range
-            for (int b = 0; b < 256; b++) {
-                contentHashPrefixIndex.onBlockFreed(seqIdx * 1000 + b);
+            sequenceTokenHistory.remove(seqIdx);
+            List<Integer> prefixBlockIds = sequencePrefixBlockIds.remove(seqIdx);
+            if (prefixBlockIds != null) {
+                synchronized (prefixBlockIds) {
+                    for (int blockId : prefixBlockIds) {
+                        contentHashPrefixIndex.onBlockFreed(blockId);
+                    }
+                }
             }
         }
 

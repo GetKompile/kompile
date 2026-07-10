@@ -32,6 +32,7 @@ import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * CLI tool for building, searching, and navigating the code knowledge graph.
@@ -42,6 +43,20 @@ import java.util.Map;
  * is available.
  */
 public class CodeGraphTool implements CliTool {
+
+    // Directory-management actions keep the legacy raw-or-'default' project id.
+    private static final Set<String> DIRECTORY_BOUND_ACTIONS = Set.of(
+            "build", "add_directory", "remove_directory", "list_directories");
+
+    // Actions that always execute against the local index even when a backend is up.
+    private static final Set<String> LOCAL_ALWAYS_ACTIONS = Set.of(
+            "impact", "ranked_search", "blended_search", "signatures", "health", "routing");
+
+    // Read actions preceded by a throttled incremental refresh of the local index
+    // ('health'/'stats'/'connectivity' intentionally unrefreshed).
+    private static final Set<String> REFRESHABLE_ACTIONS = Set.of(
+            "search", "symbol", "file", "impact", "ranked_search", "blended_search",
+            "signatures", "routing");
 
     private final KompileBackendClient backend;
     private final ObjectMapper objectMapper;
@@ -80,6 +95,11 @@ public class CodeGraphTool implements CliTool {
         action.put("description", "Action: 'build', 'search', 'symbol', 'file', 'impact', " +
                 "'ranked_search', 'signatures', 'health', 'routing', 'stats', 'connectivity', " +
                 "'add_directory', 'remove_directory', 'list_directories'");
+        action.putArray("enum")
+                .add("build").add("search").add("symbol").add("file").add("impact")
+                .add("ranked_search").add("signatures").add("health").add("routing")
+                .add("stats").add("connectivity").add("add_directory")
+                .add("remove_directory").add("list_directories");
 
         ObjectNode dirPath = props.putObject("directory_path");
         dirPath.put("type", "string");
@@ -99,7 +119,14 @@ public class CodeGraphTool implements CliTool {
 
         ObjectNode projectId = props.putObject("project_id");
         projectId.put("type", "string");
-        projectId.put("description", "Project identifier (default: 'default')");
+        projectId.put("description", "Project identifier (default: auto-resolved from " +
+                "registration.json or indexed roots containing the cwd; directory-management " +
+                "actions default to 'default')");
+
+        ObjectNode autoRefresh = props.putObject("auto_refresh");
+        autoRefresh.put("type", "boolean");
+        autoRefresh.put("description", "Incrementally re-index changed files before local read " +
+                "actions (default: true; throttled)");
 
         ObjectNode depth = props.putObject("depth");
         depth.put("type", "integer");
@@ -154,12 +181,22 @@ public class CodeGraphTool implements CliTool {
         context.checkPermission(permissionKey(), "Build/search code graph");
 
         String action = params.path("action").asText("build");
-        String projectId = params.path("project_id").asText("default");
 
         // Default directory_path to current working directory if not specified
         String cwd = context.getWorkingDirectory().toAbsolutePath().toString();
 
-        if (!backend.isAvailable()) {
+        boolean backendUp = backend.isAvailable();
+        String projectId = resolveProjectId(action, params, context, backendUp);
+
+        // Self-heal the local index when this call will be answered from it:
+        // background maintenance keeps it fresh; reads only join in-flight work.
+        if (REFRESHABLE_ACTIONS.contains(action)
+                && (!backendUp || LOCAL_ALWAYS_ACTIONS.contains(action))
+                && params.path("auto_refresh").asBoolean(true)) {
+            BackgroundIndexService.getInstance().prepareForRead(new LocalCodeIndexer(), projectId);
+        }
+
+        if (!backendUp) {
             // No backend reachable — fall back to local index
             return executeLocal(action, params, projectId, cwd, context);
         }
@@ -194,6 +231,28 @@ public class CodeGraphTool implements CliTool {
         } catch (Exception e) {
             return ToolResult.error("Code graph error: " + e.getMessage());
         }
+    }
+
+    /**
+     * Resolve the effective project id. Query actions use
+     * {@link ProjectIdResolver} (registration → indexed root → cwd name);
+     * directory-management actions keep their legacy raw-or-'default'
+     * behavior. Backend-bound queries preserve the legacy {@code "default"}
+     * bucket when nothing authoritative matched.
+     */
+    private String resolveProjectId(String action, JsonNode params, ToolContext context,
+                                    boolean backendUp) {
+        String raw = params.path("project_id").asText("");
+        if (DIRECTORY_BOUND_ACTIONS.contains(action)) {
+            return raw.isEmpty() ? "default" : raw;
+        }
+        ProjectIdResolver.Resolution resolution =
+                ProjectIdResolver.resolve(raw, context.getWorkingDirectory());
+        boolean backendBound = backendUp && !LOCAL_ALWAYS_ACTIONS.contains(action);
+        if (backendBound && "cwd-name".equals(resolution.source())) {
+            return "default";
+        }
+        return resolution.projectId();
     }
 
     private ToolResult doBuild(JsonNode params, String projectId, String cwd) throws Exception {

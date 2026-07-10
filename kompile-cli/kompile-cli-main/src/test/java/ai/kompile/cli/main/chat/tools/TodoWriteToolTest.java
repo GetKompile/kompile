@@ -2,12 +2,16 @@ package ai.kompile.cli.main.chat.tools;
 
 import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.permission.PermissionService;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
-import java.nio.file.Paths;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -15,6 +19,11 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.*;
 
 class TodoWriteToolTest {
+
+    /** Fresh per test — todo state persists to <workDir>/.kompile/memory, and a shared
+     *  working directory leaks persisted todos into every later session's first load. */
+    @TempDir
+    Path workDir;
 
     private TodoWriteTool tool;
     private ToolContext context;
@@ -33,7 +42,7 @@ class TodoWriteToolTest {
                 .build();
         PermissionService perms = new PermissionService();
         ToolRegistry registry = new ToolRegistry(om);
-        context = new ToolContext(sessionId, agent, perms, Paths.get("."), registry);
+        context = new ToolContext(sessionId, agent, perms, workDir, registry);
     }
 
     @Test
@@ -230,6 +239,54 @@ class TodoWriteToolTest {
         String otherSession = "other-" + UUID.randomUUID();
         assertTrue(TodoWriteTool.getTodos(otherSession).isEmpty());
         assertEquals(1, TodoWriteTool.getTodos(sessionId).size());
+    }
+
+    @Test
+    void testSetAcceptsPlainStringItems() throws Exception {
+        ObjectNode params = om.createObjectNode();
+        params.put("action", "set");
+        ArrayNode arr = params.putArray("todos");
+        arr.add("First plain task");
+        arr.add("Second plain task");
+
+        ToolResult result = tool.execute(params, context);
+
+        assertFalse(result.isError());
+        assertTrue(result.getOutput().contains("Set 2 task(s)"));
+        List<TodoWriteTool.TodoItem> todos = TodoWriteTool.getTodos(sessionId);
+        assertEquals("First plain task", todos.get(0).subject);
+        assertEquals("pending", todos.get(0).status);
+        assertEquals("medium", todos.get(1).priority);
+    }
+
+    /**
+     * Persisting must not rely on Jackson bean reflection over TodoItem — that has no
+     * registered reflection config in the native image and made todowrite fail there.
+     * The array is built field by field; this pins the persisted shape.
+     */
+    @Test
+    void testSetPersistsTodosToProjectMemory(@TempDir Path dir) throws Exception {
+        ToolContext isolated = new ToolContext("persist-" + UUID.randomUUID(), context.getAgent(),
+                context.getPermissionService(), dir, new ToolRegistry(om));
+
+        ObjectNode params = om.createObjectNode();
+        params.put("action", "set");
+        ObjectNode item = params.putArray("todos").addObject();
+        item.put("subject", "Persisted task");
+        item.put("status", "in_progress");
+        item.put("priority", "high");
+
+        ToolResult result = tool.execute(params, isolated);
+        assertFalse(result.isError());
+
+        Path file = dir.resolve(".kompile").resolve("memory").resolve("project-todos.json.md");
+        assertTrue(Files.isRegularFile(file));
+        JsonNode root = om.readTree(file.toFile());
+        assertEquals(1, root.path("todos").size());
+        JsonNode persisted = root.path("todos").get(0);
+        assertEquals("Persisted task", persisted.path("subject").asText());
+        assertEquals("in_progress", persisted.path("status").asText());
+        assertEquals("high", persisted.path("priority").asText());
     }
 
     @Test

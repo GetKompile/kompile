@@ -67,6 +67,17 @@ public class TableCellGraphBuilder {
     private static final Logger log = LoggerFactory.getLogger(TableCellGraphBuilder.class);
     private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
 
+    /**
+     * Confidence assigned to all structural/tabular entities and relationships produced by this builder.
+     *
+     * <p>Rationale: tabular data is observed directly (no LLM inference required), so confidence
+     * is high — but 0.9 rather than 1.0 keeps these facts as PSL <em>soft</em> atoms (below the
+     * hard-pin threshold of 0.99). This allows contradicting evidence from LLM extraction or other
+     * sources to override a cell value through PSL inference rather than being silently blocked by
+     * a hard observed fact.</p>
+     */
+    static final double TABULAR_FACT_CONFIDENCE = 0.9;
+
     private String namespace;
     private String tableName;
     private List<String> headers;
@@ -172,7 +183,7 @@ public class TableCellGraphBuilder {
         tableEntity.setTitle(tblName);
         tableEntity.setType(ENTITY_TABLE);
         tableEntity.setDescription("Table: " + tblName);
-        tableEntity.setConfidence(1.0);
+        tableEntity.setConfidence(TABULAR_FACT_CONFIDENCE);
         Map<String, Object> tableMeta = new LinkedHashMap<>();
         tableMeta.put("isComposite", true);
         tableMeta.put(PROP_ROW_COUNT, rows.size() - (firstRowIsHeader ? 1 : 0));
@@ -206,7 +217,7 @@ public class TableCellGraphBuilder {
                 cellEntity.setTitle(cellValue != null && !cellValue.isEmpty() ? cellValue : "R0C" + col);
                 cellEntity.setType(ENTITY_HEADER_CELL);
                 cellEntity.setDescription("Header cell [0," + col + "]: " + cellValue);
-                cellEntity.setConfidence(1.0);
+                cellEntity.setConfidence(TABULAR_FACT_CONFIDENCE);
 
                 Map<String, Object> cellMeta = new LinkedHashMap<>();
                 cellMeta.put(PROP_ROW_INDEX, 0);
@@ -243,7 +254,7 @@ public class TableCellGraphBuilder {
                         rowIdx, col,
                         columnName != null ? " (" + columnName + ")" : "",
                         cellValue));
-                cellEntity.setConfidence(1.0);
+                cellEntity.setConfidence(TABULAR_FACT_CONFIDENCE);
 
                 Map<String, Object> cellMeta = new LinkedHashMap<>();
                 cellMeta.put(PROP_ROW_INDEX, rowIdx);
@@ -272,7 +283,7 @@ public class TableCellGraphBuilder {
                             col < effectiveHeaders.size() ? effectiveHeaders.get(col) : "?",
                             rowIdx, col));
                     headerOf.setWeight(0.8);
-                    headerOf.setConfidence(1.0);
+                    headerOf.setConfidence(TABULAR_FACT_CONFIDENCE);
                     headerOf.setMetadata(Collections.singletonMap("provenance", (Object) PROVENANCE_EXTRACTED));
                     graph.getRelationships().add(headerOf);
                 }
@@ -290,7 +301,7 @@ public class TableCellGraphBuilder {
         rel.setType(REL_CONTAINS);
         rel.setDescription(String.format("Table '%s' contains cell '%s'", tableName, cellValue));
         rel.setWeight(1.0);
-        rel.setConfidence(1.0);
+        rel.setConfidence(TABULAR_FACT_CONFIDENCE);
         rel.setMetadata(Collections.singletonMap("provenance", (Object) PROVENANCE_EXTRACTED));
         return rel;
     }

@@ -71,6 +71,10 @@ public class CrawlProfileAutoStartService {
     private final KompileProjectStore store;
     private final ModelAutoInitializationService modelAutoInit;
 
+    /** Optional default processing-route config; wired when available. */
+    @Autowired(required = false)
+    private ProcessingRouteConfigService processingRouteConfigService;
+
     @Value("${kompile.project.root:}")
     private String configuredRoot;
 
@@ -225,44 +229,49 @@ public class CrawlProfileAutoStartService {
             builder.factSheetName(profile.getFactSheetName());
         }
 
-        // Configure graph extraction if enabled on the profile
-        if (profile.isGraphExtraction()) {
-            GraphExtractionConfig graphConfig = GraphExtractionConfig.builder()
-                    .enabled(true)
-                    .build();
-            if (profile.getGraphModelProvider() != null) {
-                graphConfig.setLlmProvider(profile.getGraphModelProvider());
-            }
-            if (profile.getGraphModelName() != null) {
-                graphConfig.setModelName(profile.getGraphModelName());
-            }
-            if (profile.getGraphMinConfidence() != null) {
-                graphConfig.setMinConfidence(profile.getGraphMinConfidence());
-            }
-            if (profile.getGraphEntityTypes() != null && !profile.getGraphEntityTypes().isEmpty()) {
-                graphConfig.setEntityTypes(profile.getGraphEntityTypes());
-            }
-            if (profile.getGraphRelationTypes() != null && !profile.getGraphRelationTypes().isEmpty()) {
-                graphConfig.setRelationshipTypes(profile.getGraphRelationTypes());
-            }
-            if (profile.getSchemaPresetId() != null) {
-                graphConfig.setSchemaPresetId(profile.getSchemaPresetId());
-            }
-            if (profile.getGraphSchemaMode() != null) {
-                try {
-                    graphConfig.setSchemaMode(
-                            SchemaEnforcementMode.valueOf(profile.getGraphSchemaMode().toUpperCase()));
-                } catch (IllegalArgumentException ignored) {
-                    // Keep default LENIENT
-                }
-            }
-            builder.graphExtraction(graphConfig);
+        // Graph extraction is mandatory; profile fields only customize schema/model details.
+        GraphExtractionConfig graphConfig = GraphExtractionConfig.builder().build();
+        if (profile.getGraphModelProvider() != null) {
+            graphConfig.setLlmProvider(profile.getGraphModelProvider());
         }
+        if (profile.getGraphModelName() != null) {
+            graphConfig.setModelName(profile.getGraphModelName());
+        }
+        if (profile.getGraphMinConfidence() != null) {
+            graphConfig.setMinConfidence(profile.getGraphMinConfidence());
+        }
+        if (profile.getGraphEntityTypes() != null && !profile.getGraphEntityTypes().isEmpty()) {
+            graphConfig.setEntityTypes(profile.getGraphEntityTypes());
+        }
+        if (profile.getGraphRelationTypes() != null && !profile.getGraphRelationTypes().isEmpty()) {
+            graphConfig.setRelationshipTypes(profile.getGraphRelationTypes());
+        }
+        if (profile.getSchemaPresetId() != null) {
+            graphConfig.setSchemaPresetId(profile.getSchemaPresetId());
+        }
+        if (profile.getGraphSchemaMode() != null) {
+            try {
+                graphConfig.setSchemaMode(
+                        SchemaEnforcementMode.valueOf(profile.getGraphSchemaMode().toUpperCase()));
+            } catch (IllegalArgumentException ignored) {
+                // Keep default LENIENT
+            }
+        }
+        builder.graphExtraction(graphConfig);
 
         // Always enable vector indexing for auto-start crawls
         builder.vectorIndex(VectorIndexConfig.builder()
                 .enabled(true)
                 .build());
+
+        // Apply the default processing route configuration when available
+        if (processingRouteConfigService != null) {
+            ai.kompile.core.crawl.graph.ProcessingRouteConfig defaultRoute =
+                    processingRouteConfigService.getConfig();
+            if (defaultRoute != null) {
+                builder.processingRoute(defaultRoute);
+            }
+        }
 
         return builder.build();
     }

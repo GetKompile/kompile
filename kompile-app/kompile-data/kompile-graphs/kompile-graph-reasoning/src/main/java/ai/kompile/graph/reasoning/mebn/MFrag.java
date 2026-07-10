@@ -9,6 +9,7 @@
  */
 package ai.kompile.graph.reasoning.mebn;
 
+import java.io.Serializable;
 import ai.kompile.graph.reasoning.mebn.logic.LogicalConstraint;
 import ai.kompile.graph.reasoning.prior.DefaultPriorProvider;
 import ai.kompile.graph.reasoning.prior.PriorContext;
@@ -38,12 +39,14 @@ import java.util.function.BiFunction;
  * and edges — one instantiation per valid entity tuple satisfying all context
  * constraints.</p>
  */
-public class MFrag {
+public class MFrag implements Serializable {
+
+    private static final long serialVersionUID = 1L;
 
     private final String name;
     private final List<RandomVariable> residentNodes;
     private final List<RandomVariable> inputNodes;
-    private final List<LogicalConstraint> contextConstraints;
+    private transient List<LogicalConstraint> contextConstraints;
 
     /**
      * Parent relationships: maps each resident RV name to the list of
@@ -56,7 +59,7 @@ public class MFrag {
      * produces the CPT values using noisy-OR or custom logic.
      * If null, defaults to noisy-OR with the provided strengths.
      */
-    private BiFunction<String, double[], double[]> localDistribution;
+    private transient BiFunction<String, double[], double[]> localDistribution;
 
     /**
      * Default causal strengths for parent edges (used when no custom distribution is set).
@@ -72,7 +75,7 @@ public class MFrag {
      *
      * <p>If null, a uniform prior over the RV's states is used as the ultimate fallback.</p>
      */
-    private BiFunction<String, double[], double[]> defaultDistribution;
+    private transient BiFunction<String, double[], double[]> defaultDistribution;
 
     public MFrag(String name) {
         this.name = name;
@@ -81,6 +84,17 @@ public class MFrag {
         this.contextConstraints = new ArrayList<>();
         this.parentMap = new LinkedHashMap<>();
         this.edgeStrengths = new LinkedHashMap<>();
+    }
+
+    /**
+     * Reinitialize transient fields after Java deserialization: context constraints and the
+     * local/default distributions are lambdas (not serializable). The MFrag structure — resident and
+     * input nodes, parent map, and edge strengths — is fully restored; distributions fall back to
+     * noisy-OR / uniform, and context constraints must be re-added after loading if needed.
+     */
+    private void readObject(java.io.ObjectInputStream in) throws java.io.IOException, ClassNotFoundException {
+        in.defaultReadObject();
+        this.contextConstraints = new ArrayList<>();
     }
 
     public String getName() {

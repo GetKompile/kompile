@@ -18,6 +18,7 @@ package ai.kompile.cli.component.cmd;
 
 import ai.kompile.cli.component.output.OutputFormatter;
 import ai.kompile.cli.component.output.OutputFormatter.Format;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
@@ -25,6 +26,7 @@ import picocli.CommandLine.Parameters;
 import java.io.File;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -249,7 +251,7 @@ public class ComponentStatusCommand implements Callable<Integer> {
             }
 
             File instanceFile = instanceFiles[0];
-            com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+            ObjectMapper mapper = new ObjectMapper();
             Map<String, Object> instanceMap = mapper.readValue(instanceFile, Map.class);
             
             Long pid = ((Number) instanceMap.get("pid")).longValue();
@@ -302,7 +304,7 @@ public class ComponentStatusCommand implements Callable<Integer> {
         try {
             Instant startedAt = Instant.parse(startedAtStr);
             Instant now = Instant.now();
-            long uptimeMs = java.time.Duration.between(startedAt, now).toMillis();
+            long uptimeMs = Duration.between(startedAt, now).toMillis();
             
             long seconds = uptimeMs / 1000;
             long minutes = seconds / 60;

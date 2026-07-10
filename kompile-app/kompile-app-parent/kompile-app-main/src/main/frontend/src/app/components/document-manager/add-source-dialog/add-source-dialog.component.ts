@@ -80,11 +80,14 @@ import {
   TableExtractionMethodInfo,
   PDF_PROCESSING_MODES,
   TABLE_EXTRACTION_METHODS,
-  DEFAULT_PDF_PROCESSING_CONFIG
+  DEFAULT_PDF_PROCESSING_CONFIG,
+  SingleSourceCrawlPreviewRequest,
+  SingleSourceCrawlPreviewResponse
 } from '../../../models/api-models';
 import { HttpClient } from '@angular/common/http';
 import { backendUrl } from '../../../services/base.service';
 import { AdaptivePerformanceService, AdaptiveConfig, DEFAULT_ADAPTIVE_CONFIG } from '../../../services/adaptive-performance.service';
+import { DocumentService } from '../../../services/document.service';
 import { SubprocessConfigService, SubprocessConfigResponse } from '../../../services/subprocess-config.service';
 
 export interface AddSourceDialogData {
@@ -180,6 +183,9 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
   availableLoaders: LoaderInfo[] = [];
   isSubmitting: boolean = false;
   isSubmitButtonDisabled: boolean = true;
+  previewLoading: boolean = false;
+  previewResult: SingleSourceCrawlPreviewResponse | null = null;
+  previewError: string | null = null;
   isDragOver: boolean = false;
 
   // Chunking configuration
@@ -326,11 +332,12 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
     private cdr: ChangeDetectorRef,
     private http: HttpClient,
     private adaptivePerformanceService: AdaptivePerformanceService,
+    private documentService: DocumentService,
     private subprocessConfigService: SubprocessConfigService
   ) {
     this.availableLoaders = this.data.availableLoaders;
     this.addSourceForm = this.fb.group<AddSourceFormModel>({
-      sourceType: new FormControl<'file' | 'url' | 'path' | 'text' | 'youtube' | 'discord' | 'confluence'>('file', { nonNullable: true, validators: Validators.required }),
+      sourceType: new FormControl<'file' | 'url' | 'path' | 'text' | 'youtube' | 'discord' | 'slack' | 'slack_history' | 'confluence'>('file', { nonNullable: true, validators: Validators.required }),
       urlInput: new FormControl('', { validators: [Validators.pattern(/^(https?|ftp):\/\/[^\s/$.?#].[^\s]*$/i)] }),
       pathInput: new FormControl(''),
       fileNameInput: new FormControl(''),
@@ -410,9 +417,16 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
     this.updateValidatorsBasedOnSourceType();
 
     const sourceTypeControl = this.addSourceForm.controls.sourceType;
+    const slackLoadAllChannelsControl = this.addSourceForm.controls.slackLoadAllChannels;
 
     this.subscriptions.add(
       sourceTypeControl.valueChanges.subscribe(() => {
+        this.clearPreview();
+        this.updateValidatorsBasedOnSourceType();
+      })
+    );
+    this.subscriptions.add(
+      slackLoadAllChannelsControl.valueChanges.subscribe(() => {
         this.updateValidatorsBasedOnSourceType();
       })
     );
@@ -420,7 +434,8 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
     this.subscriptions.add(
       merge(
         this.addSourceForm.statusChanges,
-        sourceTypeControl.valueChanges
+        sourceTypeControl.valueChanges,
+        slackLoadAllChannelsControl.valueChanges
       ).pipe(startWith(null))
         .subscribe(() => {
           this.updateSubmitButtonState();
@@ -546,7 +561,11 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
       discordBotTokenControl.setValidators([Validators.required]);
     } else if (sourceType === 'slack' || sourceType === 'slack_history') {
       const slackChannelIdControl = this.addSourceForm.controls.slackChannelId;
-      slackChannelIdControl.setValidators([Validators.required]);
+      const loadingAllHistoryChannels = sourceType === 'slack_history'
+        && this.addSourceForm.controls.slackLoadAllChannels.value;
+      if (!loadingAllHistoryChannels) {
+        slackChannelIdControl.setValidators([Validators.required]);
+      }
     } else if (sourceType === 'confluence') {
       confluenceBaseUrlControl.setValidators([
         Validators.required,
@@ -597,8 +616,12 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
                 this.addSourceForm.controls.discordBotToken.valid &&
                 !!this.addSourceForm.controls.discordBotToken.value;
     } else if (sourceType === 'slack' || sourceType === 'slack_history') {
-      isValid = this.addSourceForm.controls.slackChannelId.valid &&
-                !!this.addSourceForm.controls.slackChannelId.value;
+      const loadingAllHistoryChannels = sourceType === 'slack_history'
+        && this.addSourceForm.controls.slackLoadAllChannels.value;
+      isValid = loadingAllHistoryChannels || (
+        this.addSourceForm.controls.slackChannelId.valid &&
+        !!this.addSourceForm.controls.slackChannelId.value
+      );
     } else if (sourceType === 'confluence') {
       isValid = this.addSourceForm.controls.confluenceBaseUrl.valid &&
                 !!this.addSourceForm.controls.confluenceBaseUrl.value &&
@@ -613,77 +636,6 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
     this.cdr.markForCheck();
   }
 
-  onSubmit(): void {
-    if (this.addSourceForm.invalid || this.isSubmitButtonDisabled) {
-      return;
-    }
-
-    const formValue = this.addSourceForm.getRawValue();
-    const result: AddSourceDialogResult = {
-      sourceType: formValue.sourceType,
-      selectedLoader: formValue.loaderSelect || undefined,
-      rebuildIndex: formValue.rebuildIndex,
-      convertToMarkdown: formValue.convertToMarkdown,
-      chunkerName: this.chunkingConfig.strategy !== 'auto' ? this.chunkingConfig.strategy : undefined,
-      chunkerOptions: this.chunkingConfig.useCustomSettings ? this.buildChunkerOptions() : undefined,
-      largeDocumentConfig: this.largeDocConfig.mode !== 'standard' || this.documentAnalysis?.hasLargeFiles ? this.largeDocConfig : undefined,
-      // Pass tokenizer config if enabled
-      ...(this.enablePreTokenization ? {
-        tokenizerModel: this.selectedTokenizer,
-        maxTokenLength: this.maxTokenLength,
-        enablePreTokenization: true
-      } : {}),
-      // Pass adaptive config if enabled
-      adaptivePerformanceConfig: this.adaptiveMode ? this.adaptiveConfig : undefined,
-      subprocessConfig: this.subprocessConfig,
-      // Override the processing mode if user selected a specific one for this request
-      processingMode: this.selectedProcessingMode,
-      // Composite PDF loader option (auto-select best PDF loader)
-      useCompositePdfLoader: this.useCompositePdfLoader && this.hasSelectedPdfFiles() && !formValue.loaderSelect,
-      // PDF processing configuration (only for PDFs)
-      pdfProcessingConfig: this.hasSelectedPdfFiles() ? this.pdfProcessingConfig : undefined
-    };
-
-    if (formValue.sourceType === 'file') {
-      result.file = this.selectedFile || undefined;
-      result.files = this.selectedFiles.length > 0 ? this.selectedFiles : undefined; // Pass all selected files
-    } else if (formValue.sourceType === 'url') {
-      result.url = formValue.urlInput || undefined;
-      result.fileName = formValue.fileNameInput || undefined;
-    } else if (formValue.sourceType === 'path') {
-      result.path = formValue.pathInput || undefined;
-    } else if (formValue.sourceType === 'youtube') {
-      result.youtubeUrl = formValue.youtubeUrl || undefined;
-      result.youtubeLanguage = formValue.youtubeLanguage || 'en';
-      result.saveTranscriptFile = formValue.saveTranscriptFile;
-    } else if (formValue.sourceType === 'discord') {
-      result.discordServerId = formValue.discordServerId || undefined;
-      result.discordChannelId = formValue.discordChannelId || undefined;
-      result.discordBotToken = formValue.discordBotToken || undefined;
-      result.discordMessageLimit = formValue.discordMessageLimit;
-      result.discordIncludeThreads = formValue.discordIncludeThreads;
-      result.saveDiscordMessages = formValue.saveDiscordMessages;
-    } else if (formValue.sourceType === 'slack' || formValue.sourceType === 'slack_history') {
-      result.slackChannelId = formValue.slackChannelId || undefined;
-      result.slackToken = formValue.slackToken || undefined;
-      result.slackMessageLimit = formValue.slackMessageLimit;
-      result.slackIncludeThreads = formValue.slackIncludeThreads;
-      result.slackStartDate = formValue.slackStartDate || undefined;
-      result.slackEndDate = formValue.slackEndDate || undefined;
-      result.slackDaysBack = formValue.slackDaysBack;
-      result.slackLoadAllChannels = formValue.slackLoadAllChannels;
-      result.slackHistoryMode = formValue.sourceType === 'slack_history';
-    } else if (formValue.sourceType === 'confluence') {
-      result.confluenceBaseUrl = formValue.confluenceBaseUrl || undefined;
-      result.confluenceEmail = formValue.confluenceEmail || undefined;
-      result.confluenceApiToken = formValue.confluenceApiToken || undefined;
-      result.confluenceSpaceKey = formValue.confluenceSpaceKey || undefined;
-      result.confluenceIncludeChildren = formValue.confluenceIncludeChildren;
-      result.confluenceIncludeAttachments = formValue.confluenceIncludeAttachments;
-    }
-
-    this.dialogRef.close(result);
-  }
   onFileSelectedChange(event: Event): void {
     const element = event.target as HTMLInputElement;
     this.fileErrorMessage = null;
@@ -1970,6 +1922,265 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
     return `speed-${speed}`;
   }
 
+  runCrawlPreview(): void {
+    if (this.isSubmitting || this.previewLoading) {
+      return;
+    }
+
+    Object.values(this.addSourceForm.controls).forEach(control => control.markAsTouched());
+    this.updateSubmitButtonState();
+    if (!this.checkFormValidityForAction()) {
+      this.cdr.markForCheck();
+      return;
+    }
+
+    if (this.addSourceForm.controls.sourceType.value === 'file') {
+      this.previewSelectedFilesCrawl();
+      return;
+    }
+
+    const request = this.buildSingleSourcePreviewRequest();
+    if (!request) {
+      this.previewError = 'Preview is not available for this source type.';
+      this.previewResult = null;
+      this.cdr.markForCheck();
+      return;
+    }
+
+    this.previewLoading = true;
+    this.previewError = null;
+    this.previewResult = null;
+    this.cdr.markForCheck();
+
+    const sub = this.documentService.previewSingleSourceCrawl(request).subscribe({
+      next: result => {
+        this.previewResult = result;
+        this.previewError = null;
+        this.previewLoading = false;
+        this.cdr.markForCheck();
+      },
+      error: error => {
+        this.previewError = this.extractPreviewError(error);
+        this.previewResult = null;
+        this.previewLoading = false;
+        this.cdr.markForCheck();
+      }
+    });
+    this.subscriptions.add(sub);
+  }
+
+  clearPreview(): void {
+    this.previewResult = null;
+    this.previewError = null;
+  }
+
+  private previewSelectedFilesCrawl(): void {
+    this.previewLoading = true;
+    this.previewError = null;
+    this.previewResult = null;
+    this.cdr.markForCheck();
+
+    const hasPdfFiles = this.hasSelectedPdfFiles();
+    const sub = this.documentService.previewSingleSourceFilesCrawl(this.selectedFiles, {
+      loaderName: this.addSourceForm.controls.loaderSelect.value || undefined,
+      chunkerName: this.selectedPreviewChunkerName(),
+      maxDocuments: this.previewDocumentLimit('file'),
+      useCompositePdfLoader: hasPdfFiles ? this.useCompositePdfLoader : undefined,
+      pdfProcessingConfig: hasPdfFiles
+        ? { ...this.pdfProcessingConfig, useCompositeLoader: this.useCompositePdfLoader }
+        : undefined
+    }).subscribe({
+      next: result => {
+        this.previewResult = result;
+        this.previewError = null;
+        this.previewLoading = false;
+        this.cdr.markForCheck();
+      },
+      error: error => {
+        this.previewError = this.extractPreviewError(error);
+        this.previewResult = null;
+        this.previewLoading = false;
+        this.cdr.markForCheck();
+      }
+    });
+    this.subscriptions.add(sub);
+  }
+
+  private buildSingleSourcePreviewRequest(): SingleSourceCrawlPreviewRequest | null {
+    const formValues = this.addSourceForm.getRawValue();
+    const base: SingleSourceCrawlPreviewRequest = {
+      sourceType: formValues.sourceType,
+      loaderName: formValues.loaderSelect || undefined,
+      chunkerName: this.selectedPreviewChunkerName(),
+      maxDocuments: this.previewDocumentLimit(formValues.sourceType)
+    };
+
+    if (formValues.sourceType === 'url') {
+      return {
+        ...base,
+        sourceType: 'url',
+        label: formValues.fileNameInput || formValues.urlInput || undefined,
+        pathOrUrl: formValues.urlInput || undefined,
+        maxDepth: 0,
+        maxDocuments: 1,
+        properties: this.compactPreviewProperties({
+          convertToMarkdown: formValues.convertToMarkdown
+        })
+      };
+    }
+
+    if (formValues.sourceType === 'path') {
+      return {
+        ...base,
+        sourceType: 'path',
+        label: formValues.pathInput || undefined,
+        pathOrUrl: formValues.pathInput || undefined,
+        maxDepth: 3
+      };
+    }
+
+    if (formValues.sourceType === 'text') {
+      return {
+        ...base,
+        sourceType: 'text',
+        label: formValues.textSourceName || 'Pasted text',
+        content: formValues.textInput || undefined,
+        maxDepth: 0,
+        maxDocuments: 1
+      };
+    }
+
+    if (formValues.sourceType === 'youtube') {
+      return {
+        ...base,
+        sourceType: 'youtube',
+        label: formValues.youtubeUrl || undefined,
+        pathOrUrl: formValues.youtubeUrl || undefined,
+        language: formValues.youtubeLanguage || 'en',
+        maxDepth: 0,
+        maxDocuments: 1
+      };
+    }
+
+    if (formValues.sourceType === 'slack') {
+      return {
+        ...base,
+        sourceType: 'slack',
+        label: formValues.slackChannelId ? `Slack: ${formValues.slackChannelId}` : 'Slack channel',
+        pathOrUrl: formValues.slackChannelId || undefined,
+        maxDepth: 0,
+        maxDocuments: formValues.slackMessageLimit || undefined,
+        properties: this.compactPreviewProperties({
+          slackToken: formValues.slackToken,
+          limit: formValues.slackMessageLimit,
+          includeThreads: formValues.slackIncludeThreads,
+          source_kind: 'slack_preview'
+        })
+      };
+    }
+
+    if (formValues.sourceType === 'slack_history') {
+      const allChannels = formValues.slackLoadAllChannels;
+      const label = allChannels ? 'Slack history: all channels' : `Slack history: ${formValues.slackChannelId}`;
+      return {
+        ...base,
+        sourceType: 'slack_history',
+        label,
+        pathOrUrl: allChannels ? 'all' : (formValues.slackChannelId || undefined),
+        maxDepth: 0,
+        maxDocuments: formValues.slackMessageLimit || undefined,
+        properties: this.compactPreviewProperties({
+          slackToken: formValues.slackToken,
+          startDate: formValues.slackStartDate,
+          endDate: formValues.slackEndDate,
+          daysBack: formValues.slackDaysBack,
+          maxMessages: formValues.slackMessageLimit,
+          includeThreads: formValues.slackIncludeThreads,
+          loadAllChannels: allChannels,
+          source_kind: 'slack_history_preview'
+        })
+      };
+    }
+
+    if (formValues.sourceType === 'discord') {
+      return {
+        ...base,
+        sourceType: 'discord',
+        label: formValues.discordChannelId
+          ? `Discord: ${formValues.discordChannelId}`
+          : `Discord: ${formValues.discordServerId}`,
+        pathOrUrl: formValues.discordServerId || undefined,
+        maxDepth: 0,
+        maxDocuments: formValues.discordMessageLimit || undefined,
+        properties: this.compactPreviewProperties({
+          botToken: formValues.discordBotToken,
+          channelId: formValues.discordChannelId,
+          messageLimit: formValues.discordMessageLimit,
+          includeThreads: formValues.discordIncludeThreads,
+          source_kind: 'discord_preview'
+        })
+      };
+    }
+
+    if (formValues.sourceType === 'confluence') {
+      return {
+        ...base,
+        sourceType: 'confluence',
+        label: formValues.confluenceSpaceKey
+          ? `Confluence: ${formValues.confluenceSpaceKey}`
+          : 'Confluence space',
+        pathOrUrl: formValues.confluenceBaseUrl || undefined,
+        maxDepth: formValues.confluenceIncludeChildren ? 3 : 0,
+        properties: this.compactPreviewProperties({
+          email: formValues.confluenceEmail,
+          apiToken: formValues.confluenceApiToken,
+          spaceKey: formValues.confluenceSpaceKey,
+          includeChildren: formValues.confluenceIncludeChildren,
+          includeAttachments: formValues.confluenceIncludeAttachments,
+          source_kind: 'confluence_preview'
+        })
+      };
+    }
+
+    return null;
+  }
+
+  private selectedPreviewChunkerName(): string | undefined {
+    return this.chunkingConfig.strategy !== 'auto' ? this.chunkingConfig.strategy : undefined;
+  }
+
+  private previewDocumentLimit(sourceType: string): number {
+    if (sourceType === 'url' || sourceType === 'text' || sourceType === 'youtube') {
+      return 1;
+    }
+    if (sourceType === 'slack' || sourceType === 'slack_history') {
+      const limit = this.addSourceForm.controls.slackMessageLimit.value;
+      return limit && limit > 0 ? Math.min(limit, 100) : 25;
+    }
+    if (sourceType === 'discord') {
+      const limit = this.addSourceForm.controls.discordMessageLimit.value;
+      return limit && limit > 0 ? Math.min(limit, 100) : 25;
+    }
+    return 25;
+  }
+
+  private compactPreviewProperties(properties: { [key: string]: any }): { [key: string]: any } {
+    return Object.entries(properties).reduce((acc, [key, value]) => {
+      if (value !== undefined && value !== null && value !== '') {
+        acc[key] = value;
+      }
+      return acc;
+    }, {} as { [key: string]: any });
+  }
+
+  private extractPreviewError(error: any): string {
+    const body = error?.error;
+    if (typeof body === 'string') {
+      return body;
+    }
+    return body?.details || body?.error || error?.message || 'Preview crawl failed.';
+  }
+
   onCancelDialog(): void {
     if (!this.isSubmitting) {
       this.dialogRef.close();
@@ -2007,6 +2218,11 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
              this.addSourceForm.controls.discordBotToken.valid &&
              !!this.addSourceForm.controls.discordBotToken.value;
     } else if (sourceType === 'slack' || sourceType === 'slack_history') {
+      const loadingAllHistoryChannels = sourceType === 'slack_history'
+        && this.addSourceForm.controls.slackLoadAllChannels.value;
+      if (loadingAllHistoryChannels) {
+        return true;
+      }
       this.addSourceForm.controls.slackChannelId.markAsTouched();
       return this.addSourceForm.controls.slackChannelId.valid &&
              !!this.addSourceForm.controls.slackChannelId.value;
@@ -2117,11 +2333,23 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
     result.processingMode = this.selectedProcessingMode;
 
     if (formValues.sourceType === 'file' && this.selectedFiles.length > 0) {
+      result.sourceType = 'file';
       result.file = this.selectedFiles[0]; // Keep for backwards compatibility
       result.files = this.selectedFiles; // Include all files for batch upload
+      if (this.hasSelectedPdfFiles()) {
+        result.useCompositePdfLoader = this.useCompositePdfLoader;
+        result.pdfProcessingConfig = {
+          ...this.pdfProcessingConfig,
+          useCompositeLoader: this.useCompositePdfLoader
+        };
+      }
     } else if (formValues.sourceType === 'url') {
+      result.sourceType = 'url';
       result.url = formValues.urlInput ?? undefined;
       result.fileName = formValues.fileNameInput || undefined;
+    } else if (formValues.sourceType === 'path') {
+      result.sourceType = 'path';
+      result.path = formValues.pathInput ?? undefined;
     } else if (formValues.sourceType === 'text') {
       result.sourceType = 'text';
       result.textContent = formValues.textInput ?? undefined;

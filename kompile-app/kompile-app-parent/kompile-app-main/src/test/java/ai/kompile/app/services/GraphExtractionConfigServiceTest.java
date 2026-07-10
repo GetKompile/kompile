@@ -16,6 +16,7 @@
 package ai.kompile.app.services;
 
 import ai.kompile.app.services.GraphExtractionConfigService.GraphExtractionConfig;
+import ai.kompile.app.services.agent.CliAgentModelService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -46,7 +47,7 @@ class GraphExtractionConfigServiceTest {
     void initCreatesDefaultConfig() {
         GraphExtractionConfig config = service.getConfig();
         assertNotNull(config);
-        assertFalse(config.enabled);
+        assertTrue(service.isEnabled());
         assertEquals(10, config.batchSize);
         assertEquals("LENIENT", config.schemaEnforcement);
         assertEquals(20, config.maxEntitiesPerChunk);
@@ -61,6 +62,11 @@ class GraphExtractionConfigServiceTest {
         assertEquals(0.0, config.extractionTemperature);
         assertEquals(4096, config.extractionMaxTokens);
         assertNull(config.customExtractionPrompt);
+        assertEquals(List.of("opencode", "local"), config.extractionModelProviderAllow);
+        assertEquals(List.of("claude", "codex", "opus", "sonnet", "gpt", "gemini"),
+                config.extractionModelExcludeMarkers);
+        assertEquals(List.of(), config.extractionModelAllow);
+        assertEquals(CliAgentModelService.DEFAULT_EXTRACTION_MODEL_PRIORITY, config.extractionModelPriority);
     }
 
     @Test
@@ -80,16 +86,17 @@ class GraphExtractionConfigServiceTest {
     }
 
     @Test
-    void defaultConfigWritesJsonFile() {
+    void defaultConfigWritesJsonFileWithoutEnabledKey() throws IOException {
         Path configFile = tempDir.resolve("config").resolve("graph-extraction-config.json");
         assertTrue(Files.exists(configFile));
+        assertFalse(Files.readString(configFile).contains("\"enabled\""));
     }
 
     // --- isEnabled / getBatchSize ---
 
     @Test
-    void isEnabledReturnsFalseByDefault() {
-        assertFalse(service.isEnabled());
+    void isEnabledReturnsTrueBecauseGraphExtractionIsMandatory() {
+        assertTrue(service.isEnabled());
     }
 
     @Test
@@ -100,9 +107,8 @@ class GraphExtractionConfigServiceTest {
     // --- updateConfig ---
 
     @Test
-    void updateConfigMergesEnabledField() {
+    void updateConfigKeepsGraphExtractionMandatory() {
         GraphExtractionConfig update = new GraphExtractionConfig();
-        update.enabled = true;
         service.updateConfig(update);
 
         assertTrue(service.isEnabled());
@@ -249,7 +255,6 @@ class GraphExtractionConfigServiceTest {
     void updateConfigIgnoresNullFields() {
         // First set everything
         GraphExtractionConfig fullUpdate = new GraphExtractionConfig();
-        fullUpdate.enabled = true;
         fullUpdate.batchSize = 20;
         fullUpdate.schemaEnforcement = "STRICT";
         service.updateConfig(fullUpdate);
@@ -260,7 +265,7 @@ class GraphExtractionConfigServiceTest {
         service.updateConfig(partialUpdate);
 
         GraphExtractionConfig config = service.getConfig();
-        assertTrue(config.enabled); // unchanged
+        assertTrue(service.isEnabled());
         assertEquals(5, config.batchSize); // updated
         assertEquals("STRICT", config.schemaEnforcement); // unchanged
     }
@@ -270,14 +275,13 @@ class GraphExtractionConfigServiceTest {
     @Test
     void resetToDefaultsRestoresAllFields() {
         GraphExtractionConfig update = new GraphExtractionConfig();
-        update.enabled = true;
         update.batchSize = 50;
         update.schemaEnforcement = "STRICT";
         update.extractionTemperature = 1.5;
         service.updateConfig(update);
 
         GraphExtractionConfig reset = service.resetToDefaults();
-        assertFalse(reset.enabled);
+        assertTrue(service.isEnabled());
         assertEquals(10, reset.batchSize);
         assertEquals("LENIENT", reset.schemaEnforcement);
         assertEquals(0.0, reset.extractionTemperature);
@@ -288,7 +292,6 @@ class GraphExtractionConfigServiceTest {
     @Test
     void configPersistsAcrossServiceInstances() {
         GraphExtractionConfig update = new GraphExtractionConfig();
-        update.enabled = true;
         update.batchSize = 25;
         update.entityTypes = List.of("PERSON", "DOCUMENT");
         service.updateConfig(update);
@@ -298,7 +301,7 @@ class GraphExtractionConfigServiceTest {
         service2.init();
 
         GraphExtractionConfig loaded = service2.getConfig();
-        assertTrue(loaded.enabled);
+        assertTrue(service2.isEnabled());
         assertEquals(25, loaded.batchSize);
         assertEquals(2, loaded.entityTypes.size());
     }
@@ -308,11 +311,9 @@ class GraphExtractionConfigServiceTest {
     @Test
     void getConfigReturnsCopyNotReference() {
         GraphExtractionConfig config1 = service.getConfig();
-        config1.enabled = true;
         config1.batchSize = 99;
 
         GraphExtractionConfig config2 = service.getConfig();
-        assertFalse(config2.enabled);
         assertEquals(10, config2.batchSize);
     }
 
@@ -384,7 +385,7 @@ class GraphExtractionConfigServiceTest {
 
         GraphExtractionConfig config = corruptService.getConfig();
         assertNotNull(config);
-        assertFalse(config.enabled);
+        assertTrue(corruptService.isEnabled());
         assertEquals(10, config.batchSize);
     }
 }

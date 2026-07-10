@@ -71,7 +71,7 @@ class TableSearchToolImplTest {
 
     @BeforeEach
     void setUp() {
-        AnseriniVectorStoreProperties props = new AnseriniVectorStoreProperties();
+        AnseriniVectorStoreProperties props = new AnseriniVectorStoreProperties(tempDir.toString());
         props.setIndexPath(tempDir.resolve("vector-index").toString());
         props.setPersistenceEnabled(false);
         props.setMemoryBufferSizeMb(16.0);

@@ -28,6 +28,7 @@ import org.springframework.web.servlet.NoHandlerFoundException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -59,6 +60,12 @@ public class GlobalExceptionHandler {
      */
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Map<String, Object>> handleAllExceptions(Exception ex, WebRequest request) {
+        if (isDisconnectedClient(ex)) {
+            logger.debug("Client disconnected during request {}: {}",
+                    request.getDescription(false), ex.getMessage());
+            return ResponseEntity.status(HttpStatus.NO_CONTENT).body(null);
+        }
+
         logger.error("Unhandled exception in request {}: {}",
                 request.getDescription(false), ex.getMessage(), ex);
 
@@ -180,6 +187,12 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(RuntimeException.class)
     public ResponseEntity<Map<String, Object>> handleRuntimeException(
             RuntimeException ex, WebRequest request) {
+        if (isDisconnectedClient(ex)) {
+            logger.debug("Client disconnected during request {}: {}",
+                    request.getDescription(false), ex.getMessage());
+            return ResponseEntity.status(HttpStatus.NO_CONTENT).body(null);
+        }
+
         logger.error("RuntimeException in request {}: {}",
                 request.getDescription(false), ex.getMessage(), ex);
 
@@ -202,5 +215,31 @@ public class GlobalExceptionHandler {
         }
 
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(errorResponse);
+    }
+
+    private boolean isDisconnectedClient(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            String className = current.getClass().getSimpleName();
+            String message = current.getMessage();
+            if ("ClientAbortException".equals(className)
+                    || "AsyncRequestNotUsableException".equals(className)
+                    || "AsyncRequestTimeoutException".equals(className)
+                    || containsIgnoreCase(message, "broken pipe")
+                    || containsIgnoreCase(message, "disconnected client")
+                    || containsIgnoreCase(message, "connection reset")
+                    || containsIgnoreCase(message, "async request timeout")
+                    || containsIgnoreCase(message, "async request timed out")
+                    || containsIgnoreCase(message, "ServletOutputStream failed to write")) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
+    private boolean containsIgnoreCase(String value, String needle) {
+        return value != null && needle != null
+                && value.toLowerCase(Locale.ROOT).contains(needle.toLowerCase(Locale.ROOT));
     }
 }

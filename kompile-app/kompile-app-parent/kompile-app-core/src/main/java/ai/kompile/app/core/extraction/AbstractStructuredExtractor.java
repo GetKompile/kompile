@@ -82,7 +82,8 @@ public abstract class AbstractStructuredExtractor implements ContentExtractor {
                     .sourceDocumentId(document.getId())
                     .extractorType(getType())
                     .extractorName(getName())
-                    .success(true)
+                    .success(false)
+                    .errorMessage("Document text is empty")
                     .build();
         }
 

@@ -226,6 +226,19 @@ public class SpreadsheetGraph {
             sheetEntities.put(sheetName, sheetEntity);
         }
 
+        // Infer generic row/column semantic context before creating cell entities. This uses
+        // spreadsheet structure only; domain ontologies may refine the labels later.
+        Map<String, CellSemanticContext> semanticContexts = new LinkedHashMap<>();
+        Map<String, NavigableMap<Integer, String>> loneTextRowsBySheet = new LinkedHashMap<>();
+        for (Map.Entry<String, List<CellNode>> entry : cellsBySheet.entrySet()) {
+            NavigableMap<Integer, String> loneTextRows = loneTextRows(entry.getValue());
+            loneTextRowsBySheet.put(entry.getKey(), loneTextRows);
+            for (CellNode cell : entry.getValue()) {
+                semanticContexts.put(cell.getCellReference(),
+                        inferSemanticContext(cell, entry.getValue(), loneTextRows));
+            }
+        }
+
         // Create cell entities
         for (CellNode cell : cells.values()) {
             // Skip genuinely empty cells — no value, no formula, not a named range. Empty grid cells
@@ -242,10 +255,15 @@ public class SpreadsheetGraph {
             // maps, the visualizer, and LLM discovery show "Net revenue" instead of "AU!E10"/"CELL".
             // The coordinate stays on the id, description, and cell_reference metadata.
             String dispVal = cell.getDisplayValue();
+            CellSemanticContext semantic = semanticContexts.get(cell.getCellReference());
             String cellLabel;
             if (cell.isNamedRange() && cell.getNamedRangeName() != null && !cell.getNamedRangeName().isBlank()) {
                 cellLabel = cell.getNamedRangeName();
-            } else if (dispVal != null && !dispVal.isBlank()) {
+            } else if (!"STRING".equals(cell.getCellType())
+                    && semantic != null && !semantic.label().isBlank()) {
+                cellLabel = semantic.label();
+            } else if ("STRING".equals(cell.getCellType())
+                    && dispVal != null && !dispVal.isBlank()) {
                 cellLabel = dispVal.length() > 60 ? dispVal.substring(0, 57) + "…" : dispVal;
             } else {
                 cellLabel = cell.getCellReference();
@@ -280,6 +298,66 @@ public class SpreadsheetGraph {
             }
             if (cell.getDisplayValue() != null) {
                 meta.put("displayValue", cell.getDisplayValue());
+            }
+            if (cell.getRawValue() != null) {
+                meta.put("rawValue", cell.getRawValue());
+            }
+            if (cell.getEvaluatedCellType() != null) {
+                meta.put("evaluatedCellType", cell.getEvaluatedCellType());
+            }
+            if (cell.getEvaluatedNumericValue() != null) {
+                meta.put("evaluatedNumericValue", cell.getEvaluatedNumericValue());
+            }
+            if (cell.getNumberFormat() != null) {
+                meta.put("numberFormat", cell.getNumberFormat());
+            }
+            if (cell.getDataFormatIndex() != null) {
+                meta.put("dataFormatIndex", cell.getDataFormatIndex());
+            }
+            if (cell.getFormulaError() != null) {
+                meta.put("formulaError", cell.getFormulaError());
+            }
+            if (semantic != null) {
+                if (semantic.rowLabel() != null) {
+                    meta.put("rowLabel", semantic.rowLabel());
+                }
+                if (!semantic.rowLabels().isEmpty()) {
+                    meta.put("rowLabels", semantic.rowLabels());
+                }
+                if (!semantic.rowDimensions().isEmpty()) {
+                    meta.put("rowDimensions", semantic.rowDimensions());
+                }
+                if (semantic.columnLabel() != null) {
+                    meta.put("columnLabel", semantic.columnLabel());
+                }
+                if (semantic.sectionLabel() != null) {
+                    meta.put("sectionLabel", semantic.sectionLabel());
+                }
+                if (semantic.sheetTitle() != null) {
+                    meta.put("sheetTitle", semantic.sheetTitle());
+                }
+                if (!semantic.label().isBlank()) {
+                    meta.put("semanticLabel", semantic.label());
+                }
+                Map<String, String> dimensions = new LinkedHashMap<>();
+                dimensions.put("sheet", cell.getSheetName());
+                if (workbookName != null) {
+                    dimensions.put("workbook", workbookName);
+                }
+                if (semantic.rowLabel() != null) {
+                    dimensions.put("row", semantic.rowLabel());
+                }
+                if (semantic.columnLabel() != null) {
+                    dimensions.put("column", semantic.columnLabel());
+                }
+                for (Map.Entry<String, String> rowDimension
+                        : semantic.rowDimensions().entrySet()) {
+                    String key = dimensionKey(rowDimension.getKey());
+                    if (key != null) {
+                        dimensions.putIfAbsent(key, rowDimension.getValue());
+                    }
+                }
+                meta.put("dimensions", dimensions);
             }
             if (cell.isNamedRange()) {
                 meta.put("namedRangeName", cell.getNamedRangeName());
@@ -553,6 +631,10 @@ public class SpreadsheetGraph {
             }
         }
 
+        // Project plain grids into inferred TABLE entities with typed, keyed member entities.
+        InferredTableProjector.project(
+                ns, workbookName, cellsBySheet, loneTextRowsBySheet, sheetEntities, graph);
+
         // Create CROSS_SHEET_LINK relationships between sheets
         Set<String> linkedSheetPairs = new HashSet<>();
         for (FormulaDependency dep : getCrossSheetDependencies()) {
@@ -576,6 +658,149 @@ public class SpreadsheetGraph {
         }
 
         return graph;
+    }
+
+    // ─── Sheet semantic-context helpers ────────────────────────────────────────
+
+    /**
+     * Rows whose only populated cell is a text label. These act as sheet titles (topmost occupied
+     * row) or as section headers for the data rows beneath them ("Net revenue" above entity rows).
+     */
+    private static NavigableMap<Integer, String> loneTextRows(List<CellNode> sheetCells) {
+        Map<Integer, List<CellNode>> byRow = new LinkedHashMap<>();
+        for (CellNode cell : sheetCells) {
+            byRow.computeIfAbsent(cell.getRow(), ignored -> new ArrayList<>()).add(cell);
+        }
+        TreeMap<Integer, String> result = new TreeMap<>();
+        for (Map.Entry<Integer, List<CellNode>> entry : byRow.entrySet()) {
+            if (entry.getValue().size() == 1 && isTextLabel(entry.getValue().get(0))) {
+                result.put(entry.getKey(), entry.getValue().get(0).getDisplayValue().trim());
+            }
+        }
+        return result;
+    }
+
+    private static CellSemanticContext inferSemanticContext(
+            CellNode target, List<CellNode> sheetCells, NavigableMap<Integer, String> loneTextRows) {
+        if (target == null || sheetCells == null || "STRING".equals(target.getCellType())) {
+            return CellSemanticContext.empty();
+        }
+        int targetColumn = columnLetterToIndex(target.getColumn());
+        List<CellNode> rowHeaders = sheetCells.stream()
+                .filter(cell -> cell.getRow() == target.getRow())
+                .filter(cell -> columnLetterToIndex(cell.getColumn()) < targetColumn)
+                .filter(SpreadsheetGraph::isTextLabel)
+                .sorted(Comparator.comparingInt(cell -> columnLetterToIndex(cell.getColumn())))
+                .toList();
+
+        Map<Integer, CellNode> nearestHeaders = new LinkedHashMap<>();
+        for (CellNode cell : sheetCells) {
+            if (!isTextLabel(cell) || cell.getRow() >= target.getRow()) {
+                continue;
+            }
+            int column = columnLetterToIndex(cell.getColumn());
+            CellNode current = nearestHeaders.get(column);
+            if (current == null || current.getRow() < cell.getRow()) {
+                nearestHeaders.put(column, cell);
+            }
+        }
+
+        CellNode rowHeader = rowHeaders.isEmpty() ? null : rowHeaders.get(rowHeaders.size() - 1);
+        CellNode columnHeader = nearestHeaders.get(targetColumn);
+        Map<Integer, CellNode> tableHeaders = new LinkedHashMap<>();
+        if (columnHeader != null) {
+            int headerRow = columnHeader.getRow();
+            for (CellNode cell : sheetCells) {
+                if (cell.getRow() == headerRow && isTextLabel(cell)) {
+                    tableHeaders.put(columnLetterToIndex(cell.getColumn()), cell);
+                }
+            }
+        }
+        List<String> rowLabels = rowHeaders.stream()
+                .map(CellNode::getDisplayValue)
+                .map(String::trim)
+                .filter(value -> !value.isBlank())
+                .distinct()
+                .toList();
+        Map<String, String> rowDimensions = new LinkedHashMap<>();
+        for (CellNode headerValue : rowHeaders) {
+            int headerColumn = columnLetterToIndex(headerValue.getColumn());
+            CellNode headerName = tableHeaders.get(headerColumn);
+            if (headerName == null) {
+                headerName = nearestHeaders.get(headerColumn);
+            }
+            String name = headerName == null
+                    ? "column_" + headerValue.getColumn().toLowerCase(Locale.ROOT)
+                    : headerName.getDisplayValue().trim();
+            rowDimensions.putIfAbsent(name, headerValue.getDisplayValue().trim());
+        }
+
+        String rowLabel = rowHeader == null ? null : rowHeader.getDisplayValue().trim();
+        String columnLabel = columnHeader == null ? null : columnHeader.getDisplayValue().trim();
+        List<String> parts = new ArrayList<>(rowLabels);
+        if (columnLabel != null && !columnLabel.isBlank()
+                && parts.stream().noneMatch(columnLabel::equalsIgnoreCase)) {
+            parts.add(columnLabel);
+        }
+        String label = String.join(" / ", parts);
+        if (label.length() > 240) {
+            label = label.substring(0, 237) + "...";
+        }
+
+        // Sheet title = topmost occupied row when it is a lone text label. Section header = the
+        // nearest lone text row above the target, excluding the title row itself.
+        String sheetTitle = null;
+        String sectionLabel = null;
+        if (loneTextRows != null && !loneTextRows.isEmpty()) {
+            int firstOccupiedRow = sheetCells.stream()
+                    .mapToInt(CellNode::getRow).min().orElse(Integer.MAX_VALUE);
+            Integer titleRow = loneTextRows.firstKey().equals(firstOccupiedRow)
+                    ? loneTextRows.firstKey() : null;
+            if (titleRow != null) {
+                sheetTitle = loneTextRows.get(titleRow);
+            }
+            Map.Entry<Integer, String> section = loneTextRows.lowerEntry(target.getRow());
+            if (section != null && (titleRow == null || !section.getKey().equals(titleRow))) {
+                sectionLabel = section.getValue();
+            }
+        }
+        return new CellSemanticContext(
+                rowLabel, rowLabels, rowDimensions, columnLabel, sectionLabel, sheetTitle, label);
+    }
+
+    private static String dimensionKey(String value) {
+        if (value == null) {
+            return null;
+        }
+        String normalized = value.toLowerCase(Locale.ROOT)
+                .replaceAll("[^a-z0-9]+", "_")
+                .replaceAll("^_+|_+$", "");
+        return normalized.isBlank() ? null : normalized;
+    }
+
+    private static boolean isTextLabel(CellNode cell) {
+        return cell != null && "STRING".equals(cell.getCellType())
+                && cell.getDisplayValue() != null && !cell.getDisplayValue().isBlank();
+    }
+
+    private record CellSemanticContext(
+            String rowLabel,
+            List<String> rowLabels,
+            Map<String, String> rowDimensions,
+            String columnLabel,
+            String sectionLabel,
+            String sheetTitle,
+            String label) {
+
+        private CellSemanticContext {
+            rowLabels = rowLabels == null ? List.of() : List.copyOf(rowLabels);
+            rowDimensions = rowDimensions == null
+                    ? Map.of() : Map.copyOf(new LinkedHashMap<>(rowDimensions));
+        }
+
+        private static CellSemanticContext empty() {
+            return new CellSemanticContext(null, List.of(), Map.of(), null, null, null, "");
+        }
     }
 
     // ─── Sheet → markdown grid helpers ────────────────────────────────────────

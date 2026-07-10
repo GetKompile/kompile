@@ -67,9 +67,9 @@ public class AnseriniVectorStoreProperties {
 
     /**
      * Whether to enable the Anserini VectorStore.
-     * Default is FALSE - must be explicitly enabled in the JSON config file.
+     * Default is TRUE — enabled by default; set to false in the JSON config file to disable.
      */
-    private boolean enabled = false;
+    private boolean enabled = true;
 
     /**
      * Whether to enable persistent storage for the index.
@@ -150,7 +150,14 @@ public class AnseriniVectorStoreProperties {
         }
         this.objectMapper = JsonUtils.newStandardMapper();
         this.configFilePath = Paths.get(effectiveDataDir, "config", CONFIG_FILENAME);
-        log.info("AnseriniVectorStoreProperties initialized, config path: {}", configFilePath);
+        // Default the index path under the resolved data dir so a config-less project (golden-path
+        // `project init` writes no vectorstore-anserini-config.json) still gets a durable, shared
+        // index. 2026-07-05: with no default the graph-matrix subprocess ran MEMORY-ONLY — 727
+        // node-persist failures and tableGraph NPEs — because indexPath stayed null. The JSON config
+        // (loaded in init()) still overrides this value when present.
+        this.indexPath = Paths.get(effectiveDataDir, "data", "indices", "anserini").toString();
+        log.info("AnseriniVectorStoreProperties initialized, config path: {}, default indexPath: {}",
+                configFilePath, indexPath);
     }
 
     /**

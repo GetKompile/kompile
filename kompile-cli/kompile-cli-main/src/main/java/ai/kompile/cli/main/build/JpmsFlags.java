@@ -1,5 +1,6 @@
 package ai.kompile.cli.main.build;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
@@ -53,7 +54,7 @@ public final class JpmsFlags {
     /** Formats flags for a Unix shell script with backslash line continuations. */
     public static String asShellFlags(String indent) {
         StringBuilder sb = new StringBuilder();
-        List<String> all = new java.util.ArrayList<>(ADD_OPENS);
+        List<String> all = new ArrayList<>(ADD_OPENS);
         all.addAll(ADD_EXPORTS);
         for (int i = 0; i < all.size(); i++) {
             sb.append(indent).append(all.get(i));
@@ -66,7 +67,7 @@ public final class JpmsFlags {
     /** Formats flags for a Windows batch script with caret line continuations. */
     public static String asBatchFlags(String indent) {
         StringBuilder sb = new StringBuilder();
-        List<String> all = new java.util.ArrayList<>(ADD_OPENS);
+        List<String> all = new ArrayList<>(ADD_OPENS);
         all.addAll(ADD_EXPORTS);
         for (int i = 0; i < all.size(); i++) {
             sb.append(indent).append(all.get(i));

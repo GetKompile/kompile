@@ -28,6 +28,7 @@ import ai.kompile.staging.export.ExportService;
 import ai.kompile.staging.export.ImportService;
 import ai.kompile.modelmanager.registry.*;
 import ai.kompile.core.staging.StagingModelInfo;
+import ai.kompile.core.staging.StagingStatus;
 import ai.kompile.staging.staging.StagingService;
 import ai.kompile.staging.web.dto.*;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -42,17 +43,24 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.web.multipart.MultipartFile;
 
+import org.springframework.core.io.FileSystemResource;
+import org.springframework.core.io.Resource;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.stream.Stream;
 
 /**
  * REST API controller for the model staging service.
@@ -219,9 +227,9 @@ public class StagingController {
                             resp.put("error", "Model is not a VLM type: " + entry.getType());
                             return ResponseEntity.badRequest().body(resp);
                         }
-                        java.nio.file.Path modelDir = registryService.getModelsDir()
+                        Path modelDir = registryService.getModelsDir()
                                 .resolve(entry.getPath());
-                        java.nio.file.Path modelFile = modelDir.resolve(entry.getModelFile());
+                        Path modelFile = modelDir.resolve(entry.getModelFile());
                         ModelMetadata meta = entry.getMetadata();
                         if (meta == null) {
                             meta = ModelMetadata.builder().build();
@@ -296,8 +304,8 @@ public class StagingController {
                         return ResponseEntity.notFound().<Void>build();
                     }
                     try {
-                        org.springframework.core.io.Resource resource =
-                                new org.springframework.core.io.FileSystemResource(modelPath);
+                        Resource resource =
+                                new FileSystemResource(modelPath);
                         return ResponseEntity.ok()
                                 .header("Content-Disposition", "attachment; filename=\"" + modelPath.getFileName() + "\"")
                                 .header("Content-Type", "application/octet-stream")
@@ -326,8 +334,8 @@ public class StagingController {
                         return ResponseEntity.notFound().<Void>build();
                     }
                     try {
-                        org.springframework.core.io.Resource resource =
-                                new org.springframework.core.io.FileSystemResource(vocabPath);
+                        Resource resource =
+                                new FileSystemResource(vocabPath);
                         return ResponseEntity.ok()
                                 .header("Content-Disposition", "attachment; filename=\"" + vocabPath.getFileName() + "\"")
                                 .header("Content-Type", "application/octet-stream")
@@ -354,11 +362,11 @@ public class StagingController {
                         return ResponseEntity.notFound().<Object>build();
                     }
                     try {
-                        List<Map<String, Object>> files = new java.util.ArrayList<>();
-                        try (java.util.stream.Stream<Path> stream = Files.list(modelDir)) {
+                        List<Map<String, Object>> files = new ArrayList<>();
+                        try (Stream<Path> stream = Files.list(modelDir)) {
                             stream.filter(Files::isRegularFile).forEach(p -> {
                                 try {
-                                    Map<String, Object> info = new java.util.LinkedHashMap<>();
+                                    Map<String, Object> info = new LinkedHashMap<>();
                                     info.put("name", p.getFileName().toString());
                                     info.put("size", Files.size(p));
                                     files.add(info);
@@ -367,7 +375,7 @@ public class StagingController {
                                 }
                             });
                         }
-                        Map<String, Object> result = new java.util.LinkedHashMap<>();
+                        Map<String, Object> result = new LinkedHashMap<>();
                         result.put("modelId", modelId);
                         result.put("files", files);
                         return ResponseEntity.ok((Object) result);
@@ -397,8 +405,8 @@ public class StagingController {
                         return ResponseEntity.notFound().<Void>build();
                     }
                     try {
-                        org.springframework.core.io.Resource resource =
-                                new org.springframework.core.io.FileSystemResource(filePath);
+                        Resource resource =
+                                new FileSystemResource(filePath);
                         return ResponseEntity.ok()
                                 .header("Content-Disposition", "attachment; filename=\"" + fileName + "\"")
                                 .header("Content-Type", "application/octet-stream")
@@ -450,7 +458,7 @@ public class StagingController {
                             .modelType(modelType)
                             .format(catalogModel.getFormat());
                     if (catalogModel.getFiles() != null && !catalogModel.getFiles().isEmpty()) {
-                        dlBuilder.files(new java.util.HashMap<>(catalogModel.getFiles()));
+                        dlBuilder.files(new HashMap<>(catalogModel.getFiles()));
                     }
                     DownloadRequest downloadRequest = dlBuilder.build();
 
@@ -460,7 +468,7 @@ public class StagingController {
                     // If auto-promote is requested, add completion handler
                     if (autoPromote) {
                         future.thenAccept(info -> {
-                            if (info.getStatus() == ai.kompile.core.staging.StagingStatus.READY) {
+                            if (info.getStatus() == StagingStatus.READY) {
                                 stagingService.promoteModel(modelId, null);
                             }
                         });
@@ -545,7 +553,7 @@ public class StagingController {
         // Group active models by type
         Map<ModelType, List<ModelEntry>> activeByType = new LinkedHashMap<>();
         for (ModelEntry entry : registry.getActiveModels()) {
-            activeByType.computeIfAbsent(entry.getType(), k -> new java.util.ArrayList<>()).add(entry);
+            activeByType.computeIfAbsent(entry.getType(), k -> new ArrayList<>()).add(entry);
         }
 
         // For types with multiple active models, keep only the most recently promoted
@@ -637,7 +645,7 @@ public class StagingController {
                 .authToken(request.getAuthToken())
                 .tokenizerUrl(request.getTokenizerUrl());
         if (request.getFiles() != null && !request.getFiles().isEmpty()) {
-            builder.files(new java.util.HashMap<>(request.getFiles()));
+            builder.files(new HashMap<>(request.getFiles()));
         }
         DownloadRequest downloadRequest = builder.build();
 
@@ -697,6 +705,34 @@ public class StagingController {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of(
                     "success", false,
                     "error", "Failed to promote model. Check if it's in ready state."
+            ));
+        }
+    }
+
+    /**
+     * Stage a completed training artifact manifest for deployment.
+     */
+    @PostMapping("/training-artifacts/stage")
+    public ResponseEntity<Map<String, Object>> stageTrainingArtifact(
+            @RequestBody TrainingArtifactStageRequest request) {
+        try {
+            StagingModelInfo info = stagingService.stageTrainingArtifact(request);
+            return ResponseEntity.ok(Map.of(
+                    "success", true,
+                    "modelId", info.getModelId(),
+                    "status", String.valueOf(info.getStatus()),
+                    "staging", info
+            ));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of(
+                    "success", false,
+                    "error", e.getMessage()
+            ));
+        } catch (Exception e) {
+            log.error("Failed to stage training artifact", e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of(
+                    "success", false,
+                    "error", "Failed to stage training artifact"
             ));
         }
     }
@@ -833,7 +869,7 @@ public class StagingController {
                             .modelType(modelType)
                             .format(catalogModel.getFormat());
                     if (catalogModel.getFiles() != null && !catalogModel.getFiles().isEmpty()) {
-                        dlBuilder.files(new java.util.HashMap<>(catalogModel.getFiles()));
+                        dlBuilder.files(new HashMap<>(catalogModel.getFiles()));
                     }
                     DownloadRequest downloadRequest = dlBuilder.build();
 
@@ -841,7 +877,7 @@ public class StagingController {
 
                     if (request.isAutoPromote()) {
                         future.thenAccept(info -> {
-                            if (info.getStatus() == ai.kompile.core.staging.StagingStatus.READY) {
+                            if (info.getStatus() == StagingStatus.READY) {
                                 stagingService.promoteModel(modelId, null);
                             }
                         });
@@ -878,19 +914,38 @@ public class StagingController {
             }
         }
 
-        // Fall back to catalog list membership
-        if (catalogService.getVlm().contains(catalogModel)) {
+        String modelId = catalogModel.getId();
+        if (catalogContainsId(catalogService.getLlm(), modelId)) {
+            return ModelType.LLM_GGML;
+        }
+        if (catalogContainsId(catalogService.getVlm(), modelId)) {
             return ModelType.VLM_PIPELINE;
         }
-        if (catalogService.getEncoders().contains(catalogModel)) {
-            return ModelType.ENCODER;
-        }
-        if (catalogService.getCrossEncoders().contains(catalogModel)) {
+        if (catalogContainsId(catalogService.getCrossEncoders(), modelId)) {
             return ModelType.CROSS_ENCODER;
+        }
+        if (catalogContainsId(catalogService.getEncoders(), modelId)) {
+            return ModelType.DENSE_ENCODER;
+        }
+
+        String format = catalogModel.getFormat() != null
+                ? catalogModel.getFormat().trim().toLowerCase(Locale.ROOT) : "";
+        if ("gguf".equals(format) || "ggml".equals(format)) {
+            return ModelType.LLM_GGML;
+        }
+        if ("vlm".equals(format) || "vlm_pipeline".equals(format)) {
+            return ModelType.VLM_PIPELINE;
         }
 
         // Default
-        return ModelType.ENCODER;
+        return ModelType.DENSE_ENCODER;
+    }
+
+    private boolean catalogContainsId(List<CatalogModel> models, String modelId) {
+        if (models == null || modelId == null) {
+            return false;
+        }
+        return models.stream().anyMatch(model -> modelId.equals(model.getId()));
     }
 
     // ==================== Cleanup Endpoints ====================

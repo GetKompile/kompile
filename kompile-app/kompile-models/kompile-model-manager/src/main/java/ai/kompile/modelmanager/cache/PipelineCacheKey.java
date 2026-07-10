@@ -16,9 +16,7 @@
 
 package ai.kompile.modelmanager.cache;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
+import ai.kompile.utils.HashUtils;
 import java.util.Map;
 import java.util.Objects;
 import java.util.TreeMap;
@@ -177,20 +175,14 @@ public final class PipelineCacheKey {
      * Compute SHA-256 hash of byte array.
      */
     public static String sha256(byte[] data) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] hash = digest.digest(data);
-            return bytesToHex(hash);
-        } catch (NoSuchAlgorithmException e) {
-            throw new RuntimeException("SHA-256 not available", e);
-        }
+        return HashUtils.sha256Hex(data);
     }
 
     /**
      * Compute SHA-256 hash of a string.
      */
     public static String sha256(String data) {
-        return sha256(data.getBytes(StandardCharsets.UTF_8));
+        return HashUtils.sha256Hex(data);
     }
 
     private static String hashParameters(Map<String, Object> parameters) {
@@ -216,14 +208,6 @@ public final class PipelineCacheKey {
         }
         if (!parametersHash.isEmpty()) {
             sb.append(':').append(parametersHash);
-        }
-        return sb.toString();
-    }
-
-    private static String bytesToHex(byte[] bytes) {
-        StringBuilder sb = new StringBuilder(bytes.length * 2);
-        for (byte b : bytes) {
-            sb.append(String.format("%02x", b));
         }
         return sb.toString();
     }

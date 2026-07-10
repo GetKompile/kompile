@@ -83,6 +83,17 @@ public class ExtractionResult {
             String extractorName,
             List<RetrievedDoc> chunks,
             long extractionTimeMs) {
+        if (chunks == null || chunks.isEmpty()) {
+            return builder()
+                    .sourceDocumentId(sourceDocId)
+                    .extractorType(ContentExtractor.ExtractorType.CHUNKING)
+                    .extractorName(extractorName)
+                    .chunks(chunks)
+                    .extractionTimeMs(extractionTimeMs)
+                    .success(false)
+                    .errorMessage("Chunk extractor produced no chunks")
+                    .build();
+        }
         return builder()
                 .sourceDocumentId(sourceDocId)
                 .extractorType(ContentExtractor.ExtractorType.CHUNKING)
@@ -102,6 +113,17 @@ public class ExtractionResult {
             String extractorName,
             List<StructuredItem> items,
             long extractionTimeMs) {
+        if (items == null || items.isEmpty()) {
+            return builder()
+                    .sourceDocumentId(sourceDocId)
+                    .extractorType(type)
+                    .extractorName(extractorName)
+                    .structuredItems(items)
+                    .extractionTimeMs(extractionTimeMs)
+                    .success(false)
+                    .errorMessage("Structured extractor produced no items")
+                    .build();
+        }
         return builder()
                 .sourceDocumentId(sourceDocId)
                 .extractorType(type)
@@ -118,7 +140,10 @@ public class ExtractionResult {
      */
     public static ExtractionResult merge(List<ExtractionResult> results) {
         if (results == null || results.isEmpty()) {
-            return builder().success(true).build();
+            return builder()
+                    .success(false)
+                    .errorMessage("No extraction results to merge")
+                    .build();
         }
 
         List<RetrievedDoc> allChunks = new ArrayList<>();
@@ -145,14 +170,18 @@ public class ExtractionResult {
             }
         }
 
+        boolean hasOutput = !allChunks.isEmpty() || !allItems.isEmpty();
         Builder builder = builder()
                 .sourceDocumentId(sourceDocId)
                 .chunks(allChunks)
                 .structuredItems(allItems)
                 .metadata(mergedMetadata)
                 .extractionTimeMs(totalTime)
-                .success(anySuccess);
+                .success(anySuccess && hasOutput);
 
+        if (!hasOutput) {
+            errors.add("No extracted chunks or structured items");
+        }
         if (!errors.isEmpty()) {
             builder.errorMessage(String.join("; ", errors));
         }

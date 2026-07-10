@@ -28,8 +28,9 @@ import java.util.Map;
 
 /**
  * Tool that performs RAG (Retrieval-Augmented Generation) searches against
- * the kompile-app vector store and keyword index. Connects to the kompile-app
- * REST API for semantic and keyword search over indexed documents.
+ * the kompile-app knowledge base. Connects to the kompile-app REST API
+ * via {@code POST /api/knowledge/search} (UnifiedKnowledgeTool), which
+ * fans out to all active document retrievers and the knowledge graph in parallel.
  * <p>
  * Uses {@link KompileBackendClient} for auto-detection, reconnection,
  * and configurable timeouts.
@@ -53,9 +54,11 @@ public class RagSearchTool implements CliTool {
     @Override
     public String description() {
         return "Search the kompile knowledge base using RAG (Retrieval-Augmented Generation). " +
-                "Performs semantic vector search and/or keyword search over indexed documents. " +
-                "Returns relevant document chunks with similarity scores. " +
-                "Use this to find information from ingested documents, PDFs, and other sources.";
+                "Fans out to all active document retrievers (vector store, keyword index) and " +
+                "the knowledge graph simultaneously. Returns relevant document chunks with " +
+                "source attribution, relevance scores, and optional graph context. " +
+                "Use this to find information from ingested documents, PDFs, and other sources. " +
+                "Optionally supply a topic to narrow results to a specific subject area.";
     }
 
     @Override
@@ -69,17 +72,9 @@ public class RagSearchTool implements CliTool {
         query.put("type", "string");
         query.put("description", "The search query to find relevant documents");
 
-        ObjectNode maxResults = props.putObject("max_results");
-        maxResults.put("type", "integer");
-        maxResults.put("description", "Maximum number of results to return (default: 5)");
-
-        ObjectNode searchType = props.putObject("search_type");
-        searchType.put("type", "string");
-        searchType.put("description", "Search type: 'semantic' (vector), 'keyword', or 'hybrid' (both, default)");
-
-        ObjectNode similarityThreshold = props.putObject("similarity_threshold");
-        similarityThreshold.put("type", "number");
-        similarityThreshold.put("description", "Minimum similarity score for results (0.0-1.0, default: 0.0)");
+        ObjectNode topic = props.putObject("topic");
+        topic.put("type", "string");
+        topic.put("description", "Optional topic / subject area to narrow results (e.g. 'finance', 'security')");
 
         schema.putArray("required").add("query");
         return schema;
@@ -93,9 +88,7 @@ public class RagSearchTool implements CliTool {
         context.checkPermission(permissionKey(), "Search knowledge base");
 
         String query = params.path("query").asText("");
-        int maxResults = params.path("max_results").asInt(5);
-        String searchType = params.path("search_type").asText("hybrid");
-        double threshold = params.path("similarity_threshold").asDouble(0.0);
+        String topic = params.path("topic").asText(null);
 
         if (query.isEmpty()) {
             return ToolResult.error("query is required");
@@ -108,18 +101,15 @@ public class RagSearchTool implements CliTool {
         }
 
         try {
+            // POST /api/knowledge/search — KnowledgeSearchController → UnifiedKnowledgeTool
             ObjectNode request = objectMapper.createObjectNode();
             request.put("query", query);
-            request.put("maxResults", maxResults);
-            request.put("similarityThreshold", threshold);
-
-            boolean enableSemantic = "semantic".equals(searchType) || "hybrid".equals(searchType);
-            boolean enableKeyword = "keyword".equals(searchType) || "hybrid".equals(searchType);
-            request.put("enableSemanticSearch", enableSemantic);
-            request.put("enableKeywordSearch", enableKeyword);
+            if (topic != null && !topic.isBlank()) {
+                request.put("topic", topic);
+            }
 
             HttpResponse<String> response = backend.post(
-                    "/api/search/cross-index",
+                    "/api/knowledge/search",
                     objectMapper.writeValueAsString(request),
                     Duration.ofSeconds(30));
 
@@ -129,7 +119,7 @@ public class RagSearchTool implements CliTool {
             }
 
             JsonNode result = objectMapper.readTree(response.body());
-            return formatResults(query, result, searchType);
+            return formatResults(query, result, topic);
 
         } catch (ConnectException e) {
             return ToolResult.error("Cannot connect to kompile-app. " + e.getMessage());
@@ -141,38 +131,64 @@ public class RagSearchTool implements CliTool {
         }
     }
 
-    private ToolResult formatResults(String query, JsonNode result, String searchType) {
+    private ToolResult formatResults(String query, JsonNode result, String topic) {
         StringBuilder sb = new StringBuilder();
 
-        JsonNode documents = result.path("documents");
-        if (!documents.isArray() || documents.isEmpty()) {
-            documents = result.path("results");
-        }
+        // /api/knowledge/search returns {results: [...], graph_context: "...", summary: "..."}
+        String summary = result.path("summary").asText("");
+        String hint = result.path("hint").asText("");
+
+        JsonNode documents = result.path("results");
 
         if (!documents.isArray() || documents.isEmpty()) {
-            return ToolResult.success("No documents found for: " + query);
+            String msg = summary.isEmpty()
+                    ? "No documents found for: " + query
+                    : summary + (hint.isEmpty() ? "" : " " + hint);
+            return ToolResult.success(msg);
         }
 
-        sb.append("RAG search results for: \"").append(query).append("\" (").append(searchType).append(")\n\n");
+        sb.append("RAG search results for: \"").append(query).append("\"");
+        if (topic != null && !topic.isBlank()) {
+            sb.append(" (topic: ").append(topic).append(")");
+        }
+        sb.append("\n");
+        if (!summary.isEmpty()) {
+            sb.append(summary).append("\n");
+        }
+        sb.append("\n");
 
         int idx = 0;
         for (JsonNode doc : documents) {
             idx++;
-            double score = doc.path("score").asDouble(
-                    doc.path("similarity").asDouble(0.0));
-            String content = doc.path("content").asText(
-                    doc.path("text").asText("(no content)"));
-            String source = doc.path("metadata").path("source").asText(
-                    doc.path("source").asText("unknown"));
+            double relevance = doc.path("relevance").asDouble(0.0);
+            String content = doc.path("content").asText("(no content)");
+            String source = doc.path("source").asText("unknown");
 
-            sb.append("### Document ").append(idx).append(" (score: ")
-                    .append(String.format("%.3f", score)).append(")\n");
-            sb.append("Source: ").append(source).append("\n");
+            sb.append("### Document ").append(idx);
+            if (relevance > 0.0) {
+                sb.append(" (relevance: ").append(String.format("%.2f", relevance)).append(")");
+            }
+            sb.append("\nSource: ").append(source);
+
+            // Surface citation fields when available
+            if (!doc.path("page").isMissingNode()) {
+                sb.append(", page ").append(doc.path("page").asInt());
+            }
+            if (!doc.path("chunk").isMissingNode()) {
+                sb.append(", chunk ").append(doc.path("chunk").asInt());
+            }
+            sb.append("\n");
             sb.append(content.strip()).append("\n\n");
         }
 
+        // Append graph context when available
+        String graphContext = result.path("graph_context").asText("");
+        if (!graphContext.isEmpty()) {
+            sb.append("### Graph Context\n").append(graphContext).append("\n");
+        }
+
         return ToolResult.success("rag_search: " + query, sb.toString(),
-                Map.of("query", query, "resultCount", idx, "searchType", searchType));
+                Map.of("query", query, "resultCount", idx));
     }
 
     private String extractError(String body) {

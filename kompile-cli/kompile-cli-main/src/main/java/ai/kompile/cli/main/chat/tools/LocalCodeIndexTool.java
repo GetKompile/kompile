@@ -23,14 +23,17 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.io.BufferedReader;
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.PrintStream;
 import java.nio.file.FileVisitOption;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.EnumSet;
@@ -40,6 +43,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
 /**
  * MCP-compatible CLI tool for local code indexing. Works entirely offline —
@@ -60,13 +64,13 @@ public class LocalCodeIndexTool implements CliTool {
     /**
      * Get or open a cached IndexDatabase for the given project.
      */
-    static IndexDatabase getCachedDb(String projectId) throws java.sql.SQLException {
+    static IndexDatabase getCachedDb(String projectId) throws SQLException {
         Path indexDir = LocalCodeIndexer.getIndexDir(projectId);
         if (!Files.exists(indexDir.resolve("index.db"))) return null;
         return DB_CACHE.computeIfAbsent(projectId, k -> {
             try {
                 return IndexDatabase.open(indexDir);
-            } catch (java.sql.SQLException e) {
+            } catch (SQLException e) {
                 throw new RuntimeException(e);
             }
         });
@@ -79,6 +83,19 @@ public class LocalCodeIndexTool implements CliTool {
         DB_CACHE.values().forEach(IndexDatabase::close);
         DB_CACHE.clear();
     }
+
+    // ── Project resolution + freshness ─────────────────────────────────────
+    // Actions that keep their own directory-derived project_id defaults.
+    private static final Set<String> PROJECT_RESOLUTION_EXEMPT =
+            Set.of("index", "index_status", "list", "modules");
+
+    // Read actions preceded by a throttled incremental refresh of the index.
+    // 'health' and 'stats' stay unrefreshed on purpose — they REPORT staleness.
+    private static final Set<String> REFRESHABLE_ACTIONS = Set.of(
+            "search", "ranked_search", "blended_search", "signatures", "impact",
+            "routing", "spath", "find", "replace", "usages", "pagerank", "clones",
+            "cochanges", "unused_exports", "callers", "implementors", "trace",
+            "spring_resolve", "debug_trace", "changed_context");
 
     // ── Token budget ───────────────────────────────────────────────────────
     private static final int DEFAULT_MAX_TOKENS = 0; // 0 = unlimited
@@ -107,7 +124,11 @@ public class LocalCodeIndexTool implements CliTool {
     @Override
     public String description() {
         return "Index and search a codebase locally. Extracts code entities (classes, methods, functions) " +
-                "with incremental indexing. Actions: index, search, ranked_search (multi-signal relevance), " +
+                "with incremental indexing; indexes stay fresh automatically via per-project background " +
+                "watchers and refresh passes. " +
+                "Actions: index (background job by default; waits briefly, then returns a job handle), " +
+                "index_status (background jobs + maintenance state), " +
+                "search, ranked_search (multi-signal relevance), " +
                 "blended_search (auto-selects strategy: spath for symbols, ranked for names, compressed for broad), " +
                 "signatures (token-compressed file views), impact (blast radius analysis), " +
                 "health (index quality score), routing (file complexity tiers), " +
@@ -135,7 +156,10 @@ public class LocalCodeIndexTool implements CliTool {
 
         ObjectNode action = props.putObject("action");
         action.put("type", "string");
-        action.put("description", "Action: 'index' (index a directory), 'search' (find entities), " +
+        action.put("description", "Action: 'index' (index a directory — runs as a background job by default, " +
+                "waits briefly then returns a job handle), " +
+                "'index_status' (background index jobs + per-project maintenance state), " +
+                "'search' (find entities), " +
                 "'ranked_search' (multi-signal relevance ranking with intent detection and graph boost), " +
                 "'signatures' (extract compact signatures per file — 70-95% token reduction), " +
                 "'impact' (BFS blast radius — who is affected if this file changes), " +
@@ -153,6 +177,25 @@ public class LocalCodeIndexTool implements CliTool {
                 "'implementors' (find all implementations of an interface), " +
                 "'trace' (BFS call chain traversal — outgoing or incoming), " +
                 "'spring_resolve' (resolve Spring DI bean wiring for an interface)");
+        action.putArray("enum")
+                .add("index").add("index_status").add("search").add("ranked_search").add("blended_search")
+                .add("signatures").add("impact").add("health").add("routing")
+                .add("spath").add("find").add("replace").add("usages")
+                .add("pagerank").add("clones").add("cochanges").add("unused_exports")
+                .add("stats").add("list").add("callers").add("implementors")
+                .add("trace").add("spring_resolve").add("debug_trace")
+                .add("changed_context").add("modules");
+
+        ObjectNode background = props.putObject("background");
+        background.put("type", "boolean");
+        background.put("description", "For action='index': run as a background job (default true). " +
+                "The call waits up to wait_seconds for completion, then returns a job handle; " +
+                "poll with action='index_status'. Set false to force fully synchronous indexing.");
+
+        ObjectNode waitSeconds = props.putObject("wait_seconds");
+        waitSeconds.put("type", "integer");
+        waitSeconds.put("description", "For action='index' with background=true: seconds to wait " +
+                "for the job before returning a handle (default 10, 0 = return immediately, max 120).");
 
         ObjectNode directory = props.putObject("directory");
         directory.put("type", "string");
@@ -160,7 +203,14 @@ public class LocalCodeIndexTool implements CliTool {
 
         ObjectNode projectId = props.putObject("project_id");
         projectId.put("type", "string");
-        projectId.put("description", "Project identifier (default: directory name)");
+        projectId.put("description", "Project identifier (default: auto-resolved — nearest " +
+                ".kompile/registration.json, then deepest indexed root containing the cwd, " +
+                "then the cwd directory name)");
+
+        ObjectNode autoRefresh = props.putObject("auto_refresh");
+        autoRefresh.put("type", "boolean");
+        autoRefresh.put("description", "Incrementally re-index changed files before read " +
+                "actions (default: true; throttled to once per 30s per project)");
 
         ObjectNode query = props.putObject("query");
         query.put("type", "string");
@@ -256,22 +306,53 @@ public class LocalCodeIndexTool implements CliTool {
     public String permissionKey() { return "local_code_index"; }
 
     @Override
+    public String compactHint() {
+        return "Index+search code locally. action=index runs as a background job (waits ~10s, " +
+                "then returns a job id — poll action=index_status); indexes auto-refresh in the " +
+                "background per project. blended_search auto-picks strategy; debug_trace bundles " +
+                "search+callers+trace+impact.";
+    }
+
+    @Override
     public ToolResult execute(JsonNode params, ToolContext context) throws ToolExecutionException {
         context.checkPermission(permissionKey(), "Index/search code locally");
 
         String action = params.path("action").asText("index");
         String cwd = context.getWorkingDirectory().toAbsolutePath().toString();
         int maxTokens = params.path("max_tokens").asInt(DEFAULT_MAX_TOKENS);
-        java.io.PrintStream progress = ProgressPrintStream.from(context);
+        PrintStream progress = ProgressPrintStream.from(context);
 
         try {
             LocalCodeIndexer indexer = new LocalCodeIndexer();
 
-            ai.kompile.cli.main.codeindex.CodeSearchEngine engine =
-                    new ai.kompile.cli.main.codeindex.CodeSearchEngine(indexer);
+            CodeSearchEngine engine =
+                    new CodeSearchEngine(indexer);
+
+            // Resolve project_id once for project-bound actions (explicit param →
+            // registration.json → deepest indexed root → cwd dir name) and stash it
+            // back into the params so the per-action fallbacks below see an explicit
+            // value. 'index'/'list'/'modules' keep their directory-based defaults.
+            ProjectIdResolver.Resolution resolution = null;
+            if (params instanceof ObjectNode mutableParams
+                    && !PROJECT_RESOLUTION_EXEMPT.contains(action)) {
+                resolution = ProjectIdResolver.resolve(
+                        params.path("project_id").asText(""), context.getWorkingDirectory());
+                mutableParams.put("project_id", resolution.projectId());
+            }
+
+            // Self-heal: background index maintenance (watcher + incremental
+            // passes) keeps the project fresh; reads only briefly join any
+            // in-flight work so they still see their own writes.
+            String refreshNote = null;
+            if (resolution != null && REFRESHABLE_ACTIONS.contains(action)
+                    && params.path("auto_refresh").asBoolean(true)) {
+                refreshNote = BackgroundIndexService.getInstance()
+                        .prepareForRead(indexer, resolution.projectId());
+            }
 
             ToolResult result = switch (action) {
                 case "index" -> doIndex(indexer, params, cwd, progress);
+                case "index_status" -> doIndexStatus(params);
                 case "search" -> doSearch(indexer, params, cwd);
                 case "ranked_search" -> doRankedSearch(params, cwd);
                 case "blended_search" -> doBlendedSearch(params, cwd);
@@ -297,19 +378,31 @@ public class LocalCodeIndexTool implements CliTool {
                 case "changed_context" -> doChangedContext(params, cwd);
                 case "modules" -> doModules(params, cwd);
                 default -> ToolResult.error("Unknown action: " + action +
-                        ". Use 'index', 'search', 'ranked_search', 'blended_search', 'signatures', " +
+                        ". Use 'index', 'index_status', 'search', 'ranked_search', 'blended_search', 'signatures', " +
                         "'impact', 'health', 'routing', 'spath', 'find', 'replace', 'usages', " +
                         "'pagerank', 'clones', 'cochanges', 'unused_exports', 'stats', 'list', " +
                         "'callers', 'implementors', 'trace', 'spring_resolve', " +
                         "'debug_trace', 'changed_context', or 'modules'.");
             };
 
-            // Apply token budget truncation if requested
-            if (maxTokens > 0 && result != null && !result.isError()) {
+            // Apply token budget truncation + resolution/freshness annotations
+            if (result != null && !result.isError()) {
                 String text = result.getOutput();
-                String truncated = truncateToTokenBudget(text, maxTokens);
-                if (!truncated.equals(text)) {
-                    return ToolResult.success(result.getTitle(), truncated, result.getMetadata());
+                if (maxTokens > 0) {
+                    text = truncateToTokenBudget(text, maxTokens);
+                }
+                StringBuilder suffix = new StringBuilder();
+                if (refreshNote != null) {
+                    suffix.append('\n').append(refreshNote);
+                }
+                if (resolution != null && resolution.autoResolved()
+                        && !"cwd-name".equals(resolution.source())) {
+                    suffix.append("\n[project_id '").append(resolution.projectId())
+                            .append("' auto-resolved via ").append(resolution.source()).append(']');
+                }
+                if (suffix.length() > 0 || !text.equals(result.getOutput())) {
+                    return ToolResult.success(result.getTitle(), text + suffix,
+                            result.getMetadata());
                 }
             }
             return result;
@@ -318,7 +411,7 @@ public class LocalCodeIndexTool implements CliTool {
         }
     }
 
-    private ToolResult doIndex(LocalCodeIndexer indexer, JsonNode params, String cwd, java.io.PrintStream progress) throws Exception {
+    private ToolResult doIndex(LocalCodeIndexer indexer, JsonNode params, String cwd, PrintStream progress) throws Exception {
         String dir = params.path("directory").asText("");
         if (dir.isEmpty()) dir = cwd;
         Path dirPath = Path.of(dir).toAbsolutePath();
@@ -330,11 +423,52 @@ public class LocalCodeIndexTool implements CliTool {
         String excludes = params.path("exclude_patterns").asText(null);
         boolean forceReindex = params.path("force_reindex").asBoolean(false);
 
-        LocalCodeIndexer.IndexResult result = indexer.index(dirPath, projectId,
-                includes, excludes, forceReindex, progress);
+        BackgroundIndexService service = BackgroundIndexService.getInstance();
+        boolean background = params.path("background").asBoolean(true) && service.enabled();
+
+        if (!background) {
+            LocalCodeIndexer.IndexResult result = indexer.index(dirPath, projectId,
+                    includes, excludes, forceReindex, progress);
+            return renderIndexResult(dir, result, null);
+        }
+
+        // Background job with a bounded sync grace window: small/incremental
+        // passes complete inline; big first-time builds return immediately
+        // with a job handle instead of blocking the tool call.
+        long waitSeconds = Math.max(0, Math.min(120, params.path("wait_seconds").asLong(10)));
+        BackgroundIndexService.IndexJob job = service.submitIndexJob(
+                dirPath, projectId, includes, excludes, forceReindex);
+        if (waitSeconds > 0 && service.awaitJob(job, waitSeconds * 1000)) {
+            if (job.status() == BackgroundIndexService.JobStatus.FAILED) {
+                return ToolResult.error("Index job " + job.id() + " failed: " + job.error());
+            }
+            return renderIndexResult(dir, job.result(),
+                    "- **Mode**: background job " + job.id() + " (completed in "
+                            + job.runtimeMillis() + " ms)\n");
+        }
 
         StringBuilder sb = new StringBuilder();
+        sb.append("Index job started in background\n\n");
+        sb.append("- **Job**: ").append(job.id()).append(" (").append(job.status().name().toLowerCase()).append(")\n");
+        sb.append("- **Project**: ").append(projectId).append("\n");
+        sb.append("- **Root**: ").append(dirPath).append("\n");
+        if (!job.progressLine().isEmpty()) {
+            sb.append("- **Progress**: ").append(job.progressLine()).append("\n");
+        }
+        sb.append("\nPoll with: local_code_index action='index_status' project_id='")
+                .append(projectId).append("'. ");
+        sb.append("Searches during the build see the index as it fills; ")
+                .append("wait for completion for exhaustive results.");
+        return ToolResult.success("code_index: " + dir + " (background)", sb.toString(),
+                Map.of("projectId", projectId, "jobId", job.id(),
+                        "status", job.status().name()));
+    }
+
+    private ToolResult renderIndexResult(String dir, LocalCodeIndexer.IndexResult result,
+                                         String modeLine) {
+        StringBuilder sb = new StringBuilder();
         sb.append("Codebase indexed locally (incremental)\n\n");
+        if (modeLine != null) sb.append(modeLine);
         sb.append("- **Project**: ").append(result.projectId()).append("\n");
         sb.append("- **Root**: ").append(result.rootPath()).append("\n");
         sb.append("- **Files (total)**: ").append(result.filesProcessed()).append("\n");
@@ -355,6 +489,52 @@ public class LocalCodeIndexTool implements CliTool {
         return ToolResult.success("code_index: " + dir, sb.toString(),
                 Map.of("projectId", result.projectId(), "filesProcessed", result.filesProcessed(),
                         "entitiesFound", result.entitiesFound(), "filesSkipped", result.filesSkipped()));
+    }
+
+    private ToolResult doIndexStatus(JsonNode params) {
+        String projectId = params.path("project_id").asText("");
+        BackgroundIndexService service = BackgroundIndexService.getInstance();
+        List<BackgroundIndexService.IndexJob> jobs =
+                service.jobs(projectId.isEmpty() ? null : projectId);
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("Background index status");
+        if (!projectId.isEmpty()) sb.append(" for: ").append(projectId);
+        sb.append("\n\n");
+
+        if (!projectId.isEmpty()) {
+            String line = service.statusLine(projectId);
+            if (line != null) sb.append("- **Maintenance**: ").append(line).append("\n\n");
+        }
+
+        if (jobs.isEmpty()) {
+            sb.append("No background index jobs in this session.");
+            if (!service.enabled()) {
+                sb.append(" (background indexing disabled via KOMPILE_CODE_INDEX_BACKGROUND)");
+            }
+            return ToolResult.success("index_status", sb.toString(), Map.of("jobCount", 0));
+        }
+
+        for (BackgroundIndexService.IndexJob job : jobs) {
+            sb.append("- **").append(job.id()).append("** ").append(job.projectId())
+                    .append(" — ").append(job.status().name().toLowerCase());
+            if (job.isDone()) {
+                sb.append(" in ").append(job.runtimeMillis()).append(" ms");
+            } else if (job.runtimeMillis() > 0) {
+                sb.append(" for ").append(job.runtimeMillis()).append(" ms");
+            }
+            LocalCodeIndexer.IndexResult result = job.result();
+            if (result != null) {
+                sb.append(" (").append(result.filesProcessed()).append(" files, ")
+                        .append(result.entitiesFound()).append(" entities)");
+            } else if (job.error() != null) {
+                sb.append(" — ").append(job.error());
+            } else if (!job.progressLine().isEmpty()) {
+                sb.append(" — ").append(job.progressLine());
+            }
+            sb.append("\n");
+        }
+        return ToolResult.success("index_status", sb.toString(), Map.of("jobCount", jobs.size()));
     }
 
     private ToolResult doSearch(LocalCodeIndexer indexer, JsonNode params, String cwd) throws Exception {
@@ -446,9 +626,9 @@ public class LocalCodeIndexTool implements CliTool {
 
         int maxResults = params.path("max_results").asInt(50);
 
-        ai.kompile.cli.main.codeindex.SpathResolver resolver =
-                new ai.kompile.cli.main.codeindex.SpathResolver(projectId);
-        ai.kompile.cli.main.codeindex.SpathResolver.SpathResult result =
+        SpathResolver resolver =
+                new SpathResolver(projectId);
+        SpathResolver.SpathResult result =
                 resolver.resolve(query, maxResults);
 
         if (result.matches().isEmpty()) {
@@ -468,7 +648,7 @@ public class LocalCodeIndexTool implements CliTool {
         sb.append("\n").append(result.totalMatches()).append(" match(es)\n\n");
 
         int idx = 0;
-        for (ai.kompile.cli.main.codeindex.SpathResolver.SpathMatch match : result.matches()) {
+        for (SpathResolver.SpathMatch match : result.matches()) {
             idx++;
             String type = match.entityType().toLowerCase();
             sb.append(idx).append(". [").append(type).append("] **").append(match.name()).append("**");
@@ -519,6 +699,10 @@ public class LocalCodeIndexTool implements CliTool {
         sb.append("- **Entities found**: ").append(stats.getOrDefault("entitiesFound", "?")).append("\n");
         sb.append("- **Errors**: ").append(stats.getOrDefault("errors", 0)).append("\n");
         sb.append("- **Indexed at**: ").append(stats.getOrDefault("indexedAt", "?")).append("\n");
+        String maintenance = BackgroundIndexService.getInstance().statusLine(projectId);
+        if (maintenance != null) {
+            sb.append("- **Background maintenance**: ").append(maintenance).append("\n");
+        }
 
         @SuppressWarnings("unchecked")
         Map<String, Object> langCounts = (Map<String, Object>) stats.get("languageCounts");
@@ -542,8 +726,13 @@ public class LocalCodeIndexTool implements CliTool {
         StringBuilder sb = new StringBuilder();
         sb.append("Locally indexed projects (").append(projects.size()).append("):\n\n");
 
+        BackgroundIndexService service = BackgroundIndexService.getInstance();
         for (Map<String, Object> meta : projects) {
-            sb.append("- **").append(meta.getOrDefault("projectId", "?")).append("**\n");
+            String pid = String.valueOf(meta.getOrDefault("projectId", "?"));
+            sb.append("- **").append(pid).append("**");
+            if (service.isWatching(pid)) sb.append(" _(watching)_");
+            else if (service.activeJob(pid) != null) sb.append(" _(indexing in background)_");
+            sb.append("\n");
             sb.append("  Path: ").append(meta.getOrDefault("rootPath", "?")).append("\n");
             sb.append("  Files: ").append(meta.getOrDefault("filesProcessed", "?"))
                     .append(" | Entities: ").append(meta.getOrDefault("entitiesFound", "?")).append("\n");
@@ -765,7 +954,7 @@ public class LocalCodeIndexTool implements CliTool {
     // Find in files
     // -----------------------------------------------------------------------
 
-    private ToolResult doFind(ai.kompile.cli.main.codeindex.CodeSearchEngine engine,
+    private ToolResult doFind(CodeSearchEngine engine,
                               JsonNode params, String cwd) throws Exception {
         String query = params.path("query").asText("");
         if (query.isEmpty()) return ToolResult.error("'query' is required for find");
@@ -773,8 +962,8 @@ public class LocalCodeIndexTool implements CliTool {
         String projectId = params.path("project_id").asText("");
         if (projectId.isEmpty()) projectId = Path.of(cwd).getFileName().toString();
 
-        ai.kompile.cli.main.codeindex.CodeSearchEngine.FindOptions opts =
-                ai.kompile.cli.main.codeindex.CodeSearchEngine.FindOptions.defaults()
+        CodeSearchEngine.FindOptions opts =
+                CodeSearchEngine.FindOptions.defaults()
                         .withRegex(params.path("regex").asBoolean(false))
                         .withCaseSensitive(params.path("case_sensitive").asBoolean(true))
                         .withWholeWord(params.path("whole_word").asBoolean(false))
@@ -782,7 +971,7 @@ public class LocalCodeIndexTool implements CliTool {
                         .withContextLines(params.path("context_lines").asInt(2))
                         .withMaxResults(params.path("max_results").asInt(200));
 
-        ai.kompile.cli.main.codeindex.CodeSearchEngine.FindResult result =
+        CodeSearchEngine.FindResult result =
                 engine.findInFiles(projectId, query, opts);
 
         if (result.matches().isEmpty()) {
@@ -796,7 +985,7 @@ public class LocalCodeIndexTool implements CliTool {
         sb.append("\n\n");
 
         String lastFile = null;
-        for (ai.kompile.cli.main.codeindex.CodeSearchEngine.FileMatch match : result.matches()) {
+        for (CodeSearchEngine.FileMatch match : result.matches()) {
             if (!match.filePath().equals(lastFile)) {
                 if (lastFile != null) sb.append("\n");
                 sb.append("**").append(match.filePath()).append("**\n");
@@ -820,8 +1009,8 @@ public class LocalCodeIndexTool implements CliTool {
     // Find and replace
     // -----------------------------------------------------------------------
 
-    private ToolResult doReplace(ai.kompile.cli.main.codeindex.CodeSearchEngine engine,
-                                  JsonNode params, String cwd, java.io.PrintStream progress) throws Exception {
+    private ToolResult doReplace(CodeSearchEngine engine,
+                                  JsonNode params, String cwd, PrintStream progress) throws Exception {
         String query = params.path("query").asText("");
         if (query.isEmpty()) return ToolResult.error("'query' is required for replace");
 
@@ -833,14 +1022,14 @@ public class LocalCodeIndexTool implements CliTool {
 
         boolean dryRun = params.path("dry_run").asBoolean(true);
 
-        ai.kompile.cli.main.codeindex.CodeSearchEngine.FindOptions opts =
-                ai.kompile.cli.main.codeindex.CodeSearchEngine.FindOptions.defaults()
+        CodeSearchEngine.FindOptions opts =
+                CodeSearchEngine.FindOptions.defaults()
                         .withRegex(params.path("regex").asBoolean(false))
                         .withCaseSensitive(params.path("case_sensitive").asBoolean(true))
                         .withWholeWord(params.path("whole_word").asBoolean(false))
                         .withFilePattern(params.path("file_pattern").asText(null));
 
-        ai.kompile.cli.main.codeindex.CodeSearchEngine.ReplaceResult result =
+        CodeSearchEngine.ReplaceResult result =
                 engine.findAndReplace(projectId, query, replacement, opts, dryRun, progress);
 
         if (result.replacements().isEmpty()) {
@@ -853,7 +1042,7 @@ public class LocalCodeIndexTool implements CliTool {
                 .append(result.filesModified()).append(" file(s)\n\n");
 
         String lastFile = null;
-        for (ai.kompile.cli.main.codeindex.CodeSearchEngine.Replacement r : result.replacements()) {
+        for (CodeSearchEngine.Replacement r : result.replacements()) {
             if (!r.filePath().equals(lastFile)) {
                 if (lastFile != null) sb.append("\n");
                 sb.append("**").append(r.filePath()).append("**\n");
@@ -877,7 +1066,7 @@ public class LocalCodeIndexTool implements CliTool {
     // Find usages
     // -----------------------------------------------------------------------
 
-    private ToolResult doUsages(ai.kompile.cli.main.codeindex.CodeSearchEngine engine,
+    private ToolResult doUsages(CodeSearchEngine engine,
                                  JsonNode params, String cwd) throws Exception {
         String symbolName = params.path("symbol_name").asText(params.path("query").asText(""));
         if (symbolName.isEmpty()) return ToolResult.error("'symbol_name' (or 'query') is required for usages");
@@ -888,7 +1077,7 @@ public class LocalCodeIndexTool implements CliTool {
         String entityType = params.path("entity_type").asText("");
         int maxResults = params.path("max_results").asInt(100);
 
-        ai.kompile.cli.main.codeindex.CodeSearchEngine.UsagesResult result =
+        CodeSearchEngine.UsagesResult result =
                 engine.findUsages(projectId, symbolName,
                         entityType.isEmpty() ? null : entityType, maxResults);
 
@@ -915,7 +1104,7 @@ public class LocalCodeIndexTool implements CliTool {
         }
 
         String lastFile = null;
-        for (ai.kompile.cli.main.codeindex.CodeSearchEngine.Usage usage : result.usages()) {
+        for (CodeSearchEngine.Usage usage : result.usages()) {
             if (!usage.filePath().equals(lastFile)) {
                 if (lastFile != null) sb.append("\n");
                 sb.append("**").append(usage.filePath()).append("**\n");
@@ -1200,7 +1389,7 @@ public class LocalCodeIndexTool implements CliTool {
 
             return ToolResult.success("callers: " + query, sb.toString(),
                     Map.of("query", query, "callerCount", callers.size()));
-        } catch (java.sql.SQLException e) {
+        } catch (SQLException e) {
             return ToolResult.error("Database error: " + e.getMessage());
         }
     }
@@ -1258,7 +1447,7 @@ public class LocalCodeIndexTool implements CliTool {
 
             return ToolResult.success("implementors: " + query, sb.toString(),
                     Map.of("query", query, "count", impls.size()));
-        } catch (java.sql.SQLException e) {
+        } catch (SQLException e) {
             return ToolResult.error("Database error: " + e.getMessage());
         }
     }
@@ -1336,7 +1525,7 @@ public class LocalCodeIndexTool implements CliTool {
                     Map.of("query", query, "direction", direction,
                             "totalNodes", chain.get("totalNodes"),
                             "totalEdges", chain.get("totalEdges")));
-        } catch (java.sql.SQLException e) {
+        } catch (SQLException e) {
             return ToolResult.error("Database error: " + e.getMessage());
         }
     }
@@ -1432,7 +1621,7 @@ public class LocalCodeIndexTool implements CliTool {
                     Map.of("query", query, "strategy", strategy,
                             "implementorCount", implementors.size(),
                             "componentCount", springComponents.size()));
-        } catch (java.sql.SQLException e) {
+        } catch (SQLException e) {
             return ToolResult.error("Database error: " + e.getMessage());
         }
     }
@@ -1620,7 +1809,7 @@ public class LocalCodeIndexTool implements CliTool {
                     Map.of("query", query, "callerCount", callers.size(),
                             "chainNodes", chain.get("totalNodes"),
                             "chainEdges", chain.get("totalEdges")));
-        } catch (java.sql.SQLException e) {
+        } catch (SQLException e) {
             return ToolResult.error("Database error: " + e.getMessage());
         }
     }
@@ -1733,7 +1922,7 @@ public class LocalCodeIndexTool implements CliTool {
                     Map.of("changedFiles", changedFiles.size(),
                             "totalEntities", totalEntities,
                             "gitRef", gitRef));
-        } catch (java.sql.SQLException e) {
+        } catch (SQLException e) {
             return ToolResult.error("Database error: " + e.getMessage());
         }
     }
@@ -1746,7 +1935,7 @@ public class LocalCodeIndexTool implements CliTool {
         try {
             // Staged + unstaged changes
             ProcessBuilder pb = new ProcessBuilder("git", "diff", "--name-only", gitRef);
-            pb.directory(new java.io.File(cwd));
+            pb.directory(new File(cwd));
             pb.redirectErrorStream(true);
             Process proc = pb.start();
 
@@ -1757,13 +1946,13 @@ public class LocalCodeIndexTool implements CliTool {
                     if (!line.isEmpty()) changed.add(line);
                 }
             }
-            if (!proc.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)) {
+            if (!proc.waitFor(30, TimeUnit.SECONDS)) {
                 proc.destroyForcibly();
             }
 
             // Also include untracked files
             ProcessBuilder pb2 = new ProcessBuilder("git", "diff", "--name-only", "--cached", gitRef);
-            pb2.directory(new java.io.File(cwd));
+            pb2.directory(new File(cwd));
             pb2.redirectErrorStream(true);
             Process proc2 = pb2.start();
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(proc2.getInputStream()))) {
@@ -1773,13 +1962,13 @@ public class LocalCodeIndexTool implements CliTool {
                     if (!line.isEmpty()) changed.add(line);
                 }
             }
-            if (!proc2.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)) {
+            if (!proc2.waitFor(30, TimeUnit.SECONDS)) {
                 proc2.destroyForcibly();
             }
 
             // Unstaged modifications (not yet added)
             ProcessBuilder pb3 = new ProcessBuilder("git", "diff", "--name-only");
-            pb3.directory(new java.io.File(cwd));
+            pb3.directory(new File(cwd));
             pb3.redirectErrorStream(true);
             Process proc3 = pb3.start();
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(proc3.getInputStream()))) {
@@ -1789,7 +1978,7 @@ public class LocalCodeIndexTool implements CliTool {
                     if (!line.isEmpty()) changed.add(line);
                 }
             }
-            if (!proc3.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)) {
+            if (!proc3.waitFor(30, TimeUnit.SECONDS)) {
                 proc3.destroyForcibly();
             }
         } catch (Exception e) {
@@ -1814,7 +2003,8 @@ public class LocalCodeIndexTool implements CliTool {
         // on a large repo means walking gigabytes of git-ignored model builds to find poms.
         List<Path> pomFiles = new ArrayList<>();
         SearchExclusions.GitignoreDirFilter pomGitFilter = SearchExclusions.loadGitignoreDirFilter(projectRoot);
-        Files.walkFileTree(projectRoot, EnumSet.noneOf(FileVisitOption.class), 10, new SimpleFileVisitor<>() {
+        Files.walkFileTree(projectRoot, EnumSet.noneOf(FileVisitOption.class), 10,
+                new SimpleFileVisitor<>() {
             @Override
             public FileVisitResult preVisitDirectory(Path d, BasicFileAttributes attrs) {
                 if (d.equals(projectRoot)) return FileVisitResult.CONTINUE;

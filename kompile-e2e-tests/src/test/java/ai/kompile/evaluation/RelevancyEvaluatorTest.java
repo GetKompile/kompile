@@ -53,7 +53,7 @@ class RelevancyEvaluatorTest {
 
     @BeforeEach
     void setUp() {
-        properties = new EvaluationProperties();
+        properties = new EvaluationProperties(null);
         properties.getRelevancy().setEnabled(true);
         properties.getRelevancy().setThreshold(0.7);
         evaluator = new RelevancyEvaluator(chatClient, properties);

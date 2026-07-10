@@ -38,6 +38,26 @@ public final class GraphExtractionSchema {
     public static final String SCHEMA_VERSION = "kompile-graph-extraction/v1";
 
     /**
+     * Fallback confidence when the LLM omits a confidence value for an entity.
+     *
+     * <p>Rationale: entities are relatively identifiable (they have surface forms the model can
+     * anchor on), but an unconfirmed extraction is not certain — 0.7 places it in the "likely
+     * real but unverified" tier and keeps PSL soft-truth below the hard-pin threshold (0.99)
+     * so contradicting evidence can still win.</p>
+     */
+    public static final double DEFAULT_ENTITY_CONFIDENCE = 0.7;
+
+    /**
+     * Fallback confidence when the LLM omits a confidence value for a relation.
+     *
+     * <p>Rationale: relations are epistemically harder than entities — co-occurrence in text
+     * does not prove a semantic link. 0.5 signals epistemic parity (we have weak evidence for
+     * the relation but no evidence against it). This ensures PSL treats such facts as soft,
+     * allowing inference to override them when stronger evidence is present.</p>
+     */
+    public static final double DEFAULT_RELATION_CONFIDENCE = 0.5;
+
+    /**
      * Top-level extraction result containing entities, relations, and metadata.
      */
     @JsonIgnoreProperties(ignoreUnknown = true)
@@ -77,7 +97,9 @@ public final class GraphExtractionSchema {
     ) {
         public ExtractedEntity {
             if (aliases == null) aliases = List.of();
-            if (confidence == null) confidence = 1.0;
+            // Default to DEFAULT_ENTITY_CONFIDENCE, not 1.0, so absent LLM confidence is
+            // treated as "probable but unverified" rather than hard-certain.
+            if (confidence == null) confidence = DEFAULT_ENTITY_CONFIDENCE;
             if (properties == null) properties = Map.of();
         }
     }
@@ -97,7 +119,9 @@ public final class GraphExtractionSchema {
             @JsonProperty("occurredAt") String occurredAt
     ) {
         public ExtractedRelation {
-            if (confidence == null) confidence = 1.0;
+            // Default to DEFAULT_RELATION_CONFIDENCE, not 1.0, so absent LLM confidence
+            // produces soft PSL atoms (value < 0.99) rather than hard-pinned facts.
+            if (confidence == null) confidence = DEFAULT_RELATION_CONFIDENCE;
             if (properties == null) properties = Map.of();
         }
 

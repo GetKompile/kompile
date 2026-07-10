@@ -42,6 +42,19 @@ public record ArithmeticGroundRule(double weight, boolean hard, boolean squared,
                                    double[] coefficients, String[] atomKeys,
                                    double rhs, RelOp op) {
 
+    public ArithmeticGroundRule {
+        if (Double.isNaN(weight) || weight < 0.0) {
+            throw new IllegalArgumentException("Rule weight must be non-negative, got: " + weight);
+        }
+        if (weight == Double.POSITIVE_INFINITY) {
+            hard = true;
+            squared = true;
+        } else if (hard) {
+            weight = Double.POSITIVE_INFINITY;
+            squared = true;
+        }
+    }
+
     /**
      * Distance to satisfaction for this arithmetic constraint.
      *

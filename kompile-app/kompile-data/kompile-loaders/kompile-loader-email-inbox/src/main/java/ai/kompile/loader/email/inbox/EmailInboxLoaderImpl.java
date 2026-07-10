@@ -22,6 +22,13 @@ import ai.kompile.core.loaders.DocumentSourceDescriptor.SourceType;
 import ai.kompile.core.graphrag.GraphConstants;
 import ai.kompile.core.graphrag.model.Graph;
 import ai.kompile.core.graphrag.table.TableCellGraphBuilder;
+import com.pff.PSTAppointment;
+import com.pff.PSTAttachment;
+import com.pff.PSTContact;
+import com.pff.PSTFile;
+import com.pff.PSTFolder;
+import com.pff.PSTMessage;
+import com.pff.PSTTask;
 import org.apache.james.mime4j.mboxiterator.CharBufferWrapper;
 import org.apache.james.mime4j.mboxiterator.MboxIterator;
 import org.slf4j.Logger;
@@ -34,6 +41,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
 import java.util.function.Consumer;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 /**
@@ -372,15 +382,15 @@ public class EmailInboxLoaderImpl implements DocumentLoader {
         logger.info("Loading Outlook PST file: {} ({} bytes)", pstPath, Files.size(pstPath));
         List<Document> documents = new ArrayList<>();
 
-        com.pff.PSTFile pstFile = new com.pff.PSTFile(pstPath.toFile());
-        com.pff.PSTFolder rootFolder = pstFile.getRootFolder();
+        PSTFile pstFile = new PSTFile(pstPath.toFile());
+        PSTFolder rootFolder = pstFile.getRootFolder();
         loadPstFolder(rootFolder, documents, pstPath, progressCallback);
 
         logger.info("Loaded {} documents from PST: {}", documents.size(), pstPath);
         return documents;
     }
 
-    private void loadPstFolder(com.pff.PSTFolder folder, List<Document> documents,
+    private void loadPstFolder(PSTFolder folder, List<Document> documents,
                                 Path pstPath, Consumer<LoaderProgress> progressCallback)
             throws Exception {
         if (folder.getContentCount() > 0) {
@@ -389,25 +399,25 @@ public class EmailInboxLoaderImpl implements DocumentLoader {
                 if (Thread.currentThread().isInterrupted()) break;
 
                 // Handle PST contacts, tasks, and appointments as distinct document types
-                if (nextChild instanceof com.pff.PSTContact contact) {
+                if (nextChild instanceof PSTContact contact) {
                     Document contactDoc = loadPstContact(contact, folder, pstPath, documents.size());
                     if (contactDoc != null) documents.add(contactDoc);
                     nextChild = folder.getNextChild();
                     continue;
                 }
-                if (nextChild instanceof com.pff.PSTTask task) {
+                if (nextChild instanceof PSTTask task) {
                     Document taskDoc = loadPstTask(task, folder, pstPath, documents.size());
                     if (taskDoc != null) documents.add(taskDoc);
                     nextChild = folder.getNextChild();
                     continue;
                 }
-                if (nextChild instanceof com.pff.PSTAppointment appointment) {
+                if (nextChild instanceof PSTAppointment appointment) {
                     Document apptDoc = loadPstAppointment(appointment, folder, pstPath, documents.size());
                     if (apptDoc != null) documents.add(apptDoc);
                     nextChild = folder.getNextChild();
                     continue;
                 }
-                if (!(nextChild instanceof com.pff.PSTMessage message)) {
+                if (!(nextChild instanceof PSTMessage message)) {
                     nextChild = folder.getNextChild();
                     continue;
                 }
@@ -501,9 +511,9 @@ public class EmailInboxLoaderImpl implements DocumentLoader {
                 if (transportHeaders != null && !transportHeaders.isEmpty()) {
                     String refsLine = extractHeaderValue(transportHeaders, "References");
                     if (refsLine != null && !refsLine.isEmpty()) {
-                        List<String> refsList = java.util.Arrays.stream(refsLine.trim().split("\\s+"))
+                        List<String> refsList = Arrays.stream(refsLine.trim().split("\\s+"))
                                 .filter(s -> !s.isBlank())
-                                .collect(java.util.stream.Collectors.toList());
+                                .collect(Collectors.toList());
                         if (!refsList.isEmpty()) {
                             meta.put("email.references", refsList);
                         }
@@ -540,11 +550,11 @@ public class EmailInboxLoaderImpl implements DocumentLoader {
                     if (authResults != null && !authResults.isBlank()) {
                         meta.put(GraphConstants.META_EMAIL_AUTH_RESULTS, authResults.trim());
                         String authLower = authResults.toLowerCase();
-                        java.util.regex.Matcher dkimM = java.util.regex.Pattern.compile("\\bdkim=(\\w+)").matcher(authLower);
+                        Matcher dkimM = Pattern.compile("\\bdkim=(\\w+)").matcher(authLower);
                         if (dkimM.find()) meta.put(GraphConstants.META_EMAIL_DKIM_RESULT, dkimM.group(1));
-                        java.util.regex.Matcher spfM = java.util.regex.Pattern.compile("\\bspf=(\\w+)").matcher(authLower);
+                        Matcher spfM = Pattern.compile("\\bspf=(\\w+)").matcher(authLower);
                         if (spfM.find()) meta.put(GraphConstants.META_EMAIL_SPF_RESULT, spfM.group(1));
-                        java.util.regex.Matcher dmarcM = java.util.regex.Pattern.compile("\\bdmarc=(\\w+)").matcher(authLower);
+                        Matcher dmarcM = Pattern.compile("\\bdmarc=(\\w+)").matcher(authLower);
                         if (dmarcM.find()) meta.put(GraphConstants.META_EMAIL_DMARC_RESULT, dmarcM.group(1));
                     }
 
@@ -604,7 +614,7 @@ public class EmailInboxLoaderImpl implements DocumentLoader {
                     if (numAttachments > 0) {
                         List<String> attachmentNames = new ArrayList<>();
                         for (int ai = 0; ai < numAttachments; ai++) {
-                            com.pff.PSTAttachment attachment = message.getAttachment(ai);
+                            PSTAttachment attachment = message.getAttachment(ai);
                             String filename = attachment.getLongFilename();
                             if (filename == null || filename.isEmpty()) {
                                 filename = attachment.getFilename();
@@ -638,7 +648,7 @@ public class EmailInboxLoaderImpl implements DocumentLoader {
         }
 
         if (folder.hasSubfolders()) {
-            for (com.pff.PSTFolder childFolder : folder.getSubFolders()) {
+            for (PSTFolder childFolder : folder.getSubFolders()) {
                 loadPstFolder(childFolder, documents, pstPath, progressCallback);
             }
         }
@@ -646,7 +656,7 @@ public class EmailInboxLoaderImpl implements DocumentLoader {
 
     // ── PST special item types ─────────────────────────────────────────
 
-    private Document loadPstContact(com.pff.PSTContact contact, com.pff.PSTFolder folder,
+    private Document loadPstContact(PSTContact contact, PSTFolder folder,
                                      Path pstPath, int docIndex) {
         try {
             StringBuilder content = new StringBuilder();
@@ -703,7 +713,7 @@ public class EmailInboxLoaderImpl implements DocumentLoader {
         }
     }
 
-    private Document loadPstTask(com.pff.PSTTask task, com.pff.PSTFolder folder,
+    private Document loadPstTask(PSTTask task, PSTFolder folder,
                                   Path pstPath, int docIndex) {
         try {
             StringBuilder content = new StringBuilder();
@@ -743,7 +753,7 @@ public class EmailInboxLoaderImpl implements DocumentLoader {
         }
     }
 
-    private Document loadPstAppointment(com.pff.PSTAppointment appointment, com.pff.PSTFolder folder,
+    private Document loadPstAppointment(PSTAppointment appointment, PSTFolder folder,
                                          Path pstPath, int docIndex) {
         try {
             StringBuilder content = new StringBuilder();
@@ -807,9 +817,9 @@ public class EmailInboxLoaderImpl implements DocumentLoader {
      */
     private void extractPstEmailHtmlTables(String html, String sourcePath, Map<String, Object> metadata) {
         try {
-            java.util.regex.Pattern tablePattern = java.util.regex.Pattern.compile(
-                    "<table[^>]*>(.*?)</table>", java.util.regex.Pattern.DOTALL | java.util.regex.Pattern.CASE_INSENSITIVE);
-            java.util.regex.Matcher tableMatcher = tablePattern.matcher(html);
+            Pattern tablePattern = Pattern.compile(
+                    "<table[^>]*>(.*?)</table>", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
+            Matcher tableMatcher = tablePattern.matcher(html);
             List<Graph> graphs = new ArrayList<>();
             int tableIdx = 0;
 
@@ -817,9 +827,9 @@ public class EmailInboxLoaderImpl implements DocumentLoader {
                 String tableHtml = tableMatcher.group(1);
                 // Strip nested tables to avoid parsing inner table rows as outer table data
                 tableHtml = tableHtml.replaceAll("(?si)<table[^>]*>.*?</table>", "");
-                java.util.regex.Pattern rowPattern = java.util.regex.Pattern.compile(
-                        "<tr[^>]*>(.*?)</tr>", java.util.regex.Pattern.DOTALL | java.util.regex.Pattern.CASE_INSENSITIVE);
-                java.util.regex.Matcher rowMatcher = rowPattern.matcher(tableHtml);
+                Pattern rowPattern = Pattern.compile(
+                        "<tr[^>]*>(.*?)</tr>", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
+                Matcher rowMatcher = rowPattern.matcher(tableHtml);
 
                 List<List<String>> allRows = new ArrayList<>();
                 boolean firstRowIsHeader = false;
@@ -828,9 +838,9 @@ public class EmailInboxLoaderImpl implements DocumentLoader {
                     String rowHtml = rowMatcher.group(1);
                     List<String> cells = new ArrayList<>();
                     boolean rowHasHeaders = false;
-                    java.util.regex.Pattern cellPattern = java.util.regex.Pattern.compile(
-                            "<(th|td)[^>]*>(.*?)</\\1>", java.util.regex.Pattern.DOTALL | java.util.regex.Pattern.CASE_INSENSITIVE);
-                    java.util.regex.Matcher cellMatcher = cellPattern.matcher(rowHtml);
+                    Pattern cellPattern = Pattern.compile(
+                            "<(th|td)[^>]*>(.*?)</\\1>", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
+                    Matcher cellMatcher = cellPattern.matcher(rowHtml);
                     while (cellMatcher.find()) {
                         if ("th".equalsIgnoreCase(cellMatcher.group(1))) rowHasHeaders = true;
                         String cellText = cellMatcher.group(2).replaceAll("<[^>]+>", "").trim();

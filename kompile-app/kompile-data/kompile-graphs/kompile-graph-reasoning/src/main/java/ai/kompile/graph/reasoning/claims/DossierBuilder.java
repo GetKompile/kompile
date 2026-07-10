@@ -292,9 +292,13 @@ public final class DossierBuilder {
 
     // ── Private helpers ────────────────────────────────────────────────────────
 
-    /** Build the canonical atom key: {@code PREDICATE(subject, object)} (predicate upper-cased). */
+    /**
+     * Build the canonical atom key: {@code predicate(subject, object)}. Predicate case is
+     * preserved — KB atom keys are case-sensitive, so folding case here would disconnect the
+     * verifier channel from stores keyed with camelCase predicates.
+     */
     static String canonicalAtomKey(String predicate, String subject, String object) {
-        return predicate.toUpperCase(Locale.ROOT) + "(" + subject + ", " + object + ")";
+        return predicate + "(" + subject + ", " + object + ")";
     }
 
     /**

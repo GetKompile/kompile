@@ -27,6 +27,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ProjectCommandVlmOcrPresetTest {
@@ -44,9 +45,11 @@ class ProjectCommandVlmOcrPresetTest {
                 "--preset", "vlm-ocr",
                 "--source", "data/input_documents/uploads",
                 "--pdf-routing", "FORCE_VLM",
-                "--vlm-model", "smoldocling-256m"));
+                "--vlm-model", "smoldocling-256m",
+                "--schema-preset", "fpna-cpg-channel-v1"));
 
         String manifest = Files.readString(projectRoot.resolve("kompile.project.json"), StandardCharsets.UTF_8);
+        String openState = Files.readString(projectRoot.resolve(".kompile/project/open.json"), StandardCharsets.UTF_8);
         String pipeline = Files.readString(projectRoot.resolve("data/pipelines/vlm-ocr-pipeline.json"), StandardCharsets.UTF_8);
         String routing = Files.readString(projectRoot.resolve("data/pipelines/vlm-ocr-routing.json"), StandardCharsets.UTF_8);
         String stagingRegistry = Files.readString(projectRoot.resolve("data/models/registry.json"), StandardCharsets.UTF_8);
@@ -60,13 +63,14 @@ class ProjectCommandVlmOcrPresetTest {
         assertTrue(manifest.contains("\"id\" : \"vlm-ocr-docs\""));
         assertTrue(manifest.contains("\"multimodal\" : true"));
         assertTrue(manifest.contains("\"vlmModel\" : \"smoldocling-256m\""));
+        assertTrue(manifest.contains("\"schemaPresetId\" : \"fpna-cpg-channel-v1\""));
         assertTrue(manifest.contains("\"id\" : \"vlm-ocr-ingest\""));
         assertTrue(manifest.contains("\"id\" : \"run-vlm-ocr\""));
 
         assertTrue(pipeline.contains("\"enableVlm\" : true"));
         assertTrue(pipeline.contains("\"enableOcr\" : true"));
         assertTrue(pipeline.contains("\"pdfRoutingMode\" : \"FORCE_VLM\""));
-        assertTrue(routing.contains("\"fileExtensions\":[\".pdf\"]"));
+        assertTrue(routing.contains("\"fileExtensions\" : [\".pdf\"]"));
         assertTrue(routing.contains("\".png\""));
         assertTrue(stagingRegistry.contains("\"model_id\" : \"smoldocling-256m\""));
         assertTrue(stagingRegistry.contains("\"type\" : \"vlm_pipeline\""));
@@ -74,10 +78,36 @@ class ProjectCommandVlmOcrPresetTest {
         assertTrue(stagingRegistry.contains("\"source_repository\" : \"ds4sd/SmolDocling-256M-preview\""));
         assertTrue(prompt.contains("Preserve table cells and reading order"));
         assertTrue(runbook.contains("kompile project workflow-run --root . --id vlm-ocr-ingest --dry-run"));
-        assertTrue(runbook.contains("KOMPILE_BIN"));
+        assertTrue(runbook.contains("vlm-ocr-routing.json"));
         assertTrue(script.contains("--dry-run"));
         assertTrue(script.contains("KOMPILE_BIN=\"${KOMPILE_BIN:-kompile}\""));
+        assertTrue(openState.contains("\"promptTemplateCount\" : 1"));
         assertTrue(Files.isDirectory(projectRoot.resolve("data/ocr/vlm-ocr-docs")));
+    }
+
+    @Test
+    void projectConfigSetWritesProjectLocalJson() throws Exception {
+        Path projectRoot = tempDir.resolve("config-project");
+
+        assertEquals(0, execute("project", "create",
+                "--root", projectRoot.toString(),
+                "--name", "config-project",
+                "--no-auto-detect"));
+
+        assertEquals(0, execute("project", "config", "set",
+                "--root", projectRoot.toString(),
+                "graph-extraction-config.crawlGraphExtractionParallelism=2",
+                "graph-extraction-config.extractionModelPriority=[\"local/lfm2\",\"opencode/test\"]",
+                "resource-scheduler-config.heavyMemoryOpEstimatesMb.embedding=8192"));
+
+        String graphConfig = Files.readString(projectRoot.resolve("config/graph-extraction-config.json"), StandardCharsets.UTF_8);
+        String resourceConfig = Files.readString(projectRoot.resolve("config/resource-scheduler-config.json"), StandardCharsets.UTF_8);
+
+        assertFalse(graphConfig.contains("\"enabled\""));
+        assertTrue(graphConfig.contains("\"crawlGraphExtractionParallelism\" : 2"));
+        assertTrue(graphConfig.contains("\"local/lfm2\""));
+        assertTrue(resourceConfig.contains("\"heavyMemoryOpEstimatesMb\""));
+        assertTrue(resourceConfig.contains("\"embedding\" : 8192"));
     }
 
     private static int execute(String... args) {

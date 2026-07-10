@@ -98,8 +98,7 @@ Chunks -> LLM extraction -> Validation -> Entity resolution
 # Show current config
 kompile graph config show
 
-# Set options
-kompile graph config set --enabled=true
+# Set extraction options (graph extraction is mandatory)
 kompile graph config set --schema-mode=STRICT
 kompile graph config set --model-provider=anthropic
 kompile graph config set --model-name=claude-sonnet-4-20250514
@@ -112,10 +111,7 @@ kompile graph config set --similarity-threshold=0.85
 kompile graph config set --neo4j-enabled=true
 kompile graph config set --neo4j-uri=bolt://localhost:7687
 
-# Toggle extraction on/off
-kompile graph config toggle
-
-# Reset to defaults
+# Reset tunable settings to defaults
 kompile graph config reset
 
 # View status

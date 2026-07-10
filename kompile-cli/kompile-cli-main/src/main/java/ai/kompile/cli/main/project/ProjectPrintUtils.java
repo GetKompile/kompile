@@ -132,7 +132,7 @@ final class ProjectPrintUtils {
         System.out.println("  Crawl profiles (" + manifest.getCrawlProfiles().size() + "):");
         for (KompileProjectCrawlProfile profile : manifest.getCrawlProfiles()) {
             System.out.println("    " + profile.getId()
-                    + " [" + (profile.isGraphExtraction() ? "graph" : "vector") + "] "
+                    + " [graph] "
                     + String.join(", ", profile.getSources())
                     + (profile.getSchemaPresetId() == null ? "" : " schema=" + profile.getSchemaPresetId())
                     + (profile.isWatch() ? " watch=true" : "")
@@ -193,7 +193,17 @@ final class ProjectPrintUtils {
                 System.out.println("  Step " + step.getId() + ": " + step.getType());
                 continue;
             }
-            KompileProjectCrawlProfile profile = store.findCrawlProfile(manifest, step.getRef()).orElse(null);
+            // Apply the same null-ref fallback as runCrawlStep: if the step has no ref
+            // (legacy manifest generated before the fix), resolve to the first available profile.
+            String profileRef = firstNonBlank(step.getRef());
+            if (profileRef == null && !manifest.getCrawlProfiles().isEmpty()) {
+                profileRef = manifest.getCrawlProfiles().stream()
+                        .map(KompileProjectCrawlProfile::getId)
+                        .filter(id -> id != null && !id.isBlank())
+                        .findFirst()
+                        .orElse(null);
+            }
+            KompileProjectCrawlProfile profile = store.findCrawlProfile(manifest, profileRef).orElse(null);
             if (profile == null) {
                 System.out.println("  Crawl " + step.getRef() + ": missing profile");
                 continue;
@@ -222,19 +232,7 @@ final class ProjectPrintUtils {
         if (profile == null || profile.getSources().isEmpty()) {
             return false;
         }
-        if (profile.isMultimodal() || profile.isGraphExtraction()) {
-            return false;
-        }
-        String sourceType = normalizeEnum(profile.getSourceType());
-        if ("WEB".equals(sourceType) || "URL".equals(sourceType)) {
-            return false;
-        }
-        for (String source : profile.getSources()) {
-            String lower = firstNonBlank(source, "").toLowerCase(java.util.Locale.ROOT);
-            if (lower.startsWith("http://") || lower.startsWith("https://")) {
-                return false;
-            }
-        }
-        return true;
+        // Local artifact-only crawls cannot build the canonical knowledge graph.
+        return false;
     }
 }

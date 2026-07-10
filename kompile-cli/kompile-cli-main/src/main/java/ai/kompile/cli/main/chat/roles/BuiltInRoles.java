@@ -197,7 +197,7 @@ public class BuiltInRoles {
                     - Test deployments in isolated environments first
                     - Maintain rollback procedures for all changes
                     """)
-            .enabledTools(Set.of("read", "write", "edit", "bash", "grep", "glob", "list",
+            .enabledTools(Set.of("read", "write", "edit", "patch", "bash", "grep", "glob", "list",
                     "webfetch", "websearch"))
             .permissionOverrides(Map.of(
                     "bash", PermissionService.PermissionLevel.ASK

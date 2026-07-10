@@ -68,6 +68,28 @@ public class VespaVectorStoreImpl implements VectorStore, AutoCloseable {
     private static final Logger logger = LoggerFactory.getLogger(VespaVectorStoreImpl.class);
     private static final String SOURCE_ID_FIELD = "source_id";
 
+    private static float[] toHostFloatVector(INDArray array) {
+        if (array == null || array.isEmpty()) {
+            return new float[0];
+        }
+        long length = array.length();
+        if (length > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException("INDArray too large to materialize as float[]: " + length);
+        }
+        if (array.elementWiseStride() == 1) {
+            return array.data().getFloatsAt(array.offset(), (int) length);
+        }
+        INDArray copy = null;
+        try {
+            copy = array.dup('c');
+            return copy.data().getFloatsAt(copy.offset(), (int) length);
+        } finally {
+            if (copy != null && !copy.wasClosed()) {
+                copy.close();
+            }
+        }
+    }
+
     private final VespaVectorStoreProperties properties;
     private final EmbeddingModel embeddingModel;
     private final ObjectMapper objectMapper;
@@ -232,7 +254,15 @@ public class VespaVectorStoreImpl implements VectorStore, AutoCloseable {
         // Convert INDArray to float[][] for efficient processing
         float[][] embeddingArrays = new float[documents.size()][];
         for (int i = 0; i < embeddings.rows(); i++) {
-            embeddingArrays[i] = embeddings.getRow(i).toFloatVector();
+            INDArray row = null;
+            try {
+                row = embeddings.getRow(i);
+                embeddingArrays[i] = toHostFloatVector(row);
+            } finally {
+                if (row != null && !row.wasClosed()) {
+                    row.close();
+                }
+            }
         }
 
         return addWithFloatArrayEmbeddings(documents, embeddingArrays);
@@ -405,9 +435,20 @@ public class VespaVectorStoreImpl implements VectorStore, AutoCloseable {
             return Collections.emptyList();
         }
 
-        float[] queryVector = queryEmbedding.isVector()
-                ? queryEmbedding.toFloatVector()
-                : queryEmbedding.getRow(0).toFloatVector();
+        float[] queryVector;
+        INDArray row = null;
+        try {
+            if (queryEmbedding.isVector()) {
+                queryVector = toHostFloatVector(queryEmbedding);
+            } else {
+                row = queryEmbedding.getRow(0);
+                queryVector = toHostFloatVector(row);
+            }
+        } finally {
+            if (row != null && !row.wasClosed()) {
+                row.close();
+            }
+        }
 
         return executeVectorSearch(queryVector, k, threshold);
     }

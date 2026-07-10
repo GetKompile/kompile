@@ -55,6 +55,11 @@
             <groupId>org.apache.logging.log4j</groupId>
             <artifactId>log4j-api</artifactId>
         </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-utils</artifactId>
+        </dependency>
+
         <!-- Language detection for crawl-time language enrichment -->
         <dependency>
             <groupId>ai.kompile</groupId>

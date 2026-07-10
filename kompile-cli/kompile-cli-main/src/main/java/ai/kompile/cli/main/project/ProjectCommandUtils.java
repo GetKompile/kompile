@@ -39,6 +39,20 @@ final class ProjectCommandUtils {
         return store.findProjectRoot(candidate).orElse(candidate);
     }
 
+    /**
+     * Resolve the root of an EXISTING kompile project (a directory, or any descendant of one,
+     * containing {@code kompile.project.json}). Unlike {@link #resolveProjectRoot}, this fails
+     * with a clear, actionable message instead of silently returning a project-less directory
+     * (whose subsequent manifest load throws a cryptic Jackson FileNotFoundException).
+     */
+    static Path requireExistingProjectRoot(KompileProjectStore store, File root) {
+        Path candidate = root.toPath().toAbsolutePath().normalize();
+        return store.findProjectRoot(candidate).orElseThrow(() -> new IllegalStateException(
+                "No kompile project found in " + candidate + " or any parent directory.\n"
+              + "  cd into a project directory (one containing " + KompileProjectStore.MANIFEST_FILE + "),\n"
+              + "  or pass --root <project-dir>. To create one: kompile project init <dir>"));
+    }
+
     static String firstNonBlank(String... values) {
         for (String value : values) {
             if (value != null && !value.isBlank()) {

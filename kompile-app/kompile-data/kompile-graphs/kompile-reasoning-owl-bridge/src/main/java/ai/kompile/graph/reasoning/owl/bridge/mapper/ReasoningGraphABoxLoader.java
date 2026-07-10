@@ -27,7 +27,10 @@ import org.semanticweb.owlapi.model.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Loads ABox assertions from a {@link ReasoningGraph} into an existing
@@ -67,7 +70,7 @@ public final class ReasoningGraphABoxLoader {
      * Load {@link ReasoningGraph} entities and relations as OWL ABox assertions into
      * {@code target}.
      *
-     * <p>Each {@link GraphEntity} with a non-empty {@link GraphEntity#type()} becomes a
+     * <p>Each non-empty {@link GraphEntity#typeMemberships()} value becomes a
      * {@code ClassAssertion(classIri(type), indIri(id))}. Each {@link GraphRelation} becomes an
      * {@code ObjectPropertyAssertion(propIri(type), indIri(sourceId), indIri(targetId))}.</p>
      *
@@ -82,8 +85,8 @@ public final class ReasoningGraphABoxLoader {
             OWLNamedIndividual ind = df.getOWLNamedIndividual(IRI.create(OwlIri.indIri(entity.id())));
             mgr.addAxiom(target, df.getOWLDeclarationAxiom(ind));
 
-            String type = entity.type();
-            if (type != null && !type.isEmpty()) {
+            for (String type : entity.typeMemberships()) {
+                if (type == null || type.isEmpty()) continue;
                 OWLClass cls = df.getOWLClass(IRI.create(OwlIri.classIri(type)));
                 mgr.addAxiom(target, df.getOWLClassAssertionAxiom(cls, ind));
             }
@@ -104,8 +107,9 @@ public final class ReasoningGraphABoxLoader {
      * {@link MutableReasoningGraph}.
      *
      * <ul>
-     *   <li>{@code OWLClassAssertionAxiom(C, i)} → entity with {@code id=localName(i)},
-     *       {@code type=localName(C)}</li>
+     *   <li>{@code OWLClassAssertionAxiom(C, i)} → entity with {@code id=localName(i)} and
+     *       membership in {@code localName(C)}. The first class becomes {@code type}; later
+     *       classes are preserved in {@code additionalTypes}.</li>
      *   <li>{@code OWLObjectPropertyAssertionAxiom(P, i, j)} → directed relation with
      *       {@code type=localName(P)}, {@code sourceId=localName(i)},
      *       {@code targetId=localName(j)}</li>
@@ -124,18 +128,7 @@ public final class ReasoningGraphABoxLoader {
                 if (caa.getIndividual().isNamed() && caa.getClassExpression().isNamed()) {
                     String indId  = localName(caa.getIndividual().asOWLNamedIndividual().getIRI());
                     String clsName = localName(caa.getClassExpression().asOWLClass().getIRI());
-                    // Add entity if not already present (class assertion may come after a previous one)
-                    if (graph.entity(indId).isEmpty()) {
-                        graph.addEntity(SimpleGraphEntity.of(indId, clsName, indId));
-                    }
-                    // If entity was added with empty type, update via re-add with type
-                    // (MutableReasoningGraph.addEntity replaces by id)
-                    else {
-                        String existingType = graph.entity(indId).get().type();
-                        if (existingType == null || existingType.isEmpty()) {
-                            graph.addEntity(SimpleGraphEntity.of(indId, clsName, indId));
-                        }
-                    }
+                    addClassMembership(graph, indId, clsName);
                 }
 
             } else if (axiom instanceof OWLObjectPropertyAssertionAxiom opaa) {
@@ -161,6 +154,39 @@ public final class ReasoningGraphABoxLoader {
     }
 
     // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+    /** Derive local name from an IRI (fragment after {@code #}, or last path segment after {@code /}). */
+    private static void addClassMembership(MutableReasoningGraph graph, String entityId, String className) {
+        if (graph.entity(entityId).isEmpty()) {
+            graph.addEntity(SimpleGraphEntity.of(entityId, className, entityId));
+            return;
+        }
+        GraphEntity existing = graph.entity(entityId).orElseThrow();
+        LinkedHashSet<String> memberships = new LinkedHashSet<>(existing.typeMemberships());
+        memberships.add(className);
+        String primaryType = existing.type();
+        if (primaryType == null || primaryType.isBlank()) {
+            primaryType = memberships.iterator().next();
+        }
+        String finalPrimaryType = primaryType;
+        List<String> additionalTypes = memberships.stream()
+                .filter(type -> !type.equalsIgnoreCase(finalPrimaryType))
+                .toList();
+        Map<String, Object> attributes = new LinkedHashMap<>(existing.attributes());
+        if (!additionalTypes.isEmpty()) {
+            attributes.put("additionalTypes", additionalTypes);
+        }
+        graph.addEntity(GraphEntity.builder(entityId)
+                .type(primaryType)
+                .label(existing.label())
+                .weight(existing.weight())
+                .confidence(existing.confidence())
+                .tags(existing.tags())
+                .embedding(existing.embedding())
+                .timestamp(existing.timestamp())
+                .attributes(attributes)
+                .build());
+    }
 
     /** Derive local name from an IRI (fragment after {@code #}, or last path segment after {@code /}). */
     private static String localName(IRI iri) {

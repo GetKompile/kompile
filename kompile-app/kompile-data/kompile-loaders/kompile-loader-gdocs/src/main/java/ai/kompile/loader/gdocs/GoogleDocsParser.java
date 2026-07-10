@@ -17,7 +17,10 @@
 package ai.kompile.loader.gdocs;
 
 import ai.kompile.core.graphrag.GraphConstants;
+import ai.kompile.core.graphrag.model.Graph;
+import ai.kompile.core.graphrag.table.TableCellGraphBuilder;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.document.Document;
 
@@ -108,21 +111,21 @@ public class GoogleDocsParser {
                 metadata.put(GraphConstants.META_TABLE_GRAPH, tableGraphJsons.get(0));
             } else {
                 // Merge all table graphs into a single combined graph
-                ai.kompile.core.graphrag.model.Graph combined = new ai.kompile.core.graphrag.model.Graph();
+                Graph combined = new Graph();
                 combined.setId("gdocs-tables:" + documentId);
                 combined.setEntities(new ArrayList<>());
                 combined.setRelationships(new ArrayList<>());
-                com.fasterxml.jackson.databind.ObjectMapper om = new com.fasterxml.jackson.databind.ObjectMapper();
+                ObjectMapper om = new ObjectMapper();
                 for (String json : tableGraphJsons) {
                     try {
-                        ai.kompile.core.graphrag.model.Graph g = om.readValue(json, ai.kompile.core.graphrag.model.Graph.class);
+                        Graph g = om.readValue(json, Graph.class);
                         if (g.getEntities() != null) combined.getEntities().addAll(g.getEntities());
                         if (g.getRelationships() != null) combined.getRelationships().addAll(g.getRelationships());
                     } catch (Exception e) {
                         log.debug("Failed to parse table graph JSON from Google Doc: {}", e.getMessage());
                     }
                 }
-                metadata.put(GraphConstants.META_TABLE_GRAPH, ai.kompile.core.graphrag.table.TableCellGraphBuilder.toJson(combined));
+                metadata.put(GraphConstants.META_TABLE_GRAPH, TableCellGraphBuilder.toJson(combined));
             }
         }
 
@@ -348,8 +351,8 @@ public class GoogleDocsParser {
         // Build cell-level graph for this table
         if (cellData.size() >= 2) {
             try {
-                ai.kompile.core.graphrag.table.TableCellGraphBuilder builder =
-                        new ai.kompile.core.graphrag.table.TableCellGraphBuilder()
+                TableCellGraphBuilder builder =
+                        new TableCellGraphBuilder()
                                 .namespace("gdocs:" + currentDocumentId + "/table:" + tableGraphIndex)
                                 .tableName("Table-" + (tableGraphIndex + 1))
                                 .firstRowIsHeader(true);
@@ -360,10 +363,10 @@ public class GoogleDocsParser {
                 if (!cellData.isEmpty()) {
                     builder.headers(cellData.get(0));
                 }
-                ai.kompile.core.graphrag.model.Graph cellGraph = builder.build();
+                Graph cellGraph = builder.build();
                 if (cellGraph.getEntities() != null && !cellGraph.getEntities().isEmpty()) {
                     if (tableGraphJsons == null) tableGraphJsons = new ArrayList<>();
-                    tableGraphJsons.add(ai.kompile.core.graphrag.table.TableCellGraphBuilder.toJson(cellGraph));
+                    tableGraphJsons.add(TableCellGraphBuilder.toJson(cellGraph));
                 }
             } catch (Exception e) {
                 log.debug("Failed to build table graph for table {}: {}", tableGraphIndex, e.getMessage());

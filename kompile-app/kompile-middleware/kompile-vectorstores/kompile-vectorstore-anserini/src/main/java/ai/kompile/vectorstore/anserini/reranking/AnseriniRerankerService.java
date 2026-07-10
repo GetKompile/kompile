@@ -18,6 +18,7 @@ package ai.kompile.vectorstore.anserini.reranking;
 
 import ai.kompile.core.embeddings.ScoredDocument;
 import ai.kompile.core.reranking.NoOpReranker;
+import ai.kompile.utils.StringUtils;
 import ai.kompile.core.reranking.Reranker;
 import ai.kompile.core.reranking.RerankerConfig;
 import ai.kompile.core.reranking.RerankerService;
@@ -98,7 +99,7 @@ public class AnseriniRerankerService implements RerankerService {
 
         Reranker reranker = createReranker(config);
         log.debug("Reranking {} documents with {} for query: '{}'",
-                documents.size(), reranker.tag(), truncateQuery(query));
+                documents.size(), reranker.tag(), StringUtils.truncate(query, 50));
 
         return reranker.rerank(documents, query);
     }
@@ -150,15 +151,8 @@ public class AnseriniRerankerService implements RerankerService {
             case MMR:
                 return new MmrRerankerAdapter(config);
             default:
-                log.warn("Unsupported reranker type: {}, using NoOp", config.getType());
-                return NoOpReranker.getInstance();
+                throw new IllegalArgumentException("Unsupported reranker type: " + config.getType());
         }
     }
 
-    private String truncateQuery(String query) {
-        if (query == null) {
-            return "";
-        }
-        return query.length() > 50 ? query.substring(0, 50) + "..." : query;
-    }
 }

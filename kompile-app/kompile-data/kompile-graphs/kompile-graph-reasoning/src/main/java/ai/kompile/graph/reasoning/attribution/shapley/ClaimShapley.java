@@ -32,6 +32,7 @@ import java.util.Collections;
 import java.util.Deque;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -171,7 +172,7 @@ public final class ClaimShapley {
             log.warn("ClaimShapley: no recorded derivations for claim '{}' — "
                     + "falling back to all facts as players (cap: {})", claimAtom, maxPlayers);
             // extractWitnessPlayers may return an immutable empty set — build a fresh one.
-            witnessPlayers = new java.util.LinkedHashSet<>();
+            witnessPlayers = new LinkedHashSet<>();
             for (Fact f : facts.allFacts()) {
                 witnessPlayers.add(f.atomKey());
             }
@@ -249,7 +250,7 @@ public final class ClaimShapley {
         visited.add(claimAtom);
 
         // Maintain insertion-ordered result for deterministic cap behavior
-        Set<String> players = new java.util.LinkedHashSet<>();
+        Set<String> players = new LinkedHashSet<>();
 
         while (!queue.isEmpty()) {
             String atomKey = queue.poll();

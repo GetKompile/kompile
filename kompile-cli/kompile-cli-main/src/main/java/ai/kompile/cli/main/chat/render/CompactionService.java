@@ -16,10 +16,7 @@
 
 package ai.kompile.cli.main.chat.render;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ArrayNode;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -30,19 +27,28 @@ import java.util.List;
  *
  * Strategy:
  * 1. Estimate token count of conversation history
- * 2. When approaching limit (within 20K tokens of max), trigger compaction
- * 3. Prune old tool outputs, keeping recent 40K tokens intact
+ * 2. When approaching the model's context window (proportional headroom), trigger compaction
+ * 3. Prune old tool outputs, keeping a recent window (proportional to the model) intact
  * 4. Replace pruned tool outputs with summaries
  * 5. Preserve system messages and user messages
+ *
+ * The token budget is model-aware: the chat loop refreshes {@link #setMaxTokens(int)}
+ * from the active model's real context window each turn, so thresholds are correct
+ * for both a 200K Claude and a 4K local staged GGUF.
  */
 public class CompactionService {
 
     private static final int DEFAULT_MAX_TOKENS = 128_000;
-    private static final int COMPACTION_BUFFER = 20_000;
-    private static final int PRESERVE_RECENT_TOKENS = 40_000;
+    private static final int MAX_COMPACTION_BUFFER = 20_000;
+    private static final int MAX_PRESERVE_RECENT_TOKENS = 40_000;
     private static final double CHARS_PER_TOKEN = 4.0; // rough estimate
 
-    private final int maxTokens;
+    /**
+     * Context budget in tokens. Mutable: refreshed per turn from the active model's
+     * real context window (dynamic CLI catalog, static table, or local staging probe)
+     * so the trigger tracks the model actually being chatted with.
+     */
+    private volatile int maxTokens;
     private final ObjectMapper objectMapper;
 
     public CompactionService(ObjectMapper objectMapper) {
@@ -51,15 +57,56 @@ public class CompactionService {
 
     public CompactionService(ObjectMapper objectMapper, int maxTokens) {
         this.objectMapper = objectMapper;
-        this.maxTokens = maxTokens;
+        this.maxTokens = sanitizeMaxTokens(maxTokens);
+    }
+
+    /** Update the context budget (in tokens) for the active model. Non-positive resets to the default. */
+    public void setMaxTokens(int maxTokens) {
+        this.maxTokens = sanitizeMaxTokens(maxTokens);
+    }
+
+    public int getMaxTokens() {
+        return maxTokens;
+    }
+
+    private static int sanitizeMaxTokens(int maxTokens) {
+        return maxTokens > 0 ? Math.max(1_024, maxTokens) : DEFAULT_MAX_TOKENS;
+    }
+
+    /**
+     * Headroom kept free below the context window before compaction triggers.
+     * Proportional to the window so small local models don't sit permanently
+     * past the trigger line (a fixed 20K buffer exceeds a 4K window entirely).
+     */
+    int compactionBuffer() {
+        return Math.min(MAX_COMPACTION_BUFFER, Math.max(256, maxTokens / 8));
+    }
+
+    /**
+     * Recent-history span preserved verbatim during heuristic compaction,
+     * proportional to the window (a fixed 40K preserve span would make
+     * compaction a no-op on models smaller than 40K).
+     */
+    int preserveRecentTokens() {
+        return Math.min(MAX_PRESERVE_RECENT_TOKENS, Math.max(512, maxTokens / 3));
     }
 
     /**
      * Check if compaction is needed based on estimated token count.
      */
     public boolean needsCompaction(List<ConversationEntry> entries) {
-        int estimatedTokens = estimateTokens(entries);
-        return estimatedTokens >= (maxTokens - COMPACTION_BUFFER);
+        return needsCompaction(entries, 0L);
+    }
+
+    /**
+     * Check if compaction is needed, additionally considering the last prompt token
+     * count reported by the provider API ({@code usage.prompt_tokens} /
+     * {@code usage.input_tokens}). The reported figure includes the system prompt and
+     * tool definitions the char estimate can't see, so take the max of both signals.
+     */
+    public boolean needsCompaction(List<ConversationEntry> entries, long reportedInputTokens) {
+        long estimatedTokens = Math.max(estimateTokens(entries), reportedInputTokens);
+        return estimatedTokens >= (long) maxTokens - compactionBuffer();
     }
 
     /**
@@ -75,12 +122,13 @@ public class CompactionService {
             return new CompactionResult(entries, totalBefore, totalBefore, false);
         }
 
-        // Find the cutoff point: preserve the most recent PRESERVE_RECENT_TOKENS
+        // Find the cutoff point: preserve the most recent proportional window
+        int preserveTarget = preserveRecentTokens();
         int recentTokens = 0;
         int preserveFromIndex = entries.size();
         for (int i = entries.size() - 1; i >= 0; i--) {
             recentTokens += estimateEntryTokens(entries.get(i));
-            if (recentTokens >= PRESERVE_RECENT_TOKENS) {
+            if (recentTokens >= preserveTarget) {
                 preserveFromIndex = i;
                 break;
             }
@@ -96,7 +144,7 @@ public class CompactionService {
                 compacted.add(entry);
             } else if (entry.type == EntryType.TOOL_RESULT) {
                 // Replace old tool results with summaries
-                String summary = summarizeToolResult(entry);
+                String summary = summarizeToolResultContent(entry.toolName, entry.content);
                 compacted.add(new ConversationEntry(
                         EntryType.TOOL_RESULT,
                         entry.role,
@@ -138,8 +186,40 @@ public class CompactionService {
         return (int) (entry.content.length() / CHARS_PER_TOKEN);
     }
 
-    private String summarizeToolResult(ConversationEntry entry) {
-        String content = entry.content;
+    /**
+     * Deterministic plain-text digest of a conversation — the no-LLM fallback used
+     * when a summarization call fails but the history must still shrink. Roles are
+     * labeled, tool results collapse to their one-line summaries, and long turns
+     * are clipped, so the digest is safe to inject as replacement history.
+     */
+    public String renderDigest(List<ConversationEntry> entries) {
+        StringBuilder digest = new StringBuilder();
+        for (ConversationEntry entry : entries) {
+            if (entry.content == null || entry.content.isBlank()) continue;
+            switch (entry.type) {
+                case USER -> digest.append("User: ").append(clip(entry.content, 400)).append('\n');
+                case ASSISTANT -> digest.append("Assistant: ").append(clip(entry.content, 400)).append('\n');
+                case SYSTEM -> digest.append("Note: ").append(clip(entry.content, 400)).append('\n');
+                case TOOL_CALL -> digest.append("Tool call: ")
+                        .append(entry.toolName != null ? entry.toolName : "tool").append('\n');
+                case TOOL_RESULT -> digest.append(clip(
+                        summarizeToolResultContent(entry.toolName, entry.content), 300)).append('\n');
+            }
+        }
+        return digest.toString().trim();
+    }
+
+    private static String clip(String text, int maxChars) {
+        String flat = text.strip();
+        return flat.length() <= maxChars ? flat : flat.substring(0, maxChars) + "…";
+    }
+
+    /**
+     * Collapse a tool result to a short summary (line/size counts, saved-path pointer,
+     * first-lines preview). Static so the wire-history pruner can reuse the exact same
+     * rendering on {@code DirectLlmClient}'s message list.
+     */
+    public static String summarizeToolResultContent(String toolName, String content) {
         if (content == null || content.isEmpty()) {
             return "(empty result)";
         }
@@ -158,7 +238,7 @@ public class CompactionService {
         int charCount = contentForSummary.length();
 
         StringBuilder summary = new StringBuilder();
-        summary.append("[").append(entry.toolName != null ? entry.toolName : "tool").append(" result: ");
+        summary.append("[").append(toolName != null ? toolName : "tool").append(" result: ");
         summary.append(lineCount).append(" lines, ");
         summary.append(formatSize(charCount)).append("]");
 

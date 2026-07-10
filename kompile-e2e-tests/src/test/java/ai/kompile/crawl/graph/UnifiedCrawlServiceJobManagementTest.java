@@ -136,7 +136,7 @@ class UnifiedCrawlServiceJobManagementTest {
         return UnifiedCrawlRequest.builder()
                 .name(name)
                 .sources(List.of(sources))
-                .graphExtraction(GraphExtractionConfig.builder().enabled(false).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build();
     }

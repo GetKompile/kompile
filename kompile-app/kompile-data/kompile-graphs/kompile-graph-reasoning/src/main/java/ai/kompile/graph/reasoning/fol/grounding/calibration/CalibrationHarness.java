@@ -15,9 +15,11 @@ import ai.kompile.graph.reasoning.fol.grounding.StrengthCalibrator.SignalType;
 
 import java.util.ArrayList;
 import java.util.EnumMap;
+import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Multi-signal calibration harness that manages both Platt (sigmoid) and
@@ -57,7 +59,7 @@ public class CalibrationHarness {
     private final PlattCalibrator plattCal = new PlattCalibrator();
 
     /** Tracks which SignalTypes have had Platt fitting applied. */
-    private final java.util.Set<SignalType> plattFitted = java.util.EnumSet.noneOf(SignalType.class);
+    private final Set<SignalType> plattFitted = EnumSet.noneOf(SignalType.class);
 
     // ─── Sample accumulation ─────────────────────────────────────────────────────
 

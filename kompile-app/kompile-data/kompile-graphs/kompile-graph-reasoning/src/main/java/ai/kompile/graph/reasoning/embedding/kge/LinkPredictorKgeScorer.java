@@ -35,8 +35,10 @@ import java.util.Set;
  * {@code distance→∞ → score→0.0} (impossible).  For typical RotatE distances
  * in the range {@code [0, 10]} this places the midpoint at {@code distance≈1}.</p>
  *
- * <p>If a custom calibration function is needed, extend this class and override
- * {@link #calibrate(double)}.</p>
+ * <p>For a proper probability, pass a fitted {@link KgeCalibration} to the two-arg constructor —
+ * {@link #calibrate(double)} then uses the temperature-scaled sigmoid {@code σ((γ−d)/T)} (WP2c) that
+ * matches RotatE's training objective. Or extend this class and override {@link #calibrate(double)}
+ * for fully custom behavior.</p>
  *
  * <h3>Unknown identifiers</h3>
  * <p>If any of the three identifiers is unknown to the underlying model,
@@ -51,6 +53,7 @@ public class LinkPredictorKgeScorer implements KgeTripleScorer {
     private final LinkPredictor predictor;
     private final Set<String>   entityIds;
     private final Set<String>   relTypes;
+    private final KgeCalibration calibration; // nullable → legacy 1/(1+d)
 
     /**
      * Construct a scorer backed by the given trained RotatE model.
@@ -58,10 +61,24 @@ public class LinkPredictorKgeScorer implements KgeTripleScorer {
      * @param model a fully-trained {@link RotatELearner.TrainedRotatE}; must not be null
      */
     public LinkPredictorKgeScorer(RotatELearner.TrainedRotatE model) {
+        this(model, null);
+    }
+
+    /**
+     * Construct a scorer with an explicit {@link KgeCalibration} (WP2c). When {@code calibration} is
+     * non-null, {@link #calibrate(double)} uses the temperature-scaled sigmoid {@code σ((γ−d)/T)} —
+     * matching RotatE's training objective — instead of the legacy {@code 1/(1+d)} heuristic, so the
+     * returned plausibility is a proper probability. Fit one with {@link KgeCalibration#fit}.
+     *
+     * @param model       a fully-trained {@link RotatELearner.TrainedRotatE}; must not be null
+     * @param calibration the distance→probability calibration, or {@code null} for legacy behavior
+     */
+    public LinkPredictorKgeScorer(RotatELearner.TrainedRotatE model, KgeCalibration calibration) {
         Objects.requireNonNull(model, "model must not be null");
         this.predictor = new LinkPredictor(model);
         this.entityIds  = Set.copyOf(model.entityIds());
         this.relTypes   = Set.copyOf(model.relTypes());
+        this.calibration = calibration;
     }
 
     @Override
@@ -93,6 +110,6 @@ public class LinkPredictorKgeScorer implements KgeTripleScorer {
      * @return plausibility in {@code [0, 1]}
      */
     protected double calibrate(double distance) {
-        return 1.0 / (1.0 + distance);
+        return calibration != null ? calibration.calibrate(distance) : 1.0 / (1.0 + distance);
     }
 }

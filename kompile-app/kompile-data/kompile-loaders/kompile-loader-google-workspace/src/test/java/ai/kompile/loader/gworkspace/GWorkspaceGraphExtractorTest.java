@@ -516,6 +516,27 @@ class GWorkspaceGraphExtractorTest {
     }
 
     @Test
+    void extractGmail_unparseableSender_noDanglingPersonRelation() {
+        // "Anonymous" has no extractable email; personEntityId(null) is now null so the SENT_BY
+        // relation carries a null (droppable) target instead of dangling to a shared person:unknown
+        // phantom that conflates every unidentifiable sender.
+        Document doc = gmailDoc("msg-noemail", "thread-x", "No Sender", "Anonymous", null, null);
+
+        ExtractionResult result = extractor.extract(doc);
+
+        ExtractedRelation sentBy = result.relations().stream()
+                .filter(r -> "SENT_BY".equals(r.type()))
+                .findFirst().orElse(null);
+        if (sentBy != null) {
+            assertNull(sentBy.target(),
+                    "SENT_BY for an unparseable sender must have a null (droppable) target, not a person:unknown phantom");
+        }
+        // No person entity is fabricated for the unidentifiable sender.
+        assertNull(findEntityByType(result.entities(), "GOOGLE_PERSON"),
+                "no person entity should be created for an unparseable sender");
+    }
+
+    @Test
     void extractGmail_noInternalDate_propertyAbsent() {
         Document doc = gmailDoc("msg2", "thread2", "No Date",
                 "alice@example.com", "bob@example.com", null);

@@ -27,7 +27,6 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import ai.kompile.core.agent.AgentProvider;
 import ai.kompile.core.agent.CliAgentRegistry;
 
-import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -37,8 +36,9 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Persisted chat configuration stored at ~/.kompile/chat-config.json.
- * Contains LLM provider settings, API keys, and default preferences.
+ * Persisted chat configuration stored at either project-local
+ * {@code .kompile/chat-config.json} or global {@code ~/.kompile/chat-config.json}.
+ * Contains standard provider settings and passthrough CLI-agent preferences.
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class ChatConfig {
@@ -89,6 +89,14 @@ public class ChatConfig {
     @JsonIgnore
     private Boolean enforcementEnabled;
 
+    @JsonIgnore
+    private Path loadedFrom;
+
+    public enum Scope {
+        PROJECT,
+        GLOBAL
+    }
+
     public ChatConfig() {}
 
     public ChatConfig(String provider, String apiKey, String model, String baseUrl) {
@@ -135,6 +143,8 @@ public class ChatConfig {
 
     public Boolean getEnforcementEnabled() { return enforcementEnabled; }
     public void setEnforcementEnabled(Boolean enforcementEnabled) { this.enforcementEnabled = enforcementEnabled; }
+
+    public Path getLoadedFrom() { return loadedFrom; }
 
     /**
      * Resolve the actual API base URL for the configured provider.
@@ -221,21 +231,83 @@ public class ChatConfig {
 
     // --- Persistence ---
 
-    private static Path configPath() {
+    public static Path globalConfigPath() {
         return KompileHome.homeDirectory().toPath().resolve(CONFIG_FILE);
     }
 
+    public static Path defaultProjectRoot() {
+        return KompileHome.resolvedProjectDirectory().toPath().toAbsolutePath().normalize();
+    }
+
+    public static Path projectConfigPath(Path projectRoot) {
+        Path root = projectRoot != null ? projectRoot : defaultProjectRoot();
+        return root.toAbsolutePath().normalize().resolve(".kompile").resolve(CONFIG_FILE);
+    }
+
+    public static Path defaultProjectConfigPath() {
+        return projectConfigPath(defaultProjectRoot());
+    }
+
+    public static Path configPath(Scope scope, Path projectRoot) {
+        return scope == Scope.GLOBAL ? globalConfigPath() : projectConfigPath(projectRoot);
+    }
+
+    public static Path configPath(Scope scope) {
+        return configPath(scope, defaultProjectRoot());
+    }
+
     public static boolean exists() {
-        return Files.exists(configPath());
+        return existsGlobal();
+    }
+
+    public static boolean existsGlobal() {
+        return Files.exists(globalConfigPath());
+    }
+
+    public static boolean existsProject(Path projectRoot) {
+        return Files.exists(projectConfigPath(projectRoot));
+    }
+
+    public static boolean existsProject() {
+        return existsProject(defaultProjectRoot());
     }
 
     public static ChatConfig load() {
-        Path path = configPath();
+        return loadGlobal();
+    }
+
+    public static ChatConfig loadGlobal() {
+        return loadFrom(globalConfigPath());
+    }
+
+    public static ChatConfig loadProject(Path projectRoot) {
+        return loadFrom(projectConfigPath(projectRoot));
+    }
+
+    public static ChatConfig loadProject() {
+        return loadProject(defaultProjectRoot());
+    }
+
+    public static ChatConfig loadEffective() {
+        return loadEffective(defaultProjectRoot());
+    }
+
+    public static ChatConfig loadEffective(Path projectRoot) {
+        ChatConfig project = loadProject(projectRoot);
+        if (project != null && project.isValid()) {
+            return project;
+        }
+        return loadGlobal();
+    }
+
+    private static ChatConfig loadFrom(Path path) {
         if (!Files.exists(path)) {
             return null;
         }
         try {
-            return MAPPER.readValue(path.toFile(), ChatConfig.class);
+            ChatConfig config = MAPPER.readValue(path.toFile(), ChatConfig.class);
+            config.loadedFrom = path.toAbsolutePath().normalize();
+            return config;
         } catch (IOException e) {
             System.err.println("Warning: Could not load chat config: " + e.getMessage());
             return null;
@@ -243,22 +315,52 @@ public class ChatConfig {
     }
 
     public void save() throws IOException {
-        Path path = configPath();
+        saveGlobal();
+    }
+
+    public void saveGlobal() throws IOException {
+        saveTo(globalConfigPath());
+    }
+
+    public void saveProject(Path projectRoot) throws IOException {
+        saveTo(projectConfigPath(projectRoot));
+    }
+
+    public void save(Scope scope, Path projectRoot) throws IOException {
+        saveTo(configPath(scope, projectRoot));
+    }
+
+    private void saveTo(Path path) throws IOException {
         Files.createDirectories(path.getParent());
         MAPPER.writeValue(path.toFile(), this);
+        loadedFrom = path.toAbsolutePath().normalize();
     }
 
     /**
      * Load config, falling back to environment variables if no config file.
      */
     public static ChatConfig loadOrFromEnv() {
-        ChatConfig config = load();
+        return loadOrFromEnv(defaultProjectRoot());
+    }
+
+    public static ChatConfig loadOrFromEnv(Path projectRoot) {
+        ChatConfig config = loadEffective(projectRoot);
         if (config != null && config.isValid()) {
             return config;
         }
+        return fromEnv();
+    }
 
-        // Try environment variables
-        config = new ChatConfig();
+    public static ChatConfig loadGlobalOrFromEnv() {
+        ChatConfig config = loadGlobal();
+        if (config != null && config.isValid()) {
+            return config;
+        }
+        return fromEnv();
+    }
+
+    private static ChatConfig fromEnv() {
+        ChatConfig config = new ChatConfig();
 
         String openaiKey = System.getenv("OPENAI_API_KEY");
         String anthropicKey = System.getenv("ANTHROPIC_API_KEY");
@@ -278,11 +380,7 @@ public class ChatConfig {
             config.setModel("gemini-2.5-flash");
         }
 
-        if (config.isValid()) {
-            return config;
-        }
-
-        return null;
+        return config.isValid() ? config : null;
     }
 
     // Available provider names for the setup wizard

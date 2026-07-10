@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ~ Copyright 2025 Kompile Inc.
+  ~
+  ~ Licensed under the Apache License, Version 2.0 (the "License");
+  ~ you may not use this file except in compliance with the License.
+  ~ You may obtain a copy of the License at
+  ~
+  ~ http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing, software
+  ~ distributed under the License is distributed on an "AS IS" BASIS,
+  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~ See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-app-subprocess</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>kompile-app-subprocess-ingest</artifactId>
+    <name>Kompile App - Subprocess: Ingest + Vector Population</name>
+    <description>
+        IngestSubprocessMain and VectorPopulationSubprocessMain — the child JVMs that run the
+        document ingest / vector-population pipeline off the main heap, plus the reusable,
+        app-main-decoupled core of that pipeline (ParallelIngestPipeline and its stages, moved
+        out of kompile-app-main's ai.kompile.app.services.pipeline package). The three
+        app-main-coupled stages (StagedIngestPipeline, ContentExtractionStage,
+        ContextualEnrichmentStage) intentionally stay in kompile-app-main. Pipeline stages bind
+        to ai.kompile.core.* interfaces (from app-core); concrete impls are injected at runtime
+        on the full uber-jar classpath the subprocess launcher provides.
+    </description>
+
+    <dependencies>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-subprocess-common</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-vectorstore-anserini</artifactId>
+        </dependency>
+        <!-- IngestSubprocessMain / VectorPopulationSubprocessMain construct the Anserini
+             embedding model + config directly (inline fully-qualified references). Other packages
+             they @ComponentScan (ai.kompile.loader / anserini / modelmanager) are resolved at
+             runtime on the uber-jar classpath, so they are not compile dependencies. -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-embedding-anserini</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+        </dependency>
+    </dependencies>
+</project>

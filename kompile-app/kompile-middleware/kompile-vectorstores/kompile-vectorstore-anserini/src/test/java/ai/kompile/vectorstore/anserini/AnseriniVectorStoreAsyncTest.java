@@ -17,6 +17,7 @@
 package ai.kompile.vectorstore.anserini;
 
 import ai.kompile.core.embeddings.EmbeddingModel;
+import ai.kompile.core.embeddings.NoOpEmbeddingModelImpl;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -37,6 +38,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -279,7 +282,7 @@ class AnseriniVectorStoreAsyncTest {
         System.setProperty(PROP_THREADS,     "1");    // sequential → counter is deterministic
 
         // ── model: null for first N_FAIL calls, valid matrix afterwards ───────
-        final int N_FAIL = 6;   // > MAX_CONSECUTIVE_EMBED_EMPTY (5)
+        final int N_FAIL = 6;   // many enough to trip the default empty-result circuit breaker
         AtomicInteger callCount = new AtomicInteger(0);
         INDArray validMatrix = makeFakeMatrix(1, EMBED_DIM); // pre-created in main thread
 
@@ -301,11 +304,14 @@ class AnseriniVectorStoreAsyncTest {
             store.add(List.of(makeDoc("fail-" + i, 80)));
         }
 
-        // awaitPendingEmbeddings() must return promptly: circuit-break drains tasks fast.
+        // awaitPendingEmbeddings() must fail promptly and drain tasks: the circuit-break is a
+        // surfaced indexing failure, not a silent successful barrier.
         long t0 = System.currentTimeMillis();
-        store.awaitPendingEmbeddings();
+        RuntimeException failure = assertThrows(RuntimeException.class, store::awaitPendingEmbeddings,
+                "persistent empty embeddings must fail the async embedding barrier");
         long elapsed = System.currentTimeMillis() - t0;
 
+        assertTrue(failure.getMessage().contains("async embedding tasks failed"), failure.getMessage());
         assertTrue(elapsed < 3_000,
                 "awaitPendingEmbeddings() took " + elapsed + " ms — possible hang; "
                         + "fail-fast should abort quickly after " + N_FAIL + " consecutive empties");
@@ -326,6 +332,157 @@ class AnseriniVectorStoreAsyncTest {
     }
 
     // ══════════════════════════════════════════════════════════════════════════
+    // TEST 4 — NoOpEmbeddingModelImpl: writes never submit async embed tasks
+    // ══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Verifies the WS7-gap fix: when an {@link AnseriniVectorStoreImpl} is constructed
+     * with a {@link NoOpEmbeddingModelImpl}, document writes do NOT submit any async
+     * embed tasks — so the "consecutive empty results — appears down" heuristic is
+     * never triggered.
+     *
+     * <p>Specifically asserts:
+     * <ul>
+     *   <li>{@code pendingCount} and {@code pendingBytes} both stay 0 across multiple {@code add()} calls.</li>
+     *   <li>{@code consecutiveEmbedEmpty} stays 0 (no failed embed attempts reached {@code embedAndWriteToLucene}).</li>
+     *   <li>{@code awaitPendingEmbeddings()} completes cleanly (no exception).</li>
+     * </ul>
+     * The real no-op bean is used directly (not a stub), so this covers the
+     * exact production path in the graph-matrix subprocess.
+     * </p>
+     *
+     * <p>Note: {@link NoOpEmbeddingModelImpl} requires an ND4J backend on the classpath
+     * because its constructor logs via {@code Nd4j.empty(DataType.FLOAT)}.  The
+     * {@code nd4j-native} test-scope dependency in the module pom satisfies this.</p>
+     */
+    @Test
+    void test4_noOpModel_doesNotSubmitAsyncEmbedTasks() throws Exception {
+        // Standard props — coalescer and fast-path both active.
+        System.setProperty(PROP_MIN_BATCH,   "32");
+        System.setProperty(PROP_MAX_BYTES,   Long.toString(512L * 1024 * 1024));
+        System.setProperty(PROP_MAX_PENDING, "500");
+        System.setProperty(PROP_THREADS,     "2");
+        System.setProperty(PROP_IDLE_MS,     "100");
+        System.setProperty(PROP_HARD_CAP_MS, "1000");
+
+        // Use the real NoOpEmbeddingModelImpl — same bean that wins in the graph subprocess.
+        NoOpEmbeddingModelImpl noOpModel = new NoOpEmbeddingModelImpl();
+        store = buildStore(tempDir, noOpModel);
+
+        // Verify the flag is set.
+        assertTrue(readBoolean("embeddingDisabled"),
+                "embeddingDisabled flag must be true when constructed with NoOpEmbeddingModelImpl");
+
+        // Add several documents — should NOT queue any embed tasks.
+        for (int i = 0; i < 5; i++) {
+            store.add(List.of(makeDoc("noop-" + i, 200)));
+        }
+
+        // Small pause in case any async path somehow fires.
+        Thread.sleep(200);
+
+        assertEquals(0, readAtomicInt("pendingCount"),
+                "pendingCount must be 0 — no embed tasks should have been submitted");
+        assertEquals(0L, readAtomicLong("pendingBytes"),
+                "pendingBytes must be 0 — no embed tasks should have been submitted");
+        assertEquals(0, readAtomicInt("consecutiveEmbedEmpty"),
+                "consecutiveEmbedEmpty must be 0 — embed path was never reached");
+
+        // awaitPendingEmbeddings() must succeed cleanly.
+        store.awaitPendingEmbeddings(); // must not throw
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // TEST 5 — Real (mock) embedding model still triggers normal async embed
+    // ══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Verifies the main-app path is unaffected: a store built with a real
+     * (non-no-op) {@link EmbeddingModel} stub still submits async embed tasks
+     * and eventually calls the model.
+     *
+     * <p>This guards against a regression where {@code embeddingDisabled} is
+     * accidentally set for non-no-op models.</p>
+     */
+    @Test
+    void test5_realModel_stillSubmitsAsyncEmbedTasks() throws Exception {
+        System.setProperty(PROP_MIN_BATCH,   "32");   // coalescer path for single docs
+        System.setProperty(PROP_MAX_BYTES,   Long.toString(512L * 1024 * 1024));
+        System.setProperty(PROP_MAX_PENDING, "500");
+        System.setProperty(PROP_THREADS,     "2");
+        System.setProperty(PROP_IDLE_MS,     "150");
+        System.setProperty(PROP_HARD_CAP_MS, "2000");
+
+        AtomicInteger embedCallCount = new AtomicInteger(0);
+        INDArray validMatrix = makeFakeMatrix(1, EMBED_DIM);
+
+        EmbeddingModel realModel = new TestEmbeddingModel() {
+            @Override
+            public INDArray embed(List<String> texts) {
+                embedCallCount.incrementAndGet();
+                return validMatrix;
+            }
+        };
+
+        store = buildStore(tempDir, realModel);
+
+        // Flag must NOT be set for a real model.
+        assertFalse(readBoolean("embeddingDisabled"),
+                "embeddingDisabled must be false for a non-NoOp EmbeddingModel");
+
+        // Add documents.
+        for (int i = 0; i < 4; i++) {
+            store.add(List.of(makeDoc("real-" + i, 80)));
+        }
+
+        // Wait past the idle window so the coalescer flushes.
+        Thread.sleep(400);
+        store.awaitPendingEmbeddings();
+
+        assertTrue(embedCallCount.get() > 0,
+                "embed() must have been called at least once for a real model");
+        assertEquals(0, readAtomicInt("pendingCount"),
+                "pendingCount must drain to 0 after awaitPendingEmbeddings()");
+    }
+
+    @Test
+    void smallFailedBatchRecoversWithSingleItemEmbeddings() throws Exception {
+        System.setProperty(PROP_MIN_BATCH, "10");
+        System.setProperty(PROP_MAX_BYTES, Long.toString(512L * 1024 * 1024));
+        System.setProperty(PROP_MAX_PENDING, "500");
+        System.setProperty(PROP_THREADS, "1");
+        System.setProperty(PROP_IDLE_MS, "1000");
+        System.setProperty(PROP_HARD_CAP_MS, "5000");
+
+        AtomicInteger embedCallCount = new AtomicInteger(0);
+        EmbeddingModel model = new TestEmbeddingModel() {
+            @Override
+            public INDArray embed(List<String> texts) {
+                embedCallCount.incrementAndGet();
+                if (texts.size() > 1) {
+                    return null;
+                }
+                return makeFakeMatrix(1, EMBED_DIM);
+            }
+        };
+
+        store = buildStore(tempDir, model);
+
+        for (int i = 0; i < 3; i++) {
+            store.add(List.of(makeDoc("recover-single-" + i, 80)));
+        }
+
+        store.awaitPendingEmbeddings();
+
+        assertEquals(4, embedCallCount.get(),
+                "one failed batch call plus three single-item recovery calls should run");
+        assertEquals(0, readAtomicInt("pendingCount"),
+                "pendingCount must drain to 0 after recovery completes");
+        assertEquals(0, readAtomicInt("consecutiveEmbedEmpty"),
+                "successful recovery must reset the empty-result circuit breaker");
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
     // Infrastructure helpers
     // ══════════════════════════════════════════════════════════════════════════
 
@@ -340,7 +497,7 @@ class AnseriniVectorStoreAsyncTest {
      *   <li>{@code isEmpty()} → false</li>
      *   <li>{@code rows()} → {@code rows} (the int passed in)</li>
      *   <li>{@code columns()} → {@code cols}</li>
-     *   <li>{@code ordering()} → {@code 'f'} (non-C → takes {@code data().asFloat()} branch)</li>
+     *   <li>{@code ordering()} → {@code 'c'} with contiguous row-major strides</li>
      *   <li>{@code data()} → DataBuffer whose {@code asFloat()} returns all-1.0f data</li>
      *   <li>{@code wasClosed()} → false</li>
      *   <li>{@code close()} → no-op (void, returns null)</li>
@@ -374,7 +531,13 @@ class AnseriniVectorStoreAsyncTest {
                         case "isEmpty":    return false;
                         case "rows":       return rows;
                         case "columns":    return cols;
-                        case "ordering":   return 'f';
+                        case "ordering":   return 'c';
+                        case "isView":     return false;
+                        case "stride": {
+                            int dim = (Integer) args[0];
+                            return dim == 0 ? cols : 1;
+                        }
+                        case "offset":     return 0L;
                         case "data":       return fakeBuf;
                         case "wasClosed":  return false;
                         case "close":      return null;
@@ -421,6 +584,13 @@ class AnseriniVectorStoreAsyncTest {
         Field f = AnseriniVectorStoreImpl.class.getDeclaredField(field);
         f.setAccessible(true);
         return ((AtomicInteger) f.get(store)).get();
+    }
+
+    /** Reads a private {@code volatile boolean} field from {@code store} via reflection. */
+    private boolean readBoolean(String field) throws Exception {
+        Field f = AnseriniVectorStoreImpl.class.getDeclaredField(field);
+        f.setAccessible(true);
+        return f.getBoolean(store);
     }
 
     /** Clears all system properties set by the tests. */

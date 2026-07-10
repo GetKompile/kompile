@@ -300,6 +300,66 @@
               </button>
             </mat-card-actions>
           </mat-card>
+
+          <!-- Per-Subprocess-Type Overrides -->
+          <mat-card class="config-card">
+            <mat-card-header>
+              <mat-card-title>
+                <mat-icon>tune</mat-icon>
+                Per-Subprocess Overrides
+              </mat-card-title>
+              <mat-card-subtitle>
+                Enable/disable and set heap size for each long-running subprocess type.
+                Changes are persisted to <code>subprocess-ingest-config.json</code> and take effect on the next launch.
+              </mat-card-subtitle>
+            </mat-card-header>
+            <mat-card-content>
+
+              <!-- graph-matrix row -->
+              <div class="type-override-row">
+                <span class="type-label"><strong>graph-matrix</strong></span>
+                <mat-slide-toggle [(ngModel)]="editGraphMatrixEnabled" [ngModelOptions]="{standalone: true}"
+                                  matTooltip="Enable or disable the graph-matrix subprocess">
+                  {{ editGraphMatrixEnabled ? 'Enabled' : 'Disabled' }}
+                </mat-slide-toggle>
+                <mat-form-field appearance="outline" class="type-heap-input">
+                  <mat-label>Heap Size</mat-label>
+                  <input matInput [(ngModel)]="editGraphMatrixHeapSize" [ngModelOptions]="{standalone: true}"
+                         placeholder="e.g. 32g">
+                  <mat-hint>JVM -Xmx for graph-matrix subprocess</mat-hint>
+                </mat-form-field>
+                <button mat-stroked-button color="primary"
+                        (click)="saveSubprocessTypeConfig('graph-matrix', editGraphMatrixEnabled, editGraphMatrixHeapSize)"
+                        [disabled]="isSavingTypeConfig['graph-matrix']">
+                  <mat-icon>{{ isSavingTypeConfig['graph-matrix'] ? 'sync' : 'save' }}</mat-icon>
+                  {{ isSavingTypeConfig['graph-matrix'] ? 'Saving...' : 'Save' }}
+                </button>
+              </div>
+
+              <!-- learning row -->
+              <div class="type-override-row">
+                <span class="type-label"><strong>learning</strong></span>
+                <mat-slide-toggle [(ngModel)]="editLearningEnabled" [ngModelOptions]="{standalone: true}"
+                                  matTooltip="Enable or disable the learning subprocess">
+                  {{ editLearningEnabled ? 'Enabled' : 'Disabled' }}
+                </mat-slide-toggle>
+                <mat-form-field appearance="outline" class="type-heap-input">
+                  <mat-label>Heap Size</mat-label>
+                  <input matInput [(ngModel)]="editLearningHeapSize" [ngModelOptions]="{standalone: true}"
+                         placeholder="e.g. 16g">
+                  <mat-hint>JVM -Xmx for learning subprocess</mat-hint>
+                </mat-form-field>
+                <button mat-stroked-button color="primary"
+                        (click)="saveSubprocessTypeConfig('learning', editLearningEnabled, editLearningHeapSize)"
+                        [disabled]="isSavingTypeConfig['learning']">
+                  <mat-icon>{{ isSavingTypeConfig['learning'] ? 'sync' : 'save' }}</mat-icon>
+                  {{ isSavingTypeConfig['learning'] ? 'Saving...' : 'Save' }}
+                </button>
+              </div>
+
+            </mat-card-content>
+          </mat-card>
+
         </div>
       </mat-tab>
 

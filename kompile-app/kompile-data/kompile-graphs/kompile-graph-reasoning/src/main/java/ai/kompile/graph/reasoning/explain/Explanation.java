@@ -15,6 +15,7 @@
  */
 package ai.kompile.graph.reasoning.explain;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -46,7 +47,7 @@ public record Explanation(String summary, double confidence, List<String> suppor
      * premises are the supporting entities (as {@link ReasoningTrace.StepKind#FACT} leaves).
      */
     public ReasoningTrace toReasoningTrace() {
-        List<ReasoningTrace.Step> premises = new java.util.ArrayList<>();
+        List<ReasoningTrace.Step> premises = new ArrayList<>();
         for (String id : supportingEntityIds) {
             premises.add(ReasoningTrace.Step.fact(id, 1.0, "entity"));
         }

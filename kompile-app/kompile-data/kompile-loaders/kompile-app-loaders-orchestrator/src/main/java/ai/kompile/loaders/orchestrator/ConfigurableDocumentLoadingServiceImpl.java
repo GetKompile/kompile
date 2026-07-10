@@ -29,6 +29,7 @@ import org.springframework.stereotype.Service;
 
 import java.io.File;
 import java.io.IOException;
+import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -89,6 +90,10 @@ public class ConfigurableDocumentLoadingServiceImpl implements DocumentLoadingSe
         logger.info("Generated {} source descriptors to process.", sourceDescriptors.size());
 
         for (DocumentSourceDescriptor descriptor : sourceDescriptors) {
+            if (descriptor.getPathOrUrl() == null || descriptor.getPathOrUrl().isBlank()) {
+                logger.warn("Skipping source descriptor with no resolvable path/URL (malformed or missing file).");
+                continue;
+            }
             boolean loadedSuccessfully = false;
             for (DocumentLoader loader : documentLoaders) {
                 if (loader.supports(descriptor)) {
@@ -217,10 +222,10 @@ public class ConfigurableDocumentLoadingServiceImpl implements DocumentLoadingSe
             path = sourceString;
             originalFileName = extractFileNameFromUrl(sourceString);
             descriptors.add(DocumentSourceDescriptor.builder()
-                    .type(DocumentSourceDescriptor.SourceType.FILE)
-                    .collectionName(path)
+                    .type(type)
+                    .pathOrUrl(path)
                     .originalFileName(originalFileName)
-                    .build()); // Corrected
+                    .build());
         } else {
             File sourceFileOrDir = new File(sourceString).getAbsoluteFile();
             path = sourceFileOrDir.getAbsolutePath();
@@ -235,8 +240,9 @@ public class ConfigurableDocumentLoadingServiceImpl implements DocumentLoadingSe
                                 .forEach(filePath -> {
                                     descriptors.add(DocumentSourceDescriptor.builder()
                                             .type(DocumentSourceDescriptor.SourceType.FILE)
+                                            .pathOrUrl(filePath.toAbsolutePath().toString())
                                             .collectionName(String.valueOf(filePath.getParent().getFileName()))
-                                            .originalFileName(finalOriginalFileName)
+                                            .originalFileName(filePath.getFileName().toString())
                                             .build());
 
                                 });
@@ -252,8 +258,9 @@ public class ConfigurableDocumentLoadingServiceImpl implements DocumentLoadingSe
                     type = DocumentSourceDescriptor.SourceType.FILE;
                     descriptors.add(DocumentSourceDescriptor.builder()
                             .type(type)
+                            .pathOrUrl(path)
                             .originalFileName(originalFileName)
-                            .collectionName(originalFileName).build()); // Corrected
+                            .build());
                 } else {
                     logger.warn("Path exists but is not a recognized file or directory: {}", path);
                 }
@@ -280,10 +287,10 @@ public class ConfigurableDocumentLoadingServiceImpl implements DocumentLoadingSe
 
     private String extractFileNameFromUrl(String urlString) {
         try {
-            Path path = Paths.get(new java.net.URI(urlString).getPath());
+            Path path = Paths.get(new URI(urlString).getPath());
             String fileName = path.getFileName() != null ? path.getFileName().toString() : null;
             if (fileName == null || fileName.isEmpty() || fileName.equals("/")) {
-                String host = new java.net.URI(urlString).getHost();
+                String host = new URI(urlString).getHost();
                 if (host != null) {
                     fileName = host.replace("www.","").replaceAll("[^a-zA-Z0-9.-]", "_") + ".html";
                 } else {

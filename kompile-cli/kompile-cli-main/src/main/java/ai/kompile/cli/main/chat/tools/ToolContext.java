@@ -19,7 +19,14 @@ package ai.kompile.cli.main.chat.tools;
 import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.FileTime;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
@@ -36,6 +43,23 @@ public class ToolContext {
     private final ToolRegistry toolRegistry;
     private volatile Consumer<String> outputConsumer;
     private volatile boolean autoApproveAll = false;
+
+    /**
+     * File-read snapshots keyed by sessionId + path, shared process-wide. Deliberately static:
+     * the MCP servers construct short-lived ToolContext instances (McpStdioCommand caches one
+     * per pool thread, McpSocketSession builds one per tool call), so instance-scoped snapshots
+     * were lost between a read and the following edit/write/patch — every mutation was rejected
+     * with "has not been read in this tool session". The sessionId in the key preserves
+     * per-session isolation; the access-order LRU bounds memory in long-lived daemons.
+     */
+    private static final int MAX_FILE_READ_SNAPSHOTS = 8192;
+    private static final Map<String, FileSnapshot> FILE_READ_SNAPSHOTS =
+            Collections.synchronizedMap(new LinkedHashMap<>(256, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, FileSnapshot> eldest) {
+                    return size() > MAX_FILE_READ_SNAPSHOTS;
+                }
+            });
 
     public ToolContext(String sessionId, AgentConfig agent,
                        PermissionService permissionService,
@@ -106,5 +130,52 @@ public class ToolContext {
                     "Access path outside working directory: " + resolved);
         }
         return resolved;
+    }
+
+    /**
+     * Record the current file metadata after a successful read or write. Edit/write tools
+     * use this to reject stale writes when the file changed after the agent last saw it.
+     */
+    public void recordFileRead(Path path) {
+        try {
+            FILE_READ_SNAPSHOTS.put(snapshotKey(path), FileSnapshot.from(path));
+        } catch (IOException ignored) {
+            FILE_READ_SNAPSHOTS.remove(snapshotKey(path));
+        }
+    }
+
+    /** Returns true when the file was read in this session and still has the same metadata. */
+    public boolean hasFreshFileRead(Path path) {
+        FileSnapshot previous = FILE_READ_SNAPSHOTS.get(snapshotKey(path));
+        if (previous == null) {
+            return false;
+        }
+        try {
+            return previous.equals(FileSnapshot.from(normalizeFilePath(path)));
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    public String staleReadMessage(Path path, String operation) {
+        return "Refusing to " + operation + " " + path
+                + " because it has not been read in this tool session or changed since it was read. "
+                + "Call read on the file before modifying it.";
+    }
+
+    /** Newline separator: cannot occur in a session id or a sane absolute path. */
+    private String snapshotKey(Path path) {
+        return sessionId + "\n" + normalizeFilePath(path);
+    }
+
+    private Path normalizeFilePath(Path path) {
+        return path.toAbsolutePath().normalize();
+    }
+
+    private record FileSnapshot(FileTime lastModifiedTime, long size, Object fileKey) {
+        static FileSnapshot from(Path path) throws IOException {
+            BasicFileAttributes attrs = Files.readAttributes(path, BasicFileAttributes.class);
+            return new FileSnapshot(attrs.lastModifiedTime(), attrs.size(), attrs.fileKey());
+        }
     }
 }

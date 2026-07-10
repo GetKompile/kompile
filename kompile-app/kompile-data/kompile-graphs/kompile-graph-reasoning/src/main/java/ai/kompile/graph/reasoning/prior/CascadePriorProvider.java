@@ -35,6 +35,9 @@ import java.util.Objects;
  *   <li><b>Embedding geometric prior</b> — when the context carries a non-null embedding, the
  *       L2 norm is mapped to a prior via the function {@code norm / (norm + 1.0)}, then wrapped
  *       in {@link Opinion#fromEmbeddingScore(double, double)} with uncertainty floor 0.3.</li>
+ *   <li><b>Topology prior (WP19)</b> — position as evidence: interpolate from the uniform prior
+ *       toward the node's PageRank percentile by {@code topologyPriorWeight} (0 = off, the default,
+ *       so the waterfall is unchanged until an operator opts in).</li>
  *   <li><b>EmpiricalPriorBlend / type-frequency shrinkage</b> — Laplace-smoothed count prior
  *       {@code (typeCount + 1) / (totalCount + 2)} when
  *       {@link PriorContext#typeFrequencies()} is non-null and the entity type is recognised.</li>
@@ -67,6 +70,13 @@ public final class CascadePriorProvider implements PriorProvider {
     private final OpinionStore opinionStore;
 
     /**
+     * WP19 topology-prior weight in {@code [0,1]} — interpolates the topology tier's prior from uniform
+     * (0.5) toward the node's PageRank percentile. {@code 0} (the default) disables the tier entirely,
+     * so the waterfall behaves exactly as before until an operator opts in ({@code kbTopologyPriorWeight}).
+     */
+    private final double topologyPriorWeight;
+
+    /**
      * Construct with an opinion store and no findings.
      *
      * @param opinionStore the opinion store used for tier (b); never {@code null}
@@ -83,8 +93,21 @@ public final class CascadePriorProvider implements PriorProvider {
      *                     hard evidence values (tier a); may be {@code null}
      */
     public CascadePriorProvider(OpinionStore opinionStore, Map<String, Double> findings) {
-        this.opinionStore = Objects.requireNonNull(opinionStore, "opinionStore");
-        this.findings     = findings;
+        this(opinionStore, findings, 0.0);
+    }
+
+    /**
+     * Construct with an opinion store, optional findings, and the WP19 topology-prior weight.
+     *
+     * @param opinionStore        the opinion store used for tier (b); never {@code null}
+     * @param findings            optional hard-evidence map (tier a); may be {@code null}
+     * @param topologyPriorWeight weight in {@code [0,1]} for the topology tier; {@code 0} disables it
+     */
+    public CascadePriorProvider(OpinionStore opinionStore, Map<String, Double> findings,
+                                double topologyPriorWeight) {
+        this.opinionStore        = Objects.requireNonNull(opinionStore, "opinionStore");
+        this.findings            = findings;
+        this.topologyPriorWeight = topologyPriorWeight;
     }
 
     // ─── PriorProvider ───────────────────────────────────────────────────────
@@ -110,6 +133,10 @@ public final class CascadePriorProvider implements PriorProvider {
         // (c) Embedding geometric prior
         double embPrior = embeddingPrior(ctx.embedding());
         if (embPrior >= 0.0) return embPrior;
+
+        // (c') WP19 topology prior — position (PageRank percentile) as evidence
+        double topoPrior = topologyPrior(ctx, topologyPriorWeight);
+        if (topoPrior >= 0.0) return topoPrior;
 
         // (d) EmpiricalPriorBlend — type-frequency shrinkage
         double typeFreqPrior = typeFrequencyPrior(ctx);
@@ -146,6 +173,10 @@ public final class CascadePriorProvider implements PriorProvider {
         double embPrior = embeddingPrior(ctx.embedding());
         if (embPrior >= 0.0) return embPrior;
 
+        // (c') WP19 topology prior — position (PageRank percentile) as evidence
+        double topoPrior = topologyPrior(ctx, topologyPriorWeight);
+        if (topoPrior >= 0.0) return topoPrior;
+
         // (d) Type-frequency shrinkage
         double typeFreqPrior = typeFrequencyPrior(ctx);
         if (typeFreqPrior >= 0.0) return typeFreqPrior;
@@ -177,6 +208,29 @@ public final class CascadePriorProvider implements PriorProvider {
         if (norm < 1e-10) return -1.0; // zero-magnitude vector carries no information
         double score = norm / (norm + 1.0);
         return Opinion.fromEmbeddingScore(score, EMBEDDING_UNCERTAINTY).expectation();
+    }
+
+    /**
+     * Tier (c'): WP19 topology prior — a node's structural position as weak evidence.
+     *
+     * <p>Interpolates from the uniform prior (0.5) toward the node's PageRank percentile by
+     * {@code weight}: {@code prior = 0.5 + weight·(percentile − 0.5)}. A hub (percentile→1) is nudged
+     * up, a leaf (percentile→0) down; at {@code weight = 1} the prior is the raw percentile, at
+     * {@code weight = 0} it is a no-op. Returns the {@code -1.0} skip sentinel when the tier is disabled
+     * ({@code weight ≤ 0}) or no percentile is available, so lower tiers still fire.</p>
+     *
+     * @param ctx    the prior context (supplies {@link PriorContext#pageRankPercentile()})
+     * @param weight the topology-prior weight in {@code [0,1]}
+     * @return the interpolated prior in {@code [0,1]}, or {@code -1.0} to skip this tier
+     */
+    static double topologyPrior(PriorContext ctx, double weight) {
+        if (weight <= 0.0) return -1.0;
+        Double pct = ctx.pageRankPercentile();
+        if (pct == null) return -1.0;
+        double p = Math.max(0.0, Math.min(1.0, pct));
+        double w = Math.min(1.0, weight);
+        double prior = 0.5 + w * (p - 0.5);
+        return Math.max(0.0, Math.min(1.0, prior));
     }
 
     /**

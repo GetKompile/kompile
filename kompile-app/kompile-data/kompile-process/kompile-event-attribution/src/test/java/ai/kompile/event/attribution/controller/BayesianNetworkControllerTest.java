@@ -1169,10 +1169,11 @@ class BayesianNetworkControllerTest {
         mebnMeta.put("isRisky_ENTITY_n1", entry);
         result.setVariableToMebnMeta(mebnMeta);
 
-        when(bayesianService.queryMebnFromKg(eq(List.of("test-node")), eq(Map.of()), eq(3), eq(100)))
+        // mebnStructure now delegates to queryMebnFromKg(seeds, evidence, depth, nodes, typeHierarchy, factSheetId)
+        when(bayesianService.queryMebnFromKg(eq(List.of("test-node")), eq(Map.of()), eq(3), eq(100), isNull(), isNull()))
                 .thenReturn(result);
 
-        ResponseEntity<BayesianInferenceResult> response = controller.mebnStructure("test-node", 3, 100);
+        ResponseEntity<BayesianInferenceResult> response = controller.mebnStructure("test-node", 3, 100, null);
 
         assertEquals(200, response.getStatusCode().value());
         assertNotNull(response.getBody());
@@ -1186,7 +1187,7 @@ class BayesianNetworkControllerTest {
         assertEquals("ENTITY", meta.get("entityType"));
         assertEquals("n1", meta.get("entityId"));
 
-        verify(bayesianService).queryMebnFromKg(List.of("test-node"), Map.of(), 3, 100);
+        verify(bayesianService).queryMebnFromKg(List.of("test-node"), Map.of(), 3, 100, null, null);
     }
 
     /**
@@ -1198,11 +1199,55 @@ class BayesianNetworkControllerTest {
                 new LinkedHashMap<>(), new LinkedHashMap<>(),
                 new LinkedHashMap<>(), new LinkedHashMap<>());
 
-        when(bayesianService.queryMebnFromKg(anyCollection(), anyMap(), anyInt(), anyInt()))
+        when(bayesianService.queryMebnFromKg(anyCollection(), anyMap(), anyInt(), anyInt(), isNull(), isNull()))
                 .thenReturn(result);
 
-        controller.mebnStructure("node-abc", 5, 200);
+        controller.mebnStructure("node-abc", 5, 200, null);
 
-        verify(bayesianService).queryMebnFromKg(List.of("node-abc"), Map.of(), 5, 200);
+        verify(bayesianService).queryMebnFromKg(List.of("node-abc"), Map.of(), 5, 200, null, null);
+    }
+
+    // =========================================================================
+    // GET /api/attribution/bayesian/mebn/query?factSheetId=N — fact-sheet scoping
+    // =========================================================================
+
+    /**
+     * When factSheetId is provided, queryMebnFromNode passes it to the service.
+     */
+    @Test
+    void mebnQuery_withFactSheetId_passesFactSheetIdToService() {
+        BayesianInferenceResult result = makeResult(
+                new LinkedHashMap<>(), new LinkedHashMap<>(),
+                new LinkedHashMap<>(), new LinkedHashMap<>());
+
+        when(bayesianService.queryMebnFromKg(anyCollection(), anyMap(), anyInt(), anyInt(), isNull(), eq(42L)))
+                .thenReturn(result);
+
+        ResponseEntity<BayesianInferenceResult> response =
+                controller.queryMebnFromNode("node-42", 3, 100, 42L);
+
+        assertEquals(200, response.getStatusCode().value());
+        verify(bayesianService).queryMebnFromKg(
+                eq(List.of("node-42")), eq(Map.of()), eq(3), eq(100), isNull(), eq(42L));
+    }
+
+    /**
+     * When factSheetId is omitted (null), queryMebnFromNode passes null to service (global graph).
+     */
+    @Test
+    void mebnQuery_withoutFactSheetId_passesNullToService() {
+        BayesianInferenceResult result = makeResult(
+                new LinkedHashMap<>(), new LinkedHashMap<>(),
+                new LinkedHashMap<>(), new LinkedHashMap<>());
+
+        when(bayesianService.queryMebnFromKg(anyCollection(), anyMap(), anyInt(), anyInt(), isNull(), isNull()))
+                .thenReturn(result);
+
+        ResponseEntity<BayesianInferenceResult> response =
+                controller.queryMebnFromNode("node-global", 3, 100, null);
+
+        assertEquals(200, response.getStatusCode().value());
+        verify(bayesianService).queryMebnFromKg(
+                eq(List.of("node-global")), eq(Map.of()), eq(3), eq(100), isNull(), isNull());
     }
 }

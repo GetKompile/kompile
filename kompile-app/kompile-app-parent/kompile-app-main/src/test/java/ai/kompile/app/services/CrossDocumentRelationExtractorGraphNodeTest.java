@@ -61,6 +61,10 @@ class CrossDocumentRelationExtractorGraphNodeTest {
         // Default: no edges exist yet (both 2-arg and 5-arg overloads)
         when(knowledgeGraphService.edgeExists(anyString(), anyString())).thenReturn(false);
         when(knowledgeGraphService.edgeExists(anyString(), anyString(), any(), anyString(), anyLong())).thenReturn(false);
+        // The Jul-8 refactor switched per-edge createEdgeWithMetadata calls to createEdgesBatch.
+        // createEdgesBatch is a default interface method that delegates to createEdgeWithMetadata;
+        // make the mock execute the real default so per-edge verify() calls remain observable.
+        doCallRealMethod().when(knowledgeGraphService).createEdgesBatch(anyList());
     }
 
     // =========================================================================
@@ -91,7 +95,7 @@ class CrossDocumentRelationExtractorGraphNodeTest {
         node.setNodeId(nodeId);
         node.setTitle(title);
         node.setNodeType(NodeLevel.TABLE);
-        node.setParent(parent);
+        node.setParentId(parent != null ? parent.getNodeId() : null);
         if (metadata != null && !metadata.isEmpty()) {
             try {
                 node.setMetadataJson(MAPPER.writeValueAsString(metadata));

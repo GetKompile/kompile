@@ -42,7 +42,7 @@ import static org.mockito.Mockito.*;
 
 /**
  * Tests for {@link GraphBuildingStage} verifying entity/relationship extraction,
- * batching, disabled state, and error handling.
+ * batching, mandatory graph behavior, and error handling.
  */
 @ExtendWith(MockitoExtension.class)
 class GraphBuildingStageTest {
@@ -64,15 +64,27 @@ class GraphBuildingStageTest {
     }
 
     @Test
-    void disabledStageReturnsZeroCounts() throws Exception {
-        stage.setEnabled(false);
+    void legacyDisableOptionsDoNotSkipGraphBuilding() throws Exception {
+        Graph mockGraph = new Graph();
+        Entity entity = new Entity();
+        entity.setId("e1");
+        entity.setTitle("John Doe");
+        entity.setType("PERSON");
+        mockGraph.setEntities(List.of(entity));
+        mockGraph.setRelationships(List.of());
+        when(graphConstructor.constructGraphFromDocs(anyList(), any(), any()))
+                .thenReturn(mockGraph);
+
+        stage.configure(Map.of("enabled", false, "graphBuildingEnabled", false));
+        stage.setChunksToProcess(List.of(
+                new RetrievedDoc("c1", "John Doe works at Acme Corp.", new HashMap<>())));
 
         GraphBuildingStage.GraphBuildingOutput output = stage.process(dummyInput);
 
-        assertEquals(0, output.entitiesExtracted());
+        assertEquals(1, output.entitiesExtracted());
         assertEquals(0, output.relationshipsExtracted());
-        assertEquals(0, output.batchCount());
-        verifyNoInteractions(graphConstructor);
+        assertEquals(1, output.batchCount());
+        verify(graphConstructor).constructGraphFromDocs(anyList(), any(), any());
     }
 
     @Test
@@ -232,7 +244,6 @@ class GraphBuildingStageTest {
 
     @Test
     void resetClearsState() {
-        stage.setEnabled(false);
         stage.cancel();
         stage.setChunksToProcess(List.of(new RetrievedDoc("c1", "t", new HashMap<>())));
 
@@ -243,24 +254,19 @@ class GraphBuildingStageTest {
     }
 
     @Test
-    void configureFromMapSetsAllOptions() {
+    void configureFromMapAcceptsLegacyEnableKeys() {
         Map<String, Object> options = new HashMap<>();
         options.put("enabled", false);
+        options.put("graphBuildingEnabled", false);
         options.put("batchSize", 20);
         options.put("schemaEnforcementMode", "STRICT");
 
-        stage.configure(options);
-
-        assertFalse(stage.isEnabled());
+        assertDoesNotThrow(() -> stage.configure(options));
     }
 
     @Test
-    void configureWithGraphBuildingEnabledKey() {
-        stage.configure(Map.of("graphBuildingEnabled", true));
-        assertTrue(stage.isEnabled());
-
-        stage.configure(Map.of("graphBuildingEnabled", false));
-        assertFalse(stage.isEnabled());
+    void configureWithGraphBuildingEnabledKeyIsIgnored() {
+        assertDoesNotThrow(() -> stage.configure(Map.of("graphBuildingEnabled", false)));
     }
 
     @Test

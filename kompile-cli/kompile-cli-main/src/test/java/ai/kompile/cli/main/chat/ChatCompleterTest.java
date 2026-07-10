@@ -59,6 +59,9 @@ class ChatCompleterTest {
         assertTrue(values.contains("/tools"), "missing /tools");
         assertTrue(values.contains("/quit"), "missing /quit");
         assertTrue(values.contains("/enforce"), "missing /enforce");
+        assertTrue(values.contains("/enforcer"), "missing /enforcer");
+        assertTrue(values.contains("/activity"), "missing /activity");
+        assertTrue(values.contains("/render"), "missing /render");
         assertTrue(values.contains("/image"), "missing /image");
         assertTrue(values.contains("/queue-send-all"), "missing /queue-send-all");
         // Skills too
@@ -135,11 +138,11 @@ class ChatCompleterTest {
                 "/recall", "/permissions", "/todos", "/plan", "/queue",
                 "/queues", "/queue-send", "/queue-send-all", "/queue-remove",
                 "/queue-clear", "/queue-status", "/jobs", "/jobs-remove",
-                "/jobs-clear", "/processes", "/process-kill", "/process-output",
-                "/statusbar", "/auto-dequeue", "/enforce", "/stats",
-                "/passthrough", "/resume", "/mode", "/menu", "/skills",
-                "/roles", "/role", "/model", "/forward", "/image", "/file",
-                "/attach", "/attachments"
+                "/jobs-clear", "/activity", "/processes", "/process-kill", "/process-output",
+                "/process-status", "/statusbar", "/auto-dequeue", "/enforce", "/enforcer", "/stats",
+                "/passthrough", "/keys", "/render", "/resume", "/mode", "/menu", "/skills",
+                "/roles", "/role", "/model", "/forward", "/archive", "/rollback", "/diff", "/purge",
+                "/rules", "/image", "/file", "/attach", "/attachments"
         );
 
         for (String cmd : allCases) {
@@ -275,7 +278,18 @@ class ChatCompleterTest {
     void enforceSubArgs() {
         List<Candidate> candidates = complete("/enforce ");
         Set<String> values = candidateValues(candidates);
-        assertEquals(Set.of("on", "off", "rules", "score"), values);
+        assertEquals(Set.of("status", "on", "off", "pause", "resume", "judgements", "show",
+                "rules", "init", "delete", "reload", "run"), values);
+    }
+
+    @Test
+    void enforcerAliasSubArgs() {
+        List<Candidate> candidates = complete("/enforcer ");
+        Set<String> values = candidateValues(candidates);
+        assertTrue(values.contains("status"));
+        assertTrue(values.contains("pause"));
+        assertTrue(values.contains("resume"));
+        assertTrue(values.contains("judgements"));
     }
 
     @Test
@@ -294,7 +308,27 @@ class ChatCompleterTest {
                 .filter(c -> "rules".equals(c.value()))
                 .findFirst().orElse(null);
         assertNotNull(rules);
-        assertEquals("Show or set enforcer rules", rules.descr());
+        assertEquals("Show active enforcer rules", rules.descr());
+    }
+
+    @Test
+    void activitySubArgsIncludeInspectionAndCleanup() {
+        List<Candidate> candidates = complete("/activity ");
+        Set<String> values = candidateValues(candidates);
+        assertEquals(Set.of("enter", "inspect", "status", "logs", "kill", "remove", "clear", "close"), values);
+    }
+
+    @Test
+    void processAndJobsShareActivitySubArgs() {
+        assertTrue(candidateValues(complete("/processes ")).contains("enter"));
+        assertTrue(candidateValues(complete("/jobs ")).contains("clear"));
+    }
+
+    @Test
+    void renderSubArgs() {
+        List<Candidate> candidates = complete("/render ");
+        Set<String> values = candidateValues(candidates);
+        assertEquals(Set.of("mirror", "decoded", "decode"), values);
     }
 
     @Test

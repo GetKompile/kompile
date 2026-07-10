@@ -32,8 +32,8 @@ import java.util.Map;
  * MCP tool for coordinating file edits, process awareness, and agent activity
  * across multiple concurrent agents. Delegates to {@link CoordinationStateManager}.
  *
- * <p>Actions: register_edit, release_edit, query_edits, query_processes,
- * register_agent, query_agents, publish_process, unpublish_process, status.
+     * <p>Actions: register_edit, release_edit, query_edits, query_processes,
+     * register_agent, query_agents, publish_process, unpublish_process, awareness, status.
  */
 public class EditCoordinatorTool implements CliTool {
 
@@ -55,9 +55,9 @@ public class EditCoordinatorTool implements CliTool {
                 + "3. register_edit — lock the file before editing (returns lock_id)\n"
                 + "4. (do your edits)\n"
                 + "5. release_edit — release the lock using the lock_id\n\n"
-                + "Other actions: query_processes (see running background processes), "
-                + "query_agents (see all active agents), publish_process/unpublish_process (track background work), "
-                + "status (combined dashboard).";
+                + "Other actions: awareness (one-call cross-agent snapshot with risks and next steps), "
+                + "query_processes (see running background processes), query_agents (see all active agents), "
+                + "publish_process/unpublish_process (track background work), status (combined dashboard).";
     }
 
     @Override
@@ -71,13 +71,13 @@ public class EditCoordinatorTool implements CliTool {
         action.put("type", "string");
         action.put("description",
                 "Action to perform: register_edit, release_edit, query_edits, query_processes, "
-                        + "register_agent, query_agents, publish_process, unpublish_process, status");
+                        + "register_agent, query_agents, publish_process, unpublish_process, awareness, status");
         action.putArray("enum")
                 .add("register_edit").add("release_edit")
                 .add("query_edits").add("query_processes")
                 .add("register_agent").add("query_agents")
                 .add("publish_process").add("unpublish_process")
-                .add("status");
+                .add("awareness").add("status");
 
         ObjectNode filePath = props.putObject("file_path");
         filePath.put("type", "string");
@@ -158,12 +158,14 @@ public class EditCoordinatorTool implements CliTool {
                 return executePublishProcess(params);
             case "unpublish_process":
                 return executeUnpublishProcess(params);
+            case "awareness":
+                return executeAwareness();
             case "status":
                 return executeStatus();
             default:
                 return ToolResult.error("Unknown action: " + action
                         + ". Valid: register_edit, release_edit, query_edits, query_processes, "
-                        + "register_agent, query_agents, publish_process, unpublish_process, status");
+                        + "register_agent, query_agents, publish_process, unpublish_process, awareness, status");
         }
     }
 
@@ -354,9 +356,102 @@ public class EditCoordinatorTool implements CliTool {
         }
     }
 
+    private ToolResult executeAwareness() {
+        List<AgentEntry> agents = coordinator.queryAgents();
+        List<EditLockEntry> edits = coordinator.queryEdits();
+        List<ProcessCoordEntry> processes = coordinator.queryProcesses();
+
+        long runningProcesses = processes.stream()
+                .filter(p -> "RUNNING".equalsIgnoreCase(p.getState()))
+                .count();
+        long buildProcesses = processes.stream()
+                .filter(p -> isBuildOrTestCommand(p.getCommand()) || isBuildOrTestCommand(p.getDescription()))
+                .count();
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("Cross-agent awareness snapshot\n");
+        sb.append("Time: ").append(Instant.now()).append("\n\n");
+
+        sb.append("Agents active: ").append(agents.size()).append("\n");
+        if (agents.isEmpty()) {
+            sb.append("  (none)\n");
+        } else {
+            for (AgentEntry a : agents) {
+                sb.append("  - ").append(a.getAgentName())
+                        .append(" [").append(StringUtils.truncate(a.getSessionId(), 18)).append("]")
+                        .append(" depth=").append(a.getDepth())
+                        .append(" running ").append(formatAge(a.getStartedAt()))
+                        .append(" — ").append(StringUtils.truncate(safe(a.getTask()), 90))
+                        .append("\n");
+            }
+        }
+
+        sb.append("\nFiles currently locked: ").append(edits.size()).append("\n");
+        if (edits.isEmpty()) {
+            sb.append("  (none)\n");
+        } else {
+            for (EditLockEntry e : edits) {
+                sb.append("  - ").append(e.getEditType()).append(" ")
+                        .append(e.getFilePath())
+                        .append(" by ").append(e.getAgentName())
+                        .append(" [").append(StringUtils.truncate(e.getSessionId(), 18)).append("]")
+                        .append(" for ").append(formatAge(e.getAcquiredAt()))
+                        .append("\n");
+            }
+        }
+
+        sb.append("\nProcesses visible across agents: ").append(processes.size())
+                .append(" (").append(runningProcesses).append(" running, ")
+                .append(buildProcesses).append(" build/test-like)\n");
+        if (processes.isEmpty()) {
+            sb.append("  (none)\n");
+        } else {
+            for (ProcessCoordEntry p : processes) {
+                sb.append("  - ").append(p.getProcessId())
+                        .append(" ").append(p.getState())
+                        .append(" pid=").append(p.getPid())
+                        .append(" by ").append(p.getAgentName())
+                        .append(" [").append(StringUtils.truncate(p.getSessionId(), 18)).append("]")
+                        .append(" for ").append(formatAge(p.getStartedAt()))
+                        .append(" — ").append(StringUtils.truncate(safe(p.getDescription()), 90))
+                        .append("\n");
+            }
+        }
+
+        sb.append("\nCoordination guidance:\n");
+        if (!edits.isEmpty()) {
+            sb.append("  - Re-read and avoid editing locked files unless you own the listed lock.\n");
+        }
+        if (runningProcesses > 0) {
+            sb.append("  - Check running process output before launching duplicate builds/tests.\n");
+        }
+        if (agents.size() > 1) {
+            sb.append("  - Align with active agents' task scopes before overlapping edits.\n");
+        }
+        if (edits.isEmpty() && runningProcesses == 0 && agents.size() <= 1) {
+            sb.append("  - No cross-agent contention detected.\n");
+        }
+
+        return ToolResult.success("awareness", sb.toString(),
+                Map.of("agents", agents.size(), "edits", edits.size(),
+                        "processes", processes.size(), "runningProcesses", runningProcesses));
+    }
+
     private ToolResult executeStatus() {
         String dashboard = coordinator.statusDashboard();
         return ToolResult.success("status", dashboard);
+    }
+
+    private static String safe(String text) {
+        return text == null ? "" : text;
+    }
+
+    private static boolean isBuildOrTestCommand(String text) {
+        if (text == null) return false;
+        String lower = text.toLowerCase();
+        return lower.contains("mvn") || lower.contains("gradle") || lower.contains("npm test")
+                || lower.contains("pytest") || lower.contains(" build") || lower.contains(" test")
+                || lower.contains("surefire") || lower.contains("failsafe");
     }
 
     private static String formatAge(Instant since) {

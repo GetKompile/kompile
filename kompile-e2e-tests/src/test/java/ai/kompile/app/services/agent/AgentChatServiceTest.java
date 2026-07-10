@@ -21,6 +21,7 @@ import ai.kompile.app.services.mcp.BuiltInToolDiscoveryService;
 import ai.kompile.app.web.dto.AgentChatRequest;
 import ai.kompile.chat.history.service.FolderService;
 import ai.kompile.core.agent.AgentProvider;
+import ai.kompile.core.agent.ProcessStatus;
 import ai.kompile.core.embeddings.NoOpVectorStoreImpl;
 import ai.kompile.core.retrievers.NoOpDocumentRetrieverImpl;
 import org.junit.jupiter.api.BeforeEach;
@@ -283,7 +284,7 @@ class AgentChatServiceTest {
     void executeChatSync_echoAgent_returnsOutput() {
         when(agentRegistry.getAgent("echo-agent")).thenReturn(Optional.of(echoAgent));
 
-        ai.kompile.core.agent.ProcessStatus mockStatus = new ai.kompile.core.agent.ProcessStatus(
+        ProcessStatus mockStatus = new ProcessStatus(
                 "echo-agent", List.of("echo", "hello"));
         when(diagnosticService.startProcess(anyString(), any())).thenReturn(mockStatus);
         doNothing().when(diagnosticService).processStarted(any(), anyLong());

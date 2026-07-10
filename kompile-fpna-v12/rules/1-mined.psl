@@ -1,0 +1,137 @@
+# Mined PSL rules for fact sheet 1
+# Generated: 2026-07-08T00:49:01.785666739Z
+# Rule count: 118
+# Source: ProcessCausalAnalyzer (chi-squared-significant directly-follows arcs) + Declare->PSL constraint encodings (entailment pass), when present
+# Arcs used:
+#   Cell -> Cell  dep=0.999  chi2=855.022  sig=true  type=CAUSES  fwd=1816  rev=1816
+#   Alias -> Alias  dep=0.997  chi2=450.908  sig=true  type=CAUSES  fwd=339  rev=339
+#   Audit -> Audit  dep=0.986  chi2=1573.387  sig=true  type=CAUSES  fwd=69  rev=69
+#   Notes -> Notes  dep=0.983  chi2=1815.294  sig=true  type=CAUSES  fwd=59  rev=59
+#   SKU master -> SKU master  dep=0.960  chi2=894.472  sig=true  type=CAUSES  fwd=24  rev=24
+#   Adjustments -> Adjustments  dep=0.955  chi2=868.529  sig=true  type=CAUSES  fwd=21  rev=21
+#   Instructions -> Instructions  dep=0.947  chi2=1146.150  sig=true  type=CAUSES  fwd=18  rev=18
+#   Currency rules -> Currency rules  dep=0.933  chi2=1944.069  sig=true  type=CAUSES  fwd=14  rev=14
+#   Consolidated Input -> Consolidated Input  dep=0.909  chi2=370.245  sig=true  type=CAUSES  fwd=10  rev=10
+#   Channel taxonomy -> Channel taxonomy  dep=0.909  chi2=1903.061  sig=true  type=CAUSES  fwd=10  rev=10
+#   SG -> SG  dep=0.889  chi2=416.124  sig=true  type=CAUSES  fwd=8  rev=8
+#   FX rates (for ref) -> FX rates (for ref)  dep=0.889  chi2=1700.880  sig=true  type=CAUSES  fwd=8  rev=8
+#   Document -> Notes  dep=0.500  chi2=4.184  sig=true  type=TRIGGERS  fwd=1  rev=0
+#
+0.99: State("Cell") & Link("Cell","Cell") -> State("Cell") ^2
+0.99: State("Alias") & Link("Alias","Alias") -> State("Alias") ^2
+0.99: State("Audit") & Link("Audit","Audit") -> State("Audit") ^2
+0.98: State("Notes") & Link("Notes","Notes") -> State("Notes") ^2
+0.96: State("SKU master") & Link("SKU master","SKU master") -> State("SKU master") ^2
+0.95: State("Adjustments") & Link("Adjustments","Adjustments") -> State("Adjustments") ^2
+0.95: State("Instructions") & Link("Instructions","Instructions") -> State("Instructions") ^2
+0.93: State("Currency rules") & Link("Currency rules","Currency rules") -> State("Currency rules") ^2
+0.91: State("Consolidated Input") & Link("Consolidated Input","Consolidated Input") -> State("Consolidated Input") ^2
+0.91: State("Channel taxonomy") & Link("Channel taxonomy","Channel taxonomy") -> State("Channel taxonomy") ^2
+0.89: State("SG") & Link("SG","SG") -> State("SG") ^2
+0.89: State("FX rates (for ref)") & Link("FX rates (for ref)","FX rates (for ref)") -> State("FX rates (for ref)") ^2
+0.50: State("Document") & Link("Document","Notes") -> State("Notes") ^2
+0.99: Occurs("Cell") -> Occurs("Alias") ^2
+0.99: Occurs("Alias") -> Occurs("Cell") ^2
+0.99: Occurs("Cell") -> Occurs("Audit") ^2
+0.99: Occurs("Audit") -> Occurs("Cell") ^2
+0.99: Occurs("Notes") -> Occurs("Cell") ^2
+0.99: Occurs("Consolidated Input") -> Occurs("Cell") ^2
+0.99: Occurs("Document") -> Occurs("Cell") ^2
+0.99: Occurs("Instructions") -> Occurs("Cell") ^2
+0.99: Occurs("SG") -> Occurs("Cell") ^2
+0.99: Occurs("Cell") -> Occurs("Adjustments") ^2
+0.99: Occurs("Adjustments") -> Occurs("Cell") ^2
+0.99: Occurs("SKU master") -> Occurs("Cell") ^2
+0.99: Occurs("Channel taxonomy") -> Occurs("Cell") ^2
+0.99: Occurs("Currency rules") -> Occurs("Cell") ^2
+0.99: Occurs("FX rates (for ref)") -> Occurs("Cell") ^2
+0.99: Occurs("Alias") -> Occurs("Audit") ^2
+0.99: Occurs("Audit") -> Occurs("Alias") ^2
+0.99: Occurs("Notes") -> Occurs("Alias") ^2
+0.99: Occurs("Consolidated Input") -> Occurs("Alias") ^2
+0.99: Occurs("Document") -> Occurs("Alias") ^2
+0.99: Occurs("Instructions") -> Occurs("Alias") ^2
+0.99: Occurs("SG") -> Occurs("Alias") ^2
+0.99: Occurs("Adjustments") -> Occurs("Alias") ^2
+0.99: Occurs("SKU master") -> Occurs("Alias") ^2
+0.99: Occurs("Channel taxonomy") -> Occurs("Alias") ^2
+0.99: Occurs("Currency rules") -> Occurs("Alias") ^2
+0.99: Occurs("FX rates (for ref)") -> Occurs("Alias") ^2
+0.99: Occurs("Notes") -> Occurs("Audit") ^2
+0.99: Occurs("Consolidated Input") -> Occurs("Audit") ^2
+0.99: Occurs("Document") -> Occurs("Audit") ^2
+0.99: Occurs("Instructions") -> Occurs("Audit") ^2
+0.99: Occurs("SG") -> Occurs("Audit") ^2
+0.99: Occurs("Adjustments") -> Occurs("Audit") ^2
+0.99: Occurs("SKU master") -> Occurs("Audit") ^2
+0.99: Occurs("Channel taxonomy") -> Occurs("Audit") ^2
+0.99: Occurs("Currency rules") -> Occurs("Audit") ^2
+0.99: Occurs("FX rates (for ref)") -> Occurs("Audit") ^2
+0.99: Occurs("Consolidated Input") -> Occurs("Notes") ^2
+0.99: Occurs("Document") -> Occurs("Notes") ^2
+0.99: Occurs("Instructions") -> Occurs("Notes") ^2
+0.99: Occurs("SG") -> Occurs("Notes") ^2
+0.99: Occurs("Notes") -> Occurs("Adjustments") ^2
+0.99: Occurs("Adjustments") -> Occurs("Notes") ^2
+0.99: Occurs("Notes") -> Occurs("SKU master") ^2
+0.99: Occurs("SKU master") -> Occurs("Notes") ^2
+0.99: Occurs("Channel taxonomy") -> Occurs("Notes") ^2
+0.99: Occurs("Currency rules") -> Occurs("Notes") ^2
+0.99: Occurs("FX rates (for ref)") -> Occurs("Notes") ^2
+0.99: Occurs("Consolidated Input") -> Occurs("Document") ^2
+0.99: Occurs("Document") -> Occurs("Consolidated Input") ^2
+0.99: Occurs("Instructions") -> Occurs("Consolidated Input") ^2
+0.99: Occurs("SG") -> Occurs("Consolidated Input") ^2
+0.99: Occurs("Consolidated Input") -> Occurs("Adjustments") ^2
+0.99: Occurs("Adjustments") -> Occurs("Consolidated Input") ^2
+0.99: Occurs("Consolidated Input") -> Occurs("SKU master") ^2
+0.99: Occurs("SKU master") -> Occurs("Consolidated Input") ^2
+0.99: Occurs("Consolidated Input") -> Occurs("Channel taxonomy") ^2
+0.99: Occurs("Channel taxonomy") -> Occurs("Consolidated Input") ^2
+0.99: Occurs("Consolidated Input") -> Occurs("Currency rules") ^2
+0.99: Occurs("Currency rules") -> Occurs("Consolidated Input") ^2
+0.99: Occurs("Consolidated Input") -> Occurs("FX rates (for ref)") ^2
+0.99: Occurs("FX rates (for ref)") -> Occurs("Consolidated Input") ^2
+0.99: Occurs("Instructions") -> Occurs("Document") ^2
+0.99: Occurs("SG") -> Occurs("Document") ^2
+0.99: Occurs("Document") -> Occurs("Adjustments") ^2
+0.99: Occurs("Adjustments") -> Occurs("Document") ^2
+0.99: Occurs("Document") -> Occurs("SKU master") ^2
+0.99: Occurs("SKU master") -> Occurs("Document") ^2
+0.99: Occurs("Channel taxonomy") -> Occurs("Document") ^2
+0.99: Occurs("Currency rules") -> Occurs("Document") ^2
+0.99: Occurs("FX rates (for ref)") -> Occurs("Document") ^2
+0.99: Occurs("SG") -> Occurs("Instructions") ^2
+0.99: Occurs("Instructions") -> Occurs("Adjustments") ^2
+0.99: Occurs("Adjustments") -> Occurs("Instructions") ^2
+0.99: Occurs("Instructions") -> Occurs("SKU master") ^2
+0.99: Occurs("SKU master") -> Occurs("Instructions") ^2
+0.99: Occurs("Instructions") -> Occurs("Channel taxonomy") ^2
+0.99: Occurs("Channel taxonomy") -> Occurs("Instructions") ^2
+0.99: Occurs("Instructions") -> Occurs("Currency rules") ^2
+0.99: Occurs("Currency rules") -> Occurs("Instructions") ^2
+0.99: Occurs("Instructions") -> Occurs("FX rates (for ref)") ^2
+0.99: Occurs("FX rates (for ref)") -> Occurs("Instructions") ^2
+0.99: Occurs("SG") -> Occurs("Adjustments") ^2
+0.99: Occurs("Adjustments") -> Occurs("SG") ^2
+0.99: Occurs("SG") -> Occurs("SKU master") ^2
+0.99: Occurs("SKU master") -> Occurs("SG") ^2
+0.99: Occurs("SG") -> Occurs("Channel taxonomy") ^2
+0.99: Occurs("Channel taxonomy") -> Occurs("SG") ^2
+0.99: Occurs("SG") -> Occurs("Currency rules") ^2
+0.99: Occurs("Currency rules") -> Occurs("SG") ^2
+0.99: Occurs("SG") -> Occurs("FX rates (for ref)") ^2
+0.99: Occurs("FX rates (for ref)") -> Occurs("SG") ^2
+0.99: Occurs("SKU master") -> Occurs("Adjustments") ^2
+0.99: Occurs("Channel taxonomy") -> Occurs("Adjustments") ^2
+0.99: Occurs("Currency rules") -> Occurs("Adjustments") ^2
+0.99: Occurs("FX rates (for ref)") -> Occurs("Adjustments") ^2
+0.99: Occurs("Channel taxonomy") -> Occurs("SKU master") ^2
+0.99: Occurs("Currency rules") -> Occurs("SKU master") ^2
+0.99: Occurs("FX rates (for ref)") -> Occurs("SKU master") ^2
+0.99: Occurs("Channel taxonomy") -> Occurs("Currency rules") ^2
+0.99: Occurs("Currency rules") -> Occurs("Channel taxonomy") ^2
+0.99: Occurs("Channel taxonomy") -> Occurs("FX rates (for ref)") ^2
+0.99: Occurs("FX rates (for ref)") -> Occurs("Channel taxonomy") ^2
+0.99: Occurs("Currency rules") -> Occurs("FX rates (for ref)") ^2
+0.99: Occurs("FX rates (for ref)") -> Occurs("Currency rules") ^2

@@ -1108,6 +1108,24 @@ describe('ProcessEngineService', () => {
     });
   });
 
+  describe('mineProcesses()', () => {
+    it('should GET the mining endpoint for one fact sheet', (done) => {
+      const mockSuggestion = { id: 'sug-1', name: 'Mined flow', confidence: 0.88 };
+
+      service.mineProcesses(42).subscribe(res => {
+        expect(res).toEqual(mockSuggestion);
+        done();
+      });
+
+      const req = httpMock.expectOne(r =>
+        r.url === `${backendUrl}/process/mining/discover` &&
+        r.params.get('factSheetId') === '42'
+      );
+      expect(req.request.method).toBe('GET');
+      req.flush(mockSuggestion);
+    });
+  });
+
   // ── Stored Suggestions CRUD ───────────────────────────────────────────────
 
   describe('listStoredSuggestions()', () => {
@@ -1152,6 +1170,26 @@ describe('ProcessEngineService', () => {
       const req = httpMock.expectOne(`${backendUrl}/process/discovery/suggestions/sug-1`);
       expect(req.request.method).toBe('GET');
       req.flush(mockSuggestion);
+    });
+  });
+
+  describe('getStoredSuggestionTrace()', () => {
+    it('should GET the persisted reasoning trace', (done) => {
+      const trace = {
+        size: 1,
+        depth: 1,
+        conclusion: { kind: 'CONCLUSION', conclusion: 'candidate', confidence: 0.9 }
+      };
+
+      service.getStoredSuggestionTrace('sug-1').subscribe(res => {
+        expect(res).toEqual(trace);
+        done();
+      });
+
+      const req = httpMock.expectOne(
+        `${backendUrl}/process/discovery/suggestions/sug-1/trace`);
+      expect(req.request.method).toBe('GET');
+      req.flush(trace);
     });
   });
 

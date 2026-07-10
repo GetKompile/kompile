@@ -21,6 +21,7 @@ import ai.kompile.cli.main.chat.render.AsciiRenderer;
 import ai.kompile.utils.StringUtils;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.common.util.JsonUtils;
+import com.fasterxml.jackson.core.JsonFactory;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import picocli.CommandLine;
@@ -29,6 +30,8 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
@@ -540,8 +543,8 @@ public class EvalCommand implements Callable<Integer> {
                 return 1;
             }
 
-            List<String> warnings = new java.util.ArrayList<>();
-            List<String> errors = new java.util.ArrayList<>();
+            List<String> warnings = new ArrayList<>();
+            List<String> errors = new ArrayList<>();
 
             if (suite.getName() == null || suite.getName().isBlank())
                 errors.add("Suite has no name");
@@ -553,7 +556,7 @@ public class EvalCommand implements Callable<Integer> {
                 warnings.add("No default agent — each case must specify its own");
 
             int enabled = 0, disabled = 0, totalAssertions = 0;
-            Map<String, Integer> assertionTypes = new java.util.LinkedHashMap<>();
+            Map<String, Integer> assertionTypes = new LinkedHashMap<>();
 
             if (suite.getCases() != null) {
                 for (int i = 0; i < suite.getCases().size(); i++) {
@@ -797,7 +800,7 @@ public class EvalCommand implements Callable<Integer> {
                 try {
                     ObjectMapper jsonMapper = JsonUtils.newStandardMapper()
                             .enable(SerializationFeature.INDENT_OUTPUT);
-                    Map<String, Object> out = new java.util.LinkedHashMap<>();
+                    Map<String, Object> out = new LinkedHashMap<>();
                     out.put("runA", runA);
                     out.put("runB", runB);
                     System.out.println(jsonMapper.writeValueAsString(out));
@@ -835,12 +838,12 @@ public class EvalCommand implements Callable<Integer> {
 
             // Per-case diff (same suite only)
             if (runA.getSuiteName() != null && runA.getSuiteName().equals(runB.getSuiteName())) {
-                Map<String, EvalCaseResult> casesA = new java.util.LinkedHashMap<>();
+                Map<String, EvalCaseResult> casesA = new LinkedHashMap<>();
                 for (EvalCaseResult cr : runA.getCaseResults()) casesA.put(cr.getCaseId(), cr);
-                Map<String, EvalCaseResult> casesB = new java.util.LinkedHashMap<>();
+                Map<String, EvalCaseResult> casesB = new LinkedHashMap<>();
                 for (EvalCaseResult cr : runB.getCaseResults()) casesB.put(cr.getCaseId(), cr);
 
-                java.util.LinkedHashMap<String, Boolean> allCases = new java.util.LinkedHashMap<>();
+                LinkedHashMap<String, Boolean> allCases = new LinkedHashMap<>();
                 casesA.keySet().forEach(k -> allCases.put(k, true));
                 casesB.keySet().forEach(k -> allCases.put(k, true));
 
@@ -892,7 +895,7 @@ public class EvalCommand implements Callable<Integer> {
                 Class<?> yamlFactoryClass = Class.forName(
                         "com.fasterxml.jackson.dataformat.yaml.YAMLFactory");
                 Object yamlFactory = yamlFactoryClass.getDeclaredConstructor().newInstance();
-                mapper = new ObjectMapper((com.fasterxml.jackson.core.JsonFactory) yamlFactory);
+                mapper = new ObjectMapper((JsonFactory) yamlFactory);
             } catch (Exception e) {
                 System.err.println("Warning: jackson-dataformat-yaml not on classpath, falling back to JSON parser");
                 mapper = JsonUtils.standardMapper();

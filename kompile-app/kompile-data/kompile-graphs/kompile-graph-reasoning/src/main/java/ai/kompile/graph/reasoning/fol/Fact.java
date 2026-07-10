@@ -9,6 +9,8 @@
  */
 package ai.kompile.graph.reasoning.fol;
 
+import ai.kompile.graph.reasoning.confidence.Opinion;
+
 import java.time.Instant;
 import java.util.Objects;
 
@@ -30,7 +32,8 @@ public record Fact(
         double value,
         String sourceId,
         Instant timestamp,
-        boolean hard
+        boolean hard,
+        Opinion opinion
 ) {
 
     public Fact {
@@ -40,6 +43,14 @@ public record Fact(
         if (value < 0.0 || value > 1.0) {
             throw new IllegalArgumentException("Fact value must be in [0,1], got: " + value);
         }
+    }
+
+    /**
+     * Back-compat 5-arg constructor (no carried opinion) — WP13a added the optional {@link #opinion} as
+     * a 6th component; every existing {@code new Fact(...)} call keeps working via this delegation.
+     */
+    public Fact(String atomKey, double value, String sourceId, Instant timestamp, boolean hard) {
+        this(atomKey, value, sourceId, timestamp, hard, null);
     }
 
     /**
@@ -76,5 +87,15 @@ public record Fact(
      */
     public static Fact soft(String atomKey, double value, String sourceId, Instant timestamp) {
         return new Fact(atomKey, value, sourceId, timestamp, false);
+    }
+
+    /**
+     * WP13a — a soft fact carrying its subjective-logic {@link Opinion}; the truth {@code value} is the
+     * opinion's expectation. Consumers (WP5/WP12 leaf maps) prefer {@link #opinion()} over
+     * reconstructing an opinion from the scalar value.
+     */
+    public static Fact withOpinion(String atomKey, String sourceId, Opinion opinion) {
+        double v = opinion != null ? opinion.expectation() : 0.0;
+        return new Fact(atomKey, v, sourceId, Instant.now(), false, opinion);
     }
 }

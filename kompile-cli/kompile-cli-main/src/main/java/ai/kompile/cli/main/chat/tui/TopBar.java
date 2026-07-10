@@ -141,7 +141,7 @@ public class TopBar {
 
         // Right-aligned help hint
         String leftVisible = AnsiConstants.stripAnsi(sb.toString());
-        String hint = "Ctrl+C cancel  /help  /quit";
+        String hint = "Ctrl+G cancel  /help  /quit";
         int gap = width - leftVisible.length() - hint.length() - 1;
         if (gap > 2) {
             sb.append(" ".repeat(gap));

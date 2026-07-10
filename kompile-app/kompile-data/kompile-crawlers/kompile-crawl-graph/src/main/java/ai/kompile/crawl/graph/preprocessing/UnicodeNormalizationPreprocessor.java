@@ -24,6 +24,7 @@ import org.springframework.ai.document.Document;
 import org.springframework.stereotype.Component;
 
 import java.text.Normalizer;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
@@ -43,7 +44,7 @@ public class UnicodeNormalizationPreprocessor implements DocumentPreprocessor {
     // Common mojibake patterns (UTF-8 decoded as Latin-1)
     private static final Map<String, String> MOJIBAKE_FIXES;
     static {
-        Map<String, String> m = new java.util.LinkedHashMap<>();
+        Map<String, String> m = new LinkedHashMap<>();
         m.put("\u00C3\u00A9", "\u00E9"); // é
         m.put("\u00C3\u00A8", "\u00E8"); // è
         m.put("\u00C3\u00A0", "\u00E0"); // à

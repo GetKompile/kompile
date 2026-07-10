@@ -27,7 +27,7 @@ import { MatSliderModule } from '@angular/material/slider';
 import { MatCardModule } from '@angular/material/card';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
-import { MatDialogModule } from '@angular/material/dialog';
+import { MatDialogModule, MatDialog } from '@angular/material/dialog';
 import { Subject, takeUntil } from 'rxjs';
 
 import {
@@ -38,6 +38,8 @@ import {
   ArchiveInfo,
   ArchiveListResponse
 } from '../../../services/log-config.service';
+import { LogCleanupDialogComponent } from './log-cleanup-dialog.component';
+import { ConfirmDialogComponent } from '../../confirm-dialog/confirm-dialog.component';
 
 @Component({
   selector: 'app-log-settings',
@@ -55,7 +57,9 @@ import {
     MatCardModule,
     MatTooltipModule,
     MatProgressBarModule,
-    MatDialogModule
+    MatDialogModule,
+    LogCleanupDialogComponent,
+    ConfirmDialogComponent
   ],
   templateUrl: './log-settings.component.html',
   styleUrls: ['./log-settings.component.scss']
@@ -84,20 +88,13 @@ export class LogSettingsComponent implements OnInit, OnDestroy {
   error: string | null = null;
   successMessage: string | null = null;
 
-  // Cleanup dialog
-  showCleanupDialog = false;
-  cleanupHours = 168; // 7 days
-  cleanupLoading = false;
-
   // Archive state
   archives: ArchiveInfo[] = [];
   archiveLoading = false;
   archiveCreating = false;
-  showArchiveDeleteDialog = false;
-  archiveToDelete: ArchiveInfo | null = null;
   archiveDeleting = false;
 
-  constructor(private logConfigService: LogConfigService) { }
+  constructor(private logConfigService: LogConfigService, private dialog: MatDialog) { }
 
   ngOnInit(): void {
     this.loadConfiguration();
@@ -189,24 +186,23 @@ export class LogSettingsComponent implements OnInit, OnDestroy {
   }
 
   openCleanupDialog(): void {
-    this.showCleanupDialog = true;
+    this.dialog.open(LogCleanupDialogComponent, {
+      data: { initialHours: 168 },
+      width: '400px'
+    }).afterClosed().subscribe((hours: number | null) => {
+      if (hours != null) {
+        this.runCleanup(hours);
+      }
+    });
   }
 
-  closeCleanupDialog(): void {
-    this.showCleanupDialog = false;
-  }
-
-  triggerCleanup(): void {
-    this.cleanupLoading = true;
-
-    this.logConfigService.triggerCleanup(this.cleanupHours)
+  runCleanup(hours: number): void {
+    this.logConfigService.triggerCleanup(hours)
       .pipe(takeUntil(this.destroy$))
       .subscribe({
         next: (response) => {
           this.status = response.statusAfter;
           this.successMessage = `Cleaned up ${response.deletedCount} log entries`;
-          this.cleanupLoading = false;
-          this.closeCleanupDialog();
 
           setTimeout(() => {
             this.successMessage = null;
@@ -214,7 +210,6 @@ export class LogSettingsComponent implements OnInit, OnDestroy {
         },
         error: (err) => {
           this.error = 'Failed to cleanup logs: ' + (err.error?.error || err.message);
-          this.cleanupLoading = false;
         }
       });
   }
@@ -309,30 +304,35 @@ export class LogSettingsComponent implements OnInit, OnDestroy {
   }
 
   openArchiveDeleteDialog(archive: ArchiveInfo): void {
-    this.archiveToDelete = archive;
-    this.showArchiveDeleteDialog = true;
+    const ref = this.dialog.open(ConfirmDialogComponent, {
+      data: {
+        title: 'Delete Archive',
+        message: `Delete archive ${archive.fileName}?`,
+        confirmText: 'Delete',
+        confirmColor: 'warn',
+        icon: 'delete',
+        iconColor: 'warn'
+      }
+    });
+    ref.afterClosed().subscribe((confirmed: boolean) => {
+      if (confirmed) {
+        this.deleteArchive(archive);
+      }
+    });
   }
 
-  closeArchiveDeleteDialog(): void {
-    this.showArchiveDeleteDialog = false;
-    this.archiveToDelete = null;
-  }
-
-  confirmDeleteArchive(): void {
-    if (!this.archiveToDelete) return;
-
+  deleteArchive(archive: ArchiveInfo): void {
     this.archiveDeleting = true;
 
-    this.logConfigService.deleteArchive(this.archiveToDelete.fileName)
+    this.logConfigService.deleteArchive(archive.fileName)
       .pipe(takeUntil(this.destroy$))
       .subscribe({
         next: (response) => {
           if (response.success) {
             this.successMessage = response.message || 'Archive deleted successfully';
-            this.loadArchives(); // Refresh archive list
+            this.loadArchives();
           }
           this.archiveDeleting = false;
-          this.closeArchiveDeleteDialog();
 
           setTimeout(() => {
             this.successMessage = null;
@@ -341,7 +341,6 @@ export class LogSettingsComponent implements OnInit, OnDestroy {
         error: (err) => {
           this.error = 'Failed to delete archive: ' + (err.error?.error || err.message);
           this.archiveDeleting = false;
-          this.closeArchiveDeleteDialog();
         }
       });
   }

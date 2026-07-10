@@ -24,6 +24,14 @@ class SubprocessMemoryWatchdogTest {
             }
         }
 
+        @Test void recognizesCudaBackendNames() {
+            assertTrue(SubprocessMemoryWatchdog.isGpuBackendName("JCublasBackend"));
+            assertTrue(SubprocessMemoryWatchdog.isGpuBackendName("CudaBackend"));
+            assertTrue(SubprocessMemoryWatchdog.isGpuBackendName("RocmBackend"));
+            assertFalse(SubprocessMemoryWatchdog.isGpuBackendName("CpuBackend"));
+            assertFalse(SubprocessMemoryWatchdog.isGpuBackendName(null));
+        }
+
         @Test void fromArgsBuilder() {
             SubprocessArgs args = SubprocessArgs.builder()
                     .taskId("t").filePath("/f").callbackBaseUrl("http://x")

@@ -27,8 +27,6 @@ import ai.kompile.core.retrievers.NoOpDocumentRetrieverImpl;
 import ai.kompile.core.retrievers.RetrievedDoc;
 import ai.kompile.knowledgegraph.citation.CitationSupport;
 import ai.kompile.knowledgegraph.domain.GraphProvenanceKeys;
-import ai.kompile.knowledgegraph.domain.NodeLevel;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -66,8 +64,6 @@ public class UnifiedKnowledgeTool {
     private final McpOptimizationConfigProvider optimizationProvider;
     private final ObjectMapper objectMapper;
 
-    private GraphNodeRepository graphNodeRepository;
-
     public record SearchInput(String query, String topic) {}
 
     public record StatusInput() {}
@@ -84,11 +80,6 @@ public class UnifiedKnowledgeTool {
                 ? optimizationProvider
                 : McpOptimizationConfigProvider.ofDefaults();
         this.objectMapper = objectMapper;
-    }
-
-    @Autowired(required = false)
-    public void setGraphNodeRepository(GraphNodeRepository graphNodeRepository) {
-        this.graphNodeRepository = graphNodeRepository;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -398,13 +389,7 @@ public class UnifiedKnowledgeTool {
     }
 
     private long countByNodeType(String typeName) {
-        if (graphNodeRepository == null) return -1;
-        try {
-            return graphNodeRepository.countByNodeType(NodeLevel.valueOf(typeName));
-        } catch (Exception e) {
-            logger.debug("Could not count {} nodes: {}", typeName, e.getMessage());
-            return -1;
-        }
+        return -1;
     }
 
     private int resolveMaxDocs(McpOptimizationConfig cfg) {

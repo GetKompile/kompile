@@ -53,7 +53,7 @@ class HallucinationEvaluatorTest {
 
     @BeforeEach
     void setUp() {
-        properties = new EvaluationProperties();
+        properties = new EvaluationProperties(null);
         properties.getHallucination().setEnabled(true);
         properties.getHallucination().setThreshold(0.8);
         evaluator = new HallucinationEvaluator(chatClient, properties);

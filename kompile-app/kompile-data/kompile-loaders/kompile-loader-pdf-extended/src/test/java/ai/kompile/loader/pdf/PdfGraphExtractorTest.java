@@ -218,7 +218,8 @@ class PdfGraphExtractorTest {
         meta.put("fileName", "annual-report.pdf");
         meta.put("title", "Annual Report 2024");
         meta.put("author", "Jane Smith");
-        meta.put("producer", "Adobe Acrobat");
+        // A non-software producer (a real publisher/org) still becomes an ORGANIZATION.
+        meta.put("producer", "Contoso Publishing");
         meta.put("keywords", "finance, report, annual");
         meta.put("subject", "Corporate Finance");
         meta.put("pageCount", 42);
@@ -494,13 +495,14 @@ class PdfGraphExtractorTest {
         Map<String, Object> meta = new LinkedHashMap<>();
         meta.put("documentType", "PDF Document");
         meta.put("fileName", "report.pdf");
-        meta.put("producer", "Adobe PDF Library 15.0");
+        // A non-software producer (a real publisher/org) becomes an ORGANIZATION.
+        meta.put("producer", "Contoso Publishing");
         meta.put("source", "/tmp/report.pdf");
 
         ExtractionResult result = extractor.extract(doc(meta));
 
         ExtractedEntity org = singleEntityOfType(result, "ORGANIZATION");
-        assertEquals("Adobe PDF Library 15.0", org.name());
+        assertEquals("Contoso Publishing", org.name());
         assertEquals("producer", org.properties().get("source_field"));
         assertEquals(0.7, org.confidence(), 1e-9);
 
@@ -511,11 +513,32 @@ class PdfGraphExtractorTest {
     }
 
     @Test
+    void extract_softwareProducer_isNotMaterializedAsOrganization() {
+        // The PDF "Producer" is usually the generating software; it must not pollute the graph with a
+        // junk ORGANIZATION — it is retained only as a document property.
+        Map<String, Object> meta = new LinkedHashMap<>();
+        meta.put("documentType", "PDF Document");
+        meta.put("fileName", "report.pdf");
+        meta.put("producer", "Adobe PDF Library 15.0");   // looksLikeSoftware → no ORG
+        meta.put("source", "/tmp/report.pdf");
+
+        ExtractionResult result = extractor.extract(doc(meta));
+
+        assertTrue(entitiesOfType(result, "ORGANIZATION").isEmpty(),
+                "a software producer must not become a junk ORGANIZATION");
+        assertTrue(relationsOfType(result, "PRODUCED_BY").isEmpty(),
+                "no PRODUCED_BY relation for a software producer");
+        ExtractedEntity docEntity = singleEntityOfType(result, "PDF_DOCUMENT");
+        assertEquals("Adobe PDF Library 15.0", docEntity.properties().get("producer"),
+                "software producer retained as a document property for provenance");
+    }
+
+    @Test
     void extract_producerEntityId_isDeterministic() {
         Map<String, Object> meta = new LinkedHashMap<>();
         meta.put("documentType", "PDF Document");
         meta.put("fileName", "doc.pdf");
-        meta.put("producer", "iText 7.0");
+        meta.put("producer", "Contoso Publishing");   // non-software → ORGANIZATION
         meta.put("source", "/tmp/doc.pdf");
 
         ExtractionResult r1 = extractor.extract(doc(meta));
@@ -960,13 +983,13 @@ class PdfGraphExtractorTest {
         Map<String, Object> meta1 = new LinkedHashMap<>();
         meta1.put("documentType", "PDF Document");
         meta1.put("fileName", "doc1.pdf");
-        meta1.put("producer", "Adobe Acrobat");
+        meta1.put("producer", "Contoso Publishing");
         meta1.put("source", "/tmp/doc1.pdf");
 
         Map<String, Object> meta2 = new LinkedHashMap<>();
         meta2.put("documentType", "PDF Document");
         meta2.put("fileName", "doc2.pdf");
-        meta2.put("producer", "Adobe Acrobat");  // same producer
+        meta2.put("producer", "Contoso Publishing");  // same non-software producer
         meta2.put("source", "/tmp/doc2.pdf");
 
         ExtractionResult batch = extractor.extractBatch(List.of(doc(meta1), doc(meta2)));

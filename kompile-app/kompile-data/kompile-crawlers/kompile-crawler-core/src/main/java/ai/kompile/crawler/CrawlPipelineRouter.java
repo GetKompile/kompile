@@ -48,8 +48,8 @@ public class CrawlPipelineRouter implements ContentRouter {
 
     /**
      * Creates a router from a CrawlConfig without language detection.
-     * If the config has no pipelines defined, a synthetic default pipeline
-     * is created from the config's loaderName/chunkerName.
+     * If the config has no pipelines defined, a default pipeline
+     * is derived from the config's loaderName/chunkerName.
      */
     public CrawlPipelineRouter(CrawlConfig config) {
         this(config, null);

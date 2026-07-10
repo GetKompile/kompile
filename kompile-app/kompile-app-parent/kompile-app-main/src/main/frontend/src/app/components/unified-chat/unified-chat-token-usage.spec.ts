@@ -46,7 +46,8 @@ describe('UnifiedChatComponent - Token Usage', () => {
     ragServiceSpy = jasmine.createSpyObj('ConversationalRagService', ['getStatus', 'query']);
     agentChatServiceSpy = jasmine.createSpyObj('LocalAgentChatService', [
       'getStreamingContent', 'getStreamingComplete', 'getStreamingError',
-      'getChatStats', 'getSources', 'getModifiedFiles', 'sendMessage', 'cancelStreaming'
+      'getChatStats', 'getSources', 'getModifiedFiles', 'sendMessage', 'cancelStreaming',
+      'getCompaction'
     ]);
     agentServiceSpy = jasmine.createSpyObj('AgentService', ['getAgents', 'getAvailableAgents']);
     chatStorageServiceSpy = jasmine.createSpyObj('ChatStorageService', [
@@ -75,6 +76,7 @@ describe('UnifiedChatComponent - Token Usage', () => {
     agentChatServiceSpy.getChatStats.and.returnValue(new Subject<any>().asObservable());
     agentChatServiceSpy.getSources.and.returnValue(new Subject<any>().asObservable());
     agentChatServiceSpy.getModifiedFiles.and.returnValue(new Subject<any>().asObservable());
+    agentChatServiceSpy.getCompaction.and.returnValue(new Subject<any>().asObservable());
 
     await TestBed.configureTestingModule({
       imports: [

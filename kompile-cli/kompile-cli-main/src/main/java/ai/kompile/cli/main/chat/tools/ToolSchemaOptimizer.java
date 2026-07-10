@@ -112,16 +112,36 @@ public final class ToolSchemaOptimizer {
      * @return          new array with compressed schemas; never {@code null}
      */
     public static ArrayNode optimize(ArrayNode toolDefs, OptimizationLevel level) {
+        return optimize(toolDefs, level, Map.of());
+    }
+
+    /**
+     * Optimize with per-tool curated compact hints. At the COMPACT and AGGRESSIVE
+     * levels — which strip parameter descriptions and hard-truncate the tool
+     * description — a tool whose name appears in {@code compactHints} has its
+     * description replaced by the curated hint instead of being blind-truncated,
+     * so the compressed schema still tells an agent how to call the tool. Hints
+     * are keyed by tool name and ignored at NONE/MODERATE (where the full
+     * description and parameter docs are already present).
+     *
+     * @param toolDefs     array of tool definitions (OpenAI or MCP shape)
+     * @param level        desired optimization level
+     * @param compactHints tool-name → curated one-line hint; may be {@code null}/empty
+     * @return             new array with compressed schemas; never {@code null}
+     */
+    public static ArrayNode optimize(ArrayNode toolDefs, OptimizationLevel level,
+                                     Map<String, String> compactHints) {
         if (toolDefs == null) {
             return MAPPER.createArrayNode();
         }
+        Map<String, String> hints = (compactHints == null) ? Map.of() : compactHints;
         if (level == OptimizationLevel.NONE) {
             return toolDefs.deepCopy();
         }
 
         ArrayNode result = MAPPER.createArrayNode();
         for (JsonNode toolDef : toolDefs) {
-            result.add(optimizeSingleTool(toolDef, level));
+            result.add(optimizeSingleTool(toolDef, level, hints));
         }
         return result;
     }
@@ -182,14 +202,16 @@ public final class ToolSchemaOptimizer {
      * { "name": "...", "description": "...", "inputSchema": { ... } }
      * </pre>
      */
-    private static JsonNode optimizeSingleTool(JsonNode toolDef, OptimizationLevel level) {
+    private static JsonNode optimizeSingleTool(JsonNode toolDef, OptimizationLevel level,
+                                               Map<String, String> compactHints) {
         ObjectNode copy = toolDef.deepCopy();
 
         // Try OpenAI function-calling format first
         JsonNode functionNode = copy.get("function");
         if (functionNode != null && functionNode.isObject()) {
             ObjectNode function = (ObjectNode) functionNode;
-            optimizeDescriptionField(function, level);
+            optimizeDescriptionField(function, level,
+                    compactHintFor(compactHints, level, function.path("name").asText(null)));
             JsonNode parametersNode = function.get("parameters");
             if (parametersNode != null && parametersNode.isObject()) {
                 optimizeParametersSchema((ObjectNode) parametersNode, level);
@@ -199,7 +221,8 @@ public final class ToolSchemaOptimizer {
 
         // MCP tool format: name/description/inputSchema at top level
         if (copy.has("name")) {
-            optimizeDescriptionField(copy, level);
+            optimizeDescriptionField(copy, level,
+                    compactHintFor(compactHints, level, copy.path("name").asText(null)));
             JsonNode inputSchema = copy.get("inputSchema");
             if (inputSchema != null && inputSchema.isObject()) {
                 optimizeParametersSchema((ObjectNode) inputSchema, level);
@@ -211,13 +234,36 @@ public final class ToolSchemaOptimizer {
     }
 
     /**
+     * The curated compact hint to substitute for a tool's description, or {@code null} to
+     * keep the default truncation behavior. Only applies at the aggressive levels
+     * (COMPACT/AGGRESSIVE) that strip parameter descriptions; at NONE/MODERATE the full
+     * docs remain, so no hint is used.
+     */
+    private static String compactHintFor(Map<String, String> compactHints,
+                                         OptimizationLevel level, String toolName) {
+        if (toolName == null
+                || (level != OptimizationLevel.COMPACT && level != OptimizationLevel.AGGRESSIVE)) {
+            return null;
+        }
+        String hint = compactHints.get(toolName);
+        return (hint != null && !hint.isBlank()) ? hint : null;
+    }
+
+    /**
      * Truncate the {@code "description"} field on {@code node} according to
      * the given optimization level.  Operates in-place on the provided
      * {@link ObjectNode}.
      */
-    private static void optimizeDescriptionField(ObjectNode node, OptimizationLevel level) {
+    private static void optimizeDescriptionField(ObjectNode node, OptimizationLevel level,
+                                                 String compactHint) {
         JsonNode descNode = node.get("description");
         if (descNode == null || !descNode.isTextual()) {
+            return;
+        }
+        // A curated compact hint (COMPACT/AGGRESSIVE only) replaces blind truncation, so the
+        // compressed schema keeps the one line an agent needs to call the tool correctly.
+        if (compactHint != null) {
+            node.put("description", capHint(compactHint));
             return;
         }
         int maxLen = switch (level) {
@@ -235,6 +281,30 @@ public final class ToolSchemaOptimizer {
                 node.put("description", desc.substring(0, maxLen) + ELLIPSIS);
             }
         }
+    }
+
+    /**
+     * Upper bound on a curated compact hint, so a careless hint can't defeat compaction.
+     * Curated hints are meant to be one dense line; anything longer is trimmed at a word
+     * boundary. Larger than the blind COMPACT/AGGRESSIVE caps on purpose — the whole point
+     * of a hint is that a curated line carries more usable signal than a blind truncation.
+     */
+    private static final int HINT_MAX = 200;
+
+    private static String capHint(String hint) {
+        String h = hint.strip();
+        if (h.length() <= HINT_MAX) {
+            return h;
+        }
+        int cut = h.lastIndexOf(' ', HINT_MAX);
+        if (cut < HINT_MAX / 2) {
+            cut = HINT_MAX;
+        }
+        return h.substring(0, cut) + ELLIPSIS;
+    }
+
+    private static boolean preserveLargeEnum(String propertyName) {
+        return "action".equals(propertyName) || "fn".equals(propertyName) || "operation".equals(propertyName);
     }
 
     /**
@@ -272,15 +342,16 @@ public final class ToolSchemaOptimizer {
                     // Remove parameter descriptions entirely.
                     propObj.remove("description");
                 } else {
-                    // MODERATE: just truncate the description.
-                    optimizeDescriptionField(propObj, level);
+                    // MODERATE: just truncate the description (param descriptions get no hint).
+                    optimizeDescriptionField(propObj, level, null);
                 }
 
                 if (level == OptimizationLevel.COMPACT) {
-                    // COMPACT: additional reductions
-                    // Strip enum values with more than 5 entries (name is enough)
+                    // COMPACT: additional reductions. Keep action/function selector enums even
+                    // when large; without them action-heavy tools become guesswork after compacting.
                     JsonNode enumNode = propObj.get("enum");
-                    if (enumNode != null && enumNode.isArray() && enumNode.size() > 5) {
+                    if (enumNode != null && enumNode.isArray() && enumNode.size() > 5
+                            && !preserveLargeEnum(entry.getKey())) {
                         propObj.remove("enum");
                     }
                     // Collapse nested items schemas to just type

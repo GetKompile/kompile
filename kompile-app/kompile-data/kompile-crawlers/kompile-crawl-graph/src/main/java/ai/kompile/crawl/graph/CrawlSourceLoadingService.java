@@ -257,9 +257,9 @@ class CrawlSourceLoadingService {
                 .metadata(sourceMetadata(source, job))
                 .build();
 
-        // For WEB_CRAWL and DIRECTORY sources, prefer the crawler path — these need
-        // recursive traversal (link following / directory descent) that only the
-        // crawler provides. Document loaders would only handle a single URL or file.
+        // For WEB_CRAWL, DIRECTORY, and FILE sources, prefer the crawler path when
+        // available. The crawler path is where unified crawl records discovered items
+        // and applies the content-hash incremental skip/purge logic before loading.
         if (isCrawlPreferredSourceType(source.getSourceType())) {
             if (crawlerService != null && isSourceTypeCrawlable(source.getSourceType())) {
                 return crawlSource(source, job, progress);
@@ -554,8 +554,11 @@ class CrawlSourceLoadingService {
                     }
                 }
                 if (!loaderFound) {
-                    log.debug("[Job {}] Skipping unsupported file '{}' (type={}, path={})",
-                            job.getJobId(), shortName, desc.getType(), itemUrl);
+                    String details = "type=" + desc.getType() + ", path=" + itemUrl;
+                    log.warn("[Job {}] Skipping unsupported discovered file '{}' ({})",
+                            job.getJobId(), shortName, details);
+                    documentTracker.recordEvent(job, "LOADING", "WARN",
+                            "Skipping unsupported discovered file", shortName + " - " + details);
                 }
             } catch (Throwable e) {
                 String errorMsg = "Failed to load '" + shortName + "': " + e.getClass().getSimpleName() + ": " + e.getMessage();
@@ -665,7 +668,8 @@ class CrawlSourceLoadingService {
 
     boolean isCrawlPreferredSourceType(DocumentSourceDescriptor.SourceType type) {
         return type == DocumentSourceDescriptor.SourceType.WEB_CRAWL
-                || type == DocumentSourceDescriptor.SourceType.DIRECTORY;
+                || type == DocumentSourceDescriptor.SourceType.DIRECTORY
+                || type == DocumentSourceDescriptor.SourceType.FILE;
     }
 
     boolean isSourceTypeCrawlable(DocumentSourceDescriptor.SourceType type) {

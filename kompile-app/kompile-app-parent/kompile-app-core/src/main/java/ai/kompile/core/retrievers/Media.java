@@ -16,6 +16,9 @@
 
 package ai.kompile.core.retrievers;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
 import lombok.ToString;
@@ -29,6 +32,7 @@ import java.util.Objects;
 @Getter
 @EqualsAndHashCode
 @ToString
+@JsonIgnoreProperties(ignoreUnknown = true)
 public class Media {
     
     /**
@@ -43,12 +47,14 @@ public class Media {
     
     /**
      * Creates a new Media instance.
-     * 
+     *
      * @param mediaType the media type of the content
      * @param data the binary data content
      * @throws IllegalArgumentException if mediaType or data is null
      */
-    public Media(MediaType mediaType, byte[] data) {
+    @JsonCreator
+    public Media(@JsonProperty("mediaType") MediaType mediaType,
+                 @JsonProperty("data") byte[] data) {
         if (mediaType == null) {
             throw new IllegalArgumentException("mediaType cannot be null");
         }

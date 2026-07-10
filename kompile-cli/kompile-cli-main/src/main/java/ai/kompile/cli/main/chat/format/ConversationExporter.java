@@ -18,6 +18,7 @@ package ai.kompile.cli.main.chat.format;
 
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.ChatHistory;
+import ai.kompile.utils.HashUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -30,8 +31,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
@@ -739,9 +738,8 @@ public class ConversationExporter {
         // Also write to history.jsonl for discovery
         writeCodexHistory(sessionId, turns);
 
-        // Codex resume filters sessions by cwd by default. Use --all to disable cwd
-        // filtering so the specific session ID is found regardless of working directory.
-        String resumeCommand = "codex resume --all " + sessionId;
+        // UUID resumes do not need the broad --all picker path.
+        String resumeCommand = "codex resume " + sessionId;
         return new ExportResult(sessionId, "codex", sessionFile, resumeCommand, workingDirectory);
     }
 
@@ -982,40 +980,8 @@ public class ConversationExporter {
         long msgTimestamp = now;
         long lastTimestamp = now;
 
-        // Pre-scan: if first turn is assistant, inject a synthetic user message
-        // so every assistant message has a valid parentID (required by OpenCode Zod schema)
-        boolean needsSyntheticUser = !turns.isEmpty() && "assistant".equals(turns.get(0).role());
-        if (needsSyntheticUser) {
-            String syntheticUserId = "msg_" + UUID.randomUUID().toString().replace("-", "").substring(0, 26);
-            ObjectNode syntheticMsg = MAPPER.createObjectNode();
-            syntheticMsg.put("role", "user");
-            ObjectNode synthInfo = syntheticMsg.putObject("info");
-            synthInfo.put("id", syntheticUserId);
-            synthInfo.put("sessionID", sessId);
-            synthInfo.put("role", "user");
-            synthInfo.put("agent", "general");
-            ObjectNode synthModel = synthInfo.putObject("model");
-            synthModel.put("providerID", effectiveProviderId);
-            synthModel.put("modelID", effectiveModelId);
-            synthInfo.putObject("summary").putArray("diffs");
-            ObjectNode synthTools = synthInfo.putObject("tools");
-            synthTools.put("task", false);
-            synthInfo.putObject("time").put("created", msgTimestamp);
-            ArrayNode synthParts = syntheticMsg.putArray("parts");
-            ObjectNode synthPart = MAPPER.createObjectNode();
-            synthPart.put("type", "text");
-            synthPart.put("text", "[Imported conversation — original user prompt not available]");
-            synthPart.put("id", "prt_" + UUID.randomUUID().toString().replace("-", "").substring(0, 26));
-            synthPart.put("sessionID", sessId);
-            synthPart.put("messageID", syntheticUserId);
-            ObjectNode synthPartTime = synthPart.putObject("time");
-            synthPartTime.put("start", msgTimestamp);
-            synthPartTime.put("end", msgTimestamp + 1000);
-            synthParts.add(synthPart);
-            messagesArray.add(syntheticMsg);
-            lastUserMsgId = syntheticUserId;
-            lastMsgId = syntheticUserId;
-            msgTimestamp += 10000;
+        if (!turns.isEmpty() && "assistant".equals(turns.get(0).role())) {
+            throw new IllegalArgumentException("Cannot export assistant-first conversation to OpenCode format without an original user turn");
         }
 
         for (ChatHistory.Turn turn : turns) {
@@ -1249,45 +1215,8 @@ public class ConversationExporter {
             long msgTimestamp = now;
             long lastTimestamp = now;
 
-            // Pre-scan: if first turn is assistant, inject a synthetic user message
-            boolean needsSyntheticUser = !turns.isEmpty() && "assistant".equals(turns.get(0).role());
-            if (needsSyntheticUser) {
-                String syntheticUserId = "msg_" + UUID.randomUUID().toString().replace("-", "").substring(0, 26);
-                Path msgDir = storageBase.resolve("message").resolve(sessId);
-                Files.createDirectories(msgDir);
-                Path msgFile = msgDir.resolve(syntheticUserId + ".json");
-
-                ObjectNode synthMsgJson = MAPPER.createObjectNode();
-                synthMsgJson.put("id", syntheticUserId);
-                synthMsgJson.put("sessionID", sessId);
-                synthMsgJson.put("role", "user");
-                synthMsgJson.put("agent", "general");
-                ObjectNode synthModel = synthMsgJson.putObject("model");
-                synthModel.put("providerID", providerId);
-                synthModel.put("modelID", modelId);
-                synthMsgJson.putObject("summary").putArray("diffs");
-                synthMsgJson.putObject("tools").put("task", false);
-                synthMsgJson.putObject("time").put("created", msgTimestamp);
-                Files.writeString(msgFile, MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(synthMsgJson), StandardCharsets.UTF_8);
-
-                String synthPartId = "prt_" + UUID.randomUUID().toString().replace("-", "").substring(0, 26);
-                Path partDir = storageBase.resolve("part").resolve(syntheticUserId);
-                Files.createDirectories(partDir);
-                Path partFile = partDir.resolve(synthPartId + ".json");
-                ObjectNode synthPartJson = MAPPER.createObjectNode();
-                synthPartJson.put("id", synthPartId);
-                synthPartJson.put("sessionID", sessId);
-                synthPartJson.put("messageID", syntheticUserId);
-                synthPartJson.put("type", "text");
-                synthPartJson.put("text", "[Imported conversation — original user prompt not available]");
-                ObjectNode synthPartTime = synthPartJson.putObject("time");
-                synthPartTime.put("start", msgTimestamp);
-                synthPartTime.put("end", msgTimestamp + 1000);
-                Files.writeString(partFile, MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(synthPartJson), StandardCharsets.UTF_8);
-
-                lastUserMsgId = syntheticUserId;
-                lastMsgId = syntheticUserId;
-                msgTimestamp += 10000;
+            if (!turns.isEmpty() && "assistant".equals(turns.get(0).role())) {
+                throw new IllegalArgumentException("Cannot export assistant-first conversation to OpenCode storage without an original user turn");
             }
 
             for (ChatHistory.Turn turn : turns) {
@@ -1520,17 +1449,7 @@ public class ConversationExporter {
     }
 
     private static String sha256Hex(String value) throws IOException {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] bytes = digest.digest(value.getBytes(StandardCharsets.UTF_8));
-            StringBuilder sb = new StringBuilder(bytes.length * 2);
-            for (byte b : bytes) {
-                sb.append(String.format("%02x", b & 0xff));
-            }
-            return sb.toString();
-        } catch (NoSuchAlgorithmException e) {
-            throw new IOException("SHA-256 is not available", e);
-        }
+        return HashUtils.sha256Hex(value);
     }
 
     /**

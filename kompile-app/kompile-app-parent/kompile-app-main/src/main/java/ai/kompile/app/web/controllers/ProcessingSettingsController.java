@@ -883,69 +883,9 @@ public class ProcessingSettingsController {
     @PostMapping("/graph-optimization/optimize-and-save")
     public ResponseEntity<Map<String, Object>> optimizeAndSaveModel(@RequestBody(required = false) Map<String, String> request) {
         Map<String, Object> response = new LinkedHashMap<>();
-
-        if (embeddingModel == null) {
-            response.put("success", false);
-            response.put("error", "Embedding model not available");
-            return ResponseEntity.status(503).body(response);
-        }
-
-        if (!embeddingModel.isInitialized()) {
-            response.put("success", false);
-            response.put("error", "Embedding model not initialized");
-            return ResponseEntity.status(503).body(response);
-        }
-
-        String modelId = embeddingModel.getActiveModelId();
-        logger.info("Starting graph optimization for model: {}", modelId);
-
-        try {
-            // Get the encoder - in subprocess mode this returns null
-            Object encoderObj = null;
-            try {
-                encoderObj = embeddingModel.getEncoder();
-            } catch (Exception encoderEx) {
-                logger.warn("getEncoder() threw an exception: {}", encoderEx.getMessage());
-            }
-            if (encoderObj == null || !(encoderObj instanceof SameDiffEncoder<?>)) {
-                response.put("success", false);
-                response.put("error", "Graph optimization not available - encoder runs in subprocess mode");
-                return ResponseEntity.status(400).body(response);
-            }
-            SameDiffEncoder<?> encoder = (SameDiffEncoder<?>) encoderObj;
-
-            // Save optimized model to separate directory
-            String homeDir = System.getProperty("user.home");
-            java.nio.file.Path modelsDir = java.nio.file.Paths.get(homeDir, ".kompile", "models", "optimized");
-            java.nio.file.Files.createDirectories(modelsDir);
-            java.nio.file.Path optimizedPath = modelsDir.resolve(modelId + "-optimized.fb");
-
-            long startTime = System.currentTimeMillis();
-            encoder.saveOptimized(optimizedPath);
-            long elapsed = System.currentTimeMillis() - startTime;
-
-            response.put("success", true);
-            response.put("originalModel", modelId);
-            response.put("optimizedModelPath", optimizedPath.toString());
-            response.put("optimizationTimeMs", elapsed);
-            response.put("message", String.format("Model optimized and saved in %dms.", elapsed));
-            response.put("nextSteps", new String[]{
-                    "1. Copy vocab.txt to the same directory as the optimized model",
-                    "2. Register the optimized model in the model registry",
-                    "3. Switch to model ID '" + modelId + "-optimized' to use it"
-            });
-
-            logger.info("Graph optimization complete for {}: saved to {} in {}ms",
-                    modelId, optimizedPath, elapsed);
-
-            return ResponseEntity.ok(response);
-
-        } catch (Exception e) {
-            logger.error("Failed to optimize model {}", modelId, e);
-            response.put("success", false);
-            response.put("error", e.getMessage());
-            response.put("modelId", modelId);
-            return ResponseEntity.status(500).body(response);
-        }
+        response.put("success", false);
+        response.put("error",
+                "Graph optimization is disabled in the main app process; run optimization through a managed subprocess path.");
+        return ResponseEntity.status(501).body(response);
     }
 }

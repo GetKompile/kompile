@@ -221,19 +221,11 @@
         <div class="stage-header">
           <mat-icon>hub</mat-icon>
           <h4>Knowledge Graph (Entity Extraction)</h4>
-          <span class="thread-count" *ngIf="graphConfig.enabled">Enabled</span>
-          <span class="thread-count" *ngIf="!graphConfig.enabled">Disabled</span>
+          <span class="thread-count">Mandatory</span>
           <mat-spinner *ngIf="graphConfigSaving" diameter="16"></mat-spinner>
         </div>
         <div class="stage-options">
-          <mat-slide-toggle
-            [checked]="graphConfig.enabled || false"
-            (change)="toggleGraphExtraction()"
-            [disabled]="graphConfigSaving"
-            matTooltip="Extract entities and relationships from documents to build a knowledge graph">
-            Enable entity extraction
-          </mat-slide-toggle>
-          <ng-container *ngIf="graphConfig.enabled">
+          <ng-container>
             <mat-form-field appearance="outline">
               <mat-label>Extraction Batch Size</mat-label>
               <input matInput type="number" [value]="graphConfig.batchSize || 10"
@@ -261,7 +253,7 @@
         </div>
 
         <!-- Entity Extraction Model Settings -->
-        <ng-container *ngIf="graphConfig.enabled">
+        <ng-container>
           <div class="model-config-section" style="margin-top: 16px; padding-top: 12px; border-top: 1px solid rgba(0,0,0,0.08);">
             <div class="stage-header">
               <mat-icon>psychology</mat-icon>
@@ -335,7 +327,7 @@
         </ng-container>
 
         <!-- Advanced Entity Extraction Settings -->
-        <ng-container *ngIf="graphConfig.enabled">
+        <ng-container>
           <div class="stage-options" style="margin-top: 12px;">
             <mat-form-field appearance="outline">
               <mat-label>Max Entities Per Chunk</mat-label>
@@ -426,7 +418,7 @@
           </div>
         </ng-container>
 
-        <div class="graph-info" *ngIf="graphConfig.enabled">
+        <div class="graph-info">
           <mat-icon>info</mat-icon>
           <span>
             Entity extraction will analyze indexed documents using LLM to extract entities (people, organizations,

@@ -15,6 +15,7 @@
  */
 package ai.kompile.knowledgegraph.persistence;
 
+import ai.kompile.graph.reasoning.learning.MebnWeightSerializer;
 import ai.kompile.graph.reasoning.learning.WeightBackupInfo;
 import ai.kompile.knowledgegraph.confidence.KbConfig;
 import ai.kompile.knowledgegraph.confidence.KbConfigManager;
@@ -30,9 +31,12 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * Service layer for weight-model session management: backup, reset (reinit), restore, and
@@ -172,14 +176,14 @@ public class WeightSessionService {
                         int count = 0;
                         try {
                             String json = Files.readString(p, StandardCharsets.UTF_8);
-                            count = ai.kompile.graph.reasoning.learning.MebnWeightSerializer
+                            count = MebnWeightSerializer
                                     .parseStrengths(json).size();
                         } catch (IOException ignored) {
                             // keep count=0
                         }
                         return new WeightBackupInfo(ts, "mebn:" + factSheetId, ts, 0, count);
                     })
-                    .sorted(java.util.Comparator.comparing(WeightBackupInfo::backupId).reversed())
+                    .sorted(Comparator.comparing(WeightBackupInfo::backupId).reversed())
                     .toList();
             return result;
         } catch (IOException e) {
@@ -227,7 +231,7 @@ public class WeightSessionService {
         }
         if (!existing.isEmpty()) {
             // Build reset map — same keys, all set to MEBN_DEFAULT_STRENGTH
-            Map<String, Double> reset = new java.util.LinkedHashMap<>();
+            Map<String, Double> reset = new LinkedHashMap<>();
             for (String key : existing.keySet()) {
                 reset.put(key, MEBN_DEFAULT_STRENGTH);
             }
@@ -296,8 +300,8 @@ public class WeightSessionService {
             List<Path> backups = stream
                     .filter(Files::isRegularFile)
                     .filter(p -> p.getFileName().toString().startsWith("mebn-weights.bak."))
-                    .sorted(java.util.Comparator.comparing(p -> p.getFileName().toString()))
-                    .collect(java.util.stream.Collectors.toList());
+                    .sorted(Comparator.comparing(p -> p.getFileName().toString()))
+                    .collect(Collectors.toList());
             while (backups.size() > 10) {
                 Files.deleteIfExists(backups.remove(0));
             }

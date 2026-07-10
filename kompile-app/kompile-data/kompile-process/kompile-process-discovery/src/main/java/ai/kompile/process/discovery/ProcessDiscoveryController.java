@@ -16,12 +16,17 @@
 
 package ai.kompile.process.discovery;
 
+import ai.kompile.process.discovery.mining.ProcessCalibrationService;
+import ai.kompile.process.discovery.mining.trace.ProcessReasoningTraceStore;
 import ai.kompile.process.workflow.ProcessDefinition;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -37,6 +42,7 @@ public class ProcessDiscoveryController {
 
     private final ProcessDiscoveryService discoveryService;
     private ProcessSuggestionStore suggestionStore;
+    private ProcessReasoningTraceStore reasoningTraceStore;
 
     @Autowired
     public ProcessDiscoveryController(ProcessDiscoveryService discoveryService) {
@@ -46,6 +52,20 @@ public class ProcessDiscoveryController {
     @Autowired(required = false)
     public void setSuggestionStore(ProcessSuggestionStore suggestionStore) {
         this.suggestionStore = suggestionStore;
+    }
+
+    @Autowired(required = false)
+    public void setReasoningTraceStore(ProcessReasoningTraceStore reasoningTraceStore) {
+        this.reasoningTraceStore = reasoningTraceStore;
+    }
+
+    /** Optional: accept/dismiss decisions on mined suggestions (re)fit the miner's calibrator. */
+    private ProcessCalibrationService calibrationService;
+
+    @Autowired(required = false)
+    public void setCalibrationService(
+            ProcessCalibrationService calibrationService) {
+        this.calibrationService = calibrationService;
     }
 
     /**
@@ -266,7 +286,8 @@ public class ProcessDiscoveryController {
     @GetMapping("/suggestions")
     public ResponseEntity<Map<String, Object>> listSuggestions(
             @RequestParam(required = false) Long factSheetId,
-            @RequestParam(required = false, defaultValue = "false") boolean pendingOnly) {
+            @RequestParam(required = false, defaultValue = "false") boolean pendingOnly,
+            @RequestParam(required = false, defaultValue = "false") boolean includeSuperseded) {
         if (suggestionStore == null) {
             return ResponseEntity.ok(Map.of("count", 0, "suggestions", List.of()));
         }
@@ -279,10 +300,24 @@ public class ProcessDiscoveryController {
         } else {
             results = suggestionStore.listAll();
         }
+        // Superseded generations stay stored (lineage — mark, never delete) but only the heads
+        // list by default; pass includeSuperseded=true to walk a process's history.
+        if (!includeSuperseded) {
+            results = results.stream().filter(s -> s.getSupersededAt() == null).toList();
+        }
+
+        // Best-first: the learned acceptance likelihood (when the re-ranker has trained on the
+        // user's accept/dismiss history) outranks the fused confidence.
+        List<ProcessSuggestion> ranked = new ArrayList<>(results);
+        ranked.sort(Comparator
+                .comparingInt((ProcessSuggestion s) -> s.getReasoningRank() != null
+                        ? s.getReasoningRank() : Integer.MAX_VALUE)
+                .thenComparing(Comparator.comparingDouble((ProcessSuggestion s) ->
+                        s.getLearnedScore() != null ? s.getLearnedScore() : s.getConfidence()).reversed()));
 
         Map<String, Object> response = new LinkedHashMap<>();
-        response.put("count", results.size());
-        response.put("suggestions", results);
+        response.put("count", ranked.size());
+        response.put("suggestions", ranked);
         return ResponseEntity.ok(response);
     }
 
@@ -297,6 +332,21 @@ public class ProcessDiscoveryController {
 
         Optional<ProcessSuggestion> suggestion = suggestionStore.get(id);
         return suggestion.map(ResponseEntity::ok)
+                .orElseGet(() -> ResponseEntity.notFound().build());
+    }
+
+    /**
+     * Get the walkable reasoning trace that explains a stored mined suggestion.
+     */
+    @GetMapping(value = "/suggestions/{id}/trace", produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<String> getSuggestionTrace(@PathVariable String id) {
+        if (reasoningTraceStore == null) {
+            return ResponseEntity.notFound().build();
+        }
+        return reasoningTraceStore.get(id)
+                .map(trace -> ResponseEntity.ok()
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .body(trace.toJson()))
                 .orElseGet(() -> ResponseEntity.notFound().build());
     }
 
@@ -316,6 +366,10 @@ public class ProcessDiscoveryController {
 
         ProcessDefinition definition = discoveryService.acceptSuggestion(suggestion.get());
         suggestionStore.markAccepted(id, definition.getId());
+        // An accepted mined suggestion is a positive calibration label.
+        if (calibrationService != null) {
+            calibrationService.recordOutcome(suggestion.get(), true);
+        }
         return ResponseEntity.ok(definition);
     }
 
@@ -326,6 +380,14 @@ public class ProcessDiscoveryController {
     public ResponseEntity<Void> deleteSuggestion(@PathVariable String id) {
         if (suggestionStore == null) {
             return ResponseEntity.notFound().build();
+        }
+
+        // Dismissing a still-pending mined suggestion is a negative calibration label
+        // (deleting an already-accepted one is cleanup, not feedback).
+        if (calibrationService != null) {
+            suggestionStore.get(id)
+                    .filter(s -> !Boolean.TRUE.equals(s.getAccepted()))
+                    .ifPresent(s -> calibrationService.recordOutcome(s, false));
         }
 
         suggestionStore.delete(id);

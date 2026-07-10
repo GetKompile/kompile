@@ -23,6 +23,7 @@ buildNumber.properties
 .idea/
 *.iml
 *.json
+!kompile-app/kompile-app-parent/kompile-app-core/src/main/resources/cli-agents.json
 
 # Frontend build artifacts
 node_modules/

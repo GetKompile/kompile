@@ -25,6 +25,8 @@ import ai.kompile.core.crawl.graph.VectorIndexConfig;
 import ai.kompile.core.embeddings.EmbeddingModel;
 import ai.kompile.core.embeddings.VectorStore;
 import ai.kompile.core.graphrag.GraphConstants;
+import ai.kompile.core.language.LanguageMetadata;
+import ai.kompile.core.language.LanguageSupport;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
@@ -125,6 +127,17 @@ class VectorIndexingHelper {
                 vectorStore.switchIndexPath(config.getCollectionName());
             }
 
+            EmbeddingModel embeddingModel = primaryEmbeddingModel();
+            List<Document> indexableDocuments = filterDocumentsByEmbeddingLanguage(documents, embeddingModel, job);
+            if (indexableDocuments.isEmpty()) {
+                updateProgress(job, "EMBEDDING", "No language-compatible chunks to index",
+                        documents.size() + " chunk(s) skipped");
+                pipelineStepTracker.completePipelineStep(job, "VECTOR_INDEXING", 0,
+                        "No language-compatible chunks to index");
+                return;
+            }
+            documents = indexableDocuments;
+
             int batchSize = resolveEmbeddingBatchSize(config, job);
             int totalBatches = (int) Math.ceil(documents.size() / (double) batchSize);
             job.getChunksQueuedForEmbedding().set(documents.size());
@@ -173,9 +186,9 @@ class VectorIndexingHelper {
                 int end = Math.min(i + adaptiveBatchSize, documents.size());
                 List<Document> batch = new ArrayList<>(documents.subList(i, end));
                 int batchNumber = job.getVectorBatchesCompleted().get() + 1;
-                String batchLabel = "Embedding/indexing batch " + batchNumber + "/" + totalBatches;
+                String batchLabel = formatVectorBatchLabel("Embedding/indexing batch", batchNumber, totalBatches);
                 job.getCurrentBatchSize().set(batch.size());
-                job.getCurrentBatchStep().set("EMBEDDING_BATCH " + batchNumber + "/" + totalBatches);
+                job.getCurrentBatchStep().set(formatVectorBatchLabel("EMBEDDING_BATCH", batchNumber, totalBatches));
                 updateProgress(job, "EMBEDDING",
                         batchLabel,
                         batch.size() + " chunk(s), effectiveBatchSize=" + adaptiveBatchSize);
@@ -439,7 +452,7 @@ class VectorIndexingHelper {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("Interrupted waiting for vector store write", ie);
         }
-        String batchLabel = "Vector indexed in batch " + batchNumber + "/" + totalBatches;
+        String batchLabel = formatVectorBatchLabel("Vector indexed in batch", batchNumber, totalBatches);
         String failMsg = indexed < batch.size()
                 ? "Vector store accepted " + indexed + "/" + batch.size() + " document(s) for this batch"
                 : null;
@@ -456,7 +469,11 @@ class VectorIndexingHelper {
         markBatchVectorIndexedInCrossIndex(batch, indexed);
         job.getChunksEmbedded().addAndGet(indexed);
         job.getDocumentsIndexed().addAndGet(indexed);
-        job.getVectorBatchesCompleted().incrementAndGet();
+        job.getVectorBatchesCompleted().updateAndGet(current -> {
+            int next = current + 1;
+            int total = job.getVectorBatchesTotal().get();
+            return total > 0 ? Math.min(next, total) : next;
+        });
         if (embeddingSizer != null) {
             long elapsedMs = (System.nanoTime() - batchStartNs) / 1_000_000L;
             memoryMonitor.updateMemorySnapshot(job);
@@ -464,10 +481,55 @@ class VectorIndexingHelper {
                     embeddingPressure(job));
             embeddingSizer.publishStats(job);
         }
-        String indexedLabel = "Indexed vector batch " + batchNumber + "/" + totalBatches;
+        String indexedLabel = formatVectorBatchLabel("Indexed vector batch", batchNumber, totalBatches);
         pipelineStepTracker.incrementPipelineStep(job, "VECTOR_INDEXING", indexed, 1, indexedLabel);
         updateProgress(job, "INDEXING", indexedLabel, indexed + " chunk(s)");
         batch.clear();
+    }
+
+    List<Document> filterDocumentsByEmbeddingLanguage(List<Document> documents,
+                                                       EmbeddingModel embeddingModel,
+                                                       UnifiedCrawlJob job) {
+        if (documents == null || documents.isEmpty() || embeddingModel == null) {
+            return documents == null ? List.of() : documents;
+        }
+        List<String> supportedLanguages = embeddingModel.getSupportedLanguages();
+        if (LanguageSupport.isUniversal(supportedLanguages)) {
+            return documents;
+        }
+
+        List<Document> supported = new ArrayList<>(documents.size());
+        Map<String, Integer> skippedByLanguage = new LinkedHashMap<>();
+        for (Document document : documents) {
+            String language = LanguageMetadata.canonicalLanguage(document.getMetadata());
+            if (embeddingModel.supportsLanguage(language)) {
+                supported.add(document);
+                continue;
+            }
+
+            String normalized = LanguageSupport.normalizeLanguageCode(language);
+            skippedByLanguage.merge(normalized != null ? normalized : LanguageSupport.UNDETERMINED_LANGUAGE, 1, Integer::sum);
+            document.getMetadata().put("embeddingSkipped", true);
+            document.getMetadata().put("embeddingSkipReason", "unsupported_language");
+            document.getMetadata().put("embeddingSupportedLanguages", String.join(",", supportedLanguages));
+            documentTracker.recordDocumentVectorProgress(job, document, "SKIPPED", 0, 0,
+                    "Embedding skipped: unsupported language",
+                    "language=" + normalized + ", supported=" + supportedLanguages, true);
+        }
+
+        int skipped = documents.size() - supported.size();
+        if (skipped > 0) {
+            String detail = "skipped=" + skipped
+                    + ", indexed=" + supported.size()
+                    + ", model=" + embeddingModel.getModelIdentifier()
+                    + ", supported=" + supportedLanguages
+                    + ", languages=" + skippedByLanguage;
+            log.warn("[Job {}] Skipped {} chunk(s) because embedding model {} supports {} but detected languages were {}",
+                    job.getJobId(), skipped, embeddingModel.getModelIdentifier(), supportedLanguages, skippedByLanguage);
+            documentTracker.recordEvent(job, "EMBEDDING", "WARN",
+                    "Skipped unsupported-language chunks", detail);
+        }
+        return supported;
     }
 
     String indexableDocumentText(Document document) {
@@ -494,6 +556,16 @@ class VectorIndexingHelper {
             magnitude += (double) value * value;
         }
         return Double.isFinite(magnitude) && magnitude > 1e-18;
+    }
+
+    static String formatVectorBatchLabel(String prefix, int batchNumber, int totalBatches) {
+        int safeBatch = Math.max(1, batchNumber);
+        if (totalBatches <= 0) {
+            return prefix + " " + safeBatch;
+        }
+        int displayBatch = Math.min(safeBatch, totalBatches);
+        String label = prefix + " " + displayBatch + "/" + totalBatches;
+        return safeBatch > totalBatches ? label + " (retry split)" : label;
     }
 
     int resolveEmbeddingBatchSize(VectorIndexConfig config, UnifiedCrawlJob job) {

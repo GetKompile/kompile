@@ -101,50 +101,18 @@ public class ModelManagementTool {
             return Map.of("status", "error", "error", "No embedding models available");
         }
 
-        try {
-            EmbeddingModel selectedModel = null;
-
-            if (input.modelName() != null && !input.modelName().isEmpty()) {
-                for (EmbeddingModel model : embeddingModels) {
-                    if (model.getModelName().equalsIgnoreCase(input.modelName())) {
-                        selectedModel = model;
-                        break;
-                    }
-                }
-                if (selectedModel == null) {
-                    return Map.of("status", "error", "error", "Model not found: " + input.modelName(),
-                            "availableModels", embeddingModels.stream().map(EmbeddingModel::getModelName).toList());
-                }
-            } else {
-                selectedModel = embeddingModels.get(0);
+        if (input.modelName() != null && !input.modelName().isEmpty()) {
+            boolean found = embeddingModels.stream()
+                    .anyMatch(model -> model.getModelName().equalsIgnoreCase(input.modelName()));
+            if (!found) {
+                return Map.of("status", "error", "error", "Model not found: " + input.modelName(),
+                        "availableModels", embeddingModels.stream().map(EmbeddingModel::getModelName).toList());
             }
-
-            long startTime = System.currentTimeMillis();
-            var embedding = selectedModel.embed(input.text());
-            long endTime = System.currentTimeMillis();
-
-            Map<String, Object> result = new LinkedHashMap<>();
-            result.put("status", "success");
-            result.put("modelName", selectedModel.getModelName());
-            result.put("inputTextLength", input.text().length());
-            result.put("embeddingDimensions", embedding != null ? embedding.length() : 0);
-            result.put("executionTimeMs", endTime - startTime);
-
-            // Include first few embedding values as sample
-            if (embedding != null && embedding.length() > 0) {
-                double[] sample = new double[Math.min(5, (int) embedding.length())];
-                for (int i = 0; i < sample.length; i++) {
-                    sample[i] = embedding.getDouble(i);
-                }
-                result.put("embeddingSample", sample);
-            }
-
-            return result;
-
-        } catch (Exception e) {
-            logger.error("Error testing embedding: {}", e.getMessage(), e);
-            return Map.of("status", "error", "error", "Failed to test embedding: " + e.getMessage());
         }
+
+        return Map.of(
+                "status", "error",
+                "error", "Direct main-process embedding tests are disabled; use a managed embedding subprocess endpoint");
     }
 
     /**

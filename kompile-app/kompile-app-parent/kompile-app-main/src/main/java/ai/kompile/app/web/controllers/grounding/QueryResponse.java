@@ -25,8 +25,15 @@ public record QueryResponse(
      * One binding row returned by a conjunctive query.
      */
     public record BindingRow(
+            /** Raw binding values keyed by variable name. */
             Map<String, String> variables,
             double confidence,
-            List<String> matchedAtoms
+            List<String> matchedAtoms,
+            /**
+             * Human-readable display values parallel to {@link #variables} — entity/node titles
+             * resolved server-side. Present when humanization is available; empty map otherwise.
+             * Clients should prefer these over raw variable values when rendering to users.
+             */
+            Map<String, String> displayVariables
     ) {}
 }

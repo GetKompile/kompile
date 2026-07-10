@@ -21,6 +21,7 @@ import ai.kompile.cli.common.registry.InstanceRegistry;
 import picocli.CommandLine;
 
 import java.io.File;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Callable;
@@ -69,7 +70,7 @@ public class AppStartCommand implements Callable<Integer> {
         long pid = process.pid();
         InstanceRegistry.register(InstanceInfo.builder()
                 .name(name).type("app").port(port).pid(pid).jarPath(jar.getAbsolutePath())
-                .startedAt(java.time.Instant.now()).build());
+                .startedAt(Instant.now()).build());
 
         System.out.println("Started Kompile app '" + name + "' on port " + port + " (PID: " + pid + ")");
         return 0;

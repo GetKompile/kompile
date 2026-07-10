@@ -18,8 +18,10 @@ package ai.kompile.graph.reasoning.embedding.learn;
 import ai.kompile.graph.reasoning.model.GraphEntity;
 import ai.kompile.graph.reasoning.model.MutableReasoningGraph;
 import ai.kompile.graph.reasoning.model.ReasoningGraph;
+import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * Strategy interface for learning node embeddings from a {@link ReasoningGraph}.
@@ -79,5 +81,27 @@ public interface EmbeddingLearner {
                     .build();
             graph.addEntity(updated);
         }
+    }
+
+    /**
+     * Train embeddings into a named {@link UnifiedGraph} vector layer without replacing the
+     * graph's primary entity embeddings. This keeps sentence embeddings, imported KGE vectors,
+     * and graph-structure embeddings independently selectable by downstream reasoners.
+     *
+     * @param graph     graph to train over and enrich
+     * @param layerName non-blank destination vector-layer name
+     * @param config    hyper-parameters controlling the training run
+     * @return the learned table that was written to the layer
+     */
+    default EmbeddingTable learnIntoLayer(UnifiedGraph graph, String layerName,
+                                          EmbeddingConfig config) {
+        Objects.requireNonNull(graph, "graph");
+        if (layerName == null || layerName.isBlank()) {
+            throw new IllegalArgumentException("layerName must be non-blank");
+        }
+        EmbeddingTable table = learn(graph, config);
+        table.asMap().forEach((entityId, vector) ->
+                graph.putEntityVector(layerName, entityId, vector));
+        return table;
     }
 }

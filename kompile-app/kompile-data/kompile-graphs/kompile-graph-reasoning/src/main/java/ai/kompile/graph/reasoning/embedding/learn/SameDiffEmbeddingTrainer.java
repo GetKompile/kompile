@@ -29,6 +29,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
@@ -439,7 +440,7 @@ public final class SameDiffEmbeddingTrainer {
      */
     private double executeOn(SameDiff graph, long[] centerLong, long[] posLong, long[] negLong) {
         // Bind placeholder values.
-        Map<String, INDArray> placeholders = new java.util.HashMap<>(4);
+        Map<String, INDArray> placeholders = new HashMap<>(4);
         placeholders.put(CENTER_IDX, Nd4j.createFromArray(centerLong));
         placeholders.put(POS_IDX,    Nd4j.createFromArray(posLong));
         placeholders.put(NEG_IDX,    Nd4j.createFromArray(negLong));

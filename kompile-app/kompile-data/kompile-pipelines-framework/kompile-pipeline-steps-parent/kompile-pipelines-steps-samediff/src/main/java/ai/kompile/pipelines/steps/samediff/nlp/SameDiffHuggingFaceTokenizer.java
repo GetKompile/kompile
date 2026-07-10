@@ -23,6 +23,7 @@ import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
 
 import java.io.File;
+import java.io.IOException;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -69,7 +70,7 @@ public class SameDiffHuggingFaceTokenizer implements SameDiffLLMTokenizer {
 
         File tokenizerFile = resolveTokenizerFile(vocabUri);
         if (!tokenizerFile.exists()) {
-            throw new java.io.IOException("Tokenizer file not found: " + tokenizerFile.getAbsolutePath());
+            throw new IOException("Tokenizer file not found: " + tokenizerFile.getAbsolutePath());
         }
 
         if (tokenizerFile.isDirectory()) {

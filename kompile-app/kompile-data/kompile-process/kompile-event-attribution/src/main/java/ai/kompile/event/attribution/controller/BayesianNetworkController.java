@@ -131,15 +131,20 @@ public class BayesianNetworkController {
     }
 
     /**
-     * Quick MEBN query from a single target node.
+     * Quick MEBN query from a single target node, optionally scoped to a fact sheet.
+     *
+     * <p>When {@code factSheetId} is provided, nodes discovered during BFS are filtered
+     * to those belonging to that fact sheet, preventing cross-sheet contamination.
+     * Omit {@code factSheetId} (or pass 0) to use the global/default graph.</p>
      */
     @GetMapping("/mebn/query")
     public ResponseEntity<BayesianInferenceResult> queryMebnFromNode(
             @RequestParam String nodeId,
             @RequestParam(defaultValue = "3") int maxDepth,
-            @RequestParam(defaultValue = "100") int maxNodes) {
+            @RequestParam(defaultValue = "100") int maxNodes,
+            @RequestParam(required = false) Long factSheetId) {
         BayesianInferenceResult result = bayesianService.queryMebnFromKg(
-                List.of(nodeId), Map.of(), maxDepth, maxNodes);
+                List.of(nodeId), Map.of(), maxDepth, maxNodes, null, factSheetId);
         return ResponseEntity.ok(result);
     }
 
@@ -166,10 +171,11 @@ public class BayesianNetworkController {
     public ResponseEntity<BayesianInferenceResult> mebnStructure(
             @RequestParam(required = false) String nodeId,
             @RequestParam(defaultValue = "3") int maxDepth,
-            @RequestParam(defaultValue = "100") int maxNodes) {
+            @RequestParam(defaultValue = "100") int maxNodes,
+            @RequestParam(required = false) Long factSheetId) {
         List<String> seeds = (nodeId == null || nodeId.isBlank()) ? List.of() : List.of(nodeId);
         BayesianInferenceResult result = bayesianService.queryMebnFromKg(
-                seeds, Map.of(), maxDepth, maxNodes);
+                seeds, Map.of(), maxDepth, maxNodes, null, factSheetId);
         return ResponseEntity.ok(result);
     }
 

@@ -23,11 +23,21 @@ import org.nd4j.linalg.api.ndarray.INDArray;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.Queue;
+import java.util.Set;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * Service interface for knowledge graph operations.
@@ -106,7 +116,7 @@ public interface KnowledgeGraphService {
         if (specs == null || specs.isEmpty()) {
             return List.of();
         }
-        List<GraphNode> created = new java.util.ArrayList<>(specs.size());
+        List<GraphNode> created = new ArrayList<>(specs.size());
         for (SnippetSpec s : specs) {
             GraphNode parentNode = GraphNode.builder()
                     .nodeId("doc_" + s.parentExternalId())
@@ -141,8 +151,8 @@ public interface KnowledgeGraphService {
         GraphNode parent = parentOpt.get();
 
         // Enrich metadata with table-specific fields
-        Map<String, Object> tableMeta = metadata != null ? new java.util.LinkedHashMap<>(metadata)
-                                                         : new java.util.LinkedHashMap<>();
+        Map<String, Object> tableMeta = metadata != null ? new LinkedHashMap<>(metadata)
+                                                         : new LinkedHashMap<>();
         tableMeta.put("rowCount", rowCount);
         tableMeta.put("columnCount", columnCount);
         if (headers != null && !headers.isEmpty()) {
@@ -216,7 +226,7 @@ public interface KnowledgeGraphService {
         if (specs == null || specs.isEmpty()) {
             return List.of();
         }
-        List<GraphNode> created = new java.util.ArrayList<>(specs.size());
+        List<GraphNode> created = new ArrayList<>(specs.size());
         for (NodeSpec s : specs) {
             created.add(createNode(s.nodeType(), s.externalId(), s.title(),
                     s.description(), s.metadata(), factSheetId));
@@ -240,6 +250,35 @@ public interface KnowledgeGraphService {
      */
     default Optional<GraphNode> getNodeByExternalId(String externalId, NodeLevel nodeType, Long factSheetId) {
         return getNodeByExternalId(externalId, nodeType);
+    }
+
+    /**
+     * One external-id lookup row for {@link #getNodesByExternalIds(List)}. A {@code null}
+     * factSheetId means the unscoped lookup.
+     */
+    record ExternalNodeLookup(String externalId, NodeLevel nodeType, Long factSheetId) {
+    }
+
+    /**
+     * Batch-resolve nodes by external id. Rows that resolve to nothing are omitted (the result
+     * order follows the input order of the rows that DID resolve). Implementations backed by a
+     * remote store should override this with a single round-trip.
+     */
+    default List<GraphNode> getNodesByExternalIds(List<ExternalNodeLookup> lookups) {
+        if (lookups == null || lookups.isEmpty()) {
+            return List.of();
+        }
+        List<GraphNode> result = new ArrayList<>(lookups.size());
+        for (ExternalNodeLookup lookup : lookups) {
+            if (lookup == null || lookup.externalId() == null) {
+                continue;
+            }
+            (lookup.factSheetId() != null
+                    ? getNodeByExternalId(lookup.externalId(), lookup.nodeType(), lookup.factSheetId())
+                    : getNodeByExternalId(lookup.externalId(), lookup.nodeType()))
+                    .ifPresent(result::add);
+        }
+        return result;
     }
 
     /**
@@ -269,11 +308,18 @@ public interface KnowledgeGraphService {
      * {@code getAllSources()}. Fact sheets with no SOURCE node (e.g. only manually-added entities)
      * are not enumerated — acceptable for scheduled maintenance, which acts on crawled structure.
      */
-    default java.util.Set<Long> findFactSheetIds() {
+    default Set<Long> findFactSheetIds() {
         return getAllSources().stream()
                 .map(GraphNode::getFactSheetId)
-                .filter(java.util.Objects::nonNull)
-                .collect(java.util.stream.Collectors.toSet());
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+    }
+
+    /**
+     * Ordered fact-sheet enumeration for callers that mine or hydrate every available graph.
+     */
+    default List<Long> getFactSheetIdsWithGraphs() {
+        return findFactSheetIds().stream().sorted().toList();
     }
 
     /**
@@ -281,7 +327,7 @@ public interface KnowledgeGraphService {
      * Default implementation combines results from every NodeLevel.
      */
     default List<GraphNode> getAllNodes(int limit) {
-        java.util.List<GraphNode> result = new java.util.ArrayList<>();
+        List<GraphNode> result = new ArrayList<>();
         for (NodeLevel level : NodeLevel.values()) {
             List<GraphNode> byType = getNodesByType(level, limit);
             result.addAll(byType);
@@ -368,7 +414,7 @@ public interface KnowledgeGraphService {
     /**
      * Delete multiple edges in a single batch operation
      */
-    default void deleteEdgesBulk(java.util.List<String> edgeIds) {
+    default void deleteEdgesBulk(List<String> edgeIds) {
         if (edgeIds != null) {
             edgeIds.forEach(this::deleteEdge);
         }
@@ -396,8 +442,24 @@ public interface KnowledgeGraphService {
      * skipped rather than creating a duplicate.  Duplicate checking is intentionally coarse
      * (same source+target pair) to match the behaviour of the normalizer redirect step.</p>
      */
-    record EdgeSpec(String sourceNodeId, String targetNodeId, EdgeType edgeType,
-                    Double weight, String description) {}
+    record EdgeSpec(
+            String sourceNodeId,
+            String targetNodeId,
+            EdgeType edgeType,
+            Double weight,
+            String description,
+            String label,
+            String metaJson,
+            EdgeProvenance provenance,
+            Long factSheetId) {
+
+        /** Backward-compatible minimal edge specification. */
+        public EdgeSpec(String sourceNodeId, String targetNodeId, EdgeType edgeType,
+                        Double weight, String description) {
+            this(sourceNodeId, targetNodeId, edgeType, weight, description,
+                    null, null, null, null);
+        }
+    }
 
     /**
      * Create many edges in one call, skipping pairs that already have an edge between them.
@@ -417,7 +479,10 @@ public interface KnowledgeGraphService {
         for (EdgeSpec s : specs) {
             try {
                 if (!edgeExists(s.sourceNodeId(), s.targetNodeId())) {
-                    createEdge(s.sourceNodeId(), s.targetNodeId(), s.edgeType(), s.weight(), s.description());
+                    createEdgeWithMetadata(
+                            s.sourceNodeId(), s.targetNodeId(), s.edgeType(), s.weight(),
+                            s.label(), s.description(), s.metaJson(), s.provenance(),
+                            s.factSheetId());
                     created++;
                 }
             } catch (Exception e) { /* best-effort — skip failures */ }
@@ -433,9 +498,9 @@ public interface KnowledgeGraphService {
                                    String sourcePath, String fileName,
                                    String contentPreview, Map<String, Object> docMeta,
                                    Long factSheetId) {
-        Map<String, Object> sourceMeta = docMeta == null ? Map.of() : new java.util.HashMap<>(docMeta);
+        Map<String, Object> sourceMeta = docMeta == null ? Map.of() : new HashMap<>(docMeta);
         GraphNode sourceNode = createOrUpdateSourceNode(sourceExternalId, jobId, sourceType, sourcePath, sourceMeta);
-        Map<String, Object> documentMeta = docMeta == null ? Map.of() : new java.util.HashMap<>(docMeta);
+        Map<String, Object> documentMeta = docMeta == null ? Map.of() : new HashMap<>(docMeta);
         if (contentPreview != null) documentMeta.put("contentPreview", contentPreview);
         return createDocumentNode(sourceNode, sourcePath, fileName != null ? fileName : sourcePath, documentMeta);
     }
@@ -486,9 +551,9 @@ public interface KnowledgeGraphService {
         }
 
         // BFS with parent tracking
-        java.util.Map<String, String> parentMap = new java.util.LinkedHashMap<>();
-        java.util.Queue<String> queue = new java.util.ArrayDeque<>();
-        java.util.Set<String> visited = new java.util.HashSet<>();
+        Map<String, String> parentMap = new LinkedHashMap<>();
+        Queue<String> queue = new ArrayDeque<>();
+        Set<String> visited = new HashSet<>();
 
         queue.add(fromNodeId);
         visited.add(fromNodeId);
@@ -509,7 +574,7 @@ public interface KnowledgeGraphService {
                     parentMap.put(neighbor, current);
                     if (neighbor.equals(toNodeId)) {
                         // Reconstruct path
-                        java.util.LinkedList<GraphNode> path = new java.util.LinkedList<>();
+                        LinkedList<GraphNode> path = new LinkedList<>();
                         String step = toNodeId;
                         while (step != null) {
                             getNode(step).ifPresent(path::addFirst);
@@ -697,13 +762,14 @@ public interface KnowledgeGraphService {
      * @Primary store actually holds, rather than only the JPA {@code kgEmbedding} column:
      * the matrix/vector store returns its per-node vectors (the text embeddings used for
      * similarity search); a JPA-backed store may return its KGE columns. Only nodes that
-     * have an embedding are included. Default: empty (store has none / not supported).</p>
+     * have an embedding are included. Returned arrays are caller-owned and should be closed
+     * after use. Default: empty (store has none / not supported).</p>
      *
      * @param factSheetId fact-sheet scope; {@code null} means all nodes
      * @return map of nodeId → embedding (never {@code null})
      */
     default Map<String, INDArray> exportNodeEmbeddings(Long factSheetId) {
-        return java.util.Map.of();
+        return Map.of();
     }
 
     /**
@@ -717,6 +783,59 @@ public interface KnowledgeGraphService {
      */
     default int applyNodeEmbeddings(Map<String, INDArray> embeddingsByNodeId) {
         return 0;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // GENERAL NODE BATCH UPDATE
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * One node update. Metadata is merged with the existing metadata rather than replacing it.
+     */
+    record NodeUpdate(String nodeId, String title, String description,
+                      Map<String, Object> additionalMetadata) {
+        public NodeUpdate {
+            additionalMetadata = additionalMetadata == null
+                    ? null
+                    : Map.copyOf(additionalMetadata);
+        }
+
+        /** Compatibility name used by graph post-processing code and JSON-facing callers. */
+        public Map<String, Object> metadata() {
+            return additionalMetadata;
+        }
+    }
+
+    /**
+     * Apply node updates in a store-neutral batch contract.
+     * Stores with native batching may override this method.
+     */
+    default int updateNodesBatch(List<NodeUpdate> updates) {
+        if (updates == null || updates.isEmpty()) {
+            return 0;
+        }
+        int count = 0;
+        for (NodeUpdate update : updates) {
+            if (update == null || update.nodeId() == null) {
+                continue;
+            }
+            try {
+                Map<String, Object> merged = null;
+                if (update.additionalMetadata() != null) {
+                    Optional<GraphNode> existing = getNode(update.nodeId());
+                    if (existing.isEmpty()) {
+                        continue;
+                    }
+                    merged = new HashMap<>(existing.get().getMetadata());
+                    merged.putAll(update.additionalMetadata());
+                }
+                updateNode(update.nodeId(), update.title(), update.description(), merged);
+                count++;
+            } catch (Exception ignored) {
+                // Best-effort default; transactional stores can provide an atomic override.
+            }
+        }
+        return count;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -771,8 +890,8 @@ public interface KnowledgeGraphService {
                 if (nodeOpt.isEmpty()) continue;
                 GraphNode node = nodeOpt.get();
                 // Merge: preserve existing metadata, overwrite only the new KGE keys
-                java.util.Map<String, Object> merged = node.getMetadata() != null
-                        ? new java.util.HashMap<>(node.getMetadata()) : new java.util.HashMap<>();
+                Map<String, Object> merged = node.getMetadata() != null
+                        ? new HashMap<>(node.getMetadata()) : new HashMap<>();
                 merged.putAll(u.additionalMetadata());
                 // Null title+description → MatrixKnowledgeGraphService takes the
                 // no-re-embed (updateNodeMetadata) code path
@@ -809,7 +928,7 @@ public interface KnowledgeGraphService {
      * Default: empty list.
      */
     default List<GraphNode> findNodesWithKgEmbedding(Long factSheetId) {
-        return java.util.List.of();
+        return List.of();
     }
 
     /**
@@ -826,7 +945,7 @@ public interface KnowledgeGraphService {
      * from EdgeType name → embedding. Default: empty map.
      */
     default Map<String, INDArray> getEdgeTypeKgEmbeddings(Long factSheetId) {
-        return java.util.Map.of();
+        return Map.of();
     }
 
     /**
@@ -880,7 +999,7 @@ public interface KnowledgeGraphService {
      * without an explicit set. Kept to the ENTITY layer so the existing auto-prune policy
      * (OrphanPruner) is unchanged; broader maintenance/health scans pass an explicit level set.
      */
-    java.util.Set<NodeLevel> DEFAULT_ORPHAN_LEVELS = java.util.Set.of(NodeLevel.ENTITY);
+    Set<NodeLevel> DEFAULT_ORPHAN_LEVELS = Set.of(NodeLevel.ENTITY);
 
     /**
      * Return the nodeId strings of degree-0 ENTITY nodes (no edges connect them) within the
@@ -906,15 +1025,15 @@ public interface KnowledgeGraphService {
      * @param levels      node levels to consider; {@code null}/empty falls back to {@link #DEFAULT_ORPHAN_LEVELS}
      * @return list of orphan node UUIDs (never {@code null})
      */
-    default List<String> findOrphanNodeIds(Long factSheetId, java.util.Set<NodeLevel> levels) {
-        java.util.Set<NodeLevel> wanted =
+    default List<String> findOrphanNodeIds(Long factSheetId, Set<NodeLevel> levels) {
+        Set<NodeLevel> wanted =
                 (levels == null || levels.isEmpty()) ? DEFAULT_ORPHAN_LEVELS : levels;
         return getNodesInFactSheet(factSheetId).stream()
                 .filter(n -> n.getNodeType() != null && wanted.contains(n.getNodeType()))
                 .filter(n -> !Boolean.TRUE.equals(n.getStale()))
                 .filter(n -> getEdgesForNode(n.getNodeId()).isEmpty())
                 .map(ai.kompile.knowledgegraph.domain.GraphNode::getNodeId)
-                .collect(java.util.stream.Collectors.toList());
+                .collect(Collectors.toList());
     }
 
     /**
@@ -931,7 +1050,7 @@ public interface KnowledgeGraphService {
                 .filter(n -> !Boolean.TRUE.equals(n.getStale()))
                 .filter(n -> n.getConfidence() != null && n.getConfidence() < minConfidence)
                 .map(ai.kompile.knowledgegraph.domain.GraphNode::getNodeId)
-                .collect(java.util.stream.Collectors.toList());
+                .collect(Collectors.toList());
     }
 
     /**
@@ -948,7 +1067,7 @@ public interface KnowledgeGraphService {
                 .filter(e -> !Boolean.TRUE.equals(e.getStale()))
                 .filter(e -> e.getConfidence() != null && e.getConfidence() < minConfidence)
                 .map(ai.kompile.knowledgegraph.domain.GraphEdge::getEdgeId)
-                .collect(java.util.stream.Collectors.toList());
+                .collect(Collectors.toList());
     }
 
     /**
@@ -973,7 +1092,7 @@ public interface KnowledgeGraphService {
         return getEdgesInFactSheet(factSheetId).stream()
                 .filter(e -> !Boolean.TRUE.equals(e.getStale()))
                 .map(ai.kompile.knowledgegraph.domain.GraphEdge::getEdgeId)
-                .collect(java.util.stream.Collectors.toList());
+                .collect(Collectors.toList());
     }
 
     /**
@@ -1006,7 +1125,7 @@ public interface KnowledgeGraphService {
         if (nodeIds == null || nodeIds.isEmpty()) {
             return GraphPruneResult.empty(dryRun);
         }
-        List<String> ids = new java.util.ArrayList<>(nodeIds);
+        List<String> ids = new ArrayList<>(nodeIds);
         if (dryRun) {
             return GraphPruneResult.ofSoftDelete(ids, true);
         }
@@ -1015,7 +1134,7 @@ public interface KnowledgeGraphService {
             for (String nodeId : ids) {
                 try {
                     updateNode(nodeId, null, null,
-                            java.util.Map.of("_stale", true,
+                            Map.of("_stale", true,
                                     "_staleAt", java.time.LocalDateTime.now().toString()));
                 } catch (Exception ignored) { /* best-effort */ }
             }
@@ -1052,7 +1171,7 @@ public interface KnowledgeGraphService {
         if (edgeIds == null || edgeIds.isEmpty()) {
             return GraphPruneResult.empty(dryRun);
         }
-        List<String> ids = new java.util.ArrayList<>(edgeIds);
+        List<String> ids = new ArrayList<>(edgeIds);
         if (dryRun) {
             return GraphPruneResult.ofSoftDelete(ids, true);
         }
@@ -1126,8 +1245,8 @@ public interface KnowledgeGraphService {
         return updateNode(node.getNodeId(), node.getTitle(),
                 node.getDescription(),
                 node.getMetadataJson() != null
-                        ? java.util.Map.of("_raw", node.getMetadataJson())
-                        : java.util.Map.of());
+                        ? Map.of("_raw", node.getMetadataJson())
+                        : Map.of());
     }
 
     /**
@@ -1159,7 +1278,7 @@ public interface KnowledgeGraphService {
         if (type == null) return raw;
         return raw.stream()
                 .filter(n -> n.getNodeType() == type)
-                .collect(java.util.stream.Collectors.toList());
+                .collect(Collectors.toList());
     }
 
     /**
@@ -1178,11 +1297,11 @@ public interface KnowledgeGraphService {
     default List<GraphEdge> getStrongEdgesByTypeInFactSheet(Long factSheetId, EdgeType edgeType,
                                                              Double minWeight, int limit) {
         List<GraphEdge> all = getEdgesByTypeInFactSheet(factSheetId, edgeType);
-        java.util.stream.Stream<GraphEdge> stream = all.stream();
+        Stream<GraphEdge> stream = all.stream();
         if (minWeight != null) {
             stream = stream.filter(e -> e.getWeight() != null && e.getWeight() >= minWeight);
         }
-        return stream.limit(limit).collect(java.util.stream.Collectors.toList());
+        return stream.limit(limit).collect(Collectors.toList());
     }
 
     /**
@@ -1192,11 +1311,11 @@ public interface KnowledgeGraphService {
      */
     default List<GraphEdge> getStrongEdgesByType(EdgeType edgeType, Double minWeight, int limit) {
         List<GraphEdge> all = searchEdges(null, edgeType, limit * 2);
-        java.util.stream.Stream<GraphEdge> stream = all.stream();
+        Stream<GraphEdge> stream = all.stream();
         if (minWeight != null) {
             stream = stream.filter(e -> e.getWeight() != null && e.getWeight() >= minWeight);
         }
-        return stream.limit(limit).collect(java.util.stream.Collectors.toList());
+        return stream.limit(limit).collect(Collectors.toList());
     }
 
     /**
@@ -1282,4 +1401,23 @@ public interface KnowledgeGraphService {
         return Map.of("nodes", List.of(), "edges", List.of(), "links", List.of(),
                 "statistics", Map.of("totalAvailableNodes", 0));
     }
+
+    /**
+     * Batch-update arbitrary metadata on existing edges without touching their topology.
+     * Used by GNN/link-prediction overlays to attach scores post-hoc.
+     *
+     * @param updates list of edge-id + metadata pairs
+     * @return count of edges successfully updated
+     */
+    default int updateEdgeMetadataBatch(List<EdgeMetadataUpdate> updates) {
+        return 0;
+    }
+
+    /**
+     * Payload for {@link #updateEdgeMetadataBatch}: identifies an edge and carries the
+     * key/value metadata to merge into it. The {@code edgeId} format is
+     * {@code sourceNodeId::targetNodeId::edgeType}, which matches the compound id produced
+     * by the matrix store.
+     */
+    record EdgeMetadataUpdate(String edgeId, Map<String, Object> additionalMetadata) {}
 }

@@ -74,6 +74,16 @@ public class TrainingJobHistoryController {
     }
 
     /**
+     * Get the deploy/export artifact manifest emitted by a completed training job.
+     */
+    @GetMapping("/{taskId}/artifact")
+    public ResponseEntity<Map<String, Object>> getJobArtifactManifest(@PathVariable String taskId) {
+        return historyService.getArtifactManifest(taskId)
+                .map(ResponseEntity::ok)
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    /**
      * Get jobs filtered by status.
      */
     @GetMapping("/status/{status}")

@@ -403,7 +403,7 @@ public class StatusBar {
      * Request an immediate redraw (called after state changes).
      */
     public void requestRedraw() {
-        if (enabled && visible && renderer.isAnsiEnabled()) {
+        if (canDraw()) {
             redraw();
         }
     }
@@ -417,15 +417,17 @@ public class StatusBar {
      * Thread-safe: uses drawLock to prevent interleaved ANSI sequences.
      */
     public void redraw() {
-        if (!enabled || !visible || !renderer.isAnsiEnabled()) return;
+        if (!canDraw()) return;
 
         synchronized (drawLock) {
             PrintStream out = System.out;
             List<MenuItem> items = this.menuItems;
             String msg = this.menuMessage;
-            int menuRows = items.size() + (msg.isEmpty() ? 0 : 1);
+            int availableMenuRows = Math.max(0, terminalHeight - STATUS_HEIGHT);
+            int requestedMenuRows = items.size() + (msg.isEmpty() ? 0 : 1);
+            int menuRows = Math.min(requestedMenuRows, availableMenuRows);
             int totalRows = STATUS_HEIGHT + menuRows;
-            int sepRow = terminalHeight - totalRows + 1;
+            int sepRow = Math.max(1, terminalHeight - totalRows + 1);
             int contentRow = sepRow + 1;
 
             // Save cursor position
@@ -470,6 +472,12 @@ public class StatusBar {
             out.print(RESTORE_CURSOR);
             out.flush();
         }
+    }
+
+    private boolean canDraw() {
+        return enabled && visible && renderer.isAnsiEnabled()
+                && terminalHeight >= STATUS_HEIGHT
+                && terminalWidth > 0;
     }
 
     /**
@@ -528,10 +536,13 @@ public class StatusBar {
         }
 
         // --- Active subagents ---
-        if (!activeSubagents.isEmpty()) {
+        List<SubagentEntry> visibleSubagents = activeSubagents.stream()
+                .filter(sa -> !isIdleStatus(sa.getStatus()))
+                .toList();
+        if (!visibleSubagents.isEmpty()) {
             String spinner = MAGENTA + SPINNER_FRAMES[spinnerFrame % SPINNER_FRAMES.length] + RESET;
-            if (activeSubagents.size() == 1) {
-                SubagentEntry sa = activeSubagents.get(0);
+            if (visibleSubagents.size() == 1) {
+                SubagentEntry sa = visibleSubagents.get(0);
                 String desc = sa.getType();
                 if (sa.getDescription() != null && !sa.getDescription().isEmpty()) {
                     desc = StringUtils.truncateEllipsis(sa.getDescription(), 20);
@@ -547,7 +558,7 @@ public class StatusBar {
                 }
             } else {
                 segments.add(spinner + " ▸ "
-                        + MAGENTA + activeSubagents.size() + " subagents" + RESET);
+                        + MAGENTA + visibleSubagents.size() + " subagents" + RESET);
             }
         }
 
@@ -592,7 +603,7 @@ public class StatusBar {
         String joined = String.join(sep, segments);
 
         // Pad to terminal width with inverse-video background
-        int visibleLen = stripAnsi(joined).length();
+        int visibleLen = AnsiConstants.stripAnsi(joined).length();
         int padding = Math.max(0, terminalWidth - visibleLen - 2); // -2 for leading space
 
         return INVERSE + " " + joined + " ".repeat(padding + 1) + RESET;
@@ -633,6 +644,7 @@ public class StatusBar {
                         .append("\n");
                 body.append(DIM + "    ").append(formatProcessDetails(p)).append(RESET)
                         .append("\n");
+                appendProcessOutputTail(body, p, "    ");
             }
         }
         if (!commandProcesses.isEmpty()) {
@@ -647,6 +659,7 @@ public class StatusBar {
                         .append("\n");
                 body.append(DIM + "    ").append(formatProcessDetails(p)).append(RESET)
                         .append("\n");
+                appendProcessOutputTail(body, p, "    ");
             }
         }
 
@@ -767,7 +780,32 @@ public class StatusBar {
     private boolean hasActiveItems() {
         return !processManager.listRunning().isEmpty()
                 || !taskManager.getActiveTasks().isEmpty()
-                || !activeSubagents.isEmpty();
+                || activeSubagents.stream().anyMatch(sa -> !isIdleStatus(sa.getStatus()));
+    }
+
+    private static boolean isIdleStatus(String status) {
+        return status != null && status.trim().equalsIgnoreCase("idle");
+    }
+
+    private static void appendProcessOutputTail(StringBuilder body, ProcessEntry p, String indent) {
+        List<String> tail = processOutputTail(p, 3);
+        if (tail.isEmpty()) return;
+        body.append(DIM).append(indent).append("recent output:").append(RESET).append("\n");
+        for (String line : tail) {
+            body.append(DIM)
+                    .append(indent).append("  ")
+                    .append(StringUtils.truncateEllipsis(AnsiConstants.stripAnsi(line), 96))
+                    .append(RESET).append("\n");
+        }
+    }
+
+    private static List<String> processOutputTail(ProcessEntry p, int maxLines) {
+        if (p == null || p.getOutputFile() == null || maxLines <= 0) return List.of();
+        try {
+            return BackgroundProcessManager.tailOutputFile(p.getOutputFile(), maxLines).lines();
+        } catch (Exception ignored) {
+            return List.of();
+        }
     }
 
     private static String formatProcessDetails(ProcessEntry p) {
@@ -784,9 +822,5 @@ public class StatusBar {
             }
         });
         return String.join("  ", parts);
-    }
-
-    private static String stripAnsi(String text) {
-        return AnsiConstants.stripAnsi(text);
     }
 }

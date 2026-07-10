@@ -5,8 +5,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
+import java.io.FileOutputStream;
 import java.lang.reflect.Method;
 import java.nio.file.Path;
+import java.util.jar.JarEntry;
+import java.util.jar.JarOutputStream;
+import java.util.jar.Manifest;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -70,5 +74,82 @@ public class ComponentInstallerTest {
                 + (url.endsWith(".tar.gz") ? ".tar.gz" : "");
         assertTrue(tempFileName.endsWith(".tar.gz"),
                 "Temp file should end with .tar.gz: " + tempFileName);
+    }
+
+    @Test
+    public void installFromLocalJarRejectsSilentBackendDowngrade(@TempDir Path tempDir) throws Exception {
+        ComponentRegistry registry = registryAt(tempDir);
+        ComponentInstaller installer = new ComponentInstaller(registry);
+        File cudaJar = createJar(tempDir.resolve("cuda.jar"), "BOOT-INF/lib/nd4j-cuda-12.9-1.0.0-SNAPSHOT.jar");
+        File cpuJar = createJar(tempDir.resolve("cpu.jar"), "BOOT-INF/lib/nd4j-native-1.0.0-SNAPSHOT.jar");
+
+        installer.installFromLocalJar(ComponentRegistry.KOMPILE_APP_MAIN, cudaJar);
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> installer.installFromLocalJar(ComponentRegistry.KOMPILE_APP_MAIN, cpuJar));
+        assertTrue(error.getMessage().contains("Refusing to replace installed kompile-app-main CUDA backend with CPU backend"));
+
+        assertEquals(ComponentInstaller.InstalledBackend.CUDA,
+                ComponentInstaller.detectNd4jBackend(registry.getJarPath(ComponentRegistry.KOMPILE_APP_MAIN)));
+    }
+
+    @Test
+    public void installFromLocalJarAllowsExplicitBackendChange(@TempDir Path tempDir) throws Exception {
+        ComponentRegistry registry = registryAt(tempDir);
+        ComponentInstaller installer = new ComponentInstaller(registry);
+        File cudaJar = createJar(tempDir.resolve("cuda.jar"), "BOOT-INF/lib/nd4j-cuda-12.9-1.0.0-SNAPSHOT.jar");
+        File cpuJar = createJar(tempDir.resolve("cpu.jar"), "BOOT-INF/lib/nd4j-native-1.0.0-SNAPSHOT.jar");
+
+        installer.installFromLocalJar(ComponentRegistry.KOMPILE_APP_MAIN, cudaJar);
+        installer.setAllowBackendChange(true);
+        installer.installFromLocalJar(ComponentRegistry.KOMPILE_APP_MAIN, cpuJar);
+
+        assertEquals(ComponentInstaller.InstalledBackend.CPU,
+                ComponentInstaller.detectNd4jBackend(registry.getJarPath(ComponentRegistry.KOMPILE_APP_MAIN)));
+    }
+
+    @Test
+    public void installFromLocalJarRejectsThinAppJar(@TempDir Path tempDir) throws Exception {
+        ComponentRegistry registry = registryAt(tempDir);
+        ComponentInstaller installer = new ComponentInstaller(registry);
+        File thinJar = createJar(tempDir.resolve("thin.jar"), "ai/kompile/app/MainApplication.class");
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> installer.installFromLocalJar(ComponentRegistry.KOMPILE_APP_MAIN, thinJar));
+        assertTrue(error.getMessage().contains("without an ND4J backend"));
+    }
+
+    @Test
+    public void installFromLocalJarClearsBootExtractionCache(@TempDir Path tempDir) throws Exception {
+        ComponentRegistry registry = registryAt(tempDir);
+        ComponentInstaller installer = new ComponentInstaller(registry);
+        File cpuJar = createJar(tempDir.resolve("cpu.jar"), "BOOT-INF/lib/nd4j-native-1.0.0-SNAPSHOT.jar");
+        File installDir = registry.getInstallDirectory(ComponentRegistry.KOMPILE_APP_MAIN);
+        File cacheDir = new File(installDir, ".boot-inf-extracted");
+        assertTrue(cacheDir.mkdirs());
+        assertTrue(new File(cacheDir, "stale.classpath").createNewFile());
+
+        installer.installFromLocalJar(ComponentRegistry.KOMPILE_APP_MAIN, cpuJar);
+
+        assertFalse(cacheDir.exists(), "install should clear stale Spring Boot extraction cache");
+    }
+
+    private static ComponentRegistry registryAt(Path tempDir) {
+        ComponentRegistry registry = new ComponentRegistry();
+        registry.setInstallBaseDir(tempDir.toFile());
+        registry.setVersion("0.1.0-SNAPSHOT");
+        return registry;
+    }
+
+    private static File createJar(Path path, String... entries) throws Exception {
+        Manifest manifest = new Manifest();
+        manifest.getMainAttributes().putValue("Manifest-Version", "1.0");
+        try (JarOutputStream out = new JarOutputStream(new FileOutputStream(path.toFile()), manifest)) {
+            for (String entry : entries) {
+                out.putNextEntry(new JarEntry(entry));
+                out.closeEntry();
+            }
+        }
+        return path.toFile();
     }
 }

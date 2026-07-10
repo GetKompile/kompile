@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.chat.harness;
 
 import ai.kompile.cli.main.chat.agent.PersistentAgentProcess;
+import ai.kompile.cli.main.chat.agent.PersistentJudgeProcessPool;
 import ai.kompile.cli.main.chat.agent.SubprocessAgentRunner;
 import ai.kompile.core.agent.CliAgentRegistry;
 
@@ -47,8 +48,8 @@ public class CliJudgeBackend implements JudgeBackend {
     private final String agentName;
     private final String agentBinary;
 
-    /** Persistent subprocess via shared infrastructure. */
-    private volatile PersistentAgentProcess persistentProcess;
+    /** Lease on the shared judge process pool (persistent mode). */
+    private volatile PersistentJudgeProcessPool.Lease judgeLease;
     /** Session ID for single-shot resume (non-claude agents). */
     private volatile String sessionId;
 
@@ -105,19 +106,37 @@ public class CliJudgeBackend implements JudgeBackend {
 
     private String generatePersistent(String userPrompt, String systemPrompt) throws Exception {
         ensurePersistentProcess(systemPrompt);
-        return persistentProcess.sendMessage(userPrompt, TURN_TIMEOUT_SECONDS);
+        return judgeLease.sendMessage(userPrompt, TURN_TIMEOUT_SECONDS);
     }
 
-    private void ensurePersistentProcess(String systemPrompt) throws IOException, InterruptedException {
-        if (persistentProcess != null && persistentProcess.isAlive()) return;
+    // synchronized: the async constructor warm-up and the first generate() may race here;
+    // without the lock both would acquire a lease and one would leak.
+    private synchronized void ensurePersistentProcess(String systemPrompt) throws IOException, InterruptedException {
+        if (judgeLease != null && judgeLease.isAlive()) return;
+        if (judgeLease != null) {
+            judgeLease.close();
+            judgeLease = null;
+        }
 
-        persistentProcess = PersistentAgentProcess.builder(agentBinary)
-                .systemPrompt(systemPrompt)
-                .model("haiku")
-                .skipPermissions(true)
-                .extraArgs(List.of("--tools", ""))  // disable tools — judge returns text only
-                .build();
-        persistentProcess.start(30);
+        // Judge processes come from the shared pool: identical spec (binary, model, args,
+        // system prompt) → ONE warm process shared by every judge consumer in this JVM
+        // (turn gate, realtime tap, tool-call guard, per-call MCP tools) instead of a
+        // private agent boot each. Releasing the lease keeps it warm for the pool's idle
+        // window, so bursty per-call consumers stop paying a boot per invocation.
+        judgeLease = PersistentJudgeProcessPool.acquire(new PersistentJudgeProcessPool.Spec(
+                agentBinary,
+                "haiku",
+                true,
+                // --tools "" : judge returns text only. --strict-mcp-config with no
+                // --mcp-config: never load project/user MCP servers — a judge that reads
+                // the project's .mcp.json spawns kompile mcp-stdio, which (with the
+                // enforcer env inherited) builds another judge, recursively.
+                List.of("--tools", "", "--strict-mcp-config"),
+                // Belt-and-braces against the same recursion: the judge process must not
+                // look like an enforced session to anything it spawns.
+                List.of("KOMPILE_ENFORCER_"),
+                systemPrompt,
+                30));
     }
 
     // ========================================================================
@@ -224,10 +243,12 @@ public class CliJudgeBackend implements JudgeBackend {
     }
 
     @Override
-    public void close() {
-        if (persistentProcess != null) {
-            persistentProcess.close();
-            persistentProcess = null;
+    public synchronized void close() {
+        // Releases the pool lease — the shared process stays warm for the pool's idle
+        // window so the next judge consumer skips the agent boot entirely.
+        if (judgeLease != null) {
+            judgeLease.close();
+            judgeLease = null;
         }
     }
 

@@ -91,8 +91,18 @@ public class HuggingFaceDownloader implements DownloadService {
                 progressCallback.accept(DownloadProgress.initializing(
                         "Downloading " + fileName + " from " + request.getRepository()));
 
-                long fileBytes = downloadFile(url, targetPath, request.getAuthToken(),
-                        progress -> progressCallback.accept(progress));
+                long fileBytes;
+                try {
+                    fileBytes = downloadFile(url, targetPath, request.getAuthToken(),
+                            progress -> progressCallback.accept(progress));
+                } catch (IOException e) {
+                    if (isOptionalAuxiliaryFile(request, fileKey)) {
+                        log.warn("Optional {} file '{}' was not available for {}: {}",
+                                fileKey, filePath, request.getModelId(), e.getMessage());
+                        continue;
+                    }
+                    throw e;
+                }
 
                 downloadedFiles.put(fileKey, targetPath);
                 totalBytes += fileBytes;
@@ -157,6 +167,19 @@ public class HuggingFaceDownloader implements DownloadService {
         files.put("vocab", "vocab.txt");
         files.put("tokenizer_config", "tokenizer_config.json");
         return files;
+    }
+
+    static boolean isOptionalAuxiliaryFile(DownloadRequest request, String fileKey) {
+        if (request == null || fileKey == null) {
+            return false;
+        }
+        String format = request.getFormat() != null ? request.getFormat().trim().toLowerCase() : "";
+        if (!"gguf".equals(format) && !"ggml".equals(format)) {
+            return false;
+        }
+        return "vocab".equals(fileKey)
+                || "tokenizer".equals(fileKey)
+                || "tokenizer_config".equals(fileKey);
     }
 
     private String getFileName(String path) {

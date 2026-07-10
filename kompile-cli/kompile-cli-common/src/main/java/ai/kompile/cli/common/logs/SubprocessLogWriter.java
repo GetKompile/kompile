@@ -26,12 +26,15 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.StandardOpenOption;
 import java.time.Instant;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Writes a single subprocess run's stdout/stderr to
- * {@code ~/.kompile/logs/subprocesses/<type>/<runId>.log} as JSON-lines,
+ * {@code ~/.kompile/logs/subprocesses/<type>/<runId>.log} or a project-scoped
+ * equivalent under the nearest project {@code .kompile} directory when a
+ * working directory is provided.
  * with a companion {@code <runId>.meta.json} sidecar.
  *
  * <p>Mirrors {@link AgentLogWriter} but keyed on {@code (subprocessType, runId)}
@@ -54,12 +57,28 @@ public final class SubprocessLogWriter implements AutoCloseable {
     private volatile boolean closed;
 
     public SubprocessLogWriter(String subprocessType, String runId) throws IOException {
-        LogPaths.ensureSubprocessDir(subprocessType);
-        this.logFile = LogPaths.subprocessLogFile(subprocessType, runId);
-        this.metaFile = LogPaths.subprocessMetaFile(subprocessType, runId);
+        this(subprocessType, runId, (String) null);
+    }
+
+    public SubprocessLogWriter(String subprocessType, String runId, String workingDirectory) throws IOException {
         this.metadata = new SubprocessLogMetadata();
         this.metadata.setSubprocessType(subprocessType);
         this.metadata.setRunId(runId);
+
+        if (workingDirectory == null || workingDirectory.isBlank()) {
+            LogPaths.ensureSubprocessDir(subprocessType);
+            this.logFile = LogPaths.subprocessLogFile(subprocessType, runId);
+            this.metaFile = LogPaths.subprocessMetaFile(subprocessType, runId);
+        } else {
+            Path workingDir = Path.of(workingDirectory).toAbsolutePath().normalize();
+            LogPaths.ensureSubprocessDir(workingDir, subprocessType);
+            this.logFile = LogPaths.subprocessLogFile(workingDir, subprocessType, runId);
+            this.metaFile = LogPaths.subprocessMetaFile(workingDir, subprocessType, runId);
+        }
+    }
+
+    public SubprocessLogWriter(String subprocessType, String runId, Path workingDirectory) throws IOException {
+        this(subprocessType, runId, workingDirectory == null ? null : workingDirectory.toString());
     }
 
     public File getLogFile() {

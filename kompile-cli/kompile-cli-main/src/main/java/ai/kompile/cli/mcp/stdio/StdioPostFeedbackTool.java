@@ -1,5 +1,6 @@
 package ai.kompile.cli.mcp.stdio;
 
+import ai.kompile.cli.common.logs.LogPaths;
 import ai.kompile.cli.common.KompileHome;
 import ai.kompile.utils.StringUtils;
 import ai.kompile.cli.main.chat.enforcer.EnforcerConversationContext;
@@ -302,8 +303,7 @@ public class StdioPostFeedbackTool {
     }
 
     private String readRecentMcpLog() {
-        Path log = KompileHome.homeDirectory().toPath()
-                .resolve("logs").resolve("mcp-activity.log");
+        Path log = LogPaths.logsDirectory(workDir).toPath().resolve("mcp-activity.log");
         if (!Files.exists(log)) {
             return "No MCP activity log found at " + log;
         }

@@ -26,6 +26,8 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
+import java.time.Instant;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -141,6 +143,50 @@ class ClaudeCodeAdapterTest {
         // Verify flattened content is still available for all turns
         assertTrue(turns.get(1).content().contains("[tool:Read]"));
         assertTrue(turns.get(2).content().contains("[tool-result]"));
+    }
+
+    @Test
+    void derivesTitleAndTimestampFromRealMessageFields() throws Exception {
+        Path projects = tempDir.resolve("projects");
+        Path project = projects.resolve("-tmp-project");
+        Files.createDirectories(project);
+        Files.writeString(project.resolve("timestamped-session.jsonl"), """
+                {"type":"user","message":{"role":"user","content":"Add Claude Code transcript imports"},"timestamp":"2026-07-10T10:15:30Z","cwd":"/work/project","sessionId":"timestamped-session"}
+                {"type":"assistant","message":{"role":"assistant","content":"I will inspect the adapter."},"timestamp":"2026-07-10T10:15:31Z","cwd":"/work/project","sessionId":"timestamped-session"}
+                """, StandardCharsets.UTF_8);
+
+        ClaudeCodeAdapter adapter = new TestClaudeCodeAdapter(projects);
+
+        ChatSessionSummary summary = adapter.list().get(0);
+        assertEquals("Add Claude Code transcript imports", summary.title());
+        assertEquals("Add Claude Code transcript imports", adapter.resolveTitle("timestamped-session"));
+
+        List<ChatTurn> turns = adapter.readTurns("timestamped-session");
+        assertEquals(Instant.parse("2026-07-10T10:15:30Z"), turns.get(0).timestamp());
+        assertEquals(Instant.parse("2026-07-10T10:15:31Z"), turns.get(1).timestamp());
+    }
+
+    @Test
+    void listHonorsLimitBeforeParsingSessionSummaries() throws Exception {
+        Path projects = tempDir.resolve("projects");
+        Path project = projects.resolve("-tmp-project");
+        Files.createDirectories(project);
+
+        for (int i = 1; i <= 3; i++) {
+            Path file = project.resolve("session-" + i + ".jsonl");
+            Files.writeString(file, """
+                    {"type":"user","message":{"role":"user","content":"Session %d"},"sessionId":"session-%d"}
+                    """.formatted(i, i), StandardCharsets.UTF_8);
+            Files.setLastModifiedTime(file, FileTime.fromMillis(1_000L * i));
+        }
+
+        ClaudeCodeAdapter adapter = new TestClaudeCodeAdapter(projects);
+        List<ChatSessionSummary> summaries = adapter.list(2);
+
+        assertEquals(2, summaries.size());
+        assertEquals("session-3", summaries.get(0).sessionId());
+        assertEquals("session-2", summaries.get(1).sessionId());
+        assertTrue(adapter.list(0).isEmpty());
     }
 
     private static class TestClaudeCodeAdapter extends ClaudeCodeAdapter {

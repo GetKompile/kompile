@@ -1,3 +1,5 @@
+# DEPRECATED — predates the multi-module reactor (GraalVM 22.3/Java 11, konduit-serving, old ./src layout);
+# use build-scripts/Dockerfile.cpu or build-scripts/Dockerfile.cuda; kept for reference only.
 ARG OS=centos
 ARG OS_VERSION=7
 FROM ${OS}:${OS_VERSION} as builder

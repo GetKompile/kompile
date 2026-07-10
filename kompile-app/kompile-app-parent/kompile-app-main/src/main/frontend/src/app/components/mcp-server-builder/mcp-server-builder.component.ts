@@ -20,6 +20,11 @@ import { MatSnackBar } from '@angular/material/snack-bar';
 import { Subject, interval } from 'rxjs';
 import { takeUntil, switchMap, filter } from 'rxjs/operators';
 import { ConfirmDialogComponent, ConfirmDialogData } from '../confirm-dialog/confirm-dialog.component';
+import { McpServerDialogComponent, McpServerDialogData } from './mcp-server-dialog.component';
+import { McpToolDialogComponent, McpToolDialogData } from './mcp-tool-dialog.component';
+import { McpResourceDialogComponent, McpResourceDialogData } from './mcp-resource-dialog.component';
+import { McpPromptDialogComponent, McpPromptDialogData } from './mcp-prompt-dialog.component';
+import { McpImportDialogComponent } from './mcp-import-dialog.component';
 import {
   McpServerBuilderService,
   McpServerConfig,
@@ -65,12 +70,6 @@ export class McpServerBuilderComponent implements OnInit, OnDestroy {
 
   // UI state
   activeTab = 0; // 0=servers, 1=tools, 2=resources, 3=prompts
-  showServerDialog = false;
-  showToolDialog = false;
-  showResourceDialog = false;
-  showPromptDialog = false;
-  showImportDialog = false;
-  importJson = '';
 
   private destroy$ = new Subject<void>();
 
@@ -126,38 +125,50 @@ export class McpServerBuilderComponent implements OnInit, OnDestroy {
   }
 
   createServer(): void {
-    this.editingServer = this.mcpService.createDefaultConfig();
-    this.isEditing = false;
-    this.showServerDialog = true;
+    const data: McpServerDialogData = {
+      server: this.mcpService.createDefaultConfig(),
+      isEditing: false,
+      transportTypes: this.transportTypes
+    };
+    this.dialog.open(McpServerDialogComponent, { data, width: '520px' })
+      .afterClosed()
+      .pipe(takeUntil(this.destroy$))
+      .subscribe((result: McpServerConfig | null) => {
+        if (!result) return;
+        this.mcpService.createServer(result).subscribe({
+          next: (saved) => {
+            this.showSuccess('Server created successfully');
+            this.loadServers();
+            this.selectedServer = saved;
+          },
+          error: (err) => {
+            this.showError('Failed to save server: ' + (err.error?.error || err.message));
+          }
+        });
+      });
   }
 
   editServer(server: McpServerConfig): void {
-    this.editingServer = { ...server };
-    this.isEditing = true;
-    this.showServerDialog = true;
-  }
-
-  saveServer(): void {
-    if (!this.editingServer) return;
-
-    const operation = this.isEditing && this.editingServer.id
-      ? this.mcpService.updateServer(this.editingServer.id, this.editingServer)
-      : this.mcpService.createServer(this.editingServer);
-
-    operation.subscribe({
-      next: (saved) => {
-        this.showSuccess(`Server ${this.isEditing ? 'updated' : 'created'} successfully`);
-        this.showServerDialog = false;
-        this.editingServer = null;
-        this.loadServers();
-        if (!this.isEditing) {
-          this.selectedServer = saved;
-        }
-      },
-      error: (err) => {
-        this.showError('Failed to save server: ' + (err.error?.error || err.message));
-      }
-    });
+    const data: McpServerDialogData = {
+      server: { ...server },
+      isEditing: true,
+      transportTypes: this.transportTypes
+    };
+    this.dialog.open(McpServerDialogComponent, { data, width: '520px' })
+      .afterClosed()
+      .pipe(takeUntil(this.destroy$))
+      .subscribe((result: McpServerConfig | null) => {
+        if (!result) return;
+        this.mcpService.updateServer(result.id!, result).subscribe({
+          next: () => {
+            this.showSuccess('Server updated successfully');
+            this.loadServers();
+          },
+          error: (err) => {
+            this.showError('Failed to save server: ' + (err.error?.error || err.message));
+          }
+        });
+      });
   }
 
   deleteServer(server: McpServerConfig): void {
@@ -251,35 +262,83 @@ export class McpServerBuilderComponent implements OnInit, OnDestroy {
   }
 
   openImportDialog(): void {
-    this.importJson = '';
-    this.showImportDialog = true;
-  }
-
-  importServer(): void {
-    if (!this.importJson.trim()) return;
-    this.mcpService.importConfig(this.importJson).subscribe({
-      next: () => {
-        this.showSuccess('Server imported successfully');
-        this.showImportDialog = false;
-        this.importJson = '';
-        this.loadServers();
-      },
-      error: (err) => {
-        this.showError('Failed to import server: ' + (err.error?.error || err.message));
-      }
-    });
+    this.dialog.open(McpImportDialogComponent, { width: '500px' })
+      .afterClosed()
+      .pipe(takeUntil(this.destroy$))
+      .subscribe((result: string | null) => {
+        if (!result) return;
+        this.mcpService.importConfig(result).subscribe({
+          next: () => {
+            this.showSuccess('Server imported successfully');
+            this.loadServers();
+          },
+          error: (err) => {
+            this.showError('Failed to import server: ' + (err.error?.error || err.message));
+          }
+        });
+      });
   }
 
   // Tool Operations
   createTool(): void {
     if (!this.selectedServer) return;
-    this.editingTool = this.mcpService.createDefaultTool();
-    this.showToolDialog = true;
+    const data: McpToolDialogData = {
+      tool: this.mcpService.createDefaultTool(),
+      toolTypes: this.toolTypes,
+      parameterTypes: this.parameterTypes
+    };
+    this.dialog.open(McpToolDialogComponent, { data, width: '800px' })
+      .afterClosed()
+      .pipe(takeUntil(this.destroy$))
+      .subscribe((result: McpToolConfig | null) => {
+        if (!result || !this.selectedServer?.id) return;
+        this.mcpService.addTool(this.selectedServer.id, result).subscribe({
+          next: (updated) => {
+            this.showSuccess('Tool added successfully');
+            this.selectedServer = updated;
+          },
+          error: (err) => {
+            this.showError('Failed to add tool: ' + (err.error?.error || err.message));
+          }
+        });
+      });
   }
 
   editTool(tool: McpToolConfig): void {
-    this.editingTool = { ...tool, parameters: [...(tool.parameters || [])] };
-    this.showToolDialog = true;
+    const data: McpToolDialogData = {
+      tool: { ...tool, parameters: [...(tool.parameters || [])] },
+      toolTypes: this.toolTypes,
+      parameterTypes: this.parameterTypes
+    };
+    this.dialog.open(McpToolDialogComponent, { data, width: '800px' })
+      .afterClosed()
+      .pipe(takeUntil(this.destroy$))
+      .subscribe((result: McpToolConfig | null) => {
+        if (!result || !this.selectedServer?.id) return;
+        const existingIndex = this.selectedServer.tools.findIndex(t => t.name === result.name);
+        if (existingIndex >= 0) {
+          this.selectedServer.tools[existingIndex] = result;
+          this.mcpService.updateServer(this.selectedServer.id, this.selectedServer).subscribe({
+            next: (updated) => {
+              this.showSuccess('Tool updated successfully');
+              this.selectedServer = updated;
+            },
+            error: (err) => {
+              this.showError('Failed to update tool: ' + (err.error?.error || err.message));
+            }
+          });
+        } else {
+          this.mcpService.addTool(this.selectedServer.id, result).subscribe({
+            next: (updated) => {
+              this.showSuccess('Tool added successfully');
+              this.selectedServer = updated;
+            },
+            error: (err) => {
+              this.showError('Failed to add tool: ' + (err.error?.error || err.message));
+            }
+          });
+        }
+      });
   }
 
   saveTool(): void {
@@ -295,21 +354,16 @@ export class McpServerBuilderComponent implements OnInit, OnDestroy {
         next: (updated) => {
           this.showSuccess('Tool updated successfully');
           this.selectedServer = updated;
-          this.showToolDialog = false;
-          this.editingTool = null;
         },
         error: (err) => {
           this.showError('Failed to update tool: ' + (err.error?.error || err.message));
         }
       });
     } else {
-      // Add new tool
       this.mcpService.addTool(this.selectedServer.id, this.editingTool).subscribe({
         next: (updated) => {
           this.showSuccess('Tool added successfully');
           this.selectedServer = updated;
-          this.showToolDialog = false;
-          this.editingTool = null;
         },
         error: (err) => {
           this.showError('Failed to add tool: ' + (err.error?.error || err.message));
@@ -366,13 +420,61 @@ export class McpServerBuilderComponent implements OnInit, OnDestroy {
   // Resource Operations
   createResource(): void {
     if (!this.selectedServer) return;
-    this.editingResource = this.mcpService.createDefaultResource();
-    this.showResourceDialog = true;
+    const data: McpResourceDialogData = {
+      resource: this.mcpService.createDefaultResource(),
+      resourceTypes: this.resourceTypes
+    };
+    this.dialog.open(McpResourceDialogComponent, { data, width: '800px' })
+      .afterClosed()
+      .pipe(takeUntil(this.destroy$))
+      .subscribe((result: McpResourceConfig | null) => {
+        if (!result || !this.selectedServer?.id) return;
+        this.mcpService.addResource(this.selectedServer.id, result).subscribe({
+          next: (updated) => {
+            this.showSuccess('Resource added successfully');
+            this.selectedServer = updated;
+          },
+          error: (err) => {
+            this.showError('Failed to add resource: ' + (err.error?.error || err.message));
+          }
+        });
+      });
   }
 
   editResource(resource: McpResourceConfig): void {
-    this.editingResource = { ...resource };
-    this.showResourceDialog = true;
+    const data: McpResourceDialogData = {
+      resource: { ...resource },
+      resourceTypes: this.resourceTypes
+    };
+    this.dialog.open(McpResourceDialogComponent, { data, width: '800px' })
+      .afterClosed()
+      .pipe(takeUntil(this.destroy$))
+      .subscribe((result: McpResourceConfig | null) => {
+        if (!result || !this.selectedServer?.id) return;
+        const existingIndex = this.selectedServer.resources.findIndex(r => r.uri === result.uri);
+        if (existingIndex >= 0) {
+          this.selectedServer.resources[existingIndex] = result;
+          this.mcpService.updateServer(this.selectedServer.id, this.selectedServer).subscribe({
+            next: (updated) => {
+              this.showSuccess('Resource updated successfully');
+              this.selectedServer = updated;
+            },
+            error: (err) => {
+              this.showError('Failed to update resource: ' + (err.error?.error || err.message));
+            }
+          });
+        } else {
+          this.mcpService.addResource(this.selectedServer.id, result).subscribe({
+            next: (updated) => {
+              this.showSuccess('Resource added successfully');
+              this.selectedServer = updated;
+            },
+            error: (err) => {
+              this.showError('Failed to add resource: ' + (err.error?.error || err.message));
+            }
+          });
+        }
+      });
   }
 
   saveResource(): void {
@@ -386,8 +488,6 @@ export class McpServerBuilderComponent implements OnInit, OnDestroy {
         next: (updated) => {
           this.showSuccess('Resource updated successfully');
           this.selectedServer = updated;
-          this.showResourceDialog = false;
-          this.editingResource = null;
         },
         error: (err) => {
           this.showError('Failed to update resource: ' + (err.error?.error || err.message));
@@ -398,8 +498,6 @@ export class McpServerBuilderComponent implements OnInit, OnDestroy {
         next: (updated) => {
           this.showSuccess('Resource added successfully');
           this.selectedServer = updated;
-          this.showResourceDialog = false;
-          this.editingResource = null;
         },
         error: (err) => {
           this.showError('Failed to add resource: ' + (err.error?.error || err.message));
@@ -441,17 +539,65 @@ export class McpServerBuilderComponent implements OnInit, OnDestroy {
   // Prompt Operations
   createPrompt(): void {
     if (!this.selectedServer) return;
-    this.editingPrompt = this.mcpService.createDefaultPrompt();
-    this.showPromptDialog = true;
+    const data: McpPromptDialogData = {
+      prompt: this.mcpService.createDefaultPrompt(),
+      messageRoles: this.messageRoles
+    };
+    this.dialog.open(McpPromptDialogComponent, { data, width: '800px' })
+      .afterClosed()
+      .pipe(takeUntil(this.destroy$))
+      .subscribe((result: McpPromptConfig | null) => {
+        if (!result || !this.selectedServer?.id) return;
+        this.mcpService.addPrompt(this.selectedServer.id, result).subscribe({
+          next: (updated) => {
+            this.showSuccess('Prompt added successfully');
+            this.selectedServer = updated;
+          },
+          error: (err) => {
+            this.showError('Failed to add prompt: ' + (err.error?.error || err.message));
+          }
+        });
+      });
   }
 
   editPrompt(prompt: McpPromptConfig): void {
-    this.editingPrompt = {
-      ...prompt,
-      arguments: [...(prompt.arguments || [])],
-      messages: [...(prompt.messages || [])]
+    const data: McpPromptDialogData = {
+      prompt: {
+        ...prompt,
+        arguments: [...(prompt.arguments || [])],
+        messages: [...(prompt.messages || [])]
+      },
+      messageRoles: this.messageRoles
     };
-    this.showPromptDialog = true;
+    this.dialog.open(McpPromptDialogComponent, { data, width: '800px' })
+      .afterClosed()
+      .pipe(takeUntil(this.destroy$))
+      .subscribe((result: McpPromptConfig | null) => {
+        if (!result || !this.selectedServer?.id) return;
+        const existingIndex = this.selectedServer.prompts.findIndex(p => p.name === result.name);
+        if (existingIndex >= 0) {
+          this.selectedServer.prompts[existingIndex] = result;
+          this.mcpService.updateServer(this.selectedServer.id, this.selectedServer).subscribe({
+            next: (updated) => {
+              this.showSuccess('Prompt updated successfully');
+              this.selectedServer = updated;
+            },
+            error: (err) => {
+              this.showError('Failed to update prompt: ' + (err.error?.error || err.message));
+            }
+          });
+        } else {
+          this.mcpService.addPrompt(this.selectedServer.id, result).subscribe({
+            next: (updated) => {
+              this.showSuccess('Prompt added successfully');
+              this.selectedServer = updated;
+            },
+            error: (err) => {
+              this.showError('Failed to add prompt: ' + (err.error?.error || err.message));
+            }
+          });
+        }
+      });
   }
 
   savePrompt(): void {
@@ -465,8 +611,6 @@ export class McpServerBuilderComponent implements OnInit, OnDestroy {
         next: (updated) => {
           this.showSuccess('Prompt updated successfully');
           this.selectedServer = updated;
-          this.showPromptDialog = false;
-          this.editingPrompt = null;
         },
         error: (err) => {
           this.showError('Failed to update prompt: ' + (err.error?.error || err.message));
@@ -477,8 +621,6 @@ export class McpServerBuilderComponent implements OnInit, OnDestroy {
         next: (updated) => {
           this.showSuccess('Prompt added successfully');
           this.selectedServer = updated;
-          this.showPromptDialog = false;
-          this.editingPrompt = null;
         },
         error: (err) => {
           this.showError('Failed to add prompt: ' + (err.error?.error || err.message));
@@ -566,31 +708,6 @@ export class McpServerBuilderComponent implements OnInit, OnDestroy {
       case 'ERROR': return 'error';
       default: return 'help';
     }
-  }
-
-  cancelServerDialog(): void {
-    this.showServerDialog = false;
-    this.editingServer = null;
-  }
-
-  cancelToolDialog(): void {
-    this.showToolDialog = false;
-    this.editingTool = null;
-  }
-
-  cancelResourceDialog(): void {
-    this.showResourceDialog = false;
-    this.editingResource = null;
-  }
-
-  cancelPromptDialog(): void {
-    this.showPromptDialog = false;
-    this.editingPrompt = null;
-  }
-
-  cancelImportDialog(): void {
-    this.showImportDialog = false;
-    this.importJson = '';
   }
 
   private showSuccess(message: string): void {

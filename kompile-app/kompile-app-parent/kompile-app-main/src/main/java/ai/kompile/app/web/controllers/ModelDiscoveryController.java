@@ -886,44 +886,10 @@ public class ModelDiscoveryController {
             @RequestParam(name = "modelIndex", defaultValue = "0") int modelIndex) {
 
         Map<String, Object> response = new LinkedHashMap<>();
-
-        try {
-            if (embeddingModels == null || embeddingModels.isEmpty()) {
-                response.put("status", "error");
-                response.put("message", "No embedding models available");
-                return ResponseEntity.badRequest().body(response);
-            }
-
-            if (modelIndex < 0 || modelIndex >= embeddingModels.size()) {
-                response.put("status", "error");
-                response.put("message", "Invalid model index. Available models: " + embeddingModels.size());
-                return ResponseEntity.badRequest().body(response);
-            }
-
-            EmbeddingModel model = embeddingModels.get(modelIndex);
-
-            long startTime = System.currentTimeMillis();
-            INDArray embedding = model.embed(text);
-            long duration = System.currentTimeMillis() - startTime;
-
-            response.put("modelClass", model.getClass().getSimpleName());
-            response.put("inputText", text);
-            response.put("embeddingShape", Arrays.toString(embedding.shape()));
-            response.put("embeddingLength", embedding.length());
-            response.put("embeddingPreview", Arrays.toString(
-                    Arrays.copyOf(embedding.toFloatVector(), Math.min(10, (int)embedding.length()))
-            ));
-            response.put("inferenceTimeMs", duration);
-            response.put("status", "success");
-
-            return ResponseEntity.ok(response);
-
-        } catch (Exception e) {
-            logger.error("Error testing embedding model", e);
-            response.put("status", "error");
-            response.put("message", e.getMessage());
-            return ResponseEntity.internalServerError().body(response);
-        }
+        response.put("status", "error");
+        response.put("message",
+                "Direct main-process embedding tests are disabled; use a managed embedding subprocess endpoint.");
+        return ResponseEntity.status(501).body(response);
     }
 
     /**

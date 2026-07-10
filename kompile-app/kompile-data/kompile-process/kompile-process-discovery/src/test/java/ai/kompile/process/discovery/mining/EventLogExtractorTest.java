@@ -32,6 +32,7 @@ import java.util.List;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * End-to-end check of the knowledge-graph → event-log bridge: connected components become cases,
@@ -52,6 +53,16 @@ class EventLogExtractorTest {
         return GraphEdge.builder()
                 .edgeId(source.getNodeId() + "->" + target.getNodeId())
                 .sourceNode(source).targetNode(target)
+                .edgeType(EdgeType.USER_DEFINED).weight(1.0)
+                .build();
+    }
+
+    private GraphEdge relation(GraphNode source, GraphNode target, String relationType, LocalDateTime when) {
+        return GraphEdge.builder()
+                .edgeId(source.getNodeId() + "-" + relationType + "-" + target.getNodeId())
+                .sourceNode(source).targetNode(target)
+                .sourceNodeId(source.getNodeId()).targetNodeId(target.getNodeId())
+                .relationType(relationType).occurredAt(when)
                 .edgeType(EdgeType.USER_DEFINED).weight(1.0)
                 .build();
     }
@@ -79,11 +90,56 @@ class EventLogExtractorTest {
         EventLog log = new EventLogExtractor().extract(nodes, edges);
 
         assertEquals(2, log.size(), "two disconnected components ⇒ two cases");
-        assertEquals(Set.of("ORDER", "REVIEW", "APPROVE"), log.activityNames(), "SNIPPET chunk excluded");
+        assertEquals(Set.of("Order", "Review", "Approve"), log.activityNames(), "SNIPPET chunk excluded");
 
         ProcessTreeNode root = new InductiveMiner().mine(log).root();
         assertEquals(Operator.SEQUENCE, root.operator());
-        assertEquals(List.of("ORDER", "REVIEW", "APPROVE"),
+        assertEquals(List.of("Order", "Review", "Approve"),
                 root.children().stream().map(ProcessTreeNode::activity).toList());
+    }
+
+    @Test
+    void liftsScalarMetadataOntoEventAttributes_asDecisionData() {
+        LocalDateTime t0 = LocalDateTime.of(2026, 2, 1, 9, 0);
+        GraphNode order = GraphNode.builder()
+                .nodeId("o1").nodeType(NodeLevel.ENTITY).externalId("o1").title("o1")
+                .occurredAt(t0)
+                .metadataJson("{\"entity_type\":\"ORDER\",\"amount\":4500,\"priority\":\"high\","
+                        + "\"rush\":true,\"source\":\"job-9\",\"nested\":{\"x\":1}}")
+                .build();
+        GraphNode approve = node("a1", "APPROVE", NodeLevel.ENTITY, t0.plusHours(1));
+
+        EventLog log = new EventLogExtractor().extract(List.of(order, approve),
+                List.of(edge(order, approve)));
+
+        var orderEvent = log.traces().get(0).ordered().get(0);
+        assertEquals(4500, ((Number) orderEvent.attributes().get("amount")).intValue(),
+                "business scalars become decision attributes");
+        assertEquals("high", orderEvent.attributes().get("priority"));
+        assertEquals(Boolean.TRUE, orderEvent.attributes().get("rush"));
+        assertEquals(null, orderEvent.attributes().get("entity_type"),
+                "identifier-ish keys are excluded — they are activity data, not decision data");
+        assertEquals(null, orderEvent.attributes().get("source"));
+        assertEquals(null, orderEvent.attributes().get("nested"), "non-scalars are excluded");
+    }
+
+    @Test
+    void optInRelationEventsUseResolvedEndpointTypesWithoutChangingDefaultProjection() {
+        LocalDateTime t0 = LocalDateTime.of(2026, 3, 1, 10, 0);
+        GraphNode email = node("email1", "EMAIL_MESSAGE", NodeLevel.ENTITY, t0);
+        GraphNode sender = node("person1", "PERSON", NodeLevel.ENTITY, null);
+        GraphNode workbook = node("workbook1", "SPREADSHEET", NodeLevel.ENTITY, null);
+        List<GraphNode> nodes = List.of(email, sender, workbook);
+        List<GraphEdge> edges = List.of(
+                relation(email, sender, "SENT_BY", t0),
+                relation(email, workbook, "HAS_ATTACHMENT", t0.plusMinutes(1)));
+
+        EventLog nodeOnly = new EventLogExtractor().extract(nodes, edges);
+        assertEquals(Set.of("Email Message"), nodeOnly.activityNames(),
+                "default extraction remains node-only and excludes actor/structural nodes");
+
+        EventLog withRelations = EventLogExtractor.withRelationEvents().extract(nodes, edges);
+        assertTrue(withRelations.activityNames().contains("Email Message Sent By Person"));
+        assertTrue(withRelations.activityNames().contains("Email Message Has Attachment Spreadsheet"));
     }
 }

@@ -287,18 +287,28 @@ public class CausalTraversal {
      */
     public static CausalEdgeType classifyEdge(GraphEdge edge) {
         EdgeType type = edge.getEdgeType();
+        String relation = edge.getRelationType() != null ? edge.getRelationType().toLowerCase() : "";
         String label = edge.getLabel() != null ? edge.getLabel().toLowerCase() : "";
         String desc = edge.getDescription() != null ? edge.getDescription().toLowerCase() : "";
-        String combined = label + " " + desc;
+        String combined = (relation + " " + label + " " + desc)
+                .replace('_', ' ')
+                .replace('-', ' ');
 
-        // Check explicit causal keywords in label/description
+        // Semantic relationType is the primary signal for extracted/asserted event relations;
+        // labels and descriptions remain compatibility evidence for older graphs.
         if (combined.contains("causes") || combined.contains("caused by")) return CausalEdgeType.CAUSES;
-        if (combined.contains("triggers") || combined.contains("triggered")) return CausalEdgeType.TRIGGERS;
+        if (combined.contains("triggers") || combined.contains("triggered")
+                || combined.contains("precedes") || combined.contains("followed by")) {
+            return CausalEdgeType.TRIGGERS;
+        }
         if (combined.contains("enables") || combined.contains("enabled")) return CausalEdgeType.ENABLES;
         if (combined.contains("prevents") || combined.contains("blocked")) return CausalEdgeType.PREVENTS;
         if (combined.contains("derived") || combined.contains("generated from")) return CausalEdgeType.DERIVED_FROM;
         if (combined.contains("contributes") || combined.contains("factor")) return CausalEdgeType.CONTRIBUTES_TO;
-        if (combined.contains("influences") || combined.contains("affects")) return CausalEdgeType.INFLUENCES;
+        if (combined.contains("influences") || combined.contains("affects")
+                || combined.contains("has owner") || combined.contains("owned by")) {
+            return CausalEdgeType.INFLUENCES;
+        }
 
         // Fall back to EdgeType mapping. edgeType can be null for transient or
         // legacy edges that were never persisted with a type (the DB column is
@@ -326,6 +336,9 @@ public class CausalTraversal {
             // A cross-doc alias membership edge (entity → name hub) is an identity
             // association — treat as a weak correlation for causal analysis.
             case ALIAS_OF -> CausalEdgeType.CORRELATES_WITH;
+            // New structural routing types remain usable without requiring this attribution
+            // module to change in lockstep; semantic relationType above carries causal meaning.
+            default -> CausalEdgeType.INFLUENCES;
         };
     }
 

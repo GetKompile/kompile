@@ -134,6 +134,11 @@ class CrawlCommandTest {
         // Source type override
         assertTrue(output.contains("--type"), "missing --type");
 
+        // Language preprocessing
+        assertTrue(output.contains("--language-detection"), "missing --language-detection");
+        assertTrue(output.contains("--translate-to"), "missing --translate-to");
+        assertTrue(output.contains("--translation-dual-index"), "missing --translation-dual-index");
+
         // UX
         assertTrue(output.contains("--watch") || output.contains("-w"), "missing --watch/-w");
         assertTrue(output.contains("--name"), "missing --name");

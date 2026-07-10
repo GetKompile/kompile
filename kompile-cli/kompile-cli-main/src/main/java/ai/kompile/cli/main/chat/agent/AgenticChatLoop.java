@@ -18,6 +18,7 @@ package ai.kompile.cli.main.chat.agent;
 
 import ai.kompile.cli.main.chat.ToolCallIndex;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
+import ai.kompile.cli.main.chat.config.ModelContextResolver;
 import ai.kompile.cli.main.chat.harness.PerformanceHarness;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
@@ -94,6 +95,15 @@ public class AgenticChatLoop {
 
     // Conversation history for compaction
     private final List<CompactionService.ConversationEntry> conversationHistory = new ArrayList<>();
+
+    // Resolves the active model's real context window (catalog first, then a local
+    // staging-server probe for staged GGUFs the catalogs don't know).
+    private final ModelContextResolver contextResolver = new ModelContextResolver();
+
+    // Prompt tokens the provider reported for the most recent direct-mode call.
+    // A truer context-usage signal than the char/4 estimate (it includes the system
+    // prompt and tool definitions), used alongside the estimate to trigger compaction.
+    private volatile long lastReportedInputTokens = 0L;
 
     // Cancel signal - set by ChatRepl when user presses Escape
     private volatile AtomicBoolean cancelSignal;
@@ -499,8 +509,93 @@ public class AgenticChatLoop {
                     summary.getInputTokens(), summary.getOutputTokens(), 0, 0);
         }
 
+        // The provider-reported prompt size described the pre-compaction history.
+        lastReportedInputTokens = 0L;
+
         return ForceCompactResult.ok(tokensBefore, tokensAfter, toPreserve.size(),
                 summary.getSummary());
+    }
+
+    /**
+     * Refresh the compaction budget from the real context window of the model this
+     * chat is talking to: per-agent override first, then the configured model; the
+     * resolver consults the live CLI catalogs, the static table, and — for staged
+     * local GGUFs unknown to both — the local serving origin's /api/llm/status.
+     * Server mode keeps the default budget (the server bounds its own context).
+     */
+    private void refreshCompactionBudget(AgentConfig agent) {
+        if (directLlmClient == null) return;
+        try {
+            String override = agent != null ? agent.getModelOverride() : null;
+            String model = override != null && !override.isBlank()
+                    ? override : directLlmClient.getConfiguredModel();
+            compactionService.setMaxTokens(contextResolver.resolveContextWindow(
+                    model, directLlmClient.getResolvedBaseUrl()));
+        } catch (Exception e) {
+            // Budget refresh must never break a chat turn; keep the previous budget.
+        }
+    }
+
+    /**
+     * Turn-start auto-compaction. Runs the same LLM summarization as /compact when
+     * the tracked history (or the provider-reported prompt size of the last call)
+     * is near the model's context window; falls back to deterministic pruning plus
+     * a digest rewrite of the wire history when summarization fails. Turn start is
+     * the only point where wholesale wire-history replacement is safe — mid-loop,
+     * only in-place tool-content shrinking is allowed.
+     */
+    private void maybeAutoCompactBeforeTurn() {
+        if (directLlmClient == null) return;
+        if (!compactionService.needsCompaction(conversationHistory, lastReportedInputTokens)) return;
+
+        int tokensBefore = compactionService.estimateTokens(conversationHistory);
+        ForceCompactResult forced = forceCompact(null);
+        if (forced.isSuccess()) {
+            System.out.println(renderer.renderCompactionNotice(
+                    forced.getTokensBefore(), forced.getTokensAfter()));
+            lastReportedInputTokens = 0L;
+            return;
+        }
+        if (forced.getStatus() == ForceCompactResult.Status.NOOP) {
+            return;
+        }
+
+        // Summarization unavailable or failed — deterministic fallback: prune the
+        // tracked history, then rewrite the wire history as digest + recent tail.
+        CompactionService.CompactionResult pruned = compactionService.compact(conversationHistory);
+        if (!pruned.isCompacted()) return;
+        conversationHistory.clear();
+        conversationHistory.addAll(pruned.getEntries());
+
+        int preserveIndex = findRecentPreservationCutoff(conversationHistory);
+        List<CompactionService.ConversationEntry> tail =
+                new ArrayList<>(conversationHistory.subList(preserveIndex, conversationHistory.size()));
+        String digest = compactionService.renderDigest(conversationHistory.subList(0, preserveIndex));
+        directLlmClient.replaceHistoryWithSummary(digest);
+        for (CompactionService.ConversationEntry entry : tail) {
+            if (entry.type == CompactionService.EntryType.USER) {
+                directLlmClient.addToHistory("user", entry.content);
+            } else if (entry.type == CompactionService.EntryType.ASSISTANT) {
+                directLlmClient.addToHistory("assistant", entry.content);
+            }
+        }
+
+        int tokensAfter = compactionService.estimateTokens(conversationHistory);
+        if (sessionMetrics != null) {
+            sessionMetrics.recordCompaction(tokensBefore, tokensAfter);
+        }
+        System.out.println(renderer.renderCompactionNotice(tokensBefore, tokensAfter));
+        lastReportedInputTokens = 0L;
+    }
+
+    /** The model-aware context budget currently in effect, in tokens. */
+    public int contextWindowTokens() {
+        return compactionService.getMaxTokens();
+    }
+
+    /** Prompt tokens the provider reported for the most recent direct-mode call (0 if none yet). */
+    public long lastReportedInputTokens() {
+        return lastReportedInputTokens;
     }
 
     /**
@@ -657,6 +752,11 @@ public class AgenticChatLoop {
         String currentMessage = message;
         List<ToolCallResult> pendingToolResults = null;
 
+        // Refresh the compaction budget from the active model's real context window,
+        // then auto-compact BEFORE this turn if the prior conversation is already near it.
+        refreshCompactionBudget(agent);
+        maybeAutoCompactBeforeTurn();
+
         // Track conversation for compaction
         conversationHistory.add(CompactionService.ConversationEntry.user(message));
 
@@ -673,8 +773,9 @@ public class AgenticChatLoop {
             fireFirstOutput();
             System.out.println(renderer.renderAgentTurnStart(step, maxSteps));
 
-            // Check compaction
-            if (compactionService.needsCompaction(conversationHistory)) {
+            // Check compaction (model-aware budget; also honors the provider-reported
+            // prompt size of the previous call, which sees system prompt + tool defs)
+            if (compactionService.needsCompaction(conversationHistory, lastReportedInputTokens)) {
                 CompactionService.CompactionResult compResult =
                         compactionService.compact(conversationHistory);
                 if (compResult.isCompacted()) {
@@ -685,6 +786,14 @@ public class AgenticChatLoop {
                     }
                     conversationHistory.clear();
                     conversationHistory.addAll(compResult.getEntries());
+                }
+                // Pruning the tracked list does not change what direct mode actually
+                // sends — shrink old tool outputs on the wire history too. Content-only
+                // rewrites keep the assistant tool_calls ↔ tool-message pairing valid,
+                // so this is safe mid-exchange (a full summary rewrite is not).
+                if (isDirectMode()) {
+                    directLlmClient.compactToolHistory(
+                            8, CompactionService::summarizeToolResultContent);
                 }
             }
 
@@ -1019,6 +1128,10 @@ public class AgenticChatLoop {
             sessionMetrics.recordTokenUsage(
                     directResult.inputTokens, directResult.outputTokens,
                     directResult.cacheReadTokens, directResult.cacheCreationTokens);
+        }
+        if (directResult.inputTokens > 0) {
+            // Real prompt size of this call — feeds the compaction trigger.
+            lastReportedInputTokens = directResult.inputTokens;
         }
 
         result.text = directResult.text;

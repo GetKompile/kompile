@@ -17,6 +17,22 @@
 import { Component, OnInit, ViewChild, AfterViewInit } from '@angular/core';
 import { ActivatedRoute } from '@angular/router';
 import { MatTabChangeEvent, MatTabGroup } from '@angular/material/tabs';
+import { TrainingJobHistory } from '../../services/training-history.service';
+
+/**
+ * Outer section keys recognised in ?section= query params.
+ * "staging" is a shortcut: selects Management → Model & Staging inner tab.
+ */
+type DeveloperSection = 'testers' | 'debuggers' | 'management' | 'sdk' | 'system' | 'staging';
+
+const SECTION_TO_OUTER_INDEX: Record<DeveloperSection, number> = {
+  testers:    0,
+  debuggers:  1,
+  management: 2,
+  staging:    2,   // staging = Management outer tab
+  sdk:        3,
+  system:     4,
+};
 
 @Component({
   standalone: false,
@@ -27,10 +43,25 @@ import { MatTabChangeEvent, MatTabGroup } from '@angular/material/tabs';
 export class DeveloperHubComponent implements OnInit, AfterViewInit {
   selectedTabIndex = 0;
 
-  // Keep track of the subtab index to set after view init
-  private pendingSubtabIndex: number | null = null;
+  /** Job selected for the Training Dashboard tab. Set by routing or future inter-tab wiring. */
+  selectedTrainingJob: TrainingJobHistory | null = null;
 
-  // Reference to the System inner tab group for direct navigation
+  // Management inner tab group: pending index to set after view init.
+  private pendingManagementSubtabIndex: number | null = null;
+
+  // System inner tab group: pending index to set after view init.
+  private pendingSystemSubtabIndex: number | null = null;
+
+  /** Index of the "Model & Staging" tab within the Management inner tab group. */
+  private readonly MGMT_MODEL_STAGING_INDEX = 2; // Ingest & Jobs has 3 tabs (0,1,2 not there)
+  // Management group order after restructuring:
+  // Ingest & Jobs group: Index & Search Status(0), Ingest History(1), Resumable Jobs(2), Processing Settings(3), Pipeline Schedules(4)
+  // Models & GPU group: Model & Staging(5), VLM Management(6), GPU Management(7), Model Admission(8), Model Warmup & Cache(9), Training History(10)
+  // Ops & Monitoring group: Job Scheduler(11), Monitors(12)
+  // So "Model & Staging" = index 5 in the flat inner list
+  private readonly MGMT_STAGING_TAB_INDEX = 5;
+
+  @ViewChild('managementInnerTabs') managementInnerTabs?: MatTabGroup;
   @ViewChild('systemInnerTabs') systemInnerTabs?: MatTabGroup;
 
   constructor(
@@ -38,9 +69,18 @@ export class DeveloperHubComponent implements OnInit, AfterViewInit {
   ) {}
 
   ngOnInit(): void {
-    // Subscribe to query params for tab navigation
     this.route.queryParams.subscribe(params => {
-      if (params['tab'] !== undefined) {
+      // ?section= key navigation
+      const sectionParam = params['section'] as DeveloperSection | undefined;
+      if (sectionParam && sectionParam in SECTION_TO_OUTER_INDEX) {
+        this.selectedTabIndex = SECTION_TO_OUTER_INDEX[sectionParam];
+        if (sectionParam === 'staging') {
+          this.pendingManagementSubtabIndex = this.MGMT_STAGING_TAB_INDEX;
+        }
+      }
+
+      // Legacy numeric ?tab= support (keep backward compat)
+      if (params['tab'] !== undefined && sectionParam === undefined) {
         const tabIndex = parseInt(params['tab'], 10);
         if (!isNaN(tabIndex) && tabIndex >= 0 && tabIndex <= 4) {
           this.selectedTabIndex = tabIndex;
@@ -49,31 +89,30 @@ export class DeveloperHubComponent implements OnInit, AfterViewInit {
       if (params['subtab'] !== undefined) {
         const subtabIndex = parseInt(params['subtab'], 10);
         if (!isNaN(subtabIndex) && subtabIndex >= 0) {
-          this.pendingSubtabIndex = subtabIndex;
+          this.pendingSystemSubtabIndex = subtabIndex;
         }
       }
     });
   }
 
   ngAfterViewInit(): void {
-    // Set the subtab index after the view has been initialized
-    if (this.pendingSubtabIndex !== null) {
-      // Use setTimeout to avoid ExpressionChangedAfterItHasBeenCheckedError
+    if (this.pendingManagementSubtabIndex !== null) {
+      const idx = this.pendingManagementSubtabIndex;
+      this.pendingManagementSubtabIndex = null;
       setTimeout(() => {
-        this.setSubtab(this.pendingSubtabIndex!);
-        this.pendingSubtabIndex = null;
+        if (this.managementInnerTabs) {
+          this.managementInnerTabs.selectedIndex = idx;
+        }
       }, 0);
     }
-  }
-
-  /**
-   * Set the subtab index for the System tab (index 4).
-   * Currently only supports System tab subtab navigation.
-   */
-  private setSubtab(index: number): void {
-    // Only support System tab (index 4) for now
-    if (this.selectedTabIndex === 4 && this.systemInnerTabs) {
-      this.systemInnerTabs.selectedIndex = index;
+    if (this.pendingSystemSubtabIndex !== null) {
+      const idx = this.pendingSystemSubtabIndex;
+      this.pendingSystemSubtabIndex = null;
+      setTimeout(() => {
+        if (this.systemInnerTabs) {
+          this.systemInnerTabs.selectedIndex = idx;
+        }
+      }, 0);
     }
   }
 

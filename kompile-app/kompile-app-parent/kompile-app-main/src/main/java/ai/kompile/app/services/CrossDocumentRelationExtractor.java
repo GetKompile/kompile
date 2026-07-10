@@ -94,24 +94,25 @@ public class CrossDocumentRelationExtractor {
         try {
             // Build lookup maps from documents
             Map<String, DocumentInfo> docsByFileName = buildFileNameIndex(documents);
+            Map<Document, String> nodeIdsByDocument = resolveDocumentNodeIds(documents, factSheetId);
 
             // Strategy A: Attachment resolution (email → referenced files)
-            totalCreated += resolveAttachments(documents, docsByFileName, factSheetId);
+            totalCreated += resolveAttachments(documents, docsByFileName, factSheetId, nodeIdsByDocument);
 
             // Strategy B: Version chain detection
-            totalCreated += detectVersionChains(docsByFileName, factSheetId);
+            totalCreated += detectVersionChains(docsByFileName, factSheetId, nodeIdsByDocument);
 
             // Strategy C: Process-to-data references
-            totalCreated += detectProcessDataReferences(documents, docsByFileName, factSheetId);
+            totalCreated += detectProcessDataReferences(documents, docsByFileName, factSheetId, nodeIdsByDocument);
 
             // Strategy D: Hyperlink resolution (PDF hyperlinks → other documents)
-            totalCreated += resolveHyperlinks(documents, docsByFileName, factSheetId);
+            totalCreated += resolveHyperlinks(documents, docsByFileName, factSheetId, nodeIdsByDocument);
 
             // Strategy E: Shared author linking
-            totalCreated += detectSharedAuthors(documents, factSheetId);
+            totalCreated += detectSharedAuthors(documents, factSheetId, nodeIdsByDocument);
 
             // Strategy F: Shared keywords/topics
-            totalCreated += detectSharedKeywords(documents, factSheetId);
+            totalCreated += detectSharedKeywords(documents, factSheetId, nodeIdsByDocument);
 
         } catch (Exception e) {
             logger.warn("Cross-document relation extraction failed (non-fatal): {}", e.getMessage());
@@ -129,8 +130,8 @@ public class CrossDocumentRelationExtractor {
     // =========================================================================
 
     private int resolveAttachments(List<Document> documents, Map<String, DocumentInfo> docsByFileName,
-                                    Long factSheetId) {
-        int created = 0;
+                                    Long factSheetId, Map<Document, String> nodeIdsByDocument) {
+        List<KnowledgeGraphService.EdgeSpec> edgeSpecs = new ArrayList<>();
 
         for (Document doc : documents) {
             Map<String, Object> meta = doc.getMetadata();
@@ -219,7 +220,7 @@ public class CrossDocumentRelationExtractor {
 
             if (attachmentNames.isEmpty()) continue;
 
-            String docNodeId = findDocumentNodeId(doc, factSheetId);
+            String docNodeId = findDocumentNodeId(doc, nodeIdsByDocument);
             if (docNodeId == null) continue;
 
             for (String attachmentName : attachmentNames) {
@@ -227,44 +228,30 @@ public class CrossDocumentRelationExtractor {
                 DocumentInfo target = findDocumentByFileName(docsByFileName, attachmentName);
                 if (target == null) continue;
 
-                String targetNodeId = findDocumentNodeId(target, factSheetId);
+                String targetNodeId = findDocumentNodeId(target, nodeIdsByDocument);
                 if (targetNodeId == null) continue;
 
-                if (crossDocumentEdgeExists(docNodeId, targetNodeId, GraphConstants.REL_ATTACHMENT_OF, factSheetId)) {
-                    continue;
-                }
-
-                try {
-                    Map<String, Object> edgeMeta = new LinkedHashMap<>();
-                    edgeMeta.put("semanticType", GraphConstants.REL_ATTACHMENT_OF);
-                    edgeMeta.put("parentDocument", parentLabel);
-                    edgeMeta.put("attachmentFilename", attachmentName);
-
-                    knowledgeGraphService.createEdgeWithMetadata(
-                            docNodeId, targetNodeId, EdgeType.USER_DEFINED,
-                            0.95, GraphConstants.REL_ATTACHMENT_OF,
-                            "Attachment: " + attachmentName,
-                            toJson(edgeMeta), EdgeProvenance.EXTRACTED, factSheetId);
-                    created++;
-
-                    logger.debug("Created ATTACHMENT_OF edge: '{}' → '{}'",
-                            parentLabel, attachmentName);
-                } catch (Exception e) {
-                    logger.warn("Failed to create attachment edge from '{}' to '{}': {}",
-                            parentLabel, attachmentName, e.getMessage());
-                }
+                Map<String, Object> edgeMeta = new LinkedHashMap<>();
+                edgeMeta.put("semanticType", GraphConstants.REL_ATTACHMENT_OF);
+                edgeMeta.put("parentDocument", parentLabel);
+                edgeMeta.put("attachmentFilename", attachmentName);
+                edgeSpecs.add(crossDocumentEdgeSpec(
+                        docNodeId, targetNodeId, 0.95,
+                        GraphConstants.REL_ATTACHMENT_OF, "Attachment: " + attachmentName,
+                        edgeMeta, EdgeProvenance.EXTRACTED, factSheetId));
             }
         }
 
-        return created;
+        return createCrossDocumentEdges(edgeSpecs, "Strategy A");
     }
 
     // =========================================================================
     // Strategy B: Version chain detection
     // =========================================================================
 
-    private int detectVersionChains(Map<String, DocumentInfo> docsByFileName, Long factSheetId) {
-        int created = 0;
+    private int detectVersionChains(Map<String, DocumentInfo> docsByFileName, Long factSheetId,
+                                    Map<Document, String> nodeIdsByDocument) {
+        List<KnowledgeGraphService.EdgeSpec> edgeSpecs = new ArrayList<>();
 
         // Group documents by normalized base name
         Map<String, List<DocumentInfo>> groups = new LinkedHashMap<>();
@@ -285,37 +272,24 @@ public class CrossDocumentRelationExtractor {
                 DocumentInfo older = versions.get(i);
                 DocumentInfo newer = versions.get(i + 1);
 
-                String olderNodeId = findDocumentNodeId(older, factSheetId);
-                String newerNodeId = findDocumentNodeId(newer, factSheetId);
+                String olderNodeId = findDocumentNodeId(older, nodeIdsByDocument);
+                String newerNodeId = findDocumentNodeId(newer, nodeIdsByDocument);
                 if (olderNodeId == null || newerNodeId == null) continue;
 
-                if (crossDocumentEdgeExists(newerNodeId, olderNodeId, GraphConstants.REL_VERSION_OF, factSheetId)) {
-                    continue;
-                }
-
-                try {
-                    Map<String, Object> edgeMeta = new LinkedHashMap<>();
-                    edgeMeta.put("semanticType", GraphConstants.REL_VERSION_OF);
-                    edgeMeta.put("olderVersion", older.fileName);
-                    edgeMeta.put("newerVersion", newer.fileName);
-                    edgeMeta.put("baseGroup", entry.getKey());
-
-                    knowledgeGraphService.createEdgeWithMetadata(
-                            newerNodeId, olderNodeId, EdgeType.USER_DEFINED,
-                            0.85, GraphConstants.REL_VERSION_OF,
-                            "Version chain: " + newer.fileName + " → " + older.fileName,
-                            toJson(edgeMeta), EdgeProvenance.INFERRED, factSheetId);
-                    created++;
-
-                    logger.debug("Created VERSION_OF edge: '{}' → '{}'", newer.fileName, older.fileName);
-                } catch (Exception e) {
-                    logger.warn("Failed to create version edge '{}' → '{}': {}",
-                            newer.fileName, older.fileName, e.getMessage());
-                }
+                Map<String, Object> edgeMeta = new LinkedHashMap<>();
+                edgeMeta.put("semanticType", GraphConstants.REL_VERSION_OF);
+                edgeMeta.put("olderVersion", older.fileName);
+                edgeMeta.put("newerVersion", newer.fileName);
+                edgeMeta.put("baseGroup", entry.getKey());
+                edgeSpecs.add(crossDocumentEdgeSpec(
+                        newerNodeId, olderNodeId, 0.85,
+                        GraphConstants.REL_VERSION_OF,
+                        "Version chain: " + newer.fileName + " → " + older.fileName,
+                        edgeMeta, EdgeProvenance.INFERRED, factSheetId));
             }
         }
 
-        return created;
+        return createCrossDocumentEdges(edgeSpecs, "Strategy B");
     }
 
     // =========================================================================
@@ -324,8 +298,9 @@ public class CrossDocumentRelationExtractor {
 
     private int detectProcessDataReferences(List<Document> documents,
                                              Map<String, DocumentInfo> docsByFileName,
-                                             Long factSheetId) {
-        int created = 0;
+                                             Long factSheetId,
+                                             Map<Document, String> nodeIdsByDocument) {
+        List<KnowledgeGraphService.EdgeSpec> edgeSpecs = new ArrayList<>();
 
         // Collect sheet names and significant column headers from spreadsheet documents
         Map<String, DocumentInfo> sheetIndex = new LinkedHashMap<>();
@@ -375,7 +350,7 @@ public class CrossDocumentRelationExtractor {
             if (content == null || content.length() < 50) continue;
 
             String contentLower = content.toLowerCase();
-            String sourceNodeId = findDocumentNodeId(doc, factSheetId);
+            String sourceNodeId = findDocumentNodeId(doc, nodeIdsByDocument);
             if (sourceNodeId == null) continue;
 
             Set<String> alreadyLinked = new HashSet<>();
@@ -389,38 +364,23 @@ public class CrossDocumentRelationExtractor {
 
                 // Check if the term appears in the document content
                 if (contentLower.contains(term)) {
-                    String targetNodeId = findDocumentNodeId(targetInfo, factSheetId);
+                    String targetNodeId = findDocumentNodeId(targetInfo, nodeIdsByDocument);
                     if (targetNodeId == null || alreadyLinked.contains(targetNodeId)) continue;
                     alreadyLinked.add(targetNodeId);
 
-                    if (crossDocumentEdgeExists(sourceNodeId, targetNodeId, GraphConstants.REL_REFERENCES_DATA, factSheetId)) {
-                        continue;
-                    }
-
-                    try {
-                        Map<String, Object> edgeMeta = new LinkedHashMap<>();
-                        edgeMeta.put("semanticType", GraphConstants.REL_REFERENCES_DATA);
-                        edgeMeta.put("referencedTerm", term);
-                        edgeMeta.put("referencedSheet", targetInfo.fileName);
-
-                        knowledgeGraphService.createEdgeWithMetadata(
-                                sourceNodeId, targetNodeId, EdgeType.USER_DEFINED,
-                                0.7, GraphConstants.REL_REFERENCES_DATA,
-                                "References data term: " + term,
-                                toJson(edgeMeta), EdgeProvenance.INFERRED, factSheetId);
-                        created++;
-
-                        logger.debug("Created REFERENCES_DATA edge: document → '{}' (term: {})",
-                                targetInfo.fileName, term);
-                    } catch (Exception e) {
-                        logger.warn("Failed to create process-data edge for term '{}': {}",
-                                term, e.getMessage());
-                    }
+                    Map<String, Object> edgeMeta = new LinkedHashMap<>();
+                    edgeMeta.put("semanticType", GraphConstants.REL_REFERENCES_DATA);
+                    edgeMeta.put("referencedTerm", term);
+                    edgeMeta.put("referencedSheet", targetInfo.fileName);
+                    edgeSpecs.add(crossDocumentEdgeSpec(
+                            sourceNodeId, targetNodeId, 0.7,
+                            GraphConstants.REL_REFERENCES_DATA, "References data term: " + term,
+                            edgeMeta, EdgeProvenance.INFERRED, factSheetId));
                 }
             }
         }
 
-        return created;
+        return createCrossDocumentEdges(edgeSpecs, "Strategy C");
     }
 
     // =========================================================================
@@ -428,8 +388,8 @@ public class CrossDocumentRelationExtractor {
     // =========================================================================
 
     private int resolveHyperlinks(List<Document> documents, Map<String, DocumentInfo> docsByFileName,
-                                   Long factSheetId) {
-        int created = 0;
+                                   Long factSheetId, Map<Document, String> nodeIdsByDocument) {
+        List<KnowledgeGraphService.EdgeSpec> edgeSpecs = new ArrayList<>();
 
         for (Document doc : documents) {
             Map<String, Object> meta = doc.getMetadata();
@@ -442,7 +402,7 @@ public class CrossDocumentRelationExtractor {
             String text = doc.getText();
             if (text == null || text.isEmpty()) continue;
 
-            String sourceNodeId = findDocumentNodeId(doc, factSheetId);
+            String sourceNodeId = findDocumentNodeId(doc, nodeIdsByDocument);
             if (sourceNodeId == null) continue;
 
             // Extract URLs from annotation text
@@ -468,41 +428,30 @@ public class CrossDocumentRelationExtractor {
                 DocumentInfo target = findDocumentByFileName(docsByFileName, urlFileName);
                 if (target == null) continue;
 
-                String targetNodeId = findDocumentNodeId(target, factSheetId);
+                String targetNodeId = findDocumentNodeId(target, nodeIdsByDocument);
                 if (targetNodeId == null || targetNodeId.equals(sourceNodeId)) continue;
 
-                if (crossDocumentEdgeExists(sourceNodeId, targetNodeId, GraphConstants.REL_HYPERLINK_TO, factSheetId)) {
-                    continue;
-                }
-
-                try {
-                    Map<String, Object> edgeMeta = new LinkedHashMap<>();
-                    edgeMeta.put("semanticType", GraphConstants.REL_HYPERLINK_TO);
-                    edgeMeta.put("url", url);
-                    edgeMeta.put("targetFileName", target.fileName);
-
-                    knowledgeGraphService.createEdgeWithMetadata(
-                            sourceNodeId, targetNodeId, EdgeType.USER_DEFINED,
-                            0.9, GraphConstants.REL_HYPERLINK_TO,
-                            "PDF hyperlinks to: " + target.fileName,
-                            toJson(edgeMeta), EdgeProvenance.EXTRACTED, factSheetId);
-                    created++;
-                    logger.debug("Created HYPERLINK_TO edge: PDF → '{}' (via {})", target.fileName, url);
-                } catch (Exception e) {
-                    logger.warn("Failed to create hyperlink edge for URL '{}': {}", url, e.getMessage());
-                }
+                Map<String, Object> edgeMeta = new LinkedHashMap<>();
+                edgeMeta.put("semanticType", GraphConstants.REL_HYPERLINK_TO);
+                edgeMeta.put("url", url);
+                edgeMeta.put("targetFileName", target.fileName);
+                edgeSpecs.add(crossDocumentEdgeSpec(
+                        sourceNodeId, targetNodeId, 0.9,
+                        GraphConstants.REL_HYPERLINK_TO, "PDF hyperlinks to: " + target.fileName,
+                        edgeMeta, EdgeProvenance.EXTRACTED, factSheetId));
             }
         }
 
-        return created;
+        return createCrossDocumentEdges(edgeSpecs, "Strategy D");
     }
 
     // =========================================================================
     // Strategy E: Shared author linking
     // =========================================================================
 
-    private int detectSharedAuthors(List<Document> documents, Long factSheetId) {
-        int created = 0;
+    private int detectSharedAuthors(List<Document> documents, Long factSheetId,
+                                    Map<Document, String> nodeIdsByDocument) {
+        List<KnowledgeGraphService.EdgeSpec> edgeSpecs = new ArrayList<>();
 
         // Group documents by author — check multiple author field names used by different loaders
         Map<String, List<Document>> docsByAuthor = new LinkedHashMap<>();
@@ -522,42 +471,32 @@ public class CrossDocumentRelationExtractor {
 
             for (int i = 0; i < authorDocs.size(); i++) {
                 for (int j = i + 1; j < authorDocs.size(); j++) {
-                    String nodeIdA = findDocumentNodeId(authorDocs.get(i), factSheetId);
-                    String nodeIdB = findDocumentNodeId(authorDocs.get(j), factSheetId);
+                    String nodeIdA = findDocumentNodeId(authorDocs.get(i), nodeIdsByDocument);
+                    String nodeIdB = findDocumentNodeId(authorDocs.get(j), nodeIdsByDocument);
                     if (nodeIdA == null || nodeIdB == null) continue;
 
-                    try {
-                        if (crossDocumentEdgeExists(nodeIdA, nodeIdB, GraphConstants.REL_SHARED_AUTHOR, factSheetId)) {
-                            continue;
-                        }
-
-                        String author = entry.getKey();
-                        Map<String, Object> edgeMeta = new LinkedHashMap<>();
-                        edgeMeta.put("semanticType", GraphConstants.REL_SHARED_AUTHOR);
-                        edgeMeta.put("author", author);
-
-                        knowledgeGraphService.createEdgeWithMetadata(
-                                nodeIdA, nodeIdB, EdgeType.USER_DEFINED,
-                                0.75, GraphConstants.REL_SHARED_AUTHOR,
-                                "Both authored by: " + author,
-                                toJson(edgeMeta), EdgeProvenance.INFERRED, factSheetId);
-                        created++;
-                    } catch (Exception e) {
-                        logger.warn("Failed to create shared author edge: {}", e.getMessage());
-                    }
+                    String author = entry.getKey();
+                    Map<String, Object> edgeMeta = new LinkedHashMap<>();
+                    edgeMeta.put("semanticType", GraphConstants.REL_SHARED_AUTHOR);
+                    edgeMeta.put("author", author);
+                    edgeSpecs.add(crossDocumentEdgeSpec(
+                            nodeIdA, nodeIdB, 0.75,
+                            GraphConstants.REL_SHARED_AUTHOR, "Both authored by: " + author,
+                            edgeMeta, EdgeProvenance.INFERRED, factSheetId));
                 }
             }
         }
 
-        return created;
+        return createCrossDocumentEdges(edgeSpecs, "Strategy E");
     }
 
     // =========================================================================
     // Strategy F: Shared keywords/topics
     // =========================================================================
 
-    private int detectSharedKeywords(List<Document> documents, Long factSheetId) {
-        int created = 0;
+    private int detectSharedKeywords(List<Document> documents, Long factSheetId,
+                                     Map<Document, String> nodeIdsByDocument) {
+        List<KnowledgeGraphService.EdgeSpec> edgeSpecs = new ArrayList<>();
 
         // Build keyword → document index — check multiple keyword field names
         Map<String, List<Document>> docsByKeyword = new LinkedHashMap<>();
@@ -583,8 +522,8 @@ public class CrossDocumentRelationExtractor {
 
             for (int i = 0; i < keywordDocs.size(); i++) {
                 for (int j = i + 1; j < keywordDocs.size(); j++) {
-                    String nodeIdA = findDocumentNodeId(keywordDocs.get(i), factSheetId);
-                    String nodeIdB = findDocumentNodeId(keywordDocs.get(j), factSheetId);
+                    String nodeIdA = findDocumentNodeId(keywordDocs.get(i), nodeIdsByDocument);
+                    String nodeIdB = findDocumentNodeId(keywordDocs.get(j), nodeIdsByDocument);
                     if (nodeIdA == null || nodeIdB == null) continue;
 
                     // Avoid duplicate edges between same pair
@@ -592,30 +531,19 @@ public class CrossDocumentRelationExtractor {
                             ? nodeIdA + "|" + nodeIdB : nodeIdB + "|" + nodeIdA;
                     if (!createdPairs.add(pairKey)) continue;
 
-                    try {
-                        if (crossDocumentEdgeExists(nodeIdA, nodeIdB, GraphConstants.REL_SHARED_KEYWORD, factSheetId)) {
-                            continue;
-                        }
-
-                        String keyword = entry.getKey();
-                        Map<String, Object> edgeMeta = new LinkedHashMap<>();
-                        edgeMeta.put("semanticType", GraphConstants.REL_SHARED_KEYWORD);
-                        edgeMeta.put("keyword", keyword);
-
-                        knowledgeGraphService.createEdgeWithMetadata(
-                                nodeIdA, nodeIdB, EdgeType.USER_DEFINED,
-                                0.65, GraphConstants.REL_SHARED_KEYWORD,
-                                "Shared keyword: " + keyword,
-                                toJson(edgeMeta), EdgeProvenance.INFERRED, factSheetId);
-                        created++;
-                    } catch (Exception e) {
-                        logger.warn("Failed to create shared keyword edge: {}", e.getMessage());
-                    }
+                    String keyword = entry.getKey();
+                    Map<String, Object> edgeMeta = new LinkedHashMap<>();
+                    edgeMeta.put("semanticType", GraphConstants.REL_SHARED_KEYWORD);
+                    edgeMeta.put("keyword", keyword);
+                    edgeSpecs.add(crossDocumentEdgeSpec(
+                            nodeIdA, nodeIdB, 0.65,
+                            GraphConstants.REL_SHARED_KEYWORD, "Shared keyword: " + keyword,
+                            edgeMeta, EdgeProvenance.INFERRED, factSheetId));
                 }
             }
         }
 
-        return created;
+        return createCrossDocumentEdges(edgeSpecs, "Strategy F");
     }
 
     // =========================================================================
@@ -764,33 +692,78 @@ public class CrossDocumentRelationExtractor {
         return 0;
     }
 
-    private String findDocumentNodeId(Document doc, Long factSheetId) {
-        Map<String, Object> meta = doc.getMetadata();
-        if (meta == null) return null;
+    private Map<Document, String> resolveDocumentNodeIds(List<Document> documents, Long factSheetId) {
+        Map<Document, String> nodeIdsByDocument = new IdentityHashMap<>();
+        Map<String, List<Document>> documentsBySourcePath = new LinkedHashMap<>();
+        List<KnowledgeGraphService.ExternalNodeLookup> lookups = new ArrayList<>();
 
-        // Try to find an existing DOCUMENT node by external ID
-        String externalId = (String) meta.get("documentNodeId");
-        if (externalId != null) return externalId;
+        for (Document doc : documents) {
+            Map<String, Object> meta = doc.getMetadata();
+            if (meta == null) {
+                continue;
+            }
+            String directNodeId = (String) meta.get("documentNodeId");
+            if (directNodeId != null) {
+                nodeIdsByDocument.put(doc, directNodeId);
+                continue;
+            }
+            String sourcePath = documentSourcePath(meta);
+            if (sourcePath == null) {
+                continue;
+            }
+            documentsBySourcePath.computeIfAbsent(sourcePath, ignored -> new ArrayList<>()).add(doc);
+            lookups.add(new KnowledgeGraphService.ExternalNodeLookup(sourcePath, NodeLevel.DOCUMENT, factSheetId));
+        }
 
-        // Try by source path
+        if (!lookups.isEmpty()) {
+            // Resolve each source path to a node ID individually so we can maintain the
+            // sourcePath → nodeId mapping.  getNodesByExternalIds returns bare GraphNode
+            // objects with no back-reference to their lookup key, so the batch result
+            // cannot be paired back to source paths without per-lookup queries here.
+            Map<String, String> nodeIdBySourcePath = new LinkedHashMap<>();
+            for (KnowledgeGraphService.ExternalNodeLookup lookup : lookups) {
+                if (nodeIdBySourcePath.containsKey(lookup.externalId())) {
+                    continue; // already resolved (dedup)
+                }
+                Optional<GraphNode> found = lookup.factSheetId() == null
+                        ? knowledgeGraphService.getNodeByExternalId(lookup.externalId(), lookup.nodeType())
+                        : knowledgeGraphService.getNodeByExternalIdInFactSheet(lookup.externalId(), lookup.nodeType(), lookup.factSheetId());
+                found.ifPresent(node -> {
+                    if (node.getNodeId() != null) {
+                        nodeIdBySourcePath.put(lookup.externalId(), node.getNodeId());
+                    }
+                });
+            }
+            for (Map.Entry<String, List<Document>> entry : documentsBySourcePath.entrySet()) {
+                String nodeId = nodeIdBySourcePath.get(entry.getKey());
+                if (nodeId == null) {
+                    continue;
+                }
+                for (Document doc : entry.getValue()) {
+                    nodeIdsByDocument.put(doc, nodeId);
+                }
+            }
+        }
+        return nodeIdsByDocument;
+    }
+
+    private String documentSourcePath(Map<String, Object> meta) {
         String sourcePath = (String) meta.get(GraphConstants.META_SOURCE);
         if (sourcePath == null) sourcePath = (String) meta.get(GraphConstants.META_SOURCE_PATH);
         if (sourcePath == null) sourcePath = (String) meta.get(GraphConstants.META_FILE_NAME);
-        if (sourcePath == null) return null;
-
-        // Look up in the vector store (SSOT)
-        Optional<GraphNode> node;
-        if (factSheetId != null) {
-            node = knowledgeGraphService.getNodeByExternalIdInFactSheet(sourcePath, NodeLevel.DOCUMENT, factSheetId);
-        } else {
-            node = knowledgeGraphService.getNodeByExternalId(sourcePath, NodeLevel.DOCUMENT);
-        }
-
-        return node.map(GraphNode::getNodeId).orElse(null);
+        return sourcePath;
     }
 
-    private String findDocumentNodeId(DocumentInfo info, Long factSheetId) {
-        return findDocumentNodeId(info.doc, factSheetId);
+    private static String externalNodeId(NodeLevel level, String externalId) {
+        return level.name().toLowerCase(Locale.ROOT) + "_" + externalId;
+    }
+
+    private String findDocumentNodeId(Document doc, Map<Document, String> nodeIdsByDocument) {
+        return nodeIdsByDocument.get(doc);
+    }
+
+    private String findDocumentNodeId(DocumentInfo info, Map<Document, String> nodeIdsByDocument) {
+        return findDocumentNodeId(info.doc, nodeIdsByDocument);
     }
 
     private boolean isGenericHeader(String header) {
@@ -901,7 +874,7 @@ public class CrossDocumentRelationExtractor {
     private int resolveAttachmentsFromNodes(List<GraphNode> docNodes,
                                              Map<String, GraphNodeInfo> nodesByFileName,
                                              Long factSheetId) {
-        int created = 0;
+        List<KnowledgeGraphService.EdgeSpec> edgeSpecs = new ArrayList<>();
         int nodesWithAttachments = 0;
         for (GraphNode node : docNodes) {
             Map<String, Object> meta = parseMetadata(node.getMetadataJson());
@@ -1000,38 +973,22 @@ public class CrossDocumentRelationExtractor {
                     continue;
                 }
 
-                if (crossDocumentEdgeExists(node.getNodeId(), target.node.getNodeId(), GraphConstants.REL_ATTACHMENT_OF, factSheetId)) {
-                    logger.debug("Cross-doc Strategy A: ATTACHMENT_OF edge already exists {} -> {}",
-                            node.getNodeId(), target.node.getNodeId());
-                    continue;
-                }
-
-                try {
-                    Map<String, Object> edgeMeta = new LinkedHashMap<>();
-                    edgeMeta.put("semanticType", GraphConstants.REL_ATTACHMENT_OF);
-                    edgeMeta.put("parentDocument", parentLabel);
-                    edgeMeta.put("attachmentFilename", attachmentName);
-
-                    knowledgeGraphService.createEdgeWithMetadata(
-                            node.getNodeId(), target.node.getNodeId(), EdgeType.USER_DEFINED,
-                            0.95, GraphConstants.REL_ATTACHMENT_OF,
-                            "Attachment: " + attachmentName,
-                            toJson(edgeMeta), EdgeProvenance.EXTRACTED, factSheetId);
-                    created++;
-                    logger.info("Created ATTACHMENT_OF edge: '{}' → '{}'",
-                            node.getTitle(), attachmentName);
-                } catch (Exception e) {
-                    logger.warn("Failed to create attachment edge from '{}' to '{}': {}",
-                            node.getTitle(), attachmentName, e.getMessage());
-                }
+                Map<String, Object> edgeMeta = new LinkedHashMap<>();
+                edgeMeta.put("semanticType", GraphConstants.REL_ATTACHMENT_OF);
+                edgeMeta.put("parentDocument", parentLabel);
+                edgeMeta.put("attachmentFilename", attachmentName);
+                edgeSpecs.add(crossDocumentEdgeSpec(
+                        node.getNodeId(), target.node.getNodeId(), 0.95,
+                        GraphConstants.REL_ATTACHMENT_OF, "Attachment: " + attachmentName,
+                        edgeMeta, EdgeProvenance.EXTRACTED, factSheetId));
             }
         }
-        return created;
+        return createCrossDocumentEdges(edgeSpecs, "Strategy A (graph-based)");
     }
 
     private int detectVersionChainsFromNodes(Map<String, GraphNodeInfo> nodesByFileName,
                                               Long factSheetId) {
-        int created = 0;
+        List<KnowledgeGraphService.EdgeSpec> edgeSpecs = new ArrayList<>();
 
         Map<String, List<GraphNodeInfo>> groups = new LinkedHashMap<>();
         for (GraphNodeInfo info : nodesByFileName.values()) {
@@ -1050,32 +1007,20 @@ public class CrossDocumentRelationExtractor {
                 GraphNodeInfo older = versions.get(i);
                 GraphNodeInfo newer = versions.get(i + 1);
 
-                if (crossDocumentEdgeExists(newer.node.getNodeId(), older.node.getNodeId(), GraphConstants.REL_VERSION_OF, factSheetId)) {
-                    continue;
-                }
-
-                try {
-                    Map<String, Object> edgeMeta = new LinkedHashMap<>();
-                    edgeMeta.put("semanticType", GraphConstants.REL_VERSION_OF);
-                    edgeMeta.put("olderVersion", older.fileName);
-                    edgeMeta.put("newerVersion", newer.fileName);
-                    edgeMeta.put("baseGroup", entry.getKey());
-
-                    knowledgeGraphService.createEdgeWithMetadata(
-                            newer.node.getNodeId(), older.node.getNodeId(), EdgeType.USER_DEFINED,
-                            0.85, GraphConstants.REL_VERSION_OF,
-                            "Version chain: " + newer.fileName + " → " + older.fileName,
-                            toJson(edgeMeta), EdgeProvenance.INFERRED, factSheetId);
-                    created++;
-                    logger.info("Created VERSION_OF edge: '{}' → '{}'", newer.fileName, older.fileName);
-                } catch (Exception e) {
-                    logger.warn("Failed to create version edge '{}' → '{}': {}",
-                            newer.fileName, older.fileName, e.getMessage());
-                }
+                Map<String, Object> edgeMeta = new LinkedHashMap<>();
+                edgeMeta.put("semanticType", GraphConstants.REL_VERSION_OF);
+                edgeMeta.put("olderVersion", older.fileName);
+                edgeMeta.put("newerVersion", newer.fileName);
+                edgeMeta.put("baseGroup", entry.getKey());
+                edgeSpecs.add(crossDocumentEdgeSpec(
+                        newer.node.getNodeId(), older.node.getNodeId(), 0.85,
+                        GraphConstants.REL_VERSION_OF,
+                        "Version chain: " + newer.fileName + " → " + older.fileName,
+                        edgeMeta, EdgeProvenance.INFERRED, factSheetId));
             }
         }
 
-        return created;
+        return createCrossDocumentEdges(edgeSpecs, "Strategy B (graph-based)");
     }
 
     /**
@@ -1085,6 +1030,12 @@ public class CrossDocumentRelationExtractor {
     private int detectProcessDataReferencesFromNodes(List<GraphNode> docNodes, Long factSheetId) {
         // Build index of TABLE node titles and headers → parent DOCUMENT node
         Map<String, GraphNode> sheetTermIndex = new LinkedHashMap<>();
+        Map<String, GraphNode> docNodesById = new LinkedHashMap<>();
+        for (GraphNode docNode : docNodes) {
+            if (docNode.getNodeId() != null) {
+                docNodesById.putIfAbsent(docNode.getNodeId(), docNode);
+            }
+        }
 
         // Use vector store (SSOT) to enumerate TABLE nodes
         List<GraphNode> tableNodes;
@@ -1095,8 +1046,11 @@ public class CrossDocumentRelationExtractor {
         }
 
         for (GraphNode tableNode : tableNodes) {
-            // Find the parent DOCUMENT node for this table
-            GraphNode parentDoc = tableNode.getParent();
+            // Resolve the parent DOCUMENT from the already-loaded document set instead of
+            // issuing one getNode RPC per table.
+            GraphNode parentDoc = tableNode.getParentId() != null
+                    ? docNodesById.get(tableNode.getParentId())
+                    : null;
             if (parentDoc == null || parentDoc.getNodeType() != NodeLevel.DOCUMENT) continue;
 
             // Index by table title (sheet name)
@@ -1133,7 +1087,7 @@ public class CrossDocumentRelationExtractor {
 
         if (sheetTermIndex.isEmpty()) return 0;
 
-        int created = 0;
+        List<KnowledgeGraphService.EdgeSpec> edgeSpecs = new ArrayList<>();
 
         for (GraphNode docNode : docNodes) {
             // Gather searchable text from description and contentPreview
@@ -1159,32 +1113,18 @@ public class CrossDocumentRelationExtractor {
                 if (alreadyLinked.contains(targetParentDoc.getNodeId())) continue;
                 alreadyLinked.add(targetParentDoc.getNodeId());
 
-                if (crossDocumentEdgeExists(docNode.getNodeId(), targetParentDoc.getNodeId(), GraphConstants.REL_REFERENCES_DATA, factSheetId)) {
-                    continue;
-                }
-
-                try {
-                    Map<String, Object> edgeMeta = new LinkedHashMap<>();
-                    edgeMeta.put("semanticType", GraphConstants.REL_REFERENCES_DATA);
-                    edgeMeta.put("referencedTerm", term);
-                    edgeMeta.put("referencedDocument", targetParentDoc.getTitle());
-
-                    knowledgeGraphService.createEdgeWithMetadata(
-                            docNode.getNodeId(), targetParentDoc.getNodeId(), EdgeType.USER_DEFINED,
-                            0.7, GraphConstants.REL_REFERENCES_DATA,
-                            "References data term: " + term,
-                            toJson(edgeMeta), EdgeProvenance.INFERRED, factSheetId);
-                    created++;
-
-                    logger.debug("Created REFERENCES_DATA edge (graph): '{}' → '{}' (term: {})",
-                            docNode.getTitle(), targetParentDoc.getTitle(), term);
-                } catch (Exception e) {
-                    logger.warn("Failed to create process-data edge for term '{}': {}",
-                            term, e.getMessage());
-                }
+                Map<String, Object> edgeMeta = new LinkedHashMap<>();
+                edgeMeta.put("semanticType", GraphConstants.REL_REFERENCES_DATA);
+                edgeMeta.put("referencedTerm", term);
+                edgeMeta.put("referencedDocument", targetParentDoc.getTitle());
+                edgeSpecs.add(crossDocumentEdgeSpec(
+                        docNode.getNodeId(), targetParentDoc.getNodeId(), 0.7,
+                        GraphConstants.REL_REFERENCES_DATA, "References data term: " + term,
+                        edgeMeta, EdgeProvenance.INFERRED, factSheetId));
             }
         }
 
+        int created = createCrossDocumentEdges(edgeSpecs, "Strategy C (graph-based)");
         if (created > 0) {
             logger.info("Strategy C (graph-based): created {} REFERENCES_DATA edges", created);
         }
@@ -1199,7 +1139,7 @@ public class CrossDocumentRelationExtractor {
     private int resolveHyperlinksFromNodes(List<GraphNode> docNodes,
                                             Map<String, GraphNodeInfo> nodesByFileName,
                                             Long factSheetId) {
-        int created = 0;
+        List<KnowledgeGraphService.EdgeSpec> edgeSpecs = new ArrayList<>();
 
         for (GraphNode node : docNodes) {
             Map<String, Object> meta = parseMetadata(node.getMetadataJson());
@@ -1233,28 +1173,18 @@ public class CrossDocumentRelationExtractor {
                 GraphNodeInfo target = findNodeByFileName(nodesByFileName, urlFileName);
                 if (target == null || target.node.getNodeId().equals(node.getNodeId())) continue;
 
-                try {
-                    if (crossDocumentEdgeExists(node.getNodeId(), target.node.getNodeId(), GraphConstants.REL_HYPERLINK_TO, factSheetId)) {
-                        continue;
-                    }
-
-                    Map<String, Object> edgeMeta = new LinkedHashMap<>();
-                    edgeMeta.put("semanticType", GraphConstants.REL_HYPERLINK_TO);
-                    edgeMeta.put("url", url);
-                    edgeMeta.put("targetFileName", target.fileName);
-
-                    knowledgeGraphService.createEdgeWithMetadata(
-                            node.getNodeId(), target.node.getNodeId(), EdgeType.USER_DEFINED,
-                            0.9, GraphConstants.REL_HYPERLINK_TO,
-                            "Document hyperlinks to: " + target.fileName,
-                            toJson(edgeMeta), EdgeProvenance.EXTRACTED, factSheetId);
-                    created++;
-                } catch (Exception e) {
-                    logger.warn("Failed to create hyperlink edge for URL '{}': {}", url, e.getMessage());
-                }
+                Map<String, Object> edgeMeta = new LinkedHashMap<>();
+                edgeMeta.put("semanticType", GraphConstants.REL_HYPERLINK_TO);
+                edgeMeta.put("url", url);
+                edgeMeta.put("targetFileName", target.fileName);
+                edgeSpecs.add(crossDocumentEdgeSpec(
+                        node.getNodeId(), target.node.getNodeId(), 0.9,
+                        GraphConstants.REL_HYPERLINK_TO, "Document hyperlinks to: " + target.fileName,
+                        edgeMeta, EdgeProvenance.EXTRACTED, factSheetId));
             }
         }
 
+        int created = createCrossDocumentEdges(edgeSpecs, "Strategy D (graph-based)");
         if (created > 0) {
             logger.info("Strategy D (graph-based): created {} HYPERLINK_TO edges", created);
         }
@@ -1266,7 +1196,7 @@ public class CrossDocumentRelationExtractor {
     // =========================================================================
 
     private int detectSharedAuthorsFromNodes(List<GraphNode> docNodes, Long factSheetId) {
-        int created = 0;
+        List<KnowledgeGraphService.EdgeSpec> edgeSpecs = new ArrayList<>();
 
         Map<String, List<GraphNode>> docsByAuthor = new LinkedHashMap<>();
         for (GraphNode node : docNodes) {
@@ -1286,28 +1216,18 @@ public class CrossDocumentRelationExtractor {
                     String nodeIdA = authorNodes.get(i).getNodeId();
                     String nodeIdB = authorNodes.get(j).getNodeId();
 
-                    try {
-                        if (crossDocumentEdgeExists(nodeIdA, nodeIdB, GraphConstants.REL_SHARED_AUTHOR, factSheetId)) {
-                            continue;
-                        }
-
-                        Map<String, Object> edgeMeta = new LinkedHashMap<>();
-                        edgeMeta.put("semanticType", GraphConstants.REL_SHARED_AUTHOR);
-                        edgeMeta.put("author", entry.getKey());
-
-                        knowledgeGraphService.createEdgeWithMetadata(
-                                nodeIdA, nodeIdB, EdgeType.USER_DEFINED,
-                                0.75, GraphConstants.REL_SHARED_AUTHOR,
-                                "Both authored by: " + entry.getKey(),
-                                toJson(edgeMeta), EdgeProvenance.INFERRED, factSheetId);
-                        created++;
-                    } catch (Exception e) {
-                        logger.warn("Failed to create shared author edge: {}", e.getMessage());
-                    }
+                    Map<String, Object> edgeMeta = new LinkedHashMap<>();
+                    edgeMeta.put("semanticType", GraphConstants.REL_SHARED_AUTHOR);
+                    edgeMeta.put("author", entry.getKey());
+                    edgeSpecs.add(crossDocumentEdgeSpec(
+                            nodeIdA, nodeIdB, 0.75,
+                            GraphConstants.REL_SHARED_AUTHOR, "Both authored by: " + entry.getKey(),
+                            edgeMeta, EdgeProvenance.INFERRED, factSheetId));
                 }
             }
         }
 
+        int created = createCrossDocumentEdges(edgeSpecs, "Strategy E (graph-based)");
         if (created > 0) {
             logger.info("Strategy E (graph-based): created {} SHARED_AUTHOR edges", created);
         }
@@ -1319,7 +1239,7 @@ public class CrossDocumentRelationExtractor {
     // =========================================================================
 
     private int detectSharedKeywordsFromNodes(List<GraphNode> docNodes, Long factSheetId) {
-        int created = 0;
+        List<KnowledgeGraphService.EdgeSpec> edgeSpecs = new ArrayList<>();
 
         Map<String, List<GraphNode>> docsByKeyword = new LinkedHashMap<>();
         for (GraphNode node : docNodes) {
@@ -1350,32 +1270,44 @@ public class CrossDocumentRelationExtractor {
                             ? nodeIdA + "|" + nodeIdB : nodeIdB + "|" + nodeIdA;
                     if (!createdPairs.add(pairKey)) continue;
 
-                    try {
-                        if (crossDocumentEdgeExists(nodeIdA, nodeIdB, GraphConstants.REL_SHARED_KEYWORD, factSheetId)) {
-                            continue;
-                        }
-
-                        Map<String, Object> edgeMeta = new LinkedHashMap<>();
-                        edgeMeta.put("semanticType", GraphConstants.REL_SHARED_KEYWORD);
-                        edgeMeta.put("keyword", entry.getKey());
-
-                        knowledgeGraphService.createEdgeWithMetadata(
-                                nodeIdA, nodeIdB, EdgeType.USER_DEFINED,
-                                0.65, GraphConstants.REL_SHARED_KEYWORD,
-                                "Shared keyword: " + entry.getKey(),
-                                toJson(edgeMeta), EdgeProvenance.INFERRED, factSheetId);
-                        created++;
-                    } catch (Exception e) {
-                        logger.warn("Failed to create shared keyword edge: {}", e.getMessage());
-                    }
+                    Map<String, Object> edgeMeta = new LinkedHashMap<>();
+                    edgeMeta.put("semanticType", GraphConstants.REL_SHARED_KEYWORD);
+                    edgeMeta.put("keyword", entry.getKey());
+                    edgeSpecs.add(crossDocumentEdgeSpec(
+                            nodeIdA, nodeIdB, 0.65,
+                            GraphConstants.REL_SHARED_KEYWORD, "Shared keyword: " + entry.getKey(),
+                            edgeMeta, EdgeProvenance.INFERRED, factSheetId));
                 }
             }
         }
 
+        int created = createCrossDocumentEdges(edgeSpecs, "Strategy F (graph-based)");
         if (created > 0) {
             logger.info("Strategy F (graph-based): created {} SHARED_KEYWORD edges", created);
         }
         return created;
+    }
+
+    private KnowledgeGraphService.EdgeSpec crossDocumentEdgeSpec(
+            String sourceNodeId, String targetNodeId, double weight, String label,
+            String description, Map<String, Object> metadata, EdgeProvenance provenance,
+            Long factSheetId) {
+        return new KnowledgeGraphService.EdgeSpec(
+                sourceNodeId, targetNodeId, EdgeType.USER_DEFINED, weight, description,
+                label, toJson(metadata), provenance, factSheetId);
+    }
+
+    private int createCrossDocumentEdges(List<KnowledgeGraphService.EdgeSpec> edgeSpecs, String strategyName) {
+        if (edgeSpecs == null || edgeSpecs.isEmpty()) {
+            return 0;
+        }
+        try {
+            return knowledgeGraphService.createEdgesBatch(edgeSpecs);
+        } catch (Exception e) {
+            logger.warn("{}: failed to create {} cross-document edges in batch: {}",
+                    strategyName, edgeSpecs.size(), e.getMessage());
+            return 0;
+        }
     }
 
     private GraphNodeInfo findNodeByFileName(Map<String, GraphNodeInfo> index, String searchName) {
@@ -1415,10 +1347,6 @@ public class CrossDocumentRelationExtractor {
      */
     private String stripLeadingPrefix(String name) {
         return name.replaceFirst("^\\d+[a-z]?[ _-]+", "");
-    }
-
-    private boolean crossDocumentEdgeExists(String sourceNodeId, String targetNodeId, String label, Long factSheetId) {
-        return knowledgeGraphService.edgeExists(sourceNodeId, targetNodeId, EdgeType.USER_DEFINED, label, factSheetId);
     }
 
     @SuppressWarnings("unchecked")

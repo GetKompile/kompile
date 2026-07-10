@@ -11,13 +11,15 @@ package ai.kompile.tool.graph;
 
 import ai.kompile.graph.algorithms.ShortestPathAlgorithm;
 import ai.kompile.graph.algorithms.service.GraphAlgorithmService;
+import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
+import ai.kompile.knowledgegraph.unified.UnifiedGraphBridge;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentMatchers;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -31,8 +33,8 @@ import static org.mockito.Mockito.*;
 class GraphAlgorithmsToolTest {
 
     @Mock private GraphAlgorithmService algorithmService;
-    @Mock private GraphNodeRepository nodeRepository;
     @Mock private KnowledgeGraphService graphService;
+    @Mock private UnifiedGraphBridge unifiedGraphBridge;
 
     private GraphAlgorithmsTool tool;
 
@@ -47,7 +49,7 @@ class GraphAlgorithmsToolTest {
         scores.put("n1", 0.9);
         scores.put("n2", 0.5);
         scores.put("n3", 0.1);
-        when(algorithmService.pageRank(isNull(), eq(0.85), eq(100), eq(1e-6)))
+        when(algorithmService.pageRank(ArgumentMatchers.<Long>isNull(), eq(0.85), eq(100), eq(1e-6)))
                 .thenReturn(scores);
         when(graphService.getNodesByIds(anyList()))
                 .thenReturn(List.of(
@@ -66,12 +68,32 @@ class GraphAlgorithmsToolTest {
     }
 
     @Test
+    void pageRank_withFactSheetUsesUnifiedGraphWhenBridgeIsAvailable() {
+        UnifiedGraph unified = new UnifiedGraph()
+                .addEntity("n1", "ENTITY", "Unified Node")
+                .addEntity("n2", "DOCUMENT", "Other Node")
+                .addRelation("r1", "n2", "n1", "LINKS_TO", 1.0);
+        when(unifiedGraphBridge.export(7L)).thenReturn(unified);
+        when(algorithmService.pageRankGraph(same(unified), eq(0.85), eq(100), eq(1e-6)))
+                .thenReturn(Map.of("n1", 0.9));
+
+        GraphAlgorithmsTool unifiedTool = new GraphAlgorithmsTool(algorithmService, graphService, unifiedGraphBridge);
+        var result = unifiedTool.pageRank(new GraphAlgorithmsTool.PageRankInput(7L, null, null, null));
+
+        assertEquals("unified_graph", result.get("source"));
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> rankings = (List<Map<String, Object>>) result.get("rankings");
+        assertEquals("Unified Node", rankings.get(0).get("title"));
+        verify(graphService, never()).getNodesByIds(anyList());
+    }
+
+    @Test
     void pageRank_respectsTopK() {
         Map<String, Double> scores = new LinkedHashMap<>();
         for (int i = 0; i < 30; i++) {
             scores.put("n" + i, (double) (30 - i));
         }
-        when(algorithmService.pageRank(any(), anyDouble(), anyInt(), anyDouble()))
+        when(algorithmService.pageRank(ArgumentMatchers.<Long>any(), anyDouble(), anyInt(), anyDouble()))
                 .thenReturn(scores);
         when(graphService.getNodesByIds(anyList())).thenReturn(List.of());
 
@@ -84,7 +106,7 @@ class GraphAlgorithmsToolTest {
 
     @Test
     void degreeCentrality_parsesTypeCorrectly() {
-        when(algorithmService.degreeCentrality(any(), any()))
+        when(algorithmService.degreeCentrality(ArgumentMatchers.<Long>any(), any()))
                 .thenReturn(Map.of("n1", 5.0));
         when(graphService.getNodesByIds(anyList())).thenReturn(List.of());
 
@@ -103,7 +125,7 @@ class GraphAlgorithmsToolTest {
 
     @Test
     void betweennessCentrality_returnsRankedResult() {
-        when(algorithmService.betweennessCentrality(isNull(), eq(100), eq(42L)))
+        when(algorithmService.betweennessCentrality(ArgumentMatchers.<Long>isNull(), eq(100), eq(42L)))
                 .thenReturn(Map.of("bridge", 0.8));
         when(graphService.getNodesByIds(anyList())).thenReturn(List.of());
 
@@ -127,7 +149,7 @@ class GraphAlgorithmsToolTest {
 
     @Test
     void shortestPath_noPathFound_returnsNotFound() {
-        when(algorithmService.shortestPath(isNull(), eq("a"), eq("b"), eq(false)))
+        when(algorithmService.shortestPath(ArgumentMatchers.<Long>isNull(), eq("a"), eq("b"), eq(false)))
                 .thenReturn(new ShortestPathAlgorithm.PathResult(List.of(), Double.POSITIVE_INFINITY, false));
 
         var result = tool.shortestPath(
@@ -138,7 +160,7 @@ class GraphAlgorithmsToolTest {
 
     @Test
     void shortestPath_pathFound_returnsNodes() {
-        when(algorithmService.shortestPath(isNull(), eq("a"), eq("c"), eq(false)))
+        when(algorithmService.shortestPath(ArgumentMatchers.<Long>isNull(), eq("a"), eq("c"), eq(false)))
                 .thenReturn(new ShortestPathAlgorithm.PathResult(List.of("a", "b", "c"), 2.0, true));
         when(graphService.getNodesByIds(List.of("a", "b", "c")))
                 .thenReturn(List.of(
@@ -162,7 +184,7 @@ class GraphAlgorithmsToolTest {
 
     @Test
     void shortestPath_weighted_usesDijkstra() {
-        when(algorithmService.shortestPath(isNull(), eq("a"), eq("b"), eq(true)))
+        when(algorithmService.shortestPath(ArgumentMatchers.<Long>isNull(), eq("a"), eq("b"), eq(true)))
                 .thenReturn(new ShortestPathAlgorithm.PathResult(List.of("a", "b"), 0.5, true));
         when(graphService.getNodesByIds(anyList())).thenReturn(List.of());
 
@@ -181,7 +203,7 @@ class GraphAlgorithmsToolTest {
 
     @Test
     void nodeSimilarity_returnsScoreAndInterpretation() {
-        when(algorithmService.jaccardSimilarity(isNull(), eq("a"), eq("b")))
+        when(algorithmService.jaccardSimilarity(ArgumentMatchers.<Long>isNull(), eq("a"), eq("b")))
                 .thenReturn(0.75);
         when(graphService.getNodesByIds(List.of("a", "b")))
                 .thenReturn(List.of(
@@ -200,7 +222,7 @@ class GraphAlgorithmsToolTest {
 
     @Test
     void nodeSimilarity_lowScore_returnsLowInterpretation() {
-        when(algorithmService.jaccardSimilarity(isNull(), eq("a"), eq("b")))
+        when(algorithmService.jaccardSimilarity(ArgumentMatchers.<Long>isNull(), eq("a"), eq("b")))
                 .thenReturn(0.05);
         when(graphService.getNodesByIds(anyList())).thenReturn(List.of());
 
@@ -212,7 +234,7 @@ class GraphAlgorithmsToolTest {
 
     @Test
     void nodeSimilarity_moderateScore_returnsModerateInterpretation() {
-        when(algorithmService.jaccardSimilarity(isNull(), eq("a"), eq("b")))
+        when(algorithmService.jaccardSimilarity(ArgumentMatchers.<Long>isNull(), eq("a"), eq("b")))
                 .thenReturn(0.35);
         when(graphService.getNodesByIds(anyList())).thenReturn(List.of());
 

@@ -461,6 +461,10 @@ public final class GraphConstants {
 
     // Google Docs relationship types
     public static final String REL_OWNED_BY = "OWNED_BY";
+    /** Source entity has an owner; inverse of {@code OWNED_BY}. Maps to {@code EdgeType.HAS_OWNER}. */
+    public static final String REL_HAS_OWNER = "HAS_OWNER";
+    /** Alternative string form for ownership used by some extractors. Maps to {@code EdgeType.OWNED_BY}. */
+    public static final String REL_OWNS = "OWNS";
     public static final String REL_REVISION_OF = "REVISION_OF";
     public static final String REL_MODIFIED_BY = "MODIFIED_BY";
     public static final String REL_SUCCESSOR_OF = "SUCCESSOR_OF";
@@ -558,6 +562,9 @@ public final class GraphConstants {
     public static final String META_SUBJECT = "subject";
     public static final String META_DESCRIPTION = "description";
     public static final String META_LANGUAGE = "language";
+    public static final String META_LANGUAGE_CONFIDENCE = "languageConfidence";
+    public static final String META_LANGUAGE_SOURCE = "languageSource";
+    public static final String META_LANGUAGE_REASON = "languageReason";
     public static final String META_FILE_SIZE = "fileSize";
     public static final String META_PAGE_COUNT = "pageCount";
     public static final String META_CREATION_DATE = "creationDate";

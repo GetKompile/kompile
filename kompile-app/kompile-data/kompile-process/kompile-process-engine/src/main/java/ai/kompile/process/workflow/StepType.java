@@ -34,6 +34,8 @@ public enum StepType {
     HTTP_CALL,
     /** Executes a JavaScript or Python script via GraalVM Polyglot with full access to runData. */
     SCRIPT,
+    /** Runs a stateful conversational agent session with structured workflow context. */
+    AGENT_SESSION,
     /** Converts Excel spreadsheet formulas to code via LLM and executes the generated code.
      *  Requires a SpreadsheetGraph JSON (from kompile-loader-excel) in the step's excelGraphJson field. */
     EXCEL_COMPUTE,

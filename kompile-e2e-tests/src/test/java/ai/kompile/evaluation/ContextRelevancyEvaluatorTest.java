@@ -53,7 +53,7 @@ class ContextRelevancyEvaluatorTest {
 
     @BeforeEach
     void setUp() {
-        properties = new EvaluationProperties();
+        properties = new EvaluationProperties(null);
         properties.getContextRelevancy().setEnabled(true);
         properties.getContextRelevancy().setThreshold(0.6);
         evaluator = new ContextRelevancyEvaluator(chatClient, properties);

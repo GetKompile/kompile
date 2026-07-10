@@ -46,8 +46,10 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.util.*;
 import java.util.regex.Pattern;
 
@@ -529,7 +531,7 @@ public class OneDriveCrawler extends AbstractCrawler {
         }
 
         try (InputStream in = response.body()) {
-            Files.copy(in, localFile, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            Files.copy(in, localFile, StandardCopyOption.REPLACE_EXISTING);
         }
     }
 
@@ -665,7 +667,7 @@ public class OneDriveCrawler extends AbstractCrawler {
     private static long parseEpochMs(String dateTime) {
         if (dateTime == null || dateTime.isBlank()) return 0L;
         try {
-            return java.time.OffsetDateTime.parse(dateTime).toInstant().toEpochMilli();
+            return OffsetDateTime.parse(dateTime).toInstant().toEpochMilli();
         } catch (Exception e) {
             return 0L;
         }

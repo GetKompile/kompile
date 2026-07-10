@@ -21,6 +21,7 @@ import org.springframework.web.server.ResponseStatusException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -169,7 +170,7 @@ public class XetCasService {
     }
 
     private void verifyTermHashes(ShardCodec.ParsedShard shard) {
-        Map<String, ShardCodec.XorbInfo> byHash = new java.util.HashMap<>();
+        Map<String, ShardCodec.XorbInfo> byHash = new HashMap<>();
         for (ShardCodec.XorbInfo xi : shard.xorbs) {
             byHash.put(xi.xorbHash, xi);
         }

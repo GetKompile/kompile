@@ -47,6 +47,8 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -686,8 +688,8 @@ public class SlackCrawler extends AbstractCrawler {
 
     private String parseDate(String dateStr) {
         try {
-            return String.valueOf(java.time.LocalDate.parse(dateStr)
-                    .atStartOfDay(java.time.ZoneOffset.UTC).toEpochSecond());
+            return String.valueOf(LocalDate.parse(dateStr)
+                    .atStartOfDay(ZoneOffset.UTC).toEpochSecond());
         } catch (Exception e1) {
             try {
                 return String.valueOf(Instant.parse(dateStr).getEpochSecond());

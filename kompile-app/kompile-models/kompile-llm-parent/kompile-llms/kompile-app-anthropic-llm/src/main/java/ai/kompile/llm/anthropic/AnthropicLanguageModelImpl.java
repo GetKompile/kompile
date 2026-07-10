@@ -84,8 +84,7 @@ public class AnthropicLanguageModelImpl implements LanguageModel {
                 return output.getText();
             }
         }
-        logger.warn("Anthropic could not get a valid response or output for query: {}", userQuery);
-        return "Error: Could not get a response from Anthropic language model.";
+        throw new IllegalStateException("Anthropic language model returned no usable response");
     }
 
     @Override

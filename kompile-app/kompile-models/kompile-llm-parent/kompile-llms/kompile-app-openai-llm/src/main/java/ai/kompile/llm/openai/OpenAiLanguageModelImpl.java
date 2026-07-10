@@ -71,8 +71,7 @@ public class OpenAiLanguageModelImpl implements LanguageModel {
         if (response != null && response.getResult() != null && response.getResult().getOutput() != null) {
             return response.getResult().getOutput().getText();
         }
-        logger.warn("OpenAI could not get a valid response or output for query: {}", userQuery);
-        return "Error: Could not get a response from OpenAI language model.";
+        throw new IllegalStateException("OpenAI language model returned no usable response");
     }
 
     @Override

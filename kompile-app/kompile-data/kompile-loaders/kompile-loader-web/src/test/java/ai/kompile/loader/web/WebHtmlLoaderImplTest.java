@@ -664,6 +664,34 @@ class WebHtmlLoaderImplTest {
         assertNull(meta.get("email.from"), "Non-email should not set email.from");
     }
 
+    @Test
+    void extractsCodeBlocksFromPreCode() throws Exception {
+        String html = "<html><head><title>Docs</title></head><body>"
+                + "<h1>Guide</h1>"
+                + "<pre><code class=\"language-java\">int x = 1;\nSystem.out.println(x);</code></pre>"
+                + "<p>Some prose.</p>"
+                + "</body></html>";
+        Path htmlFile = tempDir.resolve("code.html");
+        writeFile(htmlFile, html);
+
+        DocumentSourceDescriptor desc = DocumentSourceDescriptor.builder()
+                .type(SourceType.FILE)
+                .pathOrUrl(htmlFile.toString())
+                .build();
+
+        List<Document> docs = loader.load(desc);
+        assertFalse(docs.isEmpty());
+        Object codeBlocksObj = docs.get(0).getMetadata().get("html.codeBlocks");
+        assertNotNull(codeBlocksObj, "loader must emit html.codeBlocks (was a dead consumer branch)");
+        assertTrue(codeBlocksObj instanceof List<?>);
+        List<?> codeBlocks = (List<?>) codeBlocksObj;
+        assertEquals(1, codeBlocks.size(), "one code block for the single <pre><code>");
+        Map<?, ?> cb = (Map<?, ?>) codeBlocks.get(0);
+        assertEquals("java", cb.get("language"), "language-java class → java");
+        assertTrue(String.valueOf(cb.get("code")).contains("System.out.println"),
+                "code text captured");
+    }
+
     // ── HtmlEmailMetadataExtractor standalone tests ─────────────────────────
 
     @Test

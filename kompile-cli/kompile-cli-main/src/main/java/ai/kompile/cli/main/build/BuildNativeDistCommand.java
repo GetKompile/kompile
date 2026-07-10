@@ -16,8 +16,8 @@
 
 package ai.kompile.cli.main.build;
 
-import ai.kompile.cli.common.util.ByteFormatUtils;
 import ai.kompile.cli.common.util.EnvironmentUtils;
+import ai.kompile.utils.FormatUtils;
 import org.apache.maven.shared.invoker.*;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
@@ -358,6 +358,6 @@ public class BuildNativeDistCommand implements Callable<Integer> {
     }
 
     private static String formatBytes(long bytes) {
-        return ByteFormatUtils.formatBytes(bytes);
+        return FormatUtils.formatBytes(bytes);
     }
 }

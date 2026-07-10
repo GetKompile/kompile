@@ -9,6 +9,8 @@
  */
 package ai.kompile.graph.reasoning.psl;
 
+import java.io.Serializable;
+
 /**
  * An argument of a {@link PslAtom}: either a logic {@code variable} (e.g. {@code X})
  * or a ground {@code constant} (e.g. a knowledge-graph entity id).
@@ -20,7 +22,7 @@ package ai.kompile.graph.reasoning.psl;
  * @param name     the identifier (variable name or constant value)
  * @param variable {@code true} for a free variable, {@code false} for a ground constant
  */
-public record Term(String name, boolean variable) {
+public record Term(String name, boolean variable) implements Serializable {
 
     public static Term var(String name) {
         return new Term(name, true);

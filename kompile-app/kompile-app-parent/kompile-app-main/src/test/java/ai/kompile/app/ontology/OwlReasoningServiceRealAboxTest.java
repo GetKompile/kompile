@@ -39,6 +39,8 @@ import static org.mockito.ArgumentMatchers.anyDouble;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.Mockito.doCallRealMethod;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -83,6 +85,10 @@ class OwlReasoningServiceRealAboxTest {
         when(kg.getEdgesInFactSheet(7L)).thenReturn(List.of(
                 containsEdge("e-ab", a, b),
                 containsEdge("e-bc", b, c)));
+        // The Jul-8 refactor switched from per-edge createEdgeWithMetadata to createEdgesBatch.
+        // createEdgesBatch is a default method that delegates to createEdgeWithMetadata; instruct the mock
+        // to execute the real default so the underlying createEdgeWithMetadata call is observable.
+        doCallRealMethod().when(kg).createEdgesBatch(anyList());
 
         OwlReasoningService service = new OwlReasoningService(binding, new OwlOntologyBridge(), kg);
         List<String> rules = service.owlDerivedPslRules(7L, 1.0);
@@ -152,6 +158,13 @@ class OwlReasoningServiceRealAboxTest {
         when(kg.getNodesByTypeInFactSheet(7L, NodeLevel.ENTITY)).thenReturn(List.of(alice, bob, fido));
         when(kg.getEdgesInFactSheet(7L)).thenReturn(List.of(
                 relationEdge("e-manages", alice, bob, "MANAGES")));
+        // updateNodesBatch is a default method that loops and calls updateNode per entry. Instruct the
+        // mock to execute the real default so per-node updateNode calls are observable. Also provide
+        // getNode stubs so the default can look up each node before merging metadata.
+        doCallRealMethod().when(kg).updateNodesBatch(anyList());
+        when(kg.getNode(eq("alice"))).thenReturn(Optional.of(alice));
+        when(kg.getNode(eq("bob"))).thenReturn(Optional.of(bob));
+        when(kg.getNode(eq("fido"))).thenReturn(Optional.of(fido));
 
         OwlReasoningService service = new OwlReasoningService(binding, new OwlOntologyBridge(), kg);
         OwlClassificationResponse response = service.classify(7L);
@@ -201,6 +214,9 @@ class OwlReasoningServiceRealAboxTest {
                         "confidence", 0.25d,
                         "source", "llm"))));
         when(kg.getNodesByTypeInFactSheet(7L, NodeLevel.ENTITY)).thenReturn(List.of(entity));
+        // updateNodesBatch is a default method; make the mock execute it so updateNode is observable.
+        doCallRealMethod().when(kg).updateNodesBatch(anyList());
+        when(kg.getNode(eq("a"))).thenReturn(Optional.of(entity));
 
         OwlReasoningService service = new OwlReasoningService(binding, new OwlOntologyBridge(), kg);
         Method method = OwlReasoningService.class.getDeclaredMethod(
@@ -237,6 +253,8 @@ class OwlReasoningServiceRealAboxTest {
         KnowledgeGraphService kg = mock(KnowledgeGraphService.class);
         GraphNode entity = entityNode("a", Map.of("entity_type", "Thing"));
         when(kg.getNodesByTypeInFactSheet(7L, NodeLevel.ENTITY)).thenReturn(List.of(entity));
+        doCallRealMethod().when(kg).updateNodesBatch(anyList());
+        when(kg.getNode(eq("a"))).thenReturn(Optional.of(entity));
 
         OwlReasoningService service = new OwlReasoningService(binding, new OwlOntologyBridge(), kg);
         Method method = OwlReasoningService.class.getDeclaredMethod(
@@ -282,6 +300,8 @@ class OwlReasoningServiceRealAboxTest {
                                 "basis", "class-subsumption",
                                 "evidence", List.of("https://example.org/ontology#Assembly")))));
         when(kg.getNodesByTypeInFactSheet(7L, NodeLevel.ENTITY)).thenReturn(List.of(entity));
+        doCallRealMethod().when(kg).updateNodesBatch(anyList());
+        when(kg.getNode(eq("a"))).thenReturn(Optional.of(entity));
 
         OwlReasoningService service = new OwlReasoningService(binding, new OwlOntologyBridge(), kg);
         Method method = OwlReasoningService.class.getDeclaredMethod(
@@ -316,6 +336,8 @@ class OwlReasoningServiceRealAboxTest {
                 "entity_type", "RedWine",
                 "typeInferenceScore", 0.93d));
         when(kg.getNodesByTypeInFactSheet(7L, NodeLevel.ENTITY)).thenReturn(List.of(entity));
+        doCallRealMethod().when(kg).updateNodesBatch(anyList());
+        when(kg.getNode(eq("wine-red"))).thenReturn(Optional.of(entity));
 
         OwlReasoningService service = new OwlReasoningService(binding, new OwlOntologyBridge(), kg);
         Method method = OwlReasoningService.class.getDeclaredMethod(

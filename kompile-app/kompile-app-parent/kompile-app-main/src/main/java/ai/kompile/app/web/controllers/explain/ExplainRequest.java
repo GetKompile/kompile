@@ -28,6 +28,12 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
  * @param depth       derivation depth cap; 0 uses the lib default (5)
  * @param mode        optional engine override: GROUNDING, HYBRID, CAUSAL
  * @param sessionId   pass-through for audit/correlation
+ * @param format      optional response format: {@code json} (default) | {@code prov-n} | {@code prov-json}.
+ *                    When {@code prov-n} or {@code prov-json} is requested the controller
+ *                    renders the {@link ai.kompile.graph.reasoning.explain.ReasoningTrace}
+ *                    via {@link ai.kompile.graph.reasoning.explain.ProvSerializer} and returns
+ *                    the PROV document as {@code text/plain} (PROV-N) or
+ *                    {@code application/json} (PROV-JSON). Default behaviour is unchanged.
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record ExplainRequest(
@@ -35,5 +41,6 @@ public record ExplainRequest(
         Long factSheetId,
         int depth,
         String mode,
-        String sessionId
+        String sessionId,
+        String format
 ) {}

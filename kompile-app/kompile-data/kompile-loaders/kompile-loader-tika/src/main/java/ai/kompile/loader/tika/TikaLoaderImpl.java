@@ -28,9 +28,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import org.apache.tika.Tika;
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.metadata.Metadata;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
+import org.springframework.core.Ordered;
+import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 import org.w3c.dom.Attr;
 import org.w3c.dom.Element;
@@ -48,17 +51,20 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 @Component
+@Order(Ordered.LOWEST_PRECEDENCE)
 public class TikaLoaderImpl implements DocumentLoader {
 
     private static final Logger logger = LoggerFactory.getLogger(TikaLoaderImpl.class);
@@ -144,8 +150,15 @@ public class TikaLoaderImpl implements DocumentLoader {
         }
 
         String content;
+        Metadata tikaMeta = new Metadata();
+        // Hint the filename so Tika's parser/type detection is accurate for ambiguous content.
+        tikaMeta.set("resourceName", file.getName());
         try (InputStream stream = new FileInputStream(file)) {
-            content = tika.parseToString(stream);
+            // Use the (stream, metadata) overload so Tika's native document metadata — Dublin Core
+            // author/title/dates, producer, page count, content type — is captured. parseToString(stream)
+            // discarded ALL of it, leaving TikaGenericGraphExtractor's author/title/keywords/dates/
+            // DublinCore block dead on the pure-Tika path (RTF/EPUB/TXT/plain).
+            content = tika.parseToString(stream, tikaMeta);
         } catch (TikaException | IOException e) {
             // Handle corrupted or invalid files gracefully
             String errorMessage = e.getMessage();
@@ -165,16 +178,107 @@ public class TikaLoaderImpl implements DocumentLoader {
         }
 
         Document springDoc = new Document(content);
-        springDoc.getMetadata().put("source", file.getAbsolutePath());
-        springDoc.getMetadata().put("fileName", file.getName());
-        springDoc.getMetadata().put("loader", getName());
+        Map<String, Object> docMeta = springDoc.getMetadata();
+        docMeta.put(GraphConstants.META_SOURCE, file.getAbsolutePath());
+        docMeta.put(GraphConstants.META_FILE_NAME, file.getName());
+        docMeta.put(GraphConstants.META_LOADER, getName());
+        // Stamp fileSize/lastModified on the SUCCESS path too. TikaGenericGraphExtractor reads both
+        // (fileSize into docProps; lastModified as the modificationDate fallback), but previously
+        // only the error path set them, so every successfully-parsed doc lacked them.
+        docMeta.put(GraphConstants.META_FILE_SIZE, file.length());
+        // ISO-8601 (not raw epoch millis) so it reads as a real date wherever it is used as the
+        // modificationDate fallback — and so an occurredAt parse / DATE entity is human-readable.
+        docMeta.put(GraphConstants.META_LAST_MODIFIED, Instant.ofEpochMilli(file.lastModified()).toString());
+
+        // Surface Tika's native metadata (Dublin Core author/title/dates, producer, etc.) under the
+        // keys the graph extractor reads.
+        stampTikaMetadata(tikaMeta, docMeta);
 
         // Structured-format enrichment: JSON/YAML/XML files are parsed so the graph
         // extractor can build a structural knowledge graph from them (Tika only yields
         // flat text). Best-effort — the document already carries its plain-text body.
-        enrichStructuredFormat(file, springDoc.getMetadata());
+        enrichStructuredFormat(file, docMeta);
+
+        // Fallback documentType from the file extension for Tika-owned formats that structured
+        // enrichment doesn't handle but resolveEntityType() specialises (rtf/epub/log). putIfAbsent
+        // semantics — never override a documentType a more specific step already set, and restricted
+        // to a safe whitelist so Office/PDF/HTML files that fell through to Tika are not re-routed
+        // away from this extractor.
+        applyDocumentTypeFallback(file, docMeta);
 
         return List.of(springDoc);
+    }
+
+    /**
+     * Copies Tika's native document metadata into the Spring document metadata under the keys
+     * {@link ai.kompile.loader.tika.TikaGenericGraphExtractor} reads. Tika exposes each field under
+     * several (version- and format-dependent) names, so every target key tries a short ordered list
+     * of candidates and takes the first non-blank one. {@code putIfAbsent} semantics: an already-set
+     * value (structured enrichment, a more specific loader) always wins.
+     */
+    private void stampTikaMetadata(Metadata tikaMeta, Map<String, Object> meta) {
+        if (tikaMeta == null) {
+            return;
+        }
+        putTika(meta, GraphConstants.META_TITLE, tikaMeta, "dc:title", "title");
+        putTika(meta, GraphConstants.META_AUTHOR, tikaMeta, "dc:creator", "meta:author", "Author", "creator");
+        putTika(meta, GraphConstants.META_SUBJECT, tikaMeta, "dc:subject", "subject", "cp:subject");
+        putTika(meta, GraphConstants.META_KEYWORDS, tikaMeta, "meta:keyword", "Keywords", "pdf:keywords");
+        putTika(meta, GraphConstants.META_DESCRIPTION, tikaMeta, "dc:description", "description");
+        putTika(meta, GraphConstants.META_LANGUAGE, tikaMeta, "dc:language", "language");
+        putTika(meta, GraphConstants.META_CREATION_DATE, tikaMeta,
+                "dcterms:created", "meta:creation-date", "Creation-Date", "created");
+        putTika(meta, GraphConstants.META_MODIFICATION_DATE, tikaMeta,
+                "dcterms:modified", "meta:save-date", "Last-Modified", "modified");
+        putTika(meta, GraphConstants.META_PRODUCER, tikaMeta, "pdf:producer", "producer");
+        putTika(meta, GraphConstants.META_APPLICATION_NAME, tikaMeta,
+                "extended-properties:Application", "Application-Name", "generator");
+        putTika(meta, GraphConstants.META_PUBLISHER, tikaMeta, "dc:publisher", "publisher");
+        putTika(meta, GraphConstants.META_PAGE_COUNT, tikaMeta, "xmpTPg:NPages", "Page-Count", "meta:page-count");
+        putTika(meta, GraphConstants.META_TIKA_CONTENT_TYPE, tikaMeta, "Content-Type");
+        // Dublin Core fields the extractor reads by their raw name.
+        putTika(meta, "identifier", tikaMeta, "dc:identifier", "identifier");
+        putTika(meta, "rights", tikaMeta, "dc:rights", "rights");
+        putTika(meta, "contributor", tikaMeta, "dc:contributor", "contributor");
+    }
+
+    /** Stamps {@code targetKey} from the first non-blank Tika candidate value, if not already set. */
+    private static void putTika(Map<String, Object> meta, String targetKey,
+                                Metadata tikaMeta, String... candidates) {
+        if (meta.get(targetKey) != null) {
+            return;
+        }
+        for (String candidate : candidates) {
+            String value = tikaMeta.get(candidate);
+            if (value != null && !value.isBlank()) {
+                meta.put(targetKey, value.trim());
+                return;
+            }
+        }
+    }
+
+    /** Extensions that resolveEntityType() specialises and that no more-specific extractor claims. */
+    private static final Set<String> DOC_TYPE_FALLBACK_EXTENSIONS = Set.of("rtf", "epub", "log");
+
+    /**
+     * Sets documentType from the file extension for Tika-owned formats that structured enrichment
+     * doesn't handle but {@code resolveEntityType()} specialises. Restricted to a safe whitelist so a
+     * DOCX/PDF/HTML file that happened to fall through to the Tika loader is not mislabelled and
+     * routed away from the Tika extractor.
+     */
+    private static void applyDocumentTypeFallback(File file, Map<String, Object> meta) {
+        if (meta.get(GraphConstants.META_DOCUMENT_TYPE) != null) {
+            return;
+        }
+        String name = file.getName();
+        int dot = name.lastIndexOf('.');
+        if (dot < 0 || dot == name.length() - 1) {
+            return;
+        }
+        String ext = name.substring(dot + 1).toLowerCase(Locale.ROOT);
+        if (DOC_TYPE_FALLBACK_EXTENSIONS.contains(ext)) {
+            meta.put(GraphConstants.META_DOCUMENT_TYPE, ext);
+        }
     }
 
     // ── Structured-format (JSON / YAML / XML) metadata enrichment ───────────
@@ -563,8 +667,52 @@ public class TikaLoaderImpl implements DocumentLoader {
             // Map form is consumed by TikaGenericGraphExtractor; flattened keys are convenient downstream.
             meta.put("markdown.frontmatter", fmMap);
             fmMap.forEach((k, v) -> meta.put("markdown.frontmatter." + k, v));
+            // Promote the frontmatter fields the graph extractor reads as BARE top-level keys — it
+            // explicitly skips these in its frontmatter map-loop, expecting them promoted here. Without
+            // this, frontmatter tags/categories/date/title/author/description were double-dropped and
+            // never became graph entities. Array values (e.g. `tags: [ai, ml]`) are joined with ", "
+            // so extractTopics splits them cleanly; putIfAbsent so a Tika-extracted value always wins.
+            promoteFrontmatterKey(fm, meta, "title", GraphConstants.META_TITLE);
+            promoteFrontmatterKey(fm, meta, "author", GraphConstants.META_AUTHOR);
+            promoteFrontmatterKey(fm, meta, "description", GraphConstants.META_DESCRIPTION);
+            promoteFrontmatterKey(fm, meta, "date", "date");
+            promoteFrontmatterKey(fm, meta, "tags", "tags");
+            promoteFrontmatterKey(fm, meta, "categories", "categories");
         } catch (Exception ex) {
             logger.debug("Markdown frontmatter parse failed for '{}': {}", fileName, ex.toString());
+        }
+    }
+
+    /**
+     * Promotes a Markdown frontmatter field to a bare metadata key that {@code TikaGenericGraphExtractor}
+     * reads directly. Array values are joined with {@code ", "} (so a YAML list of tags splits cleanly
+     * into TOPIC entities); {@code putIfAbsent} keeps any richer value already set by Tika.
+     */
+    private static void promoteFrontmatterKey(JsonNode fm, Map<String, Object> meta,
+                                              String frontmatterKey, String targetKey) {
+        JsonNode node = fm.get(frontmatterKey);
+        if (node == null || node.isNull()) {
+            return;
+        }
+        String value;
+        if (node.isArray()) {
+            StringBuilder sb = new StringBuilder();
+            for (JsonNode element : node) {
+                String v = element.asText().trim();
+                if (v.isEmpty()) {
+                    continue;
+                }
+                if (sb.length() > 0) {
+                    sb.append(", ");
+                }
+                sb.append(v);
+            }
+            value = sb.toString();
+        } else {
+            value = node.asText().trim();
+        }
+        if (!value.isEmpty()) {
+            meta.putIfAbsent(targetKey, value);
         }
     }
 

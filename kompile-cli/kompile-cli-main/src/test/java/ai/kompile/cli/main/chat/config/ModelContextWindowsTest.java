@@ -1,11 +1,44 @@
 package ai.kompile.cli.main.chat.config;
 
+import ai.kompile.core.llm.CliModelCatalog;
 import ai.kompile.core.llm.ModelContextWindows;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+
+import java.lang.reflect.Method;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 class ModelContextWindowsTest {
+
+    private static final String CATALOG_PATHS_PROPERTY = "kompile.cli.modelCatalogPaths";
+
+    private String previousCatalogPaths;
+
+    @BeforeEach
+    void isolateStaticFallbackTable() throws Exception {
+        previousCatalogPaths = System.getProperty(CATALOG_PATHS_PROPERTY);
+        System.setProperty(CATALOG_PATHS_PROPERTY,
+                System.getProperty("java.io.tmpdir") + "/kompile-no-model-catalog-for-static-test.json");
+        invalidateCatalogCache();
+    }
+
+    @AfterEach
+    void restoreCatalogPath() throws Exception {
+        if (previousCatalogPaths == null) {
+            System.clearProperty(CATALOG_PATHS_PROPERTY);
+        } else {
+            System.setProperty(CATALOG_PATHS_PROPERTY, previousCatalogPaths);
+        }
+        invalidateCatalogCache();
+    }
+
+    private void invalidateCatalogCache() throws Exception {
+        Method method = CliModelCatalog.class.getDeclaredMethod("invalidateCacheForTest");
+        method.setAccessible(true);
+        method.invoke(null);
+    }
 
     // --- supportsVision: vision-capable models ---
 
@@ -135,6 +168,12 @@ class ModelContextWindowsTest {
     @Test
     void knownModelReturnsCorrectContextWindow() {
         assertEquals(200_000, ModelContextWindows.getContextWindow("claude-sonnet-4"));
+    }
+
+    @Test
+    void deepseekV4FlashFreeUsesMillionTokenContext() {
+        assertEquals(1_000_000, ModelContextWindows.getContextWindow("opencode/deepseek-v4-flash-free"));
+        assertEquals(384_000, ModelContextWindows.getMaxOutputTokens("opencode/deepseek-v4-flash-free"));
     }
 
     @Test

@@ -20,6 +20,7 @@ import ai.kompile.cli.main.build.config.BuildConfiguration;
 import org.apache.maven.model.*;
 import org.codehaus.plexus.util.xml.Xpp3Dom;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import static ai.kompile.cli.main.build.generators.PomModelBuilder.addChild;
@@ -215,7 +216,7 @@ public class ContainerProfileBuilder {
     }
 
     private List<String> resolveJvmFlags() {
-        List<String> flags = new java.util.ArrayList<>();
+        List<String> flags = new ArrayList<>();
 
         // Always include module opens required by ND4J/JavaCPP
         flags.add("--add-opens=java.base/java.lang=ALL-UNNAMED");

@@ -453,7 +453,7 @@ public class KGEmbeddingController {
      * Get available LLM providers.
      */
     @GetMapping("/config/llm-providers")
-    public ResponseEntity<java.util.List<String>> getLlmProviders() {
+    public ResponseEntity<List<String>> getLlmProviders() {
         return ResponseEntity.ok(configService.getAvailableLlmProviders());
     }
 
@@ -461,7 +461,7 @@ public class KGEmbeddingController {
      * Get available models for a specific LLM provider.
      */
     @GetMapping("/config/llm-models/{provider}")
-    public ResponseEntity<java.util.List<String>> getLlmModels(@PathVariable("provider") String provider) {
+    public ResponseEntity<List<String>> getLlmModels(@PathVariable("provider") String provider) {
         return ResponseEntity.ok(configService.getAvailableLlmModels(provider));
     }
 

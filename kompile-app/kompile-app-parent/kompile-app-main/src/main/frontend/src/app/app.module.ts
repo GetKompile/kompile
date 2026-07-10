@@ -16,16 +16,21 @@
 
 import { NgModule } from '@angular/core';
 import { BrowserModule } from '@angular/platform-browser';
-import { HttpClientModule } from '@angular/common/http';
+import { AppRoutingModule } from './app-routing.module';
+import { HttpClientModule, HTTP_INTERCEPTORS } from '@angular/common/http';
 import { FormsModule, ReactiveFormsModule } from '@angular/forms';
+import { HttpErrorInterceptor } from './services/http-error.interceptor';
 import { CommonModule } from '@angular/common';
 import { BrowserAnimationsModule } from '@angular/platform-browser/animations';
-import { RouterModule } from '@angular/router';
-
 import { AppComponent } from './app.component';
 import { McpToolsViewerComponent } from './components/mcp-tools-viewer/mcp-tools-viewer.component';
 import { McpServerBuilderComponent } from './components/mcp-server-builder/mcp-server-builder.component';
 import { RestMcpBridgeComponent } from './components/rest-mcp-bridge/rest-mcp-bridge.component';
+import { BridgeDialogComponent } from './components/rest-mcp-bridge/bridge-dialog.component';
+import { MappingDialogComponent } from './components/rest-mcp-bridge/mapping-dialog.component';
+import { AuthDialogComponent } from './components/rest-mcp-bridge/auth-dialog.component';
+import { BridgeImportDialogComponent } from './components/rest-mcp-bridge/bridge-import-dialog.component';
+import { TestMappingDialogComponent } from './components/rest-mcp-bridge/test-mapping-dialog.component';
 import { IndexBrowserComponent } from './components/index-browser/index-browser.component';
 import { IndexSystemStatusComponent } from './components/index-system-status/index-system-status.component';
 import { ModelDebugComponent } from './components/model-debug/model-debug.component';
@@ -37,7 +42,8 @@ import { PromptTemplateManagerComponent } from './components/prompt-template-man
 import { McpHubComponent } from './components/mcp-hub/mcp-hub.component';
 import { McpConfigManagerComponent } from './components/mcp-config-manager/mcp-config-manager.component';
 import { IngestEventViewerComponent } from './components/ingest-event-viewer/ingest-event-viewer.component';
-import { UnifiedDataManagementComponent } from './components/unified-data-management/unified-data-management.component';
+import { ProjectPageComponent } from './components/project-page/project-page.component';
+// FactSheetPageComponent and GraphPageComponent are standalone — imported below
 import { JobHistoryComponent } from './components/job-history/job-history.component';
 import { BatchSizeConfigComponent } from './components/batch-size-config/batch-size-config.component';
 import { SubprocessConfigComponent } from './components/subprocess-config/subprocess-config.component';
@@ -114,6 +120,7 @@ import { PassthroughChatComponent } from './components/passthrough-chat/passthro
 import { AgentTasksComponent } from './components/agent-tasks/agent-tasks.component';
 import { Nd4jFrameworkComponent } from './components/nd4j-framework/nd4j-framework.component';
 import { SameDiffLLMModelsComponent } from './components/samediff-llm-models/samediff-llm-models.component';
+import { SystemInfoComponent } from './components/system-info/system-info.component';
 import { VlmManagementComponent } from './components/developer-hub/vlm-management/vlm-management.component';
 import { GpuManagementComponent } from './components/developer-hub/gpu-management/gpu-management.component';
 import { SchedulerDashboardComponent } from './components/developer-hub/scheduler-dashboard/scheduler-dashboard.component';
@@ -153,10 +160,22 @@ import { AgentModelConfigComponent } from './components/agent-model-config/agent
 import { GraphsHubComponent } from './components/graphs-hub/graphs-hub.component';
 import { EnforcerHubComponent } from './components/enforcer-hub/enforcer-hub.component';
 import { KbConfidenceSettingsComponent } from './components/settings/kb-confidence-settings/kb-confidence-settings.component';
+import { ProcessMiningSettingsComponent } from './components/settings/process-mining-settings/process-mining-settings.component';
 import { CrawlStepMonitorComponent } from './components/crawl-step-monitor/crawl-step-monitor.component';
 import { SourceCitationComponent } from './components/source-citation/source-citation.component';
-import { GroundingConsolePanelComponent } from './components/grounding-console-panel/grounding-console-panel.component';
 import { ReasoningTrailComponent } from './components/reasoning-trail/reasoning-trail.component';
+import { FactSheetPageComponent } from './components/fact-sheet-page/fact-sheet-page.component';
+import { GraphPageComponent } from './components/graph-page/graph-page.component';
+import { McpServerDialogComponent } from './components/mcp-server-builder/mcp-server-dialog.component';
+import { McpToolDialogComponent } from './components/mcp-server-builder/mcp-tool-dialog.component';
+import { McpResourceDialogComponent } from './components/mcp-server-builder/mcp-resource-dialog.component';
+import { McpPromptDialogComponent } from './components/mcp-server-builder/mcp-prompt-dialog.component';
+import { McpImportDialogComponent } from './components/mcp-server-builder/mcp-import-dialog.component';
+import { ExtMcpServerDialogComponent } from './components/mcp-config-manager/ext-mcp-server-dialog.component';
+import { ExtMcpImportDialogComponent } from './components/mcp-config-manager/ext-mcp-import-dialog.component';
+import { ExtMcpDetailsDialogComponent } from './components/mcp-config-manager/ext-mcp-details-dialog.component';
+import { DedupDialogComponent } from './components/chunk-manager/dedup-dialog.component';
+import { CreateFactSheetDialogComponent } from './components/create-fact-sheet-dialog/create-fact-sheet-dialog.component';
 
 // Angular Material Modules
 import { MatButtonModule } from '@angular/material/button';
@@ -211,7 +230,7 @@ import { MatNativeDateModule } from '@angular/material/core';
     McpHubComponent,
     McpConfigManagerComponent,
     IngestEventViewerComponent,
-    UnifiedDataManagementComponent,
+    ProjectPageComponent,
     JobHistoryComponent,
     OrchestratorHubComponent,
     FolderSidebarComponent,
@@ -270,7 +289,7 @@ import { MatNativeDateModule } from '@angular/material/core';
     ReactiveFormsModule,
     CommonModule,
     BrowserAnimationsModule,
-    RouterModule.forRoot([]),  // Required for ActivatedRoute
+    AppRoutingModule,
 
     // Material Modules
     MatButtonModule,
@@ -353,6 +372,7 @@ import { MatNativeDateModule } from '@angular/material/core';
     AgentTasksComponent,
     Nd4jFrameworkComponent,
     SameDiffLLMModelsComponent,
+    SystemInfoComponent,
     ProcessEngineDashboardComponent,
     WorkflowsHubComponent,
     ComputeGraphDashboardComponent,
@@ -372,12 +392,37 @@ import { MatNativeDateModule } from '@angular/material/core';
     GraphsHubComponent,
     EnforcerHubComponent,
     KbConfidenceSettingsComponent,
+    ProcessMiningSettingsComponent,
     CrawlStepMonitorComponent,
     SourceCitationComponent,
-    GroundingConsolePanelComponent,
-    ReasoningTrailComponent
+    ReasoningTrailComponent,
+    // Route wrapper standalone components
+    FactSheetPageComponent,
+    GraphPageComponent,
+    // REST-MCP Bridge standalone dialog components
+    BridgeDialogComponent,
+    MappingDialogComponent,
+    AuthDialogComponent,
+    BridgeImportDialogComponent,
+    TestMappingDialogComponent,
+    // MCP Server Builder standalone dialog components
+    McpServerDialogComponent,
+    McpToolDialogComponent,
+    McpResourceDialogComponent,
+    McpPromptDialogComponent,
+    McpImportDialogComponent,
+    // External MCP Config Manager standalone dialog components
+    ExtMcpServerDialogComponent,
+    ExtMcpImportDialogComponent,
+    ExtMcpDetailsDialogComponent,
+    // Chunk Manager standalone dialog components
+    DedupDialogComponent,
+    // App shell standalone dialog components
+    CreateFactSheetDialogComponent
   ],
-  providers: [],
+  providers: [
+    { provide: HTTP_INTERCEPTORS, useClass: HttpErrorInterceptor, multi: true }
+  ],
   bootstrap: [AppComponent]
 })
 export class AppModule { }

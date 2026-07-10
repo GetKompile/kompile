@@ -45,9 +45,16 @@ public class GlobTool implements CliTool {
     @Override
     public String description() {
         return "Find files matching a glob pattern. Returns file paths sorted by modification time " +
-                "(most recent first). Supports patterns like '**/*.java', 'src/**/*.ts', '*.xml'. " +
-                "Hidden files and directories are skipped by default; set 'hidden' to true to include " +
-                "them. Maximum 100 results returned. Use this to discover files before reading or editing them.";
+                "(most recent first). Bare filename patterns like 'pom.xml' or '*.java' search " +
+                "recursively; path patterns like 'src/**/*.ts' are also supported. Hidden files and " +
+                "directories are skipped by default; set 'hidden' to true to include them. Maximum " +
+                "100 results returned. Use this to discover files before reading or editing them.";
+    }
+
+    @Override
+    public String compactHint() {
+        return "Find FILES by name/path (not contents; use grep). Bare names like pom.xml or "
+                + "*.java search recursively; path globs like src/**/*.ts work. Max 100, newest first.";
     }
 
     @Override
@@ -59,7 +66,7 @@ public class GlobTool implements CliTool {
 
         ObjectNode pattern = props.putObject("pattern");
         pattern.put("type", "string");
-        pattern.put("description", "The glob pattern to match files against (e.g. '**/*.java')");
+        pattern.put("description", "The glob pattern to match files against. Bare names like 'pom.xml' or '*.java' search recursively; path globs like 'src/**/*.ts' are also supported.");
 
         ObjectNode path = props.putObject("path");
         path.put("type", "string");
@@ -76,6 +83,9 @@ public class GlobTool implements CliTool {
 
     @Override
     public String permissionKey() { return "glob"; }
+
+    @Override
+    public McpToolAnnotations mcpAnnotations() { return McpToolAnnotations.READ_ONLY; }
 
     @Override
     public ToolResult execute(JsonNode params, ToolContext context) throws ToolExecutionException {
@@ -101,14 +111,22 @@ public class GlobTool implements CliTool {
 
         try {
             PathMatcher matcher = FileSystems.getDefault().getPathMatcher("glob:" + pattern);
+            PathMatcher rootMatcher = rootEquivalentMatcher(pattern);
+            boolean basenameOnlyPattern = isBasenameOnlyPattern(pattern);
 
-            List<Path> matches = new ArrayList<>();
+            PriorityQueue<GlobMatch> matches = new PriorityQueue<>(GlobMatch.OLDEST_FIRST);
+            final int[] totalMatches = {0};
             final long deadline = System.currentTimeMillis() + TIMEOUT_MILLIS;
-            Files.walkFileTree(dir, new SimpleFileVisitor<>() {
+            int maxDepth = traversalDepthForGlob(pattern);
+            Files.walkFileTree(dir, EnumSet.noneOf(FileVisitOption.class), maxDepth,
+                    new SimpleFileVisitor<>() {
                 @Override
                 public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
                     if (System.currentTimeMillis() > deadline) {
                         return FileVisitResult.TERMINATE;
+                    }
+                    if (!attrs.isRegularFile()) {
+                        return FileVisitResult.CONTINUE;
                     }
                     // Skip hidden files (dot-prefixed basename) unless opted in, so file-level
                     // results stay consistent with the pruned hidden directories below and with
@@ -120,11 +138,17 @@ public class GlobTool implements CliTool {
                         }
                     }
                     Path relative = dir.relativize(file);
-                    if (matcher.matches(relative)) {
-                        matches.add(file);
+                    if (matchesGlob(matcher, rootMatcher, basenameOnlyPattern, relative)) {
+                        totalMatches[0]++;
+                        GlobMatch match = new GlobMatch(file, attrs.lastModifiedTime());
+                        if (matches.size() < MAX_RESULTS) {
+                            matches.add(match);
+                        } else if (GlobMatch.OLDEST_FIRST.compare(match, matches.peek()) > 0) {
+                            matches.poll();
+                            matches.add(match);
+                        }
                     }
-                    return matches.size() >= MAX_RESULTS * 2 ?
-                            FileVisitResult.TERMINATE : FileVisitResult.CONTINUE;
+                    return FileVisitResult.CONTINUE;
                 }
 
                 @Override
@@ -136,8 +160,9 @@ public class GlobTool implements CliTool {
                     // dir; only prune excluded directories encountered while descending.
                     if (!dirPath.equals(dir)) {
                         String name = dirPath.getFileName() != null ? dirPath.getFileName().toString() : "";
+                        String rel = gitFilter.relativePath(dirPath, dir);
                         if (SearchExclusions.isExcludedDir(name, includeHidden)
-                                || gitFilter.isIgnoredDir(dir.relativize(dirPath).toString(), name)) {
+                                || gitFilter.isIgnoredDir(rel, name)) {
                             return FileVisitResult.SKIP_SUBTREE;
                         }
                     }
@@ -151,17 +176,11 @@ public class GlobTool implements CliTool {
             });
             boolean timedOut = System.currentTimeMillis() > deadline;
 
-            // Sort by modification time (most recent first)
-            matches.sort((a, b) -> {
-                try {
-                    return Files.getLastModifiedTime(b).compareTo(Files.getLastModifiedTime(a));
-                } catch (IOException e) {
-                    return 0;
-                }
-            });
+            List<GlobMatch> sortedMatches = new ArrayList<>(matches);
+            sortedMatches.sort(GlobMatch.NEWEST_FIRST);
 
-            List<Path> limited = matches.stream().limit(MAX_RESULTS).collect(Collectors.toList());
-            boolean truncated = matches.size() > MAX_RESULTS || timedOut;
+            List<Path> limited = sortedMatches.stream().map(GlobMatch::path).collect(Collectors.toList());
+            boolean truncated = totalMatches[0] > MAX_RESULTS || timedOut;
 
             if (limited.isEmpty()) {
                 return ToolResult.success(timedOut
@@ -178,10 +197,59 @@ public class GlobTool implements CliTool {
             return ToolResult.success("glob: " + pattern,
                     sb.toString().trim() + (timedOut ? "\n... (search timed out — results partial)" : ""),
                     Map.of("count", limited.size(), "truncated", truncated,
-                            "totalMatches", matches.size(), "timedOut", timedOut));
+                            "totalMatches", totalMatches[0], "timedOut", timedOut));
 
         } catch (Exception e) {
             return ToolResult.error("Error searching files: " + e.getMessage());
         }
+    }
+
+    static int traversalDepthForGlob(String pattern) {
+        if (pattern == null || pattern.contains("**") || isBasenameOnlyPattern(pattern)) {
+            return Integer.MAX_VALUE;
+        }
+        String normalized = pattern.replace('\\', '/');
+        int depth = 1;
+        for (int i = 0; i < normalized.length(); i++) {
+            if (normalized.charAt(i) == '/') {
+                depth++;
+            }
+        }
+        return Math.max(1, depth);
+    }
+
+    static boolean isBasenameOnlyPattern(String pattern) {
+        return pattern != null && !pattern.contains("/") && !pattern.contains("\\");
+    }
+
+    private static PathMatcher rootEquivalentMatcher(String pattern) {
+        if (pattern == null) {
+            return null;
+        }
+        String normalized = pattern.replace('\\', '/');
+        if (!normalized.startsWith("**/")) {
+            return null;
+        }
+        String rootPattern = normalized.substring(3);
+        if (rootPattern.isEmpty()) {
+            return null;
+        }
+        return FileSystems.getDefault().getPathMatcher("glob:" + rootPattern);
+    }
+
+    private static boolean matchesGlob(PathMatcher matcher, PathMatcher rootMatcher,
+                                       boolean basenameOnlyPattern, Path relative) {
+        if (basenameOnlyPattern) {
+            Path fileName = relative.getFileName();
+            return fileName != null && matcher.matches(fileName);
+        }
+        return matcher.matches(relative) || (rootMatcher != null && rootMatcher.matches(relative));
+    }
+
+    private record GlobMatch(Path path, java.nio.file.attribute.FileTime modifiedTime) {
+        private static final Comparator<GlobMatch> OLDEST_FIRST = Comparator
+                .comparing(GlobMatch::modifiedTime)
+                .thenComparing(match -> match.path().toString());
+        private static final Comparator<GlobMatch> NEWEST_FIRST = OLDEST_FIRST.reversed();
     }
 }

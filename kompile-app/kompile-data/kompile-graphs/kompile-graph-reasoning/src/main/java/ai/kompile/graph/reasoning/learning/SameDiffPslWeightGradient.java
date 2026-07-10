@@ -17,10 +17,13 @@ import org.nd4j.autodiff.samediff.SameDiff;
 import org.nd4j.linalg.api.buffer.DataType;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
+import org.nd4j.linalg.learning.GradientUpdater;
+import org.nd4j.linalg.learning.config.Adam;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -87,6 +90,11 @@ public final class SameDiffPslWeightGradient {
      * graph-build overhead which is dominated by the R×lookups at small R).
      */
     public static final int GROUND_RULE_THRESHOLD = 1_000;
+
+    // ── Adam hyper-parameters (same as RotatELearner) ─────────────────────────
+    private static final double ADAM_BETA1 = 0.9;
+    private static final double ADAM_BETA2 = 0.999;
+    private static final double ADAM_EPS   = 1e-8;
 
     private SameDiffPslWeightGradient() {}
 
@@ -248,10 +256,256 @@ public final class SameDiffPslWeightGradient {
             return new double[K];
         }
         INDArray flat = gArr.reshape(K).castTo(DataType.DOUBLE);
-        double[] result = new double[K];
-        for (int i = 0; i < K; i++) {
-            result[i] = flat.getDouble(i);
+        return flat.toDoubleVector();
+    }
+
+    // ─── Adam helpers ──────────────────────────────────────────────────────────
+
+    /**
+     * Instantiate an ND4J Adam {@link GradientUpdater} with fresh zero-initialised moment state.
+     *
+     * @param config   shared Adam hyper-parameter config
+     * @param stateLen {@code 2 × parameter-count} (m‖v split)
+     * @return ready Adam updater
+     */
+    @SuppressWarnings("unchecked")
+    private static GradientUpdater<Adam> newAdamUpdater(Adam config, long stateLen) {
+        return config.instantiate(Nd4j.zeros(DataType.DOUBLE, 1, stateLen), true);
+    }
+
+    /**
+     * Apply one Adam step to {@code param} in place.
+     * The updater rewrites {@code grad} with the bias-corrected update, then {@code param −= update}.
+     *
+     * @param updater   Adam updater (owns moment state)
+     * @param param     parameter array updated in place
+     * @param grad      gradient for this step ({@code null} ⇒ no-op)
+     * @param iteration 0-based Adam step index
+     */
+    private static void applyAdam(GradientUpdater<Adam> updater, INDArray param,
+                                   INDArray grad, int iteration) {
+        if (grad == null) {
+            return;
         }
-        return result;
+        INDArray update = grad.castTo(DataType.DOUBLE);
+        updater.applyUpdater(update, iteration, 0);
+        param.subi(update);
+    }
+
+    // ─── buildPlaceholderGraph ──────────────────────────────────────────────────
+
+    /**
+     * Build a SameDiff graph with {@code w} as a trainable variable and
+     * {@code distPred}/{@code distGt} as <em>placeholders</em> (fed each gradient call).
+     * The graph topology is identical to {@link #sdGradient}; only distPred/distGt become
+     * placeholders instead of constants, enabling re-use of the same graph across epochs.
+     *
+     * @param wArr        initial weight values [K]
+     * @param templateIdx per-grounding template index, shape [R] — structure, not values, fixed
+     * @param squaredMask 1=squared hinge per grounding, shape [R] — structure, fixed
+     * @param K           number of rule templates
+     * @param R           number of ground rules
+     * @return SameDiff graph ready for placeholder-fed inference
+     */
+    private static SameDiff buildPlaceholderGraph(INDArray wArr, int[] templateIdx,
+                                                   float[] squaredMask, int K, int R) {
+        SameDiff sd = SameDiff.create();
+
+        // Trainable: w [K]
+        SDVariable wVar = sd.var(VAR_W, wArr.dup());
+
+        // Gather per-grounding weights
+        INDArray tidxArr = Nd4j.createFromArray(templateIdx).castTo(DataType.INT32);
+        SDVariable tidxVar = sd.constant(CONST_TIDX, tidxArr);
+        SDVariable wPerGrounding = sd.gather("wPerGrounding", wVar, tidxVar, 0);
+
+        // Placeholders for per-epoch distances
+        SDVariable dpVar = sd.placeHolder(CONST_DPRED, DataType.DOUBLE, R);
+        SDVariable dgVar = sd.placeHolder(CONST_DGT,   DataType.DOUBLE, R);
+
+        // squaredMask as constant (structure doesn't change across epochs)
+        INDArray sqArr = Nd4j.createFromArray(squaredMask).castTo(DataType.DOUBLE).reshape(R);
+        SDVariable sqVar = sd.constant(CONST_SQ, sqArr);
+        INDArray oneMinusSqArr = Nd4j.ones(DataType.DOUBLE, R).sub(sqArr);
+        SDVariable oneMinusSq = sd.constant("oneMinusSq", oneMinusSqArr);
+
+        // potential(d) = sq*d^2 + (1-sq)*d
+        SDVariable potPred = wPerGrounding.mul(
+                sqVar.mul(dpVar.mul("dp2", dpVar)).add(oneMinusSq.mul("dpLin", dpVar)));
+        SDVariable potGt = wPerGrounding.mul(
+                sqVar.mul(dgVar.mul("dg2", dgVar)).add(oneMinusSq.mul("dgLin", dgVar)));
+
+        // Structured-perceptron loss = sum(potPred - potGt)
+        potPred.sub(potGt).sum(LOSS);
+        sd.setLossVariables(LOSS);
+        return sd;
+    }
+
+    // ─── GradientSession ───────────────────────────────────────────────────────
+
+    /**
+     * Stateful gradient-computation session for one PSL program in full-batch mode.
+     *
+     * <p>The SameDiff graph is built once in the constructor (with {@code distPred}/{@code distGt}
+     * as placeholders rather than per-call constants) and reused across all epochs, avoiding the
+     * graph-rebuild cost at each gradient step. The Adam updater's moment state also persists,
+     * enabling proper bias-corrected adaptive steps.</p>
+     *
+     * <p><b>Lifecycle contract:</b>
+     * <ul>
+     *   <li>Create before the epoch loop when {@code R == groundRules.size()} is stable (full-batch).</li>
+     *   <li>Call {@link #computeGradient} to get the raw SameDiff gradient each epoch.</li>
+     *   <li>Add prior-penalty terms to the gradient in the caller.</li>
+     *   <li>Call {@link #applyAdamStep} to apply Adam and update the weight array in place.</li>
+     *   <li>If R changes (mini-batch or program growth), discard and recreate the session.</li>
+     * </ul>
+     *
+     * <p><b>R/K must be fixed for the session lifetime.</b> Use {@link #matches} to verify before
+     * each epoch; if it returns {@code false}, create a new {@code GradientSession}.</p>
+     */
+    public static final class GradientSession {
+
+        private final SameDiff sd;
+        /** Live weight array [K] — authoritative weight storage for the Adam path. */
+        private final INDArray wArr;
+        private final GradientUpdater<Adam> adamUpdater;
+        private final int K;
+        private final int R;
+        private final List<PslRule> rules;
+        private final Map<String, Integer> sigIndex;
+        /** Per-grounding template index (computed once from groundRules structure). */
+        private final int[] templateIdx;
+
+        /**
+         * Construct a {@code GradientSession} for the given rules and ground rules.
+         *
+         * @param rules          current program rules (used for hard-rule zeroing + index map)
+         * @param groundRules    ground rules for this program epoch (R must remain stable)
+         * @param initialWeights current weight values [K], read-only at construction
+         * @param learningRate   Adam learning rate
+         */
+        public GradientSession(List<PslRule> rules, List<GroundRule> groundRules,
+                                double[] initialWeights, double learningRate) {
+            this.K = rules.size();
+            this.R = groundRules.size();
+            this.rules = rules;
+            this.sigIndex = PslRuleGradient.buildSignatureIndex(rules);
+
+            // Build templateIdx and squaredMask from ground-rule structure (constants).
+            this.templateIdx = new int[R];
+            float[] squaredMask = new float[R];
+            for (int ri = 0; ri < R; ri++) {
+                GroundRule gr = groundRules.get(ri);
+                if (!gr.hard()) {
+                    int idx = PslRuleGradient.findRuleIndex(rules, sigIndex, gr);
+                    if (idx >= 0) {
+                        templateIdx[ri] = idx;
+                        squaredMask[ri] = gr.squared() ? 1f : 0f;
+                    }
+                }
+            }
+
+            // Build live weight array and SameDiff graph with placeholder dist arrays.
+            this.wArr = Nd4j.createFromArray(initialWeights).reshape(K).castTo(DataType.DOUBLE);
+            this.sd = buildPlaceholderGraph(wArr, templateIdx, squaredMask, K, R);
+
+            // Adam updater created once; moment state persists across all epochs.
+            Adam adamConfig = new Adam(learningRate, ADAM_BETA1, ADAM_BETA2, ADAM_EPS);
+            this.adamUpdater = newAdamUpdater(adamConfig, 2L * K);
+        }
+
+        /**
+         * Returns {@code true} when this session's K and R match the given rules and ground rules.
+         * A {@code false} result means the session must be recreated before the next gradient step.
+         */
+        public boolean matches(List<PslRule> rules, List<GroundRule> groundRules) {
+            return groundRules.size() == R && rules.size() == K;
+        }
+
+        /**
+         * Compute the raw SameDiff gradient (no optimizer applied).
+         *
+         * <p>Feeds new distPred/distGt distances as placeholder values, runs forward+backward,
+         * and returns the gradient of length K. The caller may add prior-penalty terms before
+         * calling {@link #applyAdamStep}.</p>
+         *
+         * @param groundRules  ground rules for this epoch (must have {@code size() == R})
+         * @param predicted    atom values at MAP solution
+         * @param groundTruth  observed atom truth values
+         * @return gradient array [K]; zeros if SameDiff returned null
+         */
+        public double[] computeGradient(List<GroundRule> groundRules,
+                                         Map<String, Double> predicted,
+                                         Map<String, Double> groundTruth) {
+            // Build per-grounding distances.
+            float[] distPred = new float[R];
+            float[] distGt   = new float[R];
+            for (int ri = 0; ri < R; ri++) {
+                GroundRule gr = groundRules.get(ri);
+                if (!gr.hard()) {
+                    distPred[ri] = (float) gr.distanceToSatisfaction(predicted);
+                    distGt[ri]   = (float) gr.distanceToSatisfaction(groundTruth);
+                }
+            }
+
+            // Sync live wArr with the authoritative weight values held by the caller.
+            sd.associateArrayWithVariable(wArr, VAR_W);
+
+            // Build placeholder map.
+            Map<String, INDArray> phMap = new HashMap<>(4);
+            phMap.put(CONST_DPRED, Nd4j.createFromArray(distPred).castTo(DataType.DOUBLE).reshape(R));
+            phMap.put(CONST_DGT,   Nd4j.createFromArray(distGt).castTo(DataType.DOUBLE).reshape(R));
+
+            // Forward + backward.
+            sd.outputSingle(phMap, LOSS);
+            Map<String, INDArray> grads = sd.calculateGradients(phMap, VAR_W);
+
+            INDArray grad = grads.get(VAR_W);
+            if (grad == null) {
+                log.warn("GradientSession: no gradient returned for '{}'; returning zeros", VAR_W);
+                return new double[K];
+            }
+            return grad.reshape(K).castTo(DataType.DOUBLE).toDoubleVector();
+        }
+
+        /**
+         * Apply one Adam step to {@code weights} in place.
+         *
+         * <p>Copies {@code weights[]} into the live {@link #wArr}, applies Adam using
+         * {@code gradient[]} (which may already have prior-penalty terms added by the caller),
+         * projects to non-negative, zeroes hard rules, and writes the result back to
+         * {@code weights[]}.</p>
+         *
+         * @param weights    weight array updated in place [K]
+         * @param gradient   gradient to descend (prior-penalty may already be included)
+         * @param iteration  0-based Adam step index (epoch number)
+         * @return maximum absolute weight change (for convergence check)
+         */
+        public double applyAdamStep(double[] weights, double[] gradient, int iteration) {
+            // Copy caller's current weights into the live INDArray.
+            INDArray newW = Nd4j.createFromArray(weights).reshape(K).castTo(DataType.DOUBLE);
+            wArr.assign(newW);
+
+            // Apply Adam step (modifies wArr in place).
+            INDArray gradArr = Nd4j.createFromArray(gradient).reshape(K).castTo(DataType.DOUBLE);
+            applyAdam(adamUpdater, wArr, gradArr, iteration);
+
+            // Read back, project non-negative, zero hard rules, compute maxChange.
+            double[] updated = wArr.toDoubleVector();
+            double maxChange = 0.0;
+            for (int i = 0; i < K; i++) {
+                double projected = Math.max(0.0, updated[i]);
+                if (i < rules.size() && rules.get(i).hard()) {
+                    projected = 0.0;
+                }
+                double change = Math.abs(projected - weights[i]);
+                if (change > maxChange) {
+                    maxChange = change;
+                }
+                weights[i] = projected;
+                wArr.putScalar(i, projected);
+            }
+            return maxChange;
+        }
     }
 }

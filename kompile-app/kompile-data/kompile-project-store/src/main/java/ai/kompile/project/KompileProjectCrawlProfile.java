@@ -15,6 +15,8 @@
  */
 package ai.kompile.project;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
+
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -40,7 +42,9 @@ public class KompileProjectCrawlProfile {
     private String collection;
     private boolean multimodal;
     private String vlmModel;
-    private boolean graphExtraction;
+    /** Legacy input compatibility only; graph extraction is mandatory for project crawls. */
+    @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
+    private boolean graphExtraction = true;
     private List<String> graphEntityTypes = new ArrayList<>();
     private List<String> graphRelationTypes = new ArrayList<>();
     private String graphModelProvider;
@@ -210,11 +214,11 @@ public class KompileProjectCrawlProfile {
     }
 
     public boolean isGraphExtraction() {
-        return graphExtraction;
+        return true;
     }
 
     public void setGraphExtraction(boolean graphExtraction) {
-        this.graphExtraction = graphExtraction;
+        this.graphExtraction = true;
     }
 
     public List<String> getGraphEntityTypes() {

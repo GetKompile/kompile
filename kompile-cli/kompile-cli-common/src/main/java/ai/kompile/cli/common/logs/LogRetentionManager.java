@@ -22,6 +22,7 @@ import org.slf4j.LoggerFactory;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -72,7 +73,15 @@ public final class LogRetentionManager {
      * reinterpreted as a per-type cap.
      */
     public RetentionResult applyToSubprocesses() {
-        File subprocessesRoot = LogPaths.subprocessesRoot();
+        return applyToSubprocesses((Path) null);
+    }
+
+    /**
+     * Applies retention to subprocess logs using a working directory-scoped root.
+     * Falls back to {@code ~/.kompile/logs/subprocesses} via {@link LogPaths#subprocessesRoot(Path)}.
+     */
+    public RetentionResult applyToSubprocesses(Path workingDirectory) {
+        File subprocessesRoot = LogPaths.subprocessesRoot(workingDirectory);
         if (!subprocessesRoot.isDirectory()) {
             return RetentionResult.empty();
         }

@@ -63,7 +63,8 @@ export class ToolsHubComponent implements OnInit, OnDestroy {
     }
 
     this.route.queryParamMap.pipe(takeUntil(this.destroy$)).subscribe(params => {
-      const tab = params.get('tab') as ToolsSubTab | null;
+      // Accept both ?tab= (canonical) and ?section= (alias used by external navigation)
+      const tab = params.get('tab') ?? params.get('section');
       if (tab && this.isKnownTab(tab)) {
         this.activeSubTab = tab;
       }
@@ -98,7 +99,8 @@ export class ToolsHubComponent implements OnInit, OnDestroy {
       return;
     }
     const params = new URLSearchParams(query);
-    const tab = params.get('tab');
+    // Accept both ?tab= (canonical) and ?section= (alias used by external navigation)
+    const tab = params.get('tab') ?? params.get('section');
     if (tab && this.isKnownTab(tab)) {
       this.activeSubTab = tab;
     }

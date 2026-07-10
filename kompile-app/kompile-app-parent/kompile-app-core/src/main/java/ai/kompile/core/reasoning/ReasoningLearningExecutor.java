@@ -117,6 +117,12 @@ public interface ReasoningLearningExecutor {
      * @param weightStoreDirPath path to the FileWeightStore base directory
      * @param maxEpochs        number of learning epochs (often 1 for online learning)
      * @param learningRate     SGD step size
+     * @param tolerance        convergence threshold on max weight update
+     * @param batchSize        PSL ground-rule mini-batch size; 0 means full-batch
+     * @param seed             deterministic mini-batch seed
+     * @param weightPriorStrength MAP prior strength; 0 disables prior regularization
+     * @param weightPriorMean  scalar fallback prior mean
+     * @param perRuleMeans     optional per-rule prior means for band-aware regularization
      * @param callback         per-iteration progress callback; may be null
      * @return learning result with final loss
      */
@@ -130,6 +136,12 @@ public interface ReasoningLearningExecutor {
                                   String weightStoreDirPath,
                                   int maxEpochs,
                                   double learningRate,
+                                  double tolerance,
+                                  int batchSize,
+                                  long seed,
+                                  double weightPriorStrength,
+                                  double weightPriorMean,
+                                  double[] perRuleMeans,
                                   ProgressCallback callback);
 
     /**

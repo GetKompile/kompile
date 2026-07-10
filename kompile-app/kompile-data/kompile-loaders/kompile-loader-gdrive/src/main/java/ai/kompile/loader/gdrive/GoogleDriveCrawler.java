@@ -42,6 +42,7 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
@@ -448,7 +449,7 @@ public class GoogleDriveCrawler extends AbstractCrawler {
             Path tempFile   = Files.createTempFile("gdrive-" + fileId + "-", "-" + safeName);
             tempFile.toFile().deleteOnExit();
             try (InputStream is = response.body()) {
-                Files.copy(is, tempFile, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                Files.copy(is, tempFile, StandardCopyOption.REPLACE_EXISTING);
             }
             log.debug("[{}] Downloaded '{}' → {}", job.getJobId(), name, tempFile);
             return tempFile;

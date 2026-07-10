@@ -41,6 +41,7 @@ import org.slf4j.LoggerFactory;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -60,13 +61,10 @@ import java.util.Set;
  *       represent them — inconsistencies still surface in {@link OwlRlResult}</li>
  * </ul>
  *
- * <h2>Known limitation — multi-class membership</h2>
- * <p>{@link OwlRlResult#inferredTypes()} is {@code Map<String, String>} (entity ID → single class
- * IRI). OWL DL reasoning can infer membership in multiple classes per individual; only the
- * <em>first</em> inferred class not already asserted is stored per entity. The full set of
- * inferred types is available via the OWL API reasoner directly (not through this interface).
- * Broadening the result type to {@code Map<String, Set<String>>} is a lib-API change that is
- * out of scope for this module.</p>
+ * <h2>Multi-class membership</h2>
+ * <p>OWL DL reasoning can infer membership in multiple classes per individual. The complete
+ * per-entity set is exposed through {@link OwlRlResult#inferredTypeCandidates()}, while
+ * {@link OwlRlResult#inferredTypes()} remains a legacy first-type view.</p>
  *
  * <h2>Thread safety</h2>
  * <p>Each call to {@link #reason(ReasoningGraph, OwlOntology)} creates a fresh
@@ -156,9 +154,9 @@ public final class OwlDlReasoningBridge implements OwlReasoner {
         // is inconsistent. We must call isConsistent() before precomputing inferences.
         OWLReasoner reasoner = reasonerFactory.createReasoner(owlOnt);
         try {
-            List<GraphRelation>      inferredRelations = new ArrayList<>();
-            Map<String, String>      inferredTypes     = new HashMap<>();
-            List<OwlInconsistency>   inconsistencies   = new ArrayList<>();
+            List<GraphRelation> inferredRelations = new ArrayList<>();
+            Map<String, List<String>> inferredTypes = new LinkedHashMap<>();
+            List<OwlInconsistency> inconsistencies = new ArrayList<>();
 
             // ── Step 6 (early): Consistency check ────────────────────────────────
             boolean consistent;
@@ -172,7 +170,7 @@ public final class OwlDlReasoningBridge implements OwlReasoner {
                 LOG.warn("[OwlDlReasoningBridge] Ontology is inconsistent");
                 // Collect unsatisfiable class info before the reasoner fully fails
                 collectInconsistencies(reasoner, graph, inconsistencies);
-                return OwlRlResult.of(inferredRelations, inferredTypes, inconsistencies);
+                return OwlRlResult.ofMultiTypes(inferredRelations, inferredTypes, inconsistencies);
             }
 
             // ── Step 3b: Pre-compute inferences (only when consistent) ────────────
@@ -185,7 +183,7 @@ public final class OwlDlReasoningBridge implements OwlReasoner {
                 // Rare: became inconsistent during precompute
                 LOG.warn("[OwlDlReasoningBridge] Ontology became inconsistent during precompute");
                 collectInconsistencies(reasoner, graph, inconsistencies);
-                return OwlRlResult.of(inferredRelations, inferredTypes, inconsistencies);
+                return OwlRlResult.ofMultiTypes(inferredRelations, inferredTypes, inconsistencies);
             }
 
             OWLDataFactory df = mgr.getOWLDataFactory();
@@ -204,16 +202,15 @@ public final class OwlDlReasoningBridge implements OwlReasoner {
                 try {
                     NodeSet<OWLClass> types = reasoner.getTypes(ind, false);
                     for (Node<OWLClass> typeNode : types) {
-                        OWLClass inferredCls = typeNode.getRepresentativeElement();
-                        if (inferredCls.isOWLThing() || inferredCls.isOWLNothing()) continue;
+                        for (OWLClass inferredCls : typeNode.getEntities()) {
+                            if (inferredCls.isOWLThing() || inferredCls.isOWLNothing()) continue;
 
-                        String clsIri = inferredCls.getIRI().toString();
-                        // Only record if this type was not already asserted in the graph
-                        String assertedKey = entityId + ":" + clsIri;
-                        if (!assertedEntityTypes.contains(assertedKey)) {
-                            // Multi-class limitation: first inferred (non-asserted) type wins per entity
-                            inferredTypes.putIfAbsent(entityId, clsIri);
-                            break;
+                            String clsIri = inferredCls.getIRI().toString();
+                            // Only record if this type was not already asserted in the graph
+                            String assertedKey = entityId + ":" + clsIri;
+                            if (!assertedEntityTypes.contains(assertedKey)) {
+                                addInferredType(inferredTypes, entityId, clsIri);
+                            }
                         }
                     }
                 } catch (InconsistentOntologyException e) {
@@ -257,7 +254,7 @@ public final class OwlDlReasoningBridge implements OwlReasoner {
             // After DL inference, find individuals typed as two disjoint classes.
             detectDisjointViolations(reasoner, graph, owlOnt, mgr, inconsistencies);
 
-            return OwlRlResult.of(inferredRelations, inferredTypes, inconsistencies);
+            return OwlRlResult.ofMultiTypes(inferredRelations, inferredTypes, inconsistencies);
 
         } finally {
             // ── Step 8: Dispose the reasoner ─────────────────────────────────────
@@ -266,6 +263,16 @@ public final class OwlDlReasoningBridge implements OwlReasoner {
     }
 
     // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+    private static void addInferredType(Map<String, List<String>> inferredTypes,
+                                        String entityId,
+                                        String classIri) {
+        if (entityId == null || classIri == null) return;
+        List<String> entityTypes = inferredTypes.computeIfAbsent(entityId, ignored -> new ArrayList<>());
+        if (!entityTypes.contains(classIri)) {
+            entityTypes.add(classIri);
+        }
+    }
 
     /**
      * Collect unsatisfiable-class inconsistencies from a (potentially) inconsistent reasoner.
@@ -283,13 +290,15 @@ public final class OwlDlReasoningBridge implements OwlReasoner {
 
                 boolean foundEntity = false;
                 for (var entity : graph.entities()) {
-                    String entityType = entity.type();
-                    if (entityType != null && OwlIri.classIri(entityType).equals(clsIri)) {
-                        inconsistencies.add(OwlInconsistency.crisp(
-                                "dl-unsat",
-                                entity.id(),
-                                "Individual typed as unsatisfiable class: " + clsIri));
-                        foundEntity = true;
+                    for (String entityType : entity.typeMemberships()) {
+                        if (entityType != null && OwlIri.classIri(entityType).equals(clsIri)) {
+                            inconsistencies.add(OwlInconsistency.crisp(
+                                    "dl-unsat",
+                                    entity.id(),
+                                    "Individual typed as unsatisfiable class: " + clsIri));
+                            foundEntity = true;
+                            break;
+                        }
                     }
                 }
                 if (!foundEntity) {
@@ -328,8 +337,10 @@ public final class OwlDlReasoningBridge implements OwlReasoner {
     private static Set<String> buildAssertedEntityTypes(ReasoningGraph graph) {
         Set<String> keys = new HashSet<>();
         for (var entity : graph.entities()) {
-            if (entity.type() != null && !entity.type().isEmpty()) {
-                keys.add(entity.id() + ":" + OwlIri.classIri(entity.type()));
+            for (String entityType : entity.typeMemberships()) {
+                if (entityType != null && !entityType.isEmpty()) {
+                    keys.add(entity.id() + ":" + OwlIri.classIri(entityType));
+                }
             }
         }
         return keys;

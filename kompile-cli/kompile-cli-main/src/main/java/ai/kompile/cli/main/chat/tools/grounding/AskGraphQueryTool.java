@@ -10,18 +10,14 @@
 package ai.kompile.cli.main.chat.tools.grounding;
 
 import ai.kompile.cli.main.chat.tools.CliTool;
-import ai.kompile.cli.main.chat.tools.KompileBackendClient;
 import ai.kompile.cli.main.chat.tools.McpToolAnnotations;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolExecutionException;
 import ai.kompile.cli.main.chat.tools.ToolResult;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
-import java.net.ConnectException;
-import java.time.Duration;
 import java.util.Map;
 
 /**
@@ -33,15 +29,31 @@ import java.util.Map;
  */
 public class AskGraphQueryTool implements CliTool {
 
-    private final KompileBackendClient backend;
+    private final GroundingBackendClient groundingClient;
     private final ObjectMapper objectMapper;
 
     public AskGraphQueryTool(String baseUrl, ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
-        this.backend = KompileBackendClient.getInstance();
-        if (baseUrl != null && !baseUrl.isEmpty()) {
-            backend.setBaseUrl(baseUrl);
-        }
+        this.groundingClient = new GroundingBackendClient(baseUrl);
+    }
+
+    /** Visible for testing — lets a {@code MockRestServiceServer} intercept HTTP calls. */
+    AskGraphQueryTool(GroundingBackendClient groundingClient, ObjectMapper objectMapper) {
+        this.objectMapper = objectMapper;
+        this.groundingClient = groundingClient;
+    }
+
+    @Override
+    public String compactHint() {
+        return "Conjunctive pattern query: find all ?-variable bindings matching a set of predicates. "
+                + "CRITICAL: prefix variables with '?' or they are treated as constants (zero bindings). "
+                + "Example — who works for Acme: conjuncts=[{\"predicate\":\"worksFor\",\"args\":[\"?x\",\"Acme\"]}] "
+                + "returns rows like {x: \"Alice\", confidence: 0.91}. "
+                + "Multi-conjunct: [{\"predicate\":\"worksFor\",\"args\":[\"?x\",\"?org\"]},{\"predicate\":\"locatedIn\",\"args\":[\"?org\",\"London\"]}] "
+                + "finds all people whose employer is in London. "
+                + "factSheetId optional — discover via knowledge_graph list_fact_sheets. "
+                + "minConfidence default 0.3; raise to 0.7+ to see only well-supported facts. "
+                + "Zero results? Check predicate names with knowledge_graph list_predicates.";
     }
 
     @Override
@@ -113,7 +125,7 @@ public class AskGraphQueryTool implements CliTool {
             return ToolResult.error("conjuncts array is required and must not be empty");
         }
 
-        if (!backend.isAvailable()) {
+        if (!groundingClient.isAvailable()) {
             return ToolResult.error("ask_graph_query requires a running kompile-app.");
         }
 
@@ -126,8 +138,8 @@ public class AskGraphQueryTool implements CliTool {
             if (!params.path("minConfidence").isMissingNode()) body.set("minConfidence", params.get("minConfidence"));
             if (!params.path("sessionId").isMissingNode())     body.set("sessionId", params.get("sessionId"));
 
-            var resp = backend.post("/api/kb-grounding/query",
-                    objectMapper.writeValueAsString(body), Duration.ofSeconds(30));
+            var resp = groundingClient.post("/api/kb-grounding/query",
+                    objectMapper.writeValueAsString(body));
 
             if (resp.statusCode() != 200) {
                 return ToolResult.error("ask_graph_query failed (HTTP " + resp.statusCode() + "): "
@@ -144,8 +156,6 @@ public class AskGraphQueryTool implements CliTool {
                     formatQueryResult(rows, total, trunc, stale),
                     Map.of("total", total, "truncated", trunc));
 
-        } catch (ConnectException e) {
-            return ToolResult.error("Cannot connect to kompile-app. " + e.getMessage());
         } catch (Exception e) {
             return ToolResult.error("ask_graph_query error: " + e.getMessage());
         }
@@ -162,7 +172,11 @@ public class AskGraphQueryTool implements CliTool {
                 idx++;
                 sb.append("\n[").append(idx).append("] confidence=")
                         .append(String.format("%.3f", row.path("confidence").asDouble()));
-                JsonNode vars = row.path("variables");
+                // GAP 1: prefer displayVariables (human titles resolved server-side) over raw variables
+                JsonNode displayVars = row.path("displayVariables");
+                JsonNode rawVars = row.path("variables");
+                // Use displayVariables when present and non-empty; fall back to variables
+                JsonNode vars = (displayVars.isObject() && !displayVars.isEmpty()) ? displayVars : rawVars;
                 vars.fieldNames().forEachRemaining(var ->
                         sb.append("\n    ").append(var).append(" = ").append(vars.path(var).asText()));
             }

@@ -5,6 +5,8 @@ kompile:
   staging:
     ui:
       enabled: true
+    app:
+      enabled: true
     model-dir: ${user.home}/.kompile/models
     staging-dir: ${user.home}/.kompile/models/.staging
     settings-dir: ${user.home}/.kompile

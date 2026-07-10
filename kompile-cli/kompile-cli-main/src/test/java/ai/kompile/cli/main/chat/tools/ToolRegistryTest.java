@@ -24,6 +24,20 @@ class ToolRegistryTest {
     }
 
     @Test
+    void baseToolsExposeAccurateMcpAnnotations() {
+        assertEquals(McpToolAnnotations.READ_ONLY, new ReadTool().mcpAnnotations());
+        assertEquals(McpToolAnnotations.READ_ONLY, new GrepTool().mcpAnnotations());
+        assertEquals(McpToolAnnotations.READ_ONLY, new GlobTool().mcpAnnotations());
+        assertEquals(McpToolAnnotations.READ_ONLY, new ListTool().mcpAnnotations());
+        assertEquals(McpToolAnnotations.NETWORK, new WebFetchTool().mcpAnnotations());
+        assertEquals(McpToolAnnotations.NETWORK, new WebSearchTool().mcpAnnotations());
+        assertEquals(McpToolAnnotations.DESTRUCTIVE, new BashTool().mcpAnnotations());
+        assertEquals(McpToolAnnotations.WRITE, new WriteTool().mcpAnnotations());
+        assertEquals(McpToolAnnotations.WRITE, new EditTool().mcpAnnotations());
+        assertEquals(McpToolAnnotations.WRITE, new PatchTool().mcpAnnotations());
+    }
+
+    @Test
     void testRegisterAndGet() {
         TodoWriteTool tool = new TodoWriteTool();
         registry.register(tool);

@@ -452,8 +452,9 @@ class DossierBuilderTest {
             ReasoningTrace trace = dossier.toReasoningTrace();
 
             assertTrue(trace.size() >= 1, "Trace must have at least 1 step");
-            assertTrue(trace.conclusion().conclusion().contains("BASEDIN"),
-                    "Trace conclusion must contain the claim atom (upper-cased predicate). Got: "
+            assertTrue(trace.conclusion().conclusion().contains("basedIn"),
+                    "Trace conclusion must contain the claim atom (predicate case preserved — "
+                    + "KB atom keys are case-sensitive). Got: "
                     + trace.conclusion().conclusion());
         }
 

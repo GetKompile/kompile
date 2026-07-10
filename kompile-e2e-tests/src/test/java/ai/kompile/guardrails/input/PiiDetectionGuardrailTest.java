@@ -39,7 +39,7 @@ class PiiDetectionGuardrailTest {
 
     @BeforeEach
     void setUp() {
-        properties = new GuardrailsProperties();
+        properties = new GuardrailsProperties(null);
         properties.getInput().getPii().setEnabled(true);
         properties.getInput().getPii().setDetectEmail(true);
         properties.getInput().getPii().setDetectPhone(true);

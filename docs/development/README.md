@@ -8,7 +8,7 @@ This section covers building Kompile from source and contributing to its major l
 - Maven 3.9+
 - 10 GB RAM minimum (16 GB+ recommended for native builds)
 - Docker (optional, for containerized builds)
-- GraalVM 17 (optional, for native image builds -- needs 18-32 GB heap)
+- GraalVM 21 (optional, for native image builds — 17 fails on these images; the CLI image needs ~8 GB, app-main runs with `-J-Xmx80g`)
 
 ## Building from source
 
@@ -22,9 +22,10 @@ cd kompile-cli && mvn clean package
 # RAG application (kompile-app-main only, not the entire parent)
 cd kompile-app/kompile-app-main && mvn clean package
 
-# Native image (requires GraalVM 17)
-cd kompile-rag-builds/kompile-sample/project
-mvn clean package -DskipTests -Pnative
+# Native images / distribution archives (requires GraalVM 21)
+# Backends (CPU/CUDA), DL4J snapshot bootstrap, memory needs, custom install
+# dirs: see build-your-own-dist.md
+./build-dist.sh cpu-intel
 
 # Full distribution tarball
 kompile build dist

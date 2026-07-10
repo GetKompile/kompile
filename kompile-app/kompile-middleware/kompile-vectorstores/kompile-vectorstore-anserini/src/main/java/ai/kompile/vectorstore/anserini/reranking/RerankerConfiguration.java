@@ -22,7 +22,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -31,7 +30,10 @@ import org.springframework.context.annotation.Configuration;
  */
 @Configuration(proxyBeanMethods = false)
 @ConditionalOnClass(name = "ai.kompile.vectorstore.anserini.AnseriniVectorStoreImpl")
-@EnableConfigurationProperties(RerankerProperties.class)
+// NOTE: no @EnableConfigurationProperties here — the properties class is
+// @Component-scanned (with @ConfigurationProperties) and registering it twice
+// creates two beans; Spring AOT/native bakes both and injection fails with
+// "expected single matching bean but found 2".
 public class RerankerConfiguration {
 
     private static final Logger log = LoggerFactory.getLogger(RerankerConfiguration.class);
@@ -40,7 +42,7 @@ public class RerankerConfiguration {
      * Create the RerankerService bean when reranking is enabled.
      */
     @Bean
-    @ConditionalOnProperty(name = "kompile.reranker.enabled", havingValue = "true")
+    @ConditionalOnProperty(name = "kompile.reranker.enabled", havingValue = "true", matchIfMissing = true)
     public RerankerService rerankerService(RerankerProperties properties) {
         RerankerConfig defaultConfig = properties.toRerankerConfig();
         log.info("Creating AnseriniRerankerService with config: type={}, fbDocs={}, fbTerms={}",
@@ -52,7 +54,7 @@ public class RerankerConfiguration {
      * Expose the default RerankerConfig as a bean.
      */
     @Bean
-    @ConditionalOnProperty(name = "kompile.reranker.enabled", havingValue = "true")
+    @ConditionalOnProperty(name = "kompile.reranker.enabled", havingValue = "true", matchIfMissing = true)
     public RerankerConfig defaultRerankerConfig(RerankerProperties properties) {
         return properties.toRerankerConfig();
     }

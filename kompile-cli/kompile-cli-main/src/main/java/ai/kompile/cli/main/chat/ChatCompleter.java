@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.chat;
 
 import ai.kompile.cli.common.mcp.McpSseClient;
+import ai.kompile.utils.FormatUtils;
 import org.jline.reader.Candidate;
 import org.jline.reader.Completer;
 import org.jline.reader.LineReader;
@@ -112,9 +113,17 @@ public class ChatCompleter implements Completer {
         COMMANDS.put("/roles", "Manage roles");
         COMMANDS.put("/role", "Show or assign role");
         COMMANDS.put("/enforce", "Toggle or configure enforcer");
+        COMMANDS.put("/enforcer", "Toggle or configure enforcer");
+        COMMANDS.put("/rules", "Show active enforcer rules");
+        COMMANDS.put("/archive", "List archived enforced turns");
+        COMMANDS.put("/rollback", "Roll back archived turns");
+        COMMANDS.put("/diff", "Show an archived turn diff");
+        COMMANDS.put("/purge", "Purge session diff archive");
 
         // Passthrough & forwarding
         COMMANDS.put("/passthrough", "Toggle passthrough mode");
+        COMMANDS.put("/keys", "Forward keys directly to the agent");
+        COMMANDS.put("/render", "Show or set managed render mode");
         COMMANDS.put("/forward", "Forward command to agent");
         COMMANDS.put("/resume", "Resume a session");
         COMMANDS.put("/menu", "Show menu");
@@ -134,12 +143,22 @@ public class ChatCompleter implements Completer {
 
     private static final Map<String, List<String[]>> SUB_ARGS = new LinkedHashMap<>();
     static {
-        SUB_ARGS.put("/enforce", List.of(
+        List<String[]> enforcerArgs = List.of(
+                new String[]{"status", "Show enforcer status"},
                 new String[]{"on", "Enable enforcer"},
                 new String[]{"off", "Disable enforcer"},
-                new String[]{"rules", "Show or set enforcer rules"},
-                new String[]{"score", "Show enforcer score"}
-        ));
+                new String[]{"pause", "Pause live enforcement"},
+                new String[]{"resume", "Resume live enforcement"},
+                new String[]{"judgements", "Show recorded judgements"},
+                new String[]{"show", "Show enforcer config"},
+                new String[]{"rules", "Show active enforcer rules"},
+                new String[]{"init", "Configure enforcer"},
+                new String[]{"delete", "Remove enforcer config"},
+                new String[]{"reload", "Reload enforcer config"},
+                new String[]{"run", "Show enforcer launch command"}
+        );
+        SUB_ARGS.put("/enforce", enforcerArgs);
+        SUB_ARGS.put("/enforcer", enforcerArgs);
         SUB_ARGS.put("/rag", List.of(
                 new String[]{"on", "Enable RAG"},
                 new String[]{"off", "Disable RAG"}
@@ -153,11 +172,24 @@ public class ChatCompleter implements Completer {
                 new String[]{"passthrough", "Agent passthrough mode"},
                 new String[]{"plan", "Planning mode"}
         ));
-        SUB_ARGS.put("/activity", List.of(
+        SUB_ARGS.put("/render", List.of(
+                new String[]{"mirror", "Render the agent terminal directly"},
+                new String[]{"decoded", "Render the decoded transcript"},
+                new String[]{"decode", "Alias for decoded render mode"}
+        ));
+        List<String[]> activityArgs = List.of(
+                new String[]{"enter", "Inspect activity or subagent"},
+                new String[]{"inspect", "Inspect activity or subagent"},
+                new String[]{"status", "Inspect activity status"},
                 new String[]{"logs", "Show activity logs"},
                 new String[]{"kill", "Kill or cancel activity"},
+                new String[]{"remove", "Remove completed activity"},
+                new String[]{"clear", "Clear completed activities"},
                 new String[]{"close", "Close activity menu"}
-        ));
+        );
+        SUB_ARGS.put("/activity", activityArgs);
+        SUB_ARGS.put("/processes", activityArgs);
+        SUB_ARGS.put("/jobs", activityArgs);
     }
 
     private static final Set<String> TOOL_COMMANDS = Set.of("/tool", "/local-tool");
@@ -379,7 +411,7 @@ public class ChatCompleter implements Completer {
                     String descr = null;
                     if (!isDir) {
                         try {
-                            descr = formatSize(Files.size(entry));
+                            descr = FormatUtils.formatBytes(Files.size(entry));
                         } catch (IOException ignored) {
                         }
                     }
@@ -391,13 +423,6 @@ public class ChatCompleter implements Completer {
             }
         } catch (IOException | java.nio.file.InvalidPathException ignored) {
         }
-    }
-
-    private static String formatSize(long bytes) {
-        if (bytes < 1024) return bytes + " B";
-        if (bytes < 1024 * 1024) return (bytes / 1024) + " KB";
-        if (bytes < 1024L * 1024 * 1024) return (bytes / (1024 * 1024)) + " MB";
-        return (bytes / (1024L * 1024 * 1024)) + " GB";
     }
 
     // ── Terminal builder ──────────────────────────────────────────────────────
@@ -587,7 +612,7 @@ public class ChatCompleter implements Completer {
 
         // Status bar: keyboard shortcuts and indicators
         sb.append('\n').append(DIM)
-          .append("  Ctrl+C cancel \u00b7 /help \u00b7 /agent \u00b7 /quit")
+          .append("  Ctrl+G cancel \u00b7 /help \u00b7 /agent \u00b7 /quit")
           .append(ANSI_RESET);
 
         Supplier<List<String>> qs = queueSupplier;

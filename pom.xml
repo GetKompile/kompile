@@ -61,6 +61,8 @@
     <maven-shade-plugin.version>3.5.1</maven-shade-plugin.version>
 
     <javacpp.version>1.5.13</javacpp.version>
+    <!-- Custom local DL4J builds are consumed by overriding -Dnd4j.version=<custom>
+         (see build-scripts/build-dl4j-backend.sh for the full custom-build script). -->
     <nd4j.version>1.0.0-SNAPSHOT</nd4j.version>
     <nd4j.backend>nd4j-native</nd4j.backend>
 
@@ -754,6 +756,98 @@
       </activation>
       <properties>
         <javacpp.platform.extension>-avx512</javacpp.platform.extension>
+      </properties>
+    </profile>
+
+    <!-- ── ND4J backend variant profiles ────────────────────────────────────
+         Activated by -Dkompile.backend=<value>. These set nd4j.backend (and
+         optionally javacpp.platform.extension) so child modules resolve the
+         correct backend artifact without per-module pom changes.
+         Usage: mvn clean install -Dkompile.backend=cuda-12.9 -Dnd4j.version=...
+    -->
+    <!-- CPU explicit default alias: nd4j-native (same as property default) -->
+    <profile>
+      <id>backend-cpu</id>
+      <activation>
+        <property>
+          <name>kompile.backend</name>
+          <value>cpu</value>
+        </property>
+      </activation>
+      <properties>
+        <nd4j.backend>nd4j-native</nd4j.backend>
+      </properties>
+    </profile>
+
+    <!-- CPU + MLIR/Triton JIT compile classifier (-compile) -->
+    <profile>
+      <id>backend-cpu-compile</id>
+      <activation>
+        <property>
+          <name>kompile.backend</name>
+          <value>cpu-compile</value>
+        </property>
+      </activation>
+      <properties>
+        <nd4j.backend>nd4j-native</nd4j.backend>
+        <javacpp.platform.extension>-compile</javacpp.platform.extension>
+      </properties>
+    </profile>
+
+    <!-- CPU + OneDNN + AVX-512 extension classifier -->
+    <profile>
+      <id>backend-cpu-onednn-avx512</id>
+      <activation>
+        <property>
+          <name>kompile.backend</name>
+          <value>cpu-onednn-avx512</value>
+        </property>
+      </activation>
+      <properties>
+        <nd4j.backend>nd4j-native</nd4j.backend>
+        <javacpp.platform.extension>-onednn-avx512</javacpp.platform.extension>
+      </properties>
+    </profile>
+
+    <!-- CUDA 12.6 backend -->
+    <profile>
+      <id>backend-cuda-12.6</id>
+      <activation>
+        <property>
+          <name>kompile.backend</name>
+          <value>cuda-12.6</value>
+        </property>
+      </activation>
+      <properties>
+        <nd4j.backend>nd4j-cuda-12.6</nd4j.backend>
+      </properties>
+    </profile>
+
+    <!-- CUDA 12.9 backend -->
+    <profile>
+      <id>backend-cuda-12.9</id>
+      <activation>
+        <property>
+          <name>kompile.backend</name>
+          <value>cuda-12.9</value>
+        </property>
+      </activation>
+      <properties>
+        <nd4j.backend>nd4j-cuda-12.9</nd4j.backend>
+      </properties>
+    </profile>
+
+    <!-- ZLUDA (AMD GPU via CUDA-compat layer) -->
+    <profile>
+      <id>backend-zluda</id>
+      <activation>
+        <property>
+          <name>kompile.backend</name>
+          <value>zluda</value>
+        </property>
+      </activation>
+      <properties>
+        <nd4j.backend>nd4j-zluda</nd4j.backend>
       </properties>
     </profile>
 

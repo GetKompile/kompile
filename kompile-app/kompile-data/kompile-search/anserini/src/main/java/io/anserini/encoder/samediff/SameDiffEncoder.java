@@ -754,6 +754,34 @@ public abstract class SameDiffEncoder<RETURN_TYPE> implements AutoCloseable {
     }
 
     private void loadSameDiffModel(Path modelPath) throws IOException {
+        // Fast path: load from the graph-optimization cache if it is still fresh.
+        // The cache is a '<base>.opt<ext>' file (e.g. model.opt.sdz for model.sdz).
+        // A '<cache>.fp' fingerprint file records the source file's size+mtime plus
+        // runtime optimizer/backend settings that can affect the serialized optimized
+        // graph. If it matches the live source and runtime, GraphOptimizer.optimize()
+        // need not run again on this restart. DSP plan caching is handled separately by
+        // ND4J's DspPlanDiskCache; this cache is only for graph-level fusion output.
+        if (optimizeOnLoad) {
+            Path cachedOptPath = computeOptCachePath(modelPath);
+            if (isOptCacheValid(modelPath, cachedOptPath)) {
+                try {
+                    LOG.info("[{}] Loading from graph-optimization cache: {} (skipping re-optimization)",
+                            modelIdentifier, cachedOptPath);
+                    SameDiff cached = SameDiff.load(cachedOptPath.toFile(), true);
+                    if (cached != null) {
+                        this.sameDiffModel = cached;
+                        LOG.info("[{}] Successfully loaded from optimization cache", modelIdentifier);
+                        return;
+                    }
+                    LOG.warn("[{}] Optimization-cache load returned null, falling back to original", modelIdentifier);
+                } catch (Exception e) {
+                    LOG.warn("[{}] Failed to load from optimization cache ({}), falling back to original",
+                            modelIdentifier, e.getMessage());
+                }
+            }
+        }
+
+        // Slow path: load from the original model file and optionally optimize.
         try {
             this.sameDiffModel = SameDiff.load(modelPath.toFile(), true);
 
@@ -765,11 +793,116 @@ public abstract class SameDiffEncoder<RETURN_TYPE> implements AutoCloseable {
             // Apply graph optimization if enabled
             if (optimizeOnLoad) {
                 applyGraphOptimization();
+                // Persist the optimized graph to avoid re-running GraphOptimizer on next start.
+                // Failure here is non-fatal — the model is already loaded and ready to use.
+                saveGraphOptimizationCache(computeOptCachePath(modelPath), modelPath);
             }
 
         } catch (Exception e) {
             LOG.error("[{}] Failed to import model to SameDiff from path {}", modelIdentifier, modelPath, e);
             throw new IOException("Failed to import model to SameDiff from " + modelPath + ": " + e.getMessage(), e);
+        }
+    }
+
+    // ========== GRAPH-OPTIMIZATION CACHE HELPERS ==========
+    // These methods are package-private so the unit test can exercise them without
+    // loading a real SameDiff model.
+
+    /**
+     * Compute the path for the graph-optimization cache file next to {@code modelPath}.
+     * Convention: {@code model.sdz} → {@code model.opt.sdz};
+     *             {@code weights.bin} → {@code weights.opt.bin};
+     *             {@code modelfile} (no extension) → {@code modelfile.opt}.
+     */
+    static Path computeOptCachePath(Path modelPath) {
+        String fileName = modelPath.getFileName().toString();
+        int dotIdx = fileName.lastIndexOf('.');
+        if (dotIdx > 0) {
+            String base = fileName.substring(0, dotIdx);
+            String ext  = fileName.substring(dotIdx); // includes the dot
+            return modelPath.resolveSibling(base + ".opt" + ext);
+        }
+        return modelPath.resolveSibling(fileName + ".opt");
+    }
+
+    /**
+     * Compute a fingerprint string for a model file plus runtime settings that affect
+     * the serialized optimized SameDiff graph. Package-private for unit testing.
+     *
+     * @throws IOException if the file cannot be stat-ed
+     */
+    static String computeSourceFingerprint(Path path) throws IOException {
+        return Files.size(path) + "," + Files.getLastModifiedTime(path).toMillis()
+                + "," + computeOptimizationRuntimeFingerprint();
+    }
+
+    static String computeOptimizationRuntimeFingerprint() {
+        return "backend=" + activeNd4jBackendName()
+                + ";nd4j.backend=" + System.getProperty("nd4j.backend", "")
+                + ";defaultBackend=" + System.getProperty("org.nd4j.linalg.defaultbackend", "")
+                + ";optimizer.enabled=" + System.getProperty("nd4j.optimizer.enabled", "")
+                + ";optimizer.fp16=" + System.getProperty("nd4j.optimizer.fp16", "")
+                + ";triton.tf32=" + System.getProperty("nd4j.triton.tf32", "")
+                + ";cublas.tf32=" + System.getProperty("nd4j.cublas.tf32", "");
+    }
+
+    private static String activeNd4jBackendName() {
+        String override = System.getProperty("kompile.embedding.samediff.cacheBackend");
+        if (override != null && !override.isBlank()) {
+            return override;
+        }
+        try {
+            return Nd4j.getBackend() == null ? "unknown" : Nd4j.getBackend().getClass().getName();
+        } catch (Throwable t) {
+            return "unavailable:" + t.getClass().getName();
+        }
+    }
+
+    /**
+     * Return {@code true} if:
+     * <ol>
+     *   <li>the cached opt file (e.g. {@code model.opt.sdz}) exists as a regular file, and</li>
+     *   <li>an adjacent {@code <cachedPath>.fp} fingerprint file exists, and</li>
+     *   <li>the stored fingerprint equals the current source file and runtime settings.</li>
+     * </ol>
+     * Any IO problem (missing files, parse errors) returns {@code false} so the caller
+     * falls back to the slow import-and-optimize path.
+     * Package-private for unit testing.
+     */
+    static boolean isOptCacheValid(Path sourcePath, Path cachedPath) {
+        try {
+            if (!Files.exists(cachedPath) || !Files.isRegularFile(cachedPath)) return false;
+            Path fpPath = cachedPath.resolveSibling(cachedPath.getFileName() + ".fp");
+            if (!Files.exists(fpPath)) return false;
+            String expected = computeSourceFingerprint(sourcePath);
+            String stored   = Files.readString(fpPath).trim();
+            return expected.equals(stored);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
+     * Persist the currently-loaded (already graph-optimized) SameDiff model as
+     * {@code cachedOptPath}, and write a {@code .fp} fingerprint file recording the
+     * source file and runtime optimizer/backend settings so future loads can verify freshness.
+     *
+     * <p>This method is intentionally non-fatal: a save failure only means the
+     * optimization will be re-run on the next subprocess start.
+     */
+    private void saveGraphOptimizationCache(Path cachedOptPath, Path sourcePath) {
+        if (this.sameDiffModel == null) return;
+        try {
+            LOG.info("[{}] Saving graph-optimization cache to: {}", modelIdentifier, cachedOptPath);
+            saveOptimized(cachedOptPath);   // delegates to SDZSerializer.saveOptimized
+            String fp = computeSourceFingerprint(sourcePath);
+            Path fpPath = cachedOptPath.resolveSibling(cachedOptPath.getFileName() + ".fp");
+            Files.writeString(fpPath, fp);
+            LOG.info("[{}] Graph-optimization cache saved (fp={})", modelIdentifier, fp);
+        } catch (Exception e) {
+            LOG.warn("[{}] Failed to save graph-optimization cache (non-fatal): {}", modelIdentifier, e.getMessage());
+            // Best-effort cleanup so a partial cache file does not look valid next time.
+            try { Files.deleteIfExists(cachedOptPath); } catch (Exception ignored) {}
         }
     }
 
@@ -1014,7 +1147,7 @@ public abstract class SameDiffEncoder<RETURN_TYPE> implements AutoCloseable {
     // Counter for single encode() calls to trigger periodic cleanup
     // THREAD-SAFETY FIX: Use AtomicInteger for safe concurrent access
     // Multiple threads may encode simultaneously in Spring Boot environments
-    private final java.util.concurrent.atomic.AtomicInteger singleEncodeCount = new java.util.concurrent.atomic.AtomicInteger(0);
+    private final AtomicInteger singleEncodeCount = new AtomicInteger(0);
 
     /**
      * Bulk encode multiple texts with optimized parallel processing.

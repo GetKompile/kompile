@@ -21,12 +21,18 @@ import ai.kompile.core.graphrag.ExtractorUtils;
 import ai.kompile.core.graphrag.GraphConstants;
 import ai.kompile.core.graphrag.format.GraphExtractionSchema;
 import ai.kompile.core.graphrag.format.GraphExtractionSchema.*;
+import ai.kompile.core.graphrag.model.Entity;
+import ai.kompile.core.graphrag.model.Graph;
+import ai.kompile.core.graphrag.model.Relationship;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.document.Document;
 import org.springframework.stereotype.Component;
 
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Deterministic graph extractor for Google Docs documents.
@@ -204,11 +210,11 @@ public class GoogleDocsGraphExtractor implements DocumentGraphExtractor {
         Object tableGraphObj = meta.get(GraphConstants.META_TABLE_GRAPH);
         if (tableGraphObj instanceof String tableGraphJson && !((String) tableGraphObj).isBlank()) {
             try {
-                com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
-                ai.kompile.core.graphrag.model.Graph cellGraph = mapper.readValue(tableGraphJson,
-                        ai.kompile.core.graphrag.model.Graph.class);
+                ObjectMapper mapper = new ObjectMapper();
+                Graph cellGraph = mapper.readValue(tableGraphJson,
+                        Graph.class);
                 if (cellGraph.getEntities() != null) {
-                    for (ai.kompile.core.graphrag.model.Entity e : cellGraph.getEntities()) {
+                    for (Entity e : cellGraph.getEntities()) {
                         if (e == null || e.getId() == null || e.getTitle() == null || e.getType() == null) {
                             log.debug("Skipping table graph entity with null id/title/type: {}", e);
                             continue;
@@ -226,7 +232,7 @@ public class GoogleDocsGraphExtractor implements DocumentGraphExtractor {
                     }
                 }
                 if (cellGraph.getRelationships() != null) {
-                    for (ai.kompile.core.graphrag.model.Relationship r : cellGraph.getRelationships()) {
+                    for (Relationship r : cellGraph.getRelationships()) {
                         if (r == null || r.getSource() == null || r.getTarget() == null || r.getType() == null) {
                             log.debug("Skipping table graph relationship with null source/target/type: {}", r);
                             continue;
@@ -369,7 +375,7 @@ public class GoogleDocsGraphExtractor implements DocumentGraphExtractor {
 
         // Inline images → EMBEDDED_IMAGE entities from body text [Image: objectId] markers
         if (bodyText != null && !bodyText.isBlank()) {
-            java.util.regex.Matcher imgMatcher = java.util.regex.Pattern
+            Matcher imgMatcher = Pattern
                     .compile("\\[Image:\\s*([^\\]]+)\\]").matcher(bodyText);
             int imgIdx = 0;
             Set<String> seenObjectIds = new HashSet<>();
@@ -412,7 +418,7 @@ public class GoogleDocsGraphExtractor implements DocumentGraphExtractor {
             }
         } else if (bodyText != null && !bodyText.isBlank()) {
             // Fallback: extract URLs from body text (plaintext_fallback mode)
-            java.util.regex.Matcher urlMatcher = java.util.regex.Pattern
+            Matcher urlMatcher = Pattern
                     .compile("(?:https?|ftps?|mailto):[\\w\\-._~:/?#\\[\\]@!$&'()*+,;=%]+")
                     .matcher(bodyText);
             Set<String> seenUrls = new HashSet<>();

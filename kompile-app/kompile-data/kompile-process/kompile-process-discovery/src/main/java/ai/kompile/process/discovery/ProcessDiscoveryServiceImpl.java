@@ -23,9 +23,10 @@ import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import ai.kompile.process.service.ProcessEngineService;
+import ai.kompile.process.workflow.ApprovalMode;
+import ai.kompile.process.workflow.ApprovalPolicy;
 import ai.kompile.process.workflow.ProcessDefinition;
 import ai.kompile.process.workflow.ProcessPhase;
 import ai.kompile.process.workflow.ProcessStatus;
@@ -38,6 +39,7 @@ import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
+import java.time.LocalDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -52,7 +54,6 @@ import java.util.stream.Collectors;
 public class ProcessDiscoveryServiceImpl implements ProcessDiscoveryService {
 
     private KnowledgeGraphService knowledgeGraphService;
-    private GraphNodeRepository graphNodeRepository;
     private ProcessEngineService processEngineService;
     private LlmProcessDiscoveryService llmProcessDiscoveryService;
     private BayesianNetworkService bayesianNetworkService;
@@ -66,11 +67,6 @@ public class ProcessDiscoveryServiceImpl implements ProcessDiscoveryService {
     /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
     protected ProcessDiscoveryServiceImpl() {}
 
-
-    @Autowired(required = false)
-    public void setGraphNodeRepository(GraphNodeRepository graphNodeRepository) {
-        this.graphNodeRepository = graphNodeRepository;
-    }
 
     @Autowired(required = false)
     public void setProcessEngineService(ProcessEngineService processEngineService) {
@@ -754,7 +750,7 @@ public class ProcessDiscoveryServiceImpl implements ProcessDiscoveryService {
 
             // Build the parent email-driven process
             List<FlowPattern.FlowStep> parentSteps = new ArrayList<>();
-            java.time.LocalDateTime emailTime = emailNode.getOccurredAt();
+            LocalDateTime emailTime = emailNode.getOccurredAt();
 
             // Step 1: Receive email
             String senderName = senders.isEmpty() ? "sender" : senders.get(0).getTitle();
@@ -1074,8 +1070,8 @@ public class ProcessDiscoveryServiceImpl implements ProcessDiscoveryService {
      * from the step-level occurredAt values.
      */
     private void computeTemporalBounds(FlowPattern pattern) {
-        java.time.LocalDateTime earliest = null;
-        java.time.LocalDateTime latest = null;
+        LocalDateTime earliest = null;
+        LocalDateTime latest = null;
         for (FlowPattern.FlowStep step : pattern.getSteps()) {
             if (step.getOccurredAt() != null) {
                 if (earliest == null || step.getOccurredAt().isBefore(earliest)) {
@@ -1228,17 +1224,32 @@ public class ProcessDiscoveryServiceImpl implements ProcessDiscoveryService {
     }
 
     private GraphNode otherNode(GraphEdge edge, GraphNode self) {
+        GraphNode other;
         if (edge.getSourceNode() != null
                 && edge.getSourceNode().getNodeId() != null
                 && !edge.getSourceNode().getNodeId().equals(self.getNodeId())) {
-            return edge.getSourceNode();
+            other = edge.getSourceNode();
+        } else {
+            other = edge.getTargetNode();
         }
-        if (edge.getTargetNode() != null
-                && edge.getTargetNode().getNodeId() != null
-                && !edge.getTargetNode().getNodeId().equals(self.getNodeId())) {
-            return edge.getTargetNode();
+        return resolveEndpointNode(other);
+    }
+
+    /**
+     * Swap a hollow edge-embedded endpoint for the real store node. Store-loaded edges carry ids
+     * only — {@code GraphEdge.getSourceNode()} synthesizes an id-only node with no metadata — so
+     * type checks like {@code isSpreadsheetNode}/{@code isPersonNode} on the embedded node were
+     * silently false on production graphs (fixture edges embed real nodes, hiding it in tests).
+     */
+    private GraphNode resolveEndpointNode(GraphNode embedded) {
+        if (embedded == null || embedded.getNodeId() == null || !embedded.isHollow()) {
+            return embedded;
         }
-        return edge.getTargetNode();
+        try {
+            return knowledgeGraphService.getNode(embedded.getNodeId()).orElse(embedded);
+        } catch (Exception e) {
+            return embedded;
+        }
     }
 
     // ── Hierarchical suggestion builder ─────────────────────────────────────
@@ -1270,6 +1281,21 @@ public class ProcessDiscoveryServiceImpl implements ProcessDiscoveryService {
         List<ProcessPhase> phases = new ArrayList<>();
         int phaseOrder = 1;
 
+        // First pass: assign the step ids the engine will use, keyed by step name, so the
+        // mined/entailed dependsOn names can be translated to ids the executor enforces.
+        Map<String, String> stepIdByName = new LinkedHashMap<>();
+        {
+            int idPhase = 1;
+            for (ProcessSuggestion.SuggestedPhase sp : suggestion.getPhases()) {
+                int idStep = 1;
+                for (ProcessSuggestion.SuggestedStep ss : sp.getSteps()) {
+                    stepIdByName.putIfAbsent(ss.getName(), idPhase + "." + idStep);
+                    idStep++;
+                }
+                idPhase++;
+            }
+        }
+
         for (ProcessSuggestion.SuggestedPhase sp : suggestion.getPhases()) {
             List<ProcessStep> steps = new ArrayList<>();
             int stepOrder = 1;
@@ -1282,14 +1308,39 @@ public class ProcessDiscoveryServiceImpl implements ProcessDiscoveryService {
                     stepType = StepType.AUTO;
                 }
 
+                String stepId = phaseOrder + "." + stepOrder;
+                // Translate dependsOn step names → step ids; unknown names are dropped, self-deps skipped.
+                List<String> dependsOnIds = null;
+                if (ss.getDependsOn() != null && !ss.getDependsOn().isEmpty()) {
+                    dependsOnIds = new ArrayList<>();
+                    for (String depName : ss.getDependsOn()) {
+                        String depId = stepIdByName.get(depName);
+                        if (depId != null && !depId.equals(stepId) && !dependsOnIds.contains(depId)) {
+                            dependsOnIds.add(depId);
+                        }
+                    }
+                    if (dependsOnIds.isEmpty()) {
+                        dependsOnIds = null;
+                    }
+                }
+
                 ProcessStep step = ProcessStep.builder()
-                        .id(phaseOrder + "." + stepOrder)
+                        .id(stepId)
                         .name(ss.getName())
                         .description(ss.getDescription())
                         .stepType(stepType)
                         .graphNodeIds(ss.getGraphNodeIds())
                         .toolName(ss.getToolName())
+                        .approvalPolicy(toApprovalPolicy(ss))
+                        .controlIds(emptyToNull(ss.getControlIds()))
+                        .requiredRoles(emptyToNull(ss.getRequiredRoles()))
+                        .requiredPermissions(emptyToNull(ss.getRequiredPermissions()))
+                        .metadata(emptyMapToNull(ss.getMetadata()))
                         .confidence(suggestion.getConfidence())
+                        .dependsOn(dependsOnIds)
+                        // Mined XOR routing and graph-derived policy guards.
+                        .conditionExpression(ss.getConditionExpression())
+                        .conditionLabel(ss.getConditionLabel())
                         .build();
                 steps.add(step);
                 stepOrder++;
@@ -1309,7 +1360,43 @@ public class ProcessDiscoveryServiceImpl implements ProcessDiscoveryService {
         meta.put("discoverySource", suggestion.getDiscoverySource());
         meta.put("discoveryConfidence", suggestion.getConfidence());
         meta.put("sourceGraphNodeIds", suggestion.getSourceGraphNodeIds());
+        meta.put("sourceGraphRelationIds", suggestion.getSourceGraphRelationIds());
         meta.put("evidence", suggestion.getEvidence());
+        putIfText(meta, "narrative", suggestion.getNarrative());
+        putIfText(meta, "narrativeSource", suggestion.getNarrativeSource());
+        putIfText(meta, "processDocument", suggestion.getProcessDocument());
+        putIfText(meta, "processDocumentSource", suggestion.getProcessDocumentSource());
+        putIfText(meta, "reasoningTraceId", suggestion.getReasoningTraceId());
+        putIfText(meta, "reasoningTraceArtifactName", suggestion.getReasoningTraceArtifactName());
+        putIfText(meta, "reasoningProjection", suggestion.getReasoningProjection());
+        putIfText(meta, "reasoningFamily", suggestion.getReasoningFamily());
+        if (suggestion.getReasoningRank() != null) {
+            meta.put("reasoningRank", suggestion.getReasoningRank());
+        }
+        if (suggestion.getHybridScore() != null) {
+            meta.put("hybridScore", suggestion.getHybridScore());
+        }
+        if (suggestion.getHybridReasoning() != null) {
+            meta.put("hybridReasoning", suggestion.getHybridReasoning());
+        }
+        if (suggestion.getEntailmentScore() != null) {
+            meta.put("entailmentScore", suggestion.getEntailmentScore());
+        }
+        if (suggestion.getProcessCaseCount() != null) {
+            meta.put("processCaseCount", suggestion.getProcessCaseCount());
+        }
+        if (suggestion.getProcessActivityCount() != null) {
+            meta.put("processActivityCount", suggestion.getProcessActivityCount());
+        }
+        if (suggestion.getDirectlyFollowsCount() != null) {
+            meta.put("directlyFollowsCount", suggestion.getDirectlyFollowsCount());
+        }
+        if (suggestion.getAcceptedPrecedenceCount() != null) {
+            meta.put("acceptedPrecedenceCount", suggestion.getAcceptedPrecedenceCount());
+        }
+        if (suggestion.getEntailedOnlyPrecedenceCount() != null) {
+            meta.put("entailedOnlyPrecedenceCount", suggestion.getEntailedOnlyPrecedenceCount());
+        }
         if (suggestion.getBayesianPosteriors() != null && !suggestion.getBayesianPosteriors().isEmpty()) {
             meta.put("bayesianPosteriors", suggestion.getBayesianPosteriors());
         }
@@ -1342,26 +1429,145 @@ public class ProcessDiscoveryServiceImpl implements ProcessDiscoveryService {
         ProcessDefinition definition = ProcessDefinition.builder()
                 .id(definitionId)
                 .name(suggestion.getName())
+                .description(firstNonBlank(
+                        suggestion.getProcessDocument(),
+                        suggestion.getNarrative(),
+                        suggestion.getDescription()))
                 .version(1)
                 .status(ProcessStatus.DRAFT)
                 .phases(phases)
                 .metadata(meta)
+                .narrative(suggestion.getNarrative())
+                .narrativeSource(suggestion.getNarrativeSource())
+                .processDocument(suggestion.getProcessDocument())
+                .processDocumentSource(suggestion.getProcessDocumentSource())
                 .factSheetId(suggestion.getFactSheetId())
+                .sourceSuggestionId(suggestion.getId())
+                .sourceGraphNodeIds(suggestion.getSourceGraphNodeIds())
+                .discoveryConfidence(suggestion.getConfidence())
                 .parentProcessId(suggestion.getParentSuggestionId())
                 .childProcessIds(childProcessIds.isEmpty() ? null : childProcessIds)
                 .build();
 
-        // Persist the definition via the process engine if available
+        // Persist the definition via the process engine if available. A suggestion that was
+        // identity-matched to an ACCEPTED predecessor is a proposed REVISION: it bumps the live
+        // definition's version (previous versions stay immutable) instead of spawning an
+        // unrelated definition.
         if (processEngineService != null) {
             try {
-                definition = processEngineService.createProcess(definition);
-                log.info("Persisted discovered process '{}' (id={})", definition.getName(), definition.getId());
+                if (suggestion.getRevisesProcessDefinitionId() != null) {
+                    try {
+                        definition = processEngineService.reviseProcess(
+                                suggestion.getRevisesProcessDefinitionId(), definition);
+                        log.info("Revised process definition '{}' → id={} v{}",
+                                definition.getName(), definition.getId(), definition.getVersion());
+                    } catch (IllegalArgumentException gone) {
+                        // The referenced definition no longer exists — fall back to a fresh one.
+                        definition = processEngineService.createProcess(definition);
+                        log.info("Persisted discovered process '{}' (id={}; revision target was gone)",
+                                definition.getName(), definition.getId());
+                    }
+                } else {
+                    definition = processEngineService.createProcess(definition);
+                    log.info("Persisted discovered process '{}' (id={})", definition.getName(), definition.getId());
+                }
             } catch (Exception e) {
                 log.warn("Failed to persist discovered process '{}': {}", definition.getName(), e.getMessage());
             }
         }
 
         return definition;
+    }
+
+    private static ApprovalPolicy toApprovalPolicy(ProcessSuggestion.SuggestedStep step) {
+        if (step == null) {
+            return null;
+        }
+        List<String> approverPool = new ArrayList<>();
+        addIfText(approverPool, step.getSuggestedAssignee());
+        addIfText(approverPool, step.getRoleBinding());
+        if (step.getRequiredRoles() != null) {
+            for (String role : step.getRequiredRoles()) {
+                addIfText(approverPool, role);
+            }
+        }
+        Map<String, Object> metadata = step.getMetadata() == null ? Map.of() : step.getMetadata();
+        addIfText(approverPool, metadataText(metadata, "approver"));
+        addIfText(approverPool, metadataText(metadata, "owner"));
+        addIfText(approverPool, metadataText(metadata, "relation_owner"));
+        addIfText(approverPool, metadataText(metadata, "relation_approver"));
+
+        boolean approvalStep = "APPROVE".equalsIgnoreCase(step.getStepType())
+                || metadata.containsKey("approvalPolicy")
+                || metadata.containsKey("relation_approvalPolicy");
+        if (!approvalStep && approverPool.isEmpty()) {
+            return null;
+        }
+        ApprovalPolicy.ApprovalPolicyBuilder builder = ApprovalPolicy.builder()
+                .approverPool(approverPool.isEmpty() ? null : approverPool)
+                .mode(ApprovalMode.SINGLE);
+        Integer threshold = integer(metadata.get("dollarThreshold"));
+        if (threshold == null) {
+            threshold = integer(metadata.get("amountThreshold"));
+        }
+        if (threshold == null) {
+            threshold = integer(metadata.get("threshold"));
+        }
+        if (threshold != null) {
+            builder.dollarThreshold(threshold);
+        }
+        return builder.build();
+    }
+
+    private static <T> List<T> emptyToNull(List<T> values) {
+        return values == null || values.isEmpty() ? null : values;
+    }
+
+    private static <K, V> Map<K, V> emptyMapToNull(Map<K, V> values) {
+        return values == null || values.isEmpty() ? null : values;
+    }
+
+    private static void addIfText(List<String> target, String value) {
+        if (value != null && !value.isBlank() && !target.contains(value)) {
+            target.add(value);
+        }
+    }
+
+    private static String metadataText(Map<String, Object> metadata, String key) {
+        Object value = metadata.get(key);
+        return value == null ? null : String.valueOf(value).trim();
+    }
+
+    private static Integer integer(Object value) {
+        if (value instanceof Number n) {
+            return n.intValue();
+        }
+        if (value instanceof String s) {
+            try {
+                return (int) Math.round(Double.parseDouble(s.trim()));
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private static void putIfText(Map<String, Object> target, String key, String value) {
+        if (value != null && !value.isBlank()) {
+            target.put(key, value);
+        }
+    }
+
+    private static String firstNonBlank(String... values) {
+        if (values == null) {
+            return null;
+        }
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value;
+            }
+        }
+        return null;
     }
 
     private ProcessSuggestion flowToSuggestion(FlowPattern flow) {
@@ -1388,8 +1594,8 @@ public class ProcessDiscoveryServiceImpl implements ProcessDiscoveryService {
         }
 
         // Compute phase temporal bounds from step timestamps
-        java.time.LocalDateTime phaseEarliest = null;
-        java.time.LocalDateTime phaseLatest = null;
+        LocalDateTime phaseEarliest = null;
+        LocalDateTime phaseLatest = null;
         for (ProcessSuggestion.SuggestedStep s : steps) {
             if (s.getOccurredAt() != null) {
                 if (phaseEarliest == null || s.getOccurredAt().isBefore(phaseEarliest)) {
@@ -1544,12 +1750,15 @@ public class ProcessDiscoveryServiceImpl implements ProcessDiscoveryService {
 
         List<FlowPattern.FlowStep> steps = new ArrayList<>();
         for (GraphEdge edge : sorted) {
+            // Resolve endpoints — embedded nodes are hollow (title-less) on store-loaded edges.
+            GraphNode src = resolveEndpointNode(edge.getSourceNode());
+            GraphNode tgt = resolveEndpointNode(edge.getTargetNode());
             steps.add(FlowPattern.FlowStep.builder()
                     .description(edge.getDescription())
-                    .actor(edge.getSourceNode().getTitle())
+                    .actor(src != null ? src.getTitle() : null)
                     .action(edge.getLabel() != null ? edge.getLabel() : "EMAIL")
-                    .target(edge.getTargetNode().getTitle())
-                    .nodeId(edge.getSourceNode().getNodeId())
+                    .target(tgt != null ? tgt.getTitle() : null)
+                    .nodeId(edge.getSourceNodeId())
                     .occurredAt(edge.getOccurredAt())
                     .build());
         }
@@ -1592,11 +1801,7 @@ public class ProcessDiscoveryServiceImpl implements ProcessDiscoveryService {
      * Fetches all nodes of a given type scoped to a fact sheet.
      */
     private List<GraphNode> fetchNodesForFactSheet(Long factSheetId, NodeLevel nodeLevel) {
-        if (graphNodeRepository == null) {
-            log.warn("GraphNodeRepository not available — falling back to global query for nodeLevel={}", nodeLevel);
-            return fetchAllNodesPaginated(nodeLevel);
-        }
-        return new ArrayList<>(graphNodeRepository.findByFactSheetIdAndNodeType(factSheetId, nodeLevel));
+        return new ArrayList<>(knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, nodeLevel));
     }
 
     /**
@@ -1604,11 +1809,7 @@ public class ProcessDiscoveryServiceImpl implements ProcessDiscoveryService {
      * in the existing pattern analysis methods.
      */
     private List<String> collectNodeIdsForFactSheet(Long factSheetId) {
-        if (graphNodeRepository == null) {
-            log.warn("GraphNodeRepository not available — cannot scope to factSheetId={}", factSheetId);
-            return null;
-        }
-        List<GraphNode> nodes = graphNodeRepository.findByFactSheetId(factSheetId);
+        List<GraphNode> nodes = knowledgeGraphService.getNodesInFactSheet(factSheetId);
         return nodes.stream().map(GraphNode::getNodeId).collect(Collectors.toList());
     }
 

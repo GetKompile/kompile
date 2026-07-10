@@ -34,6 +34,7 @@ import org.springframework.stereotype.Service;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -348,7 +349,7 @@ public class MultiAgentExtractionService {
         if (name == null) {
             return "";
         }
-        return name.trim().toLowerCase(java.util.Locale.ROOT).replaceAll("\\s+", " ");
+        return name.trim().toLowerCase(Locale.ROOT).replaceAll("\\s+", " ");
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

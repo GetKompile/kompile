@@ -31,7 +31,10 @@ cd "${SCRIPT_DIR}"
 # ── Configuration ────────────────────────────────────────────────────────────
 
 GRAALVM_HOME="${GRAALVM_HOME:-${HOME}/.sdkman/candidates/java/21.0.10-graal}"
-MVN="${MVN:-/home/agibsonccc/dev-apps/mvn/bin/mvn}"
+# Maven: env override > PATH > local dev fallback (keeps clones working without edits)
+if [ -z "${MVN:-}" ]; then
+    MVN="$(command -v mvn 2>/dev/null || echo /home/agibsonccc/dev-apps/mvn/bin/mvn)"
+fi
 JAVA_HOME="${GRAALVM_HOME}"
 export JAVA_HOME
 
@@ -143,6 +146,30 @@ case "${VARIANT}" in
         ;;
 esac
 
+# Backend flag must reach EVERY maven invocation (native + exec-jar steps too,
+# not just the reactor install) — the poms select the ND4J artifact via
+# ${nd4j.backend}; -Dkompile.cuda alone activates nothing at the Maven level.
+BACKEND_FLAG=""
+if [ -n "${ND4J_BACKEND}" ]; then
+    BACKEND_FLAG="-Dnd4j.backend=${ND4J_BACKEND}"
+fi
+
+# Mixed-vintage guard: kompile bundles dl4j straight from ~/.m2, which accumulates partial `-pl`
+# installs across sessions (api/presets/natives from different builds). Mixed vintages produce
+# native-contract crashes that masquerade as dl4j bugs (2026-07-05 CUDA-700 misdiagnosis: Jun-22
+# cuda preset bundled under Jul-5 natives). Warn when the SNAPSHOT set spans >6h of build times.
+if [ -n "${ND4J_BACKEND}" ]; then
+    DL4J_M2="${HOME}/.m2/repository/org/eclipse/deeplearning4j"
+    if [ -d "${DL4J_M2}" ]; then
+        VINTAGE_SPAN_H=$(find "${DL4J_M2}" -maxdepth 3 -name '*-1.0.0-SNAPSHOT*.jar' -printf '%T@\n' 2>/dev/null | sort -n | awk 'NR==1{f=$1} {l=$1} END{if (NR>1) printf "%d", (l-f)/3600}' || true)
+        if [ -n "${VINTAGE_SPAN_H:-}" ] && [ "${VINTAGE_SPAN_H}" -gt 6 ]; then
+            echo "⚠️  WARNING: dl4j SNAPSHOT jars in ~/.m2 span ${VINTAGE_SPAN_H}h of build vintages."
+            echo "    Mixed api/preset/native vintages cause illegal-memory-access crashes at runtime."
+            echo "    Rebuild the nd4j reactor at HEAD in ONE pass before trusting this distribution."
+        fi
+    fi
+fi
+
 # ── Step 1: Java build ───────────────────────────────────────────────────────
 
 if [ "${SKIP_JAVA_BUILD}" = false ]; then
@@ -161,7 +188,7 @@ if [ "${SKIP_JAVA_BUILD}" = false ]; then
     fi
     # When building JARs (not native), produce exec JARs for app-main
     if [ "${JARS_ONLY}" = true ] && [ "${APP_NATIVE}" = true ]; then
-        BUILD_CMD="${BUILD_CMD} -Dkompile.dist.jar=true"
+        BUILD_CMD="${BUILD_CMD} -Dkompile.uber"
     fi
 
     echo "  Command: ${BUILD_CMD}"
@@ -177,8 +204,8 @@ fi
 
 if [ "${SKIP_JAVA_BUILD}" = true ] && [ "${JARS_ONLY}" = true ] && [ "${APP_NATIVE}" = true ]; then
     # Check if exec JARs already exist
-    APP_EXEC_JAR=$(ls kompile-app/kompile-app-main/target/*-exec.jar 2>/dev/null | head -1)
-    STAGING_EXEC_JAR=$(ls kompile-app/kompile-model-staging/target/*-exec.jar 2>/dev/null | head -1)
+    APP_EXEC_JAR=$(ls kompile-app/kompile-app-parent/kompile-app-main/target/*-exec.jar 2>/dev/null | head -1)
+    STAGING_EXEC_JAR=$(ls kompile-app/kompile-models/kompile-model-staging/target/*-exec.jar 2>/dev/null | head -1)
 
     if [ -z "${APP_EXEC_JAR}" ] || [ -z "${STAGING_EXEC_JAR}" ]; then
         echo ""
@@ -189,8 +216,8 @@ if [ "${SKIP_JAVA_BUILD}" = true ] && [ "${JARS_ONLY}" = true ] && [ "${APP_NATI
     if [ -z "${APP_EXEC_JAR}" ]; then
         echo "  kompile-app-main: building exec JAR..."
         (
-            cd kompile-app/kompile-app-main
-            ${MVN} package -DskipTests -Dkompile.dist.jar=true ${CUDA_FLAG} ${EXTRA_MVN_FLAGS} \
+            cd kompile-app/kompile-app-parent/kompile-app-main
+            ${MVN} package -DskipTests -Dkompile.uber ${BACKEND_FLAG} ${CUDA_FLAG} ${EXTRA_MVN_FLAGS} \
                 2>&1 | tee /tmp/kompile-app-main-jar.log
         )
         echo "  ✓ kompile-app-main exec JAR built"
@@ -213,14 +240,14 @@ if [ "${SKIP_NATIVE}" = false ]; then
 
     # CLI native (always)
     if [ "${CLI_NATIVE}" = true ]; then
-        CLI_TARGET="kompile-cli/target/kompile-cli"
+        CLI_TARGET="kompile-cli/kompile-cli-main/target/kompile-cli-main"
         if [ -f "${CLI_TARGET}" ] && [ "${SKIP_JAVA_BUILD}" = true ]; then
             echo "  kompile-cli: using existing binary"
         else
             echo "  kompile-cli: building native image..."
             (
-                cd kompile-cli
-                ${MVN} package ${NATIVE_BUILD_FLAG} -DskipTests ${CUDA_FLAG} ${EXTRA_MVN_FLAGS} \
+                cd kompile-cli/kompile-cli-main
+                ${MVN} package ${NATIVE_BUILD_FLAG} -DskipTests ${BACKEND_FLAG} ${CUDA_FLAG} ${EXTRA_MVN_FLAGS} \
                     2>&1 | tee /tmp/kompile-cli-native.log
             ) &
             PIDS+=($!)
@@ -231,8 +258,9 @@ if [ "${SKIP_NATIVE}" = false ]; then
     if [ "${APP_NATIVE}" = true ]; then
         echo "  kompile-app-main: building native image..."
         (
-            cd kompile-app/kompile-app-main
-            ${MVN} package ${NATIVE_BUILD_FLAG} -DskipTests ${CUDA_FLAG} ${EXTRA_MVN_FLAGS} \
+            cd kompile-app/kompile-app-parent/kompile-app-main
+            # -Dkompile.uber also produces the exec jar alongside the native build
+                ${MVN} package ${NATIVE_BUILD_FLAG} -Dkompile.uber -DskipTests ${BACKEND_FLAG} ${CUDA_FLAG} ${EXTRA_MVN_FLAGS} \
                 2>&1 | tee /tmp/kompile-app-main-native.log
         ) &
         PIDS+=($!)
@@ -247,8 +275,8 @@ if [ "${SKIP_NATIVE}" = false ]; then
     if [ "${STAGING_NATIVE}" = true ]; then
         echo "  kompile-model-staging: building native image..."
         (
-            cd kompile-app/kompile-model-staging
-            ${MVN} package ${NATIVE_BUILD_FLAG} -DskipTests ${CUDA_FLAG} ${EXTRA_MVN_FLAGS} \
+            cd kompile-app/kompile-models/kompile-model-staging
+            ${MVN} package ${NATIVE_BUILD_FLAG} -DskipTests ${BACKEND_FLAG} ${CUDA_FLAG} ${EXTRA_MVN_FLAGS} \
                 2>&1 | tee /tmp/kompile-model-staging-native.log
         ) &
         PIDS+=($!)
@@ -274,6 +302,156 @@ else
     echo "──── Step 2: Skipped (--skip-native) ──────────────────────────────"
 fi
 
+# ── Step 2b: Bundle jlink runtime (all variants except cli-only) ─────────────
+
+build_runtime() {
+    local dest="$1"
+
+    # Locate a JDK (prefer Temurin/regular JDK over GraalVM for smaller runtime).
+    local jdk_home=""
+    if [ -x "${KOMPILE_JAVA:-}" ]; then
+        # KOMPILE_JAVA may point to the java binary; walk up to find the JDK root.
+        jdk_home="$(cd "$(dirname "${KOMPILE_JAVA}")/.." && pwd)"
+    elif [ -d "${JAVA_HOME:-}/jmods" ]; then
+        jdk_home="${JAVA_HOME}"
+    elif [ -d "${GRAALVM_HOME:-}/jmods" ]; then
+        jdk_home="${GRAALVM_HOME}"
+    else
+        # Try java on PATH
+        local java_path
+        java_path="$(command -v java 2>/dev/null || true)"
+        if [ -n "${java_path}" ]; then
+            local resolved
+            resolved="$(readlink -f "${java_path}" 2>/dev/null || echo "${java_path}")"
+            jdk_home="$(cd "$(dirname "${resolved}")/../.." && pwd)"
+        fi
+    fi
+
+    if [ -z "${jdk_home}" ] || [ ! -d "${jdk_home}/jmods" ]; then
+        echo "  WARN: no jmods directory found (tried JAVA_HOME=${JAVA_HOME:-}, GRAALVM_HOME=${GRAALVM_HOME:-}, PATH java)"
+        echo "  WARN: runtime not bundled; jar tier will need a system JDK"
+        return 0
+    fi
+
+    local jlink="${jdk_home}/bin/jlink"
+    if [ ! -x "${jlink}" ]; then
+        echo "  WARN: jlink not found at ${jlink} — runtime not bundled; jar tier will need a system JDK"
+        return 0
+    fi
+
+    echo "  Bundling jlink runtime from ${jdk_home} ..."
+
+    local modules="java.se,jdk.unsupported,jdk.crypto.ec,jdk.crypto.cryptoki,jdk.zipfs,jdk.management,jdk.management.agent,jdk.security.auth,jdk.naming.dns,jdk.charsets,jdk.localedata,jdk.httpserver,jdk.jfr"
+    local base_opts="--add-modules ${modules} --strip-debug --no-header-files --no-man-pages --output ${dest}"
+
+    # Try compress=zip-6 first, fall back to compress=2 for older jlink.
+    local compress_opt="--compress=zip-6"
+    local locale_opt="--include-locales=en"
+
+    local ok=false
+    if "${jlink}" ${base_opts} ${compress_opt} ${locale_opt} 2>/tmp/kompile-jlink.log; then
+        ok=true
+    else
+        rm -rf "${dest}"
+        # Try without --include-locales (no jdk.jlink locale plugin on some JDKs).
+        if "${jlink}" ${base_opts} ${compress_opt} 2>/tmp/kompile-jlink.log; then
+            ok=true
+        else
+            rm -rf "${dest}"
+            # Fall back to --compress=2 (jlink <JDK 18 syntax).
+            if "${jlink}" ${base_opts} --compress=2 2>/tmp/kompile-jlink.log; then
+                ok=true
+            else
+                rm -rf "${dest}" 2>/dev/null || true
+            fi
+        fi
+    fi
+
+    if [ "${ok}" = false ]; then
+        echo "  WARN: jlink failed (see /tmp/kompile-jlink.log); runtime not bundled"
+        cat /tmp/kompile-jlink.log >&2 || true
+        return 0
+    fi
+
+    # Verify the bundled runtime works.
+    if "${dest}/bin/java" -version 2>/dev/null; then
+        local rt_ver
+        rt_ver=$("${dest}/bin/java" -version 2>&1 | head -1)
+        echo "  runtime/bin/java: ${rt_ver}"
+    else
+        echo "  WARN: bundled runtime failed -version check; removing"
+        rm -rf "${dest}"
+    fi
+}
+
+if [ "${VARIANT}" != "cli-only" ]; then
+    echo ""
+    echo "──── Step 2b: Bundling jlink runtime ──────────────────────────────"
+    echo ""
+    RUNTIME_DEST="${OUTPUT_DIR}/.runtime-stage"
+    rm -rf "${RUNTIME_DEST}"
+    build_runtime "${RUNTIME_DEST}"
+fi
+
+# ── Binary portability normalizer ────────────────────────────────────────────
+# Patches ELF interpreter and RUNPATH so native binaries copied into the dist
+# run on any glibc x86_64 Linux (e.g. Amazon Linux 2023 in the spin image).
+# Only the DIST copy is patched — target/ is left untouched.
+# Silently skips non-ELF files and non-x86_64 arches; emits a SKIP warning if
+# patchelf is not available.
+_PATCHELF=""
+for _pe_candidate in \
+        "$(command -v patchelf 2>/dev/null || true)" \
+        "/home/linuxbrew/.linuxbrew/bin/patchelf" \
+        "${HOME}/.local/bin/patchelf"; do
+    if [ -x "${_pe_candidate}" ]; then
+        _PATCHELF="${_pe_candidate}"
+        break
+    fi
+done
+
+normalize_elf_portability() {
+    local bin="$1"
+    [ -f "${bin}" ] || return 0
+
+    # Only patch ELF files.
+    if ! file "${bin}" 2>/dev/null | grep -q 'ELF'; then
+        return 0
+    fi
+
+    if [ -z "${_PATCHELF}" ]; then
+        echo "  SKIP: patchelf not found — ${bin} interpreter/RPATH not normalized (binary may fail outside this host)"
+        return 0
+    fi
+
+    local changed=0
+
+    # ── Interpreter ──────────────────────────────────────────────────────────
+    if [ "${OS}" = "linux" ] && [ "${ARCH}" = "x86_64" ]; then
+        local CANONICAL_INTERP="/lib64/ld-linux-x86-64.so.2"
+        local current_interp
+        current_interp=$(readelf -l "${bin}" 2>/dev/null | grep 'interpreter:' | sed 's/.*interpreter: \(.*\)\]/\1/' || true)
+        if [ -n "${current_interp}" ] && [ "${current_interp}" != "${CANONICAL_INTERP}" ]; then
+            echo "  patchelf: ${bin}: interpreter ${current_interp} → ${CANONICAL_INTERP}"
+            "${_PATCHELF}" --set-interpreter "${CANONICAL_INTERP}" "${bin}"
+            changed=1
+        fi
+    fi
+
+    # ── RUNPATH / RPATH ──────────────────────────────────────────────────────
+    local current_rpath
+    current_rpath=$(readelf -d "${bin}" 2>/dev/null | grep -E 'RPATH|RUNPATH' | sed 's/.*\[\(.*\)\]/\1/' || true)
+    if echo "${current_rpath}" | grep -qi 'linuxbrew\|homebrew\|/home/'; then
+        echo "  patchelf: ${bin}: stripping non-portable RPATH (${current_rpath}) → \$ORIGIN/../lib"
+        "${_PATCHELF}" --remove-rpath "${bin}"
+        "${_PATCHELF}" --set-rpath '$ORIGIN/../lib' "${bin}"
+        changed=1
+    fi
+
+    [ "${changed}" -eq 0 ] && echo "  portability OK: ${bin} (interpreter/RPATH already portable)"
+    return 0
+}
+
 # ── Step 3: Package distribution ─────────────────────────────────────────────
 
 echo ""
@@ -286,48 +464,183 @@ DIST_DIR="${OUTPUT_DIR}/${DIST_NAME}"
 rm -rf "${DIST_DIR}"
 mkdir -p "${DIST_DIR}"/{bin,lib,config,data}
 
-# Copy CLI binary
-if [ -f "kompile-cli/target/kompile-cli" ]; then
-    cp kompile-cli/target/kompile-cli "${DIST_DIR}/bin/"
-    chmod +x "${DIST_DIR}/bin/kompile-cli"
-    echo "  bin/kompile-cli ($(du -h kompile-cli/target/kompile-cli | cut -f1))"
+# Copy jlink runtime into the dist (if it was staged above).
+if [ "${VARIANT}" != "cli-only" ] && [ -d "${RUNTIME_DEST:-}" ] && [ -x "${RUNTIME_DEST}/bin/java" ]; then
+    cp -a "${RUNTIME_DEST}" "${DIST_DIR}/runtime"
+    echo "  runtime/ (bundled JDK — $(du -sh "${DIST_DIR}/runtime" | cut -f1))"
 fi
 
-# Copy app-main (native binary or JAR fallback)
+# Copy CLI binary (canonical name: bin/kompile; back-compat symlink: bin/kompile-cli)
+CLI_BIN="kompile-cli/kompile-cli-main/target/kompile-cli-main"
+if [ -f "${CLI_BIN}" ]; then
+    cp "${CLI_BIN}" "${DIST_DIR}/bin/kompile"
+    chmod +x "${DIST_DIR}/bin/kompile"
+    normalize_elf_portability "${DIST_DIR}/bin/kompile"
+    # Back-compat symlink
+    ln -sf kompile "${DIST_DIR}/bin/kompile-cli"
+    echo "  bin/kompile ($(du -h "${CLI_BIN}" | cut -f1)) + bin/kompile-cli symlink"
+fi
+
+# Copy CLI shaded jar into lib/ when present (JBang fallback)
+CLI_SHADED_JAR="kompile-cli/kompile-cli-main/target/kompile-cli-main-${VERSION}-shaded.jar"
+if [ -f "${CLI_SHADED_JAR}" ]; then
+    cp "${CLI_SHADED_JAR}" "${DIST_DIR}/lib/kompile-cli.jar"
+    echo "  lib/kompile-cli.jar ($(du -h "${CLI_SHADED_JAR}" | cut -f1))"
+else
+    echo "  WARN: ${CLI_SHADED_JAR} not found — lib/kompile-cli.jar will be absent (build with shade plugin to include)"
+fi
+
+# Copy app-main (native binary: bin/kompile-server; back-compat symlink: bin/kompile-app-main)
 if [ "${APP_NATIVE}" = true ]; then
-    if [ -f "kompile-app/kompile-app-main/target/kompile-app" ]; then
-        cp "kompile-app/kompile-app-main/target/kompile-app" "${DIST_DIR}/bin/kompile-app-main"
-        chmod +x "${DIST_DIR}/bin/kompile-app-main"
-        echo "  bin/kompile-app-main ($(du -h kompile-app/kompile-app-main/target/kompile-app | cut -f1))"
-    elif ls kompile-app/kompile-app-main/target/*-exec.jar 1>/dev/null 2>&1; then
-        JAR=$(ls kompile-app/kompile-app-main/target/*-exec.jar | head -1)
-        cp "${JAR}" "${DIST_DIR}/lib/kompile-app-main.jar"
-        echo "  lib/kompile-app-main.jar ($(du -h "${JAR}" | cut -f1)) [fallback: JAR]"
+    APP_BIN="kompile-app/kompile-app-parent/kompile-app-main/target/kompile-app"
+    APP_EXEC_JAR_PATH="kompile-app/kompile-app-parent/kompile-app-main/target/kompile-app-main-${VERSION}-exec.jar"
+    if [ -f "${APP_BIN}" ]; then
+        cp "${APP_BIN}" "${DIST_DIR}/bin/kompile-server"
+        chmod +x "${DIST_DIR}/bin/kompile-server"
+        normalize_elf_portability "${DIST_DIR}/bin/kompile-server"
+        # Back-compat symlink
+        ln -sf kompile-server "${DIST_DIR}/bin/kompile-app-main"
+        echo "  bin/kompile-server ($(du -h "${APP_BIN}" | cut -f1)) + bin/kompile-app-main symlink"
+        # GraalVM-emitted JDK shim libraries (libawt.so, libjava.so, libjvm.so, ...)
+        # must ship next to the binary; kompile-server.sh puts bin/ on LD_LIBRARY_PATH.
+        SHIM_COUNT=0
+        for shim in kompile-app/kompile-app-parent/kompile-app-main/target/lib*.so; do
+            [ -f "${shim}" ] || continue
+            cp -a "${shim}" "${DIST_DIR}/bin/"
+            SHIM_COUNT=$((SHIM_COUNT + 1))
+        done
+        if [ "${SHIM_COUNT}" -gt 0 ]; then
+            echo "  bin/ (+${SHIM_COUNT} GraalVM JDK shim libraries)"
+        fi
+    fi
+    # Copy exec jar into lib/ (present when -Dkompile.uber was passed, which native build does)
+    if [ -f "${APP_EXEC_JAR_PATH}" ]; then
+        cp "${APP_EXEC_JAR_PATH}" "${DIST_DIR}/lib/kompile-server.jar"
+        echo "  lib/kompile-server.jar ($(du -h "${APP_EXEC_JAR_PATH}" | cut -f1))"
+    else
+        # Fallback: try glob in case version differs
+        APP_EXEC_GLOB=$(ls kompile-app/kompile-app-parent/kompile-app-main/target/*-exec.jar 2>/dev/null | head -1)
+        if [ -n "${APP_EXEC_GLOB}" ]; then
+            cp "${APP_EXEC_GLOB}" "${DIST_DIR}/lib/kompile-server.jar"
+            echo "  lib/kompile-server.jar ($(du -h "${APP_EXEC_GLOB}" | cut -f1)) [fallback: JAR]"
+        else
+            echo "  WARN: kompile-app-main exec jar not found — lib/kompile-server.jar will be absent (build with -Dkompile.uber)"
+        fi
     fi
 fi
 
 # Copy model staging (native binary or JAR fallback)
 if [ "${STAGING_NATIVE}" = true ]; then
-    if [ -f "kompile-app/kompile-model-staging/target/kompile-model-staging" ]; then
-        cp "kompile-app/kompile-model-staging/target/kompile-model-staging" "${DIST_DIR}/bin/kompile-model-staging"
+    if [ -f "kompile-app/kompile-models/kompile-model-staging/target/kompile-model-staging" ]; then
+        cp "kompile-app/kompile-models/kompile-model-staging/target/kompile-model-staging" "${DIST_DIR}/bin/kompile-model-staging"
         chmod +x "${DIST_DIR}/bin/kompile-model-staging"
-        echo "  bin/kompile-model-staging ($(du -h kompile-app/kompile-model-staging/target/kompile-model-staging | cut -f1))"
-    elif ls kompile-app/kompile-model-staging/target/*-exec.jar 1>/dev/null 2>&1; then
-        JAR=$(ls kompile-app/kompile-model-staging/target/*-exec.jar | head -1)
+        normalize_elf_portability "${DIST_DIR}/bin/kompile-model-staging"
+        echo "  bin/kompile-model-staging ($(du -h kompile-app/kompile-models/kompile-model-staging/target/kompile-model-staging | cut -f1))"
+    elif ls kompile-app/kompile-models/kompile-model-staging/target/*-exec.jar 1>/dev/null 2>&1; then
+        JAR=$(ls kompile-app/kompile-models/kompile-model-staging/target/*-exec.jar | head -1)
         cp "${JAR}" "${DIST_DIR}/lib/kompile-model-staging.jar"
         echo "  lib/kompile-model-staging.jar ($(du -h "${JAR}" | cut -f1)) [fallback: JAR]"
     fi
 fi
 
+# Copy JBang catalog and quick-start guide into the dist root (every variant)
+JBANG_CATALOG_SRC="kompile-dist/src/main/resources/jbang-catalog.json"
+JBANG_MD_SRC="kompile-dist/src/main/resources/JBANG.md"
+if [ -f "${JBANG_CATALOG_SRC}" ]; then
+    cp "${JBANG_CATALOG_SRC}" "${DIST_DIR}/jbang-catalog.json"
+    echo "  jbang-catalog.json"
+fi
+if [ -f "${JBANG_MD_SRC}" ]; then
+    cp "${JBANG_MD_SRC}" "${DIST_DIR}/JBANG.md"
+    echo "  JBANG.md"
+fi
+
+# ── Optional artifacts that dist.xml also lists (copy-if-present, logged when skipped) ──
+# These are only produced when their respective sub-projects are built; all copies are
+# safe to skip in cli-only or hosted builds that don't include those modules.
+
+# kompile-sdk-serving shaded jar → lib/kompile-sdk-serving.jar
+SDK_SERVING_JAR=$(find kompile-app/kompile-middleware/kompile-sdk-serving/target \
+    -maxdepth 1 -name '*-shaded.jar' 2>/dev/null | head -1)
+if [ -n "${SDK_SERVING_JAR}" ]; then
+    cp "${SDK_SERVING_JAR}" "${DIST_DIR}/lib/kompile-sdk-serving.jar"
+    echo "  lib/kompile-sdk-serving.jar ($(du -h "${SDK_SERVING_JAR}" | cut -f1))"
+else
+    echo "  SKIP: kompile-sdk-serving shaded jar not found (build kompile-middleware to include)"
+fi
+
+# GraalVM shared library + headers from kompile-pipelines-framework-runtime → lib/
+PFW_DIR="kompile-app/kompile-data/kompile-pipelines-framework/kompile-pipelines-framework-runtime/target"
+for pfw_file in libkompile_pipelines.so libkompile_pipelines.dylib libkompile_pipelines.dll \
+                graal_isolate.h graal_isolate_dynamic.h libkompile_pipelines.h libkompile_pipelines_dynamic.h; do
+    if [ -f "${PFW_DIR}/${pfw_file}" ]; then
+        cp "${PFW_DIR}/${pfw_file}" "${DIST_DIR}/lib/${pfw_file}"
+        echo "  lib/${pfw_file} ($(du -h "${PFW_DIR}/${pfw_file}" | cut -f1))"
+    else
+        echo "  SKIP: ${pfw_file} not found at ${PFW_DIR} (build kompile-pipelines-framework-runtime with native profile)"
+    fi
+done
+
+# CMake-built C wrapper → lib/libkompile_c_library.*
+for clib_file in libkompile_c_library.so libkompile_c_library.dylib libkompile_c_library.dll; do
+    if [ -f "kompile-c-library/${clib_file}" ]; then
+        cp "kompile-c-library/${clib_file}" "${DIST_DIR}/lib/${clib_file}"
+        echo "  lib/${clib_file} ($(du -h "kompile-c-library/${clib_file}" | cut -f1))"
+    else
+        echo "  SKIP: ${clib_file} not found (build kompile-c-library with CMake to include)"
+    fi
+done
+
+# Python sdx_runtime wheel → python/*.whl
+PYTHON_DIST="kompile-python/dist"
+WHEEL_FOUND=false
+if [ -d "${PYTHON_DIST}" ]; then
+    for whl in "${PYTHON_DIST}"/*.whl; do
+        if [ -f "${whl}" ]; then
+            mkdir -p "${DIST_DIR}/python"
+            cp "${whl}" "${DIST_DIR}/python/"
+            echo "  python/$(basename "${whl}") ($(du -h "${whl}" | cut -f1))"
+            WHEEL_FOUND=true
+        fi
+    done
+fi
+if [ "${WHEEL_FOUND}" = false ]; then
+    echo "  SKIP: no Python wheel found at ${PYTHON_DIST}/ (build kompile-python to include)"
+fi
+
+# Default application configuration → conf/  (matches dist.xml conf/ fileSet)
+CONF_SRC="kompile-app/kompile-app-parent/kompile-app-main/src/main/resources"
+if [ -d "${CONF_SRC}" ]; then
+    mkdir -p "${DIST_DIR}/conf"
+    CONF_COUNT=0
+    for conf_file in "${CONF_SRC}"/application*.properties \
+                     "${CONF_SRC}"/application-*.properties \
+                     "${CONF_SRC}"/log4j2*.xml \
+                     "${CONF_SRC}"/log4j2.component.properties; do
+        if [ -f "${conf_file}" ]; then
+            cp "${conf_file}" "${DIST_DIR}/conf/"
+            CONF_COUNT=$((CONF_COUNT + 1))
+        fi
+    done
+    if [ "${CONF_COUNT}" -gt 0 ]; then
+        echo "  conf/ (${CONF_COUNT} config files)"
+    else
+        echo "  SKIP: no application.properties/log4j2 files found under ${CONF_SRC}"
+    fi
+else
+    echo "  SKIP: ${CONF_SRC} not found (kompile-app-main not checked out)"
+fi
+
 # Copy extra CLI binaries if they exist (agent, model, component, app-cli)
-for extra in kompile-agent-cli/target/kompile-agent \
-             kompile-app-cli/target/kompile-app-cli \
-             kompile-model-cli/target/kompile-model \
-             kompile-component-cli/target/kompile-component; do
+for extra in kompile-cli/kompile-agent-cli/target/kompile-agent \
+             kompile-cli/kompile-app-cli/target/kompile-app-cli \
+             kompile-cli/kompile-model-cli/target/kompile-model \
+             kompile-cli/kompile-component-cli/target/kompile-component; do
     if [ -f "${extra}" ]; then
         BNAME=$(basename "${extra}")
         cp "${extra}" "${DIST_DIR}/bin/${BNAME}"
         chmod +x "${DIST_DIR}/bin/${BNAME}"
+        normalize_elf_portability "${DIST_DIR}/bin/${BNAME}"
         echo "  bin/${BNAME} ($(du -h "${extra}" | cut -f1))"
     fi
 done
@@ -342,14 +655,22 @@ if [ -d "build-scripts" ]; then
 fi
 
 # Copy native .so libraries into lib/ for NativeLibraryResolver
-# First check if native-dist assembly already extracted them
-if [ -d "kompile-app/kompile-app-main/target/native-libs" ]; then
-    SO_COUNT=$(find kompile-app/kompile-app-main/target/native-libs -maxdepth 1 -name '*.so' -o -name '*.so.*' 2>/dev/null | wc -l)
+# First check if the unpack-native-libs execution already extracted them
+# (app-main lives under kompile-app-parent since the subprocess-module split)
+APP_NATIVE_LIBS="kompile-app/kompile-app-parent/kompile-app-main/target/native-libs"
+if [ -d "${APP_NATIVE_LIBS}" ]; then
+    SO_COUNT=$(find "${APP_NATIVE_LIBS}" \( -name '*.so' -o -name '*.so.*' \) 2>/dev/null | wc -l)
     if [ "${SO_COUNT}" -gt 0 ]; then
         echo ""
         echo "  Copying ${SO_COUNT} native libraries to lib/..."
-        cp -a kompile-app/kompile-app-main/target/native-libs/*.so* "${DIST_DIR}/lib/" 2>/dev/null || true
+        find "${APP_NATIVE_LIBS}" \( -name '*.so' -o -name '*.so.*' -o -name '*.dylib' -o -name '*.dll' \) \
+            -exec cp -a {} "${DIST_DIR}/lib/" \; 2>/dev/null || true
         chmod +x "${DIST_DIR}/lib/"*.so* 2>/dev/null || true
+        # JavaCPP fabricates alias sonames at cache-extraction time; jars carry no
+        # symlinks, so recreate the known ones (libjniopenblas_nolapack needs it).
+        if [ -f "${DIST_DIR}/lib/libopenblas.so.0" ] && [ ! -e "${DIST_DIR}/lib/libopenblas_nolapack.so.0" ]; then
+            ln -s libopenblas.so.0 "${DIST_DIR}/lib/libopenblas_nolapack.so.0"
+        fi
         echo "  lib/ ($(du -sh "${DIST_DIR}/lib/" | cut -f1) total native libs)"
     fi
 else
@@ -360,8 +681,31 @@ else
         echo "  Extracting native libraries from JavaCPP cache..."
         find "${JAVACPP_CACHE}" -path "*/${PLATFORM}/*" \( -name '*.so' -o -name '*.so.*' \) | while read -r sofile; do
             SONAME=$(basename "${sofile}")
-            if [ ! -f "${DIST_DIR}/lib/${SONAME}" ]; then
-                cp -a "${sofile}" "${DIST_DIR}/lib/${SONAME}"
+            DEST="${DIST_DIR}/lib/${SONAME}"
+            # Skip symlinks with relative targets — these are in-jar alias stubs
+            # (e.g. libjniopenblas_full.so -> ../libjniopenblas_full.so) whose
+            # target won't exist relative to lib/.  The real file is iterated
+            # separately from another cache path and will be copied below.
+            if [ -L "${sofile}" ]; then
+                TARGET=$(readlink "${sofile}")
+                case "${TARGET}" in
+                    /*)
+                        # Absolute symlink: dereference so lib/ gets a real file.
+                        rm -f "${DEST}"
+                        cp -L "${sofile}" "${DEST}"
+                        ;;
+                    *)
+                        echo "  SKIP: ${SONAME} (relative symlink alias → ${TARGET})"
+                        ;;
+                esac
+                continue
+            fi
+            # Real file: clear any dangling symlink at dest before writing.
+            if [ -L "${DEST}" ]; then
+                rm -f "${DEST}"
+            fi
+            if [ ! -f "${DEST}" ]; then
+                cp "${sofile}" "${DEST}"
             fi
         done
         chmod +x "${DIST_DIR}/lib/"*.so* 2>/dev/null || true
@@ -391,9 +735,10 @@ cat > "${DIST_DIR}/.dist-info.json" << EOF
   "platform": "${PLATFORM}",
   "buildDate": "$(date -Iseconds)",
   "components": {
-    "cli": $([ -f "${DIST_DIR}/bin/kompile-cli" ] && echo true || echo false),
-    "app-main": $([ -f "${DIST_DIR}/bin/kompile-app-main" ] || [ -f "${DIST_DIR}/lib/kompile-app-main.jar" ] && echo true || echo false),
-    "model-staging": $([ -f "${DIST_DIR}/bin/kompile-model-staging" ] || [ -f "${DIST_DIR}/lib/kompile-model-staging.jar" ] && echo true || echo false)
+    "cli": $([ -f "${DIST_DIR}/bin/kompile" ] && echo true || echo false),
+    "server": $([ -f "${DIST_DIR}/bin/kompile-server" ] || [ -f "${DIST_DIR}/lib/kompile-server.jar" ] && echo true || echo false),
+    "model-staging": $([ -f "${DIST_DIR}/bin/kompile-model-staging" ] || [ -f "${DIST_DIR}/lib/kompile-model-staging.jar" ] && echo true || echo false),
+    "bundled-runtime": $([ -d "${DIST_DIR}/runtime" ] && echo true || echo false)
   },
   "backend": "${ND4J_BACKEND:-none}"
 }

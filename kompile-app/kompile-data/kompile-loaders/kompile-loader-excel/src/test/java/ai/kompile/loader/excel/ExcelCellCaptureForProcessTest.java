@@ -73,9 +73,11 @@ class ExcelCellCaptureForProcessTest {
                 SpreadsheetGraph sg = new ExcelFormulaGraphExtractor(workbook).extract(workbook, "Budget.xlsx");
                 Graph graph = sg.toGraph();
 
-                // All cell entities should use the wb:<name>/cell:<ref> format
+                // All cell entities should use the wb:<name>/cell:<ref> format. Inferred tables
+                // and their typed members are first-class entities with their own namespaces.
                 List<Entity> cellEntities = graph.getEntities().stream()
-                        .filter(e -> !"SHEET".equals(e.getType()))
+                        .filter(e -> Set.of("CELL", "FORMULA_CELL", "NAMED_RANGE")
+                                .contains(e.getType()))
                         .toList();
 
                 assertFalse(cellEntities.isEmpty(), "Should have cell entities");

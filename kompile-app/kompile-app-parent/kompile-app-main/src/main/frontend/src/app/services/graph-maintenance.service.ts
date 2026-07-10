@@ -159,11 +159,31 @@ export interface OrphanScanResult {
 }
 
 export interface Contradiction {
-  sourceEntityId: number;
-  targetEntityId: number;
-  conflictingEdgeIds: number[];
-  contradictionType: string;
-  description: string;
+  entityIdA: string;
+  entityIdB: string;
+  existingFact: string;
+  newFact: string;
+  sourceDocExisting?: string | null;
+  sourceDocNew?: string | null;
+  type: string;
+  resolution: string;
+  contradictionId?: string | null;
+  conflictingEdgeIds: string[];
+  candidateStaleEdgeIds: string[];
+  predicate?: string | null;
+  severity?: number | null;
+  recencyScore?: number | null;
+  recommendedEdgeId?: string | null;
+  recommendedAction?: string | null;
+  llmRecommendation?: string | null;
+  details?: string | null;
+  probabilityA?: number | null;
+  probabilityB?: number | null;
+  priorA?: number | null;
+  priorB?: number | null;
+  posteriorEntropy?: number | null;
+  incompatibilityScore?: number | null;
+  uncertaintyKind?: string | null;
 }
 
 export interface ProvenanceCheck {
@@ -323,6 +343,14 @@ export class GraphMaintenanceService {
       .set('strategy', strategy)
       .set('dryRun', dryRun.toString());
     return this.http.post<MaintenanceReport>(`${this.newBaseUrl}/${factSheetId}/resolve`, {}, { params });
+  }
+
+  resolveContradictionSelection(factSheetId: number, staleEdgeIds: string[],
+                                dryRun: boolean = false): Observable<MaintenanceReport> {
+    return this.http.post<MaintenanceReport>(
+      `${this.newBaseUrl}/${factSheetId}/contradictions/resolve-selection`,
+      { staleEdgeIds, dryRun }
+    );
   }
 
   // Provenance validation

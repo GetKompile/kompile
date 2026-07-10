@@ -15,6 +15,8 @@
  */
 package ai.kompile.graph.reasoning.mebn.type;
 
+import java.io.Serializable;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
@@ -35,7 +37,7 @@ import java.util.Objects;
  * declaration. Callers can use this flag to distinguish locally-declared from inherited
  * attributes.</p>
  */
-public final class AttributeDefinition {
+public final class AttributeDefinition implements Serializable {
 
     private final String name;
     private final AttributeValueType valueType;
@@ -107,7 +109,7 @@ public final class AttributeDefinition {
         if (inherited) return this;
         Builder b = new Builder(name, valueType);
         b.required      = required;
-        b.enumValues    = enumValues.isEmpty() ? null : new java.util.ArrayList<>(enumValues);
+        b.enumValues    = enumValues.isEmpty() ? null : new ArrayList<>(enumValues);
         b.min           = min;
         b.max           = max;
         b.refersToType  = refersToType;

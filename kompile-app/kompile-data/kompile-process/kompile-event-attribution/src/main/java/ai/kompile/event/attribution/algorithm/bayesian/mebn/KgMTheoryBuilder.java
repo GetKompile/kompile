@@ -64,6 +64,8 @@ public class KgMTheoryBuilder {
     private double minEdgeWeight = 0.05;
     private boolean includeRiskMFrag = true;
     private EmpiricalPriorSource empiricalPriors;
+    /** When non-null, BFS only retains nodes whose {@code factSheetId} matches this value. */
+    private Long filterFactSheetId = null;
 
     public KgMTheoryBuilder(KnowledgeGraphService graphService) {
         this.graphService = graphService;
@@ -95,6 +97,18 @@ public class KgMTheoryBuilder {
      */
     public KgMTheoryBuilder withEmpiricalPriors(EmpiricalPriorSource empiricalPriors) {
         this.empiricalPriors = empiricalPriors;
+        return this;
+    }
+
+    /**
+     * Scope the BFS traversal to nodes that belong to the given fact sheet.
+     * Nodes whose {@link GraphNode#getFactSheetId()} does not match are silently
+     * skipped during discovery.  Seed nodes are always accepted regardless (the
+     * caller is responsible for providing seeds from the correct fact sheet).
+     * Pass {@code null} to disable the filter (default — global/legacy behaviour).
+     */
+    public KgMTheoryBuilder filterByFactSheetId(Long factSheetId) {
+        this.filterFactSheetId = factSheetId;
         return this;
     }
 
@@ -198,7 +212,14 @@ public class KgMTheoryBuilder {
                 if (!discoveredNodes.containsKey(neighborId)) {
                     Optional<GraphNode> neighborOpt = graphService.getNode(neighborId);
                     if (neighborOpt.isEmpty()) continue;
-                    discoveredNodes.put(neighborId, neighborOpt.get());
+                    GraphNode neighborNode = neighborOpt.get();
+                    // Apply fact-sheet scoping: skip nodes from a different fact sheet
+                    if (filterFactSheetId != null
+                            && neighborNode.getFactSheetId() != null
+                            && !filterFactSheetId.equals(neighborNode.getFactSheetId())) {
+                        continue;
+                    }
+                    discoveredNodes.put(neighborId, neighborNode);
                 }
 
                 if (!visited.contains(neighborId) && discoveredNodes.size() < maxNodes) {

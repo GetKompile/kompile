@@ -580,9 +580,17 @@
         </span>
       </ng-template>
 
-      <!-- Fact Sheet Manager - Select/Create/Manage Fact Sheets -->
-      <app-fact-sheet-manager>
-      </app-fact-sheet-manager>
+      <!-- Fact Sheet Manager moved to its own page at /fact-sheets -->
+      <div class="moved-embed-notice">
+        <mat-icon>library_books</mat-icon>
+        <span>
+          Fact Sheet management has its own dedicated page.
+          <a [routerLink]="['/fact-sheets']" class="moved-tab-link">
+            <mat-icon>open_in_new</mat-icon>
+            Open Fact Sheets
+          </a>
+        </span>
+      </div>
 
       <mat-divider style="margin: 16px 0;"></mat-divider>
 
@@ -1027,7 +1035,7 @@
     </mat-tab>
 
     <!-- ═══════════════════════════════════════════════════════════════════════════ -->
-    <!-- TAB 6: KNOWLEDGE GRAPH -->
+    <!-- TAB 6: KNOWLEDGE GRAPH (moved — now at /graph) -->
     <!-- ═══════════════════════════════════════════════════════════════════════════ -->
     <mat-tab>
       <ng-template mat-tab-label>
@@ -1035,10 +1043,17 @@
         Graph
       </ng-template>
 
-      <div class="graph-tab-container">
-        <app-graphs-hub
-          [focusNodeId]="graphFocusNodeId">
-        </app-graphs-hub>
+      <div class="moved-tab-notice">
+        <mat-icon>hub</mat-icon>
+        <p>The Knowledge Graph workspace now has its own dedicated page.</p>
+        <p>
+          <a [routerLink]="['/graph']"
+             [queryParams]="{ section: 'explore', tab: 'visualizer' }"
+             class="moved-tab-link">
+            <mat-icon>open_in_new</mat-icon>
+            Open Graph page
+          </a>
+        </p>
       </div>
     </mat-tab>
 

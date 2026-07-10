@@ -20,7 +20,8 @@ import {
   OnChanges,
   SimpleChanges,
   ChangeDetectionStrategy,
-  ViewEncapsulation
+  ViewEncapsulation,
+  HostListener
 } from '@angular/core';
 import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import { CommonModule } from '@angular/common';
@@ -160,6 +161,28 @@ export class MarkdownRendererComponent implements OnChanges {
     private mdService: MarkdownRendererService,
     private sanitizer: DomSanitizer
   ) {}
+
+  /**
+   * Delegated click handler for dynamically-injected content inside [innerHTML]
+   * bindings. The renderer injects <button class="code-copy-btn" data-code="...">
+   * with no inline onclick (stripped by DOMPurify). Clicks bubble up here.
+   */
+  @HostListener('click', ['$event'])
+  onContentClick(event: Event): void {
+    const target = event.target as HTMLElement;
+    const copyBtn = target.closest('.code-copy-btn') as HTMLElement | null;
+    if (copyBtn) {
+      event.preventDefault();
+      const encoded = copyBtn.getAttribute('data-code');
+      if (encoded !== null) {
+        const text = decodeURIComponent(encoded);
+        navigator.clipboard.writeText(text).then(() => {
+          copyBtn.textContent = 'Copied!';
+          setTimeout(() => { copyBtn.textContent = 'Copy'; }, 2000);
+        }).catch(() => {});
+      }
+    }
+  }
 
   ngOnChanges(changes: SimpleChanges): void {
     if (changes['content'] || changes['isStreaming'] || changes['toolUses'] || changes['sources']) {

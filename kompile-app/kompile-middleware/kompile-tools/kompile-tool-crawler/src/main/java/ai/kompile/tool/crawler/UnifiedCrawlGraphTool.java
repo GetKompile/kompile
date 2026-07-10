@@ -305,7 +305,6 @@ public class UnifiedCrawlGraphTool {
     private GraphExtractionConfig toGraphConfig(GraphConfigInput input) {
         GraphExtractionConfig.GraphExtractionConfigBuilder b = GraphExtractionConfig.builder();
 
-        if (input.enabled() != null) b.enabled(input.enabled());
         if (input.entityTypes() != null) b.entityTypes(input.entityTypes());
         if (input.relationshipTypes() != null) b.relationshipTypes(input.relationshipTypes());
         if (input.llmProvider() != null) b.llmProvider(input.llmProvider());

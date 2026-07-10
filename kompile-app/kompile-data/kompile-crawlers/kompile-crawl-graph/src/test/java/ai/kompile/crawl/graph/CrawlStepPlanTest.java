@@ -26,7 +26,6 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -45,9 +44,7 @@ class CrawlStepPlanTest {
     }
 
     @Test
-    void legacyDefaults_unconfiguredStepsSkipped() {
-        // No graph/vector/preprocessing config => those steps (and the graph steps that depend on
-        // extraction) are skipped, exactly like the pre-existing pipeline behavior.
+    void legacyDefaults_graphRunsVectorAndPreprocessingOptional() {
         CrawlStepPlan plan = CrawlStepPlan.from(UnifiedCrawlRequest.builder().build());
 
         assertEquals(Action.RUN, plan.forStep("LOADING"));
@@ -55,34 +52,35 @@ class CrawlStepPlanTest {
         assertEquals(Action.RUN, plan.forStep("ROUTING"));
         assertEquals(Action.RUN, plan.forStep("CHUNKING"));
         assertEquals(Action.RUN, plan.forStep("GRAPH_PREP"));
+        assertEquals(Action.RUN, plan.forStep("GRAPH_EXTRACTION"));
+        assertEquals(Action.RUN, plan.forStep("SURFACING"));
+        assertEquals(Action.RUN, plan.forStep("ENTITY_RESOLUTION"));
+        assertEquals(Action.RUN, plan.forStep("EDGE_COMPUTATION"));
+        assertEquals(Action.RUN, plan.forStep("ENRICHMENT"));
 
         assertEquals(Action.SKIP, plan.forStep("PREPROCESSING"));
-        assertEquals(Action.SKIP, plan.forStep("GRAPH_EXTRACTION"));
         assertEquals(Action.SKIP, plan.forStep("VECTOR_INDEXING"));
-        // Cascaded: these depend (transitively) on graph extraction.
-        assertEquals(Action.SKIP, plan.forStep("ENTITY_RESOLUTION"));
-        assertEquals(Action.SKIP, plan.forStep("EDGE_COMPUTATION"));
 
         assertDoesNotThrow(plan::validate);
     }
 
     @Test
-    void explicitEnable_chunkAndEmbedOnly() {
+    void explicitEnable_vectorIndexingAlsoRunsMandatoryGraphSteps() {
         CrawlStepPlan plan = CrawlStepPlan.from(
                 UnifiedCrawlRequest.builder().enabledSteps(List.of("VECTOR_INDEXING")).build());
 
-        // VECTOR_INDEXING + its transitive deps + foundational steps run.
         assertEquals(Action.RUN, plan.forStep("LOADING"));
         assertEquals(Action.RUN, plan.forStep("CONVERTING"));
         assertEquals(Action.RUN, plan.forStep("ROUTING"));
         assertEquals(Action.RUN, plan.forStep("CHUNKING"));
         assertEquals(Action.RUN, plan.forStep("VECTOR_INDEXING"));
-        // Everything else is skipped.
+        assertEquals(Action.RUN, plan.forStep("GRAPH_PREP"));
+        assertEquals(Action.RUN, plan.forStep("GRAPH_EXTRACTION"));
+        assertEquals(Action.RUN, plan.forStep("SURFACING"));
+        assertEquals(Action.RUN, plan.forStep("ENTITY_RESOLUTION"));
+        assertEquals(Action.RUN, plan.forStep("EDGE_COMPUTATION"));
         assertEquals(Action.SKIP, plan.forStep("PREPROCESSING"));
-        assertEquals(Action.SKIP, plan.forStep("GRAPH_PREP"));
-        assertEquals(Action.SKIP, plan.forStep("GRAPH_EXTRACTION"));
-        assertEquals(Action.SKIP, plan.forStep("ENTITY_RESOLUTION"));
-        assertEquals(Action.SKIP, plan.forStep("EDGE_COMPUTATION"));
+        assertEquals(Action.SKIP, plan.forStep("ENRICHMENT"));
 
         assertDoesNotThrow(plan::validate);
     }
@@ -96,8 +94,8 @@ class CrawlStepPlanTest {
         assertEquals(Action.RUN, plan.forStep("CHUNKING"));
         assertEquals(Action.RUN, plan.forStep("GRAPH_EXTRACTION"));
         assertEquals(Action.RUN, plan.forStep("ENTITY_RESOLUTION"));
+        assertEquals(Action.RUN, plan.forStep("EDGE_COMPUTATION"));
         assertEquals(Action.SKIP, plan.forStep("VECTOR_INDEXING"));
-        assertEquals(Action.SKIP, plan.forStep("EDGE_COMPUTATION"));
 
         assertDoesNotThrow(plan::validate);
     }
@@ -114,14 +112,13 @@ class CrawlStepPlanTest {
     }
 
     @Test
-    void archiveGraphExtraction_cascadesEntityResolutionToSkip() {
+    void archiveGraphExtractionRequestIgnored_graphStillRuns() {
         CrawlStepPlan plan = CrawlStepPlan.from(
                 UnifiedCrawlRequest.builder().archivedSteps(List.of("GRAPH_EXTRACTION")).build());
 
-        assertTrue(plan.isArchive("GRAPH_EXTRACTION"));
+        assertEquals(Action.RUN, plan.forStep("GRAPH_EXTRACTION"));
         assertEquals(Action.RUN, plan.forStep("CHUNKING"));
-        // Entity resolution can't run now because extraction was archived for later.
-        assertEquals(Action.SKIP, plan.forStep("ENTITY_RESOLUTION"));
+        assertEquals(Action.RUN, plan.forStep("ENTITY_RESOLUTION"));
         assertDoesNotThrow(plan::validate);
     }
 
@@ -136,16 +133,15 @@ class CrawlStepPlanTest {
     }
 
     @Test
-    void validate_throwsWhenArchivedStepDependsOnAnotherArchivedStep() {
-        // Archiving both extraction and entity-resolution is contradictory: entity-resolution's input
-        // (extracted entities) won't exist until extraction is resumed first.
+    void archiveRequestsForMandatoryGraphStepsAreIgnored() {
         CrawlStepPlan plan = CrawlStepPlan.from(UnifiedCrawlRequest.builder()
-                .archivedSteps(List.of("GRAPH_EXTRACTION", "ENTITY_RESOLUTION"))
+                .archivedSteps(List.of("GRAPH_EXTRACTION", "ENTITY_RESOLUTION", "EDGE_COMPUTATION"))
                 .build());
 
-        assertTrue(plan.isArchive("GRAPH_EXTRACTION"));
-        assertTrue(plan.isArchive("ENTITY_RESOLUTION"));
-        assertThrows(IllegalArgumentException.class, plan::validate);
+        assertEquals(Action.RUN, plan.forStep("GRAPH_EXTRACTION"));
+        assertEquals(Action.RUN, plan.forStep("ENTITY_RESOLUTION"));
+        assertEquals(Action.RUN, plan.forStep("EDGE_COMPUTATION"));
+        assertDoesNotThrow(plan::validate);
     }
 
     @Test
@@ -160,21 +156,20 @@ class CrawlStepPlanTest {
         CrawlStepPlan plan = CrawlStepPlan.from(
                 UnifiedCrawlRequest.builder().enabledSteps(List.of("BOGUS_STEP")).build());
         assertEquals(Action.RUN, plan.forStep("CHUNKING"));
-        assertEquals(Action.SKIP, plan.forStep("GRAPH_EXTRACTION"));
+        assertEquals(Action.RUN, plan.forStep("GRAPH_EXTRACTION"));
     }
 
     // -----------------------------------------------------------------------
-    // Test 1: Default plan — all features enabled → full pipeline runs
+    // Test 1: Default plan with optional vector/preprocessing configured
     // -----------------------------------------------------------------------
 
     /**
-     * When graphExtraction.enabled=true, vectorIndex.enabled=true, and preprocessing is non-null
-     * (all opt-in features configured), legacy mode should plan every step as RUN.
+     * When vectorIndex.enabled=true and preprocessing is non-null, legacy mode should plan every step as RUN.
      */
     @Test
-    void allFeaturesEnabled_legacyMode_fullPipelineRuns() {
+    void fullyConfiguredLegacyMode_fullPipelineRuns() {
         CrawlStepPlan plan = CrawlStepPlan.from(UnifiedCrawlRequest.builder()
-                .graphExtraction(GraphExtractionConfig.builder().enabled(true).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(true).build())
                 .preprocessing("configured")
                 .build());
@@ -203,7 +198,7 @@ class CrawlStepPlanTest {
     @Test
     void footgun_archivedStepsAlone_doesNotFlipToExplicitMode_graphStepsStillRun() {
         CrawlStepPlan plan = CrawlStepPlan.from(UnifiedCrawlRequest.builder()
-                .graphExtraction(GraphExtractionConfig.builder().enabled(true).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(true).build())
                 .preprocessing("configured")
                 // Only archive VECTOR_INDEXING — no enabledSteps set.
@@ -227,33 +222,31 @@ class CrawlStepPlanTest {
     }
 
     /**
-     * Complement of the footgun test: in explicit mode (enabledSteps non-empty), graph steps
-     * not listed ARE skipped. This is correct/intentional explicit-mode behavior — distinct
-     * from the footgun where archivedSteps alone triggered whitelist mode without the user
-     * knowingly opting in.
+     * Complement of the footgun test: explicit mode can still select vector indexing, but it cannot
+     * produce a graphless crawl. Mandatory graph construction steps are included automatically.
      */
     @Test
-    void footgun_explicitMode_graphStepsSkippedUnlessListed() {
-        // Only enable embedding — graph extraction and its dependents must be SKIP.
+    void footgun_explicitMode_graphConstructionStillRuns() {
         CrawlStepPlan plan = CrawlStepPlan.from(UnifiedCrawlRequest.builder()
                 .enabledSteps(List.of("VECTOR_INDEXING"))
                 .build());
 
-        assertEquals(Action.SKIP, plan.forStep("GRAPH_PREP"),        "GRAPH_PREP must be SKIP in explicit mode without listing it");
-        assertEquals(Action.SKIP, plan.forStep("GRAPH_EXTRACTION"),  "GRAPH_EXTRACTION must be SKIP in explicit mode without listing it");
-        assertEquals(Action.SKIP, plan.forStep("ENTITY_RESOLUTION"), "ENTITY_RESOLUTION must be SKIP in explicit mode without listing it");
-        assertEquals(Action.SKIP, plan.forStep("ENRICHMENT"),        "ENRICHMENT must be SKIP in explicit mode without listing it");
-        assertEquals(Action.RUN,  plan.forStep("VECTOR_INDEXING"),   "VECTOR_INDEXING must RUN when explicitly listed");
+        assertEquals(Action.RUN, plan.forStep("GRAPH_PREP"));
+        assertEquals(Action.RUN, plan.forStep("GRAPH_EXTRACTION"));
+        assertEquals(Action.RUN, plan.forStep("SURFACING"));
+        assertEquals(Action.RUN, plan.forStep("ENTITY_RESOLUTION"));
+        assertEquals(Action.RUN, plan.forStep("EDGE_COMPUTATION"));
+        assertEquals(Action.SKIP, plan.forStep("ENRICHMENT"));
+        assertEquals(Action.RUN, plan.forStep("VECTOR_INDEXING"));
         assertDoesNotThrow(plan::validate);
     }
 
     /**
-     * In explicit mode, listing the graph steps in enabledSteps ensures they all run.
-     * This documents the corrective action when a caller intentionally wants the full
-     * graph pipeline alongside explicit step selection.
+     * Explicit mode always includes mandatory graph construction. Listing ENRICHMENT keeps the
+     * post-crawl reasoning stage in an otherwise explicit step selection.
      */
     @Test
-    void footgun_explicitMode_graphStepsListedInEnabledSteps_allRun() {
+    void footgun_explicitMode_enrichmentListedWithMandatoryGraphSteps_allRun() {
         CrawlStepPlan plan = CrawlStepPlan.from(UnifiedCrawlRequest.builder()
                 .enabledSteps(List.of(
                         "GRAPH_PREP", "GRAPH_EXTRACTION",
@@ -282,19 +275,16 @@ class CrawlStepPlanTest {
      * cannot be archived (they must always run).
      */
     @Test
-    void archivableSteps_canBeArchived_foundationalStepsCannotBe() {
-        List<String> archivable = List.of(
-                "GRAPH_EXTRACTION", "ENTITY_RESOLUTION", "EDGE_COMPUTATION", "VECTOR_INDEXING");
+    void vectorIndexingCanBeArchived_graphConstructionCannotBeArchivedOut() {
         CrawlStepPlan plan = CrawlStepPlan.from(UnifiedCrawlRequest.builder()
-                .archivedSteps(archivable)
+                .archivedSteps(List.of("GRAPH_EXTRACTION", "ENTITY_RESOLUTION", "EDGE_COMPUTATION", "VECTOR_INDEXING"))
                 .build());
 
-        for (String id : archivable) {
-            assertEquals(Action.ARCHIVE, plan.forStep(id),
-                    id + " is archivable and should be ARCHIVE");
-        }
+        assertEquals(Action.ARCHIVE, plan.forStep("VECTOR_INDEXING"));
+        assertEquals(Action.RUN, plan.forStep("GRAPH_EXTRACTION"));
+        assertEquals(Action.RUN, plan.forStep("ENTITY_RESOLUTION"));
+        assertEquals(Action.RUN, plan.forStep("EDGE_COMPUTATION"));
 
-        // Foundational steps cannot be archived — archive requests are silently ignored.
         for (CrawlPipelineStepRegistry.StepDescriptor d : CrawlPipelineStepRegistry.all()) {
             if (d.foundational()) {
                 assertEquals(Action.RUN, plan.forStep(d.id()),
@@ -320,29 +310,102 @@ class CrawlStepPlanTest {
     }
 
     /**
-     * After archiving GRAPH_EXTRACTION the downstream dependents cascade to SKIP —
-     * they cannot run now, but the plan is still valid (ARCHIVE is intentional).
-     * The caller can re-run those dependents in a separate job once extraction completes.
+     * Archive requests for GRAPH_EXTRACTION are ignored because graph construction is mandatory.
      */
     @Test
-    void archivedGraphExtraction_downstreamStepsSkippedButPlanIsValid() {
+    void archivedGraphExtractionRequestIgnored_graphSpineRuns() {
         CrawlStepPlan plan = CrawlStepPlan.from(UnifiedCrawlRequest.builder()
-                .graphExtraction(GraphExtractionConfig.builder().enabled(true).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(true).build())
                 .preprocessing("configured")
                 .archivedSteps(List.of("GRAPH_EXTRACTION"))
                 .build());
 
-        assertEquals(Action.ARCHIVE, plan.forStep("GRAPH_EXTRACTION"));
-        // Dependents of GRAPH_EXTRACTION cascade to SKIP (can't run without extraction output).
-        assertEquals(Action.SKIP, plan.forStep("ENTITY_RESOLUTION"));
-        assertEquals(Action.SKIP, plan.forStep("EDGE_COMPUTATION"));
-        assertEquals(Action.SKIP, plan.forStep("ENRICHMENT"));
-        // Independent steps (no dependency on GRAPH_EXTRACTION) still run.
+        assertEquals(Action.RUN, plan.forStep("GRAPH_EXTRACTION"));
+        assertEquals(Action.RUN, plan.forStep("ENTITY_RESOLUTION"));
+        assertEquals(Action.RUN, plan.forStep("EDGE_COMPUTATION"));
+        assertEquals(Action.RUN, plan.forStep("ENRICHMENT"));
         assertEquals(Action.RUN, plan.forStep("CHUNKING"));
         assertEquals(Action.RUN, plan.forStep("VECTOR_INDEXING"));
         assertEquals(Action.RUN, plan.forStep("GRAPH_PREP"));
-        // Plan is self-consistent (validate does not throw).
+        assertDoesNotThrow(plan::validate);
+    }
+
+    // ---- strictSteps: explicit selection WITHOUT the mandatory graph spine ----
+
+    @Test
+    void strictEnable_vectorIndexingOnly_skipsGraphSpine() {
+        CrawlStepPlan plan = CrawlStepPlan.from(UnifiedCrawlRequest.builder()
+                .enabledSteps(List.of("VECTOR_INDEXING"))
+                .strictSteps(true)
+                .build());
+
+        // Dependency chain of the selection still runs...
+        assertEquals(Action.RUN, plan.forStep("LOADING"));
+        assertEquals(Action.RUN, plan.forStep("CONVERTING"));
+        assertEquals(Action.RUN, plan.forStep("ROUTING"));
+        assertEquals(Action.RUN, plan.forStep("CHUNKING"));
+        assertEquals(Action.RUN, plan.forStep("VECTOR_INDEXING"));
+
+        // ...but the graph spine is no longer force-seeded.
+        assertEquals(Action.SKIP, plan.forStep("GRAPH_PREP"));
+        assertEquals(Action.SKIP, plan.forStep("GRAPH_EXTRACTION"));
+        assertEquals(Action.SKIP, plan.forStep("SURFACING"));
+        assertEquals(Action.SKIP, plan.forStep("ENTITY_RESOLUTION"));
+        assertEquals(Action.SKIP, plan.forStep("EDGE_COMPUTATION"));
+        assertEquals(Action.SKIP, plan.forStep("ENRICHMENT"));
+
+        assertDoesNotThrow(plan::validate);
+    }
+
+    @Test
+    void strictEnable_edgeComputationPullsItsDependencyChainOnly() {
+        CrawlStepPlan plan = CrawlStepPlan.from(UnifiedCrawlRequest.builder()
+                .enabledSteps(List.of("EDGE_COMPUTATION"))
+                .strictSteps(true)
+                .build());
+
+        assertEquals(Action.RUN, plan.forStep("CHUNKING"));
+        assertEquals(Action.RUN, plan.forStep("GRAPH_EXTRACTION"));
+        assertEquals(Action.RUN, plan.forStep("ENTITY_RESOLUTION"));
+        assertEquals(Action.RUN, plan.forStep("EDGE_COMPUTATION"));
+
+        assertEquals(Action.SKIP, plan.forStep("VECTOR_INDEXING"));
+        assertEquals(Action.SKIP, plan.forStep("ENRICHMENT"));
+        assertEquals(Action.SKIP, plan.forStep("SURFACING"));
+        assertEquals(Action.SKIP, plan.forStep("GRAPH_PREP"));
+
+        assertDoesNotThrow(plan::validate);
+    }
+
+    @Test
+    void strictEnable_graphExtractionOnly_skipsDownstreamGraphSteps() {
+        CrawlStepPlan plan = CrawlStepPlan.from(UnifiedCrawlRequest.builder()
+                .enabledSteps(List.of("GRAPH_EXTRACTION"))
+                .strictSteps(true)
+                .build());
+
+        assertEquals(Action.RUN, plan.forStep("GRAPH_EXTRACTION"));
+        assertEquals(Action.SKIP, plan.forStep("ENTITY_RESOLUTION"));
+        assertEquals(Action.SKIP, plan.forStep("EDGE_COMPUTATION"));
+        assertEquals(Action.SKIP, plan.forStep("ENRICHMENT"));
+        assertEquals(Action.SKIP, plan.forStep("VECTOR_INDEXING"));
+
+        assertDoesNotThrow(plan::validate);
+    }
+
+    @Test
+    void strictFlagWithoutSelection_fallsBackToLegacyDefaults() {
+        CrawlStepPlan plan = CrawlStepPlan.from(UnifiedCrawlRequest.builder()
+                .strictSteps(true)
+                .build());
+
+        // No explicit selection → strict flag is inert; legacy defaults apply unchanged.
+        assertEquals(Action.RUN, plan.forStep("GRAPH_EXTRACTION"));
+        assertEquals(Action.RUN, plan.forStep("ENRICHMENT"));
+        assertEquals(Action.SKIP, plan.forStep("VECTOR_INDEXING"));
+        assertEquals(Action.SKIP, plan.forStep("PREPROCESSING"));
+
         assertDoesNotThrow(plan::validate);
     }
 }

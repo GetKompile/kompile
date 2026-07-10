@@ -49,7 +49,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
@@ -735,7 +737,7 @@ public class KGEmbeddingJobService {
             return null;
         }
         List<KgEmbeddingGraphAdapter> byPriority = graphAdapters.stream()
-                .sorted(java.util.Comparator.comparingInt(KgEmbeddingGraphAdapter::priority).reversed())
+                .sorted(Comparator.comparingInt(KgEmbeddingGraphAdapter::priority).reversed())
                 .toList();
         for (KgEmbeddingGraphAdapter adapter : byPriority) {
             try {
@@ -798,7 +800,7 @@ public class KGEmbeddingJobService {
                 + ",\"version\":" + version
                 + ",\"entitiesCount\":" + entitiesCount
                 + ",\"relationsCount\":" + relationsCount
-                + ",\"finalLoss\":" + String.format(java.util.Locale.ROOT, "%.17g", finalLoss)
+                + ",\"finalLoss\":" + String.format(Locale.ROOT, "%.17g", finalLoss)
                 + "}";
         try {
             Files.writeString(stub, json, StandardCharsets.UTF_8);

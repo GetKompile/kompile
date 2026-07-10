@@ -16,11 +16,16 @@
 
 package ai.kompile.staging.subprocess;
 
+import ai.kompile.app.subprocess.BackendConfigurable;
 import ai.kompile.app.subprocess.SubprocessEnvironmentPropagator;
+import ai.kompile.app.subprocess.SubprocessPlacement;
+import ai.kompile.app.subprocess.SubprocessPlacementSupport;
 import ai.kompile.cli.common.logs.AgentLogRecord;
 import ai.kompile.cli.common.logs.SubprocessLogWriter;
+import ai.kompile.staging.config.StagingPropertyKeys;
 import ai.kompile.staging.domain.TrainingJobHistory;
 import ai.kompile.staging.service.TrainingJobHistoryService;
+import ai.kompile.staging.web.dto.DistillationConfigRequest;
 import ai.kompile.staging.web.dto.TrainingConfigRequest;
 import ai.kompile.core.staging.TrainingJobStatus;
 import ai.kompile.staging.web.dto.TrainingLogEntry;
@@ -32,7 +37,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -53,10 +57,20 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 @Service
 @ConditionalOnClass(name = "ai.kompile.staging.catalog.CatalogService")
-@ConditionalOnProperty(name = "kompile.training.subprocess.enabled", havingValue = "true", matchIfMissing = false)
-public class TrainingSubprocessLauncher implements ai.kompile.core.staging.TrainingSubprocessLauncherApi {
+// Training runs as a subprocess by default when the staging module is present.
+// Enable/disable is kompile JSON managed-config (SubprocessConfigService), not a Spring property.
+public class TrainingSubprocessLauncher implements ai.kompile.core.staging.TrainingSubprocessLauncherApi, BackendConfigurable {
 
     private static final Logger log = LoggerFactory.getLogger(TrainingSubprocessLauncher.class);
+
+    /** Shared device-agnostic placement (same base infra every subprocess uses). */
+    private final SubprocessPlacementSupport placement = new SubprocessPlacementSupport();
+
+    /** {@link BackendConfigurable} — the scheduler assigns backend/device/memory before spawn. */
+    @Override
+    public void applyPlacement(SubprocessPlacement p) {
+        this.placement.applyPlacement(p);
+    }
 
     private final ObjectMapper objectMapper;
     private final TrainingJobHistoryService historyService;
@@ -64,7 +78,7 @@ public class TrainingSubprocessLauncher implements ai.kompile.core.staging.Train
     @Autowired(required = false)
     private ApplicationEventPublisher eventPublisher;
 
-    @Value("${kompile.staging.models-dir:#{systemProperties['user.home'] + '/.kompile/models'}}")
+    @Value(StagingPropertyKeys.MODELS_DIR_VALUE)
     private String modelsDir;
 
     @Value("${kompile.staging.training-jobs-dir:#{systemProperties['user.home'] + '/.kompile/training-jobs'}}")
@@ -94,9 +108,25 @@ public class TrainingSubprocessLauncher implements ai.kompile.core.staging.Train
      */
     public TrainingJobStatus launchTraining(TrainingConfigRequest request) throws IOException {
         String jobId = "train-sub-" + jobCounter.incrementAndGet();
+        TrainingSubprocessArgs args = createTrainingArgs(jobId, request);
+        String peftType = request.getPeftConfig() != null ? request.getPeftConfig().getPeftType() : null;
+        return launchSubprocess(args, peftType);
+    }
 
-        // Build subprocess args
-        TrainingSubprocessArgs args = TrainingSubprocessArgs.builder()
+    /**
+     * Launch knowledge distillation through the same isolated process used by
+     * fine-tuning and LoRA so dataset resolution and JSONL parsing are identical.
+     */
+    public TrainingJobStatus launchDistillation(DistillationConfigRequest request) throws IOException {
+        String jobId = "distill-sub-" + jobCounter.incrementAndGet();
+        TrainingSubprocessArgs args = createDistillationArgs(jobId, request);
+        String peftType = request.getStudentPeftConfig() != null
+                ? request.getStudentPeftConfig().getPeftType() : null;
+        return launchSubprocess(args, peftType);
+    }
+
+    TrainingSubprocessArgs createTrainingArgs(String jobId, TrainingConfigRequest request) throws IOException {
+        return TrainingSubprocessArgs.builder()
                 .taskId(jobId)
                 .trainingType(resolveTrainingType(request))
                 .modelId(request.getModelId())
@@ -117,21 +147,76 @@ public class TrainingSubprocessLauncher implements ai.kompile.core.staging.Train
                 .outputDir(request.getOutputDir())
                 .seed(request.getSeed())
                 .gradientAccumulationSteps(request.getGradientAccumulationSteps())
-                .peftConfigJson(request.getPeftConfig() != null ? objectMapper.writeValueAsString(request.getPeftConfig()) : null)
-                .updaterConfigJson(request.getUpdaterConfig() != null ? objectMapper.writeValueAsString(request.getUpdaterConfig()) : null)
+                .peftConfigJson(request.getPeftConfig() != null
+                        ? objectMapper.writeValueAsString(request.getPeftConfig()) : null)
+                .updaterConfigJson(request.getUpdaterConfig() != null
+                        ? objectMapper.writeValueAsString(request.getUpdaterConfig()) : null)
                 .build();
+    }
 
-        // Write args to temp file
+    TrainingSubprocessArgs createDistillationArgs(String jobId, DistillationConfigRequest request) throws IOException {
+        requireText(request.getTeacherModelId(), "teacherModelId");
+        requireText(request.getStudentModelId(), "studentModelId");
+        String distillationType = hasText(request.getDistillationType())
+                ? request.getDistillationType() : "LOGIT_KD";
+        if (!"LOGIT_KD".equalsIgnoreCase(distillationType)) {
+            throw new IllegalArgumentException(
+                    "Only LOGIT_KD distillation is supported; requested " + distillationType);
+        }
+        if (request.getTemperature() <= 0.0) {
+            throw new IllegalArgumentException("temperature must be positive");
+        }
+        if (Math.abs(request.getAlpha() - 1.0) > 1.0e-12) {
+            throw new IllegalArgumentException(
+                    "LOGIT_KD currently uses pure KL loss and requires alpha=1.0");
+        }
+
+        TrainingConfigRequest training = request.getTrainingConfig() != null
+                ? request.getTrainingConfig() : TrainingConfigRequest.builder().build();
+        String datasetId = hasText(request.getDatasetId()) ? request.getDatasetId() : training.getDatasetId();
+        requireText(datasetId, "datasetId");
+
+        return TrainingSubprocessArgs.builder()
+                .taskId(jobId)
+                .trainingType("DISTILLATION")
+                .modelId(request.getStudentModelId())
+                .datasetId(datasetId)
+                .epochs(training.getEpochs())
+                .batchSize(training.getBatchSize())
+                .learningRate(training.getUpdaterConfig() != null
+                        && training.getUpdaterConfig().getLearningRate() > 0
+                        ? training.getUpdaterConfig().getLearningRate() : 1e-4)
+                .lrSchedule(training.getLrSchedule())
+                .warmupRatio(training.getWarmupRatio())
+                .maxSteps(training.getMaxSteps())
+                .maxGradNorm(training.getMaxGradNorm())
+                .fp16(training.isFp16())
+                .bf16(training.isBf16())
+                .loggingSteps(training.getLoggingSteps())
+                .saveSteps(training.getSaveSteps())
+                .evalSteps(training.getEvalSteps())
+                .outputDir(training.getOutputDir())
+                .seed(training.getSeed())
+                .gradientAccumulationSteps(training.getGradientAccumulationSteps())
+                .peftConfigJson(request.getStudentPeftConfig() != null
+                        ? objectMapper.writeValueAsString(request.getStudentPeftConfig()) : null)
+                .updaterConfigJson(training.getUpdaterConfig() != null
+                        ? objectMapper.writeValueAsString(training.getUpdaterConfig()) : null)
+                .distillationConfigJson(objectMapper.writeValueAsString(request))
+                .build();
+    }
+
+    private TrainingJobStatus launchSubprocess(TrainingSubprocessArgs args, String peftType) throws IOException {
+        String jobId = args.taskId();
         Path argsFile = args.writeToTempFile();
 
-        // Create initial status
         TrainingJobStatus status = TrainingJobStatus.builder()
                 .jobId(jobId)
                 .status("QUEUED")
-                .modelId(request.getModelId())
-                .datasetId(request.getDatasetId())
+                .modelId(args.modelId())
+                .datasetId(args.datasetId())
                 .currentEpoch(0)
-                .totalEpochs(request.getEpochs())
+                .totalEpochs(args.epochs())
                 .currentStep(0)
                 .totalSteps(0)
                 .loss(0.0)
@@ -145,29 +230,28 @@ public class TrainingSubprocessLauncher implements ai.kompile.core.staging.Train
         jobLogs.put(jobId, new CopyOnWriteArrayList<>());
         jobMetrics.put(jobId, new CopyOnWriteArrayList<>());
 
-        // Create persistent job history
         TrainingJobHistory.TrainingType historyType = TrainingJobHistory.TrainingType.valueOf(
-                args.trainingType() != null ? args.trainingType().toUpperCase() : "FINETUNE");
-        historyService.createJob(jobId, historyType, request.getModelId(), request.getDatasetId());
-        historyService.updateTrainingParameters(jobId, request.getBatchSize(), request.getLrSchedule(),
-                request.getWarmupRatio(), request.getMaxGradNorm(), request.isFp16(), request.isBf16(),
-                request.getPeftConfig() != null ? request.getPeftConfig().getPeftType() : null, request.getSeed());
+                args.trainingType() != null ? args.trainingType().toUpperCase(Locale.ROOT) : "FINETUNE");
+        historyService.createJob(jobId, historyType, args.modelId(), args.datasetId());
+        historyService.updateTrainingParameters(jobId, args.batchSize(), args.lrSchedule(),
+                args.warmupRatio(), args.maxGradNorm(), args.fp16(), args.bf16(),
+                peftType, args.seed());
 
-        // Build and launch subprocess
         List<String> command = buildCommand(argsFile);
         ProcessBuilder pb = new ProcessBuilder(command);
         pb.redirectErrorStream(false);
         propagateEnvironment(pb);
 
-        log.info("Launching training subprocess: jobId={}, model={}", jobId, request.getModelId());
+        log.info("Launching {} subprocess: jobId={}, model={}, dataset={}",
+                args.trainingType(), jobId, args.modelId(), args.datasetId());
         Process process = pb.start();
 
         SubprocessHandle handle = new SubprocessHandle(process, jobId, System.currentTimeMillis());
-
-        // Initialise the centralized log writer now that the process is running and pid is known.
         try {
-            SubprocessLogWriter logWriter = new SubprocessLogWriter("training", jobId);
-            String workingDir = pb.directory() != null ? pb.directory().getAbsolutePath() : null;
+            String workingDir = pb.directory() != null
+                    ? pb.directory().getAbsolutePath()
+                    : System.getProperty("user.dir");
+            SubprocessLogWriter logWriter = new SubprocessLogWriter("training", jobId, workingDir);
             logWriter.writeStart(new SubprocessLogWriter.SubprocessRunContext(
                     null, command, workingDir, process.pid(), subprocessHeapSize));
             handle.logWriter = logWriter;
@@ -176,17 +260,24 @@ public class TrainingSubprocessLauncher implements ai.kompile.core.staging.Train
         }
 
         activeProcesses.put(jobId, handle);
-
         historyService.markRunning(jobId);
         updateJobStatus(jobId, "RUNNING");
-
-        // Start monitoring threads
         startStdoutReader(jobId, process);
         startStderrReader(jobId, process);
         startCompletionWatcher(jobId, process);
 
         log.info("Training subprocess launched: jobId={}, pid={}", jobId, process.pid());
         return jobStatuses.get(jobId);
+    }
+
+    private static boolean hasText(String value) {
+        return value != null && !value.isBlank();
+    }
+
+    private static void requireText(String value, String field) {
+        if (!hasText(value)) {
+            throw new IllegalArgumentException(field + " is required");
+        }
     }
 
     /**
@@ -280,6 +371,8 @@ public class TrainingSubprocessLauncher implements ai.kompile.core.staging.Train
         command.add("-XX:MaxGCPauseMillis=200");
         command.add("-XX:+ExitOnOutOfMemoryError");
         command.add("-Dfile.encoding=UTF-8");
+        // Device-agnostic backend/device selection from the shared base infra — no CUDA_VISIBLE_DEVICES.
+        command.addAll(placement.jvmFlags());
         command.add("-cp");
         command.add(classpath);
         command.add("ai.kompile.staging.subprocess.TrainingSubprocessMain");
@@ -289,6 +382,8 @@ public class TrainingSubprocessLauncher implements ai.kompile.core.staging.Train
 
     private void propagateEnvironment(ProcessBuilder pb) {
         SubprocessEnvironmentPropagator.propagateToEnvironment(pb.environment());
+        // Device-agnostic per-device memory bound (SD_MAX_DEVICE_BYTES) — shared base infra.
+        placement.applyEnv(pb.environment());
     }
 
     private void startStdoutReader(String jobId, Process process) {
@@ -431,7 +526,45 @@ public class TrainingSubprocessLauncher implements ai.kompile.core.staging.Train
         }
     }
 
+    private boolean rejectNonFiniteMap(String jobId, String phase, Map<String, Double> metrics) {
+        if (metrics == null) {
+            return false;
+        }
+        for (Map.Entry<String, Double> entry : metrics.entrySet()) {
+            Double value = entry.getValue();
+            if (value == null) {
+                rejectTrainingMessage(jobId, phase, "metric '" + entry.getKey() + "' is null");
+                return true;
+            }
+            if (rejectNonFinite(jobId, phase, entry.getKey(), value)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean rejectNonFinite(String jobId, String phase, String field, double value) {
+        if (Double.isFinite(value)) {
+            return false;
+        }
+        rejectTrainingMessage(jobId, phase, "metric '" + field + "' is non-finite: " + value);
+        return true;
+    }
+
+    private void rejectTrainingMessage(String jobId, String phase, String reason) {
+        String message = "Rejected training subprocess " + phase + " message: " + reason;
+        log.warn("{}", message);
+        handleFailed(jobId, new TrainingSubprocessMessage.Failed(
+                jobId, phase, message, "NON_FINITE_TRAINING_METRIC", null));
+    }
+
     private void handleProgress(String jobId, TrainingSubprocessMessage.Progress p) {
+        if (rejectNonFinite(jobId, "PROGRESS", "loss", p.loss())
+                || rejectNonFinite(jobId, "PROGRESS", "learningRate", p.learningRate())
+                || rejectNonFinite(jobId, "PROGRESS", "epochProgress", p.epochProgress())
+                || rejectNonFinite(jobId, "PROGRESS", "overallProgress", p.overallProgress())) {
+            return;
+        }
         TrainingJobStatus current = jobStatuses.get(jobId);
         if (current == null) return;
 
@@ -470,6 +603,11 @@ public class TrainingSubprocessLauncher implements ai.kompile.core.staging.Train
     }
 
     private void handleCompleted(String jobId, TrainingSubprocessMessage.Completed c) {
+        if (rejectNonFinite(jobId, "COMPLETED", "finalLoss", c.finalLoss())
+                || rejectNonFinite(jobId, "COMPLETED", "finalEvalLoss", c.finalEvalLoss())
+                || rejectNonFiniteMap(jobId, "COMPLETED", c.finalMetrics())) {
+            return;
+        }
         TrainingJobStatus current = jobStatuses.get(jobId);
         TrainingJobStatus completed = TrainingJobStatus.builder()
                 .jobId(jobId)
@@ -513,6 +651,16 @@ public class TrainingSubprocessLauncher implements ai.kompile.core.staging.Train
     }
 
     private void handleMetrics(String jobId, TrainingSubprocessMessage.MetricsUpdate m) {
+        if (rejectNonFinite(jobId, "METRICS", "trainLoss", m.trainLoss())
+                || rejectNonFinite(jobId, "METRICS", "evalLoss", m.evalLoss())
+                || rejectNonFinite(jobId, "METRICS", "learningRate", m.learningRate())
+                || rejectNonFinite(jobId, "METRICS", "gradNorm", m.gradNorm())
+                || rejectNonFinite(jobId, "METRICS", "tokensPerSecond", m.tokensPerSecond())
+                || rejectNonFinite(jobId, "METRICS", "samplesPerSecond", m.samplesPerSecond())
+                || rejectNonFinite(jobId, "METRICS", "heapUsagePercent", m.heapUsagePercent())
+                || rejectNonFiniteMap(jobId, "METRICS", m.customMetrics())) {
+            return;
+        }
         TrainingMetricsSnapshot snapshot = TrainingMetricsSnapshot.builder()
                 .step(m.step())
                 .epoch(m.epoch())

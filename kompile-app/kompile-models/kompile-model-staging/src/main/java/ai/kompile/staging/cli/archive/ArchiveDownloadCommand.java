@@ -18,6 +18,7 @@ package ai.kompile.staging.cli.archive;
 
 import ai.kompile.staging.archive.ArchiveImporter;
 import ai.kompile.staging.transfer.ArchiveDownloader;
+import ai.kompile.utils.FormatUtils;
 import ai.kompile.staging.transfer.TransferProgress;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
@@ -130,7 +131,7 @@ public class ArchiveDownloadCommand implements Callable<Integer> {
             System.out.println("Download completed successfully!");
             System.out.println();
             System.out.println("Archive:  " + result.getArchivePath());
-            System.out.println("Size:     " + formatSize(result.getBytesDownloaded()));
+            System.out.println("Size:     " + FormatUtils.formatBytes(result.getBytesDownloaded()));
             if (result.getChecksum() != null) {
                 System.out.println("Checksum: " + result.getChecksum());
             }
@@ -153,8 +154,8 @@ public class ArchiveDownloadCommand implements Callable<Integer> {
                 progress.getPhase(),
                 bar,
                 progress.getProgressPercent(),
-                formatSize(progress.getBytesTransferred()),
-                formatSize(progress.getTotalBytes()),
+                FormatUtils.formatBytes(progress.getBytesTransferred()),
+                FormatUtils.formatBytes(progress.getTotalBytes()),
                 speed,
                 eta));
     }
@@ -174,13 +175,6 @@ public class ArchiveDownloadCommand implements Callable<Integer> {
         }
         sb.append("]");
         return sb.toString();
-    }
-
-    private String formatSize(long bytes) {
-        if (bytes < 1024) return bytes + " B";
-        if (bytes < 1024 * 1024) return String.format("%.1f KB", bytes / 1024.0);
-        if (bytes < 1024 * 1024 * 1024) return String.format("%.1f MB", bytes / (1024.0 * 1024));
-        return String.format("%.2f GB", bytes / (1024.0 * 1024 * 1024));
     }
 
     private String formatSpeed(double bytesPerSecond) {

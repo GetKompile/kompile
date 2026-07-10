@@ -40,6 +40,10 @@ import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatSelectModule } from '@angular/material/select';
 import { FactSheetService } from '../../services/fact-sheet.service';
 import { FactSheet } from '../../models/api-models';
+import {
+  Contradiction,
+  GraphMaintenanceService
+} from '../../services/graph-maintenance.service';
 
 @Component({
   standalone: true,
@@ -89,6 +93,11 @@ import { FactSheet } from '../../models/api-models';
               <mat-icon>warning</mat-icon>
               {{ highRiskRunsCount }} high-risk
             </mat-chip>
+            <mat-chip class="badge-chip badge-contradictions"
+                      *ngIf="processContradictions.length > 0">
+              <mat-icon>report_problem</mat-icon>
+              {{ processContradictions.length }} graph contradiction{{ processContradictions.length !== 1 ? 's' : '' }}
+            </mat-chip>
           </mat-chip-set>
         </div>
       </div>
@@ -129,11 +138,28 @@ import { FactSheet } from '../../models/api-models';
             <div class="fact-sheet-bar">
               <mat-form-field appearance="outline">
                 <mat-label>Fact sheet</mat-label>
-                <mat-select [(ngModel)]="graphFactSheetId">
+                <mat-select [(ngModel)]="graphFactSheetId" (selectionChange)="loadProcessContradictions()">
                   <mat-option *ngFor="let fs of graphFactSheets" [value]="fs.id">{{ fs.name }} (#{{ fs.id }})</mat-option>
                 </mat-select>
               </mat-form-field>
               <span class="fact-sheet-hint">Trace how each mined process phase/step was derived — basis nodes, rules, and causal pairs.</span>
+            </div>
+            <div class="graph-quality-warning" *ngIf="processContradictions.length > 0">
+              <div class="graph-quality-title">
+                <mat-icon>report_problem</mat-icon>
+                Contradictory graph facts can affect mined process lineage and controls.
+              </div>
+              <div class="graph-quality-list">
+                <div class="graph-quality-item" *ngFor="let c of processContradictions.slice(0, 3)">
+                  <span>{{ c.predicate || c.type }}</span>
+                  <span class="quality-severity">severity {{ formatPct(c.severity) }}</span>
+                  <span class="quality-severity" *ngIf="c.incompatibilityScore != null">conflict {{ formatPct(c.incompatibilityScore) }}</span>
+                  <span class="quality-entities">{{ c.entityIdA }} &harr; {{ c.entityIdB }}</span>
+                </div>
+              </div>
+              <button mat-stroked-button (click)="loadProcessContradictions()">
+                <mat-icon>refresh</mat-icon> Refresh Signal
+              </button>
             </div>
             <app-process-lineage-panel [factSheetId]="graphFactSheetId"></app-process-lineage-panel>
           </div>
@@ -261,6 +287,7 @@ import { FactSheet } from '../../models/api-models';
     .badge-runs { background: rgba(144,202,249,0.15) !important; color: #90caf9 !important; }
     .badge-approvals { background: rgba(255,183,77,0.2) !important; color: #ffb74d !important; }
     .badge-risk { background: rgba(239,83,80,0.2) !important; color: #ef5350 !important; }
+    .badge-contradictions { background: rgba(255,152,0,0.18) !important; color: #ffb74d !important; }
 
     .pe-tabs { flex: 1; }
     .tab-icon { font-size: 18px; width: 18px; height: 18px; margin-right: 4px; vertical-align: middle; }
@@ -307,6 +334,55 @@ import { FactSheet } from '../../models/api-models';
       font-size: 12.5px;
       color: var(--text-secondary, #8a97a6);
     }
+
+    .graph-quality-warning {
+      display: grid;
+      gap: 8px;
+      border: 1px solid rgba(255, 183, 77, 0.4);
+      background: rgba(255, 183, 77, 0.08);
+      border-radius: 6px;
+      padding: 10px 12px;
+      margin-bottom: 12px;
+    }
+
+    .graph-quality-title {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+      font-weight: 600;
+      color: #ffb74d;
+    }
+
+    .graph-quality-title mat-icon {
+      font-size: 18px;
+      width: 18px;
+      height: 18px;
+    }
+
+    .graph-quality-list {
+      display: grid;
+      gap: 4px;
+    }
+
+    .graph-quality-item {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+      font-size: 12px;
+      color: var(--text-secondary, #aeb8c3);
+    }
+
+    .quality-severity {
+      color: #ffcc80;
+      font-weight: 600;
+    }
+
+    .quality-entities {
+      font-family: 'Roboto Mono', monospace;
+      font-size: 11px;
+    }
   `]
 })
 export class ProcessEngineDashboardComponent implements OnInit {
@@ -322,11 +398,13 @@ export class ProcessEngineDashboardComponent implements OnInit {
   // Shared fact-sheet selection for the Lineage tab — per-fact-sheet and needs a sheet to operate on.
   graphFactSheetId: number | null = null;
   graphFactSheets: FactSheet[] = [];
+  processContradictions: Contradiction[] = [];
 
   constructor(
     private processEngineService: ProcessEngineService,
     private processAttributionService: ProcessAttributionService,
     private factSheetService: FactSheetService,
+    private graphMaintenanceService: GraphMaintenanceService,
     private snackBar: MatSnackBar
   ) {}
 
@@ -338,6 +416,7 @@ export class ProcessEngineDashboardComponent implements OnInit {
         if (sheets.length && this.graphFactSheetId == null) {
           this.graphFactSheetId = sheets[0].id;
         }
+        this.loadProcessContradictions();
       },
       error: () => { /* non-fatal: the panels show a "select a fact sheet" empty state */ }
     });
@@ -409,5 +488,25 @@ export class ProcessEngineDashboardComponent implements OnInit {
       'Close',
       { duration: 3000 }
     );
+  }
+
+  loadProcessContradictions(): void {
+    if (this.graphFactSheetId == null) {
+      this.processContradictions = [];
+      return;
+    }
+    this.graphMaintenanceService.detectContradictions(this.graphFactSheetId).subscribe({
+      next: contradictions => {
+        this.processContradictions = contradictions || [];
+      },
+      error: () => {
+        this.processContradictions = [];
+      }
+    });
+  }
+
+  formatPct(value?: number | null): string {
+    if (value == null || Number.isNaN(value)) return '-';
+    return `${Math.round(value * 100)}%`;
   }
 }

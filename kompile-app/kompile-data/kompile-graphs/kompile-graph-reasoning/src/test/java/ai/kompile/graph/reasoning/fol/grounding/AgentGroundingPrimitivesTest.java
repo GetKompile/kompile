@@ -354,6 +354,27 @@ class AgentGroundingPrimitivesTest {
             assertTrue(r1.stream().allMatch(b -> b.get("?X") != null),
                     "All results should have ?X bound");
         }
+
+        @Test
+        @DisplayName("Predicate matching is case-insensitive (projector lowercases; queries may be camelCase/UPPER)")
+        void caseInsensitivePredicateMatching() {
+            // The graph projector stores predicates lower-cased (relationType.toLowerCase()); an agent
+            // query written in camelCase or UPPER_SNAKE must still match. Before the fix, JoinKernel's
+            // case-sensitive lookup + unify silently returned nothing for such queries.
+            InMemoryInferredFactStore lc = new InMemoryInferredFactStore();
+            lc.store(fact("worksfor(Alice, Acme)", 0.9));   // lower-cased, as the projector persists it
+            lc.store(fact("sent_by(Msg1, Bob)", 0.8));
+
+            List<QueryBinding> camel = ConjunctiveQueryEngine.query(
+                    List.of(new ConjunctiveQueryEngine.AtomPattern("worksFor", List.of("?X", "Acme"))), lc);
+            assertFalse(camel.isEmpty(), "camelCase 'worksFor' must match lower-cased stored 'worksfor'");
+            assertEquals("Alice", camel.get(0).get("?X"));
+
+            List<QueryBinding> upper = ConjunctiveQueryEngine.query(
+                    List.of(new ConjunctiveQueryEngine.AtomPattern("SENT_BY", List.of("Msg1", "?P"))), lc);
+            assertFalse(upper.isEmpty(), "UPPER_SNAKE 'SENT_BY' must match lower-cased stored 'sent_by'");
+            assertEquals("Bob", upper.get(0).get("?P"));
+        }
     }
 
     // ─── ConcurrentFactStore tests ───────────────────────────────────────────────

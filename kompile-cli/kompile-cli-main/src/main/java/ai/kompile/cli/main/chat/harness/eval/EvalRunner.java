@@ -356,7 +356,7 @@ public class EvalRunner {
             permissionService.setAutoApproveAll(true); // eval runs are non-interactive
             AgentRegistry agentRegistry = new AgentRegistry();
             BackgroundProcessManager processManager = new BackgroundProcessManager(
-                    "eval-" + UUID.randomUUID().toString().substring(0, 8));
+                    "eval-" + UUID.randomUUID().toString().substring(0, 8), workDir);
             ToolRegistry toolRegistry = ToolRegistryFactory.create(
                     mapper, "", agentRegistry, permissionService,
                     renderer, processManager, chatConfig, null);

@@ -192,6 +192,45 @@ public class CompilerController {
         }
     }
 
+    /**
+     * Compare already materialized quantization variants for one baseline model.
+     */
+    @PostMapping("/quantization/compare")
+    public ResponseEntity<QuantizationComparisonResponse> compareQuantizationVariants(
+            @RequestBody QuantizationComparisonRequest request) {
+        try {
+            if (request == null || request.getBaseModelId() == null || request.getBaseModelId().isBlank()) {
+                return ResponseEntity.badRequest().body(
+                        QuantizationComparisonResponse.builder()
+                                .success(false)
+                                .error("baseModelId is required")
+                                .build()
+                );
+            }
+            if (request.getVariants() == null || request.getVariants().isEmpty()) {
+                return ResponseEntity.badRequest().body(
+                        QuantizationComparisonResponse.builder()
+                                .success(false)
+                                .baseModelId(request.getBaseModelId())
+                                .error("At least one quantization variant is required")
+                                .build()
+                );
+            }
+
+            log.info("Comparing quantization variants for baseline: {}", request.getBaseModelId());
+            QuantizationComparisonResponse response = compilerService.compareQuantizationVariants(request);
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            log.error("Quantization comparison failed", e);
+            return ResponseEntity.internalServerError().body(
+                    QuantizationComparisonResponse.builder()
+                            .success(false)
+                            .error("Quantization comparison failed: " + e.getMessage())
+                            .build()
+            );
+        }
+    }
+
     // ==================== Triton Compiler ====================
 
     /**

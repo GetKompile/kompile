@@ -219,6 +219,83 @@ class StagingServiceLocalModelTest {
                 "Encoder model without vocab file should default to vocab.txt");
     }
 
+    @Test
+    void stageLocalVlmPipeline_promotesPipelineManifestWithoutSameDiffValidation() throws Exception {
+        String modelId = "vlm-pipeline-test";
+        Path pipelineFile = sourceDir.resolve("pipeline.json");
+        Files.writeString(pipelineFile, "{\"id\":\"vlm-pipeline-test\"}");
+
+        stagingService.stageLocalModel(modelId, pipelineFile.toString(), "vlm", true);
+        awaitStatus(modelId, StagingStatus.COMPLETED, 15);
+
+        ModelEntry model = registryService.getModel(modelId).orElseThrow();
+        assertEquals(ModelType.VLM_PIPELINE, model.getType());
+        assertEquals("pipeline.json", model.getModelFile());
+        verify(conversionService, never()).convert(any(), any(), any());
+        verify(conversionService, never()).validate(any());
+    }
+
+    @Test
+    void stageLocalVlmOnnx_doesNotConvertOrSameDiffValidate() throws Exception {
+        String modelId = "vlm-onnx-test";
+        Path decoderFile = sourceDir.resolve("decoder_model_merged.onnx");
+        Files.write(decoderFile, new byte[]{1, 2, 3});
+
+        stagingService.stageLocalModel(modelId, decoderFile.toString(), "vlm", true);
+        awaitStatus(modelId, StagingStatus.COMPLETED, 15);
+
+        ModelEntry model = registryService.getModel(modelId).orElseThrow();
+        assertEquals(ModelType.VLM_PIPELINE, model.getType());
+        assertEquals("decoder_model_merged.onnx", model.getModelFile());
+        verify(conversionService, never()).convert(any(), any(), any());
+        verify(conversionService, never()).validate(any());
+    }
+
+    /**
+     * Verify that stageLocalModel cleans up stale pending-dir artifacts left by a
+     * prior failed/cancelled attempt before starting the new one.  Without the fix
+     * the ONNX importer can encounter "duplicate variable" errors from leftover
+     * graph artifacts written by the previous run.
+     */
+    @Test
+    void stageLocalModel_retryAfterPartialFailure_cleansStalePendingWorkspace() throws Exception {
+        String modelId = "stale-workspace-retry";
+        Path onnxFile = sourceDir.resolve("model.onnx");
+        Files.write(onnxFile, new byte[]{1, 2, 3, 4, 5});
+
+        // Simulate stale artifacts from a prior failed attempt that was not fully
+        // cleaned up by moveToFailed (e.g. the JVM was killed, or the move failed).
+        Path stalePendingDir = tempDir.resolve(".staging/pending").resolve(modelId);
+        Files.createDirectories(stalePendingDir);
+        Path staleFile = stalePendingDir.resolve("stale-poison-artifact.bin");
+        Files.write(staleFile, new byte[]{(byte) 0xDE, (byte) 0xAD, (byte) 0xBE, (byte) 0xEF});
+
+        // When conversion runs the pending directory must be clean — no stale file.
+        when(conversionService.convert(any(), any(), eq("onnx")))
+                .thenAnswer(invocation -> {
+                    Path outputPath = invocation.getArgument(1);
+                    Path pendingDir = outputPath.getParent();
+                    assertFalse(
+                            Files.exists(pendingDir.resolve("stale-poison-artifact.bin")),
+                            "Stale artifact from a prior failed attempt must not survive into the new run");
+                    Files.write(outputPath, new byte[100]);
+                    return ConversionResult.builder()
+                            .success(true)
+                            .outputModelPath(outputPath)
+                            .build();
+                });
+
+        when(conversionService.validate(any()))
+                .thenReturn(ConversionService.ValidationResult.success(5, 10));
+
+        stagingService.stageLocalModel(modelId, onnxFile.toString(), "onnx", true);
+        awaitStatus(modelId, StagingStatus.COMPLETED, 15);
+
+        // Verify staging succeeded end-to-end
+        assertTrue(registryService.getModel(modelId).isPresent(),
+                "Model should be in registry after successful retry");
+    }
+
     /**
      * Poll until the staging completes. For auto-promoted models, the staging info
      * is removed from the map upon successful promotion, so null means "done".

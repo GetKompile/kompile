@@ -187,6 +187,53 @@ class TikaLoaderGraphIntegrationTest {
     class MarkdownIntegration {
 
         /**
+         * Frontmatter tags/categories/date/title/author must be PROMOTED to the bare metadata keys the
+         * graph extractor reads (it skips them in its frontmatter map-loop, expecting them promoted).
+         * Before the fix they were stamped only under markdown.frontmatter.* and double-dropped.
+         */
+        @Test
+        void frontmatterFieldsPromotedToBareKeysAndBecomeEntities() throws Exception {
+            String md = """
+                    ---
+                    title: Quarterly Strategy
+                    author: Dana Lee
+                    tags: [finance, planning, q3]
+                    categories: [reports, internal]
+                    date: 2025-03-15
+                    ---
+
+                    # Quarterly Strategy
+
+                    Body text about the finance plan.
+                    """;
+            Path mdFile = tempDir.resolve("strategy.md");
+            Files.writeString(mdFile, md);
+
+            Document doc = loadFile(mdFile);
+            Map<String, Object> meta = doc.getMetadata();
+
+            // Bare-key promotion (list values comma-joined so extractTopics can split them).
+            assertEquals("finance, planning, q3", meta.get("tags"),
+                    "list-valued frontmatter tags promoted + comma-joined");
+            assertEquals("reports, internal", meta.get("categories"));
+            assertEquals("2025-03-15", meta.get("date"));
+            assertEquals("Quarterly Strategy", meta.get(GraphConstants.META_TITLE));
+            assertEquals("Dana Lee", meta.get(GraphConstants.META_AUTHOR));
+
+            // The whole pipeline now yields TOPIC entities for tags/categories and a DATE entity.
+            ExtractionResult result = extractGraph(doc);
+            java.util.Set<String> names = new java.util.HashSet<>();
+            for (ExtractedEntity e : result.entities()) {
+                names.add(e.name());
+            }
+            assertTrue(names.contains("finance"), "tag 'finance' became a TOPIC entity");
+            assertTrue(names.contains("q3"), "tag 'q3' became a TOPIC entity");
+            assertTrue(names.contains("reports"), "category 'reports' became a TOPIC entity");
+            assertTrue(names.contains("2025-03-15"), "frontmatter date became a DATE entity");
+            assertTrue(names.contains("Quarterly Strategy"), "frontmatter title became the doc entity");
+        }
+
+        /**
          * Markdown with YAML frontmatter (Jekyll/Hugo style), headings, a pipe table,
          * inline links, code blocks, and task list items.
          */
@@ -721,6 +768,63 @@ class TikaLoaderGraphIntegrationTest {
     // ════════════════════════════════════════════════════════════════════
     //  Helpers
     // ════════════════════════════════════════════════════════════════════
+
+    // ════════════════════════════════════════════════════════════════════
+    //  Tika-native metadata (Dublin Core) surfacing — pure-Tika path
+    // ════════════════════════════════════════════════════════════════════
+
+    @Nested
+    class TikaNativeMetadata {
+
+        /**
+         * RTF with an {@code \info} group carrying title + author. Before the fix,
+         * {@code parseToString()} discarded Tika's metadata, so title/author never reached the graph
+         * extractor and no PERSON/author entity was produced. Now the whole pipeline lights up.
+         */
+        @Test
+        void rtfInfoMetadataStampedAsDublinCoreAndPipelineExtracts() throws Exception {
+            String rtf = "{\\rtf1\\ansi\\deff0 {\\info{\\title Quarterly Report}"
+                    + "{\\author Jane Doe}}\\par This is the quarterly report body about Acme Corporation.\\par}";
+            Path rtfFile = tempDir.resolve("report.rtf");
+            Files.writeString(rtfFile, rtf);
+
+            Document doc = loadFile(rtfFile);
+            Map<String, Object> meta = doc.getMetadata();
+
+            assertEquals("Quarterly Report", meta.get(GraphConstants.META_TITLE),
+                    "dc:title from the RTF \\info group must be stamped");
+            assertNotNull(meta.get(GraphConstants.META_AUTHOR), "author must be stamped");
+            assertTrue(meta.get(GraphConstants.META_AUTHOR).toString().contains("Jane Doe"),
+                    "author value should be the RTF \\author");
+            assertEquals("rtf", meta.get(GraphConstants.META_DOCUMENT_TYPE),
+                    "documentType fallback from the .rtf extension");
+            assertNotNull(meta.get(GraphConstants.META_TIKA_CONTENT_TYPE), "content type must be stamped");
+            assertNotNull(meta.get(GraphConstants.META_FILE_SIZE), "fileSize on success path");
+            assertNotNull(meta.get(GraphConstants.META_LAST_MODIFIED), "lastModified on success path");
+
+            ExtractionResult result = extractGraph(doc);
+            assertTrue(result.entities().stream().anyMatch(e -> "Quarterly Report".equals(e.name())),
+                    "doc entity should carry the RTF title");
+            assertTrue(result.entities().stream()
+                            .anyMatch(e -> e.name() != null && e.name().contains("Jane Doe")),
+                    "author should become a PERSON entity — impossible without metadata stamping");
+        }
+
+        /** Plain text has no native metadata, but fileSize/lastModified must still be stamped on the
+         *  success path (previously only the error path set them). */
+        @Test
+        void plainTextSuccessPathStampsFileSizeAndLastModified() throws Exception {
+            Path txt = tempDir.resolve("notes.txt");
+            Files.writeString(txt, "Meeting notes: follow up with the finance team.");
+
+            Document doc = loadFile(txt);
+            Map<String, Object> meta = doc.getMetadata();
+
+            assertNotNull(meta.get(GraphConstants.META_FILE_SIZE), "fileSize must be set on success");
+            assertNotNull(meta.get(GraphConstants.META_LAST_MODIFIED), "lastModified must be set on success");
+            assertTrue(meta.get(GraphConstants.META_LOADER).toString().toLowerCase().contains("tika"));
+        }
+    }
 
     /**
      * Print all entities and relations for debugging (disabled by default).

@@ -41,7 +41,7 @@ class ProcessingRouteConfigServiceTest {
         ProcessingRouteConfig config = service.getConfig();
         assertNotNull(config);
         assertEquals(PdfRoutingMode.AUTO, config.getPdfRoutingMode());
-        assertFalse(config.isFallbackEnabled());
+        assertTrue(config.isFallbackEnabled());
         assertTrue(config.isExtractTablesFromTextPdfs());
         assertEquals(50, config.getTextThresholdCharsPerPage());
     }
@@ -157,7 +157,7 @@ class ProcessingRouteConfigServiceTest {
 
         // Should fall back to global default
         assertEquals(PdfRoutingMode.AUTO, resolved.getPdfRoutingMode());
-        assertFalse(resolved.isFallbackEnabled());
+        assertTrue(resolved.isFallbackEnabled());
     }
 
     @Test

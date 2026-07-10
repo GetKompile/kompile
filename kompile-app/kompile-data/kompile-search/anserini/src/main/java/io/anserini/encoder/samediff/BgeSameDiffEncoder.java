@@ -30,6 +30,7 @@ import org.nd4j.linalg.ops.transforms.Transforms;
 import org.nd4j.linalg.profiler.ProfilerConfig;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
@@ -269,93 +270,6 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
             // Execute inference - this is a blocking native call that cannot be interrupted
             LOG.debug("[{}] Starting sameDiffModel.output() for outputName={}", this.modelIdentifier, outputName);
             long inferenceStart = System.currentTimeMillis();
-
-            // ========== DIAGNOSTIC: Dump pooler operation details ==========
-            System.err.println("\n========== BROKEN OP DIAGNOSTIC ==========");
-            System.err.println("Model: " + this.modelIdentifier);
-            System.err.println("Output requested: " + outputName);
-
-            // Get all outputs including intermediates for diagnosis
-            try {
-                Map<String, INDArray> diagMap = this.sameDiffModel.output(placeholderMap,
-                    "last_hidden_state",
-                    "/pooler/Gather_output_0",
-                    "/pooler/dense/Gemm_output_0",
-                    outputName);
-
-                // 1. last_hidden_state - transformer output
-                INDArray lastHidden = diagMap.get("last_hidden_state");
-                if (lastHidden != null) {
-                    System.err.println("\n[1] last_hidden_state (transformer output):");
-                    System.err.println("    Shape: " + Arrays.toString(lastHidden.shape()));
-                    System.err.println("    Min: " + lastHidden.minNumber() + ", Max: " + lastHidden.maxNumber());
-                    System.err.println("    Status: " + (lastHidden.maxNumber().floatValue() != 0 ? "OK" : "BROKEN - all zeros"));
-                }
-
-                // 2. Check Gather index constant
-                if (this.sameDiffModel.hasVariable("/Constant_output_0")) {
-                    INDArray gatherIdx = this.sameDiffModel.getVariable("/Constant_output_0").getArr();
-                    System.err.println("\n[2] /Constant_output_0 (Gather index):");
-                    System.err.println("    Shape: " + Arrays.toString(gatherIdx.shape()));
-                    System.err.println("    Value: " + gatherIdx);
-                    System.err.println("    Expected: scalar 0 or shape [1] with value [0]");
-                }
-
-                // 3. Gather output
-                INDArray gatherOut = diagMap.get("/pooler/Gather_output_0");
-                if (gatherOut != null) {
-                    System.err.println("\n[3] /pooler/Gather_output_0:");
-                    System.err.println("    Shape: " + Arrays.toString(gatherOut.shape()));
-                    System.err.println("    Expected shape: [batch, hidden] e.g. [1, 768]");
-                    System.err.println("    Actual shape indicates BROKEN Gather op adding extra dimensions");
-                    System.err.println("    Min: " + gatherOut.minNumber() + ", Max: " + gatherOut.maxNumber());
-                    System.err.println("    Status: " + (gatherOut.maxNumber().floatValue() != 0 ? "OK (values present)" : "BROKEN - all zeros"));
-                }
-
-                // 4. Gemm/Dense output
-                INDArray gemmOut = diagMap.get("/pooler/dense/Gemm_output_0");
-                if (gemmOut != null) {
-                    System.err.println("\n[4] /pooler/dense/Gemm_output_0:");
-                    System.err.println("    Shape: " + Arrays.toString(gemmOut.shape()));
-                    System.err.println("    Min: " + gemmOut.minNumber() + ", Max: " + gemmOut.maxNumber());
-                    System.err.println("    Status: " + (gemmOut.maxNumber().floatValue() != 0 ? "OK" : "BROKEN - all zeros"));
-                    if (gemmOut.maxNumber().floatValue() == 0) {
-                        System.err.println("    >>> GEMM IS THE BROKEN OP <<<");
-                        System.err.println("    Gemm receives input shape " + Arrays.toString(gatherOut.shape()) + " but expects 2D [batch, features]");
-                    }
-                }
-
-                // 5. Final output
-                INDArray finalOut = diagMap.get(outputName);
-                if (finalOut != null) {
-                    System.err.println("\n[5] Final output '" + outputName + "':");
-                    System.err.println("    Shape: " + Arrays.toString(finalOut.shape()));
-                    System.err.println("    Min: " + finalOut.minNumber() + ", Max: " + finalOut.maxNumber());
-                }
-
-                // Check pooler weights
-                System.err.println("\n[6] Pooler weights:");
-                for (org.nd4j.autodiff.samediff.SDVariable sdVar : this.sameDiffModel.variables()) {
-                    String varName = sdVar.name();
-                    if (varName.contains("pooler") && varName.contains("dense") &&
-                        (varName.contains("weight") || varName.contains("bias"))) {
-                        INDArray arr = sdVar.getArr();
-                        if (arr != null) {
-                            System.err.println("    " + varName + ": shape=" + Arrays.toString(arr.shape()) +
-                                ", min=" + arr.minNumber() + ", max=" + arr.maxNumber());
-                        }
-                    }
-                }
-
-                System.err.println("\n========== END DIAGNOSTIC ==========\n");
-
-                // Cleanup
-                for (INDArray arr : diagMap.values()) {
-                    if (arr != null) try { arr.close(); } catch (Exception ignored) {}
-                }
-            } catch (Exception e) {
-                System.err.println("Diagnostic failed: " + e.getMessage());
-            }
 
             // Execute model inference
             outputMap = this.sameDiffModel.output(placeholderMap, outputName);
@@ -629,22 +543,31 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
             LOG.error("[{}] Cannot convert null array to float vector", this.modelIdentifier);
             return null;
         }
+        INDArray copy = null;
         try {
-            return array.toFloatVector();
+            long length = array.length();
+            if (length > Integer.MAX_VALUE) {
+                throw new IllegalArgumentException("INDArray too large to materialize as float[]: " + length);
+            }
+            if (array.elementWiseStride() == 1) {
+                return array.data().getFloatsAt(array.offset(), (int) length);
+            }
+            copy = array.dup('c');
+            return copy.data().getFloatsAt(copy.offset(), (int) length);
         } catch (NullPointerException e) {
-            // This catches JavaCPP "Pointer address of argument X is NULL" errors
-            LOG.error("[{}] Native pointer is null during toFloatVector - array may have been closed or corrupted: {}",
+            LOG.error("[{}] Native pointer is null during float extraction - array may have been closed or corrupted: {}",
                     this.modelIdentifier, e.getMessage());
             return null;
         } catch (IllegalStateException e) {
-            // This catches "DataBuffer was already released" errors
-            LOG.error("[{}] DataBuffer was released during toFloatVector: {}",
+            LOG.error("[{}] DataBuffer was released during float extraction: {}",
                     this.modelIdentifier, e.getMessage());
             return null;
         } catch (Exception e) {
-            LOG.error("[{}] Unexpected error during toFloatVector: {}",
+            LOG.error("[{}] Unexpected error during float extraction: {}",
                     this.modelIdentifier, e.getMessage(), e);
             return null;
+        } finally {
+            closeArraySafely(copy);
         }
     }
 
@@ -773,6 +696,37 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
     private static final int OPTIMAL_INFERENCE_BATCH_SIZE = calculateOptimalBatchSize(REFERENCE_SEQ_LENGTH);
     private static final int MAX_INFERENCE_BATCH_SIZE = calculateMaxBatchSize(REFERENCE_SEQ_LENGTH);
 
+    private volatile int instanceOptimalBatchSize = OPTIMAL_INFERENCE_BATCH_SIZE;
+    private volatile int instanceMaxBatchSize = MAX_INFERENCE_BATCH_SIZE;
+    private volatile int instanceAbsoluteMaxBatchSize = ABSOLUTE_MAX_BATCH_SIZE;
+    private volatile double instanceMemoryScaleFactor = MEMORY_SCALE_FACTOR;
+
+    public void configureBatchSize(int optimalBatchSize, int maxBatchSize, int absoluteMaxBatchSize) {
+        int configuredAbsoluteMax = absoluteMaxBatchSize > 0
+                ? Math.max(ABSOLUTE_MIN_BATCH_SIZE, absoluteMaxBatchSize)
+                : Math.max(ABSOLUTE_MIN_BATCH_SIZE, maxBatchSize);
+        int configuredMax = Math.max(ABSOLUTE_MIN_BATCH_SIZE, Math.min(maxBatchSize, configuredAbsoluteMax));
+        int configuredOptimal = Math.max(ABSOLUTE_MIN_BATCH_SIZE, Math.min(optimalBatchSize, configuredMax));
+        this.instanceOptimalBatchSize = configuredOptimal;
+        this.instanceMaxBatchSize = configuredMax;
+        this.instanceAbsoluteMaxBatchSize = configuredAbsoluteMax;
+        this.instanceMemoryScaleFactor = 1.0;
+        LOG.info("[{}] Configured dynamic batch sizing: baseOptimal={}, baseMax={}, absoluteMax={}",
+                modelIdentifier, configuredOptimal, configuredMax, configuredAbsoluteMax);
+    }
+
+    private int calculateInstanceOptimalBatchSize(int maxSeqLength) {
+        if (maxSeqLength <= 0) {
+            maxSeqLength = REFERENCE_SEQ_LENGTH;
+        }
+        double seqLengthRatio = (double) REFERENCE_SEQ_LENGTH / maxSeqLength;
+        double scaleFactor = seqLengthRatio * seqLengthRatio * instanceMemoryScaleFactor;
+        int optimalBatch = (int) Math.round(instanceOptimalBatchSize * scaleFactor);
+        int maxBatch = (int) Math.round(instanceMaxBatchSize * scaleFactor);
+        int cap = Math.max(ABSOLUTE_MIN_BATCH_SIZE, Math.min(maxBatch, instanceAbsoluteMaxBatchSize));
+        return Math.max(ABSOLUTE_MIN_BATCH_SIZE, Math.min(optimalBatch, cap));
+    }
+
     // Batch inference is always supported for SameDiff models with proper padding
     // The encodeSingleInferenceBatch() method handles dynamic batching correctly
     // Batch inference is always supported for SameDiff models with proper padding
@@ -801,7 +755,7 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
         System.err.flush();
 
         if (texts.isEmpty()) {
-            return new java.util.ArrayList<>();
+            return new ArrayList<>();
         }
 
         // Check for shutdown before acquiring lock
@@ -858,7 +812,7 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
         System.err.flush();
 
         // Create indexed entries for sorting
-        List<IndexedEncoding> indexedEncodings = new java.util.ArrayList<>(numTexts);
+        List<IndexedEncoding> indexedEncodings = new ArrayList<>(numTexts);
         int maxSeqLength = 0;
         int totalTokens = 0;
         int minSeqLength = Integer.MAX_VALUE;
@@ -904,8 +858,8 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
 
         // Step 3: Calculate initial optimal batch size based on average sequence length
         // Using average gives better estimate than max for sorted batches
-        int avgBasedOptimal = calculateOptimalBatchSize((int) avgSeqLength);
-        int globalOptimalBatch = calculateOptimalBatchSize(maxSeqLength);
+        int avgBasedOptimal = calculateInstanceOptimalBatchSize((int) avgSeqLength);
+        int globalOptimalBatch = calculateInstanceOptimalBatchSize(maxSeqLength);
 
         System.err.println("[DYNAMIC-BATCH] Batch sizing: avgSeq-based=" + avgBasedOptimal +
                 ", maxSeq-based=" + globalOptimalBatch + ", using adaptive per-bucket");
@@ -919,8 +873,8 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
             System.err.flush();
 
             // Extract sorted texts and encodings
-            List<String> sortedTexts = new java.util.ArrayList<>(numTexts);
-            List<SamediffBertTokenizerPreProcessor.BertEncoding> sortedEncodings = new java.util.ArrayList<>(numTexts);
+            List<String> sortedTexts = new ArrayList<>(numTexts);
+            List<SamediffBertTokenizerPreProcessor.BertEncoding> sortedEncodings = new ArrayList<>(numTexts);
             for (IndexedEncoding ie : indexedEncodings) {
                 sortedTexts.add(ie.text);
                 sortedEncodings.add(ie.encoding);
@@ -972,20 +926,20 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
             // Start with a reasonable guess and adjust
             int sampleEnd = Math.min(processedCount + 32, numTexts); // Sample first 32 or remaining
             int sampleMaxSeq = indexedEncodings.get(sampleEnd - 1).seqLength;
-            int optimalForSample = calculateOptimalBatchSize(sampleMaxSeq);
+            int optimalForSample = calculateInstanceOptimalBatchSize(sampleMaxSeq);
 
             // Now determine actual sub-batch size
             int subBatchSize = Math.min(optimalForSample, remaining);
 
             // Recalculate with actual sub-batch max sequence length
             int subBatchMaxSeq = indexedEncodings.get(processedCount + subBatchSize - 1).seqLength;
-            int refinedOptimal = calculateOptimalBatchSize(subBatchMaxSeq);
+            int refinedOptimal = calculateInstanceOptimalBatchSize(subBatchMaxSeq);
 
             // If we can fit more items at this sequence length, expand the batch
             while (subBatchSize < remaining && subBatchSize < refinedOptimal) {
                 int nextIdx = processedCount + subBatchSize;
                 int nextSeqLen = indexedEncodings.get(nextIdx).seqLength;
-                int newOptimal = calculateOptimalBatchSize(nextSeqLen);
+                int newOptimal = calculateInstanceOptimalBatchSize(nextSeqLen);
                 if (subBatchSize + 1 <= newOptimal) {
                     subBatchSize++;
                     subBatchMaxSeq = nextSeqLen;
@@ -1001,9 +955,9 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
             subBatchNum++;
 
             // Extract sub-batch
-            List<String> subTexts = new java.util.ArrayList<>(subBatchSize);
-            List<SamediffBertTokenizerPreProcessor.BertEncoding> subEncodings = new java.util.ArrayList<>(subBatchSize);
-            List<Integer> subOriginalIndices = new java.util.ArrayList<>(subBatchSize);
+            List<String> subTexts = new ArrayList<>(subBatchSize);
+            List<SamediffBertTokenizerPreProcessor.BertEncoding> subEncodings = new ArrayList<>(subBatchSize);
+            List<Integer> subOriginalIndices = new ArrayList<>(subBatchSize);
 
             for (int i = 0; i < subBatchSize; i++) {
                 IndexedEncoding ie = indexedEncodings.get(processedCount + i);
@@ -1085,7 +1039,7 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
      */
     private List<float[]> encodeSequentialFromEncodings(List<String> texts,
                                                          List<SamediffBertTokenizerPreProcessor.BertEncoding> encodings) {
-        List<float[]> results = new java.util.ArrayList<>(texts.size());
+        List<float[]> results = new ArrayList<>(texts.size());
         for (int i = 0; i < texts.size(); i++) {
             if (Thread.currentThread().isInterrupted()) {
                 return null;
@@ -1102,7 +1056,7 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
      */
     private List<float[]> encodeSequential(List<String> texts) {
         long startTime = System.currentTimeMillis();
-        List<float[]> results = new java.util.ArrayList<>(texts.size());
+        List<float[]> results = new ArrayList<>(texts.size());
         for (int i = 0; i < texts.size(); i++) {
             if (Thread.currentThread().isInterrupted()) {
                 LOG.debug("[{}] Sequential encoding interrupted at {}/{}", modelIdentifier, i, texts.size());
@@ -1135,7 +1089,7 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
         LOG.info("[{}] Large batch ({} texts) - splitting into {} sub-batches of ~{} texts each",
                 modelIdentifier, numTexts, numSubBatches, OPTIMAL_INFERENCE_BATCH_SIZE);
 
-        List<float[]> allResults = new java.util.ArrayList<>(numTexts);
+        List<float[]> allResults = new ArrayList<>(numTexts);
         long totalStartTime = System.currentTimeMillis();
 
         for (int i = 0; i < numSubBatches; i++) {
@@ -1190,7 +1144,7 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
      */
     private List<float[]> encodeSingleInferenceBatch(List<String> texts) {
         if (texts.isEmpty()) {
-            return new java.util.ArrayList<>();
+            return new ArrayList<>();
         }
 
         long startTime = System.currentTimeMillis();
@@ -1201,7 +1155,7 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
         System.err.println("[INFERENCE-TIMING] Step 1: Tokenizing " + texts.size() + " texts...");
         System.err.flush();
 
-        List<SamediffBertTokenizerPreProcessor.BertEncoding> encodings = new java.util.ArrayList<>(texts.size());
+        List<SamediffBertTokenizerPreProcessor.BertEncoding> encodings = new ArrayList<>(texts.size());
         int maxLen = 0;
         int totalTokens = 0;
         int[] passageTokenCounts = new int[texts.size()];
@@ -1256,7 +1210,7 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
 
         Map<String, INDArray> placeholderMap = new HashMap<>();
         Map<String, INDArray> outputMap = null;
-        List<float[]> results = new java.util.ArrayList<>(batchSize);
+        List<float[]> results = new ArrayList<>(batchSize);
         long tensorCreateTime = 0;
 
         try {
@@ -1386,7 +1340,7 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
             int maxSeqLength) {
 
         if (encodings.isEmpty()) {
-            return new java.util.ArrayList<>();
+            return new ArrayList<>();
         }
 
         long startTime = System.currentTimeMillis();
@@ -1434,7 +1388,7 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
 
         Map<String, INDArray> placeholderMap = new HashMap<>();
         Map<String, INDArray> outputMap = null;
-        List<float[]> results = new java.util.ArrayList<>(batchSize);
+        List<float[]> results = new ArrayList<>(batchSize);
 
         try {
             for (String inputName : this.inputTensorNamesForModel) {

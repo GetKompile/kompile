@@ -47,6 +47,11 @@ class CliModelCatalogTest {
                 "models": {
                   "deepseek-v4-flash": {
                     "limit": {"context": 999999, "output": 384000},
+                    "cost": {"input": 0.14, "output": 0.28},
+                    "attachment": false, "tool_call": true, "status": "active"
+                  },
+                  "deepseek-v4-flash-free": {
+                    "limit": {"context": 200000, "output": 128000},
                     "cost": {"input": 0, "output": 0},
                     "attachment": false, "tool_call": true, "status": "active"
                   },
@@ -88,8 +93,13 @@ class CliModelCatalogTest {
         // Provider-prefixed ids resolve to the same spec.
         assertEquals(999999, CliModelCatalog.contextWindow("opencode/deepseek-v4-flash").orElseThrow());
 
+        // Free aliases keep free routing but inherit the canonical sibling's larger model limits.
+        assertEquals(999999, CliModelCatalog.contextWindow("opencode/deepseek-v4-flash-free").orElseThrow());
+        assertEquals(384000, CliModelCatalog.maxOutputTokens("opencode/deepseek-v4-flash-free").orElseThrow());
+        assertTrue(CliModelCatalog.isFree("opencode/deepseek-v4-flash-free").orElseThrow());
+
         // cost 0/0 → free; non-zero cost → not free.
-        assertTrue(CliModelCatalog.isFree("deepseek-v4-flash").orElseThrow());
+        assertFalse(CliModelCatalog.isFree("deepseek-v4-flash").orElseThrow());
         assertFalse(CliModelCatalog.isFree("kimi-k2.6").orElseThrow());
 
         // attachment → vision.
@@ -118,6 +128,8 @@ class CliModelCatalogTest {
         assertEquals(999999, ModelContextWindows.getContextWindow("deepseek-v4-flash"),
                 "ModelContextWindows must consult the dynamic catalog before the static table");
         assertEquals(384000, ModelContextWindows.getMaxOutputTokens("deepseek-v4-flash"));
+        assertEquals(999999, ModelContextWindows.getContextWindow("opencode/deepseek-v4-flash-free"));
+        assertEquals(384000, ModelContextWindows.getMaxOutputTokens("opencode/deepseek-v4-flash-free"));
         assertTrue(ModelContextWindows.supportsVision("kimi-k2.6"));
     }
 

@@ -21,6 +21,7 @@ import ai.kompile.graph.algorithms.adjacency.AdjacencyView;
 import ai.kompile.graph.algorithms.adjacency.AdjacencyViewBuilder;
 import ai.kompile.graph.algorithms.community.CommunitySummarizer;
 import ai.kompile.graph.algorithms.community.CommunitySummary;
+import ai.kompile.graph.reasoning.model.ReasoningGraph;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -57,6 +58,10 @@ public class GraphAlgorithmService {
         return viewCache.computeIfAbsent(key, k -> buildView(factSheetId));
     }
 
+    public AdjacencyView viewGraph(ReasoningGraph graph) {
+        return AdjacencyViewBuilder.fromReasoningGraph(graph);
+    }
+
     public void invalidateCache() {
         viewCache.clear();
     }
@@ -69,19 +74,44 @@ public class GraphAlgorithmService {
         return PageRankAlgorithm.compute(view(factSheetId), damping, maxIterations, tolerance);
     }
 
+    public Map<String, Double> pageRankGraph(ReasoningGraph graph, double damping, int maxIterations, double tolerance) {
+        return PageRankAlgorithm.compute(viewGraph(graph), damping, maxIterations, tolerance);
+    }
+
     public Map<String, Double> degreeCentrality(Long factSheetId, DegreeCentrality.Type type) {
         return DegreeCentrality.compute(view(factSheetId), type);
+    }
+
+    public Map<String, Double> degreeCentralityGraph(ReasoningGraph graph, DegreeCentrality.Type type) {
+        return DegreeCentrality.compute(viewGraph(graph), type);
     }
 
     public Map<String, Double> betweennessCentrality(Long factSheetId, int sampleSize, long randomSeed) {
         return BetweennessCentrality.compute(view(factSheetId), sampleSize, randomSeed);
     }
 
+    public Map<String, Double> betweennessCentralityGraph(ReasoningGraph graph, int sampleSize, long randomSeed) {
+        return BetweennessCentrality.compute(viewGraph(graph), sampleSize, randomSeed);
+    }
+
     public ShortestPathAlgorithm.PathResult shortestPath(Long factSheetId,
                                                          String fromNodeId,
                                                          String toNodeId,
                                                          boolean weighted) {
-        AdjacencyView v = view(factSheetId);
+        return shortestPath(view(factSheetId), fromNodeId, toNodeId, weighted);
+    }
+
+    public ShortestPathAlgorithm.PathResult shortestPathGraph(ReasoningGraph graph,
+                                                         String fromNodeId,
+                                                         String toNodeId,
+                                                         boolean weighted) {
+        return shortestPath(viewGraph(graph), fromNodeId, toNodeId, weighted);
+    }
+
+    private ShortestPathAlgorithm.PathResult shortestPath(AdjacencyView v,
+                                                          String fromNodeId,
+                                                          String toNodeId,
+                                                          boolean weighted) {
         return weighted
                 ? ShortestPathAlgorithm.dijkstra(v, fromNodeId, toNodeId)
                 : ShortestPathAlgorithm.bfs(v, fromNodeId, toNodeId);
@@ -91,12 +121,24 @@ public class GraphAlgorithmService {
         return BfsTraversal.traverse(view(factSheetId), startNodeId, maxDepth);
     }
 
+    public Map<Integer, List<String>> bfsTraversalGraph(ReasoningGraph graph, String startNodeId, int maxDepth) {
+        return BfsTraversal.traverse(viewGraph(graph), startNodeId, maxDepth);
+    }
+
     public Map<String, Integer> weaklyConnectedComponents(Long factSheetId) {
         return WeaklyConnectedComponents.compute(view(factSheetId));
     }
 
+    public Map<String, Integer> weaklyConnectedComponentsGraph(ReasoningGraph graph) {
+        return WeaklyConnectedComponents.compute(viewGraph(graph));
+    }
+
     public Map<String, Integer> louvainCommunities(Long factSheetId, int maxIterations) {
         return LouvainCommunityDetection.compute(view(factSheetId), maxIterations);
+    }
+
+    public Map<String, Integer> louvainCommunitiesGraph(ReasoningGraph graph, int maxIterations) {
+        return LouvainCommunityDetection.compute(viewGraph(graph), maxIterations);
     }
 
     public List<CommunitySummary> summarizeCommunities(Long factSheetId,
@@ -111,12 +153,32 @@ public class GraphAlgorithmService {
         return communitySummarizer.summarize(assignments, graphService, maxNodesPerPrompt);
     }
 
+    public List<CommunitySummary> summarizeCommunitiesGraph(ReasoningGraph graph,
+                                                            String algorithm,
+                                                            int maxNodesPerPrompt) {
+        Map<String, Integer> assignments;
+        if ("wcc".equalsIgnoreCase(algorithm)) {
+            assignments = weaklyConnectedComponentsGraph(graph);
+        } else {
+            assignments = louvainCommunitiesGraph(graph, 20);
+        }
+        return communitySummarizer.summarize(assignments, graph, maxNodesPerPrompt);
+    }
+
     public double jaccardSimilarity(Long factSheetId, String nodeAId, String nodeBId) {
         return JaccardNodeSimilarity.similarity(view(factSheetId), nodeAId, nodeBId);
     }
 
+    public double jaccardSimilarityGraph(ReasoningGraph graph, String nodeAId, String nodeBId) {
+        return JaccardNodeSimilarity.similarity(viewGraph(graph), nodeAId, nodeBId);
+    }
+
     public List<JaccardNodeSimilarity.SimilarityPair> jaccardTopK(Long factSheetId, int topK, double threshold) {
         return JaccardNodeSimilarity.topK(view(factSheetId), topK, threshold);
+    }
+
+    public List<JaccardNodeSimilarity.SimilarityPair> jaccardTopKGraph(ReasoningGraph graph, int topK, double threshold) {
+        return JaccardNodeSimilarity.topK(viewGraph(graph), topK, threshold);
     }
 
     private AdjacencyView buildView(Long factSheetId) {

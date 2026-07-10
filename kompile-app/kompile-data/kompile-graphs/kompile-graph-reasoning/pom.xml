@@ -73,16 +73,18 @@
             <scope>test</scope>
         </dependency>
 
-        <!-- ND4J native CPU backend so the tensor-based PSL inference tests can execute ops -->
+        <!-- ND4J backend for PSL inference tests; resolved from ${nd4j.backend}
+             (default nd4j-native). This lib is infrastructure-free: the runtime backend
+             for production is supplied by the host app; test backend follows the build flag. -->
         <dependency>
             <groupId>org.eclipse.deeplearning4j</groupId>
-            <artifactId>nd4j-native</artifactId>
+            <artifactId>${nd4j.backend}</artifactId>
             <version>${nd4j.version}</version>
             <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>org.eclipse.deeplearning4j</groupId>
-            <artifactId>nd4j-native</artifactId>
+            <artifactId>${nd4j.backend}</artifactId>
             <version>${nd4j.version}</version>
             <classifier>${javacpp.platform}</classifier>
             <scope>test</scope>

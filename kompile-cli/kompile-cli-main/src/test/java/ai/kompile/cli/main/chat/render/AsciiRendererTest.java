@@ -966,10 +966,12 @@ class AsciiRendererTest {
 
         @Test
         void wrapTextAnsiNotWrapped() {
-            // Lines with ANSI should not be word-wrapped (complex to measure)
-            String ansiLine = "\033[1mBold content that is longer than the max width\033[0m";
+            // A short ANSI line (stripped length fits maxWidth) must be returned unchanged,
+            // preserving the original ANSI escape sequences.
+            String ansiLine = "\033[1mHi\033[0m"; // stripped visible = "Hi" (2 chars)
             List<String> lines = AsciiRenderer.wrapText(ansiLine, 20);
-            assertEquals(1, lines.size(), "ANSI lines should not be wrapped");
+            assertEquals(1, lines.size(), "Short ANSI line must not be wrapped");
+            assertEquals(ansiLine, lines.get(0), "Short ANSI line must be preserved as-is");
         }
     }
 
@@ -1056,6 +1058,223 @@ class AsciiRendererTest {
             String md = "Before\n<thinking>\nLet me analyze this...\n</thinking>\nAfter";
             String result = renderer.renderMarkdown(md);
             assertTrue(result.contains("analyze this"), "Should render thinking body");
+        }
+    }
+
+    // ========================================================================
+    // Bug 4: wrapText ANSI-aware wrapping
+    // ========================================================================
+
+    @Nested
+    class WrapTextAnsiAware {
+
+        @Test
+        void shortAnsiLineBelowMaxWidthPreservedWithEscapes() {
+            // Stripped length (2) < maxWidth (20): original string with ANSI must be kept
+            String ansiLine = "\033[32mOK\033[0m";
+            List<String> lines = AsciiRenderer.wrapText(ansiLine, 20);
+            assertEquals(1, lines.size());
+            assertEquals(ansiLine, lines.get(0),
+                    "ANSI line whose stripped length fits must be returned unchanged");
+        }
+
+        @Test
+        void longAnsiLineExceedingMaxWidthIsWrapped() {
+            // Stripped text is 46 chars, maxWidth=20 → must produce multiple lines
+            String ansiLine = "\033[1mBold content that is longer than the max width\033[0m";
+            List<String> lines = AsciiRenderer.wrapText(ansiLine, 20);
+            assertTrue(lines.size() > 1,
+                    "ANSI line whose stripped length exceeds maxWidth must be word-wrapped");
+            for (String line : lines) {
+                assertTrue(AsciiRenderer.stripAnsi(line).length() <= 20,
+                        "Every wrapped line must fit within maxWidth: '" + line + "'");
+            }
+        }
+
+        @Test
+        void longAnsiLineWrapsToStrippedText() {
+            // Content of wrapped lines should be the stripped text (no mid-escape garbage)
+            String ansiLine = "\033[31mfoo bar baz\033[0m"; // stripped = "foo bar baz" (11 chars)
+            List<String> lines = AsciiRenderer.wrapText(ansiLine, 6);
+            // "foo" (3), "bar" (3), "baz" (3) fit individually, each ≤ 6
+            assertFalse(lines.isEmpty());
+            String reconstructed = String.join(" ", lines);
+            assertTrue(reconstructed.contains("foo"), "Wrapped output should contain 'foo'");
+            assertTrue(reconstructed.contains("bar"), "Wrapped output should contain 'bar'");
+            assertTrue(reconstructed.contains("baz"), "Wrapped output should contain 'baz'");
+        }
+
+        @Test
+        void ansiLineExactlyAtMaxWidthPreservedAsIs() {
+            // Stripped length == maxWidth: must NOT wrap, must preserve ANSI
+            String ansiLine = "\033[34mABCDE\033[0m"; // stripped = "ABCDE" (5 chars), maxWidth = 5
+            List<String> lines = AsciiRenderer.wrapText(ansiLine, 5);
+            assertEquals(1, lines.size(), "ANSI line fitting exactly at maxWidth must not wrap");
+            assertEquals(ansiLine, lines.get(0));
+        }
+    }
+
+    // ========================================================================
+    // Bug 5: stripAnsi broadened to cover CSI and OSC
+    // ========================================================================
+
+    @Nested
+    class StripAnsiExtended {
+
+        @Test
+        void stripAnsiRemovesEraseLineCsi() {
+            // ESC [ 2 K = erase entire line (CSI with non-m final byte)
+            String s = "before\033[2Kafter";
+            assertEquals("beforeafter", AsciiRenderer.stripAnsi(s),
+                    "CSI erase-line (2K) must be stripped");
+        }
+
+        @Test
+        void stripAnsiRemovesCursorPositionCsi() {
+            // ESC [ 1 ; 5 H = cursor position (multi-param CSI)
+            String s = "text\033[1;5Hmore";
+            assertEquals("textmore", AsciiRenderer.stripAnsi(s),
+                    "CSI cursor-position (1;5H) must be stripped");
+        }
+
+        @Test
+        void stripAnsiRemovesOscTitleSequenceBel() {
+            // ESC ] 0 ; title BEL — window title OSC terminated by BEL
+            String s = "\033]0;My Terminal\007visible";
+            assertEquals("visible", AsciiRenderer.stripAnsi(s),
+                    "OSC title sequence (BEL-terminated) must be stripped");
+        }
+
+        @Test
+        void stripAnsiRemovesOscTitleSequenceSt() {
+            // ESC ] 0 ; title ESC \ — window title OSC terminated by ST
+            String s = "\033]0;My Title\033\\visible";
+            assertEquals("visible", AsciiRenderer.stripAnsi(s),
+                    "OSC title sequence (ST-terminated) must be stripped");
+        }
+
+        @Test
+        void stripAnsiPreservesNormalSgrSequences() {
+            // Existing SGR (bold + reset) must still be stripped
+            String s = "\033[1mHello\033[0m World";
+            assertEquals("Hello World", AsciiRenderer.stripAnsi(s),
+                    "SGR bold/reset must still be stripped by the broader regex");
+        }
+
+        @Test
+        void stripAnsiPreservesPlainText() {
+            assertEquals("no escapes here", AsciiRenderer.stripAnsi("no escapes here"));
+        }
+
+        @Test
+        void stripAnsiMixedSequences() {
+            // CSI erase + plain text + SGR bold
+            String s = "\033[2KLine\033[1m bold\033[0m end";
+            assertEquals("Line bold end", AsciiRenderer.stripAnsi(s));
+        }
+    }
+
+    // ========================================================================
+    // Bug 6: table() cell truncation when columns are shrunk to fit terminal
+    // ========================================================================
+
+    @Nested
+    class TableCellTruncation {
+
+        @Test
+        void overWideCellIsTruncatedWithEllipsis() {
+            // The AsciiRenderer constructor clamps terminalWidth to a floor of 40, so the over-wide
+            // cell must exceed what fits at 40 to force the column to shrink below the cell length.
+            TerminalRenderer term = new TerminalRenderer(false);
+            AsciiRenderer narrow = new AsciiRenderer(term, 40);
+            List<String> headers = List.of("A", "B");
+            List<List<String>> rows = List.of(
+                    List.of("short", "VeryLongCellContentThatFarExceedsFortyColumnsAndKeepsGoingWell")
+            );
+            String table = narrow.table(headers, rows);
+            assertTrue(table.contains("…"),
+                    "Over-wide cell must be truncated with ellipsis when column is shrunk: " + table);
+        }
+
+        @Test
+        void truncatedTableBordersRemainAligned() {
+            // Every header/data row must have the same number of '|' or '│' separators.
+            // Pure border lines (starting with '+', '┌', '├', '└', etc.) are excluded.
+            TerminalRenderer term = new TerminalRenderer(false);
+            AsciiRenderer narrow = new AsciiRenderer(term, 20);
+            List<String> headers = List.of("Col1", "Col2");
+            List<List<String>> rows = List.of(
+                    List.of("x", "VeryVeryLongCellContent"),
+                    List.of("y", "AnotherLongCellValue")
+            );
+            String table = narrow.table(headers, rows);
+            String[] lines = table.split("\n");
+            long refPipes = -1;
+            for (String line : lines) {
+                // Only check content rows — those starting with a vertical-border char
+                if (line.startsWith("|") || line.startsWith("│")) {
+                    long pipes = line.chars().filter(c -> c == '|' || c == '│').count();
+                    if (refPipes < 0) {
+                        refPipes = pipes;
+                    } else {
+                        assertEquals(refPipes, pipes,
+                                "All content rows must have the same pipe count: " + table);
+                    }
+                }
+            }
+            assertTrue(refPipes > 0, "Expected at least one content row in table: " + table);
+        }
+
+        @Test
+        void fitCellNotTruncated() {
+            // Cells that fit within their column width must not gain an ellipsis
+            List<String> headers = List.of("Name", "Value");
+            List<List<String>> rows = List.of(List.of("abc", "123"));
+            String table = renderer.table(headers, rows);
+            assertFalse(table.contains("…"), "Cells that fit must not be truncated: " + table);
+            assertTrue(table.contains("abc"));
+            assertTrue(table.contains("123"));
+        }
+    }
+
+    @Nested
+    class MarkdownStructuredElements {
+
+        @Test
+        void gfmTableRendersAsBoxTableWithAllCells() {
+            String md = "| Column A | Column B |\n| --- | --- |\n| Cell 1 | Cell 2 |\n| Cell 3 | Cell 4 |";
+            String result = plainRenderer.renderMarkdown(md);
+            // Header and every body cell present, drawn as a box table.
+            assertTrue(result.contains("Column A") && result.contains("Column B"), result);
+            assertTrue(result.contains("Cell 1") && result.contains("Cell 2")
+                    && result.contains("Cell 3") && result.contains("Cell 4"), result);
+            assertTrue(result.contains("+") || result.contains("┌") || result.contains("│"),
+                    "table must render as a box, not raw markdown: " + result);
+            // The GFM dash-separator row must be consumed, not rendered as a literal cell.
+            assertFalse(result.contains("| --- |"), "separator row must be consumed: " + result);
+        }
+
+        @Test
+        void textAfterTableStillRenders() {
+            String md = "| A | B |\n|---|---|\n| 1 | 2 |\n\nTrailing paragraph.";
+            String result = plainRenderer.renderMarkdown(md);
+            assertTrue(result.contains("Trailing paragraph."), result);
+        }
+
+        @Test
+        void orderedListPreservesAuthorNumbers() {
+            String md = "1. First\n2. Second\n3. Third";
+            String result = plainRenderer.renderMarkdown(md);
+            assertTrue(result.contains("1.") && result.contains("2.") && result.contains("3."),
+                    "ordered list must keep its numbers, not collapse to bullets: " + result);
+        }
+
+        @Test
+        void italicUsesItalicSgrNotDim() {
+            TerminalRenderer ansiTerm = new TerminalRenderer(true);
+            AsciiRenderer r = new AsciiRenderer(ansiTerm, 100);
+            String result = r.renderInlineFormatting("this is *emphasized* text");
+            assertTrue(result.contains("\033[3m"), "italic must emit SGR 3 (italic): " + result);
         }
     }
 }

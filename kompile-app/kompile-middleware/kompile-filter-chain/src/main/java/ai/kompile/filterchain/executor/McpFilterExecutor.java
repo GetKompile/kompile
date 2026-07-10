@@ -61,17 +61,13 @@ public class McpFilterExecutor implements FilterExecutor {
                 config.getId(), toolName, mcpServerId);
 
         try {
-            // Build tool arguments
+            // Build arguments now so configuration/context errors are reported before the missing executor.
             Map<String, Object> toolArgs = buildToolArgs(config, context, phase);
+            log.debug("MCP filter '{}' prepared {} tool arguments", config.getId(), toolArgs.size());
 
-            // TODO: Integrate with MCP client when available
-
-            // For now, return a placeholder that indicates MCP is not yet fully integrated
-            log.warn("McpFilterExecutor is not yet implemented - filter '{}' will pass through without MCP execution", config.getId());
-            context.addTrace(FilterTraceEntry.warning(config.getId(),
-                    "MCP filter execution not yet fully implemented"));
-
-            return FilterResult.continueWith(context);
+            String message = "MCP filter execution is configured but no MCP client executor is wired";
+            log.error("{}: filter='{}', server='{}', tool='{}'", message, config.getId(), mcpServerId, toolName);
+            return FilterResult.terminateFatalError(message);
 
         } catch (Exception e) {
             log.error("MCP filter '{}' failed: {}", config.getId(), e.getMessage(), e);

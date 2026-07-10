@@ -25,7 +25,6 @@ import { BaseService } from './base.service';
  */
 export interface GraphExtractionConfig {
   // Extraction settings
-  enabled?: boolean;
   batchSize?: number;
   schemaEnforcement?: string;
   entityTypes?: string[];
@@ -162,14 +161,6 @@ export class GraphExtractionService extends BaseService {
    */
   resetConfig(): Observable<GraphExtractionConfig> {
     return this.http.post<GraphExtractionConfig>(`${this.backendUrl}${this.apiPath}/config/reset`, {})
-      .pipe(catchError(this.handleError));
-  }
-
-  /**
-   * Toggle entity extraction enabled/disabled.
-   */
-  toggleEnabled(): Observable<GraphExtractionConfig> {
-    return this.http.post<GraphExtractionConfig>(`${this.backendUrl}${this.apiPath}/config/toggle`, {})
       .pipe(catchError(this.handleError));
   }
 

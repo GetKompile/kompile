@@ -15,9 +15,10 @@ import ai.kompile.core.graphrag.model.Relationship;
 import ai.kompile.core.graphrag.query.GraphRagResult;
 import ai.kompile.core.graphrag.query.SearchType;
 import ai.kompile.graph.algorithms.service.GraphAlgorithmService;
+import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import ai.kompile.knowledgegraph.domain.*;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
+import ai.kompile.knowledgegraph.unified.UnifiedGraphBridge;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -35,14 +36,14 @@ class GraphTraversalToolTest {
 
     @Mock private KnowledgeGraphService graphService;
     @Mock private GraphAlgorithmService algorithmService;
-    @Mock private GraphNodeRepository nodeRepository;
     @Mock private GraphRagService graphRagService;
+    @Mock private UnifiedGraphBridge unifiedGraphBridge;
 
     private GraphTraversalTool tool;
 
     @BeforeEach
     void setUp() {
-        tool = new GraphTraversalTool(graphService, algorithmService, graphRagService);
+        tool = new GraphTraversalTool(graphService, algorithmService, graphRagService, unifiedGraphBridge);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -119,6 +120,18 @@ class GraphTraversalToolTest {
         assertEquals(1, result.get("nodeCount"));
     }
 
+    @Test
+    void egoNetwork_scopedFactSheetUsesUnifiedGraph() {
+        when(unifiedGraphBridge.export(7L)).thenReturn(unifiedTraversalGraph());
+
+        var result = tool.egoNetwork(new GraphTraversalTool.EgoNetworkInput("n1", 1, 10, 7L));
+
+        assertEquals("unified_graph", result.get("source"));
+        assertEquals(2, result.get("nodeCount"));
+        assertEquals(1, result.get("edgeCount"));
+        verify(graphService, never()).getConnectedNodes(anyString(), anyInt());
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // Node Edges
     // ═══════════════════════════════════════════════════════════════════════════
@@ -174,6 +187,23 @@ class GraphTraversalToolTest {
         assertEquals(1, result.get("edgeCount"));
     }
 
+    @Test
+    void nodeEdges_scopedFactSheetUsesUnifiedGraph() {
+        when(unifiedGraphBridge.export(7L)).thenReturn(unifiedTraversalGraph());
+
+        var result = tool.nodeEdges(
+                new GraphTraversalTool.NodeEdgesInput("n1", "out", "HIERARCHICAL", null, 7L));
+
+        assertEquals("unified_graph", result.get("source"));
+        assertEquals("out", result.get("direction"));
+        assertEquals(1, result.get("edgeCount"));
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> edges = (List<Map<String, Object>>) result.get("edges");
+        assertEquals("n2", edges.get(0).get("connectedNodeId"));
+        assertEquals("Unified Neighbor", edges.get(0).get("connectedTitle"));
+        verify(graphService, never()).getEdgesForNode(anyString());
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // Neighborhood
     // ═══════════════════════════════════════════════════════════════════════════
@@ -217,6 +247,19 @@ class GraphTraversalToolTest {
         assertEquals("ENTITY", result.get("filteredType"));
     }
 
+    @Test
+    void neighborhood_scopedFactSheetUsesUnifiedGraph() {
+        when(unifiedGraphBridge.export(7L)).thenReturn(unifiedTraversalGraph());
+
+        var result = tool.neighborhood(
+                new GraphTraversalTool.NeighborhoodInput("n1", 2, "ENTITY", null, 7L));
+
+        assertEquals("unified_graph", result.get("source"));
+        assertEquals(1, result.get("neighborCount"));
+        assertEquals("ENTITY", result.get("filteredType"));
+        verify(graphService, never()).getConnectedNodes(anyString(), anyInt());
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // Visualization Data
     // ═══════════════════════════════════════════════════════════════════════════
@@ -242,6 +285,19 @@ class GraphTraversalToolTest {
                 new GraphTraversalTool.GraphVisualizationInput(null, 10, 500));
 
         verify(graphService).getVisualizationData(isNull(), eq(5), eq(200));
+    }
+
+    @Test
+    void visualizationData_scopedFactSheetUsesUnifiedGraph() {
+        when(unifiedGraphBridge.export(7L)).thenReturn(unifiedTraversalGraph());
+
+        var result = tool.getVisualizationData(
+                new GraphTraversalTool.GraphVisualizationInput("n1", 2, 10, 7L));
+
+        assertEquals("unified_graph", result.get("source"));
+        assertEquals(3, result.get("nodeCount"));
+        assertEquals(2, result.get("edgeCount"));
+        verify(graphService, never()).getVisualizationData(any(), anyInt(), anyInt());
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -399,5 +455,30 @@ class GraphTraversalToolTest {
         tool.shortestPath(new GraphTraversalTool.ShortestPathInput("a", "b", 20));
 
         verify(graphService).findShortestPath("a", "b", 10);
+    }
+
+    @Test
+    void shortestPath_scopedFactSheetUsesUnifiedGraph() {
+        when(unifiedGraphBridge.export(7L)).thenReturn(unifiedTraversalGraph());
+
+        var result = tool.shortestPath(new GraphTraversalTool.ShortestPathInput("n1", "n3", 5, 7L));
+
+        assertEquals("unified_graph", result.get("source"));
+        assertEquals(true, result.get("found"));
+        assertEquals(2, result.get("pathLength"));
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> path = (List<Map<String, Object>>) result.get("path");
+        assertEquals("Unified Root", path.get(0).get("title"));
+        assertEquals("Unified Document", path.get(2).get("title"));
+        verify(graphService, never()).findShortestPath(anyString(), anyString(), anyInt());
+    }
+
+    private static UnifiedGraph unifiedTraversalGraph() {
+        return new UnifiedGraph()
+                .addEntity("n1", "ENTITY", "Unified Root")
+                .addEntity("n2", "ENTITY", "Unified Neighbor")
+                .addEntity("n3", "DOCUMENT", "Unified Document")
+                .addRelation("r1", "n1", "n2", "HIERARCHICAL", 1.0)
+                .addRelation("r2", "n2", "n3", "CITATION", 0.5);
     }
 }

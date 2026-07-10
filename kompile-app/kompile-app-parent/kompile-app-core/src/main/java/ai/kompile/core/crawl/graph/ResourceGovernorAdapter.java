@@ -91,4 +91,20 @@ public interface ResourceGovernorAdapter {
     default String memoryPressureReason() {
         return null;
     }
+
+    /**
+     * Host RAM (in MB) currently usable for concurrent heavy in-memory ops — i.e. the live
+     * {@code MemAvailable} minus the OOM-floor reserve ({@code governorRamFloorMb}). This is the
+     * budget that {@link HeavyMemoryCoordinator}'s admission control spreads across simultaneous
+     * heavy ops (KGE training, batch embedding) instead of forcing them to run one at a time.
+     *
+     * <p>Returns {@code -1} when the figure is unknown (governor disabled, non-Linux where
+     * {@code MemAvailable} is not readable, or no telemetry) so callers can degrade safely to
+     * serial execution rather than over-admitting.</p>
+     *
+     * @return usable heavy-op headroom in MB, or {@code -1} when unknown
+     */
+    default long availableMemoryMbForHeavyOps() {
+        return -1; // safe default when governor is absent / CPU-only
+    }
 }

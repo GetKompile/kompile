@@ -49,6 +49,8 @@ import ai.kompile.cli.main.run.RunCommand;
 import ai.kompile.cli.main.sdk.SdkMain;
 import ai.kompile.cli.main.serve.DaemonCommand;
 import ai.kompile.cli.main.serve.ServeCommand;
+import ai.kompile.cli.main.status.StatusCommand;
+import ai.kompile.cli.main.telemetry.TelemetryCommand;
 import ai.kompile.cli.main.uninstall.UnInstallMain;
 import ai.kompile.cli.main.cloud.CloudCommand;
 import ai.kompile.cli.main.web.WebCommand;
@@ -105,7 +107,10 @@ import java.util.concurrent.Callable;
                 EditCoordinatorCommand.class,
                 WebCommand.class,
                 RunCommand.class,
-                CloudCommand.class
+                CloudCommand.class,
+                StatusCommand.class,
+                TelemetryCommand.class,
+                DoctorCommand.class
         },
         mixinStandardHelpOptions = true,
         versionProvider = VersionProvider.class,
@@ -146,14 +151,6 @@ public class MainCommand implements Callable<Integer> {
             }
         }
 
-        // Add delegation subcommands for federated CLIs (kompile-model, kompile-agent, kompile-lite)
-        commandLine.addSubcommand("model", new DelegatingCommand("kompile-model",
-                "Model lifecycle management (list, download, convert, export, import)."));
-        commandLine.addSubcommand("agent", new DelegatingCommand("kompile-agent",
-                "Agent and workflow management (workflow, task, channel, session, chat)."));
-        commandLine.addSubcommand("lite", new DelegatingCommand("kompile-lite",
-                "Kompile Lite self-contained chat + RAG + Graph RAG application."));
-
         int exitCode;
         try {
             exitCode = commandLine.execute(args);
@@ -172,6 +169,24 @@ public class MainCommand implements Callable<Integer> {
         // System.exit() still runs the registered shutdown hooks (which persist
         // session/coordination state) before reaping the process.
         System.exit(exitCode);
+    }
+
+    /**
+     * Built-in command registrar loaded through the same ServiceLoader SPI used by
+     * external CLI plugins.
+     */
+    public static class BuiltInCommandRegistrar implements CliCommandRegistrar {
+        @Override
+        public void registerCommands(CommandLine mainAppCommandLine) {
+            mainAppCommandLine.addSubcommand("model", new DelegatingCommand("kompile-model",
+                    "Model lifecycle management (list, download, convert, export, import)."));
+            mainAppCommandLine.addSubcommand("agent", new DelegatingCommand("kompile-agent",
+                    "Agent and workflow management (workflow, task, channel, session, chat)."));
+            mainAppCommandLine.addSubcommand("component", new DelegatingCommand("kompile-component",
+                    "Component inventory, status, and configuration queries."));
+            mainAppCommandLine.addSubcommand("lite", new DelegatingCommand("kompile-lite",
+                    "Kompile Lite self-contained chat + RAG + Graph RAG application."));
+        }
     }
 
     /**

@@ -21,6 +21,7 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -36,7 +37,10 @@ public class ModelCatalog {
     private List<CatalogModel> encoders;
     private List<CatalogModel> crossEncoders;
     @Builder.Default
-    private List<CatalogModel> vlm = new java.util.ArrayList<>();
+    private List<CatalogModel> vlm = new ArrayList<>();
+    /** LLM models (type llm_ggml); auto-loaded by StagingServingBridge at serve time. */
+    @Builder.Default
+    private List<CatalogModel> llm = new ArrayList<>();
 
     @Data
     @Builder

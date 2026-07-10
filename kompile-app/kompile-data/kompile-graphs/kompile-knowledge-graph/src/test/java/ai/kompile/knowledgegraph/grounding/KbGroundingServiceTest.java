@@ -21,6 +21,7 @@ import ai.kompile.graph.reasoning.fol.grounding.ConjunctiveQueryEngine;
 import ai.kompile.graph.reasoning.fol.grounding.DerivationTree;
 import ai.kompile.graph.reasoning.fol.grounding.QueryBinding;
 import ai.kompile.graph.reasoning.fol.grounding.VerifyResult;
+import ai.kompile.graph.reasoning.psl.PslProgram;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -28,6 +29,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -239,5 +241,45 @@ class KbGroundingServiceTest {
 
         assertTrue(result.isConflict(),
                 "Assert with stale expectedVersion should return CONFLICT");
+    }
+
+    @Test
+    @DisplayName("verifyEnriched: direct observation → exact counterfactual fragility")
+    void verifyEnriched_directObservation_counterfactualFragility() {
+        service.assertFact(FS_ID, Fact.observed("employs(Acme, Alice)", "hr-doc"));
+
+        KbGroundingService.EnrichedVerifyResult enriched =
+                service.verifyEnriched(FS_ID, "employs(Acme, Alice)", 0.0, 0.5);
+
+        assertEquals(VerifyResult.Status.SUPPORTED, enriched.result().status());
+        // The observation is the only support: retracting it flips the verdict.
+        assertEquals(java.util.List.of("employs(Acme, Alice)"), enriched.fragilityWouldFlipIf());
+        assertEquals(1, enriched.fragilityMinimalSupportSize());
+        assertEquals(0.0, enriched.fragilityRobustness(), 1.0e-9);
+        assertFalse(enriched.openWorld(), "SUPPORTED verdicts are not open-world");
+        assertTrue(enriched.evidenceCount() >= 1);
+        assertTrue(enriched.sourceProvenance().contains("hr-doc"),
+                "observed-fact source id should surface as provenance");
+    }
+
+    @Test
+    @DisplayName("verifyEnriched: UNKNOWN + registered grounding rules → deep why-not report")
+    void verifyEnriched_unknownWithRegisteredRules_runsDeepWhyNot() {
+        long sheet = FS_ID + 1000;
+        service.assertFact(sheet, Fact.observed("parent(alice, bob)", "family-doc"));
+        PslProgram program = new PslProgram()
+                .addRule("2.0: Parent(A, B) -> Ancestor(A, B) ^2");
+        service.markEpoch(sheet, "run-whynot-1",
+                FactSheetKbState.emptyJustificationIndex(), program.rules());
+
+        KbGroundingService.EnrichedVerifyResult enriched =
+                service.verifyEnriched(sheet, "ancestor(alice, bob)", 0.0, 0.5);
+
+        assertEquals(VerifyResult.Status.UNKNOWN, enriched.result().status());
+        assertTrue(enriched.openWorld(), "UNKNOWN verdicts carry an open-world opinion");
+        assertNotNull(enriched.opinion());
+        assertNotNull(enriched.deepWhyNotReport(),
+                "registered grounding rules should enable deep why-not completion search");
+        assertEquals("ancestor(alice, bob)", enriched.deepWhyNotReport().claimAtom());
     }
 }

@@ -181,7 +181,7 @@ public class ArchiveModelEntry {
     public static ArchiveModelEntry encoder(String modelId, String version, int embeddingDim) {
         return ArchiveModelEntry.builder()
                 .modelId(modelId)
-                .type(ModelType.ENCODER)
+                .type(ModelType.DENSE_ENCODER)
                 .version(version)
                 .path("models/encoders/" + modelId)
                 .metadata(ModelMetadata.builder()

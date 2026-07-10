@@ -16,6 +16,8 @@
 
 package ai.kompile.cli.main.chat.render;
 
+import ai.kompile.utils.AnsiConstants;
+
 import java.util.*;
 import java.util.function.IntSupplier;
 import java.util.regex.Matcher;
@@ -75,8 +77,11 @@ public class AsciiRenderer {
     private static final Pattern STRIKETHROUGH_PATTERN = Pattern.compile("~~(.+?)~~");
     private static final Pattern LINK_PATTERN = Pattern.compile("\\[([^]]+)]\\(([^)]+)\\)");
     private static final Pattern UNORDERED_LIST_PATTERN = Pattern.compile("^(\\s*)[-*+]\\s+(.+)$");
-    private static final Pattern ORDERED_LIST_PATTERN = Pattern.compile("^(\\s*)\\d+\\.\\s+(.+)$");
+    private static final Pattern ORDERED_LIST_PATTERN = Pattern.compile("^(\\s*)(\\d+)\\.\\s+(.+)$");
     private static final Pattern BLOCKQUOTE_PATTERN = Pattern.compile("^>\\s?(.*)$");
+    // GFM table separator row: | --- | :---: | ---: |  (dashes, optional alignment colons)
+    private static final Pattern TABLE_SEP_PATTERN =
+            Pattern.compile("^\\s*\\|?\\s*:?-{1,}:?\\s*(\\|\\s*:?-{1,}:?\\s*)*\\|?\\s*$");
     private static final Pattern HR_PATTERN = Pattern.compile("^([-*_])\\1{2,}\\s*$");
 
     // Tool block and thinking patterns (agent-specific markers)
@@ -262,7 +267,8 @@ public class AsciiRenderer {
         // Header row
         sb.append(border.vertical);
         for (int i = 0; i < cols; i++) {
-            sb.append(" ").append(term.bold(padRight(headers.get(i), widths[i]))).append(" ");
+            String hdr = truncateCell(headers.get(i), widths[i]);
+            sb.append(" ").append(term.bold(padRight(hdr, widths[i]))).append(" ");
             sb.append(border.vertical);
         }
         sb.append("\n");
@@ -280,6 +286,7 @@ public class AsciiRenderer {
             sb.append(border.vertical);
             for (int i = 0; i < cols; i++) {
                 String cell = i < row.size() ? row.get(i) : "";
+                cell = truncateCell(cell, widths[i]);
                 sb.append(" ").append(padRight(cell, widths[i])).append(" ");
                 sb.append(border.vertical);
             }
@@ -406,13 +413,33 @@ public class AsciiRenderer {
                 continue;
             }
 
+            // GFM table: a header row of pipe-separated cells immediately followed by a
+            // dash separator row. Recognised as a unit and rendered via the box table.
+            if (line.indexOf('|') >= 0 && i + 1 < lines.length
+                    && TABLE_SEP_PATTERN.matcher(lines[i + 1]).matches()) {
+                List<String> headers = parseTableCells(line);
+                if (!headers.isEmpty()) {
+                    List<List<String>> bodyRows = new ArrayList<>();
+                    int j = i + 2;
+                    while (j < lines.length && lines[j].indexOf('|') >= 0
+                            && !lines[j].isBlank()
+                            && !TABLE_SEP_PATTERN.matcher(lines[j]).matches()) {
+                        bodyRows.add(parseTableCells(lines[j]));
+                        j++;
+                    }
+                    sb.append(table(headers, bodyRows)).append("\n");
+                    i = j - 1; // resume after the consumed table block
+                    continue;
+                }
+            }
+
             // Unordered list
             Matcher ulMatcher = UNORDERED_LIST_PATTERN.matcher(line);
             if (ulMatcher.matches()) {
                 String indent = ulMatcher.group(1);
                 String text = ulMatcher.group(2);
                 int depth = indent.length() / 2;
-                sb.append(renderListItem(text, depth, false)).append("\n");
+                sb.append(renderListItem(text, depth)).append("\n");
                 continue;
             }
 
@@ -420,9 +447,10 @@ public class AsciiRenderer {
             Matcher olMatcher = ORDERED_LIST_PATTERN.matcher(line);
             if (olMatcher.matches()) {
                 String indent = olMatcher.group(1);
-                String text = olMatcher.group(2);
+                String number = olMatcher.group(2);
+                String text = olMatcher.group(3);
                 int depth = indent.length() / 2;
-                sb.append(renderListItem(text, depth, true)).append("\n");
+                sb.append(renderOrderedListItem(text, number, depth)).append("\n");
                 continue;
             }
 
@@ -495,17 +523,31 @@ public class AsciiRenderer {
         return bar + " " + term.dim(renderInlineFormatting(text));
     }
 
-    private String renderListItem(String text, int depth, boolean ordered) {
+    private String renderListItem(String text, int depth) {
         String indent = "  ".repeat(depth);
-        String bullet;
-        if (ordered) {
-            bullet = term.dim("  " + indent) + term.cyan("•") + " ";
-        } else {
-            String[] bullets = {"●", "○", "▪", "▫"};
-            String sym = bullets[Math.min(depth, bullets.length - 1)];
-            bullet = term.dim("  " + indent) + term.cyan(sym) + " ";
-        }
+        String[] bullets = {"●", "○", "▪", "▫"};
+        String sym = bullets[Math.min(depth, bullets.length - 1)];
+        String bullet = term.dim("  " + indent) + term.cyan(sym) + " ";
         return bullet + renderInlineFormatting(text);
+    }
+
+    /** Ordered-list item that preserves the author's number instead of collapsing to a bullet. */
+    private String renderOrderedListItem(String text, String number, int depth) {
+        String indent = "  ".repeat(depth);
+        String marker = term.dim("  " + indent) + term.cyan(number + ".") + " ";
+        return marker + renderInlineFormatting(text);
+    }
+
+    /** Split a GFM table row into inline-formatted cells, dropping the outer border pipes. */
+    private List<String> parseTableCells(String line) {
+        String t = line.strip();
+        if (t.startsWith("|")) t = t.substring(1);
+        if (t.endsWith("|")) t = t.substring(0, t.length() - 1);
+        List<String> cells = new ArrayList<>();
+        for (String cell : t.split("\\|", -1)) {
+            cells.add(renderInlineFormatting(cell.strip()));
+        }
+        return cells;
     }
 
     /**
@@ -515,7 +557,7 @@ public class AsciiRenderer {
     public String renderInlineFormatting(String text) {
         // Order matters - process bold before italic to avoid conflict
         text = replacePatterned(text, BOLD_PATTERN, m -> term.bold(m.group(1)));
-        text = replacePatterned(text, ITALIC_PATTERN, m -> term.dim(m.group(1)));  // italic → dim
+        text = replacePatterned(text, ITALIC_PATTERN, m -> term.italic(m.group(1)));
         text = replacePatterned(text, INLINE_CODE_PATTERN, m ->
                 term.yellow("`" + m.group(1) + "`"));
         text = replacePatterned(text, STRIKETHROUGH_PATTERN, m -> {
@@ -1125,10 +1167,11 @@ public class AsciiRenderer {
 
     /**
      * Strip ANSI escape sequences for measuring visible string length.
+     * Handles all CSI sequences (ESC [ params final-byte) — including SGR, cursor
+     * moves, erase-line, etc. — and OSC sequences (ESC ] ... BEL-or-ST).
      */
     public static String stripAnsi(String text) {
-        if (text == null) return "";
-        return text.replaceAll("\033\\[[0-9;]*m", "");
+        return AnsiConstants.stripAnsi(text);
     }
 
     /**
@@ -1138,6 +1181,20 @@ public class AsciiRenderer {
         int visLen = stripAnsi(text).length();
         if (visLen >= width) return text;
         return text + repeat(' ', width - visLen);
+    }
+
+    /**
+     * Truncate a cell's visible text to {@code width} characters, appending {@code …} when cut.
+     * ANSI-aware: visible length is measured via stripAnsi; when truncation is needed the ANSI
+     * sequences are stripped first (simple and safe — avoids cutting mid-escape-sequence).
+     */
+    private static String truncateCell(String cell, int width) {
+        if (width <= 0) return "";
+        int visLen = stripAnsi(cell).length();
+        if (visLen <= width) return cell;
+        if (width == 1) return "…";
+        // Strip ANSI before slicing so we never cut mid-sequence
+        return stripAnsi(cell).substring(0, width - 1) + "…";
     }
 
     /**
@@ -1156,20 +1213,18 @@ public class AsciiRenderer {
                 continue;
             }
 
-            // Don't wrap lines that contain ANSI (complex to measure)
-            if (paragraph.contains("\033[")) {
-                result.add(paragraph);
+            // For ANSI lines measure visible width via stripAnsi; strip before wrapping when too wide
+            String effective = (paragraph.contains("\033[") || paragraph.contains("\033]"))
+                    ? stripAnsi(paragraph) : paragraph;
+
+            if (effective.length() <= maxWidth) {
+                result.add(paragraph); // fits: preserve original (retains ANSI coloring)
                 continue;
             }
 
-            if (paragraph.length() <= maxWidth) {
-                result.add(paragraph);
-                continue;
-            }
-
-            // Word wrap
+            // Word wrap the effective (possibly ANSI-stripped) text
             StringBuilder line = new StringBuilder();
-            for (String word : paragraph.split("\\s+")) {
+            for (String word : effective.split("\\s+")) {
                 if (line.length() == 0) {
                     line.append(word);
                 } else if (line.length() + 1 + word.length() <= maxWidth) {

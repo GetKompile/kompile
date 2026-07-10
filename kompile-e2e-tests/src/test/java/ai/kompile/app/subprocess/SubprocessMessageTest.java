@@ -3,6 +3,7 @@ package ai.kompile.app.subprocess;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.*;
 
+import java.io.IOException;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -85,7 +86,7 @@ class SubprocessMessageTest {
         }
 
         @Test void nestedCause() {
-            var cause = new java.io.IOException("Disk full");
+            var cause = new IOException("Disk full");
             var wrapper = new RuntimeException("Write failed", cause);
             var msg = SubprocessMessage.failed("t1", "INDEXING", wrapper);
             assertTrue(msg.stackTrace().contains("Disk full") || msg.errorMessage().contains("Write failed"));

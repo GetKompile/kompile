@@ -21,6 +21,11 @@
             <version>${project.version}</version>
         </dependency>
 
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-utils</artifactId>
+        </dependency>
+
         <!-- Kompile CLI Common (KompileHome, SubprocessLogWriter) -->
         <dependency>
             <groupId>ai.kompile</groupId>

@@ -37,20 +37,30 @@ import java.util.TreeMap;
  * <p>Two selection modes:</p>
  * <ul>
  *   <li><b>Legacy / default</b> — {@code enabledSteps} and {@code archivedSteps} both empty: every step
- *       RUNs, with the coarse {@code graphExtraction.enabled} / {@code vectorIndex.enabled} toggles and
- *       the PREPROCESSING opt-in folded in (so old requests behave exactly as before).</li>
- *   <li><b>Explicit RUN</b> — {@code enabledSteps} non-empty: only those steps (plus their transitive
- *       hard dependencies and all foundational steps) RUN; everything else is SKIP. Dependency-safe.</li>
+ *       RUNs, with vector indexing and preprocessing remaining optional. Graph construction always runs.</li>
+ *   <li><b>Explicit RUN</b> — {@code enabledSteps} non-empty: those steps, their transitive hard
+ *       dependencies, all foundational steps, and the mandatory graph spine RUN; everything else is SKIP.
+ *       Dependency-safe.</li>
+ *   <li><b>Strict explicit RUN</b> — {@code enabledSteps} non-empty AND {@code strictSteps=true}: same
+ *       as explicit RUN but the mandatory graph spine is NOT force-added, so a caller can run e.g. only
+ *       VECTOR_INDEXING or only GRAPH_EXTRACTION. Dependency closure and validation still apply.</li>
  *   <li><b>Archive</b> — {@code archivedSteps} non-empty while {@code enabledSteps} is empty: the
- *       default "every step RUNs" still holds, MINUS the archived steps (and their dependents).
- *       Archiving one step NEVER flips the plan to whitelist mode — ENRICHMENT and the other graph
- *       steps keep running. (Archiving + enabling together: explicit RUN of the enabled set, then the
- *       archived steps are removed from it.)</li>
+ *       default "every step RUNs" still holds, MINUS archivable non-mandatory steps. Mandatory graph
+ *       steps cannot be archived out. (Archiving + enabling together: explicit RUN of the enabled set,
+ *       then the archived non-mandatory steps are removed from it.)</li>
  * </ul>
  */
 public final class CrawlStepPlan {
 
     public enum Action { RUN, SKIP, ARCHIVE }
+
+    private static final Set<String> MANDATORY_GRAPH_STEPS = Set.of(
+            "GRAPH_PREP",
+            "GRAPH_EXTRACTION",
+            "SURFACING",
+            "ENTITY_RESOLUTION",
+            "EDGE_COMPUTATION"
+    );
 
     private final Map<String, Action> actions;
 
@@ -102,8 +112,16 @@ public final class CrawlStepPlan {
         // ENRICHMENT and the rest of the graph pipeline — which is the opposite of a modular opt-out.
         Set<String> selected = new LinkedHashSet<>();
         addKnown(selected, enabled);
+        boolean explicitSelection = !selected.isEmpty();
+        // Strict mode: honor the explicit selection as-is (plus hard deps + foundational steps below)
+        // instead of force-seeding the graph spine. Only meaningful with a non-empty selection; legacy
+        // requests (strictSteps null/false) keep the spine mandatory, byte-identical to before.
+        boolean strictSelection = explicitSelection && Boolean.TRUE.equals(request.getStrictSteps());
+        if (!strictSelection) {
+            selected.addAll(MANDATORY_GRAPH_STEPS);
+        }
 
-        if (!selected.isEmpty()) {
+        if (explicitSelection) {
             // Explicit selection: keep = selected + their transitive hard deps + all foundational steps.
             Set<String> keep = transitiveClosure(selected);
             for (CrawlPipelineStepRegistry.StepDescriptor d : CrawlPipelineStepRegistry.all()) {
@@ -114,10 +132,7 @@ public final class CrawlStepPlan {
                 }
             }
         } else {
-            // Legacy mode: coarse config toggles + PREPROCESSING opt-in.
-            if (request.getGraphExtraction() == null || !request.getGraphExtraction().isEnabled()) {
-                plan.put("GRAPH_EXTRACTION", Action.SKIP);
-            }
+            // Legacy mode: vector config toggle + PREPROCESSING opt-in. Graph construction is mandatory.
             if (request.getVectorIndex() == null || !request.getVectorIndex().isEnabled()) {
                 plan.put("VECTOR_INDEXING", Action.SKIP);
             }
@@ -131,15 +146,14 @@ public final class CrawlStepPlan {
         if (archived != null) {
             for (String id : archived) {
                 CrawlPipelineStepRegistry.StepDescriptor d = CrawlPipelineStepRegistry.get(id);
-                if (d != null && d.archivable() && !d.foundational()) {
+                if (d != null && d.archivable() && !d.foundational() && !MANDATORY_GRAPH_STEPS.contains(id)) {
                     plan.put(id, Action.ARCHIVE);
                 }
             }
         }
 
         // A step can only RUN now if all its hard dependencies RUN. Propagate SKIP/ARCHIVE downstream so
-        // the plan is self-consistent (e.g. no graph config => GRAPH_EXTRACTION skipped => ENTITY_RESOLUTION
-        // / EDGE_COMPUTATION skipped too; archive CHUNKING-consumers leaves their own dependents skipped).
+        // the plan is self-consistent (e.g. archive CHUNKING-consumers leaves their own dependents skipped).
         cascadeNonRun(plan);
         return new CrawlStepPlan(plan);
     }

@@ -67,6 +67,24 @@ public class CellNode {
      */
     private String displayValue;
 
+    /** Canonical scalar value captured before display formatting. */
+    private Object rawValue;
+
+    /** Evaluated result type for a formula cell, e.g. NUMERIC, STRING, BOOLEAN, or ERROR. */
+    private String evaluatedCellType;
+
+    /** Unformatted evaluated numeric result for a formula cell. */
+    private Double evaluatedNumericValue;
+
+    /** Excel number-format pattern, used to infer currency, percent, date, and scale semantics. */
+    private String numberFormat;
+
+    /** Workbook-local Excel data-format index. */
+    private Integer dataFormatIndex;
+
+    /** Formula evaluation error text/code when evaluation failed. */
+    private String formulaError;
+
     /**
      * Whether this cell is a named range target.
      */
@@ -96,4 +114,27 @@ public class CellNode {
      * Hyperlink label/display text if different from cell value.
      */
     private String hyperlinkLabel;
+
+    /**
+     * Backward-compatible constructor matching the original CellNode contract.
+     */
+    public CellNode(String cellReference, String sheetName, String column, int row,
+                    String cellType, String formula, String displayValue,
+                    boolean namedRange, String namedRangeName,
+                    String comment, String commentAuthor,
+                    String hyperlink, String hyperlinkLabel) {
+        this.cellReference = cellReference;
+        this.sheetName = sheetName;
+        this.column = column;
+        this.row = row;
+        this.cellType = cellType;
+        this.formula = formula;
+        this.displayValue = displayValue;
+        this.namedRange = namedRange;
+        this.namedRangeName = namedRangeName;
+        this.comment = comment;
+        this.commentAuthor = commentAuthor;
+        this.hyperlink = hyperlink;
+        this.hyperlinkLabel = hyperlinkLabel;
+    }
 }

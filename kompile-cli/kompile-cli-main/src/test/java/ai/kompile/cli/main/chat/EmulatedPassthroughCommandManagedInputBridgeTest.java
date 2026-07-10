@@ -2,6 +2,8 @@ package ai.kompile.cli.main.chat;
 
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
+import ai.kompile.cli.main.chat.terminal.TerminalQueryStripResult;
+import ai.kompile.cli.main.chat.terminal.TerminalQueryStripper;
 import org.jline.keymap.KeyMap;
 import org.jline.reader.Binding;
 import org.jline.reader.LineReader;
@@ -21,7 +23,6 @@ import java.io.IOException;
 import java.io.PipedInputStream;
 import java.io.PipedOutputStream;
 import java.io.PrintStream;
-import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
@@ -38,6 +39,8 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
     private LineDisciplineTerminal terminal;
     private ByteArrayOutputStream terminalOutput;
     private PipedOutputStream keyboardPipe;
+    @org.junit.jupiter.api.io.TempDir
+    java.nio.file.Path tempDir;
 
     @BeforeEach
     void setUp() throws Exception {
@@ -104,7 +107,7 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
 
     @Test
     void terminalStripperDropsMouseModesAndReportsBeforeDisplay() throws Exception {
-        Object stripper = newTerminalQueryStripper();
+        TerminalQueryStripper stripper = newTerminalQueryStripper();
         StripResult result = stripTerminalChunk(stripper,
                 "a\033[?1002;1006h\033[31mred\033[<35;18;26M\033[?2004lZ");
 
@@ -199,6 +202,27 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
         assertTrue(terminalOutput.toString(StandardCharsets.UTF_8).contains("\033[?1000l"),
                 "Disable should turn real-terminal mouse tracking back off");
         assertFalse((Boolean) getField(command, "transcriptMouseEnabled"));
+    }
+
+    @Test
+    void activePromptScrollRedrawClearsAllInputRows() throws Exception {
+        EmulatedPassthroughCommand command = configuredIdleCommand();
+        setField(command, "scrollBottom", 18);
+        setField(command, "inputRows", 3);
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        PrintStream originalOut = System.out;
+        try (PrintStream capture = new PrintStream(output, true, StandardCharsets.UTF_8)) {
+            System.setOut(capture);
+            invokeBooleanArg(command, "drawFixedInputChrome", true);
+        } finally {
+            System.setOut(originalOut);
+        }
+
+        String rendered = output.toString(StandardCharsets.UTF_8);
+        assertTrue(rendered.contains("\033[22;1H\033[2K"), "First input row should be cleared");
+        assertTrue(rendered.contains("\033[23;1H\033[2K"), "Second input row should be cleared");
+        assertTrue(rendered.contains("\033[24;1H\033[2K"), "Third input row should be cleared");
     }
 
     @Test
@@ -332,6 +356,55 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
         } finally {
             System.setOut(originalOut);
         }
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void emptyFilteredDecodedSnapshotDoesNotErasePreviousLiveBlock() throws Exception {
+        EmulatedPassthroughCommand command = configuredIdleCommand();
+        TerminalRenderer plainRenderer = new TerminalRenderer(false);
+        setField(command, "renderer", plainRenderer);
+        setField(command, "ascii", new AsciiRenderer(plainRenderer, 100));
+        setField(command, "lastSentMessage", "echo only");
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        PrintStream originalOut = System.out;
+        try (PrintStream capture = new PrintStream(output, true, StandardCharsets.UTF_8)) {
+            System.setOut(capture);
+            invokeUpdateLiveDecoderScrollbackBlock(command, "KOMP_LIVE_RENDER_DONE", false);
+            invokeUpdateLiveDecoderScrollbackBlock(command, "echo only", true);
+        } finally {
+            System.setOut(originalOut);
+        }
+
+        List<String> scrollback = (List<String>) getField(command, "scrollbackLines");
+        assertTrue(String.join("\n", scrollback).contains("KOMP_LIVE_RENDER_DONE"),
+                "An echo-only final snapshot must not erase the last displayable decoded answer");
+    }
+
+    @Test
+    void decodedDisplayFiltersWrappedPromptEchoFragments() throws Exception {
+        EmulatedPassthroughCommand command = configuredIdleCommand();
+        String prompt = "Print the exact token made by joining KOMP, LIVE, RENDER, and DONE with underscores. No other text.";
+        setField(command, "lastSentMessage", prompt);
+
+        String decoded = "\033[2m┃\033[0m  Print the exact token made by joining KOMP, LIVE, RENDER, and DONE\n"
+                        + "\033[2m┃\033[0m  with underscores. No other text.\n"
+                        + "KOMP_LIVE_RENDER_DONE";
+
+        String filtered = invokeStringArgReturn(command, "filterDecodedTuiTextForDisplay", decoded);
+        String historyFiltered = invokeStringArgReturn(command, "filterDecodedTuiText", decoded);
+
+        assertFalse(filtered.contains("Print the exact token"),
+                "Wrapped user prompt fragments should be removed from decoded display output");
+        assertFalse(filtered.contains("with underscores"),
+                "Wrapped user prompt continuations should be removed from decoded display output");
+        assertTrue(filtered.contains("KOMP_LIVE_RENDER_DONE"),
+                "Filtering prompt echoes must preserve real assistant output");
+        assertFalse(historyFiltered.contains("Print the exact token"),
+                "Wrapped user prompt fragments should be removed before appending decoded history");
+        assertTrue(historyFiltered.contains("KOMP_LIVE_RENDER_DONE"),
+                "History filtering must preserve real assistant output");
     }
 
     @Test
@@ -573,8 +646,9 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
 
             String rendered = output.toString(StandardCharsets.UTF_8);
             assertTrue(rendered.contains("[" + key + "]"), "Background rows should expose stable ids");
-            assertTrue(rendered.contains("/activity logs <id>"), "Activity rows should advertise log browsing");
-            assertTrue(rendered.contains("/activity kill <id>"), "Activity rows should advertise kill handling");
+            assertTrue(rendered.contains("/activity enter <id>"), "Activity rows should advertise inspect/enter handling");
+            assertTrue(rendered.contains("logs <id>"), "Activity rows should advertise log browsing");
+            assertTrue(rendered.contains("kill <id>"), "Activity rows should advertise kill handling");
         } finally {
             System.setOut(originalOut);
         }
@@ -604,7 +678,7 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
         }
 
         String rendered = output.toString(StandardCharsets.UTF_8);
-        assertTrue(rendered.contains("Activity Logs: " + key), "Enter on a selected activity should open logs");
+        assertTrue(rendered.contains("Activity: " + key), "Enter on a selected activity should inspect it");
         assertTrue(rendered.contains("live selectable log"), "Selected activity logs should be shown");
     }
 
@@ -645,6 +719,146 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
         assertTrue(rendered.contains("Activity Logs: " + key), "Log command should print a readable log section");
         assertTrue(rendered.contains("live log line"), "Captured background logs should be shown on demand");
         assertTrue(rendered.contains("showing logs for " + key), "Lower menu should stay open after viewing logs");
+    }
+
+    @Test
+    void completedSubagentStaysEnterableWithDelegationDetails() throws Exception {
+        EmulatedPassthroughCommand command = configuredBusyCommand("draft while busy");
+        setField(command, "scrollBottom", 18);
+        setField(command, "activityRows", 4);
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        PrintStream originalOut = System.out;
+        try (PrintStream capture = new PrintStream(output, true, StandardCharsets.UTF_8)) {
+            System.setOut(capture);
+            invokeToolUseArg(command, "trackToolActivityStart", new PassthroughStreamParser.ToolUse(
+                    "task", "{\"agent\":\"claude\",\"role\":\"reviewer\",\"description\":\"review process manager\"}"));
+            invokeTwoStringBooleanArg(command, "trackToolActivityComplete", "task", "subagent finished with recommendation", false);
+            invokeNoArg(command, "drawFixedInputBox");
+            String panel = output.toString(StandardCharsets.UTF_8);
+            assertTrue(panel.contains("[agent:task-1]"), "Completed subagent should keep a stable activity id");
+            assertTrue(panel.contains("agent completed"), "Completed subagent should stay visible with terminal status");
+
+            output.reset();
+            invokeStringArg(command, "handleActivitySlash", "enter agent:task-1");
+        } finally {
+            System.setOut(originalOut);
+        }
+
+        String rendered = output.toString(StandardCharsets.UTF_8);
+        assertTrue(rendered.contains("Activity: agent:task-1"));
+        assertTrue(rendered.contains("kind: agent · status: completed"));
+        assertTrue(rendered.contains("agent=claude"));
+        assertTrue(rendered.contains("role=reviewer"));
+        assertTrue(rendered.contains("review process manager"));
+        assertTrue(rendered.contains("subagent finished with recommendation"));
+    }
+
+    @Test
+    void processStatusSlashInspectsActivityInsteadOfListing() throws Exception {
+        EmulatedPassthroughCommand command = configuredBusyCommand("draft while busy");
+        String key = (String) invokeTwoStringReturn(command, "startBackgroundActivity", "opencode response", "starting");
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        PrintStream originalOut = System.out;
+        try (PrintStream capture = new PrintStream(output, true, StandardCharsets.UTF_8)) {
+            System.setOut(capture);
+            invokeSlashCommand(command, "/process-status " + key);
+        } finally {
+            System.setOut(originalOut);
+        }
+
+        String rendered = output.toString(StandardCharsets.UTF_8);
+        assertTrue(rendered.contains("Activity: " + key), "/process-status <id> should inspect the activity");
+        assertTrue(rendered.contains("opencode response"));
+    }
+
+    @Test
+    void jobsRemoveAndClearManageCompletedActivityRecords() throws Exception {
+        EmulatedPassthroughCommand command = configuredBusyCommand("draft while busy");
+        setField(command, "activityRows", 4);
+        invokeToolUseArg(command, "trackToolActivityStart", new PassthroughStreamParser.ToolUse(
+                "task", "{\"agent\":\"claude\",\"description\":\"first retained job\"}"));
+        invokeTwoStringBooleanArg(command, "trackToolActivityComplete", "task", "first done", false);
+        invokeToolUseArg(command, "trackToolActivityStart", new PassthroughStreamParser.ToolUse(
+                "task", "{\"agent\":\"codex\",\"description\":\"second retained job\"}"));
+        invokeTwoStringBooleanArg(command, "trackToolActivityComplete", "task", "second done", false);
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        PrintStream originalOut = System.out;
+        try (PrintStream capture = new PrintStream(output, true, StandardCharsets.UTF_8)) {
+            System.setOut(capture);
+            invokeSlashCommand(command, "/jobs-remove agent:task-1");
+            invokeSlashCommand(command, "/jobs-clear");
+        } finally {
+            System.setOut(originalOut);
+        }
+
+        String rendered = output.toString(StandardCharsets.UTF_8);
+        assertTrue(rendered.contains("removed agent:task-1"));
+        assertTrue(rendered.contains("cleared 1 completed"));
+    }
+
+    @Test
+    void enforceAliasRoutesToManagedEnforcerControl() throws Exception {
+        EmulatedPassthroughCommand command = configuredBusyCommand("draft while busy");
+        TerminalRenderer plainRenderer = new TerminalRenderer(false);
+        setField(command, "renderer", plainRenderer);
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        PrintStream originalOut = System.out;
+        try (PrintStream capture = new PrintStream(output, true, StandardCharsets.UTF_8)) {
+            System.setOut(capture);
+            invokeSlashCommand(command, "/enforce status");
+        } finally {
+            System.setOut(originalOut);
+        }
+
+        String rendered = output.toString(StandardCharsets.UTF_8);
+        assertTrue(rendered.contains("No enforcer active") || rendered.contains("Enforcer"),
+                "/enforce should route to Kompile enforcer handling, not child-agent forwarding");
+        assertFalse(rendered.contains("→ opencode /enforce"));
+    }
+
+    @Test
+    void registryBackedSubagentEnterShowsOwnerHierarchyAndOutput() throws Exception {
+        EmulatedPassthroughCommand command = configuredBusyCommand("draft while busy");
+        setField(command, "scrollBottom", 18);
+        setField(command, "activityRows", 4);
+        setField(command, "workingDir", tempDir.toString());
+        java.nio.file.Path outputPath = tempDir.resolve("subagent-output.log");
+        java.nio.file.Files.writeString(outputPath, "boot\nsubagent line\n", StandardCharsets.UTF_8);
+
+        ai.kompile.cli.mcp.stdio.TaskRecord record = new ai.kompile.cli.mcp.stdio.TaskRecord();
+        record.setTaskId("task-child-1");
+        record.setParentTaskId("task-parent-1");
+        record.addChildTaskId("task-grandchild-1");
+        record.setTaskType("task");
+        record.setAgentName("codex");
+        record.setRoleName("reviewer");
+        record.setSubtaskName("inspect delegation");
+        record.setPromptSummary("look at process transparency");
+        record.setOutputPath(outputPath.toString());
+        record.markRunning(-1L);
+        new ai.kompile.cli.mcp.stdio.TaskRegistry(tempDir).create(record);
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        PrintStream originalOut = System.out;
+        try (PrintStream capture = new PrintStream(output, true, StandardCharsets.UTF_8)) {
+            System.setOut(capture);
+            invokeStringArg(command, "handleActivitySlash", "enter task-child-1");
+        } finally {
+            System.setOut(originalOut);
+        }
+
+        String rendered = output.toString(StandardCharsets.UTF_8);
+        assertTrue(rendered.contains("Activity: task-child-1"));
+        assertTrue(rendered.contains("agent: codex"));
+        assertTrue(rendered.contains("role: reviewer"));
+        assertTrue(rendered.contains("parent: task-parent-1"));
+        assertTrue(rendered.contains("children: 1"));
+        assertTrue(rendered.contains("output: " + outputPath));
+        assertTrue(rendered.contains("subagent line"));
     }
 
     @Test
@@ -701,6 +915,153 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
         assertTrue(rendered.contains("running (opencode)"), "The spinner text should stay with the active response");
         assertTrue(rendered.contains("\033[20;1H\033[2K"), "The spinner should render in the chat scroll region");
         assertTrue(rendered.contains("kompile [opencode] · idle"), "Stopping the spinner should restore fixed status to idle");
+    }
+
+    @Test
+    void recentPromptMenuAnswerBypassesBusyQueueRace() throws Exception {
+        EmulatedPassthroughCommand command = configuredBusyCommand("draft while current runs");
+        setField(command, "agentBusy", true);
+        setField(command, "agentDecoder", new ai.kompile.cli.main.chat.tui.CodexDecoder());
+        setField(command, "agentStdin", new ByteArrayOutputStream());
+        setField(command, "lastAwaitingAt", System.currentTimeMillis());
+
+        assertTrue(invokeBooleanStringArg(command, "isRecentPromptAnswer", "1"),
+                "A recent numbered dialog answer should not be queued as a busy draft");
+        assertTrue(invokeBooleanStringArg(command, "isRecentPromptAnswer", "yes"),
+                "A recent confirmation answer should not be queued as a busy draft");
+        assertFalse(invokeBooleanStringArg(command, "isRecentPromptAnswer", "next real prompt"),
+                "Normal follow-up text while busy should still go through the draft queue");
+    }
+
+    @Test
+    void escapeForwardsToActiveChildWithoutCancelingTurnOrMirror() throws Exception {
+        EmulatedPassthroughCommand command = configuredBusyCommand("draft while current runs");
+        setField(command, "agentBusy", true);
+        setField(command, "agentAwaitingInput", true);
+        setField(command, "agentDecoder", new ai.kompile.cli.main.chat.tui.OpenCodeDecoder());
+        ByteArrayOutputStream agentInput = new ByteArrayOutputStream();
+        setField(command, "agentStdin", agentInput);
+        ((AtomicBoolean) getField(command, "tuiTurnSawContent")).set(true);
+        setField(command, "autoMirrorForDialog", true);
+        setField(command, "mirrorRender", true);
+
+        LineReader reader = LineReaderBuilder.builder()
+                .terminal(terminal)
+                .build();
+        invokeLineReaderArg(command, "enableManagedSlashCompletion", reader);
+        Widget escapeWidget = widgetForSequence((LineReaderImpl) reader, "\033");
+
+        assertTrue(escapeWidget.apply());
+
+        assertArrayEquals(new byte[]{0x1B}, agentInput.toByteArray(),
+                "Escape should be forwarded to the child agent");
+        assertFalse(((AtomicBoolean) getField(command, "cancelSignal")).get(),
+                "Escape must not mark the Kompile turn as cancelled");
+        assertTrue((Boolean) getField(command, "agentAwaitingInput"),
+                "Kompile should wait for the child to redraw/close the dialog");
+        assertTrue((Boolean) getField(command, "mirrorRender"),
+                "Mirror should stay active until decoder state says the dialog is gone");
+        assertTrue((Boolean) getField(command, "autoMirrorForDialog"));
+    }
+
+    @Test
+    void ctrlCForwardsInterruptToChildWithoutKompileCancel() throws Exception {
+        EmulatedPassthroughCommand command = configuredBusyCommand("draft while current runs");
+        setField(command, "agentBusy", true);
+        ByteArrayOutputStream agentInput = new ByteArrayOutputStream();
+        setField(command, "agentStdin", agentInput);
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        PrintStream originalOut = System.out;
+        try (PrintStream capture = new PrintStream(output, true, StandardCharsets.UTF_8)) {
+            System.setOut(capture);
+            invokeNoArg(command, "handleSigint");
+        } finally {
+            System.setOut(originalOut);
+        }
+
+        assertArrayEquals(new byte[]{0x03}, agentInput.toByteArray(),
+                "Ctrl+C should be delivered to the child agent/subprocess");
+        assertFalse(((AtomicBoolean) getField(command, "cancelSignal")).get(),
+                "Ctrl+C should not force-cancel Kompile's managed process when stdin is available");
+    }
+
+    @Test
+    void ctrlBForwardsToNativeChildBackgroundingWhenSupported() throws Exception {
+        EmulatedPassthroughCommand command = configuredBusyCommand("draft while current runs");
+        setField(command, "agentBusy", true);
+        setField(command, "agentDecoder", new ai.kompile.cli.main.chat.tui.ClaudeCodeDecoder());
+        ByteArrayOutputStream agentInput = new ByteArrayOutputStream();
+        setField(command, "agentStdin", agentInput);
+        ((AtomicBoolean) getField(command, "tuiTurnSawContent")).set(true);
+
+        LineReader reader = LineReaderBuilder.builder()
+                .terminal(terminal)
+                .build();
+        invokeLineReaderArg(command, "enableManagedSlashCompletion", reader);
+        Widget ctrlB = widgetForSequence((LineReaderImpl) reader, KeyMap.ctrl('B'));
+
+        assertTrue(ctrlB.apply());
+
+        assertArrayEquals(new byte[]{0x02}, agentInput.toByteArray(),
+                "Native backgrounding agents should receive Ctrl+B directly");
+        assertFalse(((AtomicBoolean) getField(command, "backgroundSignal")).get(),
+                "Kompile must not also background a child-native background request");
+    }
+
+    @Test
+    void ctrlBUsesKompileBackgroundingWhenChildDoesNotOwnIt() throws Exception {
+        EmulatedPassthroughCommand command = configuredBusyCommand("draft while current runs");
+        setField(command, "agentBusy", true);
+        setField(command, "agentDecoder", new ai.kompile.cli.main.chat.tui.OpenCodeDecoder());
+        ByteArrayOutputStream agentInput = new ByteArrayOutputStream();
+        setField(command, "agentStdin", agentInput);
+        ((AtomicBoolean) getField(command, "tuiTurnSawContent")).set(true);
+
+        LineReader reader = LineReaderBuilder.builder()
+                .terminal(terminal)
+                .build();
+        invokeLineReaderArg(command, "enableManagedSlashCompletion", reader);
+        Widget ctrlB = widgetForSequence((LineReaderImpl) reader, KeyMap.ctrl('B'));
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        PrintStream originalOut = System.out;
+        try (PrintStream capture = new PrintStream(output, true, StandardCharsets.UTF_8)) {
+            System.setOut(capture);
+            assertTrue(ctrlB.apply());
+        } finally {
+            System.setOut(originalOut);
+        }
+
+        assertArrayEquals(new byte[0], agentInput.toByteArray(),
+                "Non-native backgrounding agents should not receive Ctrl+B");
+        assertTrue(((AtomicBoolean) getField(command, "backgroundSignal")).get(),
+                "Kompile should own Ctrl+B for managed backgrounding when the child does not");
+        assertFalse(((AtomicBoolean) getField(command, "cancelSignal")).get());
+    }
+
+    @Test
+    void idlePersistentAgentDoesNotRenderAsActiveStatusBarWork() throws Exception {
+        ai.kompile.cli.main.chat.tui.StatusBar statusBar = new ai.kompile.cli.main.chat.tui.StatusBar(
+                new BackgroundTaskManager(),
+                new ai.kompile.cli.main.chat.tools.BackgroundProcessManager("status-idle-agent"),
+                new MessageQueue("status-idle-agent-" + System.nanoTime()),
+                new TerminalRenderer(true));
+        setObjectField(statusBar, "terminalHeight", 30);
+        setObjectField(statusBar, "terminalWidth", 100);
+        setObjectField(statusBar, "enabled", false);
+        setObjectField(statusBar, "activeAgent", "claude");
+        ai.kompile.cli.main.chat.tui.StatusBar.SubagentEntry entry =
+                statusBar.registerSubagent("agent-claude", "agent", "managed subprocess");
+        entry.setStatus("idle");
+
+        Method method = ai.kompile.cli.main.chat.tui.StatusBar.class.getDeclaredMethod("buildStatusContent");
+        method.setAccessible(true);
+        String rendered = (String) method.invoke(statusBar);
+
+        assertTrue(rendered.contains("claude"), "The passive active-agent label should remain visible");
+        assertFalse(rendered.contains("managed subprocess"), "Idle persistent agents should not render as active work");
+        assertFalse(rendered.contains("idle"), "Idle persistent agents should not keep an animated idle entry visible");
     }
 
     @Test
@@ -883,6 +1244,42 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
     }
 
     @Test
+    void mirrorRepaintDoesNotBounceUnchangedActivePromptCursor() throws Exception {
+        EmulatedPassthroughCommand command = configuredIdleCommand();
+        LineReader reader = LineReaderBuilder.builder()
+                .terminal(terminal)
+                .build();
+        ((LineReaderImpl) reader).getBuffer().write("queued followup");
+        setField(command, "activeLineReader", reader);
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        PrintStream originalOut = System.out;
+        try (PrintStream capture = new PrintStream(output, true, StandardCharsets.UTF_8)) {
+            System.setOut(capture);
+            invokeLineReaderArg(command, "drawIdlePromptLine", reader);
+            output.reset();
+            terminalOutput.reset();
+
+            ai.kompile.cli.main.chat.tui.VirtualTerminal vt =
+                    new ai.kompile.cli.main.chat.tui.VirtualTerminal(30, 100);
+            vt.feed("\033[1;1HCodex is drawing under Kompile");
+            invokeMirrorVt(command, vt);
+        } finally {
+            System.setOut(originalOut);
+        }
+
+        String mirrored = terminalOutput.toString(StandardCharsets.UTF_8);
+        assertTrue(mirrored.startsWith("\0337"), "Active prompt mirror blits should save the host cursor first");
+        assertTrue(mirrored.contains("\033[?25l"), "Mirror blit should hide the cursor while painting child rows");
+        assertTrue(mirrored.endsWith("\0338\033[?25h"), "Mirror blit should restore the prompt cursor and leave it visible");
+        String promptLayer = output.toString(StandardCharsets.UTF_8);
+        assertFalse(promptLayer.contains("\033[24;"),
+                "Unchanged active prompt should not repaint or jump the cursor after every mirrored frame");
+        assertFalse(promptLayer.contains("\033[?25h"),
+                "Raw mirror save/restore should handle cursor visibility when the prompt is unchanged");
+    }
+
+    @Test
     void restoreIdlePromptCursorShowsCursorAndMovesToInputRow() throws Exception {
         EmulatedPassthroughCommand command = configuredIdleCommand();
 
@@ -960,6 +1357,12 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
         field.set(target, value);
     }
 
+    private static void setObjectField(Object target, String name, Object value) throws Exception {
+        Field field = target.getClass().getDeclaredField(name);
+        field.setAccessible(true);
+        field.set(target, value);
+    }
+
     private static Object getField(Object target, String name) throws Exception {
         Field field = EmulatedPassthroughCommand.class.getDeclaredField(name);
         field.setAccessible(true);
@@ -978,23 +1381,20 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
         return method.invoke(target);
     }
 
-    private static Object newTerminalQueryStripper() throws Exception {
-        Class<?> stripperClass = Class.forName(EmulatedPassthroughCommand.class.getName() + "$TerminalQueryStripper");
-        Constructor<?> constructor = stripperClass.getDeclaredConstructor();
-        constructor.setAccessible(true);
-        return constructor.newInstance();
+    private static void invokeBooleanArg(Object target, String name, boolean value) throws Exception {
+        Method method = EmulatedPassthroughCommand.class.getDeclaredMethod(name, boolean.class);
+        method.setAccessible(true);
+        method.invoke(target, value);
     }
 
-    private static StripResult stripTerminalChunk(Object stripper, String chunk) throws Exception {
+    private static TerminalQueryStripper newTerminalQueryStripper() {
+        return new TerminalQueryStripper();
+    }
+
+    private static StripResult stripTerminalChunk(TerminalQueryStripper stripper, String chunk) {
         byte[] bytes = chunk.getBytes(StandardCharsets.UTF_8);
-        Method strip = stripper.getClass().getDeclaredMethod("strip", byte[].class, int.class, int.class);
-        strip.setAccessible(true);
-        Object rawResult = strip.invoke(stripper, bytes, 0, bytes.length);
-        Method displayBytes = rawResult.getClass().getDeclaredMethod("displayBytes");
-        Method queries = rawResult.getClass().getDeclaredMethod("queries");
-        displayBytes.setAccessible(true);
-        queries.setAccessible(true);
-        return new StripResult((byte[]) displayBytes.invoke(rawResult), (String) queries.invoke(rawResult));
+        TerminalQueryStripResult result = stripper.strip(bytes, 0, bytes.length);
+        return new StripResult(result.displayBytes(), result.queries());
     }
 
     private record StripResult(byte[] displayBytes, String queries) {}
@@ -1003,6 +1403,12 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
         Method method = EmulatedPassthroughCommand.class.getDeclaredMethod(name, String.class);
         method.setAccessible(true);
         method.invoke(target, value);
+    }
+
+    private static String invokeStringArgReturn(Object target, String name, String value) throws Exception {
+        Method method = EmulatedPassthroughCommand.class.getDeclaredMethod(name, String.class);
+        method.setAccessible(true);
+        return (String) method.invoke(target, value);
     }
 
     private static void invokeEmitDecodedTuiText(Object target, String text, StringBuilder fullText,
@@ -1040,6 +1446,23 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
         method.invoke(target, decoder, vt);
     }
 
+    private static void invokeMirrorVt(Object target,
+                                       ai.kompile.cli.main.chat.tui.VirtualTerminal vt) throws Exception {
+        Method method = EmulatedPassthroughCommand.class.getDeclaredMethod("mirrorVtToScrollRegion",
+                ai.kompile.cli.main.chat.tui.VirtualTerminal.class);
+        method.setAccessible(true);
+        method.invoke(target, vt);
+    }
+
+    private static void invokeUpdateLiveDecoderScrollbackBlock(Object target,
+                                                               String decodedText,
+                                                               boolean finalSnapshot) throws Exception {
+        Method method = EmulatedPassthroughCommand.class.getDeclaredMethod("updateLiveDecoderScrollbackBlock",
+                String.class, boolean.class);
+        method.setAccessible(true);
+        method.invoke(target, decodedText, finalSnapshot);
+    }
+
     private static String numberedLines(int count) {
         StringBuilder sb = new StringBuilder();
         for (int i = 1; i <= count; i++) {
@@ -1058,6 +1481,14 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
     private static void assertReferenceBinding(Binding binding, String expectedName) {
         assertInstanceOf(Reference.class, binding);
         assertEquals(expectedName, ((Reference) binding).name());
+    }
+
+    private static Widget widgetForSequence(LineReaderImpl impl, String sequence) {
+        Binding binding = impl.getKeyMaps().get(LineReader.EMACS).getBound(sequence);
+        assertInstanceOf(Reference.class, binding);
+        Widget widget = impl.getWidgets().get(((Reference) binding).name());
+        assertNotNull(widget);
+        return widget;
     }
 
     private static void invokeStringIntArg(Object target, String name, String value, int cursor) throws Exception {
@@ -1108,6 +1539,15 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
         method.invoke(target, toolUse);
     }
 
+    private static String invokeSlashCommand(EmulatedPassthroughCommand target, String input) throws Exception {
+        Method method = EmulatedPassthroughCommand.class.getDeclaredMethod("handleSlashCommand",
+                String.class, LineReader.class, ChatHistory.class, ChatSessionMetrics.class);
+        method.setAccessible(true);
+        return (String) method.invoke(target, input, null,
+                new ChatHistory("managed-slash-test-" + System.nanoTime()),
+                new ChatSessionMetrics("managed-slash-test"));
+    }
+
     private static String invokeStringNoArg(Object target, String name) throws Exception {
         Method method = EmulatedPassthroughCommand.class.getDeclaredMethod(name);
         method.setAccessible(true);
@@ -1141,5 +1581,92 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
             Thread.sleep(20L);
         }
         return condition.getAsBoolean();
+    }
+
+    // ── BUG 9: status-line must show "responding" not "idle" mid-turn ────────────
+
+    @Test
+    void statusLineShowsRespondingNotIdleWhileAgentBusy() throws Exception {
+        EmulatedPassthroughCommand command = configuredIdleCommand();
+        // Simulate the flicker scenario: agentBusy=true but currentStatus was set to "idle"
+        // because decoder.isResponding(vt) happened to be false between two decoder frames.
+        setField(command, "agentBusy", true);
+        setField(command, "currentStatus", "idle");
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        PrintStream originalOut = System.out;
+        try (PrintStream capture = new PrintStream(output, true, StandardCharsets.UTF_8)) {
+            System.setOut(capture);
+            invokeNoArg(command, "renderStatusLineLocked");
+        } finally {
+            System.setOut(originalOut);
+        }
+
+        String rendered = output.toString(StandardCharsets.UTF_8);
+        assertFalse(rendered.contains("idle"),
+                "Status line must not display 'idle' while agentBusy=true (BUG 9 regression)");
+        assertTrue(rendered.contains("responding"),
+                "Status line must show 'responding' while agentBusy=true even if currentStatus was 'idle'");
+    }
+
+    @Test
+    void statusLinePreservesNonIdleStatusWhileAgentBusy() throws Exception {
+        EmulatedPassthroughCommand command = configuredIdleCommand();
+        setField(command, "agentBusy", true);
+        setField(command, "currentStatus", "thinking");
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        PrintStream originalOut = System.out;
+        try (PrintStream capture = new PrintStream(output, true, StandardCharsets.UTF_8)) {
+            System.setOut(capture);
+            invokeNoArg(command, "renderStatusLineLocked");
+        } finally {
+            System.setOut(originalOut);
+        }
+
+        String rendered = output.toString(StandardCharsets.UTF_8);
+        assertTrue(rendered.contains("thinking"),
+                "Non-idle currentStatus must pass through unchanged while agentBusy=true");
+    }
+
+    // ── BUG 3: renderableDecodedDelta fallback must not re-emit full history ─────
+
+    @Test
+    void renderableDecodedDeltaReturnEmptyStringForDivergedContentToAvoidDuplication() throws Exception {
+        EmulatedPassthroughCommand command = configuredIdleCommand();
+        // Simulate mid-turn state: some content already accumulated in tuiFullText.
+        setField(command, "tuiFullText", new StringBuilder("Part 1\nPart 2\n"));
+
+        // Normal grow case: current appends cleanly to rendered — must still work.
+        String grow = invokeRenderableDecodedDelta(command, "Part 1\n", "Part 1\nPart 2\n", true);
+        assertEquals("Part 2\n", grow, "Normal append delta must be returned correctly");
+
+        // Diverged case: current neither starts-with nor is contained by rendered.
+        // Before the fix this returned the full 'current', causing duplicate accumulation.
+        String diverged = invokeRenderableDecodedDelta(command,
+                "Part 1\nPart 2\n",
+                "INTRO\nPart 1\nPart 2\nPart 3\n",
+                true);
+        assertEquals("", diverged,
+                "Diverged content must return '' to avoid re-emitting already-accumulated history (BUG 3 regression)");
+    }
+
+    @Test
+    void renderableDecodedDeltaStillEmitsCurrentWhenPreviousIsBlank() throws Exception {
+        EmulatedPassthroughCommand command = configuredIdleCommand();
+        // First frame: nothing rendered yet; full current should be emitted.
+        String first = invokeRenderableDecodedDelta(command, "", "Hello world\n", true);
+        assertEquals("Hello world\n", first,
+                "First frame with blank previous must still return full current content");
+    }
+
+    private static String invokeRenderableDecodedDelta(Object target,
+                                                       String rendered,
+                                                       String current,
+                                                       boolean finalChunk) throws Exception {
+        Method method = EmulatedPassthroughCommand.class.getDeclaredMethod(
+                "renderableDecodedDelta", String.class, String.class, boolean.class);
+        method.setAccessible(true);
+        return (String) method.invoke(target, rendered, current, finalChunk);
     }
 }

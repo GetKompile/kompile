@@ -59,6 +59,31 @@ public interface HeavyMemoryCoordinator {
     AutoCloseable acquire(String opLabel, String jobId) throws InterruptedException;
 
     /**
+     * Acquire heavy-memory admission, declaring the op's estimated peak native footprint in MB.
+     *
+     * <p>Under budgeted admission (the default), several heavy ops may run concurrently as long as
+     * the sum of their declared footprints stays under the host's heavy-op headroom
+     * ({@code MemAvailable − OOM floor}) × a safety fraction. This replaces the legacy binary mutex,
+     * which forbade e.g. embedding ∥ KGE training even when tens of GB were free. When the host is
+     * too constrained to fit two ops (or the governor cannot report headroom), admission degrades to
+     * one op at a time — equivalent to the old single permit.</p>
+     *
+     * <p>The default implementation ignores the estimate and delegates to
+     * {@link #acquire(String, String)} so alternate implementations stay source-compatible.</p>
+     *
+     * @param opLabel           short human-readable label (e.g. {@code "kge-training"})
+     * @param jobId             crawl job id for logging/events; may be {@code null}
+     * @param estimatedNativeMb declared peak native/off-heap footprint in MB; {@code <= 0} lets the
+     *                          coordinator derive an estimate from {@code opLabel} / configuration
+     * @return a token whose {@code close()} releases the admission (never {@code null})
+     * @throws InterruptedException if interrupted while waiting for headroom
+     */
+    default AutoCloseable acquire(String opLabel, String jobId, long estimatedNativeMb)
+            throws InterruptedException {
+        return acquire(opLabel, jobId);
+    }
+
+    /**
      * Whether the serialization gate is active.
      *
      * @return {@code true} when the gate is enabled and calls to {@link #acquire} may block;

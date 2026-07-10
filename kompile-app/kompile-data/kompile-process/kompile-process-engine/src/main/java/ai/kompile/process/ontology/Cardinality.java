@@ -17,11 +17,15 @@
 package ai.kompile.process.ontology;
 
 /**
- * Cardinality of a relationship between two entity types.
+ * Cardinality of a directed relationship from a source entity type to a target entity type.
  */
 public enum Cardinality {
+    /** Each source has at most one target, and each target has at most one source. */
     ONE_TO_ONE,
+    /** Each source may have many targets; each target has at most one source. */
     ONE_TO_MANY,
+    /** Each source has at most one target; each target may have many sources. */
     MANY_TO_ONE,
+    /** Each source may have many targets, and each target may have many sources. */
     MANY_TO_MANY
 }

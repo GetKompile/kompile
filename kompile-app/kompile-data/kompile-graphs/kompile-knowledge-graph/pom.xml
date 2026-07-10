@@ -138,16 +138,17 @@
             <scope>test</scope>
         </dependency>
 
-        <!-- ND4J native backend for matrix-based graph tests (MatrixGraphRagServiceTest) -->
+        <!-- ND4J backend for matrix-based graph tests (MatrixGraphRagServiceTest);
+             resolved from ${nd4j.backend} so CUDA builds run tests against the same backend. -->
         <dependency>
             <groupId>org.eclipse.deeplearning4j</groupId>
-            <artifactId>nd4j-native</artifactId>
+            <artifactId>${nd4j.backend}</artifactId>
             <version>${nd4j.version}</version>
             <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>org.eclipse.deeplearning4j</groupId>
-            <artifactId>nd4j-native</artifactId>
+            <artifactId>${nd4j.backend}</artifactId>
             <version>${nd4j.version}</version>
             <classifier>${javacpp.platform}</classifier>
             <scope>test</scope>

@@ -20,6 +20,7 @@ import ai.kompile.core.agent.CliAgentRunner;
 import ai.kompile.core.crawl.graph.AgentCallContext;
 import ai.kompile.core.crawl.graph.CliAgentAvailabilityAdapter;
 import ai.kompile.core.crawl.graph.LlmTranscriptLogger;
+import ai.kompile.core.crawl.graph.LocalServingBackend;
 import ai.kompile.core.crawl.graph.ProcessingCapacityTracker;
 import ai.kompile.core.crawl.graph.ProcessingRouteConfig;
 import ai.kompile.core.crawl.graph.ResourceGovernorAdapter;
@@ -34,9 +35,18 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.net.http.HttpTimeoutException;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -67,6 +77,14 @@ class CrawlLlmDispatcher {
 
     @Autowired(required = false)
     private LLMChat llmChat;
+
+    /**
+     * Optional quota-free local extraction lane: the LLM serving subprocess. A {@code LOCAL_MODEL}
+     * backend opts in by setting {@code agentName="serving"}; when this bridge is absent or the
+     * subprocess isn't running with a model, the dispatcher falls back to its normal path.
+     */
+    @Autowired(required = false)
+    private LocalServingBackend localServingBackend;
 
     @Autowired(required = false)
     private ProcessingCapacityTracker processingCapacityTracker;
@@ -165,10 +183,44 @@ class CrawlLlmDispatcher {
     String promptWithCapacityFallback(String prompt, String taskType, UnifiedCrawlJob job) {
         ProcessingRouteConfig routeConfig = job.getRequest().getProcessingRoute();
 
-        // Fast path: no fallback configured, use default LLM directly
+        // Fast path: no fallback configured, use default LLM directly.
+        // Exception: try the local serving lane first when it is available — this is the
+        // availability-gated default-entry for the LOCAL_MODEL/serving backend. The gate
+        // is: (a) bridge present + subprocess running + model loaded (isAvailable()), AND
+        // (b) the route config (if any) does not explicitly opt out via servingLaneEnabled=false.
         if (routeConfig == null || !routeConfig.isFallbackEnabled()
                 || processingCapacityTracker == null
                 || routeConfig.getBackends() == null || routeConfig.getBackends().isEmpty()) {
+            boolean servingLaneAllowed = routeConfig == null || routeConfig.isServingLaneEnabled();
+            if (servingLaneAllowed && localServingBackend != null && localServingBackend.isAvailable()) {
+                try {
+                    log.debug("[Job {}] Default-entry serving lane: routing to LOCAL_MODEL/serving subprocess",
+                            job.getJobId());
+                    long t0 = System.nanoTime();
+                    final String[] resultHolder = {null};
+                    CompletableFuture<String> servingFuture =
+                            CompletableFuture.supplyAsync(() -> {
+                                try {
+                                    return localServingBackend.generate(prompt);
+                                } catch (Exception e) {
+                                    throw new CompletionException(e);
+                                }
+                            }, llmTimeoutExecutor);
+                    String servingResult = servingFuture.get(llmCallTimeoutSeconds, TimeUnit.SECONDS);
+                    if (isUsableLlmResponse(servingResult)) {
+                        long latencyMs = (System.nanoTime() - t0) / 1_000_000L;
+                        recordLlmCall(job, "serving", taskType, latencyMs, prompt, servingResult,
+                                true, false, false, false, null, null);
+                        return servingResult;
+                    }
+                } catch (TimeoutException te) {
+                    log.warn("[Job {}] Default-entry serving lane timed out after {}s; falling back to default LLM",
+                            job.getJobId(), llmCallTimeoutSeconds);
+                } catch (Exception e) {
+                    log.debug("[Job {}] Default-entry serving lane failed ({}); falling back to default LLM",
+                            job.getJobId(), e.getMessage());
+                }
+            }
             if (llmChat == null) {
                 log.error("[Job {}] NO LLM CONFIGURED — cannot perform graph extraction. "
                         + "Configure an LLM provider (OpenAI, Anthropic, or CLI agent) in the application settings.",
@@ -207,19 +259,20 @@ class CrawlLlmDispatcher {
             String response = dispatchToBackendWithTimeout(prompt, backend, job);
 
             long latencyMs = (System.nanoTime() - startNanos) / 1_000_000L;
-            processingCapacityTracker.recordCompletion(backendId, taskType, response != null);
+            boolean responseOk = isUsableLlmResponse(response);
+            processingCapacityTracker.recordCompletion(backendId, taskType, responseOk);
             recordTokenUsage(job, backendId, prompt, response);
 
-            if (response != null) {
+            if (responseOk) {
                 getCircuitBreaker(backendId).recordSuccess();
                 recordLlmCall(job, backendId, taskType, latencyMs, prompt, response,
                         true, false, false, false, null, null);
-            } else {
-                breakerFailure(backendId);
-                recordLlmCall(job, backendId, taskType, latencyMs, prompt, null,
-                        false, false, false, false, "BAD_RESPONSE", "Backend returned null");
+                return response;
             }
-            return response;
+
+            breakerFailure(backendId);
+            recordLlmCall(job, backendId, taskType, latencyMs, prompt, response,
+                    false, false, false, false, "BAD_RESPONSE", badLlmResponseMessage("Backend", response));
 
         } catch (TimeoutException te) {
             long latencyMs = (System.nanoTime() - startNanos) / 1_000_000L;
@@ -274,7 +327,7 @@ class CrawlLlmDispatcher {
             ProcessingRouteConfig.ProcessingBackend backup = routeConfig.getBackends().stream()
                     .filter(b -> b.getId().equals(backend.getBackupBackendId()) && b.isEnabled())
                     .findFirst().orElse(null);
-            if (backup != null && !isBackendOpen(backup.getId())) {
+            if (backup != null && !isBackendOpen(backup.getId()) && isCapableOf(backup, "llm")) {
                 String backupResponse = tryFallbackBackend(backup, prompt, taskType, job, backendId);
                 if (backupResponse != null) return backupResponse;
             }
@@ -289,7 +342,8 @@ class CrawlLlmDispatcher {
                 log.debug("[Job {}] Skipping circuit-broken backend '{}'", job.getJobId(), fallback.getId());
                 continue;
             }
-            if (!processingCapacityTracker.canAccept(fallback.getId(), taskType)) continue;
+            if (!isCapableOf(fallback, "llm")) continue;
+            if (!processingCapacityTracker.canAccept(fallback, taskType)) continue;
 
             String fallbackResponse = tryFallbackBackend(fallback, prompt, taskType, job, backendId);
             if (fallbackResponse != null) return fallbackResponse;
@@ -331,7 +385,7 @@ class CrawlLlmDispatcher {
             String response = future.get(timeoutSec, TimeUnit.SECONDS);
             long latencyMs = (System.nanoTime() - startNanos) / 1_000_000L;
             recordTokenUsage(job, backendId, prompt, response);
-            boolean success = response != null && !response.isBlank();
+            boolean success = isUsableLlmResponse(response);
             // Surface which model handled the turn (+ symptom/latency/timeout/bench) in the crawl UI.
             recordModelRoutingDecision(job, decisionHolder[0]);
             // Bridge the captured session id onto this caller thread so recordLlmCall picks it up.
@@ -340,7 +394,7 @@ class CrawlLlmDispatcher {
                 recordLlmCall(job, backendId, taskType, latencyMs, prompt, response,
                         success, false, false, false,
                         success ? null : "BAD_RESPONSE",
-                        success ? null : "LLM returned null/empty");
+                        success ? null : badLlmResponseMessage("LLM", response));
             } finally {
                 AgentCallContext.clear();
             }
@@ -395,7 +449,7 @@ class CrawlLlmDispatcher {
                     .stage("MODEL_ROUTING")
                     .oldValue(0).newValue(0)
                     .direction(ok ? "USE" : "DEESCALATE")
-                    .reason(ok ? "model_ok" : decision.outcome().toLowerCase(java.util.Locale.ROOT))
+                    .reason(ok ? "model_ok" : decision.outcome().toLowerCase(Locale.ROOT))
                     .detail(detail)
                     .memoryPercent(job.getMemoryUsagePercent().get())
                     .build());
@@ -413,6 +467,11 @@ class CrawlLlmDispatcher {
         int timeoutSec = llmCallTimeoutSeconds;
         switch (backend.getType()) {
             case LOCAL_MODEL:
+                // A LOCAL_MODEL backend marked agentName="serving" routes to the out-of-process LLM
+                // serving subprocess (quota-free lane); everything else uses the in-process LLMChat.
+                if ("serving".equalsIgnoreCase(backend.getAgentName())) {
+                    return promptViaServing(prompt, backend, timeoutSec);
+                }
                 if (llmChat == null) {
                     throw new IllegalStateException("LOCAL_MODEL backend selected but no LLMChat available");
                 }
@@ -438,6 +497,32 @@ class CrawlLlmDispatcher {
         }
     }
 
+    /**
+     * Dispatch to the out-of-process LLM serving subprocess (quota-free LOCAL_MODEL lane). Throws if
+     * the serving bridge is absent or the subprocess isn't running with a model loaded — the circuit
+     * breaker and fallback chain then route to the next backend.
+     */
+    private String promptViaServing(String prompt, ProcessingRouteConfig.ProcessingBackend backend,
+                                     int timeoutSec) throws Exception {
+        if (localServingBackend == null || !localServingBackend.isAvailable()) {
+            throw new IllegalStateException("serving backend '" + backend.getId()
+                    + "' selected but the serving subprocess is not available (not running / no model loaded)");
+        }
+        try {
+            CompletableFuture<String> future = CompletableFuture.supplyAsync(() -> {
+                try {
+                    return localServingBackend.generate(prompt);
+                } catch (Exception e) {
+                    throw new CompletionException(e);
+                }
+            }, llmTimeoutExecutor);
+            return future.get(timeoutSec, TimeUnit.SECONDS);
+        } catch (ExecutionException ee) {
+            throw (ee.getCause() instanceof Exception)
+                    ? (Exception) ee.getCause() : new RuntimeException(ee.getCause());
+        }
+    }
+
     String dispatchToBackend(String prompt, ProcessingRouteConfig.ProcessingBackend backend,
                              UnifiedCrawlJob job) {
         try {
@@ -451,6 +536,29 @@ class CrawlLlmDispatcher {
         }
     }
 
+    static boolean isUsableLlmResponse(String response) {
+        if (response == null || response.isBlank()) {
+            return false;
+        }
+        String trimmed = response.stripLeading();
+        return !trimmed.startsWith("Error:");
+    }
+
+    private static String badLlmResponseMessage(String label, String response) {
+        if (response == null) {
+            return label + " returned null";
+        }
+        if (response.isBlank()) {
+            return label + " returned empty response";
+        }
+        String trimmed = response.stripLeading();
+        if (trimmed.startsWith("Error:")) {
+            return label + " returned error payload: "
+                    + (trimmed.length() > 180 ? trimmed.substring(0, 180) : trimmed);
+        }
+        return label + " returned unusable response";
+    }
+
     // ---- Token usage recording ----
 
     void recordTokenUsage(UnifiedCrawlJob job, String backendId, String prompt, String response) {
@@ -458,7 +566,7 @@ class CrawlLlmDispatcher {
         TokenBudgetTracker tracker = tokenTrackers.get(job.getJobId());
         if (tracker == null) return;
         long inputTokens = prompt != null ? Math.max(1, prompt.length() / 4) : 0;
-        long outputTokens = response != null ? Math.max(1, response.length() / 4) : 0;
+        long outputTokens = response != null && !response.isBlank() ? Math.max(1, response.length() / 4) : 0;
         tracker.registerBackend(backendId);
         tracker.recordUsage(backendId, inputTokens, outputTokens);
         tracker.publishStats(job);
@@ -555,7 +663,7 @@ class CrawlLlmDispatcher {
 
             Process process = pb.start();
             String output;
-            try (var reader = new java.io.BufferedReader(new java.io.InputStreamReader(process.getInputStream()))) {
+            try (var reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
                 output = reader.lines().collect(Collectors.joining("\n"));
             }
 
@@ -601,23 +709,23 @@ class CrawlLlmDispatcher {
         try {
             String requestBody = buildChatCompletionRequest(prompt, modelName);
 
-            java.net.http.HttpClient client = java.net.http.HttpClient.newBuilder()
-                    .connectTimeout(java.time.Duration.ofSeconds(30))
+            HttpClient client = HttpClient.newBuilder()
+                    .connectTimeout(Duration.ofSeconds(30))
                     .build();
 
-            java.net.http.HttpRequest.Builder requestBuilder = java.net.http.HttpRequest.newBuilder()
-                    .uri(java.net.URI.create(endpointUrl + "/chat/completions"))
+            HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
+                    .uri(URI.create(endpointUrl + "/chat/completions"))
                     .header("Content-Type", "application/json")
-                    .timeout(java.time.Duration.ofSeconds(timeoutSeconds))
-                    .POST(java.net.http.HttpRequest.BodyPublishers.ofString(requestBody));
+                    .timeout(Duration.ofSeconds(timeoutSeconds))
+                    .POST(HttpRequest.BodyPublishers.ofString(requestBody));
 
             if (apiKey != null && !apiKey.isBlank()) {
                 requestBuilder.header("Authorization", "Bearer " + apiKey);
             }
 
-            java.net.http.HttpResponse<String> response = client.send(
+            HttpResponse<String> response = client.send(
                     requestBuilder.build(),
-                    java.net.http.HttpResponse.BodyHandlers.ofString());
+                    HttpResponse.BodyHandlers.ofString());
 
             if (response.statusCode() == 429) {
                 log.warn("[Job {}] API backend '{}' returned 429 (rate limited)", job.getJobId(), backend.getId());
@@ -633,7 +741,7 @@ class CrawlLlmDispatcher {
             }
 
             return extractContentFromChatResponse(response.body());
-        } catch (java.net.http.HttpTimeoutException hte) {
+        } catch (HttpTimeoutException hte) {
             log.warn("[Job {}] API backend '{}' timed out after {}s",
                     job.getJobId(), backend.getId(), timeoutSeconds);
             throw new RuntimeException("Timeout after " + timeoutSeconds + "s: " + hte.getMessage(), hte);
@@ -732,7 +840,8 @@ class CrawlLlmDispatcher {
             boolean open = isBackendOpen(candidate.getId()); // local OR cluster-wide (Phase 4)
             boolean cliUnavailable = isCliAgentUnavailable(candidate);
             boolean memorySkip = memoryThrottled && isLocalOrApiBackend(candidate);
-            if (!open && !cliQuotaExhausted(candidate) && !cliUnavailable && !memorySkip) {
+            boolean capableSkip = !isCapableOf(candidate, "llm");
+            if (!open && !cliQuotaExhausted(candidate) && !cliUnavailable && !memorySkip && !capableSkip) {
                 // Selected backend is usable; apply opencode model alternation if applicable
                 maybeAlternateOpencodeModel(candidate, job, "selected");
                 return selected;
@@ -741,16 +850,17 @@ class CrawlLlmDispatcher {
             String skipReason = open ? cb.getStateDescription()
                     : cliUnavailable ? "cli agent unavailable"
                     : memorySkip ? "memory-throttled (prefers CLI)"
+                    : capableSkip ? "no llm capability"
                     : "cli quota exhausted";
             log.debug("[Job {}] Selected backend '{}' unavailable ({}), trying alternatives",
                     job != null ? job.getJobId() : "?", candidate.getId(), skipReason);
-            if (job != null && (memorySkip || cliUnavailable)) {
+            if (job != null && (memorySkip || cliUnavailable || capableSkip)) {
                 job.recordTuningDecision(UnifiedCrawlJob.TuningDecision.builder()
                         .timestamp(Instant.now())
                         .stage("LLM_ROUTING")
                         .oldValue(0).newValue(0)
                         .direction("SKIP")
-                        .reason(memorySkip ? "memory_pressure" : "cli_unavailable")
+                        .reason(memorySkip ? "memory_pressure" : capableSkip ? "no_llm_capability" : "cli_unavailable")
                         .detail("Skipped backend '" + candidate.getId() + "': " + skipReason
                                 + (memPressureReason != null ? " [" + memPressureReason + "]" : ""))
                         .memoryPercent(job.getMemoryUsagePercent().get())
@@ -772,7 +882,11 @@ class CrawlLlmDispatcher {
                     skippedIds.add(backend.getId() + "(mem-throttle)");
                     continue;
                 }
-                if (processingCapacityTracker.canAccept(backend.getId(), taskType)) {
+                if (!isCapableOf(backend, "llm")) {
+                    skippedIds.add(backend.getId() + "(no-llm-cap)");
+                    continue;
+                }
+                if (processingCapacityTracker.canAccept(backend, taskType)) {
                     chosenFallback = backend;
                     break;
                 }
@@ -831,7 +945,7 @@ class CrawlLlmDispatcher {
         if (backend.getType() != ProcessingRouteConfig.ProcessingBackendType.CLI_AGENT) return;
         String agentName = backend.getAgentName();
         if (agentName == null) return;
-        String lower = agentName.toLowerCase(java.util.Locale.ROOT);
+        String lower = agentName.toLowerCase(Locale.ROOT);
         // Only alternate for opencode; never touch claude or codex (paid agents, must not be used for extraction)
         if (!lower.contains("opencode")) return;
         if (lower.contains("claude") || lower.contains("codex")) return;
@@ -842,11 +956,11 @@ class CrawlLlmDispatcher {
         // alternate). Mirrors the rotation filter in CliAgentLLMChat so decision records reflect reality.
         models = models.stream()
                 .filter(m -> {
-                    String l = m.toLowerCase(java.util.Locale.ROOT);
+                    String l = m.toLowerCase(Locale.ROOT);
                     return !(l.contains("claude") || l.contains("codex") || l.contains("gpt")
                             || l.contains("opus") || l.contains("sonnet") || l.contains("-pro"));
                 })
-                .collect(java.util.stream.Collectors.toList());
+                .collect(Collectors.toList());
         if (models.isEmpty()) return;
 
         AtomicInteger idx = opencodeModelIndex.computeIfAbsent(job.getJobId(), k -> new AtomicInteger(0));
@@ -879,6 +993,19 @@ class CrawlLlmDispatcher {
     }
 
     /**
+     * Returns {@code true} when {@code backend} can handle the given {@code capability}
+     * (e.g. {@code "llm"}, {@code "vlm"}).
+     *
+     * <p>An empty or null capabilities list means the backend handles <em>all</em> task types
+     * (backward-compatible default).  A non-empty list is treated as an explicit allowlist:
+     * the backend is eligible only when the required capability is present in that list.</p>
+     */
+    boolean isCapableOf(ProcessingRouteConfig.ProcessingBackend backend, String capability) {
+        List<String> caps = backend.getCapabilities();
+        return caps == null || caps.isEmpty() || caps.contains(capability);
+    }
+
+    /**
      * Proactive quota gate: true when {@code backend} is a CLI agent whose global quota window or
      * request/token cap is currently exhausted. Checked before dispatch so the call is never wasted,
      * and shared across all concurrent jobs via {@link CliAgentQuotaLedger}.
@@ -902,9 +1029,10 @@ class CrawlLlmDispatcher {
             processingCapacityTracker.recordDispatch(fallback.getId(), taskType);
             String fallbackResponse = dispatchToBackendWithTimeout(prompt, fallback, job);
             long fallbackLatency = (System.nanoTime() - fallbackStart) / 1_000_000L;
-            processingCapacityTracker.recordCompletion(fallback.getId(), taskType, fallbackResponse != null);
+            boolean fallbackOk = isUsableLlmResponse(fallbackResponse);
+            processingCapacityTracker.recordCompletion(fallback.getId(), taskType, fallbackOk);
 
-            if (fallbackResponse != null) {
+            if (fallbackOk) {
                 getCircuitBreaker(fallback.getId()).recordSuccess();
                 log.info("[Job {}] Fallback to backend '{}' succeeded (original backend '{}' failed)",
                         job.getJobId(), fallback.getId(), originalBackendId);
@@ -918,8 +1046,8 @@ class CrawlLlmDispatcher {
                 return fallbackResponse;
             } else {
                 getCircuitBreaker(fallback.getId()).recordFailure();
-                recordLlmCall(job, fallback.getId(), taskType, fallbackLatency, prompt, null,
-                        false, false, false, false, "BAD_RESPONSE", "Fallback returned null");
+                recordLlmCall(job, fallback.getId(), taskType, fallbackLatency, prompt, fallbackResponse,
+                        false, false, false, false, "BAD_RESPONSE", badLlmResponseMessage("Fallback", fallbackResponse));
             }
         } catch (TimeoutException te) {
             long fallbackLatency = (System.nanoTime() - fallbackStart) / 1_000_000L;

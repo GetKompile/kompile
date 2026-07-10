@@ -17,6 +17,7 @@
 package ai.kompile.codeindexer.domain;
 
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
@@ -66,8 +67,8 @@ public interface CodeRelationRepository extends JpaRepository<CodeRelation, UUID
 
     void deleteByProjectIdAndFilePath(String projectId, String filePath);
 
-    @org.springframework.data.jpa.repository.Modifying
+    @Modifying
     @Query("DELETE FROM CodeRelation r WHERE r.projectId = :projectId AND r.filePath IN :filePaths")
     void deleteByProjectIdAndFilePathIn(@Param("projectId") String projectId,
-                                        @Param("filePaths") java.util.Set<String> filePaths);
+                                        @Param("filePaths") Set<String> filePaths);
 }

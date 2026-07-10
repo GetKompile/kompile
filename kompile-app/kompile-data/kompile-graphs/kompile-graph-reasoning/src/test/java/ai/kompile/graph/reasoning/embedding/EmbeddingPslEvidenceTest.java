@@ -279,4 +279,37 @@ class EmbeddingPslEvidenceTest {
                     "Self-pair atom '" + selfKey + "' must NOT be added");
         }
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test 7 (WP1a) — anti-correlated pairs are observed as 0.0, never negative
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * WP1a: a negative cosine means "no evidence", not "negative evidence". When a below-threshold
+     * pair qualifies (here the threshold is set to −1 so the anti-correlated pair passes the gate),
+     * the observed soft-truth must be clamped to {@code 0.0} — PSL soft-truth lives in [0,1], and a
+     * raw cosine ∈ [−1,1] would violate that domain.
+     */
+    @Test
+    void antiCorrelatedPairObservedAsZeroNeverNegative() {
+        List<String> ids = Arrays.asList(SEED, "anti");
+        EmbeddingTable table = new EmbeddingTable(ids, 4, 0L);
+        double[] vSeed = table.vector(SEED);
+        double[] vAnti = table.vector("anti");
+        vSeed[0] = 1.0;  vSeed[1] = 0.0; vSeed[2] = 0.0; vSeed[3] = 0.0;
+        vAnti[0] = -1.0; vAnti[1] = 0.0; vAnti[2] = 0.0; vAnti[3] = 0.0;
+
+        // cosine(seed, anti) = -1.0; a permissive threshold of -1 makes the pair qualify.
+        assertEquals(-1.0, Embeddings.cosine(vSeed, vAnti), 1e-9);
+
+        PslProgram program = new PslProgram();
+        int added = EmbeddingPslEvidence.addSimilarityEvidence(program, table, PRED, -1.0);
+
+        assertTrue(added >= 1, "anti-correlated pair should still be gated in at threshold -1");
+        String key = PRED + "(seed, anti)";
+        assertTrue(program.contains(key), "atom must be present: " + key);
+        // The decisive WP1a invariant: observed value clamped to 0.0, NOT the raw -1.0.
+        assertEquals(0.0, program.value(key), 1e-12,
+                "anti-correlation must be observed as 0.0 (no evidence), never negative");
+    }
 }

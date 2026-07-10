@@ -19,8 +19,12 @@ package ai.kompile.cli.mcp.stdio;
 import ai.kompile.cli.main.chat.ChatSessionMetrics;
 import ai.kompile.cli.main.chat.harness.*;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.time.Instant;
@@ -57,10 +61,12 @@ public class McpSessionTracker {
 
         // Build standalone judge from harness config (works when judgeProvider is set)
         JudgeLlmEvaluator candidate = new JudgeLlmEvaluator(objectMapper, config);
-        this.judge = candidate.isAvailable() ? candidate : null;
-
-        if (judge != null) {
+        if (candidate.isAvailable()) {
+            this.judge = candidate;
             System.err.println("[MCP] Judge LLM available (provider: " + config.getJudgeProvider() + ")");
+        } else {
+            this.judge = null;
+            candidate.close(); // release any half-built backend resources
         }
     }
 
@@ -246,7 +252,7 @@ public class McpSessionTracker {
 
     public int getEscapeCount() { return metrics.getEscapeCount(); }
 
-    public Map<String, java.util.concurrent.atomic.AtomicInteger> getEscapesByType() {
+    public Map<String, AtomicInteger> getEscapesByType() {
         return metrics.getEscapesByType();
     }
 
@@ -260,13 +266,13 @@ public class McpSessionTracker {
 
     public Map<String, List<Float>> getQualityScoresByModel() {
         // Convert the Double list from ChatSessionMetrics to Float for this API
-        Map<String, List<Float>> result = new java.util.LinkedHashMap<>();
+        Map<String, List<Float>> result = new LinkedHashMap<>();
         metrics.getQualityScoresByModel().forEach((model, scores) -> {
-            List<Float> floatScores = new java.util.ArrayList<>();
+            List<Float> floatScores = new ArrayList<>();
             for (double d : scores) floatScores.add((float) d);
             result.put(model, floatScores);
         });
-        return java.util.Collections.unmodifiableMap(result);
+        return Collections.unmodifiableMap(result);
     }
 
     public Map<String, Double> getAvgScoreByModel() {
@@ -279,6 +285,11 @@ public class McpSessionTracker {
     public void shutdown() {
         if (config.isPersistCrossSession()) {
             store.flush();
+        }
+        // Release the judge backend (a pooled judge lease) — previously it was never
+        // closed, pinning a judge subprocess for the life of the MCP server.
+        if (judge != null) {
+            judge.close();
         }
     }
 

@@ -18,16 +18,13 @@ package ai.kompile.crawl.graph.preprocessing;
 
 import ai.kompile.core.crawl.graph.DocumentPreprocessor;
 import ai.kompile.core.crawl.graph.PreprocessingConfig;
+import ai.kompile.utils.HashUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
 import org.springframework.stereotype.Component;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
-import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -207,12 +204,6 @@ public class DeduplicationPreprocessor implements DocumentPreprocessor {
     }
 
     private static String sha256(String text) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] hash = digest.digest(text.getBytes(StandardCharsets.UTF_8));
-            return HexFormat.of().formatHex(hash);
-        } catch (NoSuchAlgorithmException e) {
-            throw new RuntimeException("SHA-256 not available", e);
-        }
+        return HashUtils.sha256Hex(text);
     }
 }

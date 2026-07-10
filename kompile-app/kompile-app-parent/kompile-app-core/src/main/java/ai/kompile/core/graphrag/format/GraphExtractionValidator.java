@@ -262,9 +262,15 @@ public final class GraphExtractionValidator {
 
                 Rules:
                 - Each entity MUST have: id (unique within this extraction), name, type, description
-                - Each entity SHOULD have: aliases (alternative names), confidence (0.0-1.0), properties
+                - Each entity MUST have: confidence — a float in [0.0, 1.0] calibrated to how certain the text supports this entity.
+                  Use 0.9-1.0 for entities stated explicitly and unambiguously; 0.7-0.9 for entities strongly implied;
+                  0.5-0.7 for uncertain or indirect mentions; below 0.5 for speculative references.
+                - Each entity SHOULD have: aliases (alternative names), properties
                 - Each relation MUST have: source (entity id), target (entity id), type, description
-                - Each relation SHOULD have: confidence (0.0-1.0), properties
+                - Each relation MUST have: confidence — a float in [0.0, 1.0] calibrated to how certain the text supports this relation.
+                  Use 0.85-1.0 for relations stated directly; 0.6-0.85 for inferred relations; 0.4-0.6 for possible but uncertain;
+                  below 0.4 for speculative links.
+                - Each relation SHOULD have: properties
                 - Entity types should be UPPERCASE (PERSON, ORGANIZATION, LOCATION, CONCEPT, EVENT, PRODUCT, etc.)
                 - Relation types should be UPPERCASE with underscores (WORKS_AT, LOCATED_IN, FOUNDED_BY, etc.)
                 - Output ONLY valid JSON, no markdown fences, no explanations
@@ -316,10 +322,16 @@ public final class GraphExtractionValidator {
                 Rules:
                 - Each entity MUST have: id (unique within this extraction), name, type, description
                 - Each entity MUST have: chunkId set to the source value from the chunk header
-                - Each entity SHOULD have: aliases, confidence (0.0-1.0), properties
+                - Each entity MUST have: confidence — a float in [0.0, 1.0] calibrated to how certain the text supports this entity.
+                  Use 0.9-1.0 for entities stated explicitly and unambiguously; 0.7-0.9 for entities strongly implied;
+                  0.5-0.7 for uncertain or indirect mentions; below 0.5 for speculative references.
+                - Each entity SHOULD have: aliases, properties
                 - Each relation MUST have: source (entity id), target (entity id), type, description
                 - Each relation MUST have: chunkId set to the source value from the chunk header
-                - Each relation SHOULD have: confidence (0.0-1.0), properties
+                - Each relation MUST have: confidence — a float in [0.0, 1.0] calibrated to how certain the text supports this relation.
+                  Use 0.85-1.0 for relations stated directly; 0.6-0.85 for inferred relations; 0.4-0.6 for possible but uncertain;
+                  below 0.4 for speculative links.
+                - Each relation SHOULD have: properties
                 - Entity types should be UPPERCASE (PERSON, ORGANIZATION, LOCATION, CONCEPT, EVENT, PRODUCT, etc.)
                 - Relation types should be UPPERCASE with underscores (WORKS_AT, LOCATED_IN, FOUNDED_BY, etc.)
                 - Output ONLY valid JSON, no markdown fences, no explanations

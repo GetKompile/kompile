@@ -15,7 +15,20 @@
 
     <modules>
         <module>kompile-app-core</module>
+        <module>kompile-app-config</module>
+        <module>kompile-app-dto</module>
         <module>kompile-app-lite</module>
+        <module>kompile-app-subprocess</module>
+        <module>kompile-app-rag</module>
+        <module>kompile-app-source</module>
+        <module>kompile-app-facts</module>
+        <module>kompile-app-ingest</module>
+        <module>kompile-app-platform</module>
+        <module>kompile-app-mcp</module>
+        <module>kompile-app-agent</module>
+        <module>kompile-app-crawl</module>
+        <module>kompile-app-enforcer</module>
+        <module>kompile-app-diff</module>
         <module>kompile-app-main</module>
     </modules>
 </project>

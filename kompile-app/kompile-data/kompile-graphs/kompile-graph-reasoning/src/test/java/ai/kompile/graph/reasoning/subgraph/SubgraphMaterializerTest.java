@@ -15,14 +15,18 @@
  */
 package ai.kompile.graph.reasoning.subgraph;
 
+import ai.kompile.graph.reasoning.confidence.Opinion;
 import ai.kompile.graph.reasoning.model.MutableReasoningGraph;
 import ai.kompile.graph.reasoning.model.SimpleGraphEntity;
 import ai.kompile.graph.reasoning.model.SimpleGraphRelation;
+import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -513,6 +517,50 @@ class SubgraphMaterializerTest {
         assertTrue(g.containsEntity("B"));
         assertTrue(g.containsEntity("C"));
         assertTrue(g.containsEntity("G"));
+    }
+
+    @Test
+    @DisplayName("Unified subgraph preserves applicable analysis assets")
+    void materializeUnifiedPreservesScopedAssets() {
+        UnifiedGraph unified = UnifiedGraph.of(source)
+                .graphId("full-graph")
+                .factSheetId(42L)
+                .meta("owner", "analysis-team")
+                .putEntityVector("kge", "A", new double[] {1.0, 0.0})
+                .putEntityVector("kge", "B", new double[] {0.9, 0.1})
+                .putEntityVector("kge", "D", new double[] {0.0, 1.0})
+                .putRelationVector("rel-kge", "r-AB", new double[] {1.0})
+                .putRelationVector("rel-kge", "r-BD", new double[] {0.2})
+                .putGlobalVector("relation-types", "CAUSES", new double[] {0.7})
+                .putEntityOpinion("A", Opinion.fromBetaEvidence(8, 2))
+                .putEntityOpinion("D", Opinion.fromBetaEvidence(2, 8))
+                .putRelationOpinion("r-AB", Opinion.fromSoftTruth(0.9))
+                .putRelationOpinion("r-BD", Opinion.fromSoftTruth(0.4))
+                .putWeightMap("pslWeights", Map.of("CAUSES", 1.5))
+                .putArtifactText("notes", "model artifact");
+
+        UnifiedGraph subgraph = materializer.materializeUnified(
+                unified, SubgraphSpec.builder().seedId("A").radius(1).build());
+
+        assertTrue(subgraph.containsEntity("A"));
+        assertTrue(subgraph.containsEntity("B"));
+        assertTrue(subgraph.containsEntity("C"));
+        assertFalse(subgraph.containsEntity("D"));
+        assertNotNull(subgraph.vectorLayer("kge").get("A"));
+        assertNotNull(subgraph.vectorLayer("kge").get("B"));
+        assertNull(subgraph.vectorLayer("kge").get("D"));
+        assertNotNull(subgraph.vectorLayer("rel-kge").get("r-AB"));
+        assertNull(subgraph.vectorLayer("rel-kge").get("r-BD"));
+        assertNotNull(subgraph.vectorLayer("relation-types").get("CAUSES"));
+        assertNotNull(subgraph.entityOpinion("A"));
+        assertNull(subgraph.entityOpinion("D"));
+        assertNotNull(subgraph.relationOpinion("r-AB"));
+        assertNull(subgraph.relationOpinion("r-BD"));
+        assertEquals(1.5, subgraph.weightMap("pslWeights").get("CAUSES"));
+        assertEquals("model artifact", subgraph.artifactText("notes"));
+        assertEquals("analysis-team", subgraph.meta().get("owner"));
+        assertEquals(42L, subgraph.factSheetId());
+        assertEquals(1, subgraph.meta().get("subgraph.radius"));
     }
 
     // -----------------------------------------------------------------------

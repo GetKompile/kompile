@@ -29,7 +29,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(255, 255, 255, 0.8);
+  background: color-mix(in srgb, var(--bg-surface) 85%, transparent);
   z-index: 10;
   border-radius: 8px;
 }
@@ -112,14 +112,14 @@
   flex-direction: column;
   gap: 8px;
   padding: 16px;
-  background: #e3f2fd;
+  background: var(--status-info-bg);
   border-radius: 8px;
   margin-bottom: 16px;
 }
 
 .upload-progress span {
   font-size: 0.85rem;
-  color: #1976d2;
+  color: var(--status-info-icon);
   text-align: center;
 }
 
@@ -164,6 +164,21 @@
   margin: 0 0 16px;
 }
 
+.empty-facts-hint {
+  font-size: 0.9rem !important;
+  color: var(--text-tertiary) !important;
+  max-width: 480px;
+  line-height: 1.5;
+  margin-bottom: 16px !important;
+}
+
+.empty-facts-actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
 /* Facts grid */
 .facts-grid {
   display: grid;
@@ -185,13 +200,13 @@
 }
 
 .fact-card:hover {
-  border-color: #1976d2;
+  border-color: var(--status-info-icon);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
 }
 
 .fact-card.selected {
-  border-color: #1976d2;
-  background: #e3f2fd;
+  border-color: var(--status-info-icon);
+  background: var(--status-info-bg);
 }
 
 .fact-icon {
@@ -301,7 +316,7 @@
 }
 
 .detail-value.url {
-  color: #1976d2;
+  color: var(--status-info-icon);
   text-decoration: none;
 }
 
@@ -385,8 +400,8 @@
 }
 
 .sheet-card.active {
-  background: linear-gradient(135deg, #e3f2fd 0%, var(--bg-surface) 100%);
-  border-color: #1976d2;
+  background: linear-gradient(135deg, var(--status-info-bg) 0%, var(--bg-surface) 100%);
+  border-color: var(--status-info-icon);
 }
 
 .sheet-header {
@@ -427,8 +442,8 @@
   font-size: 0.7rem !important;
   padding: 2px 8px !important;
   min-height: 20px !important;
-  background: #1976d2 !important;
-  color: #fff !important;
+  background: var(--status-info-icon) !important;
+  color: var(--text-inverse) !important;
 }
 
 .sheet-description {
@@ -464,7 +479,7 @@
 
 /* Menu */
 .delete-action {
-  color: #d32f2f;
+  color: var(--status-error-text);
 }
 
 /* Empty state */
@@ -497,6 +512,13 @@
   font-size: 1.1rem;
 }
 
+.empty-state-hint {
+  font-size: 0.9rem !important;
+  color: var(--text-tertiary) !important;
+  max-width: 480px;
+  line-height: 1.5;
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════════ */
 /* WEBSOCKET STATUS BAR                                                            */
 /* ═══════════════════════════════════════════════════════════════════════════════ */
@@ -519,27 +541,27 @@
 }
 
 .ws-status-bar.ws-connected {
-  background: #e8f5e9;
-  border: 1px solid #a5d6a7;
-  color: #2e7d32;
+  background: var(--status-success-bg);
+  border: 1px solid var(--status-success-border);
+  color: var(--status-success-text);
 }
 
 .ws-status-bar.ws-disconnected {
-  background: #fff3e0;
-  border: 1px solid #ffcc80;
-  color: #e65100;
+  background: var(--status-warning-bg);
+  border: 1px solid var(--status-warning-border);
+  color: var(--status-warning-text);
 }
 
 .ws-status-bar.ws-connecting {
-  background: #e3f2fd;
-  border: 1px solid #90caf9;
-  color: #1565c0;
+  background: var(--status-connecting-bg);
+  border: 1px solid var(--status-connecting-border);
+  color: var(--status-connecting-text);
 }
 
 .ws-status-bar.ws-error {
-  background: #ffebee;
-  border: 1px solid #ef9a9a;
-  color: #c62828;
+  background: var(--status-error-bg);
+  border: 1px solid var(--status-error-border);
+  color: var(--status-error-text);
 }
 
 .ws-status-text {
@@ -560,12 +582,12 @@
 
 .active-uploads-card {
   margin-bottom: 16px;
-  border: 1px solid #e3f2fd;
+  border: 1px solid var(--status-info-border);
   border-radius: 8px;
 }
 
 .active-uploads-card mat-card-header {
-  background: linear-gradient(135deg, #e3f2fd 0%, var(--bg-surface) 100%);
+  background: linear-gradient(135deg, var(--status-info-bg) 0%, var(--bg-surface) 100%);
   border-radius: 8px 8px 0 0;
   padding: 12px 16px;
 }
@@ -614,23 +636,23 @@
 
 .upload-progress-item.in-progress {
   background: var(--bg-surface);
-  border-color: #1976d2;
+  border-color: var(--status-info-icon);
   box-shadow: 0 2px 8px rgba(25, 118, 210, 0.15);
 }
 
 .upload-progress-item.completed {
-  background: #f1f8e9;
-  border-color: #4caf50;
+  background: var(--status-success-bg);
+  border-color: var(--status-success-accent);
 }
 
 .upload-progress-item.failed {
-  background: #ffebee;
-  border-color: #f44336;
+  background: var(--status-error-bg);
+  border-color: var(--status-error-accent);
 }
 
 .upload-progress-item.cancelled {
-  background: #fff3e0;
-  border-color: #ff9800;
+  background: var(--status-warning-bg);
+  border-color: var(--status-warning-accent);
 }
 
 .upload-header {
@@ -647,7 +669,7 @@
   width: 36px;
   height: 36px;
   border-radius: 50%;
-  background: #e3f2fd;
+  background: var(--status-info-bg);
   flex-shrink: 0;
 }
 
@@ -655,43 +677,43 @@
   font-size: 20px;
   width: 20px;
   height: 20px;
-  color: #1976d2;
+  color: var(--status-info-icon);
 }
 
 .phase-icon-container.phase-completed {
-  background: #e8f5e9;
+  background: var(--status-success-bg);
 }
 
 .phase-icon-container.phase-completed mat-icon {
-  color: #4caf50;
+  color: var(--status-success-icon);
 }
 
 .phase-icon-container.phase-failed {
-  background: #ffebee;
+  background: var(--status-error-bg);
 }
 
 .phase-icon-container.phase-failed mat-icon {
-  color: #f44336;
+  color: var(--status-error-icon);
 }
 
 .phase-icon-container.phase-embedding {
-  background: #fff3e0;
+  background: var(--status-warning-bg);
 }
 
 .phase-icon-container.phase-embedding mat-icon {
-  color: #ff9800;
+  color: var(--status-warning-icon);
 }
 
 .phase-icon-container.phase-indexing {
-  background: #e3f2fd;
+  background: var(--status-info-bg);
 }
 
 .phase-icon-container.phase-indexing mat-icon {
-  color: #1976d2;
+  color: var(--status-info-icon);
 }
 
 .phase-icon-container.phase-indexing_and_embedding {
-  background: #f3e5f5;
+  background: rgba(156, 39, 176, 0.1);
 }
 
 .phase-icon-container.phase-indexing_and_embedding mat-icon {
@@ -854,7 +876,7 @@
 .progress-percent {
   font-weight: 600;
   font-size: 1rem;
-  color: #1976d2;
+  color: var(--status-info-icon);
   min-width: 45px;
   text-align: right;
 }
@@ -887,7 +909,7 @@
 
 .current-step {
   font-weight: 500;
-  color: #1976d2;
+  color: var(--status-info-icon);
 }
 
 .step-message {
@@ -5188,19 +5210,19 @@
 }
 
 .rag-component.ready {
-  border-left: 3px solid #4caf50;
+  border-left: 3px solid var(--status-success-accent);
 }
 
 .rag-component.not-ready {
-  border-left: 3px solid #f44336;
+  border-left: 3px solid var(--status-error-accent);
 }
 
 .rag-component.partial {
-  border-left: 3px solid #ff9800;
+  border-left: 3px solid var(--status-warning-accent);
 }
 
 .rag-component.optional {
-  border-left: 3px solid #9e9e9e;
+  border-left: 3px solid var(--status-neutral-accent);
 }
 
 .component-icon {
@@ -5214,44 +5236,44 @@
 }
 
 .rag-component.ready .component-icon {
-  background: rgba(76, 175, 80, 0.1);
+  background: var(--status-success-bg);
 }
 
 .rag-component.ready .component-icon mat-icon {
-  color: #4caf50;
+  color: var(--status-success-icon);
   font-size: 22px;
   width: 22px;
   height: 22px;
 }
 
 .rag-component.not-ready .component-icon {
-  background: rgba(244, 67, 54, 0.1);
+  background: var(--status-error-bg);
 }
 
 .rag-component.not-ready .component-icon mat-icon {
-  color: #f44336;
+  color: var(--status-error-icon);
   font-size: 22px;
   width: 22px;
   height: 22px;
 }
 
 .rag-component.partial .component-icon {
-  background: rgba(255, 152, 0, 0.1);
+  background: var(--status-warning-bg);
 }
 
 .rag-component.partial .component-icon mat-icon {
-  color: #ff9800;
+  color: var(--status-warning-icon);
   font-size: 22px;
   width: 22px;
   height: 22px;
 }
 
 .rag-component.optional .component-icon {
-  background: rgba(158, 158, 158, 0.1);
+  background: var(--status-neutral-bg);
 }
 
 .rag-component.optional .component-icon mat-icon {
-  color: #9e9e9e;
+  color: var(--status-neutral-icon);
   font-size: 22px;
   width: 22px;
   height: 22px;
@@ -5278,11 +5300,11 @@
 }
 
 .component-status.error {
-  color: #d32f2f;
+  color: var(--status-error-text);
 }
 
 .component-status.warning {
-  color: #e65100;
+  color: var(--status-warning-text);
 }
 
 .component-status.optional {
@@ -5294,8 +5316,8 @@
   font-family: monospace;
   font-weight: 600;
   font-size: 0.8rem;
-  color: #1976d2;
-  background: rgba(25, 118, 210, 0.08);
+  color: var(--status-info-icon);
+  background: var(--status-info-bg);
   padding: 2px 6px;
   border-radius: 4px;
 }
@@ -5304,12 +5326,12 @@
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  background: rgba(25, 118, 210, 0.1);
+  background: var(--status-info-bg);
   padding: 2px 6px;
   border-radius: 10px;
   font-size: 0.75rem;
   font-weight: 500;
-  color: #1976d2;
+  color: var(--status-info-icon);
 }
 
 .source-icon-small {
@@ -5329,8 +5351,8 @@
 .method-badge {
   font-size: 0.75rem;
   font-weight: 500;
-  color: #1976d2;
-  background: rgba(25, 118, 210, 0.08);
+  color: var(--status-info-icon);
+  background: var(--status-info-bg);
   padding: 2px 6px;
   border-radius: 4px;
 }
@@ -5340,18 +5362,18 @@
   align-items: center;
   gap: 12px;
   padding: 12px 16px;
-  background: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%);
-  border-top: 1px solid #ffcc80;
+  background: var(--status-warning-bg);
+  border-top: 1px solid var(--status-warning-border);
 }
 
 .action-needed-banner mat-icon {
-  color: #e65100;
+  color: var(--status-warning-icon);
   flex-shrink: 0;
 }
 
 .action-needed-banner span {
   flex: 1;
-  color: #bf360c;
+  color: var(--status-warning-text);
   font-size: 0.9rem;
 }
 

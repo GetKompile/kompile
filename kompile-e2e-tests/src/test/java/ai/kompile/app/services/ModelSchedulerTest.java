@@ -6,6 +6,8 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.lang.reflect.Field;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.*;
@@ -117,7 +119,7 @@ class ModelSchedulerTest {
             });
 
             // Submit several requests
-            List<CompletableFuture<Object>> futures = new java.util.ArrayList<>();
+            List<CompletableFuture<Object>> futures = new ArrayList<>();
             for (int i = 0; i < 10; i++) {
                 futures.add(scheduler.submit("batch-model", "input-" + i, 50));
             }
@@ -192,7 +194,7 @@ class ModelSchedulerTest {
             configService.saveConfiguration(config);
 
             var scheduler = createScheduler(configService);
-            java.util.List<Object> processedOrder = java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+            List<Object> processedOrder = Collections.synchronizedList(new ArrayList<>());
 
             scheduler.registerModel("priority-model", inputs -> {
                 processedOrder.addAll(inputs);

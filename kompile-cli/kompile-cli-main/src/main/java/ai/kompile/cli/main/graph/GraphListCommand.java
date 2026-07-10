@@ -15,6 +15,12 @@ import ai.kompile.cli.main.app.OutputFormatter;
 import com.fasterxml.jackson.databind.JsonNode;
 import picocli.CommandLine;
 
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.Callable;
 
 /**
@@ -47,7 +53,7 @@ public class GraphListCommand implements Callable<Integer> {
             StringBuilder url = new StringBuilder("/api/graphs");
             if (query != null && !query.isBlank()) {
                 url.append("?query=").append(
-                        java.net.URLEncoder.encode(query, java.nio.charset.StandardCharsets.UTF_8));
+                        URLEncoder.encode(query, StandardCharsets.UTF_8));
             }
 
             String response = client.getString(url.toString());
@@ -85,8 +91,8 @@ public class GraphListCommand implements Callable<Integer> {
         }
 
         // Build lookup: graphId -> node
-        java.util.Map<String, JsonNode> byId = new java.util.LinkedHashMap<>();
-        java.util.List<JsonNode> roots = new java.util.ArrayList<>();
+        Map<String, JsonNode> byId = new LinkedHashMap<>();
+        List<JsonNode> roots = new ArrayList<>();
         for (JsonNode item : items) {
             String id = item.path("graphId").asText(item.path("id").asText(""));
             if (!id.isEmpty()) byId.put(id, item);
@@ -113,13 +119,13 @@ public class GraphListCommand implements Callable<Integer> {
     }
 
     private void printGraphNode(JsonNode item, String prefix, boolean isLast,
-                                java.util.Map<String, JsonNode> byId) {
+                                Map<String, JsonNode> byId) {
         String connector = isLast ? "└── " : "├── ";
         String childPrefix = isLast ? "    " : "│   ";
         printGraphLine(item, prefix + connector);
 
         String id = item.path("graphId").asText(item.path("id").asText(""));
-        java.util.List<JsonNode> children = new java.util.ArrayList<>();
+        List<JsonNode> children = new ArrayList<>();
         for (JsonNode candidate : byId.values()) {
             String parentId = candidate.path("parentGraphId").asText("");
             if (id.equals(parentId)) {

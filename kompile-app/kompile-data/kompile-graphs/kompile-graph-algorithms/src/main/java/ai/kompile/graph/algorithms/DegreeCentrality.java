@@ -32,17 +32,34 @@ public final class DegreeCentrality {
         int n = nodeIds.size();
         if (n == 0) return Map.of();
 
-        MatrixGraphAlgorithms.DegreeType matrixType = switch (type) {
-            case IN -> MatrixGraphAlgorithms.DegreeType.IN;
-            case OUT -> MatrixGraphAlgorithms.DegreeType.OUT;
-            case TOTAL -> MatrixGraphAlgorithms.DegreeType.TOTAL;
-        };
-        INDArray degrees = MatrixGraphAlgorithms.degrees(view.toAdjacencyMatrix(), matrixType);
+        Map<String, Double> unsorted;
 
-        Map<String, Double> unsorted = new LinkedHashMap<>(n);
-        for (int i = 0; i < n; i++) {
-            unsorted.put(nodeIds.get(i), degrees.getDouble(i));
+        if (view.isLarge()) {
+            // Adjacency-list degree counting for large graphs — no dense [n×n] matrix.
+            unsorted = new LinkedHashMap<>(n);
+            for (String id : nodeIds) {
+                double deg = switch (type) {
+                    case OUT -> view.outNeighbors(id).size();
+                    case IN  -> view.inNeighbors(id).size();
+                    case TOTAL -> view.neighbors(id).size();
+                };
+                unsorted.put(id, deg);
+            }
+        } else {
+            MatrixGraphAlgorithms.DegreeType matrixType = switch (type) {
+                case IN    -> MatrixGraphAlgorithms.DegreeType.IN;
+                case OUT   -> MatrixGraphAlgorithms.DegreeType.OUT;
+                case TOTAL -> MatrixGraphAlgorithms.DegreeType.TOTAL;
+            };
+            INDArray degrees = MatrixGraphAlgorithms.degrees(view.toAdjacencyMatrix(), matrixType);
+            // Bulk off-heap → Java copy once (not getDouble() per node).
+            double[] degArr = degrees.toDoubleVector();
+            unsorted = new LinkedHashMap<>(n);
+            for (int i = 0; i < n; i++) {
+                unsorted.put(nodeIds.get(i), degArr[i]);
+            }
         }
+
         return unsorted.entrySet().stream()
                 .sorted(Map.Entry.<String, Double>comparingByValue().reversed())
                 .collect(LinkedHashMap::new,

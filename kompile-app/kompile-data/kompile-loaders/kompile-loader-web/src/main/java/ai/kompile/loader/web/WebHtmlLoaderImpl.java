@@ -31,6 +31,7 @@ import org.springframework.ai.document.Document;
 import org.springframework.stereotype.Component;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
@@ -125,7 +126,7 @@ public class WebHtmlLoaderImpl implements DocumentLoader {
         try {
             // Read the first 2KB to check for HTML markers
             byte[] buffer = new byte[2048];
-            try (java.io.FileInputStream fis = new java.io.FileInputStream(file)) {
+            try (FileInputStream fis = new FileInputStream(file)) {
                 int bytesRead = fis.read(buffer);
                 if (bytesRead <= 0) {
                     return false;
@@ -685,6 +686,38 @@ public class WebHtmlLoaderImpl implements DocumentLoader {
             metadata.put("html.embeddedMedia", embeddedMedia);
         }
 
+        // ── html.codeBlocks ─────────────────────────────────────────────────
+        // <pre><code> (and bare <pre>) → code-block metadata consumed by HtmlWebGraphExtractor to
+        // emit CODE_BLOCK entities. No producer emitted this key before, so that branch was dead.
+        Elements codeElements = doc.select("pre code, pre");
+        if (!codeElements.isEmpty()) {
+            List<Map<String, Object>> codeBlocks = new ArrayList<>();
+            for (Element codeEl : codeElements) {
+                // "pre code" already captured the <code>; skip the wrapping <pre> to avoid duplicates.
+                if ("pre".equals(codeEl.tagName()) && !codeEl.select("code").isEmpty()) {
+                    continue;
+                }
+                String code = codeEl.wholeText();
+                if (code == null || code.isBlank()) {
+                    continue;
+                }
+                Map<String, Object> cb = new LinkedHashMap<>();
+                cb.put("code", code);
+                String language = detectCodeLanguage(codeEl);
+                if (language != null) {
+                    cb.put("language", language);
+                }
+                cb.put("lineCount", code.split("\n", -1).length);
+                codeBlocks.add(cb);
+                if (codeBlocks.size() >= 50) {
+                    break;
+                }
+            }
+            if (!codeBlocks.isEmpty()) {
+                metadata.put("html.codeBlocks", codeBlocks);
+            }
+        }
+
         // Add any metadata from the source descriptor
         if (sourceDescriptor.getMetadata() != null) {
             for (Map.Entry<String, Object> entry : sourceDescriptor.getMetadata().entrySet()) {
@@ -720,5 +753,31 @@ public class WebHtmlLoaderImpl implements DocumentLoader {
                 metadata.put(key, content);
             }
         }
+    }
+
+    /**
+     * Best-effort code language from a highlight class such as {@code language-java}, {@code lang-py},
+     * or GitHub's {@code highlight-source-*}, checked on the element and its parent {@code <pre>}.
+     */
+    private String detectCodeLanguage(Element codeEl) {
+        String cls = codeEl.className();
+        if ((cls == null || cls.isBlank()) && codeEl.parent() != null) {
+            cls = codeEl.parent().className();
+        }
+        if (cls == null) {
+            return null;
+        }
+        for (String token : cls.trim().split("\\s+")) {
+            if (token.startsWith("language-") && token.length() > 9) {
+                return token.substring(9);
+            }
+            if (token.startsWith("lang-") && token.length() > 5) {
+                return token.substring(5);
+            }
+            if (token.startsWith("highlight-source-") && token.length() > 17) {
+                return token.substring(17);
+            }
+        }
+        return null;
     }
 }

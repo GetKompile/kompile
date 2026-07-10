@@ -104,6 +104,9 @@ public final class ProcessCausalAnalyzer {
     }
 
     private static String sanitize(String label) {
-        return label.replace('"', ' ').trim();
+        // One definition module-wide: quotes AND commas break both the PSL rule parser (args split
+        // on comma) and the KB atom-key parser — flatten via ProcessAtoms so rule constants and
+        // promoted fact keys stay byte-identical.
+        return ai.kompile.process.discovery.mining.entail.ProcessAtoms.sanitize(label);
     }
 }

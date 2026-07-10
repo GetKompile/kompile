@@ -58,9 +58,8 @@ class GraphExtractionControllerTest {
         controller = new GraphExtractionController(configService, llmIntegrationService, schemaPresetService);
     }
 
-    private GraphExtractionConfig config(Boolean enabled) {
+    private GraphExtractionConfig config(Boolean ignoredEnabled) {
         GraphExtractionConfig c = new GraphExtractionConfig();
-        c.enabled = enabled;
         c.batchSize = 10;
         c.schemaEnforcement = "LENIENT";
         return c;
@@ -75,7 +74,7 @@ class GraphExtractionControllerTest {
         ResponseEntity<GraphExtractionConfig> resp = controller.getConfig();
 
         assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat(resp.getBody().enabled).isTrue();
+        assertThat(resp.getBody().batchSize).isEqualTo(10);
     }
 
     // ─── updateConfig ─────────────────────────────────────────────────────────
@@ -88,7 +87,7 @@ class GraphExtractionControllerTest {
         ResponseEntity<GraphExtractionConfig> resp = controller.updateConfig(config(false));
 
         assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat(resp.getBody().enabled).isFalse();
+        assertThat(resp.getBody().schemaEnforcement).isEqualTo("LENIENT");
     }
 
     // ─── patchConfig ──────────────────────────────────────────────────────────
@@ -115,30 +114,18 @@ class GraphExtractionControllerTest {
         assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
     }
 
-    // ─── toggleEnabled ────────────────────────────────────────────────────────
+    // ─── mandatoryStatus ─────────────────────────────────────────────────────
 
     @Test
-    void toggleEnabled_enabledToDisabled() {
-        when(configService.getConfig()).thenReturn(config(true));
-        GraphExtractionConfig toggled = config(false);
-        when(configService.updateConfig(any())).thenReturn(toggled);
-
-        ResponseEntity<GraphExtractionConfig> resp = controller.toggleEnabled();
-
-        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat(resp.getBody().enabled).isFalse();
-    }
-
-    @Test
-    void toggleEnabled_disabledToEnabled() {
+    void getStatus_reportsMandatoryGraphExtraction() {
         when(configService.getConfig()).thenReturn(config(false));
-        GraphExtractionConfig toggled = config(true);
-        when(configService.updateConfig(any())).thenReturn(toggled);
 
-        ResponseEntity<GraphExtractionConfig> resp = controller.toggleEnabled();
+        ResponseEntity<Map<String, Object>> resp = controller.getStatus();
 
         assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat(resp.getBody().enabled).isTrue();
+        assertThat(resp.getBody().get("enabled")).isEqualTo(true);
+        assertThat(resp.getBody().get("batchSize")).isEqualTo(10);
+        verify(configService, never()).updateConfig(any());
     }
 
     // ─── getStatus ────────────────────────────────────────────────────────────

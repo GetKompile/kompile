@@ -131,6 +131,7 @@ public class GraphScopedDeployService {
         Files.createDirectories(dest.getParent());
         Files.copy(artifactPath, dest, StandardCopyOption.REPLACE_EXISTING);
         log.info("Copied artifact {} -> {}", artifactPath, dest);
+        copySidecars(artifactPath, dest.getParent());
 
         // Build relative path for the registry
         Path modelsRoot = registryService.getModelDir();
@@ -219,6 +220,34 @@ public class GraphScopedDeployService {
 
     private static String sanitize(String s) {
         return s.replaceAll("[^a-zA-Z0-9_-]", "_");
+    }
+
+    /**
+     * Copy sidecar files that belong to the staged artifact: regular files in the same
+     * source directory whose name is {@code <primaryFileName>.<suffix>} (e.g.
+     * {@code model.sdz} → {@code model.sdz.vocab.json}, which
+     * {@code SameDiffKgeModel.loadEmbeddings} requires next to the archive).
+     *
+     * <p>Only the strict filename-prefix rule is applied — never the whole source
+     * directory — because artifacts may be staged out of shared directories (e.g. the
+     * PSL weight store keeps every version side by side) where unrelated siblings must
+     * not be swept into a single registry entry.</p>
+     */
+    private static void copySidecars(Path artifactPath, Path destDir) throws IOException {
+        Path srcDir = artifactPath.getParent();
+        if (srcDir == null || !Files.isDirectory(srcDir)) {
+            return;
+        }
+        String prefix = artifactPath.getFileName().toString() + ".";
+        try (var siblings = Files.list(srcDir)) {
+            for (Path sibling : (Iterable<Path>) siblings::iterator) {
+                String name = sibling.getFileName().toString();
+                if (Files.isRegularFile(sibling) && name.startsWith(prefix)) {
+                    Files.copy(sibling, destDir.resolve(name), StandardCopyOption.REPLACE_EXISTING);
+                    log.info("Copied sidecar {} -> {}", sibling, destDir.resolve(name));
+                }
+            }
+        }
     }
 
     /**

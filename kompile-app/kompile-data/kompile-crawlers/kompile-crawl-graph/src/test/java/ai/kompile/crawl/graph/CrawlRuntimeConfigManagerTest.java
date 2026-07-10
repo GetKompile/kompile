@@ -17,6 +17,8 @@
 package ai.kompile.crawl.graph;
 
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.core.crawl.graph.CliAgentAvailabilityAdapter;
+import ai.kompile.core.crawl.graph.GraphExtractionConfig;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
@@ -24,11 +26,14 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Verifies the typed crawl runtime-config read/update path that backs
@@ -94,7 +99,7 @@ class CrawlRuntimeConfigManagerTest {
 
         // Defaults are exposed via the runtime-config map (project/global .kompile level).
         Map<String, Object> defaults = mgr.currentCrawlRuntimeConfig();
-        assertEquals(2, defaults.get("crawlGraphExtractionRemoteParallelism"));
+        assertEquals(4, defaults.get("crawlGraphExtractionRemoteParallelism"));
         assertEquals(64, defaults.get("crawlGraphExtractionMaxItemsPerBatch"));
 
         // And they round-trip through an update (validated/clamped, persisted to the shared file).
@@ -103,5 +108,124 @@ class CrawlRuntimeConfigManagerTest {
                 "crawlGraphExtractionMaxItemsPerBatch", 256));
         assertEquals(8, effective.get("crawlGraphExtractionRemoteParallelism"));
         assertEquals(256, effective.get("crawlGraphExtractionMaxItemsPerBatch"));
+    }
+
+    /**
+     * When the adapter returns contextBudgetChars==0 (no model discovered) but reports an
+     * agent name of "opencode", the fallback path should raise graphExtractionTargetCharsPerBatch
+     * above the static 48 000-char default and return a non-null detail string.
+     */
+    @Test
+    void contextBudgetFallbackFiresForUnknownAgent(@TempDir Path dir) {
+        CrawlRuntimeConfigManager mgr = new CrawlRuntimeConfigManager(dir.resolve("absent.json"));
+
+        // Stub adapter: model discovery fails (contextBudgetChars=0) but agent name resolves.
+        CliAgentAvailabilityAdapter stubAdapter = new CliAgentAvailabilityAdapter() {
+            @Override
+            public int contextBudgetChars(double fraction, double charsPerToken) {
+                return 0; // simulate: no models discovered
+            }
+
+            @Override
+            public String resolveExtractionAgentName() {
+                return "opencode";
+            }
+        };
+
+        CrawlLlmDispatcher dispatcher = new CrawlLlmDispatcher();
+        dispatcher.cliAgentAvailability = stubAdapter;
+
+        GraphExtractionOrchestrator orch = new GraphExtractionOrchestrator();
+        // pre-condition: static default
+        assertEquals(48_000, orch.graphExtractionTargetCharsPerBatch);
+
+        // fraction=0.7, charsPerToken=3.5; opencode fallback=128 000 tokens
+        // effectiveTokens = (128000 - 8000) = 120000; budgetChars = (int)(120000 * 3.5 * 0.7) = 294000
+        GraphExtractionConfig graphConfig = new GraphExtractionConfig();
+        graphConfig.setExtractionContextBudgetFraction(0.7);
+        graphConfig.setExtractionCharsPerToken(3.5);
+
+        String detail = mgr.applyContextBudget(graphConfig, dispatcher, orch);
+
+        assertNotNull(detail, "detail must be non-null: fallback budget should have fired");
+        assertTrue(detail.contains("fallback=true"), "detail should indicate fallback was used");
+        assertTrue(orch.graphExtractionTargetCharsPerBatch > 48_000,
+                "budget must be raised above static default; got: " + orch.graphExtractionTargetCharsPerBatch);
+    }
+
+    /**
+     * The budget update must never shrink graphExtractionTargetCharsPerBatch below its
+     * current value, even when the fallback budget is smaller than what was pre-set.
+     */
+    @Test
+    void contextBudgetNeverShrinksFromStaticDefault(@TempDir Path dir) {
+        CrawlRuntimeConfigManager mgr = new CrawlRuntimeConfigManager(dir.resolve("absent.json"));
+
+        CliAgentAvailabilityAdapter stubAdapter = new CliAgentAvailabilityAdapter() {
+            @Override
+            public int contextBudgetChars(double fraction, double charsPerToken) {
+                return 0;
+            }
+
+            @Override
+            public String resolveExtractionAgentName() {
+                return "opencode";
+            }
+        };
+
+        CrawlLlmDispatcher dispatcher = new CrawlLlmDispatcher();
+        dispatcher.cliAgentAvailability = stubAdapter;
+
+        GraphExtractionOrchestrator orch = new GraphExtractionOrchestrator();
+        // Pre-set a very large chars value — must not be reduced.
+        orch.graphExtractionTargetCharsPerBatch = 999_999;
+
+        GraphExtractionConfig graphConfig = new GraphExtractionConfig();
+        graphConfig.setExtractionContextBudgetFraction(0.7);
+        graphConfig.setExtractionCharsPerToken(3.5);
+
+        mgr.applyContextBudget(graphConfig, dispatcher, orch);
+
+        assertEquals(999_999, orch.graphExtractionTargetCharsPerBatch,
+                "budget must never shrink from a pre-set value");
+    }
+
+    /**
+     * When the fallback budget is larger than the current value, chunksPerPrompt should
+     * be scaled proportionally upward (never downward, never below initial value).
+     */
+    @Test
+    void chunksPerPromptScalesProportionally(@TempDir Path dir) {
+        CrawlRuntimeConfigManager mgr = new CrawlRuntimeConfigManager(dir.resolve("absent.json"));
+
+        CliAgentAvailabilityAdapter stubAdapter = new CliAgentAvailabilityAdapter() {
+            @Override
+            public int contextBudgetChars(double fraction, double charsPerToken) {
+                return 0; // force fallback path
+            }
+
+            @Override
+            public String resolveExtractionAgentName() {
+                return "opencode";
+            }
+        };
+
+        CrawlLlmDispatcher dispatcher = new CrawlLlmDispatcher();
+        dispatcher.cliAgentAvailability = stubAdapter;
+
+        GraphExtractionOrchestrator orch = new GraphExtractionOrchestrator();
+        // Pre-set orchestrator to match the static default so "before" is well-defined.
+        orch.graphExtractionTargetCharsPerBatch = 48_000;
+        orch.graphExtractionChunksPerPrompt = 4;
+
+        GraphExtractionConfig graphConfig = new GraphExtractionConfig();
+        graphConfig.setExtractionContextBudgetFraction(0.7);
+        graphConfig.setExtractionCharsPerToken(3.5);
+
+        mgr.applyContextBudget(graphConfig, dispatcher, orch);
+
+        // chunksPerPrompt must not be reduced below its initial value.
+        assertTrue(orch.graphExtractionChunksPerPrompt >= 4,
+                "chunksPerPrompt must not shrink; got: " + orch.graphExtractionChunksPerPrompt);
     }
 }

@@ -67,7 +67,11 @@ public final class CliAgentRegistry {
                             .description(def.description)
                             .interactivePromptPattern(def.interactivePromptPattern)
                             .modelFlag(def.modelFlag)
-                            .modelListCommand(def.modelListCommand);
+                            .modelListCommand(def.modelListCommand)
+                            .mcpSupported(def.mcpSupported)
+                            .mcpServerFlag(def.mcpServerFlag)
+                            .mcpConfigFlag(def.mcpConfigFlag)
+                            .mcpAllowToolsFlag(def.mcpAllowToolsFlag);
                     if (def.args != null) {
                         for (String arg : def.args) b.addArg(arg);
                     }
@@ -126,5 +130,9 @@ public final class CliAgentRegistry {
         public String outputMode;
         public String interactivePromptPattern;
         public List<String> modelListCommand;
+        public boolean mcpSupported;
+        public String mcpServerFlag;
+        public String mcpConfigFlag;
+        public String mcpAllowToolsFlag;
     }
 }

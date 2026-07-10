@@ -24,7 +24,10 @@ import org.nd4j.linalg.api.ndarray.INDArray;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -96,6 +99,12 @@ public class GraphNode {
     @ToString.Exclude
     @EqualsAndHashCode.Exclude
     private GraphNode parent;
+
+    /**
+     * Store-neutral parent reference used by matrix transport and lightweight fixtures.
+     */
+    @Transient
+    private String parentId;
 
     /**
      * Child nodes in the hierarchy
@@ -327,16 +336,37 @@ public class GraphNode {
     @jakarta.persistence.Transient
     @com.fasterxml.jackson.annotation.JsonProperty(value = "metadata",
             access = com.fasterxml.jackson.annotation.JsonProperty.Access.READ_ONLY)
-    public java.util.Map<String, Object> getMetadata() {
+    public Map<String, Object> getMetadata() {
         if (metadataJson == null || metadataJson.isBlank()) {
-            return java.util.Collections.emptyMap();
+            return Collections.emptyMap();
         }
         try {
             return METADATA_MAPPER.readValue(metadataJson,
                     METADATA_MAPPER.getTypeFactory().constructMapType(
-                            java.util.LinkedHashMap.class, String.class, Object.class));
+                            LinkedHashMap.class, String.class, Object.class));
         } catch (Exception e) {
-            return java.util.Collections.emptyMap();
+            return Collections.emptyMap();
         }
+    }
+
+    /** Node ID of the hierarchical parent without exposing the full association. */
+    @Transient
+    public String getParentId() {
+        return parent != null ? parent.getNodeId() : parentId;
+    }
+
+    /**
+     * Whether this is an endpoint placeholder carrying only an ID.
+     * Matrix-backed edge reads use these placeholders when an endpoint is not in the local cache.
+     */
+    @Transient
+    public boolean isHollow() {
+        return nodeId != null
+                && nodeType == null
+                && externalId == null
+                && title == null
+                && description == null
+                && metadataJson == null
+                && factSheetId == null;
     }
 }

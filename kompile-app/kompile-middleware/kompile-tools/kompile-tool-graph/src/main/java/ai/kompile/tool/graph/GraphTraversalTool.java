@@ -16,10 +16,15 @@ import ai.kompile.core.graphrag.query.GraphRagQuery;
 import ai.kompile.core.graphrag.query.GraphRagResult;
 import ai.kompile.core.graphrag.query.SearchType;
 import ai.kompile.graph.algorithms.service.GraphAlgorithmService;
+import ai.kompile.graph.reasoning.model.GraphEntity;
+import ai.kompile.graph.reasoning.model.GraphRelation;
+import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.GraphProvenanceKeys;
+import ai.kompile.knowledgegraph.domain.NodeLevel;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
+import ai.kompile.knowledgegraph.unified.UnifiedGraphBridge;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
@@ -43,6 +48,7 @@ public class GraphTraversalTool {
     private final KnowledgeGraphService graphService;
     private final GraphAlgorithmService algorithmService;
     private final GraphRagService graphRagService;
+    private final UnifiedGraphBridge unifiedGraphBridge;
 
     // ═══════════════════════════════════════════════════════════════════════════
     // INPUT RECORDS
@@ -57,28 +63,48 @@ public class GraphTraversalTool {
     public record EgoNetworkInput(
             String nodeId,
             Integer radius,
-            Integer maxNodes
-    ) {}
+            Integer maxNodes,
+            Long factSheetId
+    ) {
+        public EgoNetworkInput(String nodeId, Integer radius, Integer maxNodes) {
+            this(nodeId, radius, maxNodes, null);
+        }
+    }
 
     public record NodeEdgesInput(
             String nodeId,
             String direction,
             String edgeType,
-            Integer maxResults
-    ) {}
+            Integer maxResults,
+            Long factSheetId
+    ) {
+        public NodeEdgesInput(String nodeId, String direction, String edgeType, Integer maxResults) {
+            this(nodeId, direction, edgeType, maxResults, null);
+        }
+    }
 
     public record NeighborhoodInput(
             String nodeId,
             Integer hops,
             String nodeType,
-            Integer maxResults
-    ) {}
+            Integer maxResults,
+            Long factSheetId
+    ) {
+        public NeighborhoodInput(String nodeId, Integer hops, String nodeType, Integer maxResults) {
+            this(nodeId, hops, nodeType, maxResults, null);
+        }
+    }
 
     public record GraphVisualizationInput(
             String rootNodeId,
             Integer depth,
-            Integer maxNodes
-    ) {}
+            Integer maxNodes,
+            Long factSheetId
+    ) {
+        public GraphVisualizationInput(String rootNodeId, Integer depth, Integer maxNodes) {
+            this(rootNodeId, depth, maxNodes, null);
+        }
+    }
 
     public record HybridGraphSearchInput(
             String query,
@@ -94,16 +120,29 @@ public class GraphTraversalTool {
     public record ShortestPathInput(
             String fromNodeId,
             String toNodeId,
-            Integer maxDepth
-    ) {}
+            Integer maxDepth,
+            Long factSheetId
+    ) {
+        public ShortestPathInput(String fromNodeId, String toNodeId, Integer maxDepth) {
+            this(fromNodeId, toNodeId, maxDepth, null);
+        }
+    }
+
+    public GraphTraversalTool(KnowledgeGraphService graphService,
+                              GraphAlgorithmService algorithmService,
+                              GraphRagService graphRagService) {
+        this(graphService, algorithmService, graphRagService, null);
+    }
 
     @Autowired
     public GraphTraversalTool(KnowledgeGraphService graphService,
                               @Autowired(required = false) GraphAlgorithmService algorithmService,
-                              @Autowired(required = false) GraphRagService graphRagService) {
+                              @Autowired(required = false) GraphRagService graphRagService,
+                              @org.springframework.lang.Nullable UnifiedGraphBridge unifiedGraphBridge) {
         this.graphService = graphService;
         this.algorithmService = algorithmService;
         this.graphRagService = graphRagService;
+        this.unifiedGraphBridge = unifiedGraphBridge;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -128,28 +167,23 @@ public class GraphTraversalTool {
                 return Map.of("error", "Graph algorithm service not available");
             }
 
-            Map<Integer, List<String>> levels = algorithmService.bfsTraversal(
-                    input.factSheetId(), input.startNodeId(), maxDepth);
+            UnifiedGraph unified = unifiedGraph(input.factSheetId());
+            Map<Integer, List<String>> levels = unified != null
+                    ? algorithmService.bfsTraversalGraph(unified, input.startNodeId(), maxDepth)
+                    : algorithmService.bfsTraversal(input.factSheetId(), input.startNodeId(), maxDepth);
 
-            // Resolve all node titles
             Set<String> allNodeIds = new HashSet<>();
             levels.values().forEach(allNodeIds::addAll);
-            Map<String, GraphNode> nodeMap = graphService.getNodesByIds(new ArrayList<>(allNodeIds))
-                    .stream()
-                    .collect(Collectors.toMap(GraphNode::getNodeId, n -> n, (a, b) -> a));
+            Map<String, GraphNode> nodeMap = unified == null
+                    ? graphService.getNodesByIds(new ArrayList<>(allNodeIds)).stream()
+                            .collect(Collectors.toMap(GraphNode::getNodeId, n -> n, (a, b) -> a))
+                    : Map.of();
 
             Map<String, Object> levelDetails = new LinkedHashMap<>();
             int totalNodes = 0;
             for (Map.Entry<Integer, List<String>> entry : levels.entrySet()) {
                 List<Map<String, Object>> levelNodes = entry.getValue().stream()
-                        .map(id -> {
-                            GraphNode n = nodeMap.get(id);
-                            Map<String, Object> m = new LinkedHashMap<>();
-                            m.put("nodeId", id);
-                            m.put("title", n != null && n.getTitle() != null ? n.getTitle() : "Unknown");
-                            m.put("type", n != null ? n.getNodeType().name() : "UNKNOWN");
-                            return m;
-                        })
+                        .map(id -> nodeDetails(id, unified, nodeMap))
                         .collect(Collectors.toList());
                 levelDetails.put("level_" + entry.getKey(), levelNodes);
                 totalNodes += levelNodes.size();
@@ -157,6 +191,7 @@ public class GraphTraversalTool {
 
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("startNodeId", input.startNodeId());
+            result.put("source", unified != null ? "unified_graph" : "knowledge_graph_service");
             result.put("maxDepth", maxDepth);
             result.put("levelsReached", levels.size());
             result.put("totalNodes", totalNodes);
@@ -184,6 +219,11 @@ public class GraphTraversalTool {
                 ? Math.min(input.maxNodes(), 100) : 50;
 
         try {
+            UnifiedGraph unified = unifiedGraph(input.factSheetId());
+            if (unified != null) {
+                return unifiedEgoNetwork(input.nodeId(), radius, maxNodes, unified);
+            }
+
             List<GraphNode> connected = graphService.getConnectedNodes(input.nodeId(), radius);
             if (connected.size() > maxNodes) {
                 connected = connected.subList(0, maxNodes);
@@ -257,6 +297,11 @@ public class GraphTraversalTool {
         var edgeType = GraphSearchTool.parseEdgeType(input.edgeType());
 
         try {
+            UnifiedGraph unified = unifiedGraph(input.factSheetId());
+            if (unified != null) {
+                return unifiedNodeEdges(input.nodeId(), input.direction(), input.edgeType(), limit, unified);
+            }
+
             List<GraphEdge> edges;
             if (edgeType != null) {
                 edges = graphService.getEdgesByType(input.nodeId(), edgeType);
@@ -266,14 +311,30 @@ public class GraphTraversalTool {
 
             String direction = input.direction() != null ? input.direction().toLowerCase() : "all";
 
-            List<Map<String, Object>> edgeList = edges.stream()
+            List<GraphEdge> selectedEdges = edges.stream()
                     .filter(e -> {
                         if ("all".equals(direction)) return true;
-                        String srcId = e.getSourceNode() != null ? e.getSourceNode().getNodeId() : null;
+                        String srcId = e.getSourceNodeId();
                         if ("out".equals(direction)) return input.nodeId().equals(srcId);
                         return !input.nodeId().equals(srcId); // "in"
                     })
                     .limit(limit)
+                    .collect(Collectors.toList());
+
+            Set<String> connectedNodeIds = new LinkedHashSet<>();
+            for (GraphEdge e : selectedEdges) {
+                if (input.nodeId().equals(e.getSourceNodeId()) && e.getTargetNodeId() != null) {
+                    connectedNodeIds.add(e.getTargetNodeId());
+                } else if (e.getSourceNodeId() != null) {
+                    connectedNodeIds.add(e.getSourceNodeId());
+                }
+            }
+            Map<String, GraphNode> connectedNodes = graphService.getNodesByIds(new ArrayList<>(connectedNodeIds)).stream()
+                    .filter(Objects::nonNull)
+                    .filter(n -> n.getNodeId() != null)
+                    .collect(Collectors.toMap(GraphNode::getNodeId, n -> n, (first, ignored) -> first));
+
+            List<Map<String, Object>> edgeList = selectedEdges.stream()
                     .map(e -> {
                         Map<String, Object> m = new LinkedHashMap<>();
                         m.put("edgeId", e.getEdgeId());
@@ -281,16 +342,17 @@ public class GraphTraversalTool {
                         m.put("weight", e.getWeight());
                         m.put("description", GraphSearchTool.truncate(e.getDescription(), 150));
 
-                        // Show the "other" node
-                        String srcId = e.getSourceNode() != null ? e.getSourceNode().getNodeId() : null;
-                        if (input.nodeId().equals(srcId) && e.getTargetNode() != null) {
+                        // Show the "other" node. Titles resolve through the store when the edge
+                        // didn't embed a real node (store-loaded edges carry ids only and
+                        // getTargetNode() synthesizes a hollow, title-less node).
+                        if (input.nodeId().equals(e.getSourceNodeId()) && e.getTargetNodeId() != null) {
                             m.put("direction", "outgoing");
-                            m.put("connectedNodeId", e.getTargetNode().getNodeId());
-                            m.put("connectedTitle", e.getTargetNode().getTitle());
-                        } else if (e.getSourceNode() != null) {
+                            m.put("connectedNodeId", e.getTargetNodeId());
+                            m.put("connectedTitle", connectedTitle(e.getTargetNodeId(), e.getTargetNode(), connectedNodes));
+                        } else if (e.getSourceNodeId() != null) {
                             m.put("direction", "incoming");
-                            m.put("connectedNodeId", e.getSourceNode().getNodeId());
-                            m.put("connectedTitle", e.getSourceNode().getTitle());
+                            m.put("connectedNodeId", e.getSourceNodeId());
+                            m.put("connectedTitle", connectedTitle(e.getSourceNodeId(), e.getSourceNode(), connectedNodes));
                         }
                         return m;
                     })
@@ -324,6 +386,11 @@ public class GraphTraversalTool {
         var nodeType = GraphSearchTool.parseNodeLevel(input.nodeType());
 
         try {
+            UnifiedGraph unified = unifiedGraph(input.factSheetId());
+            if (unified != null) {
+                return unifiedNeighborhood(input.nodeId(), hops, nodeType, limit, unified);
+            }
+
             List<GraphNode> connected = graphService.getConnectedNodes(input.nodeId(), hops);
 
             List<Map<String, Object>> neighbors = connected.stream()
@@ -365,6 +432,10 @@ public class GraphTraversalTool {
                 ? Math.min(input.maxNodes(), 200) : 100;
 
         try {
+            UnifiedGraph unified = unifiedGraph(input.factSheetId());
+            if (unified != null) {
+                return unifiedVisualizationData(input.rootNodeId(), depth, maxNodes, unified);
+            }
             return graphService.getVisualizationData(input.rootNodeId(), depth, maxNodes);
         } catch (Exception e) {
             log.error("Visualization data failed: {}", e.getMessage(), e);
@@ -493,11 +564,12 @@ public class GraphTraversalTool {
         }
     }
 
-    @Tool(name = "graph_shortest_path",
-          description = "Find the shortest path between two nodes in the knowledge graph. "
+    @Tool(name = "graph_connection_path",
+          description = "Find the shortest unweighted path between two nodes in the knowledge graph. "
                   + "Returns the ordered list of nodes along the path and their details. "
                   + "maxDepth controls maximum path length (default 5, max 10). "
-                  + "Useful for understanding how two entities are connected.")
+                  + "Useful for understanding how two entities are connected. "
+                  + "For weighted/Dijkstra paths use graph_shortest_path.")
     public Map<String, Object> shortestPath(ShortestPathInput input) {
         if (input.fromNodeId() == null || input.fromNodeId().isBlank()) {
             return Map.of("error", "fromNodeId is required");
@@ -510,6 +582,11 @@ public class GraphTraversalTool {
                 ? Math.min(input.maxDepth(), 10) : 5;
 
         try {
+            UnifiedGraph unified = unifiedGraph(input.factSheetId());
+            if (unified != null) {
+                return unifiedShortestPath(input.fromNodeId(), input.toNodeId(), maxDepth, unified);
+            }
+
             List<GraphNode> path = graphService.findShortestPath(
                     input.fromNodeId(), input.toNodeId(), maxDepth);
 
@@ -565,5 +642,348 @@ public class GraphTraversalTool {
             log.error("Shortest path failed: {}", e.getMessage(), e);
             return Map.of("error", "Shortest path failed: " + e.getMessage());
         }
+    }
+
+    private Map<String, Object> unifiedEgoNetwork(String nodeId, int radius, int maxNodes, UnifiedGraph unified) {
+        Set<String> nodeIds = reachableNodeIds(unified, nodeId, radius, maxNodes, true);
+        List<Map<String, Object>> nodes = nodeIds.stream()
+                .map(unified::entity)
+                .flatMap(Optional::stream)
+                .map(entity -> unifiedNodeSummary(entity, unified))
+                .collect(Collectors.toList());
+        List<Map<String, Object>> edges = relationsWithin(unified, nodeIds).stream()
+                .map(this::unifiedEdgeSummary)
+                .collect(Collectors.toList());
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("centerNodeId", nodeId);
+        result.put("source", "unified_graph");
+        result.put("radius", radius);
+        result.put("nodeCount", nodes.size());
+        result.put("edgeCount", edges.size());
+        result.put("nodes", nodes);
+        result.put("edges", edges);
+        return result;
+    }
+
+    private Map<String, Object> unifiedNodeEdges(String nodeId,
+                                                String directionInput,
+                                                String edgeTypeInput,
+                                                int limit,
+                                                UnifiedGraph unified) {
+        String direction = directionInput != null ? directionInput.toLowerCase(Locale.ROOT) : "all";
+        var edgeType = GraphSearchTool.parseEdgeType(edgeTypeInput);
+        List<Map<String, Object>> edgeList = incidentRelations(unified, nodeId).stream()
+                .filter(r -> edgeType == null || edgeType.name().equalsIgnoreCase(r.type()))
+                .filter(r -> {
+                    if ("all".equals(direction)) return true;
+                    if ("out".equals(direction)) return nodeId.equals(r.sourceId());
+                    return nodeId.equals(r.targetId());
+                })
+                .limit(limit)
+                .map(r -> unifiedIncidentEdge(nodeId, r, unified))
+                .collect(Collectors.toList());
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("nodeId", nodeId);
+        result.put("source", "unified_graph");
+        result.put("direction", direction);
+        result.put("edgeCount", edgeList.size());
+        result.put("edges", edgeList);
+        return result;
+    }
+
+    private Map<String, Object> unifiedNeighborhood(String nodeId,
+                                                    int hops,
+                                                    NodeLevel nodeType,
+                                                    int limit,
+                                                    UnifiedGraph unified) {
+        Set<String> nodeIds = reachableNodeIds(unified, nodeId, hops, limit + 1, true);
+        List<Map<String, Object>> neighbors = nodeIds.stream()
+                .filter(id -> !nodeId.equals(id))
+                .map(unified::entity)
+                .flatMap(Optional::stream)
+                .filter(entity -> matchesNodeType(entity, nodeType))
+                .limit(limit)
+                .map(entity -> unifiedNodeSummary(entity, unified))
+                .collect(Collectors.toList());
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("nodeId", nodeId);
+        result.put("source", "unified_graph");
+        result.put("hops", hops);
+        if (nodeType != null) result.put("filteredType", nodeType.name());
+        result.put("neighborCount", neighbors.size());
+        result.put("neighbors", neighbors);
+        return result;
+    }
+
+    private Map<String, Object> unifiedVisualizationData(String rootNodeId,
+                                                         int depth,
+                                                         int maxNodes,
+                                                         UnifiedGraph unified) {
+        Set<String> nodeIds;
+        if (rootNodeId != null && !rootNodeId.isBlank()) {
+            nodeIds = reachableNodeIds(unified, rootNodeId, depth, maxNodes, true);
+        } else {
+            nodeIds = unified.entities().stream()
+                    .limit(maxNodes)
+                    .map(GraphEntity::id)
+                    .collect(Collectors.toCollection(LinkedHashSet::new));
+        }
+
+        List<Map<String, Object>> nodes = nodeIds.stream()
+                .map(unified::entity)
+                .flatMap(Optional::stream)
+                .map(entity -> {
+                    Map<String, Object> m = unifiedNodeSummary(entity, unified);
+                    m.put("id", entity.id());
+                    m.put("label", entity.label() == null || entity.label().isBlank() ? "Untitled" : entity.label());
+                    return m;
+                })
+                .collect(Collectors.toList());
+        List<Map<String, Object>> edges = relationsWithin(unified, nodeIds).stream()
+                .map(this::unifiedEdgeSummary)
+                .collect(Collectors.toList());
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("source", "unified_graph");
+        result.put("rootNodeId", rootNodeId);
+        result.put("depth", depth);
+        result.put("nodeCount", nodes.size());
+        result.put("edgeCount", edges.size());
+        result.put("nodes", nodes);
+        result.put("edges", edges);
+        return result;
+    }
+
+    private Map<String, Object> unifiedShortestPath(String fromNodeId,
+                                                    String toNodeId,
+                                                    int maxDepth,
+                                                    UnifiedGraph unified) {
+        List<String> path = shortestPathIds(unified, fromNodeId, toNodeId, maxDepth);
+        if (path.isEmpty()) {
+            return Map.of(
+                    "fromNodeId", fromNodeId,
+                    "toNodeId", toNodeId,
+                    "source", "unified_graph",
+                    "found", false,
+                    "message", "No path found within " + maxDepth + " hops"
+            );
+        }
+
+        List<Map<String, Object>> pathNodes = new ArrayList<>();
+        for (int idx = 0; idx < path.size(); idx++) {
+            String id = path.get(idx);
+            Map<String, Object> m = nodeDetails(id, unified, Map.of());
+            if (idx > 0) {
+                relationBetween(unified, path.get(idx - 1), id)
+                        .map(this::unifiedIncomingEdge)
+                        .ifPresent(edge -> m.put("incomingEdge", edge));
+            }
+            pathNodes.add(m);
+        }
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("fromNodeId", fromNodeId);
+        result.put("toNodeId", toNodeId);
+        result.put("source", "unified_graph");
+        result.put("found", true);
+        result.put("pathLength", path.size() - 1);
+        result.put("path", pathNodes);
+        return result;
+    }
+
+    private LinkedHashSet<String> reachableNodeIds(UnifiedGraph unified,
+                                                   String startNodeId,
+                                                   int maxDepth,
+                                                   int maxNodes,
+                                                   boolean includeStart) {
+        LinkedHashSet<String> visited = new LinkedHashSet<>();
+        if (startNodeId == null || startNodeId.isBlank() || maxNodes <= 0) {
+            return visited;
+        }
+        if (includeStart && unified.entity(startNodeId).isPresent()) {
+            visited.add(startNodeId);
+        }
+        Set<String> frontier = new LinkedHashSet<>();
+        frontier.add(startNodeId);
+        for (int depth = 0; depth < maxDepth && !frontier.isEmpty() && visited.size() < maxNodes; depth++) {
+            Set<String> next = new LinkedHashSet<>();
+            for (String id : frontier) {
+                for (GraphRelation relation : incidentRelations(unified, id)) {
+                    String other = id.equals(relation.sourceId()) ? relation.targetId() : relation.sourceId();
+                    if (other == null || visited.contains(other) || unified.entity(other).isEmpty()) {
+                        continue;
+                    }
+                    visited.add(other);
+                    next.add(other);
+                    if (visited.size() >= maxNodes) {
+                        break;
+                    }
+                }
+                if (visited.size() >= maxNodes) {
+                    break;
+                }
+            }
+            frontier = next;
+        }
+        return visited;
+    }
+
+    private List<String> shortestPathIds(UnifiedGraph unified, String fromNodeId, String toNodeId, int maxDepth) {
+        if (unified.entity(fromNodeId).isEmpty() || unified.entity(toNodeId).isEmpty()) {
+            return List.of();
+        }
+        Deque<List<String>> queue = new ArrayDeque<>();
+        Set<String> visited = new HashSet<>();
+        queue.add(List.of(fromNodeId));
+        visited.add(fromNodeId);
+        while (!queue.isEmpty()) {
+            List<String> path = queue.removeFirst();
+            String current = path.get(path.size() - 1);
+            if (current.equals(toNodeId)) {
+                return path;
+            }
+            if (path.size() - 1 >= maxDepth) {
+                continue;
+            }
+            for (GraphRelation relation : incidentRelations(unified, current)) {
+                String next = current.equals(relation.sourceId()) ? relation.targetId() : relation.sourceId();
+                if (next == null || !visited.add(next) || unified.entity(next).isEmpty()) {
+                    continue;
+                }
+                List<String> nextPath = new ArrayList<>(path);
+                nextPath.add(next);
+                queue.addLast(nextPath);
+            }
+        }
+        return List.of();
+    }
+
+    private List<GraphRelation> incidentRelations(UnifiedGraph unified, String nodeId) {
+        return unified.relations().stream()
+                .filter(r -> nodeId.equals(r.sourceId()) || nodeId.equals(r.targetId()))
+                .collect(Collectors.toList());
+    }
+
+    private List<GraphRelation> relationsWithin(UnifiedGraph unified, Set<String> nodeIds) {
+        Map<String, GraphRelation> unique = new LinkedHashMap<>();
+        for (GraphRelation relation : unified.relations()) {
+            if (nodeIds.contains(relation.sourceId()) && nodeIds.contains(relation.targetId())) {
+                unique.putIfAbsent(relationKey(relation), relation);
+            }
+        }
+        return new ArrayList<>(unique.values());
+    }
+
+    private Optional<GraphRelation> relationBetween(UnifiedGraph unified, String a, String b) {
+        return unified.relations().stream()
+                .filter(r -> (a.equals(r.sourceId()) && b.equals(r.targetId()))
+                        || (a.equals(r.targetId()) && b.equals(r.sourceId())))
+                .findFirst();
+    }
+
+    private Map<String, Object> unifiedNodeSummary(GraphEntity entity, UnifiedGraph unified) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("nodeId", entity.id());
+        m.put("title", entity.label() == null || entity.label().isBlank() ? "Untitled" : entity.label());
+        m.put("type", entity.type() == null || entity.type().isBlank() ? "UNKNOWN" : entity.type());
+        m.put("connections", incidentRelations(unified, entity.id()).size());
+        return m;
+    }
+
+    private Map<String, Object> unifiedIncidentEdge(String nodeId, GraphRelation relation, UnifiedGraph unified) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("edgeId", relationKey(relation));
+        m.put("edgeType", relation.type() == null || relation.type().isBlank() ? "UNKNOWN" : relation.type());
+        m.put("weight", relation.weight());
+        m.put("description", GraphSearchTool.truncate(relation.stringAttribute("description"), 150));
+        if (nodeId.equals(relation.sourceId())) {
+            m.put("direction", "outgoing");
+            m.put("connectedNodeId", relation.targetId());
+            m.put("connectedTitle", unified.entity(relation.targetId()).map(GraphEntity::label).orElse(null));
+        } else {
+            m.put("direction", "incoming");
+            m.put("connectedNodeId", relation.sourceId());
+            m.put("connectedTitle", unified.entity(relation.sourceId()).map(GraphEntity::label).orElse(null));
+        }
+        return m;
+    }
+
+    private Map<String, Object> unifiedEdgeSummary(GraphRelation relation) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("edgeId", relationKey(relation));
+        m.put("source", relation.sourceId());
+        m.put("target", relation.targetId());
+        m.put("type", relation.type() == null || relation.type().isBlank() ? "UNKNOWN" : relation.type());
+        m.put("weight", relation.weight());
+        return m;
+    }
+
+    private Map<String, Object> unifiedIncomingEdge(GraphRelation relation) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("edgeType", relation.type() == null || relation.type().isBlank() ? "UNKNOWN" : relation.type());
+        m.put("weight", relation.weight());
+        m.put("description", GraphSearchTool.truncate(relation.stringAttribute("description"), 150));
+        return m;
+    }
+
+    private boolean matchesNodeType(GraphEntity entity, NodeLevel nodeType) {
+        if (nodeType == null) {
+            return true;
+        }
+        String expected = nodeType.name();
+        return expected.equalsIgnoreCase(entity.type())
+                || entity.typeMemberships().stream().anyMatch(expected::equalsIgnoreCase);
+    }
+
+    private String relationKey(GraphRelation relation) {
+        if (relation.id() != null && !relation.id().isBlank()) {
+            return relation.id();
+        }
+        return relation.sourceId() + "->" + relation.targetId() + ":" + relation.type();
+    }
+
+    private UnifiedGraph unifiedGraph(Long factSheetId) {
+        if (unifiedGraphBridge == null || factSheetId == null) {
+            return null;
+        }
+        try {
+            return unifiedGraphBridge.export(factSheetId);
+        } catch (RuntimeException ex) {
+            log.warn("Falling back to live traversal; unified export failed for factSheet={}", factSheetId, ex);
+            return null;
+        }
+    }
+
+    private Map<String, Object> nodeDetails(String nodeId, UnifiedGraph unified, Map<String, GraphNode> liveNodes) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("nodeId", nodeId);
+        if (unified != null) {
+            Optional<GraphEntity> entity = unified.entity(nodeId);
+            if (entity.isPresent()) {
+                GraphEntity e = entity.get();
+                m.put("title", e.label() == null || e.label().isBlank() ? "Unknown" : e.label());
+                m.put("type", e.type() == null || e.type().isBlank() ? "UNKNOWN" : e.type());
+                return m;
+            }
+        }
+        GraphNode n = liveNodes.get(nodeId);
+        m.put("title", n != null && n.getTitle() != null ? n.getTitle() : "Unknown");
+        m.put("type", n != null && n.getNodeType() != null ? n.getNodeType().name() : "UNKNOWN");
+        return m;
+    }
+
+    /**
+     * Title of an edge endpoint: the embedded node's when real, else the preloaded store node.
+     */
+    private String connectedTitle(String nodeId, GraphNode embedded, Map<String, GraphNode> preloadedNodes) {
+        if (embedded != null && !embedded.isHollow()
+                && embedded.getTitle() != null && !embedded.getTitle().isBlank()) {
+            return embedded.getTitle();
+        }
+        GraphNode node = preloadedNodes.get(nodeId);
+        return node != null ? node.getTitle() : null;
     }
 }

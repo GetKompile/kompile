@@ -38,13 +38,13 @@ class InfluencePropagationTest {
     @BeforeEach
     void setUp() {
         nodeA = GraphNode.builder()
-                .id(1L).nodeId("a").title("A").nodeType(NodeLevel.ENTITY)
+                .nodeId("a").title("A").nodeType(NodeLevel.ENTITY)
                 .externalId("a").createdAt(LocalDateTime.now()).updatedAt(LocalDateTime.now()).build();
         nodeB = GraphNode.builder()
-                .id(2L).nodeId("b").title("B").nodeType(NodeLevel.ENTITY)
+                .nodeId("b").title("B").nodeType(NodeLevel.ENTITY)
                 .externalId("b").createdAt(LocalDateTime.now()).updatedAt(LocalDateTime.now()).build();
         nodeC = GraphNode.builder()
-                .id(3L).nodeId("c").title("Target").nodeType(NodeLevel.ENTITY)
+                .nodeId("c").title("Target").nodeType(NodeLevel.ENTITY)
                 .externalId("c").createdAt(LocalDateTime.now()).updatedAt(LocalDateTime.now()).build();
     }
 

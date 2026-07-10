@@ -24,6 +24,7 @@ import ai.kompile.knowledgegraph.confidence.KbConfigManager;
 import ai.kompile.knowledgegraph.maintenance.HealthSetpoints;
 import ai.kompile.knowledgegraph.maintenance.PruneCompactOrchestrator;
 import ai.kompile.knowledgegraph.maintenance.PruneCompactResult;
+import ai.kompile.knowledgegraph.matrix.gnn.GraphNeuralScoringService;
 import ai.kompile.knowledgegraph.reasoning.FactPromotionTracker;
 import ai.kompile.knowledgegraph.reasoning.IncrementalReasoningOrchestrator;
 import ai.kompile.knowledgegraph.reasoning.MebnTheoryRegistrationService;
@@ -45,6 +46,8 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyDouble;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anySet;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -85,6 +88,9 @@ class GraphHydrationOrchestratorTest {
 
     @Mock
     private MebnTheoryRegistrationService mebnRegistrationService;
+
+    @Mock
+    private GraphNeuralScoringService graphNeuralScoringService;
 
     /**
      * Used only by the flag-ON MEBN tests; NOT injected in setUp() so all other tests
@@ -148,6 +154,7 @@ class GraphHydrationOrchestratorTest {
         assertEquals(1, result.orphansRemoved(),     "P4 orphans");
         assertEquals(0, result.componentNodesRemoved(), "P5 components");
         assertEquals(4, result.stagesRun(),          "all 4 stages ran");
+        assertEquals(0, result.gnnEdgesScored(),     "GNN service is optional and absent in baseline tests");
         assertEquals("run-abc", result.runId());
 
         // WEIGHT_LEARNING is an informational sub-stage label emitted inside DERIVATION
@@ -158,8 +165,27 @@ class GraphHydrationOrchestratorTest {
                 GraphHydrationOrchestrator.STAGE_DERIVATION,
                 GraphHydrationOrchestrator.STAGE_LEARNING_METRICS,
                 GraphHydrationOrchestrator.STAGE_PRUNE_COMPACT,
+                GraphHydrationOrchestrator.STAGE_GNN_SCORING,
                 GraphHydrationOrchestrator.STAGE_ONTOLOGY_CONFORMANCE,
                 GraphHydrationOrchestrator.STAGE_HEALTH);
+    }
+
+    @Test
+    void gnnScoringStage_whenServiceWired_scoresEdgesAndCountsStage() {
+        ReflectionTestUtils.setField(orchestrator, "graphNeuralScoringService", graphNeuralScoringService);
+        when(reasoningOrchestrator.runFullReground(11L))
+                .thenReturn(new RegroundResult(1, "run-gnn", Set.of()));
+        when(pruneCompactOrchestrator.run(anyLong(), anySet(), anyString(), anyBoolean(), any(HealthSetpoints.class)))
+                .thenReturn(PruneCompactResult.of(0, 0, 0, 0, 0, null, false));
+        when(graphNeuralScoringService.scoreFactSheetEdges(anyLong(), anyInt(), anyInt(), anyInt(), anyDouble(), anyDouble()))
+                .thenReturn(new GraphNeuralScoringService.ScoringResult(
+                        "factsheet_11", 3, 2, 2, false, "ok"));
+
+        HydrationResult result = orchestrator.run(11L, HydrationConfig.defaults(), (stage, msg) -> {});
+
+        assertEquals(2, result.gnnEdgesScored());
+        assertEquals(5, result.stagesRun(), "DERIVATION + PRUNE + GNN + ONTOLOGY + HEALTH");
+        verify(graphNeuralScoringService).scoreFactSheetEdges(anyLong(), anyInt(), anyInt(), anyInt(), anyDouble(), anyDouble());
     }
 
     @Test
@@ -361,15 +387,15 @@ class GraphHydrationOrchestratorTest {
     }
 
     @Test
-    void stepPlan_legacyNoGraphConfig_enrichmentCascadedToSkip() {
-        // In legacy mode without graphExtraction config, GRAPH_EXTRACTION is SKIP
-        // → ENTITY_RESOLUTION is SKIP → EDGE_COMPUTATION is SKIP → ENRICHMENT is SKIP
+    void stepPlan_legacyNoGraphConfig_runsMandatoryGraphSpineAndEnrichment() {
+        // Legacy requests preserve the default graph-building behavior. Callers that need a
+        // narrower pipeline use an explicit strict step selection.
         CrawlStepPlan plan = CrawlStepPlan.from(UnifiedCrawlRequest.builder().build());
 
-        assertEquals(CrawlStepPlan.Action.SKIP, plan.forStep("GRAPH_EXTRACTION"));
-        assertEquals(CrawlStepPlan.Action.SKIP, plan.forStep("ENTITY_RESOLUTION"));
-        assertEquals(CrawlStepPlan.Action.SKIP, plan.forStep("EDGE_COMPUTATION"));
-        assertEquals(CrawlStepPlan.Action.SKIP, plan.forStep("ENRICHMENT"));
+        assertEquals(CrawlStepPlan.Action.RUN, plan.forStep("GRAPH_EXTRACTION"));
+        assertEquals(CrawlStepPlan.Action.RUN, plan.forStep("ENTITY_RESOLUTION"));
+        assertEquals(CrawlStepPlan.Action.RUN, plan.forStep("EDGE_COMPUTATION"));
+        assertEquals(CrawlStepPlan.Action.RUN, plan.forStep("ENRICHMENT"));
     }
 
     @Test

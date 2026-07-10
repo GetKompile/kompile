@@ -45,7 +45,15 @@ public final class AgentFlagOverrides {
     }
 
     public enum FlagSet {
-        PERMISSION_BYPASS("permissionBypass");
+        /** Permission-bypass flags for one-shot / {@code run} mode (all agents, incl. opencode). */
+        PERMISSION_BYPASS("permissionBypass"),
+        /**
+         * Permission-bypass flags valid in an agent's <em>interactive</em> TUI launch. Same as
+         * {@link #PERMISSION_BYPASS} except opencode, which only accepts the flag on {@code run}
+         * (it auto-approves in the interactive TUI, so no flag is needed — and adding one breaks
+         * the launch).
+         */
+        INTERACTIVE_PERMISSION_BYPASS("interactivePermissionBypass");
 
         private final String key;
 
@@ -70,6 +78,39 @@ public final class AgentFlagOverrides {
             return;
         }
         command.addAll(flags(agentName, FlagSet.PERMISSION_BYPASS, workingDirectory));
+    }
+
+    /**
+     * Append the interactive-TUI permission-bypass flags for {@code agentName} to {@code command}
+     * when {@code enabled}. Use this for persistent interactive launches (managed/raw passthrough);
+     * use {@link #addPermissionBypassFlags} for one-shot {@code run}/{@code -p} launches. The two
+     * differ only for opencode (see {@link FlagSet#INTERACTIVE_PERMISSION_BYPASS}).
+     */
+    public static void addInteractivePermissionBypassFlags(List<String> command,
+                                                           String agentName,
+                                                           boolean enabled,
+                                                           Path workingDirectory) {
+        if (!enabled || command == null) {
+            return;
+        }
+        command.addAll(flags(agentName, FlagSet.INTERACTIVE_PERMISSION_BYPASS, workingDirectory));
+    }
+
+    /**
+     * Append the model-selection flag for {@code agentName} to {@code command} when
+     * {@code model} is non-blank. Every supported agent CLI (claude, codex, opencode,
+     * qwen, gemini) accepts {@code --model <name>} on its interactive launch — the same
+     * flag the headless stream-json lane already passes via
+     * {@link PersistentAgentProcess.Builder#model}. Opencode expects
+     * {@code provider/model} (e.g. {@code anthropic/claude-haiku-4-5}); the value is
+     * passed through verbatim, callers pick the agent-appropriate form.
+     */
+    public static void addModelFlag(List<String> command, String agentName, String model) {
+        if (command == null || model == null || model.isBlank()) {
+            return;
+        }
+        command.add("--model");
+        command.add(model.trim());
     }
 
     public static List<String> permissionBypassFlags(String agentName) {
@@ -140,15 +181,22 @@ public final class AgentFlagOverrides {
     }
 
     private static List<String> defaultFlags(String agentKey, FlagSet flagSet) {
-        if (flagSet != FlagSet.PERMISSION_BYPASS) {
-            return Collections.emptyList();
-        }
-        return switch (agentKey) {
-            case "claude", "opencode" -> List.of("--dangerously-skip-permissions");
-            case "codex" -> List.of("--dangerously-bypass-approvals-and-sandbox");
-            case "qwen", "gemini" -> List.of("--yolo");
-            case "pi" -> Collections.emptyList(); // pi is non-interactive in -p mode, no bypass needed
-            default -> Collections.emptyList();
+        return switch (flagSet) {
+            case PERMISSION_BYPASS -> switch (agentKey) {
+                case "claude", "opencode" -> List.of("--dangerously-skip-permissions");
+                case "codex" -> List.of("--dangerously-bypass-approvals-and-sandbox");
+                case "qwen", "gemini" -> List.of("--yolo");
+                case "pi" -> Collections.emptyList(); // pi is non-interactive in -p mode, no bypass needed
+                default -> Collections.emptyList();
+            };
+            // Interactive TUI launch: same as run-mode EXCEPT opencode (auto-approves in the TUI;
+            // --dangerously-skip-permissions is only valid on `opencode run` and breaks the TUI).
+            case INTERACTIVE_PERMISSION_BYPASS -> switch (agentKey) {
+                case "claude" -> List.of("--dangerously-skip-permissions");
+                case "codex" -> List.of("--dangerously-bypass-approvals-and-sandbox");
+                case "qwen", "gemini" -> List.of("--yolo");
+                default -> Collections.emptyList(); // opencode / pi / unknown: no flag
+            };
         };
     }
 

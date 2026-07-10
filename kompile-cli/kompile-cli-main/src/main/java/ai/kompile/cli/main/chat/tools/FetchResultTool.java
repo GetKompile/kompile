@@ -47,10 +47,21 @@ public class FetchResultTool implements CliTool {
 
     @Override
     public String description() {
-        return "Retrieve a previously cached tool result by its reference handle (result_id). " +
-                "When tool outputs are large, they are stored and a summary + result_id is returned. " +
-                "Use this tool to fetch the full content or a specific slice (offset/limit by lines) " +
-                "when you need the complete data.";
+        return "Read a large tool result that was cached instead of returned inline. When a tool's " +
+                "output is big, the system stores the full result and hands back a summary + result_id " +
+                "(this is normal, not an error). Call fetch_result with that result_id to read the " +
+                "already-computed result — page with offset (1-based line) and limit, or pass a pattern " +
+                "to return only matching lines (grep over the cached result) so you pull just what you " +
+                "need. Prefer this over re-running the tool or falling back to bash to dodge the handle — " +
+                "that repeats work and can miss data; only re-run when you genuinely need a narrower or " +
+                "different query.";
+    }
+
+    @Override
+    public String compactHint() {
+        return "READ a large cached result (not an error) by result_id — don't re-run or use bash. "
+                + "offset=1-based line; limit=lines(200); pattern=<regex> filters to matching lines "
+                + "(grep it). Expires ~15min.";
     }
 
     @Override
@@ -66,11 +77,18 @@ public class FetchResultTool implements CliTool {
 
         ObjectNode offset = props.putObject("offset");
         offset.put("type", "integer");
-        offset.put("description", "Starting line to retrieve (0-based). Default: 0.");
+        offset.put("description", "Starting line to retrieve (1-based, like the read tool). Default: 1.");
 
         ObjectNode limit = props.putObject("limit");
         limit.put("type", "integer");
         limit.put("description", "Maximum lines to return. Default: 200.");
+
+        ObjectNode pattern = props.putObject("pattern");
+        pattern.put("type", "string");
+        pattern.put("description", "Optional: return only lines matching this regex (case-insensitive; "
+                + "literal substring if not a valid regex), like grep over the cached result — each match "
+                + "is prefixed with its 1-based line number. Use it to pull just the relevant lines instead "
+                + "of paging the whole result.");
 
         schema.putArray("required").add("result_id");
         return schema;
@@ -78,6 +96,9 @@ public class FetchResultTool implements CliTool {
 
     @Override
     public String permissionKey() { return "read"; }
+
+    @Override
+    public McpToolAnnotations mcpAnnotations() { return McpToolAnnotations.READ_ONLY; }
 
     @Override
     public ToolResult execute(JsonNode params, ToolContext context) throws ToolExecutionException {
@@ -88,9 +109,13 @@ public class FetchResultTool implements CliTool {
             return ToolResult.error("result_id is required");
         }
 
-        int offset = params.path("offset").asInt(0);
+        int offset = params.path("offset").asInt(1);
+        if (offset < 1) offset = 1;
         int limit = params.path("limit").asInt(200);
+        String pattern = params.path("pattern").asText("");
 
-        return cache.getSlice(resultId, offset, limit);
+        // Public contract is a 1-based line offset (consistent with the read tool); the cache
+        // slice primitive is 0-based, so convert here. A blank pattern means a plain slice.
+        return cache.getSlice(resultId, offset - 1, limit, pattern.isBlank() ? null : pattern);
     }
 }

@@ -25,6 +25,7 @@ import lombok.NoArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.io.File;
@@ -64,13 +65,13 @@ public class StagingServerLifecycleService {
     private static final int STARTUP_TIMEOUT_SECONDS = 120;
     private static final long STARTUP_WAIT_MS = 2_000L; // 2 seconds between health polls
 
-    @org.springframework.beans.factory.annotation.Value("${kompile.staging.auto-start:true}")
+    @Value("${kompile.staging.auto-start:true}")
     private boolean autoStartEnabled = true;
 
-    @org.springframework.beans.factory.annotation.Value("${kompile.staging.port:8090}")
+    @Value("${kompile.staging.port:8090}")
     private int configuredPort = DEFAULT_PORT;
 
-    @org.springframework.beans.factory.annotation.Value("${kompile.staging.heap-size:4g}")
+    @Value("${kompile.staging.heap-size:4g}")
     private String heapSize = "4g";
 
     @Autowired(required = false)

@@ -68,7 +68,7 @@ function createTestBed() {
   const agentChatServiceSpy = jasmine.createSpyObj('LocalAgentChatService', [
     'getStreamingContent', 'getStreamingComplete', 'getStreamingError',
     'getChatStats', 'getSources', 'getFilesModified', 'getToolUse',
-    'sendMessage', 'cancelStreaming', 'createSession'
+    'sendMessage', 'cancelStreaming', 'createSession', 'getCompaction'
   ]);
   const agentServiceSpy = jasmine.createSpyObj('AgentService', [
     'getAllAgents', 'getAvailableAgents', 'getKompileLocalStatus'
@@ -82,7 +82,7 @@ function createTestBed() {
     'getMessageContent'
   ]);
   const cliTranscriptServiceSpy = jasmine.createSpyObj('CliTranscriptService', [
-    'listSessions', 'discoverSources', 'getTranscript'
+    'listSessions', 'discoverSources', 'getTranscript', 'getSyncStatus'
   ]);
   const folderServiceSpy = jasmine.createSpyObj('FolderService', [
     'getFolders', 'getFolderFiles', 'associateSession', 'disassociateSession'
@@ -115,6 +115,9 @@ function createTestBed() {
   chatHistoryServiceSpy.getSessions.and.returnValue(of([]));
   cliTranscriptServiceSpy.listSessions.and.returnValue(of([]));
   cliTranscriptServiceSpy.discoverSources.and.returnValue(of({}));
+  cliTranscriptServiceSpy.getSyncStatus.and.returnValue(of({
+    running: false, sourceIndex: 0, totalSources: 0, sourcePending: 0, sourceImported: 0
+  } as any));
   folderServiceSpy.getFolders.and.returnValue(of([]));
 
   // Streaming observables — replaced per-test as needed
@@ -125,6 +128,7 @@ function createTestBed() {
   agentChatServiceSpy.getSources.and.returnValue(new Subject<any>().asObservable());
   agentChatServiceSpy.getFilesModified.and.returnValue(new Subject<any>().asObservable());
   agentChatServiceSpy.getToolUse.and.returnValue(new Subject<any>().asObservable());
+  agentChatServiceSpy.getCompaction.and.returnValue(new Subject<any>().asObservable());
   agentChatServiceSpy.sendMessage.and.returnValue(Promise.resolve());
   agentChatServiceSpy.createSession.and.returnValue({
     id: 'agent-session-1',

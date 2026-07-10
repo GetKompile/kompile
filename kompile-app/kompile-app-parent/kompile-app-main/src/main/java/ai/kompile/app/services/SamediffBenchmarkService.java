@@ -16,14 +16,12 @@
 
 package ai.kompile.app.services;
 
-import ai.kompile.app.config.Nd4jEnvironmentConfig;
 import ai.kompile.app.config.SamediffBenchmarkConfig;
 import ai.kompile.app.web.dto.SamediffBenchmarkResult;
 import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
-import org.nd4j.linalg.factory.Nd4j;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -194,14 +192,8 @@ public class SamediffBenchmarkService {
      * Apply a benchmark config's Triton/CUDA settings to the ND4J environment.
      */
     public void applyConfigToEnvironment(SamediffBenchmarkConfig config) {
-        if (Nd4j.getEnvironment().isCPU()) {
-            log.warn("Cannot apply Triton/CUDA benchmark settings on CPU backend");
-            return;
-        }
-
-        Nd4jEnvironmentConfig envUpdate = config.toNd4jEnvironmentConfig();
-        nd4jConfigService.updateConfiguration(envUpdate);
-        log.info("Applied benchmark config '{}' to ND4J environment", config.name());
+        log.warn("Skipping benchmark config '{}' application in app-main; ND4J benchmark settings must be applied in a managed subprocess",
+                config.name());
     }
 
     /**
@@ -229,91 +221,11 @@ public class SamediffBenchmarkService {
             return SamediffBenchmarkResult.failed(configName, "Config not found: " + configName);
         }
 
-        if (Nd4j.getEnvironment().isCPU()) {
-            return SamediffBenchmarkResult.failed(configName, "Benchmarks require CUDA backend");
-        }
-
-        log.info("Running benchmark with config: {}", configName);
-
-        try {
-            // Apply the config
-            long resetStart = System.currentTimeMillis();
-            applyConfigToEnvironment(config);
-            long resetMs = System.currentTimeMillis() - resetStart;
-
-            // Read current Triton metrics (before inference)
-            var env = Nd4j.getEnvironment();
-            int tritonLaunchesBefore = 0;
-            int tritonCacheHitsBefore = 0;
-
-            // Perform a simple benchmark — matrix operations as proxy for inference
-            long compileStart = System.currentTimeMillis();
-            // Warm-up: create and compute with arrays to trigger Triton compilation
-            var a = Nd4j.rand(new int[]{512, 512});
-            var b = Nd4j.rand(new int[]{512, 512});
-            var warmup = a.mmul(b);
-            warmup.close();
-            long compileMs = System.currentTimeMillis() - compileStart;
-
-            // Decode phase — simulated inference iterations
-            int iterations = config.maxTokens() != null ? config.maxTokens() : 256;
-            int actualIterations = Math.min(iterations, 100); // Cap for benchmark
-            long decodeStart = System.currentTimeMillis();
-            long firstTokenMs = 0;
-            for (int i = 0; i < actualIterations; i++) {
-                var result = a.mmul(b);
-                if (i == 0) {
-                    firstTokenMs = System.currentTimeMillis() - decodeStart;
-                }
-                result.close();
-            }
-            long decodeMs = System.currentTimeMillis() - decodeStart;
-
-            a.close();
-            b.close();
-
-            long totalMs = resetMs + compileMs + decodeMs;
-            double tokPerSec = actualIterations > 0 ? (actualIterations * 1000.0) / totalMs : 0;
-            double decodeTokPerSec = decodeMs > 0 ? (actualIterations * 1000.0) / decodeMs : 0;
-
-            SamediffBenchmarkResult result = new SamediffBenchmarkResult(
-                    configName, true, null,
-                    resetMs, compileMs, decodeMs, 0, totalMs,
-                    actualIterations, tokPerSec, decodeTokPerSec, firstTokenMs,
-                    0, 0,
-                    "Benchmark completed: " + actualIterations + " iterations",
-                    "completed",
-                    Instant.now().toString()
-            );
-
-            results.add(result);
-            persistResults();
-
-            // Update lastUsedAt
-            SamediffBenchmarkConfig updated = new SamediffBenchmarkConfig(
-                    config.name(), config.isActive(), config.createdAt(), Instant.now().toString(),
-                    config.tritonBuildThreads(), config.tritonCacheEnabled(), config.tritonVerbose(),
-                    config.tritonAlwaysCompile(), config.tritonNumWarps(), config.tritonNumStages(),
-                    config.tritonNumCTAs(), config.tritonEnableFpFusion(), config.tritonCacheDir(),
-                    config.tritonDumpDir(), config.tritonOverrideArch(),
-                    config.cudaTensorCoreEnabled(), config.cudaGraphOptimization(),
-                    config.maxTokens(), config.captureMinExec(),
-                    config.minDiversityPct(), config.expectedSubstrings(), config.expectStructuralTags()
-            );
-            configs.put(configName, updated);
-            persistConfigs();
-
-            log.info("Benchmark '{}' completed: {} tok/s (decode: {} tok/s)",
-                    configName, String.format("%.1f", tokPerSec), String.format("%.1f", decodeTokPerSec));
-            return result;
-
-        } catch (Exception e) {
-            log.error("Benchmark '{}' failed: {}", configName, e.getMessage(), e);
-            SamediffBenchmarkResult failed = SamediffBenchmarkResult.failed(configName, e.getMessage());
-            results.add(failed);
-            persistResults();
-            return failed;
-        }
+        SamediffBenchmarkResult failed = SamediffBenchmarkResult.failed(configName,
+                "SameDiff benchmarks are disabled in app-main; run them through a managed subprocess benchmark path");
+        results.add(failed);
+        persistResults();
+        return failed;
     }
 
     /**

@@ -50,7 +50,7 @@ class GraphExtractionConfigServiceTest {
     void getConfig_returnsDefaults() {
         GraphExtractionConfig config = service.getConfig();
         assertNotNull(config);
-        assertFalse(config.enabled);
+        assertTrue(service.isEnabled());
         assertEquals(10, config.batchSize);
         assertEquals("LENIENT", config.schemaEnforcement);
         assertEquals(List.of(), config.entityTypes);
@@ -86,8 +86,8 @@ class GraphExtractionConfigServiceTest {
     }
 
     @Test
-    void isEnabled_defaultsFalse() {
-        assertFalse(service.isEnabled());
+    void isEnabled_defaultsTrueBecauseGraphExtractionIsMandatory() {
+        assertTrue(service.isEnabled());
     }
 
     @Test
@@ -100,12 +100,11 @@ class GraphExtractionConfigServiceTest {
     @Test
     void updateConfig_mergesNonNullFields() {
         GraphExtractionConfig update = new GraphExtractionConfig();
-        update.enabled = true;
         update.batchSize = 20;
 
         GraphExtractionConfig result = service.updateConfig(update);
 
-        assertTrue(result.enabled);
+        assertTrue(service.isEnabled());
         assertEquals(20, result.batchSize);
         // Unchanged fields keep defaults
         assertEquals("LENIENT", result.schemaEnforcement);
@@ -113,18 +112,17 @@ class GraphExtractionConfigServiceTest {
 
     @Test
     void updateConfig_nullFieldsIgnored() {
-        // First set enabled=true
         GraphExtractionConfig update1 = new GraphExtractionConfig();
-        update1.enabled = true;
+        update1.schemaEnforcement = "STRICT";
         service.updateConfig(update1);
 
-        // Now update only batchSize (enabled is null, should not change)
         GraphExtractionConfig update2 = new GraphExtractionConfig();
         update2.batchSize = 5;
         GraphExtractionConfig result = service.updateConfig(update2);
 
-        assertTrue(result.enabled); // still true
+        assertTrue(service.isEnabled());
         assertEquals(5, result.batchSize);
+        assertEquals("STRICT", result.schemaEnforcement);
     }
 
     @Test
@@ -264,7 +262,6 @@ class GraphExtractionConfigServiceTest {
     @Test
     void isEnabled_afterUpdate_returnsTrue() {
         GraphExtractionConfig update = new GraphExtractionConfig();
-        update.enabled = true;
         service.updateConfig(update);
         assertTrue(service.isEnabled());
     }
@@ -283,14 +280,13 @@ class GraphExtractionConfigServiceTest {
     void resetToDefaults_restoresDefaults() {
         // Change some values
         GraphExtractionConfig update = new GraphExtractionConfig();
-        update.enabled = true;
         update.batchSize = 50;
         update.extractionModelProvider = "openai";
         service.updateConfig(update);
 
         // Reset
         GraphExtractionConfig result = service.resetToDefaults();
-        assertFalse(result.enabled);
+        assertTrue(service.isEnabled());
         assertEquals(10, result.batchSize);
         assertEquals("default", result.extractionModelProvider);
     }
@@ -300,7 +296,6 @@ class GraphExtractionConfigServiceTest {
     @Test
     void updateConfig_persistsToNewInstance() {
         GraphExtractionConfig update = new GraphExtractionConfig();
-        update.enabled = true;
         update.batchSize = 30;
         service.updateConfig(update);
 
@@ -309,7 +304,7 @@ class GraphExtractionConfigServiceTest {
         service2.init();
 
         GraphExtractionConfig loaded = service2.getConfig();
-        assertTrue(loaded.enabled);
+        assertTrue(service2.isEnabled());
         assertEquals(30, loaded.batchSize);
     }
 
@@ -323,7 +318,6 @@ class GraphExtractionConfigServiceTest {
 
         GraphExtractionConfig copy = original.copy();
 
-        assertEquals(original.enabled, copy.enabled);
         assertEquals(original.batchSize, copy.batchSize);
         assertEquals(List.of("PERSON"), copy.entityTypes);
         // Password is masked in copy

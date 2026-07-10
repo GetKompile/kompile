@@ -9,6 +9,8 @@
  */
 package ai.kompile.app.web.controllers.explain;
 
+import ai.kompile.graph.reasoning.explain.ReasoningTraceGapAnalyzer;
+import ai.kompile.graph.reasoning.explain.ReasoningTraceRenderer;
 import ai.kompile.graph.reasoning.explain.ReasoningTrail;
 
 import java.time.Instant;
@@ -30,6 +32,9 @@ import java.util.List;
  * @param activatedRules         rules that fired
  * @param computedAt             server timestamp
  * @param trail                  the full ReasoningTrail record (all fields)
+ * @param llmContext             compact, bounded reasoning trace text for model prompts
+ * @param attributionIndex       citeable trace steps for claim-level attribution
+ * @param traceGaps              actionable open questions tied to trace step IDs
  */
 public record ExplainResponse(
         String targetId,
@@ -41,7 +46,10 @@ public record ExplainResponse(
         List<String> evidence,
         List<String> activatedRules,
         Instant computedAt,
-        ReasoningTrail trail
+        ReasoningTrail trail,
+        String llmContext,
+        List<ReasoningTraceRenderer.AttributionStep> attributionIndex,
+        List<ReasoningTraceGapAnalyzer.TraceGap> traceGaps
 ) {
     /** Construct a response directly from a ReasoningTrail, flattening key fields. */
     public static ExplainResponse fromTrail(ReasoningTrail trail) {
@@ -59,7 +67,10 @@ public record ExplainResponse(
                 trail.evidence(),
                 trail.activatedRules(),
                 trail.computedAt(),
-                trail
+                trail,
+                ReasoningTraceRenderer.toLlmContext(trail, 40),
+                ReasoningTraceRenderer.attributionIndex(trail),
+                ReasoningTraceGapAnalyzer.traceGaps(trail)
         );
     }
 
@@ -79,7 +90,10 @@ public record ExplainResponse(
                 trail.evidence(),
                 trail.activatedRules(),
                 trail.computedAt(),
-                trail
+                trail,
+                ReasoningTraceRenderer.toLlmContext(trail, 40),
+                ReasoningTraceRenderer.attributionIndex(trail),
+                ReasoningTraceGapAnalyzer.traceGaps(trail)
         );
     }
 }

@@ -39,9 +39,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -72,7 +70,7 @@ class OntologyConformanceTaggerTest {
     private KnowledgeGraphService knowledgeGraphService;
 
     @Captor
-    private ArgumentCaptor<Map<String, Object>> metaCaptor;
+    private ArgumentCaptor<List<KnowledgeGraphService.NodeMetadataUpdate>> batchCaptor;
 
     private OntologyConformanceTagger tagger;
 
@@ -103,13 +101,19 @@ class OntologyConformanceTaggerTest {
         assertEquals(0, result.nodesTaggedConformant());
         assertEquals(1, result.nodesTaggedNonConformant());
 
-        verify(knowledgeGraphService).updateNode(
-                eq("node-1"), eq(node.getTitle()), eq(node.getDescription()), metaCaptor.capture());
+        // per-node updateNode must NOT be called — all writes go through the batch
+        verify(knowledgeGraphService, never()).updateNode(anyString(), any(), any(), any());
 
-        Map<String, Object> writtenMeta = metaCaptor.getValue();
-        assertThat(writtenMeta).containsEntry(OntologyConformanceTagger.META_CONFORMANT, "false");
-        assertThat(writtenMeta).containsKey(OntologyConformanceTagger.META_VIOLATION);
-        assertThat((String) writtenMeta.get(OntologyConformanceTagger.META_VIOLATION))
+        verify(knowledgeGraphService).updateNodeKgeMetadataBatch(batchCaptor.capture());
+        List<KnowledgeGraphService.NodeMetadataUpdate> updates = batchCaptor.getValue();
+        assertThat(updates).hasSize(1);
+        KnowledgeGraphService.NodeMetadataUpdate update = updates.get(0);
+        assertThat(update.nodeId()).isEqualTo("node-1");
+        assertThat(update.additionalMetadata())
+                .containsEntry(OntologyConformanceTagger.META_CONFORMANT, "false");
+        assertThat(update.additionalMetadata())
+                .containsKey(OntologyConformanceTagger.META_VIOLATION);
+        assertThat((String) update.additionalMetadata().get(OntologyConformanceTagger.META_VIOLATION))
                 .contains("PRODUCT")
                 .contains("not in bound ontology");
     }
@@ -134,12 +138,19 @@ class OntologyConformanceTaggerTest {
         assertEquals(1, result.nodesTaggedConformant());
         assertEquals(0, result.nodesTaggedNonConformant());
 
-        verify(knowledgeGraphService).updateNode(
-                eq("node-2"), eq(node.getTitle()), eq(node.getDescription()), metaCaptor.capture());
+        // per-node updateNode must NOT be called — all writes go through the batch
+        verify(knowledgeGraphService, never()).updateNode(anyString(), any(), any(), any());
 
-        Map<String, Object> writtenMeta = metaCaptor.getValue();
-        assertThat(writtenMeta).containsEntry(OntologyConformanceTagger.META_CONFORMANT, "true");
-        assertThat(writtenMeta).doesNotContainKey(OntologyConformanceTagger.META_VIOLATION);
+        verify(knowledgeGraphService).updateNodeKgeMetadataBatch(batchCaptor.capture());
+        List<KnowledgeGraphService.NodeMetadataUpdate> updates = batchCaptor.getValue();
+        assertThat(updates).hasSize(1);
+        KnowledgeGraphService.NodeMetadataUpdate update = updates.get(0);
+        assertThat(update.nodeId()).isEqualTo("node-2");
+        assertThat(update.additionalMetadata())
+                .containsEntry(OntologyConformanceTagger.META_CONFORMANT, "true");
+        // tag-delta for conformant nodes contains only META_CONFORMANT (no violation key)
+        assertThat(update.additionalMetadata())
+                .doesNotContainKey(OntologyConformanceTagger.META_VIOLATION);
     }
 
     // ──────────────────────────────────────────────────────────────────────────────
@@ -176,8 +187,8 @@ class OntologyConformanceTaggerTest {
         OntologyConformanceTagger.TagResult result = bare.tag(FS_ID, true);
 
         assertThat(result).isEqualTo(OntologyConformanceTagger.TagResult.empty());
-        verify(knowledgeGraphService, never())
-                .updateNode(anyString(), any(), any(), any());
+        verify(knowledgeGraphService, never()).updateNode(anyString(), any(), any(), any());
+        verify(knowledgeGraphService, never()).updateNodeKgeMetadataBatch(any());
     }
 
     // ──────────────────────────────────────────────────────────────────────────────
@@ -191,10 +202,9 @@ class OntologyConformanceTaggerTest {
         OntologyConformanceTagger.TagResult result = tagger.tag(FS_ID, true);
 
         assertThat(result).isEqualTo(OntologyConformanceTagger.TagResult.empty());
-        verify(knowledgeGraphService, never())
-                .updateNode(anyString(), any(), any(), any());
-        verify(knowledgeGraphService, never())
-                .getNodesByTypeInFactSheet(any(), any());
+        verify(knowledgeGraphService, never()).updateNode(anyString(), any(), any(), any());
+        verify(knowledgeGraphService, never()).updateNodeKgeMetadataBatch(any());
+        verify(knowledgeGraphService, never()).getNodesByTypeInFactSheet(any(), any());
     }
 
     // ──────────────────────────────────────────────────────────────────────────────
@@ -209,8 +219,8 @@ class OntologyConformanceTaggerTest {
         OntologyConformanceTagger.TagResult result = tagger.tag(FS_ID, true);
 
         assertThat(result).isEqualTo(OntologyConformanceTagger.TagResult.empty());
-        verify(knowledgeGraphService, never())
-                .updateNode(anyString(), any(), any(), any());
+        verify(knowledgeGraphService, never()).updateNode(anyString(), any(), any(), any());
+        verify(knowledgeGraphService, never()).updateNodeKgeMetadataBatch(any());
     }
 
     // ──────────────────────────────────────────────────────────────────────────────
@@ -254,9 +264,22 @@ class OntologyConformanceTaggerTest {
         assertEquals(2, result.nodesTaggedNonConformant(), "PRODUCT + LOCATION");
         assertEquals(4, result.totalNodesTagged());
 
-        // updateNode called once per node
-        verify(knowledgeGraphService, times(4))
-                .updateNode(anyString(), any(), any(), any());
+        // per-node updateNode must NOT be called — all 4 writes go through one batch call
+        verify(knowledgeGraphService, never()).updateNode(anyString(), any(), any(), any());
+
+        verify(knowledgeGraphService).updateNodeKgeMetadataBatch(batchCaptor.capture());
+        List<KnowledgeGraphService.NodeMetadataUpdate> updates = batchCaptor.getValue();
+        assertThat(updates).hasSize(4);
+
+        // verify each node has the right conformance flag
+        Map<String, String> conformanceById = new java.util.HashMap<>();
+        for (KnowledgeGraphService.NodeMetadataUpdate u : updates) {
+            conformanceById.put(u.nodeId(), (String) u.additionalMetadata().get(OntologyConformanceTagger.META_CONFORMANT));
+        }
+        assertThat(conformanceById).containsEntry("person-node",  "true");
+        assertThat(conformanceById).containsEntry("org-node",     "true");
+        assertThat(conformanceById).containsEntry("product-node", "false");
+        assertThat(conformanceById).containsEntry("location-node","false");
     }
 
     // ──────────────────────────────────────────────────────────────────────────────
@@ -297,11 +320,17 @@ class OntologyConformanceTaggerTest {
         assertEquals(0, result.nodesTaggedConformant());
         assertEquals(1, result.nodesTaggedNonConformant());
 
-        verify(knowledgeGraphService).updateNode(
-                eq("no-type-node"), any(), any(), metaCaptor.capture());
-        Map<String, Object> writtenMeta = metaCaptor.getValue();
-        assertThat(writtenMeta).containsEntry(OntologyConformanceTagger.META_CONFORMANT, "false");
-        assertThat((String) writtenMeta.get(OntologyConformanceTagger.META_VIOLATION))
+        // per-node updateNode must NOT be called — writes go through the batch
+        verify(knowledgeGraphService, never()).updateNode(anyString(), any(), any(), any());
+
+        verify(knowledgeGraphService).updateNodeKgeMetadataBatch(batchCaptor.capture());
+        List<KnowledgeGraphService.NodeMetadataUpdate> updates = batchCaptor.getValue();
+        assertThat(updates).hasSize(1);
+        KnowledgeGraphService.NodeMetadataUpdate update = updates.get(0);
+        assertThat(update.nodeId()).isEqualTo("no-type-node");
+        assertThat(update.additionalMetadata())
+                .containsEntry(OntologyConformanceTagger.META_CONFORMANT, "false");
+        assertThat((String) update.additionalMetadata().get(OntologyConformanceTagger.META_VIOLATION))
                 .contains("unknown");
     }
 

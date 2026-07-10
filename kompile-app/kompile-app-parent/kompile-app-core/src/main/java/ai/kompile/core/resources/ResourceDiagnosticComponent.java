@@ -41,9 +41,7 @@ public class ResourceDiagnosticComponent implements RuntimeHintsRegistrar {
         PathMatchingResourcePatternResolver resolver = new PathMatchingResourcePatternResolver();
 
         String[] patterns = {
-                "classpath:/ai/kompile/bindings/**/*.so",
                 "classpath:/org/eclipse/deeplearning4j/tokenizers/**/*.so",
-                "classpath*:/ai/kompile/bindings/**/*.so",
                 "classpath*:/org/eclipse/deeplearning4j/tokenizers/**/*.so"
         };
 
@@ -68,7 +66,7 @@ public class ResourceDiagnosticComponent implements RuntimeHintsRegistrar {
 
         // Try to register individual resources and see what fails
         String[] individualResources = {
-                "/ai/kompile/bindings/linux-x86_64/libjnitokenizers.so",
+                "/org/eclipse/deeplearning4j/tokenizers/bindings/linux-x86_64/libjnitokenizers.so",
                 "/org/eclipse/deeplearning4j/tokenizers/linux-x86_64/libtokenizers_wrapper.so"
         };
 
@@ -100,7 +98,7 @@ public class ResourceDiagnosticComponent implements RuntimeHintsRegistrar {
         log.debug("=== Runtime Resource Check ===");
 
         String[] resourcesToCheck = {
-                "/ai/kompile/bindings/linux-x86_64/libjnitokenizers.so",
+                "/org/eclipse/deeplearning4j/tokenizers/bindings/linux-x86_64/libjnitokenizers.so",
                 "/org/eclipse/deeplearning4j/tokenizers/linux-x86_64/libtokenizers_wrapper.so"
         };
 

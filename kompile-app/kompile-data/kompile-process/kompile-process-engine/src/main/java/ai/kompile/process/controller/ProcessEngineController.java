@@ -28,10 +28,13 @@ import ai.kompile.process.service.ProcessEngineService;
 import ai.kompile.process.service.SpelEvaluationResult;
 import ai.kompile.process.service.StepExecutionDispatcher;
 import ai.kompile.process.workflow.ProcessDefinition;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -71,7 +74,7 @@ public class ProcessEngineController {
     private final StepExecutionDispatcher stepExecutionDispatcher;
 
     public ProcessEngineController(ProcessEngineService processEngineService,
-                                    @org.springframework.beans.factory.annotation.Autowired(required = false)
+                                    @Autowired(required = false)
                                     StepExecutionDispatcher stepExecutionDispatcher) {
         this.processEngineService = processEngineService;
         this.stepExecutionDispatcher = stepExecutionDispatcher;
@@ -441,17 +444,17 @@ public class ProcessEngineController {
      */
     @GetMapping("/integrations")
     public ResponseEntity<Map<String, Object>> listAvailableIntegrations() {
-        Map<String, Object> result = new java.util.LinkedHashMap<>();
+        Map<String, Object> result = new LinkedHashMap<>();
         if (stepExecutionDispatcher != null) {
             List<Map<String, Object>> tools = stepExecutionDispatcher.listAvailableTools();
             result.put("tools", tools);
             result.put("count", tools.size());
 
             // Group by category
-            Map<String, List<Map<String, Object>>> byCategory = new java.util.LinkedHashMap<>();
+            Map<String, List<Map<String, Object>>> byCategory = new LinkedHashMap<>();
             for (Map<String, Object> tool : tools) {
                 String category = (String) tool.getOrDefault("category", "other");
-                byCategory.computeIfAbsent(category, k -> new java.util.ArrayList<>()).add(tool);
+                byCategory.computeIfAbsent(category, k -> new ArrayList<>()).add(tool);
             }
             result.put("categories", byCategory.keySet());
             result.put("toolsByCategory", byCategory);

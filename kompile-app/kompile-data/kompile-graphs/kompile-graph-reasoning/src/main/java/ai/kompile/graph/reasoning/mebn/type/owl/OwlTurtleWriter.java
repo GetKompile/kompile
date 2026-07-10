@@ -17,6 +17,7 @@ package ai.kompile.graph.reasoning.mebn.type.owl;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -97,7 +98,7 @@ public final class OwlTurtleWriter {
         }
 
         // ── owl:sameAs ────────────────────────────────────────────────────────────
-        for (java.util.Map.Entry<String, String> entry : ontology.sameAs().entrySet()) {
+        for (Map.Entry<String, String> entry : ontology.sameAs().entrySet()) {
             sb.append(iri(entry.getKey()))
                     .append(" owl:sameAs ").append(iri(entry.getValue())).append(" .\n");
         }

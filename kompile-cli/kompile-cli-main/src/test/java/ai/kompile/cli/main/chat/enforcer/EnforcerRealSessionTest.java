@@ -633,6 +633,9 @@ class EnforcerRealSessionTest {
 
         ClaudeSubprocessJudgeBackend judgeBackend = new ClaudeSubprocessJudgeBackend(tempDir.toString());
         EnforcerJudge judge = new EnforcerJudge(judgeBackend, objectMapper);
+        // Warm-up is async since the startup-stall fix; wait for it here so the timed
+        // section below measures interrupt latency, not judge-backend boot.
+        judge.awaitWarm(60_000);
         EnforcerPolicy policy = new EnforcerPolicy(
                 "Never provide hacking instructions, security exploits, or attack techniques. "
                 + "If the output contains any hacking or security exploit content, stop immediately.",

@@ -47,7 +47,7 @@ import java.util.List;
 @Service
 @Slf4j
 @RequiredArgsConstructor
-@ConditionalOnProperty(name = "kompile.freshness.enabled", havingValue = "true")
+@ConditionalOnProperty(name = "kompile.freshness.enabled", havingValue = "true", matchIfMissing = true)
 public class DocumentFreshnessService {
 
     private static final int BUFFER_SIZE = 8192; // SHA-256 read buffer

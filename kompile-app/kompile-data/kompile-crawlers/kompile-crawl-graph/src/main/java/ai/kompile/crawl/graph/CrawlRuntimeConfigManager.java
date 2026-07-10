@@ -32,10 +32,12 @@ import org.springframework.stereotype.Component;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -355,6 +357,16 @@ class CrawlRuntimeConfigManager {
      * {@code > 0}. The computed chars are {@code max(existing, budgetChars)} so the budget is only
      * ever raised, never reduced below the operator-configured static value.</p>
      *
+     * <p>When the live adapter returns {@code contextBudgetChars == 0} (no model discovered — the
+     * common case for non-opencode agents), a per-agent fallback context-window is looked up from
+     * {@link CrawlRuntimeConfig#agentContextWindows} using the agent name prefix, then falls back
+     * to {@link CrawlRuntimeConfig#extractionContextWindowFallbackTokens}. This ensures the
+     * BATCH_BUDGET event fires for every CLI lane, not only opencode.</p>
+     *
+     * <p>After the char budget is applied, {@code graphExtractionChunksPerPrompt} is scaled
+     * proportionally (only upward, capped at {@link CrawlRuntimeConfig#extractionChunksPerPromptCap})
+     * so that large-context agents can handle more chunks per LLM call.</p>
+     *
      * @param graphConfig   extraction config from the request (may be null)
      * @param llmDispatcher dispatcher holding the {@link CliAgentAvailabilityAdapter}
      * @param graphExtOrch  orchestrator whose {@code graphExtractionTargetCharsPerBatch} is updated
@@ -375,18 +387,58 @@ class CrawlRuntimeConfigManager {
                 ? graphConfig.getExtractionCharsPerToken()
                 : 3.5; // default
 
+        // --- Step 1: try the live adapter (works when model discovery succeeds, e.g. opencode) ---
         int budgetChars = llmDispatcher.cliAgentAvailability.contextBudgetChars(fraction, charsPerToken);
+        boolean usedFallback = false;
+
+        if (budgetChars <= 0) {
+            // --- Step 2: fallback path — look up by agent name prefix ---
+            CrawlRuntimeConfig cfg = crawlRuntimeConfig;
+            String agentName = llmDispatcher.cliAgentAvailability.resolveExtractionAgentName();
+            int contextWindowTokens = 0;
+            if (agentName != null && !agentName.isBlank()) {
+                String lowerAgent = agentName.toLowerCase(Locale.ROOT);
+                for (Map.Entry<String, Integer> entry : cfg.agentContextWindows.entrySet()) {
+                    if (lowerAgent.startsWith(entry.getKey())) {
+                        contextWindowTokens = entry.getValue();
+                        break;
+                    }
+                }
+            }
+            if (contextWindowTokens <= 0) {
+                contextWindowTokens = cfg.extractionContextWindowFallbackTokens;
+            }
+            int effectiveTokens = Math.max(0, contextWindowTokens - cfg.extractionContextOverheadReserveTokens);
+            budgetChars = (int) Math.min(Integer.MAX_VALUE, (long) (effectiveTokens * charsPerToken * fraction));
+            usedFallback = true;
+            log.debug("BATCH_BUDGET: using fallback contextWindow={} tokens for agent='{}' → budgetChars={}",
+                    contextWindowTokens, agentName, budgetChars);
+        }
+
         if (budgetChars <= 0) return null;
 
         int before = graphExtOrch.graphExtractionTargetCharsPerBatch;
         int after  = Math.max(before, budgetChars);
         if (after != before) {
             graphExtOrch.graphExtractionTargetCharsPerBatch = after;
-            log.info("BATCH_BUDGET: raised graphExtractionTargetCharsPerBatch {}→{} (fraction={}, charsPerToken={})",
-                    before, after, fraction, charsPerToken);
+            log.info("BATCH_BUDGET: raised graphExtractionTargetCharsPerBatch {}→{} (fraction={}, charsPerToken={}, fallback={})",
+                    before, after, fraction, charsPerToken, usedFallback);
         }
+
+        // --- Step 3: scale chunksPerPrompt proportionally (only upward, capped) ---
+        int cap = crawlRuntimeConfig.extractionChunksPerPromptCap;
+        int currentChunks = graphExtOrch.graphExtractionChunksPerPrompt;
+        if (cap > 0 && currentChunks > 0 && before > 0 && after > before) {
+            int scaledChunks = (int) Math.min(cap, Math.round((double) currentChunks * after / before));
+            if (scaledChunks > currentChunks) {
+                graphExtOrch.graphExtractionChunksPerPrompt = scaledChunks;
+                log.info("BATCH_BUDGET: scaled graphExtractionChunksPerPrompt {}→{}", currentChunks, scaledChunks);
+            }
+        }
+
         return "budgetChars=" + budgetChars + " fraction=" + fraction
-                + " charsPerToken=" + charsPerToken + " before=" + before + " after=" + after;
+                + " charsPerToken=" + charsPerToken + " before=" + before + " after=" + after
+                + " fallback=" + usedFallback;
     }
 
     /**
@@ -398,12 +450,22 @@ class CrawlRuntimeConfigManager {
      */
     void applyExtractionPolicy(GraphExtractionConfig graphConfig, CrawlLlmDispatcher llmDispatcher) {
         if (llmDispatcher == null || llmDispatcher.cliAgentAvailability == null) return;
-        List<String> providerAllow  = graphConfig != null ? graphConfig.getExtractionModelProviderAllow()  : null;
-        List<String> excludeMarkers = graphConfig != null ? graphConfig.getExtractionModelExcludeMarkers() : null;
-        List<String> modelAllow     = graphConfig != null ? graphConfig.getExtractionModelAllow()          : null;
-        llmDispatcher.cliAgentAvailability.setActiveExtractionPolicy(providerAllow, excludeMarkers, modelAllow);
-        log.info("Applied extraction policy from GraphExtractionConfig: providerAllow={}, excludeMarkers={}, modelAllow={}",
-                providerAllow, excludeMarkers, modelAllow);
+        ManagedExtractionPolicy managedPolicy = loadManagedExtractionPolicy();
+        List<String> providerAllow  = firstNonEmpty(
+                graphConfig != null ? graphConfig.getExtractionModelProviderAllow() : null,
+                managedPolicy.providerAllow());
+        List<String> excludeMarkers = firstNonEmpty(
+                graphConfig != null ? graphConfig.getExtractionModelExcludeMarkers() : null,
+                managedPolicy.excludeMarkers());
+        List<String> modelAllow     = firstNonEmpty(
+                graphConfig != null ? graphConfig.getExtractionModelAllow() : null,
+                managedPolicy.modelAllow());
+        List<String> modelPriority  = firstNonEmpty(
+                graphConfig != null ? graphConfig.getExtractionModelPriority() : null,
+                managedPolicy.modelPriority());
+        llmDispatcher.cliAgentAvailability.setActiveExtractionPolicy(providerAllow, excludeMarkers, modelAllow, modelPriority);
+        log.info("Applied extraction policy from GraphExtractionConfig/managed JSON: providerAllow={}, excludeMarkers={}, modelAllow={}, modelPriority={}",
+                providerAllow, excludeMarkers, modelAllow, modelPriority);
 
         // Per-job/per-project fallback-executor overrides (paid-tier guardrails + timeout). Null
         // fields inherit the global model-fallback-config.json default. Pushed every crawl so the
@@ -415,6 +477,55 @@ class CrawlRuntimeConfigManager {
                 paidFallbackEnabled, maxPaidCallsPerCrawl, perCallTimeoutSeconds);
         log.info("Applied extraction fallback override from GraphExtractionConfig: paidFallbackEnabled={}, maxPaidCallsPerCrawl={}, perCallTimeoutSeconds={}",
                 paidFallbackEnabled, maxPaidCallsPerCrawl, perCallTimeoutSeconds);
+    }
+
+    private ManagedExtractionPolicy loadManagedExtractionPolicy() {
+        if (!Files.isRegularFile(graphExtractionConfigPath)) {
+            return ManagedExtractionPolicy.empty();
+        }
+        try {
+            JsonNode root = configObjectMapper.readTree(graphExtractionConfigPath.toFile());
+            return new ManagedExtractionPolicy(
+                    readStringList(root, "extractionModelProviderAllow"),
+                    readStringList(root, "extractionModelExcludeMarkers"),
+                    readStringList(root, "extractionModelAllow"),
+                    readStringList(root, "extractionModelPriority"));
+        } catch (IOException e) {
+            log.warn("Could not read extraction model policy from {}: {}", graphExtractionConfigPath, e.getMessage());
+            return ManagedExtractionPolicy.empty();
+        }
+    }
+
+    private static List<String> readStringList(JsonNode root, String fieldName) {
+        JsonNode node = root != null ? root.get(fieldName) : null;
+        if (node == null || !node.isArray() || node.isEmpty()) {
+            return null;
+        }
+        List<String> out = new ArrayList<>();
+        for (JsonNode item : node) {
+            if (item == null || item.isNull()) {
+                continue;
+            }
+            String value = item.asText("").trim();
+            if (!value.isEmpty()) {
+                out.add(value);
+            }
+        }
+        return out.isEmpty() ? null : List.copyOf(out);
+    }
+
+    private static List<String> firstNonEmpty(List<String> primary, List<String> fallback) {
+        return primary != null && !primary.isEmpty() ? primary : fallback;
+    }
+
+    private record ManagedExtractionPolicy(
+            List<String> providerAllow,
+            List<String> excludeMarkers,
+            List<String> modelAllow,
+            List<String> modelPriority) {
+        static ManagedExtractionPolicy empty() {
+            return new ManagedExtractionPolicy(null, null, null, null);
+        }
     }
 
     // ── CrawlRuntimeConfig ──────────────────────────────────────────────────
@@ -441,15 +552,15 @@ class CrawlRuntimeConfigManager {
         // Remote (CLI/API) extraction: few fat concurrent calls beat many (each remote call has a large
         // fixed cost). Local models use graphExtractionParallelism. Configurable per project/global
         // (.kompile/data/config) and per job (UnifiedCrawlRequest.RuntimeConfig).
-        int graphExtractionRemoteParallelism = 2;
+        int graphExtractionRemoteParallelism = 4;
         // Safety cap on chunks per batch — the model-derived char budget is the primary control.
         int graphExtractionMaxItemsPerBatch = 64;
         int graphExtractionTargetCharsPerBatch = 48_000;
         int chunkingTargetCharsPerTask = 200_000;
         int vectorBatchSize = 0;
         boolean postProcessParallel = false;
-        boolean graphConstructorSkipEmbedding = true;
-        boolean graphConstructorPersistMatrixGraph = false;
+        boolean graphConstructorSkipEmbedding = false;
+        boolean graphConstructorPersistMatrixGraph = true;
         boolean retainResultGraph = false;
         boolean costSortChunks = true;
         int llmCallTimeoutSeconds = 300;
@@ -465,8 +576,8 @@ class CrawlRuntimeConfigManager {
         // crawlGraphExtractionMaxCharsPerChunk back to 12 000 in their project config.
         int crawlGraphExtractionMaxCharsPerChunk = 50_000;
         int crawlGraphExtractionMaxCharsPerChunkVlm = 60_000;
-        // Number of chunks to group into a single LLM prompt. 1 = one-call-per-chunk (default).
-        int graphExtractionChunksPerPrompt = 1;
+        // Number of chunks to group into a single LLM prompt for the inline fallback path.
+        int graphExtractionChunksPerPrompt = 4;
         int circuitBreakerFailureThreshold = 5;
         int circuitBreakerCooldownSeconds = 60;
         /**
@@ -550,13 +661,49 @@ class CrawlRuntimeConfigManager {
          */
         long crawlGovernorRamFloorMb = 0;
         /**
+         * Fallback context-window token sizes by agent command prefix.
+         * Used when model discovery returns no models (the common case for all non-opencode agents).
+         * Keys are agent name prefixes (e.g. "claude", "codex", "gemini", "opencode", "qwen").
+         * A null/absent entry for an agent falls back to {@link #extractionContextWindowFallbackTokens}.
+         */
+        Map<String, Integer> agentContextWindows = new LinkedHashMap<>(Map.of(
+                "claude",   200_000,
+                "codex",    128_000,
+                "gemini", 1_000_000,
+                "opencode", 128_000,
+                "qwen",     128_000,
+                "pi",        32_000
+        ));
+
+        /**
+         * Global fallback context-window token count when neither model discovery nor
+         * {@link #agentContextWindows} has an entry for the active agent.
+         * Default 32768 (conservative).
+         */
+        int extractionContextWindowFallbackTokens = 32_768;
+
+        /**
+         * Prompt+output overhead reserve in tokens. Subtracted from the context-window budget
+         * before converting to chars so calls never approach compaction.
+         * Default 8000 tokens.
+         */
+        int extractionContextOverheadReserveTokens = 8_000;
+
+        /**
+         * Maximum chunksPerPrompt cap for context-budget-derived scaling.
+         * The chunks-per-prompt is scaled up proportionally with the derived char budget.
+         * Default 16 (static default is 4; modern large-context models can handle far more).
+         */
+        int extractionChunksPerPromptCap = 16;
+
+        /**
          * When true, the local-serving extraction tier (SameDiff-LLM or any bean with
          * {@code getId()=="local-serving"}) is used side-by-side with the remote tier.
          * Batches whose cost (chars) is {@code <= crawlLocalCostThresholdChars} are routed
          * to the local tier; larger batches are routed to the remote tier.
          * Default is false (all batches go to the existing remote path, identical behaviour).
          */
-        boolean crawlLocalTierEnabled = false;
+        boolean crawlLocalTierEnabled = true;
         /**
          * Cost ceiling (characters) for routing a batch to the local tier.
          * A batch with {@code cost() <= threshold} goes LOCAL; {@code cost() > threshold}
@@ -621,6 +768,10 @@ class CrawlRuntimeConfigManager {
             m.put("crawlKgeBatchSize", crawlKgeBatchSize);
             m.put("crawlSerializedHeavyOps", crawlSerializedHeavyOps);
             m.put("crawlGovernorRamFloorMb", crawlGovernorRamFloorMb);
+            m.put("extractionContextWindowFallbackTokens", extractionContextWindowFallbackTokens);
+            m.put("extractionContextOverheadReserveTokens", extractionContextOverheadReserveTokens);
+            m.put("extractionChunksPerPromptCap", extractionChunksPerPromptCap);
+            m.put("agentContextWindows", agentContextWindows);
             return m;
         }
 
@@ -689,6 +840,19 @@ class CrawlRuntimeConfigManager {
             config.crawlKgeBatchSize = intField(root, "crawlKgeBatchSize", config.crawlKgeBatchSize, 8, 65536);
             config.crawlSerializedHeavyOps = boolField(root, "crawlSerializedHeavyOps", config.crawlSerializedHeavyOps);
             config.crawlGovernorRamFloorMb = longField(root, "crawlGovernorRamFloorMb", config.crawlGovernorRamFloorMb, 0L, 1_048_576L);
+            config.extractionContextWindowFallbackTokens = intField(root, "extractionContextWindowFallbackTokens", config.extractionContextWindowFallbackTokens, 1_000, 10_000_000);
+            config.extractionContextOverheadReserveTokens = intField(root, "extractionContextOverheadReserveTokens", config.extractionContextOverheadReserveTokens, 0, 500_000);
+            config.extractionChunksPerPromptCap = intField(root, "extractionChunksPerPromptCap", config.extractionChunksPerPromptCap, 1, 256);
+            {
+                JsonNode agentWindowsNode = root.get("agentContextWindows");
+                if (agentWindowsNode != null && agentWindowsNode.isObject()) {
+                    agentWindowsNode.fields().forEachRemaining(e -> {
+                        if (e.getValue().canConvertToInt()) {
+                            config.agentContextWindows.put(e.getKey(), Math.max(1_000, Math.min(10_000_000, e.getValue().asInt())));
+                        }
+                    });
+                }
+            }
             if (config.memoryCriticalThresholdPercent < config.memoryWaitThresholdPercent) {
                 config.memoryCriticalThresholdPercent = config.memoryWaitThresholdPercent;
             }

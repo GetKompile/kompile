@@ -28,6 +28,7 @@ import ai.kompile.app.services.IndexSyncService;
 import ai.kompile.app.services.IndexSyncService.*;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -37,6 +38,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -59,7 +61,7 @@ public class CrossIndexController {
     private final IndexSyncService syncService;
     private final FactSheetService factSheetService;
 
-    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    @Autowired(required = false)
     private DocumentFreshnessService freshnessService;
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -257,7 +259,7 @@ public class CrossIndexController {
         Map<String, Boolean> vectorStatus = trackingService.checkVectorIndexStatus(chunkIds);
 
         // Build response map
-        Map<String, PassageStatusResponse> response = new java.util.HashMap<>();
+        Map<String, PassageStatusResponse> response = new HashMap<>();
         for (String chunkId : chunkIds) {
             trackingService.findPassage(chunkId).ifPresent(passage -> {
                 response.put(chunkId, new PassageStatusResponse(

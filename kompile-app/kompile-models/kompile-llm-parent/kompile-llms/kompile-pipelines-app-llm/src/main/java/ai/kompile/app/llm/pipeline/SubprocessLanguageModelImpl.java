@@ -89,9 +89,12 @@ public class SubprocessLanguageModelImpl implements LanguageModel, ChatModel {
     public String generateResponse(String userQuery, List<String> context) {
         ChatResponse response = generateResponseWithPotentialToolCalls(userQuery, context);
         if (response != null && response.getResult() != null && response.getResult().getOutput() != null) {
-            return response.getResult().getOutput().getText();
+            String text = response.getResult().getOutput().getText();
+            if (text != null && !text.isBlank()) {
+                return text;
+            }
         }
-        return "";
+        throw new IllegalStateException("Subprocess LLM did not produce a textual response");
     }
 
     @Override
@@ -117,7 +120,7 @@ public class SubprocessLanguageModelImpl implements LanguageModel, ChatModel {
     private ChatResponse callChatCompletions(List<Map<String, String>> messages, ChatOptions options) {
         try {
             if (messages == null || messages.isEmpty()) {
-                messages = List.of(chatMessage("user", ""));
+                throw new IllegalArgumentException("Subprocess LLM request requires at least one message");
             }
 
             int requestMaxTokens = options != null && options.getMaxTokens() != null
@@ -152,18 +155,22 @@ public class SubprocessLanguageModelImpl implements LanguageModel, ChatModel {
                     .build();
 
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            if (response.statusCode() >= 200 && response.statusCode() < 300) {
-                String text = parseGenerateResponse(response.body());
-                return new ChatResponse(List.of(
-                        new Generation(new AssistantMessage(text), ChatGenerationMetadata.NULL)));
-            } else {
-                logger.error("Subprocess generate returned HTTP {}: {}", response.statusCode(), response.body());
-                return errorResponse("Subprocess HTTP " + response.statusCode() + ": "
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                throw new IllegalStateException("Subprocess HTTP " + response.statusCode() + ": "
                         + StringUtils.truncate(response.body(), 800));
             }
+            String text = parseGenerateResponse(response.body());
+            if (text == null || text.isBlank()) {
+                throw new IllegalStateException("Subprocess LLM returned an empty response");
+            }
+            return new ChatResponse(List.of(
+                    new Generation(new AssistantMessage(text), ChatGenerationMetadata.NULL)));
+        } catch (RuntimeException e) {
+            logger.error("Subprocess generate failed: {}", e.getMessage(), e);
+            throw e;
         } catch (Exception e) {
             logger.error("Subprocess generate failed: {}", e.getMessage(), e);
-            return errorResponse(e.getMessage());
+            throw new IllegalStateException("Subprocess generate failed", e);
         }
     }
 
@@ -173,7 +180,8 @@ public class SubprocessLanguageModelImpl implements LanguageModel, ChatModel {
             JsonNode error = node.get("error");
             if (error != null) {
                 JsonNode message = error.get("message");
-                return "Error generating response: " + (message != null ? message.asText() : error.toString());
+                throw new IllegalStateException("Subprocess LLM returned error: "
+                        + (message != null ? message.asText() : error.toString()));
             }
             JsonNode choices = node.get("choices");
             if (choices != null && choices.isArray() && !choices.isEmpty()) {
@@ -192,21 +200,17 @@ public class SubprocessLanguageModelImpl implements LanguageModel, ChatModel {
             JsonNode finishReason = node.get("finishReason");
             if (finishReason != null && finishReason.isTextual()
                     && finishReason.asText().toLowerCase().startsWith("error")) {
-                return "Error generating response: " + finishReason.asText();
+                throw new IllegalStateException("Subprocess LLM finish reason: " + finishReason.asText());
             }
-            return json;
+            throw new IllegalStateException("Subprocess LLM response did not contain generated text");
+        } catch (RuntimeException e) {
+            throw e;
         } catch (Exception e) {
-            return json;
+            throw new IllegalStateException("Failed to parse subprocess LLM response", e);
         }
     }
 
     // ==================== Helpers ====================
-
-    private static ChatResponse errorResponse(String message) {
-        return new ChatResponse(List.of(new Generation(
-                new AssistantMessage("Error generating response: " + message),
-                ChatGenerationMetadata.NULL)));
-    }
 
     private static String composePrompt(String userQuery, List<String> context) {
         if (userQuery == null) userQuery = "";
@@ -227,7 +231,7 @@ public class SubprocessLanguageModelImpl implements LanguageModel, ChatModel {
 
     private static List<Map<String, String>> extractChatMessages(Prompt prompt) {
         if (prompt == null || prompt.getInstructions() == null || prompt.getInstructions().isEmpty()) {
-            return List.of(chatMessage("user", ""));
+            throw new IllegalArgumentException("Subprocess LLM prompt must contain at least one instruction");
         }
 
         List<Map<String, String>> messages = new ArrayList<>();
@@ -246,8 +250,11 @@ public class SubprocessLanguageModelImpl implements LanguageModel, ChatModel {
             }
         }
 
-        if (messages.isEmpty() || !otherText.isEmpty()) {
+        if (!otherText.isEmpty()) {
             messages.add(chatMessage("user", otherText.toString()));
+        }
+        if (messages.isEmpty()) {
+            throw new IllegalArgumentException("Subprocess LLM prompt did not contain textual content");
         }
 
         return messages;

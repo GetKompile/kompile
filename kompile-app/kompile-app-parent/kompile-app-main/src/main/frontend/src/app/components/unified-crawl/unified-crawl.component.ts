@@ -56,6 +56,7 @@ import {
 import { JobLogViewerComponent } from '../job-history/job-log-viewer/job-log-viewer.component';
 import { ResourceStripComponent } from '../resource-strip/resource-strip.component';
 import { CrawlStepMonitorComponent } from '../crawl-step-monitor/crawl-step-monitor.component';
+import { HydrationProgressPanelComponent } from '../hydration-progress-panel/hydration-progress-panel.component';
 import { JobLogService, JobLogEntry } from '../../services/job-log.service';
 import { FactSheetService } from '../../services/fact-sheet.service';
 import { FactSheet } from '../../models/api-models';
@@ -77,7 +78,8 @@ import { CrawlLauncherDialogComponent, CrawlLauncherDialogData, CrawlLauncherRes
     MatSnackBarModule, MatTabsModule, MatBadgeModule, MatDialogModule,
     JobLogViewerComponent,
     ResourceStripComponent,
-    CrawlStepMonitorComponent
+    CrawlStepMonitorComponent,
+    HydrationProgressPanelComponent
   ],
   templateUrl: './unified-crawl.component.html',
   styleUrls: ['./unified-crawl.component.css']
@@ -1014,13 +1016,16 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
       'CONVERTING': 'Converting documents',
       'ROUTING': 'Routing documents',
       'GRAPH_PREP': 'Preparing graph extraction',
-      'ENTITY_RESOLUTION': 'Resolving entities',
-      'EDGE_COMPUTATION': 'Computing edges',
       'CHUNKING': 'Chunking documents',
       'GRAPH_EXTRACTION': 'Extracting graph',
-      'EMBEDDING': 'Generating embeddings',
-      'INDEXING': 'Indexing to vector store',
+      'SURFACING': 'Publishing crawl surface',
+      'ENTITY_RESOLUTION': 'Resolving entities',
+      'EDGE_COMPUTATION': 'Graph edge cleanup',
+      'EMBEDDING': 'Embedding & vector indexing',
+      'INDEXING': 'Embedding & vector indexing',
       'VECTOR_INDEXING': 'Embedding & vector indexing',
+      'ENRICHMENT': 'Post-Crawl Enrichment',
+      'LEARNING': 'KGE Training (Learning)',
       'COMPLETED': 'Completed',
       'FAILED': 'Failed',
       'CANCELLED': 'Cancelled',

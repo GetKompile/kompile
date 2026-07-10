@@ -83,8 +83,7 @@ public class AgyLanguageModelImpl implements LanguageModel {
                 return output.getText();
             }
         }
-        logger.warn("Agy could not get a valid response or output for query: {}", userQuery);
-        return "Error: Could not get a response from Agy language model.";
+        throw new IllegalStateException("Agy language model returned no usable response");
     }
 
     @Override

@@ -32,7 +32,11 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.stream.Collectors;
 
 /**
@@ -216,7 +220,7 @@ public class AutoLabelService {
                     @SuppressWarnings("unchecked")
                     Map<String, Object> meta = node.getMetadataJson() != null && !node.getMetadataJson().isBlank()
                             ? objectMapper.readValue(node.getMetadataJson(), new TypeReference<Map<String, Object>>() {})
-                            : new java.util.LinkedHashMap<>();
+                            : new LinkedHashMap<>();
                     meta.put("taxonomyCategory", cat.getLabel());
                     // Walk up to find domain
                     String domain = findRootDomain(cat);

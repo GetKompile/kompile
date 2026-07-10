@@ -34,7 +34,7 @@ class DefaultEvaluationServiceTest {
 
     @BeforeEach
     void setUp() {
-        properties = new EvaluationProperties();
+        properties = new EvaluationProperties(null);
         properties.setEnabled(true);
     }
 

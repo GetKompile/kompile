@@ -26,10 +26,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * MCP tool for managing kompile skills (slash command prompt templates).
@@ -63,9 +65,9 @@ public class SkillManagerTool implements CliTool {
 
     @Override
     public String description() {
-        return "Manage kompile skills (slash command prompt templates). Supports operations: list_skills, get_skill, create_skill, update_skill, delete_skill, generate_markdown, expand_template. " +
+        return "Manage kompile skills (slash command prompt templates). Supports operations: list_skills, get_skill, create_skill, update_skill, delete_skill, generate_markdown, expand_template, scan_provider_skills. " +
                "Skills are reusable prompt templates invoked as /skillname [args] in chat. " +
-               "Use list_skills to see all available skills, create_skill to add new ones.";
+               "Use scan_provider_skills to read project-local Claude/Codex/Gemini/Qwen/OpenCode skill or command files for cross-CLI reuse.";
     }
 
     @Override
@@ -86,7 +88,8 @@ public class SkillManagerTool implements CliTool {
                 .add("update_skill")
                 .add("delete_skill")
                 .add("generate_markdown")
-                .add("expand_template"));
+                .add("expand_template")
+                .add("scan_provider_skills"));
         actionNode.put("description", "The skill management action to perform");
         properties.set("action", actionNode);
 
@@ -101,6 +104,18 @@ public class SkillManagerTool implements CliTool {
         descNode.put("type", "string");
         descNode.put("description", "Description of what the skill does (for create_skill, update_skill)");
         properties.set("description", descNode);
+
+        // source (for provider scan)
+        ObjectNode sourceNode = objectMapper.createObjectNode();
+        sourceNode.put("type", "string");
+        sourceNode.put("description", "Provider filter for scan_provider_skills: claude-code|codex|gemini|qwen|opencode");
+        properties.set("source", sourceNode);
+
+        // query (for provider scan)
+        ObjectNode queryNode = objectMapper.createObjectNode();
+        queryNode.put("type", "string");
+        queryNode.put("description", "Optional text filter for scan_provider_skills");
+        properties.set("query", queryNode);
 
         // category (for create, update, list filter)
         ObjectNode categoryNode = objectMapper.createObjectNode();
@@ -178,7 +193,8 @@ public class SkillManagerTool implements CliTool {
                 case "delete_skill" -> deleteSkill(params);
                 case "generate_markdown" -> generateMarkdown(params);
                 case "expand_template" -> expandTemplate(params);
-                default -> errorResult("Unknown action: " + action + ". Valid actions: list_skills, get_skill, create_skill, update_skill, delete_skill, generate_markdown, expand_template");
+                case "scan_provider_skills" -> scanProviderSkills(params);
+                default -> errorResult("Unknown action: " + action + ". Valid actions: list_skills, get_skill, create_skill, update_skill, delete_skill, generate_markdown, expand_template, scan_provider_skills");
             };
         } catch (IllegalArgumentException e) {
             return errorResult(e.getMessage());
@@ -500,6 +516,137 @@ public class SkillManagerTool implements CliTool {
         String expanded = skill.expandTemplate(args);
 
         return ToolResult.success("Expanded template for /" + name + ":\n\n" + expanded);
+    }
+
+    private ToolResult scanProviderSkills(JsonNode params) {
+        String sourceFilter = params.path("source").asText("").trim().toLowerCase();
+        String query = params.path("query").asText("").trim().toLowerCase();
+
+        List<ProviderSkillFile> matches = new ArrayList<>();
+        for (ProviderSkillSpec spec : providerSkillSpecs()) {
+            if (!sourceFilter.isEmpty() && !spec.source.equals(sourceFilter)) continue;
+            for (Path file : collectProviderSkillFiles(spec)) {
+                String content = readProviderSkillFile(file);
+                if (content == null || content.isBlank()) continue;
+                String name = skillNameFromPath(file);
+                String haystack = (spec.source + " " + name + " " + file + " " + content).toLowerCase();
+                if (!query.isEmpty() && !haystack.contains(query)) continue;
+                matches.add(new ProviderSkillFile(spec.source, spec.label, workingDirectory.relativize(file), name, content));
+            }
+        }
+
+        if (matches.isEmpty()) {
+            String suffix = sourceFilter.isEmpty() ? "" : " for source=" + sourceFilter;
+            return ToolResult.success("No provider skill files found" + suffix + " under " + workingDirectory);
+        }
+
+        matches.sort(Comparator.comparing((ProviderSkillFile f) -> f.source)
+                .thenComparing(f -> f.path.toString()));
+        StringBuilder sb = new StringBuilder();
+        sb.append("Project provider skill scan: ").append(workingDirectory).append("\n\n");
+        for (ProviderSkillFile match : matches) {
+            sb.append("## ").append(match.source).append(" /").append(match.name)
+                    .append(" - ").append(match.path).append("\n");
+            sb.append(trimForScan(match.content, 12_000)).append("\n\n");
+        }
+
+        return ToolResult.success("skill_manager: scan_provider_skills " + matches.size() + " file(s)",
+                sb.toString(),
+                Map.of("count", matches.size(), "project", workingDirectory.toString()));
+    }
+
+    private List<ProviderSkillSpec> providerSkillSpecs() {
+        return List.of(
+                new ProviderSkillSpec("claude-code", "Claude Code", List.of(
+                        ".claude/commands", ".claude/agents", ".claude/skills")),
+                new ProviderSkillSpec("codex", "Codex", List.of(
+                        ".codex/skills", ".codex/prompts", ".codex/commands")),
+                new ProviderSkillSpec("gemini", "Gemini CLI", List.of(
+                        ".gemini/commands", ".gemini/skills")),
+                new ProviderSkillSpec("qwen", "Qwen Code", List.of(
+                        ".qwen/commands", ".qwen/skills")),
+                new ProviderSkillSpec("opencode", "OpenCode", List.of(
+                        ".opencode/command", ".opencode/commands", ".opencode/skill", ".opencode/skills"))
+        );
+    }
+
+    private List<Path> collectProviderSkillFiles(ProviderSkillSpec spec) {
+        Set<Path> files = new LinkedHashSet<>();
+        Path normalizedWorkDir = workingDirectory.normalize();
+        for (String rel : spec.paths) {
+            Path candidate = workingDirectory.resolve(rel).normalize();
+            if (!candidate.startsWith(normalizedWorkDir)) continue;
+            if (Files.isRegularFile(candidate) && isProviderSkillFile(candidate)) {
+                files.add(candidate);
+            } else if (Files.isDirectory(candidate)) {
+                try (Stream<Path> stream = Files.walk(candidate, 5)) {
+                    stream.filter(Files::isRegularFile)
+                            .filter(this::isProviderSkillFile)
+                            .sorted()
+                            .forEach(files::add);
+                } catch (IOException ignored) {
+                    // Ignore unreadable provider directories.
+                }
+            }
+        }
+        return new ArrayList<>(files);
+    }
+
+    private boolean isProviderSkillFile(Path file) {
+        String name = file.getFileName().toString().toLowerCase();
+        return name.endsWith(".md") || name.endsWith(".txt") || name.equals("skill.md");
+    }
+
+    private String readProviderSkillFile(Path file) {
+        try {
+            if (Files.size(file) > 200_000L) return null;
+            return Files.readString(file, StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    private String skillNameFromPath(Path file) {
+        String filename = file.getFileName().toString();
+        String lower = filename.toLowerCase();
+        if ("skill.md".equals(lower) && file.getParent() != null && file.getParent().getFileName() != null) {
+            return file.getParent().getFileName().toString();
+        }
+        int dot = filename.lastIndexOf('.');
+        return dot > 0 ? filename.substring(0, dot) : filename;
+    }
+
+    private String trimForScan(String content, int maxChars) {
+        if (content.length() <= maxChars) return content;
+        return content.substring(0, maxChars) + "\n\n... (truncated; source file is longer)";
+    }
+
+    private static class ProviderSkillSpec {
+        final String source;
+        final String label;
+        final List<String> paths;
+
+        ProviderSkillSpec(String source, String label, List<String> paths) {
+            this.source = source;
+            this.label = label;
+            this.paths = paths;
+        }
+    }
+
+    private static class ProviderSkillFile {
+        final String source;
+        final String label;
+        final Path path;
+        final String name;
+        final String content;
+
+        ProviderSkillFile(String source, String label, Path path, String name, String content) {
+            this.source = source;
+            this.label = label;
+            this.path = path;
+            this.name = name;
+            this.content = content;
+        }
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────

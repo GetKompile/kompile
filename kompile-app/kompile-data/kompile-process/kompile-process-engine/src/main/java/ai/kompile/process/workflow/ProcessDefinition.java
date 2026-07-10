@@ -22,6 +22,7 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.io.Serializable;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -36,10 +37,13 @@ import java.util.Map;
 @AllArgsConstructor
 @NoArgsConstructor
 @JsonInclude(JsonInclude.Include.NON_NULL)
-public class ProcessDefinition {
+public class ProcessDefinition implements Serializable {
+
+    private static final long serialVersionUID = 1L;
 
     private String id;
     private String name;
+    private String description;
     private int version;
     private String ontologySchemaId;
     /** Immutable snapshot of the ontology version bound at process approval time. */
@@ -52,6 +56,13 @@ public class ProcessDefinition {
     /** References to AgentSpec IDs participating in this process. */
     private List<String> agentSpecs;
     private Map<String, Object> metadata;
+
+    /** Template or LLM-grounded narrative captured when the suggestion was accepted. */
+    private String narrative;
+    private String narrativeSource;
+    /** Full agent-authored process document captured when available. */
+    private String processDocument;
+    private String processDocumentSource;
 
     // ── Fact Sheet Binding ─────────────────────────────────────────────────
 
@@ -83,7 +94,9 @@ public class ProcessDefinition {
     @Builder
     @AllArgsConstructor
     @NoArgsConstructor
-    public static class ControlDefinitionRef {
+    public static class ControlDefinitionRef implements Serializable {
+        private static final long serialVersionUID = 1L;
+
         private String controlId;
         private String triggerAfterStep;
     }

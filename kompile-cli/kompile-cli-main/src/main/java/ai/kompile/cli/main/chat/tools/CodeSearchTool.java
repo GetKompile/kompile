@@ -28,6 +28,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * CLI tool for searching and indexing codebases via the kompile-app
@@ -40,6 +41,15 @@ import java.util.Map;
  * is available.
  */
 public class CodeSearchTool implements CliTool {
+
+    // Actions that always execute against the local index even when a backend is up.
+    private static final Set<String> LOCAL_ALWAYS_ACTIONS = Set.of(
+            "ranked_search", "blended_search", "signatures", "health", "routing");
+
+    // Read actions preceded by a throttled incremental refresh of the local index
+    // ('health'/'stats' intentionally unrefreshed — they report staleness).
+    private static final Set<String> REFRESHABLE_ACTIONS = Set.of(
+            "search", "ranked_search", "blended_search", "signatures", "routing");
 
     private final KompileBackendClient backend;
     private final ObjectMapper objectMapper;
@@ -81,6 +91,10 @@ public class CodeSearchTool implements CliTool {
                 "'health' (index quality score), 'routing' (file complexity tiers), " +
                 "'index' (index a codebase directory), 'stats' (get codebase statistics), " +
                 "'entities' (list entities in a file or children of a parent)");
+        action.putArray("enum")
+                .add("search").add("ranked_search").add("blended_search")
+                .add("signatures").add("health").add("routing")
+                .add("index").add("stats").add("entities");
 
         ObjectNode query = props.putObject("query");
         query.put("type", "string");
@@ -92,7 +106,13 @@ public class CodeSearchTool implements CliTool {
 
         ObjectNode projectId = props.putObject("project_id");
         projectId.put("type", "string");
-        projectId.put("description", "Project identifier for the index (default: 'default')");
+        projectId.put("description", "Project identifier for the index (default: auto-resolved " +
+                "from registration.json or indexed roots containing the cwd)");
+
+        ObjectNode autoRefresh = props.putObject("auto_refresh");
+        autoRefresh.put("type", "boolean");
+        autoRefresh.put("description", "Incrementally re-index changed files before local read " +
+                "actions (default: true; throttled)");
 
         ObjectNode entityType = props.putObject("entity_type");
         entityType.put("type", "string");
@@ -128,12 +148,22 @@ public class CodeSearchTool implements CliTool {
         context.checkPermission(permissionKey(), "Search/index codebase");
 
         String action = params.path("action").asText("search");
-        String projectId = params.path("project_id").asText("default");
 
         // Default root_path to current working directory if not specified
         String cwd = context.getWorkingDirectory().toAbsolutePath().toString();
 
-        if (!backend.isAvailable()) {
+        boolean backendUp = backend.isAvailable();
+        String projectId = resolveProjectId(action, params, context, backendUp);
+
+        // Self-heal the local index when this call will be answered from it:
+        // background maintenance keeps it fresh; reads only join in-flight work.
+        if (REFRESHABLE_ACTIONS.contains(action)
+                && (!backendUp || LOCAL_ALWAYS_ACTIONS.contains(action))
+                && params.path("auto_refresh").asBoolean(true)) {
+            BackgroundIndexService.getInstance().prepareForRead(new LocalCodeIndexer(), projectId);
+        }
+
+        if (!backendUp) {
             // No backend reachable — fall back to local index
             return executeLocal(action, params, projectId, cwd, context);
         }
@@ -161,6 +191,34 @@ public class CodeSearchTool implements CliTool {
         } catch (Exception e) {
             return ToolResult.error("Code search error: " + e.getMessage());
         }
+    }
+
+    /**
+     * Resolve the effective project id. Search-type actions use
+     * {@link ProjectIdResolver} (registration → indexed root → cwd name);
+     * 'index' keeps a directory-derived default. Backend-bound calls preserve
+     * the legacy {@code "default"} bucket when nothing authoritative matched,
+     * since historically backend data was indexed under that id.
+     */
+    private String resolveProjectId(String action, JsonNode params, ToolContext context,
+                                    boolean backendUp) {
+        String raw = params.path("project_id").asText("");
+        if ("index".equals(action)) {
+            if (!raw.isEmpty()) return raw;
+            if (backendUp) return "default";
+            String rootPath = params.path("root_path").asText("");
+            Path dir = rootPath.isEmpty()
+                    ? context.getWorkingDirectory().toAbsolutePath()
+                    : Path.of(rootPath).toAbsolutePath();
+            return dir.getFileName() != null ? dir.getFileName().toString() : "default";
+        }
+        ProjectIdResolver.Resolution resolution =
+                ProjectIdResolver.resolve(raw, context.getWorkingDirectory());
+        boolean backendBound = backendUp && !LOCAL_ALWAYS_ACTIONS.contains(action);
+        if (backendBound && "cwd-name".equals(resolution.source())) {
+            return "default";
+        }
+        return resolution.projectId();
     }
 
     private ToolResult doSearch(JsonNode params, String projectId) throws Exception {

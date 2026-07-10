@@ -22,7 +22,11 @@ import ai.kompile.app.config.SubprocessExecutableConfig;
 import ai.kompile.app.services.DeviceRoutingConfigService;
 import ai.kompile.app.services.ModelLifecycleManager;
 import ai.kompile.app.services.subprocess.SubprocessConfigService;
+import ai.kompile.app.subprocess.BackendConfigurable;
+import ai.kompile.app.subprocess.SubprocessClasspathBuilder;
 import ai.kompile.app.subprocess.SubprocessEnvironmentPropagator;
+import ai.kompile.app.subprocess.SubprocessPlacement;
+import ai.kompile.app.subprocess.SubprocessPlacementSupport;
 import ai.kompile.cli.common.logs.AgentLogRecord;
 import ai.kompile.cli.common.logs.SubprocessLogWriter;
 import ai.kompile.cli.common.util.JsonUtils;
@@ -75,10 +79,19 @@ import java.util.function.Consumer;
  * </pre>
  */
 @Service
-public class ModelInitSubprocessLauncher {
+public class ModelInitSubprocessLauncher implements BackendConfigurable {
 
     private static final Logger logger = LoggerFactory.getLogger(ModelInitSubprocessLauncher.class);
     private static final ObjectMapper OBJECT_MAPPER = JsonUtils.standardMapper();
+
+    /** Shared device-agnostic placement (same base infra every subprocess uses). */
+    private final SubprocessPlacementSupport placement = new SubprocessPlacementSupport();
+
+    /** {@link BackendConfigurable} — the scheduler assigns backend/device/memory before spawn. */
+    @Override
+    public void applyPlacement(SubprocessPlacement p) {
+        this.placement.applyPlacement(p);
+    }
 
     // Configuration
     @Value("${kompile.model-init.subprocess.java-path:java}")
@@ -243,6 +256,8 @@ public class ModelInitSubprocessLauncher {
 
         // Propagate all ND4J/CUDA/threading/Triton env vars via central propagator
         SubprocessEnvironmentPropagator.propagateToEnvironment(pb.environment());
+        // Device-agnostic per-device memory bound (SD_MAX_DEVICE_BYTES) — shared base infra.
+        placement.applyEnv(pb.environment());
 
         // === GPU LIFECYCLE: Acquire GPU resources for this model init job ===
         boolean gpuAcquired = false;
@@ -266,10 +281,13 @@ public class ModelInitSubprocessLauncher {
         // --- Subprocess log aggregation ---
         SubprocessLogWriter logWriter = null;
         try {
-            logWriter = new SubprocessLogWriter("model-init", taskId);
+            String workingDir = pb.directory() != null
+                    ? pb.directory().getAbsolutePath()
+                    : System.getProperty("user.dir");
+            logWriter = new SubprocessLogWriter("model-init", taskId, workingDir);
             handle.logWriter = logWriter;
             logWriter.writeStart(new SubprocessLogWriter.SubprocessRunContext(
-                    taskId, command, null, process.pid(), heapSize));
+                    taskId, command, workingDir, process.pid(), heapSize));
         } catch (Exception _logEx) {
             logger.debug("SubprocessLogWriter init failed (non-fatal): {}", _logEx.getMessage());
             logWriter = null;
@@ -586,8 +604,11 @@ public class ModelInitSubprocessLauncher {
         command.add("-Dorg.bytedeco.javacpp.pathsFirst=true");
         command.add("-Dorg.bytedeco.javacpp.logger.debug=false");
 
-        // Classpath - use the current classpath
-        String classpath = System.getProperty("java.class.path");
+        // Device-agnostic backend/device selection from the shared base infra — no CUDA_VISIBLE_DEVICES.
+        command.addAll(placement.jvmFlags());
+
+        // Classpath - expand Spring Boot BOOT-INF entries when running from an exec jar.
+        String classpath = SubprocessClasspathBuilder.buildClasspath();
         command.add("-cp");
         command.add(classpath);
 

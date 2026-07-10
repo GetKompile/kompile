@@ -44,7 +44,6 @@ public class GraphConfigTool {
 
     public record GetGraphExtractionConfigInput() {}
     public record ResetGraphExtractionConfigInput() {}
-    public record ToggleGraphExtractionInput() {}
     public record GetGraphExtractionStatusInput() {}
     public record GetSchemaModesInput() {}
     public record GetSuggestedEntityTypesInput() {}
@@ -77,21 +76,8 @@ public class GraphConfigTool {
         }
     }
 
-    @Tool(name = "toggle_graph_extraction",
-            description = "Toggles entity extraction enabled/disabled.")
-    public Map<String, Object> toggleGraphExtraction(ToggleGraphExtractionInput input) {
-        try {
-            if (graphExtractionController == null) return Map.of("status", "error", "error", "Graph extraction not available");
-            ResponseEntity<?> response = graphExtractionController.toggleEnabled();
-            return Map.of("status", "success", "data", response.getBody());
-        } catch (Exception e) {
-            logger.error("Error toggling graph extraction: {}", e.getMessage(), e);
-            return Map.of("status", "error", "error", e.getMessage());
-        }
-    }
-
     @Tool(name = "get_graph_extraction_status",
-            description = "Gets the current enabled status of graph extraction.")
+            description = "Gets the current mandatory knowledge graph extraction status.")
     public Map<String, Object> getGraphExtractionStatus(GetGraphExtractionStatusInput input) {
         try {
             if (graphExtractionController == null) return Map.of("status", "error", "error", "Graph extraction not available");

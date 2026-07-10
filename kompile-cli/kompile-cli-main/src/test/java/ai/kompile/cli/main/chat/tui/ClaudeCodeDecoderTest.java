@@ -54,4 +54,26 @@ class ClaudeCodeDecoderTest {
         assertFalse(content.contains("setup issue"), content);
         assertFalse(content.contains("/doctor"), content);
     }
+
+    @Test
+    void filtersLiveModelAnnouncementAndEffortChrome() {
+        ClaudeCodeDecoder decoder = new ClaudeCodeDecoder();
+        VirtualTerminal vt = new VirtualTerminal(30, 100);
+
+        vt.feed("\033[3;1H  ▎ Meet Fable 5, our newest model for complex, long-running work. Switch anytime");
+        vt.feed("\033[4;1H  ▎ with /model.");
+        vt.feed("\033[5;1H  ▎ Included in your plan limits until Jul 8, then switch to usage credits to");
+        vt.feed("\033[6;1H  ▎ continue.");
+        vt.feed("\033[7;1H  Fast mode is now available · /fast to turn on");
+        vt.feed("\033[8;1H  ◈ max · /effort");
+        vt.feed("\033[9;1H  ● VISUAL-CLAUDE-OK");
+
+        String content = decoder.extractContent(vt);
+        assertTrue(content.contains("VISUAL-CLAUDE-OK"), content);
+        assertFalse(content.contains("Fable"), content);
+        assertFalse(content.contains("/model"), content);
+        assertFalse(content.contains("plan limits"), content);
+        assertFalse(content.contains("Fast mode"), content);
+        assertFalse(content.contains("/effort"), content);
+    }
 }

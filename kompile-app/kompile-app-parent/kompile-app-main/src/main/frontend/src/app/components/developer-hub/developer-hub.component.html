@@ -27,7 +27,8 @@
   </div>
 
   <mat-tab-group [(selectedIndex)]="selectedTabIndex" (selectedTabChange)="onTabChange($event)">
-    <!-- Testers Section -->
+
+    <!-- ── Testers ─────────────────────────────────────────────────────────── -->
     <mat-tab>
       <ng-template mat-tab-label>
         <mat-icon class="tab-icon">science</mat-icon>
@@ -74,7 +75,7 @@
       </div>
     </mat-tab>
 
-    <!-- Debuggers Section -->
+    <!-- ── Debuggers ──────────────────────────────────────────────────────── -->
     <mat-tab>
       <ng-template mat-tab-label>
         <mat-icon class="tab-icon">bug_report</mat-icon>
@@ -117,25 +118,59 @@
               </div>
             </ng-template>
           </mat-tab>
+          <mat-tab label="Document Debug">
+            <ng-template matTabContent>
+              <div class="inner-tab-content">
+                <app-document-debugger></app-document-debugger>
+              </div>
+            </ng-template>
+          </mat-tab>
         </mat-tab-group>
       </div>
     </mat-tab>
 
-    <!-- Management Section -->
+    <!-- ── Management ────────────────────────────────────────────────────── -->
+    <!--
+      Three named groups inside a single flat mat-tab-group.
+      Index map (matches MGMT_STAGING_TAB_INDEX = 5 in the TS):
+        Ingest & Jobs:
+          0  Index & Search Status
+          1  Ingest History
+          2  Resumable Jobs
+          3  Processing Settings
+          4  Pipeline Schedules
+        Models & GPU:
+          5  Model & Staging          ← ?section=staging lands here
+          6  VLM Management
+          7  GPU Management
+          8  Model Admission
+          9  Model Warmup & Cache
+          10 Training History
+        Ops & Monitoring:
+          11 Job Scheduler
+          12 Monitors
+    -->
     <mat-tab>
       <ng-template mat-tab-label>
         <mat-icon class="tab-icon">settings</mat-icon>
         Management
       </ng-template>
       <div class="tab-content section-content">
-        <mat-tab-group class="inner-tabs">
-          <mat-tab label="Index &amp; Search Status">
+        <mat-tab-group class="inner-tabs management-tabs" #managementInnerTabs>
+
+          <!-- ·· Ingest & Jobs ············································· -->
+          <mat-tab>
+            <ng-template mat-tab-label>
+              <mat-icon class="tab-icon">upload_file</mat-icon>
+              Index &amp; Search Status
+            </ng-template>
             <ng-template matTabContent>
               <div class="inner-tab-content">
                 <app-index-system-status></app-index-system-status>
               </div>
             </ng-template>
           </mat-tab>
+
           <mat-tab label="Ingest History">
             <ng-template matTabContent>
               <div class="inner-tab-content">
@@ -143,6 +178,7 @@
               </div>
             </ng-template>
           </mat-tab>
+
           <mat-tab label="Resumable Jobs">
             <ng-template matTabContent>
               <div class="inner-tab-content">
@@ -150,6 +186,7 @@
               </div>
             </ng-template>
           </mat-tab>
+
           <mat-tab label="Processing Settings">
             <ng-template matTabContent>
               <div class="inner-tab-content">
@@ -157,48 +194,7 @@
               </div>
             </ng-template>
           </mat-tab>
-          <mat-tab label="Subprocess Config">
-            <ng-template matTabContent>
-              <div class="inner-tab-content">
-                <app-subprocess-config></app-subprocess-config>
-              </div>
-            </ng-template>
-          </mat-tab>
-          <mat-tab label="Model &amp; Staging">
-            <ng-template matTabContent>
-              <div class="inner-tab-content">
-                <app-model-staging></app-model-staging>
-              </div>
-            </ng-template>
-          </mat-tab>
-          <mat-tab label="VLM Management">
-            <ng-template matTabContent>
-              <div class="inner-tab-content">
-                <app-vlm-management></app-vlm-management>
-              </div>
-            </ng-template>
-          </mat-tab>
-          <mat-tab label="GPU Management">
-            <ng-template matTabContent>
-              <div class="inner-tab-content">
-                <app-gpu-management></app-gpu-management>
-              </div>
-            </ng-template>
-          </mat-tab>
-          <mat-tab label="Job Scheduler">
-            <ng-template matTabContent>
-              <div class="inner-tab-content">
-                <app-scheduler-dashboard></app-scheduler-dashboard>
-              </div>
-            </ng-template>
-          </mat-tab>
-          <mat-tab label="Model Admission">
-            <ng-template matTabContent>
-              <div class="inner-tab-content">
-                <app-model-admission></app-model-admission>
-              </div>
-            </ng-template>
-          </mat-tab>
+
           <mat-tab label="Pipeline Schedules">
             <ng-template matTabContent>
               <div class="inner-tab-content">
@@ -206,34 +202,40 @@
               </div>
             </ng-template>
           </mat-tab>
-          <mat-tab label="Monitors">
+
+          <!-- ·· Models & GPU ··············································· -->
+          <mat-tab label="Model &amp; Staging">
             <ng-template matTabContent>
               <div class="inner-tab-content">
-                <app-monitors-manager></app-monitors-manager>
+                <app-model-staging></app-model-staging>
               </div>
             </ng-template>
           </mat-tab>
-          <mat-tab label="Enforcer">
+
+          <mat-tab label="VLM Management">
             <ng-template matTabContent>
               <div class="inner-tab-content">
-                <app-enforcer-dashboard></app-enforcer-dashboard>
+                <app-vlm-management></app-vlm-management>
               </div>
             </ng-template>
           </mat-tab>
-          <mat-tab label="Project Judge">
+
+          <mat-tab label="GPU Management">
             <ng-template matTabContent>
               <div class="inner-tab-content">
-                <app-project-enforcer-manager></app-project-enforcer-manager>
+                <app-gpu-management></app-gpu-management>
               </div>
             </ng-template>
           </mat-tab>
-          <mat-tab label="Training History">
+
+          <mat-tab label="Model Admission">
             <ng-template matTabContent>
               <div class="inner-tab-content">
-                <app-training-history></app-training-history>
+                <app-model-admission></app-model-admission>
               </div>
             </ng-template>
           </mat-tab>
+
           <mat-tab label="Model Warmup &amp; Cache">
             <ng-template matTabContent>
               <div class="inner-tab-content">
@@ -241,22 +243,89 @@
               </div>
             </ng-template>
           </mat-tab>
+
+          <mat-tab label="Training History">
+            <ng-template matTabContent>
+              <div class="inner-tab-content">
+                <app-training-history></app-training-history>
+              </div>
+            </ng-template>
+          </mat-tab>
+
+          <mat-tab label="Training Launch">
+            <ng-template matTabContent>
+              <div class="inner-tab-content">
+                <app-training-launch></app-training-launch>
+              </div>
+            </ng-template>
+          </mat-tab>
+
+          <mat-tab label="Training Dashboard">
+            <ng-template matTabContent>
+              <div class="inner-tab-content">
+                <div *ngIf="selectedTrainingJob; else noJobSelected">
+                  <app-training-dashboard [job]="selectedTrainingJob"></app-training-dashboard>
+                </div>
+                <ng-template #noJobSelected>
+                  <div style="padding: 24px; color: var(--mat-sys-on-surface-variant);">
+                    <mat-icon>info</mat-icon>
+                    Select a training job from the Training History tab to view live metrics here.
+                  </div>
+                </ng-template>
+              </div>
+            </ng-template>
+          </mat-tab>
+
+          <mat-tab label="SameDiff LLM Models">
+            <ng-template matTabContent>
+              <div class="inner-tab-content">
+                <app-samediff-llm-models></app-samediff-llm-models>
+              </div>
+            </ng-template>
+          </mat-tab>
+
+          <!-- ·· Ops & Monitoring ··········································· -->
+          <mat-tab label="Job Scheduler">
+            <ng-template matTabContent>
+              <div class="inner-tab-content">
+                <app-scheduler-dashboard></app-scheduler-dashboard>
+              </div>
+            </ng-template>
+          </mat-tab>
+
+          <mat-tab label="Monitors">
+            <ng-template matTabContent>
+              <div class="inner-tab-content">
+                <app-monitors-manager></app-monitors-manager>
+              </div>
+            </ng-template>
+          </mat-tab>
+
         </mat-tab-group>
+
+        <!-- Cross-link hints for removed tabs -->
+        <div class="removed-tab-hints">
+          <small class="hint-text">
+            <mat-icon class="hint-icon">info</mat-icon>
+            Enforcer &amp; Project Judge → top-level <strong>Enforcer</strong> tab &nbsp;|&nbsp;
+            Subprocess Config → <strong>Settings → Ingestion Subprocess</strong>
+          </small>
+        </div>
       </div>
     </mat-tab>
 
-    <!-- SDX SDK Section -->
+    <!-- ── SDK ──────────────────────────────────────────────────────────── -->
     <mat-tab>
       <ng-template mat-tab-label>
         <mat-icon class="tab-icon">developer_board</mat-icon>
-        SDX SDK
+        SDK
       </ng-template>
       <div class="tab-content section-content">
         <app-sdk-hub></app-sdk-hub>
       </div>
     </mat-tab>
 
-    <!-- System Section -->
+    <!-- ── System ─────────────────────────────────────────────────────────── -->
     <mat-tab>
       <ng-template mat-tab-label>
         <mat-icon class="tab-icon">memory</mat-icon>
@@ -341,8 +410,16 @@
               </div>
             </ng-template>
           </mat-tab>
+          <mat-tab label="System Info">
+            <ng-template matTabContent>
+              <div class="inner-tab-content">
+                <app-system-info></app-system-info>
+              </div>
+            </ng-template>
+          </mat-tab>
         </mat-tab-group>
       </div>
     </mat-tab>
+
   </mat-tab-group>
 </div>

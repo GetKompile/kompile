@@ -28,12 +28,14 @@ import java.util.concurrent.Callable;
  */
 @CommandLine.Command(
         name = "import",
-        description = "Bulk import nodes and edges from JSON, JSON-LD, CSV, or Cypher dump",
+        description = "Bulk import from JSON, JSON-LD, CSV, Cypher dump, "
+                + "or the full native .kgraph (--format kgraph, bootstraps a fact sheet)",
         mixinStandardHelpOptions = true
 )
 public class GraphImportCommand implements Callable<Integer> {
 
-    static final Set<String> SUPPORTED_FORMATS = Set.of("json", "jsonld", "json-ld", "csv", "cypher");
+    static final Set<String> SUPPORTED_FORMATS =
+            Set.of("json", "jsonld", "json-ld", "csv", "cypher", "kgraph", "unified");
 
     @CommandLine.Mixin
     private AppClientMixin app;
@@ -42,7 +44,7 @@ public class GraphImportCommand implements Callable<Integer> {
     private Path filePath;
 
     @CommandLine.Option(names = "--format", required = true,
-            description = "One of: json, jsonld, csv, cypher")
+            description = "One of: json, jsonld, csv, cypher, kgraph")
     private String format;
 
     @CommandLine.Option(names = "--edges-file",
@@ -62,6 +64,9 @@ public class GraphImportCommand implements Callable<Integer> {
         KompileHttpClient client = app.requireClient();
         if (client == null) return 1;
         try {
+            if (isUnifiedFormat(format)) {
+                return importUnified(client);
+            }
             Map<String, Path> files = new LinkedHashMap<>();
             files.put("file", filePath);
             if (edgesFile != null) files.put("edgesFile", edgesFile);
@@ -98,5 +103,29 @@ public class GraphImportCommand implements Callable<Integer> {
             System.err.println("Error: " + e.getMessage());
             return 1;
         }
+    }
+
+    /** Import the full native {@code .kgraph} into a fact sheet via {@code /api/graph/unified/import}. */
+    private Integer importUnified(KompileHttpClient client) throws Exception {
+        Map<String, Path> files = new LinkedHashMap<>();
+        files.put("file", filePath);
+        Map<String, String> form = new LinkedHashMap<>();
+        if (factSheetId != null) form.put("factSheetId", String.valueOf(factSheetId));
+
+        String response = client.uploadMultipart("/api/graph/unified/import", files, form);
+        if (app.isJsonOutput()) {
+            OutputFormatter.printJson(response);
+            return 0;
+        }
+        JsonNode result = client.getObjectMapper().readTree(response);
+        System.out.println("Import complete (.kgraph):");
+        OutputFormatter.printKv("Nodes", result.path("nodes").asInt());
+        OutputFormatter.printKv("Edges", result.path("edges").asInt());
+        OutputFormatter.printKv("Embeddings", result.path("embeddings").asInt());
+        return 0;
+    }
+
+    static boolean isUnifiedFormat(String format) {
+        return "kgraph".equalsIgnoreCase(format) || "unified".equalsIgnoreCase(format);
     }
 }

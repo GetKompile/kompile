@@ -17,6 +17,7 @@ package ai.kompile.graph.reasoning.explain;
 
 import ai.kompile.graph.reasoning.confidence.Opinion;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -149,7 +150,7 @@ public record OpinionTree(
     }
 
     private static ReasoningTrace.Step toTraceStep(OpinionTree node) {
-        List<ReasoningTrace.Step> premises = new java.util.ArrayList<>();
+        List<ReasoningTrace.Step> premises = new ArrayList<>();
         for (OpinionTree child : node.children()) {
             premises.add(toTraceStep(child));
         }

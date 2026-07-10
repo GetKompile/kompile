@@ -18,9 +18,7 @@ package ai.kompile.cli.main.install;
 
 import ai.kompile.cli.common.util.ArchiveUtils;
 import ai.kompile.cli.main.Info;
-import ai.kompile.cli.main.install.InstallMain;
 import ai.kompile.cli.main.install.registry.ComponentRegistry;
-import ai.kompile.cli.main.install.InstallMain;
 import ai.kompile.cli.main.install.registry.ComponentRegistry.ComponentDescriptor;
 import org.apache.commons.io.FileUtils;
 import org.zeroturnaround.exec.ProcessExecutor;
@@ -31,8 +29,13 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Enumeration;
+import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.TimeoutException;
 import java.util.jar.Attributes;
+import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 import java.util.jar.Manifest;
 
@@ -45,6 +48,8 @@ public class ComponentInstaller {
     protected ComponentRegistry registry;
     protected boolean forceDownload = false;
     protected boolean verbose = false;
+    private BackendRequirement expectedBackend = BackendRequirement.AUTO;
+    private boolean allowBackendChange = false;
 
     public ComponentInstaller(ComponentRegistry registry) {
         this.registry = registry;
@@ -120,7 +125,9 @@ public class ComponentInstaller {
         if (fileName.endsWith(".jar")) {
             // Direct JAR download
             File targetJar = registry.getJarPath(componentId);
+            validateCandidateBeforeInstall(componentId, downloadedFile, targetJar);
             FileUtils.moveFile(downloadedFile, targetJar);
+            clearBootInfExtracted(installDir);
             return targetJar;
 
         } else if (fileName.endsWith(".tar.gz") || fileName.endsWith(".tgz")) {
@@ -143,7 +150,9 @@ public class ComponentInstaller {
 
             // Move JAR to final location
             File targetJar = registry.getJarPath(componentId);
+            validateCandidateBeforeInstall(componentId, jarFile, targetJar);
             FileUtils.moveFile(jarFile, targetJar);
+            clearBootInfExtracted(installDir);
 
             // Clean up extraction directory
             FileUtils.deleteDirectory(tempExtractDir);
@@ -171,7 +180,9 @@ public class ComponentInstaller {
 
             // Move JAR to final location
             File targetJar = registry.getJarPath(componentId);
+            validateCandidateBeforeInstall(componentId, jarFile, targetJar);
             FileUtils.moveFile(jarFile, targetJar);
+            clearBootInfExtracted(installDir);
 
             // Clean up extraction directory
             FileUtils.deleteDirectory(tempExtractDir);
@@ -272,7 +283,21 @@ public class ComponentInstaller {
         }
 
         // Run Maven build
-        ProcessBuilder pb = new ProcessBuilder(mvnCmd, "clean", "package", "-DskipTests");
+        List<String> mavenArgs = new ArrayList<>();
+        mavenArgs.add(mvnCmd);
+        mavenArgs.add("clean");
+        mavenArgs.add("package");
+        mavenArgs.add("-DskipTests");
+        if (ComponentRegistry.KOMPILE_APP_MAIN.equals(componentId)) {
+            mavenArgs.add("-Dkompile.uber");
+            BackendRequirement buildBackend = effectiveAppBuildBackend();
+            if (buildBackend == BackendRequirement.CUDA) {
+                mavenArgs.add("-Dkompile.backend=cuda-12.9");
+            } else if (buildBackend == BackendRequirement.CPU) {
+                mavenArgs.add("-Dkompile.backend=cpu");
+            }
+        }
+        ProcessBuilder pb = new ProcessBuilder(mavenArgs);
         pb.directory(new File(sourceDir));
         pb.inheritIO();
 
@@ -301,8 +326,10 @@ public class ComponentInstaller {
         }
 
         File targetJar = registry.getJarPath(componentId);
+        validateCandidateBeforeInstall(componentId, builtJar, targetJar);
         clearOldJars(installDir, targetJar.getName());
         FileUtils.copyFile(builtJar, targetJar);
+        clearBootInfExtracted(installDir);
 
         System.out.println("  Built and installed to: " + targetJar.getAbsolutePath());
         return targetJar;
@@ -356,14 +383,142 @@ public class ComponentInstaller {
         }
 
         File targetJar = registry.getJarPath(componentId);
+        validateCandidateBeforeInstall(componentId, localJar, targetJar);
         clearOldJars(installDir, targetJar.getName());
         FileUtils.copyFile(localJar, targetJar);
+        clearBootInfExtracted(installDir);
 
         // Validate
         validateInstallation(componentId, targetJar);
 
         System.out.println("  Installed to: " + targetJar.getAbsolutePath());
         return targetJar;
+    }
+
+    /**
+     * Verify a candidate app-main JAR before it replaces the installed runtime.
+     */
+    protected void validateCandidateBeforeInstall(String componentId, File candidateJar, File targetJar) throws IOException {
+        if (!ComponentRegistry.KOMPILE_APP_MAIN.equals(componentId)) {
+            return;
+        }
+        InstalledBackend candidateBackend = detectNd4jBackend(candidateJar);
+        if (candidateBackend == InstalledBackend.UNKNOWN) {
+            throw new IllegalArgumentException("Refusing to install kompile-app-main JAR without an ND4J backend. "
+                    + "Install the executable -exec.jar built with -Dkompile.uber, not the thin library jar.");
+        }
+
+        if (expectedBackend == BackendRequirement.CUDA && candidateBackend != InstalledBackend.CUDA) {
+            throw new IllegalArgumentException("Expected a CUDA kompile-app-main JAR, but candidate contains "
+                    + candidateBackend.displayName() + ". Rebuild with -Dkompile.uber -Dkompile.backend=cuda-12.9.");
+        }
+        if (expectedBackend == BackendRequirement.CPU && candidateBackend != InstalledBackend.CPU) {
+            throw new IllegalArgumentException("Expected a CPU kompile-app-main JAR, but candidate contains "
+                    + candidateBackend.displayName() + ". Rebuild with -Dkompile.uber -Dkompile.backend=cpu.");
+        }
+
+        File existingJar = targetJar.isFile() ? targetJar : registry.findInstalledJar(componentId);
+        InstalledBackend existingBackend = detectNd4jBackend(existingJar);
+        if (!allowBackendChange
+                && expectedBackend == BackendRequirement.AUTO
+                && existingBackend != InstalledBackend.UNKNOWN
+                && existingBackend != candidateBackend) {
+            throw new IllegalArgumentException("Refusing to replace installed kompile-app-main "
+                    + existingBackend.displayName() + " backend with " + candidateBackend.displayName()
+                    + " backend. Rebuild with the existing backend, or pass --allow-backend-change when the switch is intentional.");
+        }
+    }
+
+    protected BackendRequirement effectiveAppBuildBackend() throws IOException {
+        if (expectedBackend != BackendRequirement.AUTO) {
+            return expectedBackend;
+        }
+        InstalledBackend existingBackend = detectNd4jBackend(registry.findInstalledJar(ComponentRegistry.KOMPILE_APP_MAIN));
+        if (existingBackend == InstalledBackend.CUDA) {
+            return BackendRequirement.CUDA;
+        }
+        if (existingBackend == InstalledBackend.CPU) {
+            return BackendRequirement.CPU;
+        }
+        return BackendRequirement.AUTO;
+    }
+
+    static InstalledBackend detectNd4jBackend(File jarFile) throws IOException {
+        if (jarFile == null || !jarFile.isFile() || !jarFile.getName().endsWith(".jar")) {
+            return InstalledBackend.UNKNOWN;
+        }
+        boolean hasCuda = false;
+        boolean hasCpu = false;
+        try (JarFile jar = new JarFile(jarFile)) {
+            Enumeration<JarEntry> entries = jar.entries();
+            while (entries.hasMoreElements()) {
+                String name = entries.nextElement().getName().toLowerCase(Locale.ROOT);
+                if (name.contains("/nd4j-cuda-12.9-") || name.startsWith("nd4j-cuda-12.9-")) {
+                    hasCuda = true;
+                }
+                if (name.contains("/nd4j-native-") || name.startsWith("nd4j-native-")) {
+                    hasCpu = true;
+                }
+            }
+        }
+        if (hasCuda) {
+            return InstalledBackend.CUDA;
+        }
+        if (hasCpu) {
+            return InstalledBackend.CPU;
+        }
+        return InstalledBackend.UNKNOWN;
+    }
+
+    private void clearBootInfExtracted(File installDir) throws IOException {
+        File cacheDir = new File(installDir, ".boot-inf-extracted");
+        if (!cacheDir.exists()) {
+            return;
+        }
+        if (cacheDir.isDirectory()) {
+            FileUtils.deleteDirectory(cacheDir);
+        } else if (!cacheDir.delete()) {
+            throw new IOException("Failed to delete stale Boot extraction cache: " + cacheDir.getAbsolutePath());
+        }
+        if (verbose) {
+            System.out.println("  Cleared stale Boot extraction cache: " + cacheDir.getAbsolutePath());
+        }
+    }
+
+    enum InstalledBackend {
+        CUDA("CUDA"),
+        CPU("CPU"),
+        UNKNOWN("unknown");
+
+        private final String displayName;
+
+        InstalledBackend(String displayName) {
+            this.displayName = displayName;
+        }
+
+        String displayName() {
+            return displayName;
+        }
+    }
+
+    enum BackendRequirement {
+        AUTO,
+        CUDA,
+        CPU;
+
+        static BackendRequirement parse(String value) {
+            if (value == null || value.isBlank() || "auto".equalsIgnoreCase(value)) {
+                return AUTO;
+            }
+            String normalized = value.trim().toLowerCase(Locale.ROOT);
+            if (normalized.equals("cuda") || normalized.equals("cuda-12.9") || normalized.equals("nd4j-cuda-12.9")) {
+                return CUDA;
+            }
+            if (normalized.equals("cpu") || normalized.equals("nd4j-native")) {
+                return CPU;
+            }
+            throw new IllegalArgumentException("Unknown backend: " + value + ". Use auto, cpu, or cuda-12.9.");
+        }
     }
 
     /**
@@ -396,5 +551,13 @@ public class ComponentInstaller {
 
     public void setVerbose(boolean verbose) {
         this.verbose = verbose;
+    }
+
+    public void setExpectedBackend(String expectedBackend) {
+        this.expectedBackend = BackendRequirement.parse(expectedBackend);
+    }
+
+    public void setAllowBackendChange(boolean allowBackendChange) {
+        this.allowBackendChange = allowBackendChange;
     }
 }

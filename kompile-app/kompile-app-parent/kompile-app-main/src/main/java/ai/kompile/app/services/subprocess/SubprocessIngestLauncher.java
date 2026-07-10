@@ -33,9 +33,12 @@ import ai.kompile.app.services.IngestProgressTracker;
 import ai.kompile.app.services.ModelLifecycleManager;
 import ai.kompile.app.services.Nd4jEnvironmentConfigService;
 import ai.kompile.app.services.ServerPortService;
+import ai.kompile.app.subprocess.BackendConfigurable;
 import ai.kompile.app.subprocess.SubprocessArgs;
 import ai.kompile.app.subprocess.SubprocessEnvironmentPropagator;
 import ai.kompile.app.subprocess.SubprocessMessage;
+import ai.kompile.app.subprocess.SubprocessPlacement;
+import ai.kompile.app.subprocess.SubprocessPlacementSupport;
 import ai.kompile.app.web.dto.IngestProgressUpdate;
 import ai.kompile.cli.common.logs.AgentLogRecord;
 import ai.kompile.cli.common.logs.SubprocessLogWriter;
@@ -85,9 +88,18 @@ import java.util.regex.Pattern;
  * - Monitors subprocess health via heartbeats
  */
 @Service
-public class SubprocessIngestLauncher {
+public class SubprocessIngestLauncher implements BackendConfigurable {
 
     private static final Logger logger = LoggerFactory.getLogger(SubprocessIngestLauncher.class);
+
+    /** Shared device-agnostic placement (same base infra every subprocess uses). */
+    private final SubprocessPlacementSupport placement = new SubprocessPlacementSupport();
+
+    /** {@link BackendConfigurable} — the scheduler assigns backend/device/memory before spawn. */
+    @Override
+    public void applyPlacement(SubprocessPlacement p) {
+        this.placement.applyPlacement(p);
+    }
 
     // Scheduling intervals
     private static final long STALE_CHECK_INTERVAL_MS = 30_000L; // 30 seconds
@@ -517,10 +529,13 @@ public class SubprocessIngestLauncher {
 
             // Phase-2 log aggregation: open central JSON-lines writer
             try {
-                SubprocessLogWriter slw = new SubprocessLogWriter("ingest", taskId);
+                String workingDir = processBuilder.directory() != null
+                        ? processBuilder.directory().getAbsolutePath()
+                        : System.getProperty("user.dir");
+                SubprocessLogWriter slw = new SubprocessLogWriter("ingest", taskId, workingDir);
                 slw.writeStart(new SubprocessLogWriter.SubprocessRunContext(
                         null, command,
-                        processBuilder.directory() != null ? processBuilder.directory().getAbsolutePath() : null,
+                        workingDir,
                         process.pid(), getEffectiveHeapSize(effectiveOptions)));
                 logWriters.put(taskId, slw);
                 logger.debug("[ingest-{}] SubprocessLogWriter opened: {}", taskId, slw.getLogFile());
@@ -744,6 +759,8 @@ public class SubprocessIngestLauncher {
             }
         }
 
+        // Device-agnostic backend/device selection from the shared base infra — no CUDA_VISIBLE_DEVICES.
+        command.addAll(placement.jvmFlags());
         command.add("-cp");
         command.add(classpath);
 
@@ -2697,6 +2714,8 @@ public class SubprocessIngestLauncher {
      */
     private void propagateNd4jEnvironment(Map<String, String> env) {
         SubprocessEnvironmentPropagator.propagateToEnvironment(env);
+        // Device-agnostic per-device memory bound (SD_MAX_DEVICE_BYTES) — shared base infra.
+        placement.applyEnv(env);
     }
 
     /**

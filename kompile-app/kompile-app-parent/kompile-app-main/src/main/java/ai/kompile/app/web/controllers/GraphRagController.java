@@ -15,6 +15,7 @@
  */
 package ai.kompile.app.web.controllers;
 
+import ai.kompile.app.rag.GraphReasoningRetriever;
 import ai.kompile.core.graphrag.GraphRagService;
 import ai.kompile.core.graphrag.query.GraphRagQuery;
 import ai.kompile.core.graphrag.query.GraphRagResult;
@@ -39,8 +40,8 @@ public class GraphRagController {
 
     private final GraphRagService graphRagService;
 
-    @org.springframework.beans.factory.annotation.Autowired(required = false)
-    private ai.kompile.app.rag.GraphReasoningRetriever graphReasoningRetriever;
+    @Autowired(required = false)
+    private GraphReasoningRetriever graphReasoningRetriever;
 
     @Autowired
     public GraphRagController(@Autowired(required = false) GraphRagService graphRagService) {
@@ -72,11 +73,12 @@ public class GraphRagController {
         int maxResults = request.containsKey("maxResults")
                 ? ((Number) request.get("maxResults")).intValue() : 5;
         String conversationId = (String) request.getOrDefault("conversationId", "default");
+        Long factSheetId = parseLong(request.get("factSheetId"));
 
         // Reasoning strategies (causal / probabilistic) route to the reasoning retriever, which
         // returns causal chains or MEBN posteriors as the answer/context.
         if (graphReasoningRetriever != null && graphReasoningRetriever.supports(searchTypeStr)) {
-            String reasoning = graphReasoningRetriever.retrieve(query, searchTypeStr, maxResults);
+            String reasoning = graphReasoningRetriever.retrieve(query, searchTypeStr, maxResults, factSheetId);
             if (reasoning != null && !reasoning.isBlank()) {
                 Map<String, Object> reasoningResponse = new LinkedHashMap<>();
                 reasoningResponse.put("answer", reasoning);
@@ -125,6 +127,23 @@ public class GraphRagController {
                     "error", "Graph RAG search failed: " + e.getMessage()
             ));
         }
+    }
+
+    private Long parseLong(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        if (value instanceof String text && !text.isBlank()) {
+            try {
+                return Long.parseLong(text.trim());
+            } catch (NumberFormatException ignored) {
+                log.debug("Ignoring invalid factSheetId '{}'", text);
+            }
+        }
+        return null;
     }
 
     /**

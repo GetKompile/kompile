@@ -10,10 +10,13 @@
 package ai.kompile.tool.graph;
 
 import ai.kompile.graph.algorithms.JaccardNodeSimilarity;
+import ai.kompile.graph.algorithms.community.CommunitySummary;
 import ai.kompile.graph.algorithms.service.GraphAlgorithmService;
+import ai.kompile.graph.reasoning.model.GraphEntity;
+import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
-import ai.kompile.graph.algorithms.community.CommunitySummary;
+import ai.kompile.knowledgegraph.unified.UnifiedGraphBridge;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
@@ -37,6 +40,7 @@ public class GraphCommunityTool {
 
     private final GraphAlgorithmService algorithmService;
     private final KnowledgeGraphService graphService;
+    private final UnifiedGraphBridge unifiedGraphBridge;
 
     // ═══════════════════════════════════════════════════════════════════════════
     // INPUT RECORDS
@@ -73,11 +77,18 @@ public class GraphCommunityTool {
             Double minThreshold
     ) {}
 
-    @Autowired
     public GraphCommunityTool(GraphAlgorithmService algorithmService,
                               KnowledgeGraphService graphService) {
+        this(algorithmService, graphService, null);
+    }
+
+    @Autowired
+    public GraphCommunityTool(GraphAlgorithmService algorithmService,
+                              KnowledgeGraphService graphService,
+                              @org.springframework.lang.Nullable UnifiedGraphBridge unifiedGraphBridge) {
         this.algorithmService = algorithmService;
         this.graphService = graphService;
+        this.unifiedGraphBridge = unifiedGraphBridge;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -94,15 +105,10 @@ public class GraphCommunityTool {
 
         try {
             String algo = input.algorithm() != null ? input.algorithm().toLowerCase() : "louvain";
-            Map<String, Integer> assignments;
-
-            if ("wcc".equals(algo)) {
-                assignments = algorithmService.weaklyConnectedComponents(input.factSheetId());
-            } else {
-                int maxIter = input.maxIterations() != null && input.maxIterations() > 0
-                        ? input.maxIterations() : 20;
-                assignments = algorithmService.louvainCommunities(input.factSheetId(), maxIter);
-            }
+            int maxIter = input.maxIterations() != null && input.maxIterations() > 0
+                    ? input.maxIterations() : 20;
+            UnifiedGraph unified = unifiedGraph(input.factSheetId());
+            Map<String, Integer> assignments = communityAssignments(input.factSheetId(), algo, maxIter, unified);
 
             // Aggregate: community ID -> count
             Map<Integer, Long> communitySizes = assignments.values().stream()
@@ -147,13 +153,8 @@ public class GraphCommunityTool {
 
         try {
             String algo = input.algorithm() != null ? input.algorithm().toLowerCase() : "louvain";
-            Map<String, Integer> assignments;
-
-            if ("wcc".equals(algo)) {
-                assignments = algorithmService.weaklyConnectedComponents(input.factSheetId());
-            } else {
-                assignments = algorithmService.louvainCommunities(input.factSheetId(), 20);
-            }
+            UnifiedGraph unified = unifiedGraph(input.factSheetId());
+            Map<String, Integer> assignments = communityAssignments(input.factSheetId(), algo, 20, unified);
 
             List<String> memberNodeIds = assignments.entrySet().stream()
                     .filter(e -> e.getValue().equals(input.communityId()))
@@ -161,17 +162,9 @@ public class GraphCommunityTool {
                     .limit(limit)
                     .collect(Collectors.toList());
 
-            // Resolve node details
-            List<GraphNode> nodes = graphService.getNodesByIds(memberNodeIds);
-            List<Map<String, Object>> members = nodes.stream()
-                    .map(n -> {
-                        Map<String, Object> m = new LinkedHashMap<>();
-                        m.put("nodeId", n.getNodeId());
-                        m.put("title", n.getTitle() != null ? n.getTitle() : "Untitled");
-                        m.put("type", n.getNodeType().name());
-                        m.put("connections", n.getEdgeCount());
-                        return m;
-                    })
+            Map<String, GraphNode> liveNodes = liveNodes(memberNodeIds, unified);
+            List<Map<String, Object>> members = memberNodeIds.stream()
+                    .map(id -> nodeDetails(id, unified, liveNodes, true))
                     .collect(Collectors.toList());
 
             long totalMembers = assignments.values().stream()
@@ -204,8 +197,10 @@ public class GraphCommunityTool {
             int maxNodes = input.maxNodesPerPrompt() != null && input.maxNodesPerPrompt() > 0
                     ? input.maxNodesPerPrompt() : 20;
 
-            List<CommunitySummary> summaries = algorithmService.summarizeCommunities(
-                    input.factSheetId(), algo, maxNodes);
+            UnifiedGraph unified = unifiedGraph(input.factSheetId());
+            List<CommunitySummary> summaries = unified != null
+                    ? algorithmService.summarizeCommunitiesGraph(unified, algo, maxNodes)
+                    : algorithmService.summarizeCommunities(input.factSheetId(), algo, maxNodes);
 
             List<Map<String, Object>> summaryList = summaries.stream()
                     .map(s -> {
@@ -220,6 +215,7 @@ public class GraphCommunityTool {
 
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("algorithm", algo);
+            result.put("source", unified != null ? "unified_graph" : "knowledge_graph_service");
             result.put("communityCount", summaryList.size());
             result.put("summaries", summaryList);
             return result;
@@ -241,13 +237,8 @@ public class GraphCommunityTool {
 
         try {
             String algo = input.algorithm() != null ? input.algorithm().toLowerCase() : "louvain";
-            Map<String, Integer> assignments;
-
-            if ("wcc".equals(algo)) {
-                assignments = algorithmService.weaklyConnectedComponents(input.factSheetId());
-            } else {
-                assignments = algorithmService.louvainCommunities(input.factSheetId(), 20);
-            }
+            UnifiedGraph unified = unifiedGraph(input.factSheetId());
+            Map<String, Integer> assignments = communityAssignments(input.factSheetId(), algo, 20, unified);
 
             Integer communityId = assignments.get(input.nodeId());
             if (communityId == null) {
@@ -262,15 +253,9 @@ public class GraphCommunityTool {
                     .limit(30)
                     .collect(Collectors.toList());
 
-            List<GraphNode> nodes = graphService.getNodesByIds(coMembers);
-            List<Map<String, Object>> memberList = nodes.stream()
-                    .map(n -> {
-                        Map<String, Object> m = new LinkedHashMap<>();
-                        m.put("nodeId", n.getNodeId());
-                        m.put("title", n.getTitle() != null ? n.getTitle() : "Untitled");
-                        m.put("type", n.getNodeType().name());
-                        return m;
-                    })
+            Map<String, GraphNode> liveNodes = liveNodes(coMembers, unified);
+            List<Map<String, Object>> memberList = coMembers.stream()
+                    .map(id -> nodeDetails(id, unified, liveNodes, false))
                     .collect(Collectors.toList());
 
             long totalInCommunity = assignments.values().stream()
@@ -303,30 +288,27 @@ public class GraphCommunityTool {
             int topK = input.topK() != null && input.topK() > 0 ? Math.min(input.topK(), 50) : 20;
             double threshold = input.minThreshold() != null ? input.minThreshold() : 0.1;
 
-            List<JaccardNodeSimilarity.SimilarityPair> pairs =
-                    algorithmService.jaccardTopK(input.factSheetId(), topK, threshold);
+            UnifiedGraph unified = unifiedGraph(input.factSheetId());
+            List<JaccardNodeSimilarity.SimilarityPair> pairs = unified != null
+                    ? algorithmService.jaccardTopKGraph(unified, topK, threshold)
+                    : algorithmService.jaccardTopK(input.factSheetId(), topK, threshold);
 
-            // Resolve node titles
             Set<String> allNodeIds = new HashSet<>();
             pairs.forEach(p -> {
                 allNodeIds.add(p.nodeA());
                 allNodeIds.add(p.nodeB());
             });
-            Map<String, String> idToTitle = graphService.getNodesByIds(new ArrayList<>(allNodeIds))
-                    .stream()
-                    .collect(Collectors.toMap(
-                            GraphNode::getNodeId,
-                            n -> n.getTitle() != null ? n.getTitle() : "Untitled",
-                            (a, b) -> a
-                    ));
+            Map<String, GraphNode> liveNodes = liveNodes(new ArrayList<>(allNodeIds), unified);
 
             List<Map<String, Object>> pairList = pairs.stream()
                     .map(p -> {
                         Map<String, Object> m = new LinkedHashMap<>();
+                        Map<String, Object> a = nodeDetails(p.nodeA(), unified, liveNodes, false);
+                        Map<String, Object> b = nodeDetails(p.nodeB(), unified, liveNodes, false);
                         m.put("nodeA", p.nodeA());
-                        m.put("titleA", idToTitle.getOrDefault(p.nodeA(), "Unknown"));
+                        m.put("titleA", a.get("title"));
                         m.put("nodeB", p.nodeB());
-                        m.put("titleB", idToTitle.getOrDefault(p.nodeB(), "Unknown"));
+                        m.put("titleB", b.get("title"));
                         m.put("jaccardSimilarity", p.score());
                         return m;
                     })
@@ -342,5 +324,64 @@ public class GraphCommunityTool {
             log.error("Similar pairs failed: {}", e.getMessage(), e);
             return Map.of("error", "Failed: " + e.getMessage());
         }
+    }
+
+    private UnifiedGraph unifiedGraph(Long factSheetId) {
+        if (unifiedGraphBridge == null || factSheetId == null) {
+            return null;
+        }
+        try {
+            return unifiedGraphBridge.export(factSheetId);
+        } catch (RuntimeException ex) {
+            log.warn("Falling back to live community algorithms; unified export failed for factSheet={}",
+                    factSheetId, ex);
+            return null;
+        }
+    }
+
+    private Map<String, Integer> communityAssignments(Long factSheetId, String algo, int maxIterations,
+                                                       UnifiedGraph unified) {
+        if ("wcc".equals(algo)) {
+            return unified != null
+                    ? algorithmService.weaklyConnectedComponentsGraph(unified)
+                    : algorithmService.weaklyConnectedComponents(factSheetId);
+        }
+        return unified != null
+                ? algorithmService.louvainCommunitiesGraph(unified, maxIterations)
+                : algorithmService.louvainCommunities(factSheetId, maxIterations);
+    }
+
+    private Map<String, GraphNode> liveNodes(List<String> nodeIds, UnifiedGraph unified) {
+        if (unified != null || nodeIds == null || nodeIds.isEmpty()) {
+            return Map.of();
+        }
+        return graphService.getNodesByIds(nodeIds).stream()
+                .collect(Collectors.toMap(GraphNode::getNodeId, n -> n, (a, b) -> a));
+    }
+
+    private Map<String, Object> nodeDetails(String nodeId, UnifiedGraph unified,
+                                            Map<String, GraphNode> liveNodes,
+                                            boolean includeConnections) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("nodeId", nodeId);
+        if (unified != null) {
+            Optional<GraphEntity> entity = unified.entity(nodeId);
+            if (entity.isPresent()) {
+                GraphEntity e = entity.get();
+                m.put("title", e.label() == null || e.label().isBlank() ? "Unknown" : e.label());
+                m.put("type", e.type() == null || e.type().isBlank() ? "UNKNOWN" : e.type());
+                if (includeConnections) {
+                    m.put("connections", unified.relationsOf(nodeId).size());
+                }
+                return m;
+            }
+        }
+        GraphNode n = liveNodes.get(nodeId);
+        m.put("title", n != null && n.getTitle() != null ? n.getTitle() : "Unknown");
+        m.put("type", n != null && n.getNodeType() != null ? n.getNodeType().name() : "UNKNOWN");
+        if (includeConnections) {
+            m.put("connections", n != null ? n.getEdgeCount() : 0);
+        }
+        return m;
     }
 }

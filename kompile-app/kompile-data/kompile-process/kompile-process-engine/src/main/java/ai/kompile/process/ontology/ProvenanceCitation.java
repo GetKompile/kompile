@@ -21,6 +21,7 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.io.Serializable;
 import java.time.Instant;
 
 /**
@@ -31,7 +32,9 @@ import java.time.Instant;
 @Builder
 @AllArgsConstructor
 @NoArgsConstructor
-public class ProvenanceCitation {
+public class ProvenanceCitation implements Serializable {
+
+    private static final long serialVersionUID = 1L;
 
     private SourceType sourceType;
     /** Source identifier, e.g., "FP&A_Close_SOP_v3.2.docx". */

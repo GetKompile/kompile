@@ -34,6 +34,14 @@
         Runs separately from the main RAG app to keep it lightweight and GraalVM-compatible.</description>
 
     <dependencies>
+        <!-- Hibernate loads ByteBuddy through ServiceLoader in the JVM exec jar. The parent
+             excludes it from the JPA starter for native-image hygiene, so staging must opt in. -->
+        <dependency>
+            <groupId>net.bytebuddy</groupId>
+            <artifactId>byte-buddy</artifactId>
+            <version>1.14.13</version>
+        </dependency>
+
         <!-- Core interfaces and shared types -->
         <dependency>
             <groupId>ai.kompile</groupId>
@@ -43,6 +51,14 @@
         <dependency>
             <groupId>ai.kompile</groupId>
             <artifactId>kompile-utils</artifactId>
+        </dependency>
+
+        <!-- GGML model import used by ConversionService (org.nd4j.ggml.*); was only ever
+             satisfied transitively, which broke when upstream jars stopped leaking it. -->
+        <dependency>
+            <groupId>org.eclipse.deeplearning4j</groupId>
+            <artifactId>nd4j-ggml</artifactId>
+            <version>${nd4j.version}</version>
         </dependency>
 
         <!-- Spring Boot Web for REST API -->
@@ -67,12 +83,6 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-jpa</artifactId>
-            <exclusions>
-                <exclusion>
-                    <groupId>net.bytebuddy</groupId>
-                    <artifactId>byte-buddy</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
 
         <!-- H2 embedded database for job history -->
@@ -114,15 +124,15 @@
             <version>${nd4j.version}</version>
         </dependency>
 
-        <!-- ND4J native backend -->
+        <!-- ND4J backend: resolved from ${nd4j.backend} (default: nd4j-native; override via -Dkompile.backend=cuda-12.9 etc.) -->
         <dependency>
             <groupId>org.eclipse.deeplearning4j</groupId>
-            <artifactId>nd4j-native</artifactId>
+            <artifactId>${nd4j.backend}</artifactId>
             <version>${nd4j.version}</version>
         </dependency>
         <dependency>
             <groupId>org.eclipse.deeplearning4j</groupId>
-            <artifactId>nd4j-native</artifactId>
+            <artifactId>${nd4j.backend}</artifactId>
             <version>${nd4j.version}</version>
             <classifier>${javacpp.platform}</classifier>
         </dependency>
@@ -366,9 +376,17 @@
             </build>
         </profile>
 
-        <!-- GraalVM native image profile for model staging service -->
+        <!-- GraalVM native image profile for model staging service.
+             Activates on -Dkompile.dist (same as app-main's native profile) so
+             build-dist.sh actually produces bin/kompile-model-staging — with
+             -Pnative-only activation the dist step silently shipped jar-only. -->
         <profile>
             <id>native</id>
+            <activation>
+                <property>
+                    <name>kompile.dist</name>
+                </property>
+            </activation>
             <build>
                 <plugins>
                     <plugin>
@@ -456,9 +474,6 @@
                                 <buildArg>-H:IncludeResources=org/eclipse/deeplearning4j/tokenizers/.*\.so</buildArg>
                                 <buildArg>-H:IncludeResources=org/eclipse/deeplearning4j/tokenizers/.*\.dll</buildArg>
                                 <buildArg>-H:IncludeResources=org/eclipse/deeplearning4j/tokenizers/.*\.dylib</buildArg>
-                                <buildArg>-H:IncludeResources=ai/kompile/bindings/.*\.so</buildArg>
-                                <buildArg>-H:IncludeResources=ai/kompile/bindings/.*\.dll</buildArg>
-                                <buildArg>-H:IncludeResources=ai/kompile/bindings/.*\.dylib</buildArg>
                                 <buildArg>-H:LargeArrayThreshold=8192</buildArg>
                                 <!-- Exclude native binaries from image to prevent analysis bloat -->
                                 <buildArg>-H:ExcludeResources=org/bytedeco/.*\.so$</buildArg>
@@ -544,6 +559,37 @@
                     </plugin>
                 </plugins>
             </build>
+        </profile>
+
+        <!-- CUDA dual-backend: same rationale as kompile-app-main's cuda-dual-backend profile.
+             kompile-model-staging is the serving/LLM lane (StagingServingBridge, GGML
+             inference). When built with -Dkompile.cuda its ${nd4j.backend} is swapped to
+             nd4j-cuda-12.9, leaving nd4j-native absent from the exec jar. Any serving
+             subprocess forced to CPU (CUDA_VISIBLE_DEVICES=-1) would then crash at Nd4j
+             clinit — same failure mode as the CUDA-700 incident 2026-07-05.
+             Documented intent: docs/architecture/release-distribution-unification.md ~line 160
+             "jar tier keeps runtime multi-backend selection (BackendManager, both jars on
+             classpath)". -->
+        <profile>
+            <id>cuda-dual-backend</id>
+            <activation>
+                <property>
+                    <name>kompile.cuda</name>
+                </property>
+            </activation>
+            <dependencies>
+                <dependency>
+                    <groupId>org.eclipse.deeplearning4j</groupId>
+                    <artifactId>nd4j-native</artifactId>
+                    <version>${nd4j.version}</version>
+                </dependency>
+                <dependency>
+                    <groupId>org.eclipse.deeplearning4j</groupId>
+                    <artifactId>nd4j-native</artifactId>
+                    <version>${nd4j.version}</version>
+                    <classifier>${javacpp.platform}</classifier>
+                </dependency>
+            </dependencies>
         </profile>
     </profiles>
 

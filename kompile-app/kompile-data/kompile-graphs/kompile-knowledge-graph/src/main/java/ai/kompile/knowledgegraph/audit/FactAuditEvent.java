@@ -10,6 +10,8 @@
 package ai.kompile.knowledgegraph.audit;
 
 import java.time.Instant;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -247,7 +249,7 @@ public record FactAuditEvent(
         String s = json.trim();
         if (!s.startsWith("{") || !s.endsWith("}")) throw new IllegalArgumentException("Expected JSON object");
         s = s.substring(1, s.length() - 1);
-        java.util.Map<String, String> m = new java.util.LinkedHashMap<>();
+        Map<String, String> m = new LinkedHashMap<>();
         parseRaw(s, m);
         return new FactAuditEvent(
                 unquote(m.get("eventId")),
@@ -317,7 +319,7 @@ public record FactAuditEvent(
         return "true".equalsIgnoreCase(s == null ? "" : s.trim());
     }
 
-    private static void parseRaw(String body, java.util.Map<String, String> out) {
+    private static void parseRaw(String body, Map<String, String> out) {
         int i = 0, n = body.length();
         while (i < n) {
             while (i < n && body.charAt(i) <= ' ') i++;

@@ -10,7 +10,7 @@
 package ai.kompile.graphchangetracking.controller;
 
 import ai.kompile.graphchangetracking.domain.GraphRuleConfig;
-import ai.kompile.graphchangetracking.repository.GraphRuleConfigRepository;
+import ai.kompile.graphchangetracking.service.GraphRuleConfigStore;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -24,26 +24,26 @@ import java.util.List;
 @RequestMapping("/api/graph/rules")
 public class GraphRuleController {
 
-    private final GraphRuleConfigRepository repository;
+    private final GraphRuleConfigStore store;
 
-    public GraphRuleController(GraphRuleConfigRepository repository) {
-        this.repository = repository;
+    public GraphRuleController(GraphRuleConfigStore store) {
+        this.store = store;
     }
 
     @GetMapping
     public List<GraphRuleConfig> list() {
-        return repository.findAll();
+        return store.findAll();
     }
 
     @PostMapping
     public GraphRuleConfig create(@RequestBody GraphRuleConfig config) {
         config.setId(null);
-        return repository.save(config);
+        return store.save(config);
     }
 
     @GetMapping("/{ruleId}")
     public ResponseEntity<GraphRuleConfig> get(@PathVariable("ruleId") String ruleId) {
-        return repository.findByRuleId(ruleId)
+        return store.findByRuleId(ruleId)
                 .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
     }
@@ -51,7 +51,7 @@ public class GraphRuleController {
     @PutMapping("/{ruleId}")
     public ResponseEntity<GraphRuleConfig> update(@PathVariable("ruleId") String ruleId,
                                                   @RequestBody GraphRuleConfig update) {
-        return repository.findByRuleId(ruleId).map(existing -> {
+        return store.findByRuleId(ruleId).map(existing -> {
             if (update.getName() != null) existing.setName(update.getName());
             if (update.getEnabled() != null) existing.setEnabled(update.getEnabled());
             if (update.getActionType() != null) existing.setActionType(update.getActionType());
@@ -63,14 +63,14 @@ public class GraphRuleController {
             existing.setOnMutationType(update.getOnMutationType());
             existing.setOnEntityKind(update.getOnEntityKind());
             existing.setOnEntityType(update.getOnEntityType());
-            return ResponseEntity.ok(repository.save(existing));
+            return ResponseEntity.ok(store.save(existing));
         }).orElse(ResponseEntity.notFound().build());
     }
 
     @DeleteMapping("/{ruleId}")
     public ResponseEntity<Void> delete(@PathVariable("ruleId") String ruleId) {
-        return repository.findByRuleId(ruleId).map(rule -> {
-            repository.delete(rule);
+        return store.findByRuleId(ruleId).map(rule -> {
+            store.delete(rule);
             return ResponseEntity.ok().<Void>build();
         }).orElse(ResponseEntity.notFound().build());
     }
@@ -86,9 +86,9 @@ public class GraphRuleController {
     }
 
     private ResponseEntity<GraphRuleConfig> setEnabled(String ruleId, boolean enabled) {
-        return repository.findByRuleId(ruleId).map(rule -> {
+        return store.findByRuleId(ruleId).map(rule -> {
             rule.setEnabled(enabled);
-            return ResponseEntity.ok(repository.save(rule));
+            return ResponseEntity.ok(store.save(rule));
         }).orElse(ResponseEntity.notFound().build());
     }
 }

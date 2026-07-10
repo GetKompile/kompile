@@ -6,6 +6,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -213,7 +214,7 @@ class IngestCheckpointTest {
         assertTrue(cp2.needsResume());
         assertEquals(40, cp2.getNextChunkToEmbed());
         for (int i = 40; i < 100; i++) cp2.markChunksEmbedded(List.of(i));
-        var all = new java.util.ArrayList<Integer>();
+        var all = new ArrayList<Integer>();
         for (int i = 0; i < 100; i++) all.add(i);
         cp2.markChunksIndexed(all);
         cp2.markCompleted(30000);

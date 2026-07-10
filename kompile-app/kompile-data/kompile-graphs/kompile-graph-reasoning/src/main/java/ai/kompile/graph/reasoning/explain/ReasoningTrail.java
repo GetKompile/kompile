@@ -13,6 +13,7 @@ import ai.kompile.graph.reasoning.fol.EntailmentRecord;
 import ai.kompile.graph.reasoning.fol.grounding.DerivationTree;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -150,7 +151,7 @@ public record ReasoningTrail(
         }
 
         // Entailments branch
-        List<ReasoningTrace.Step> premises = new java.util.ArrayList<>();
+        List<ReasoningTrace.Step> premises = new ArrayList<>();
         for (EntailmentRecord e : entailments) {
             String op = e.activatedRules().isEmpty() ? "entailment" : String.join("; ", e.activatedRules());
             premises.add(new ReasoningTrace.Step(ReasoningTrace.StepKind.INFERENCE,

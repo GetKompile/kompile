@@ -20,8 +20,11 @@ import ai.kompile.app.subprocess.SubprocessMemoryWatchdog;
 import ai.kompile.embedding.anserini.AnseriniEncoderFactory;
 import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.anserini.encoder.samediff.ArcticEmbedSameDiffEncoder;
+import io.anserini.encoder.samediff.BgeSameDiffEncoder;
 import io.anserini.encoder.samediff.GenericDenseSameDiffEncoder;
 import io.anserini.encoder.samediff.SameDiffEncoder;
+import org.nd4j.common.config.ND4JSystemProperties;
 import org.nd4j.imports.converters.DifferentialFunctionClassHolder;
 import org.nd4j.linalg.factory.Nd4j;
 import org.slf4j.Logger;
@@ -32,8 +35,10 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.PrintStream;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.Executors;
+import java.util.concurrent.PriorityBlockingQueue;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
@@ -84,6 +89,7 @@ public class EmbeddingSubprocessMain {
     // Batch configuration
     private static volatile int optimalBatchSize = 32;
     private static volatile int maxBatchSize = 64;
+    private static final double MIN_EMBEDDING_MAGNITUDE = 1e-18;
 
     // Statistics tracking
     private static final AtomicLong totalEmbeddingsProcessed = new AtomicLong(0);
@@ -100,6 +106,34 @@ public class EmbeddingSubprocessMain {
 
     // Current phase tracking
     private static volatile String currentPhase = "INITIALIZING";
+
+    // ── Request scheduling (priority lane) ──────────────────────────────────
+    // The reader thread only parses + classifies incoming messages; a single
+    // compute worker drains this priority lane. Keeping every encoder call on
+    // one worker preserves serialization (the SameDiff encoder is NOT
+    // concurrency-safe), while the priority ordering gives latency-sensitive
+    // work (single embeds, model load, small batches) a fast lane ahead of large
+    // throughput batches so a giant crawl batch can't head-of-line-block an
+    // interactive query embed.
+    private static final int PRIORITY_URGENT = -1;  // graceful shutdown — runs right after the in-flight op
+    private static final int PRIORITY_FAST = 0;     // single embeds, model load, op-timing, small batches
+    private static final int PRIORITY_NORMAL = 1;   // large throughput batches
+    private static final AtomicLong requestSequence = new AtomicLong(0);
+    private static final PriorityBlockingQueue<PendingRequest> computeQueue =
+            new PriorityBlockingQueue<>(64,
+                    Comparator.comparingInt(PendingRequest::priority)
+                            .thenComparingLong(PendingRequest::sequence));
+    private static volatile Thread computeWorker;
+
+    // ── Device-level CUDA error detection ────────────────────────────────────
+    static final int DEVICE_ERROR_EXIT_CODE = 78;
+    static final String DEVICE_FATAL_PREFIX = "EMBEDDING_DEVICE_FATAL:";
+    /** Set when a CUDA device-level error has poisoned the context; all subsequent ops will fail. */
+    private static final java.util.concurrent.atomic.AtomicBoolean deviceContextPoisoned =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+
+    /** A queued compute-plane request, ordered by (priority, FIFO sequence). */
+    private record PendingRequest(int priority, long sequence, EmbeddingSubprocessMessage message) {}
 
     public static void main(String[] args) {
         // Capture original stdout for protocol messages
@@ -403,11 +437,54 @@ public class EmbeddingSubprocessMain {
                 }
             }
 
+            applyLongMemoryProperty(ND4JSystemProperties.ENV_MAX_PRIMARY_MEMORY,
+                    "maxPrimaryMemory", env::setMaxPrimaryMemory);
+            applyLongMemoryProperty(ND4JSystemProperties.ENV_MAX_SPECIAL_MEMORY,
+                    "maxSpecialMemory", env::setMaxSpecialMemory);
+            applyLongMemoryProperty(ND4JSystemProperties.ENV_MAX_DEVICE_MEMORY,
+                    "maxDeviceMemory", env::setMaxDeviceMemory);
+
             logger.info("Applied ND4J environment configuration from parent JVM");
             sendLog("INFO", "ND4J", "Applied ND4J environment from parent");
 
         } catch (Exception e) {
             logger.warn("Failed to apply ND4J environment from properties: {}", e.getMessage());
+        }
+    }
+
+    private static void applyLongMemoryProperty(String propertyName, String label,
+                                                java.util.function.LongConsumer setter) {
+        String rawValue = System.getProperty(propertyName);
+        if (rawValue == null || rawValue.isBlank()) {
+            return;
+        }
+        try {
+            long bytes = Long.parseLong(rawValue.trim());
+            if (bytes <= 0L) {
+                logger.debug("Ignoring non-positive ND4J {} cap from {}={}", label, propertyName, rawValue);
+                return;
+            }
+            setter.accept(bytes);
+            long mib = bytes / (1024L * 1024L);
+            logger.info("Applied ND4J {} cap from {}: {} bytes ({} MiB)", label, propertyName, bytes, mib);
+            sendLog("INFO", "ND4J", "Applied " + label + " cap: " + mib + " MiB");
+        } catch (NumberFormatException e) {
+            logger.warn("Invalid {} value '{}': {}", propertyName, rawValue, e.getMessage());
+        }
+    }
+
+    private static String formatMemoryCapMiB(String rawValue) {
+        if (rawValue == null || rawValue.isBlank()) {
+            return "unbounded";
+        }
+        try {
+            long bytes = Long.parseLong(rawValue.trim());
+            if (bytes <= 0L) {
+                return "unbounded";
+            }
+            return (bytes / (1024L * 1024L)) + " MiB";
+        } catch (NumberFormatException e) {
+            return "invalid(" + rawValue + ")";
         }
     }
 
@@ -430,10 +507,13 @@ public class EmbeddingSubprocessMain {
             boolean helpersAllowed = Nd4j.getEnvironment().helpersAllowed();
             boolean debugMode = Nd4j.getEnvironment().isDebug();
             boolean verboseMode = Nd4j.getEnvironment().isVerbose();
+            String maxDeviceMemory = System.getProperty(ND4JSystemProperties.ENV_MAX_DEVICE_MEMORY);
+            String maxDeviceMemoryDisplay = formatMemoryCapMiB(maxDeviceMemory);
 
             logger.info("| Backend:            {}", backend);
             logger.info("| Max Threads:        {}", maxThreads);
             logger.info("| Max Master Threads: {}", maxMasterThreads);
+            logger.info("| Max Device Memory:  {}", maxDeviceMemoryDisplay);
             logger.info("| BLAS Enabled:       {}", blasEnabled);
             logger.info("| Helpers Allowed:    {}", helpersAllowed);
             logger.info("| Debug Mode:         {}", debugMode);
@@ -441,7 +521,8 @@ public class EmbeddingSubprocessMain {
 
             // Send ND4J environment info to UI
             sendLog("INFO", "ND4J", "ND4J Environment: backend=" + backend + ", maxThreads=" + maxThreads +
-                    ", maxMasterThreads=" + maxMasterThreads + ", BLAS=" + blasEnabled);
+                    ", maxMasterThreads=" + maxMasterThreads + ", maxDeviceMemory=" + maxDeviceMemoryDisplay +
+                    ", BLAS=" + blasEnabled);
         } catch (Exception e) {
             logger.info("| Error reading ND4J environment: {}", e.getMessage());
             sendLog("WARN", "ND4J", "Error reading ND4J environment: " + e.getMessage());
@@ -533,6 +614,12 @@ public class EmbeddingSubprocessMain {
      * Main command loop - reads JSON commands from stdin and processes them.
      */
     private static void commandLoop() {
+        // Start the single compute worker that drains the priority lane. Doing the
+        // encoder work off the reader thread means a big in-flight batch can never
+        // stall stdin draining (which would back-pressure the pipe and delay every
+        // subsequent request, including interactive query embeds).
+        startComputeWorker();
+
         BufferedReader reader = new BufferedReader(new InputStreamReader(System.in));
         String line;
 
@@ -543,35 +630,129 @@ public class EmbeddingSubprocessMain {
                     continue;
                 }
 
-                // Check watchdog before processing each command
-                if (memoryWatchdog != null) {
-                    if (memoryWatchdog.shouldKill()) {
-                        logger.error("Memory watchdog kill threshold exceeded - terminating command loop");
-                        sendError(null, "Memory kill threshold exceeded - subprocess terminating",
-                                "MemoryKillThreshold", currentPhase);
-                        System.exit(137);
-                    } else if (memoryWatchdog.shouldStop()) {
-                        logger.warn("Memory watchdog stop threshold exceeded - rejecting command");
-                        sendError(null, "Memory threshold exceeded - subprocess cannot process more commands",
-                                "MemoryThreshold", currentPhase);
-                        continue;
-                    }
-                }
-
+                EmbeddingSubprocessMessage message;
                 try {
-                    // Parse the message
-                    EmbeddingSubprocessMessage message = OBJECT_MAPPER.readValue(line, EmbeddingSubprocessMessage.class);
-                    processMessage(message);
+                    message = OBJECT_MAPPER.readValue(line, EmbeddingSubprocessMessage.class);
                 } catch (Exception e) {
                     logger.error("Error processing message: {} - {}", line, e.getMessage());
                     sendError(null, e, "MESSAGE_PARSE");
+                    continue;
                 }
+
+                // The hard kill threshold applies to every message type.
+                if (memoryWatchdog != null && memoryWatchdog.shouldKill()) {
+                    logger.error("Memory watchdog kill threshold exceeded - terminating command loop");
+                    sendError(null, "Memory kill threshold exceeded - subprocess terminating",
+                            "MemoryKillThreshold", currentPhase);
+                    System.exit(137);
+                }
+
+                // Status is read-only and latency-sensitive — answer it inline on the
+                // reader thread so it never waits behind a queued or in-flight batch.
+                if (isControlPlane(message)) {
+                    processMessage(message);
+                    continue;
+                }
+
+                // Compute-plane work (load / embed / batch / op-timing / shutdown): gate
+                // embeds on the soft stop threshold, then hand off to the priority lane.
+                // Shutdown is always admitted so the process can still drain cleanly.
+                boolean gatedByMemory = memoryWatchdog != null && memoryWatchdog.shouldStop()
+                        && !(message instanceof EmbeddingSubprocessMessage.ShutdownRequest);
+                if (gatedByMemory) {
+                    logger.warn("Memory watchdog stop threshold exceeded - rejecting compute request");
+                    sendError(extractRequestId(message),
+                            "Memory threshold exceeded - subprocess cannot process more commands",
+                            "MemoryThreshold", currentPhase);
+                    continue;
+                }
+
+                computeQueue.put(new PendingRequest(
+                        priorityFor(message), requestSequence.incrementAndGet(), message));
             }
         } catch (IOException e) {
             logger.info("Input stream closed, shutting down");
         }
 
+        // stdin closed: stop accepting work and let the in-flight op finish before
+        // cleanup() closes the encoder (closing it under a live encode would crash).
+        stopComputeWorker();
         logger.info("Command loop exited");
+    }
+
+    /**
+     * Start the single serial compute worker. It is the ONLY thread that touches the
+     * encoder, so encoder calls remain serialized even though the reader thread now
+     * runs concurrently. The priority lane lets single/small embeds and model loads
+     * preempt large throughput batches.
+     */
+    private static void startComputeWorker() {
+        Thread worker = new Thread(() -> {
+            while (!Thread.currentThread().isInterrupted()) {
+                PendingRequest pending;
+                try {
+                    pending = computeQueue.take();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+                // Re-check the soft stop threshold at dequeue time; memory state may have
+                // changed while the request waited. Shutdown always proceeds.
+                if (memoryWatchdog != null && memoryWatchdog.shouldStop()
+                        && !(pending.message() instanceof EmbeddingSubprocessMessage.ShutdownRequest)) {
+                    sendError(extractRequestId(pending.message()),
+                            "Memory threshold exceeded - subprocess cannot process more commands",
+                            "MemoryThreshold", currentPhase);
+                    continue;
+                }
+                processMessage(pending.message());
+            }
+        }, "embedding-compute");
+        worker.setDaemon(true);
+        computeWorker = worker;
+        worker.start();
+    }
+
+    /**
+     * Signal the compute worker to stop and wait (bounded) for any in-flight encode to
+     * finish, so the subsequent encoder close in cleanup() doesn't race a live op.
+     */
+    private static void stopComputeWorker() {
+        Thread worker = computeWorker;
+        if (worker == null) {
+            return;
+        }
+        worker.interrupt();
+        try {
+            worker.join(TimeUnit.SECONDS.toMillis(15));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * Control-plane messages are answered inline on the reader thread, so they must be
+     * cheap and free of encoder side effects. Only status qualifies today: it reads
+     * volatile/atomic state and can safely run concurrently with the compute worker.
+     */
+    static boolean isControlPlane(EmbeddingSubprocessMessage message) {
+        return message instanceof EmbeddingSubprocessMessage.StatusRequest;
+    }
+
+    /**
+     * Assign a scheduling priority. Shutdown preempts queued work (but not the in-flight
+     * op); large batches are throughput work; everything else rides the fast lane.
+     */
+    static int priorityFor(EmbeddingSubprocessMessage message) {
+        if (message instanceof EmbeddingSubprocessMessage.ShutdownRequest) {
+            return PRIORITY_URGENT;
+        }
+        if (message instanceof EmbeddingSubprocessMessage.EmbedBatchRequest batch) {
+            int size = batch.texts() == null ? 0 : batch.texts().size();
+            return size > optimalBatchSize ? PRIORITY_NORMAL : PRIORITY_FAST;
+        }
+        // Single embeds, model load, and op-timing control all ride the fast lane.
+        return PRIORITY_FAST;
     }
 
     /**
@@ -655,14 +836,14 @@ public class EmbeddingSubprocessMain {
             loadingPhase = "CONFIGURING";
             sendProgress("LOADING_MODEL", 50, "Configuring batch sizes", "Setting optimal=" + optimalBatchSize + ", max=" + maxBatchSize);
 
+            // Use the absoluteMaxBatchSize from the request (default 0 -> falls back to maxBatchSize).
+            // The old hardcoded 8192 caused ~36GB native forward-pass activations and host OOM.
+            int absoluteMax = req.absoluteMaxBatchSize() > 0 ? req.absoluteMaxBatchSize() : maxBatchSize;
             if (encoder instanceof GenericDenseSameDiffEncoder denseEncoder) {
-                // Use the absoluteMaxBatchSize from the request (default 0 → falls back to maxBatchSize).
-                // The old hardcoded 8192 caused ~36GB native forward-pass activations and host OOM.
-                int absoluteMax = req.absoluteMaxBatchSize() > 0 ? req.absoluteMaxBatchSize() : maxBatchSize;
                 denseEncoder.configureBatchSize(optimalBatchSize, maxBatchSize, absoluteMax, -1.0);
-                logger.info("Configured encoder batch sizes: optimal={}, max={}, absoluteMax={}",
+                logger.info("Configured dense encoder batch sizes: optimal={}, max={}, absoluteMax={}",
                         optimalBatchSize, maxBatchSize, absoluteMax);
-                sendLog("INFO", "ModelLoader", "Batch sizes configured: optimal=" + optimalBatchSize
+                sendLog("INFO", "ModelLoader", "Dense batch sizes configured: optimal=" + optimalBatchSize
                         + ", max=" + maxBatchSize + ", absoluteMax=" + absoluteMax);
 
                 // Register callback so native-memory-pressure resize decisions are forwarded
@@ -673,6 +854,18 @@ public class EmbeddingSubprocessMain {
                     sendMessage(EmbeddingSubprocessMessage.batchResizeNotice(
                             oldBatch, newBatch, reason, physBytes, maxPhysBytes));
                 });
+            } else if (encoder instanceof BgeSameDiffEncoder bgeEncoder) {
+                bgeEncoder.configureBatchSize(optimalBatchSize, maxBatchSize, absoluteMax);
+                logger.info("Configured BGE encoder batch sizes: optimal={}, max={}, absoluteMax={}",
+                        optimalBatchSize, maxBatchSize, absoluteMax);
+                sendLog("INFO", "ModelLoader", "BGE batch sizes configured: optimal=" + optimalBatchSize
+                        + ", max=" + maxBatchSize + ", absoluteMax=" + absoluteMax);
+            } else if (encoder instanceof ArcticEmbedSameDiffEncoder arcticEncoder) {
+                arcticEncoder.configureBatchSize(optimalBatchSize, maxBatchSize, absoluteMax);
+                logger.info("Configured Arctic encoder batch sizes: optimal={}, max={}, absoluteMax={}",
+                        optimalBatchSize, maxBatchSize, absoluteMax);
+                sendLog("INFO", "ModelLoader", "Arctic batch sizes configured: optimal=" + optimalBatchSize
+                        + ", max=" + maxBatchSize + ", absoluteMax=" + absoluteMax);
             }
 
             // Test the encoder and get dimensions
@@ -681,9 +874,7 @@ public class EmbeddingSubprocessMain {
             sendLog("INFO", "ModelLoader", "Testing encoder with warmup embedding");
 
             float[] testEmbedding = encoder.encode("test");
-            if (testEmbedding == null || testEmbedding.length == 0) {
-                throw new IOException("Encoder returned null or empty embedding for test input");
-            }
+            validateEmbedding(testEmbedding, "model-load readiness probe");
 
             currentModelId = req.modelId();
             currentDimensions = testEmbedding.length;
@@ -778,9 +969,7 @@ public class EmbeddingSubprocessMain {
             float[] embedding = encoder.encode(req.text());
             long embedTimeMs = System.currentTimeMillis() - start;
 
-            if (embedding == null) {
-                throw new RuntimeException("Encoder returned null embedding");
-            }
+            validateEmbedding(embedding, "request " + req.requestId());
 
             // Update statistics
             totalEmbeddingsProcessed.incrementAndGet();
@@ -792,7 +981,11 @@ public class EmbeddingSubprocessMain {
             sendMessage(response);
 
         } catch (Exception e) {
-            logger.error("Error embedding text: {}", e.getMessage());
+            if (isRecoverableEmbeddingValidationFailure(e)) {
+                logger.warn("Recoverable embedding validation failure: {}", e.getMessage());
+            } else {
+                logger.error("Error embedding text: {}", e.getMessage(), e);
+            }
             EmbeddingSubprocessMessage.EmbedResponse response =
                 new EmbeddingSubprocessMessage.EmbedResponse(
                     req.requestId(), false, null, 0, e.getMessage());
@@ -832,10 +1025,7 @@ public class EmbeddingSubprocessMain {
 
             long totalTimeMs = System.currentTimeMillis() - start;
 
-            if (embeddings == null) {
-                throw new RuntimeException("Encoder returned null batch embeddings");
-            }
-
+            validateEmbeddings(embeddings, inputCount, req.requestId());
             int outputCount = embeddings.size();
 
             // Update statistics before logging so the running total is accurate
@@ -877,8 +1067,15 @@ public class EmbeddingSubprocessMain {
             sendMessage(response);
 
         } catch (Exception e) {
-            logger.error("Error embedding batch: {}", e.getMessage(), e);
-            sendLog("ERROR", "BatchEmbedding", "Batch failed: " + e.getMessage());
+            boolean recoverableValidationFailure = isRecoverableEmbeddingValidationFailure(e);
+            if (recoverableValidationFailure) {
+                logger.warn("Recoverable embedding batch validation failure: {}", e.getMessage());
+            } else {
+                logger.error("Error embedding batch: {}", e.getMessage(), e);
+            }
+            sendLog(recoverableValidationFailure ? "WARN" : "ERROR", "BatchEmbedding",
+                    (recoverableValidationFailure ? "Batch validation failed; caller may retry: " : "Batch failed: ")
+                            + e.getMessage());
 
             sendPhaseTransition("EMBEDDING", "IDLE", 0);
             currentPhase = "IDLE";
@@ -887,6 +1084,45 @@ public class EmbeddingSubprocessMain {
                 new EmbeddingSubprocessMessage.EmbedBatchResponse(
                     req.requestId(), false, null, req.texts().size(), 0, 0, null, e.getMessage());
             sendMessage(response);
+
+            if (isDeviceLevelError(e) && deviceContextPoisoned.compareAndSet(false, true)) {
+                String msg = DEVICE_FATAL_PREFIX + " Device-level CUDA error during embed batch request — "
+                        + "CUDA context poisoned. Exiting with code " + DEVICE_ERROR_EXIT_CODE
+                        + " for bounded restart handling.";
+                logger.error(msg, e);
+                sendLog("ERROR", "BatchEmbedding", msg);
+                System.err.flush();
+                System.exit(DEVICE_ERROR_EXIT_CODE);
+            }
+        }
+    }
+
+    private static void validateEmbeddings(List<float[]> embeddings, int expectedCount, String requestId) {
+        if (embeddings == null) {
+            throw new IllegalStateException("Encoder returned null batch embeddings");
+        }
+        if (embeddings.size() != expectedCount) {
+            throw new IllegalStateException("Encoder returned " + embeddings.size()
+                    + " embedding(s) for " + expectedCount + " text(s)");
+        }
+        for (int i = 0; i < embeddings.size(); i++) {
+            validateEmbedding(embeddings.get(i), "batch request " + requestId + " row " + i);
+        }
+    }
+
+    private static void validateEmbedding(float[] embedding, String label) {
+        if (embedding == null || embedding.length == 0) {
+            throw new IllegalStateException("Encoder returned null or empty embedding for " + label);
+        }
+        double magnitude = 0.0;
+        for (float value : embedding) {
+            if (!Float.isFinite(value)) {
+                throw new IllegalStateException("Encoder returned non-finite embedding value for " + label);
+            }
+            magnitude += (double) value * value;
+        }
+        if (!Double.isFinite(magnitude) || magnitude <= MIN_EMBEDDING_MAGNITUDE) {
+            throw new IllegalStateException("Encoder returned zero-magnitude embedding for " + label);
         }
     }
 
@@ -1333,82 +1569,98 @@ public class EmbeddingSubprocessMain {
     }
 
     /**
-     * Warmup DSP plans at all (seq-bucket × batch-size) combinations that
-     * InferenceBatchPlanner can produce for real traffic.
+     * Warm the SINGLE max-shape DSP plan the encoder runs.
      *
-     * <h3>Why batch-size warmup matters (FIX 2)</h3>
-     * <p>SameDiff's {@code DynamicShapePlanExecutor} compiles one plan per unique input
-     * shape {@code [batchSize, seqLen]}.  The previous warmup only ran each seq-bucket
-     * with a single text (batch=1), so shapes [2,512], [4,512], [8,512] … were compiled
-     * on demand at inference time.  Each compilation "protects" ~674 model DataBuffers in
-     * the Java heap for the plan's lifetime; if the plan cache is cleared between calls
-     * (clearAllCaches path) every request triggers a fresh compile and the old set of
-     * DataBuffers becomes garbage faster than GC collects it → heap OOM at 4 g.
+     * <p>SameDiff's {@code DynamicShapePlanExecutor} compiles one plan per unique input shape
+     * {@code [batchSize, seqLen]}, and each compiled plan "protects" ~674 model DataBuffers for its
+     * lifetime. The encoder now pins every forward pass to a single fixed shape
+     * {@code [maxRows, seqHardCap]} (see {@code GenericDenseSameDiffEncoder.fixedForwardRows}), so
+     * exactly ONE plan is ever needed — smaller inputs pad up to it and reuse it. We therefore warm
+     * just that one shape: one plan, one workspace, no on-demand recompilation during a crawl.</p>
      *
-     * <p>Running warmup for all {batchSize × bucket} combinations here pre-populates
-     * the plan cache so no on-demand compilation occurs during crawl embedding.
-     * Warmup failures are non-fatal: the plan is compiled on-demand at first use.
-     *
-     * <p>Seq buckets: 128, 256, 512 (covers typical RAG chunk sizes).
-     * Batch sizes: 1, 2, 4, 8, 16, 32, 64 (the powers-of-two that InferenceBatchPlanner
-     * naturally produces up to maxRows=64).
+     * <p>(Previously this warmed a 3×3 grid {@code {128,256,512} × {1,16,64}} — 9 plans, each
+     * retaining its own workspace (~22 GB steady-state), and the 64×512 entry forced an oversized
+     * forward pass that OOM-killed the subprocess.) Warmup failure is non-fatal: the plan compiles
+     * on first real use.</p>
      */
     private static void warmupDspBuckets(GenericDenseSameDiffEncoder denseEncoder) {
-        int[] warmupBuckets = {128, 256, 512};
-        // Reduced from {1,2,4,8,16,32,64} to {1,16,64}: 21 shapes → 9 shapes.
-        // Each warmed shape retains a DSP workspace forever; the 12 dropped shapes
-        // collectively held ~4-8 GB of permanent native RSS.  Non-warmed shapes
-        // cold-compile on first real use (one-time, acceptable latency).
-        // Retained: 1 (single-text, most common), 16 (small batches), 64 (max planner rows).
-        int[] warmupBatchSizes = {1, 16, 64};
+        // The one shape fixed-shape inference always runs: [maxRows x seqHardCap].
+        int maxRows = Math.max(1, denseEncoder.plannedMaxRows());
+        int maxSeq = Math.max(1, denseEncoder.getMaxSequenceLength());
+        // Dummy text long enough to fill the seq hard cap even if pad-to-max is ever disabled (~maxSeq/1.3 words).
+        int wordCount = (int) (maxSeq / 1.3) + 10;
+        StringBuilder sb = new StringBuilder(wordCount * 8);
+        for (int w = 0; w < wordCount; w++) {
+            sb.append("warmup ");
+        }
+        String dummyText = sb.toString();
 
-        int totalPlans = warmupBuckets.length * warmupBatchSizes.length;
-        sendLog("INFO", "DspWarmup", "Pre-warming " + totalPlans + " DSP plans "
-                + "(seq buckets: 128,256,512 × batch sizes: 1,16,64)");
-        sendProgress("LOADING_MODEL", 85, "Warming DSP plans", "Pre-building " + totalPlans + " execution plans...");
+        sendLog("INFO", "DspWarmup", "Pre-warming the single max-shape DSP plan [" + maxRows + " x " + maxSeq + "]");
+        sendProgress("LOADING_MODEL", 90, "Warming DSP plan", "Compiling the [" + maxRows + " x " + maxSeq + "] plan...");
 
-        int planIdx = 0;
-        for (int bucket : warmupBuckets) {
-            // Build dummy text long enough to tokenize to ~bucket tokens.
-            // Average English word → ~1.3 subword tokens, so ~bucket/1.3 words needed.
-            int wordCount = (int) (bucket / 1.3) + 10;
-            StringBuilder sb = new StringBuilder(wordCount * 8);
-            for (int w = 0; w < wordCount; w++) {
-                sb.append("warmup ");
+        try {
+            long start = System.currentTimeMillis();
+            List<String> batch = new ArrayList<>(maxRows);
+            for (int b = 0; b < maxRows; b++) {
+                batch.add(dummyText);
             }
-            String dummyText = sb.toString();
-
-            for (int batchSize : warmupBatchSizes) {
-                planIdx++;
-                int progressPct = 85 + (planIdx * 13 / totalPlans); // 85→98 range
-                sendProgress("LOADING_MODEL", Math.min(progressPct, 98),
-                        "Warming DSP plans",
-                        "Plan " + planIdx + "/" + totalPlans + ": batch=" + batchSize + " seq=" + bucket);
-
-                try {
-                    long start = System.currentTimeMillis();
-                    List<String> batch = new ArrayList<>(batchSize);
-                    for (int b = 0; b < batchSize; b++) {
-                        batch.add(dummyText);
-                    }
-                    List<float[]> results = denseEncoder.encodeBatch(batch);
-                    long elapsed = System.currentTimeMillis() - start;
-
-                    if (results != null && !results.isEmpty() && results.get(0) != null) {
-                        sendLog("INFO", "DspWarmup",
-                                "DSP plan ready: batch=" + batchSize + " seq=" + bucket + " (" + elapsed + "ms)");
-                    } else {
-                        sendLog("WARN", "DspWarmup",
-                                "Warmup returned empty for batch=" + batchSize + " seq=" + bucket);
-                    }
-                } catch (Exception e) {
-                    sendLog("WARN", "DspWarmup",
-                            "Warmup failed for batch=" + batchSize + " seq=" + bucket + ": " + e.getMessage());
-                    logger.warn("DSP warmup failed for batch={} seq={}: {}", batchSize, bucket, e.getMessage());
-                }
+            List<float[]> results = denseEncoder.encodeBatch(batch);
+            long elapsed = System.currentTimeMillis() - start;
+            if (results != null && !results.isEmpty() && results.get(0) != null) {
+                sendLog("INFO", "DspWarmup", "DSP plan ready: [" + maxRows + " x " + maxSeq + "] (" + elapsed + "ms)");
+            } else {
+                sendLog("WARN", "DspWarmup", "Warmup returned empty for [" + maxRows + " x " + maxSeq + "]");
             }
+        } catch (Exception e) {
+            if (isDeviceLevelError(e)) {
+                String msg = DEVICE_FATAL_PREFIX + " DSP warmup encountered device-level CUDA error for ["
+                        + maxRows + " x " + maxSeq + "]: " + e.getMessage()
+                        + " — CUDA context is poisoned, embedding lane cannot serve requests. Exiting with code "
+                        + DEVICE_ERROR_EXIT_CODE + " for bounded restart handling.";
+                logger.error(msg, e);
+                sendLog("ERROR", "DspWarmup", msg);
+                System.err.flush();
+                System.exit(DEVICE_ERROR_EXIT_CODE);
+            }
+            sendLog("WARN", "DspWarmup", "Warmup failed for [" + maxRows + " x " + maxSeq + "]: " + e.getMessage());
+            logger.warn("DSP warmup failed for [{} x {}]: {}", maxRows, maxSeq, e.getMessage());
         }
 
-        sendLog("INFO", "DspWarmup", "DSP plan warmup complete (" + planIdx + " plans)");
+        sendLog("INFO", "DspWarmup", "DSP plan warmup complete (1 plan)");
+    }
+
+    static boolean isRecoverableEmbeddingValidationFailure(Throwable t) {
+        if (t == null) {
+            return false;
+        }
+        String msg = t.getMessage();
+        if (msg != null) {
+            String lower = msg.toLowerCase();
+            if (lower.contains("encoder returned null")
+                    || lower.contains("encoder returned non-finite embedding value")
+                    || lower.contains("encoder returned zero-magnitude embedding")
+                    || (lower.contains("encoder returned") && lower.contains("embedding(s)"))) {
+                return true;
+            }
+        }
+        return isRecoverableEmbeddingValidationFailure(t.getCause());
+    }
+
+    /**
+     * Returns true if the exception (or any cause chain) indicates a device-level CUDA error
+     * that poisons the CUDA context and prevents all subsequent device operations.
+     */
+    private static boolean isDeviceLevelError(Throwable t) {
+        if (t == null) return false;
+        String msg = t.getMessage();
+        if (msg != null && (
+                msg.contains("error code [700]")
+                || msg.contains("illegal memory access")
+                || msg.contains("DEVICE] allocation failed")
+                || msg.contains("cudaStreamSynchronize error")
+                || msg.contains("cudaErrorIllegalAddress"))) {
+            return true;
+        }
+        return isDeviceLevelError(t.getCause());
     }
 }

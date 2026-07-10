@@ -735,60 +735,67 @@ class VirtualTerminalTest {
 
     @Nested
     class TerminalResponses {
+        // Query answering moved out of VirtualTerminal into the shared TerminalQueryResponder
+        // (design F5d/WP4). These exercise it via the full-answer QueryPolicy.DEFAULT, the policy
+        // the deleted VirtualTerminal.terminalResponsesFor implemented.
+
+        private String responsesFor(String data) {
+            return TerminalQueryResponder.respond(data, vt, QueryPolicy.DEFAULT);
+        }
 
         @Test
         void cursorPositionReport() {
             vt.feed("\033[5;10H");
-            String response = vt.terminalResponsesFor("\033[6n");
+            String response = responsesFor("\033[6n");
             assertEquals("\033[5;10R", response);
         }
 
         @Test
         void deviceStatusOk() {
-            String response = vt.terminalResponsesFor("\033[5n");
+            String response = responsesFor("\033[5n");
             assertEquals("\033[0n", response);
         }
 
         @Test
         void primaryDeviceAttributes() {
-            String response = vt.terminalResponsesFor("\033[c");
+            String response = responsesFor("\033[c");
             assertTrue(response.startsWith("\033[?"), "Should return DA1 response");
         }
 
         @Test
         void secondaryDeviceAttributes() {
-            String response = vt.terminalResponsesFor("\033[>c");
+            String response = responsesFor("\033[>c");
             assertTrue(response.startsWith("\033[>"), "Should return DA2 response");
         }
 
         @Test
         void kittyKeyboardProtocol() {
-            String response = vt.terminalResponsesFor("\033[?u");
+            String response = responsesFor("\033[?u");
             assertEquals("\033[?0u", response);
         }
 
         @Test
         void windowSizeReport() {
-            String response = vt.terminalResponsesFor("\033[18t");
+            String response = responsesFor("\033[18t");
             assertTrue(response.contains(String.valueOf(vt.getRows())));
             assertTrue(response.contains(String.valueOf(vt.getCols())));
         }
 
         @Test
         void oscColorQuery() {
-            String response = vt.terminalResponsesFor("\033]10;?\007");
+            String response = responsesFor("\033]10;?\007");
             assertTrue(response.contains("rgb:"), "Should return foreground color");
         }
 
         @Test
         void emptyDataReturnsEmpty() {
-            assertEquals("", vt.terminalResponsesFor(""));
-            assertEquals("", vt.terminalResponsesFor(null));
+            assertEquals("", responsesFor(""));
+            assertEquals("", responsesFor(null));
         }
 
         @Test
         void multipleQueriesInOneData() {
-            String response = vt.terminalResponsesFor("\033[6n\033[5n");
+            String response = responsesFor("\033[6n\033[5n");
             // Should contain both responses
             assertTrue(response.contains("R"), "Should contain CPR");
             assertTrue(response.contains("0n"), "Should contain DSR OK");
@@ -1114,6 +1121,47 @@ class VirtualTerminalTest {
             String row = v.getRow(0);
             assertTrue(row.contains("Saut"), "spinner text present");
             assertFalse(row.contains("─"), "no rule bleeds through the spinner's spaces");
+        }
+    }
+
+    @Nested
+    class ModeAndWidthHandling {
+
+        @Test
+        void decawmDisabledOverwritesLastColumnInsteadOfWrapping() {
+            VirtualTerminal v = new VirtualTerminal(4, 5);
+            v.feed("\033[?7l");        // disable auto-wrap (ratatui/codex border drawing)
+            v.feed("ABCDEFG");         // 7 glyphs into a 5-wide row
+            // Cursor sticks at the last column; nothing spills onto row 1.
+            assertEquals("", v.getRow(1).trim(), "no wrap when DECAWM is off");
+            assertEquals('G', v.getRow(0).charAt(4), "last column holds the final overwrite");
+        }
+
+        @Test
+        void decawmEnabledStillDefersWrap() {
+            VirtualTerminal v = new VirtualTerminal(4, 5);
+            v.feed("ABCDEF");          // default auto-wrap on: 6th glyph wraps to row 1
+            assertEquals("ABCDE", v.getRow(0));
+            assertEquals("F", v.getRow(1).trim());
+        }
+
+        @Test
+        void repRepeatsPrecedingGraphicChar() {
+            VirtualTerminal v = new VirtualTerminal(2, 20);
+            v.feed("-");
+            v.feed("\033[5b");          // REP: repeat '-' five more times
+            assertEquals("------", v.getRow(0));
+        }
+
+        @Test
+        void wideCharAdvancesCursorByTwo() {
+            VirtualTerminal v = new VirtualTerminal(2, 20);
+            v.feed("A");               // width 1
+            v.feed("世");              // width 2 (CJK)
+            v.feed("B");
+            // A at col0, 世 at col1 (blanks col2), B at col3 → cursor now at col4.
+            assertEquals(4, v.getCursorCol());
+            assertEquals("A世 B", v.getRow(0));
         }
     }
 }

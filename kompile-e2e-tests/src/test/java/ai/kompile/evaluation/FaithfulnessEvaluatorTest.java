@@ -53,7 +53,7 @@ class FaithfulnessEvaluatorTest {
 
     @BeforeEach
     void setUp() {
-        properties = new EvaluationProperties();
+        properties = new EvaluationProperties(null);
         properties.getFaithfulness().setEnabled(true);
         properties.getFaithfulness().setThreshold(0.8);
         evaluator = new FaithfulnessEvaluator(chatClient, properties);

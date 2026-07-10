@@ -273,26 +273,6 @@ export class PipelineSettingsPanelComponent implements OnInit, OnDestroy {
     );
   }
 
-  toggleGraphExtraction(): void {
-    this.graphConfigSaving = true;
-    this.cdr.markForCheck();
-
-    this.subscriptions.add(
-      this.graphExtractionService.toggleEnabled().subscribe({
-        next: (config: GraphExtractionConfig) => {
-          this.graphConfig = config;
-          this.graphConfigSaving = false;
-          this.cdr.markForCheck();
-        },
-        error: (err: Error) => {
-          console.error('Failed to toggle graph extraction:', err);
-          this.graphConfigSaving = false;
-          this.cdr.markForCheck();
-        }
-      })
-    );
-  }
-
   resetGraphConfig(): void {
     this.graphConfigSaving = true;
     this.cdr.markForCheck();

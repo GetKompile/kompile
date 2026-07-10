@@ -9,6 +9,7 @@
  */
 package ai.kompile.graph.reasoning.mebn;
 
+import java.io.Serializable;
 import ai.kompile.graph.reasoning.model.GraphEntity;
 import ai.kompile.graph.reasoning.model.ReasoningGraph;
 
@@ -24,7 +25,7 @@ import java.util.*;
  * <p>Entity types form a type hierarchy — a subtype inherits the random variables
  * of its supertypes (e.g., Employee is-a Person).</p>
  */
-public class EntityType {
+public class EntityType implements Serializable {
 
     private final String typeName;
     private final String description;

@@ -15,6 +15,7 @@
  */
 package ai.kompile.graph.reasoning.mebn.type;
 
+import java.io.Serializable;
 import ai.kompile.graph.reasoning.model.GraphEntity;
 import ai.kompile.graph.reasoning.model.GraphRelation;
 import ai.kompile.graph.reasoning.model.ReasoningGraph;
@@ -65,17 +66,16 @@ public sealed interface TypeConstraint
     // ─── Cardinality enum ────────────────────────────────────────────────────────
 
     /**
-     * Multiplicity on a directed relation: how many target entities a single source can relate
-     * to (the "many" end) and how many source entities a single target can be related from.
+     * Multiplicity on a directed relation from source type A to target type B.
      */
     enum Cardinality {
-        /** One source → one target, one target ← one source. */
+        /** Each A has at most one B, and each B has at most one A. */
         ONE_TO_ONE,
-        /** One source → many targets. */
+        /** Each A may have many B values; each B has at most one A. */
         ONE_TO_MANY,
-        /** Many sources → one target. */
+        /** Each A has at most one B; each B may have many A values. */
         MANY_TO_ONE,
-        /** Many sources → many targets (no restriction). */
+        /** Each A may have many B values, and each B may have many A values. */
         MANY_TO_MANY
     }
 
@@ -94,7 +94,7 @@ public sealed interface TypeConstraint
             String relationLabel,
             String domainType,
             String rangeType
-    ) implements TypeConstraint {
+    ) implements TypeConstraint, Serializable {
 
         public RelationConstraint {
             Objects.requireNonNull(relationLabel, "relationLabel");
@@ -134,14 +134,14 @@ public sealed interface TypeConstraint
      * Declares a cardinality restriction on a named relation label.
      *
      * <p>Satisfiability check (graph-level): enforces the cardinality on outgoing/incoming
-     * counts. {@link Cardinality#ONE_TO_ONE} and {@link Cardinality#ONE_TO_MANY} require that
-     * no source entity has more than one outgoing relation of this label when {@code ONE_TO_ONE}
-     * or no target has more than one incoming relation when {@code MANY_TO_ONE}.</p>
+     * counts. {@link Cardinality#ONE_TO_ONE} and {@link Cardinality#MANY_TO_ONE} cap the number
+     * of outgoing relation values for a source entity; {@link Cardinality#ONE_TO_ONE} and
+     * {@link Cardinality#ONE_TO_MANY} cap the number of incoming source entities for a target.</p>
      */
     record CardinalityConstraint(
             String relationLabel,
             Cardinality cardinality
-    ) implements TypeConstraint {
+    ) implements TypeConstraint, Serializable {
 
         public CardinalityConstraint {
             Objects.requireNonNull(relationLabel, "relationLabel");
@@ -153,13 +153,13 @@ public sealed interface TypeConstraint
          *
          * <p>For {@link Cardinality#MANY_TO_MANY} always returns {@code true} (no structural
          * restriction). For the other three, checks whether the source-fan-out (ONE_TO_ONE,
-         * ONE_TO_MANY) or target-fan-in (ONE_TO_ONE, MANY_TO_ONE) exceeds one for any entity.</p>
+         * MANY_TO_ONE) or target-fan-in (ONE_TO_ONE, ONE_TO_MANY) exceeds one for any entity.</p>
          */
         @Override
         public boolean isSatisfiedBy(ReasoningGraph graph) {
             if (cardinality == Cardinality.MANY_TO_MANY) return true;
-            boolean checkFanOut = (cardinality == Cardinality.ONE_TO_ONE || cardinality == Cardinality.ONE_TO_MANY);
-            boolean checkFanIn  = (cardinality == Cardinality.ONE_TO_ONE || cardinality == Cardinality.MANY_TO_ONE);
+            boolean checkFanOut = (cardinality == Cardinality.ONE_TO_ONE || cardinality == Cardinality.MANY_TO_ONE);
+            boolean checkFanIn  = (cardinality == Cardinality.ONE_TO_ONE || cardinality == Cardinality.ONE_TO_MANY);
             for (GraphEntity entity : graph.entities()) {
                 if (checkFanOut) {
                     long outCount = graph.outgoing(entity.id()).stream()
@@ -187,7 +187,7 @@ public sealed interface TypeConstraint
      * to the constrained type; {@link #isSatisfiedBy(ReasoningGraph)} always returns {@code true}.
      * Use {@link #isSatisfiedBy(GraphEntity)} for per-entity checks.</p>
      */
-    record AttributeRequiredConstraint(String attributeName) implements TypeConstraint {
+    record AttributeRequiredConstraint(String attributeName) implements TypeConstraint, Serializable {
 
         public AttributeRequiredConstraint {
             Objects.requireNonNull(attributeName, "attributeName");

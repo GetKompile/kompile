@@ -19,12 +19,8 @@ package ai.kompile.app.services;
 import ai.kompile.app.ingest.domain.IndexedDocument;
 import ai.kompile.app.ingest.domain.IndexedPassage;
 import ai.kompile.app.services.CrossIndexTrackingService.CrossIndexResolutionResult;
-import ai.kompile.core.embeddings.EmbeddingModel;
-import ai.kompile.core.embeddings.VectorStore;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import lombok.extern.slf4j.Slf4j;
-import org.nd4j.linalg.api.ndarray.INDArray;
-import org.springframework.ai.document.Document;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationEventPublisher;
@@ -55,11 +51,9 @@ public class IndexSyncService {
     @Autowired
     private ApplicationEventPublisher eventPublisher;
     @Autowired(required = false)
-    private EmbeddingModel embeddingModel;
-    @Autowired(required = false)
-    private VectorStore vectorStore;
-    @Autowired(required = false)
     private KnowledgeGraphService knowledgeGraphService;
+    @Autowired(required = false)
+    private VectorStorePopulationService vectorStorePopulationService;
 
     // Self-reference through proxy to ensure @Async is honored on self-calls.
     // Uses ApplicationContext lookup instead of @Lazy self-injection to avoid
@@ -70,14 +64,12 @@ public class IndexSyncService {
     @Autowired
     public IndexSyncService(CrossIndexTrackingService trackingService,
                             ApplicationEventPublisher eventPublisher,
-                            @Autowired(required = false) EmbeddingModel embeddingModel,
-                            @Autowired(required = false) VectorStore vectorStore,
-                            @Autowired(required = false) KnowledgeGraphService knowledgeGraphService) {
+                            @Autowired(required = false) KnowledgeGraphService knowledgeGraphService,
+                            @Autowired(required = false) VectorStorePopulationService vectorStorePopulationService) {
         this.trackingService = trackingService;
         this.eventPublisher = eventPublisher;
-        this.embeddingModel = embeddingModel;
-        this.vectorStore = vectorStore;
         this.knowledgeGraphService = knowledgeGraphService;
+        this.vectorStorePopulationService = vectorStorePopulationService;
     }
 
     // Active sync jobs
@@ -488,6 +480,19 @@ public class IndexSyncService {
                     }
                 }
 
+                Set<String> vectorSyncChunkIds = new HashSet<>();
+                if (targetSet.contains(SyncTarget.VECTOR_STORE)) {
+                    for (String chunkId : chunkIds) {
+                        ai.kompile.app.ingest.domain.IndexedPassage passage = passageMap.get(chunkId);
+                        if (passage != null && passage.needsVectorIndexing()) {
+                            vectorSyncChunkIds.add(chunkId);
+                        }
+                    }
+                    if (!vectorSyncChunkIds.isEmpty()) {
+                        syncPassagesToVector(job, new ArrayList<>(vectorSyncChunkIds), DEFAULT_CONFIG);
+                    }
+                }
+
                 for (String chunkId : chunkIds) {
                     if (job.isCancelled()) {
                         job.setStatus(SyncStatus.CANCELLED);
@@ -497,9 +502,6 @@ public class IndexSyncService {
                     ai.kompile.app.ingest.domain.IndexedPassage passage = passageMap.get(chunkId);
                     if (passage != null) {
                         try {
-                            if (targetSet.contains(SyncTarget.VECTOR_STORE) && passage.needsVectorIndexing()) {
-                                indexPassageToVector(passage);
-                            }
                             if (targetSet.contains(SyncTarget.KNOWLEDGE_GRAPH) && passage.needsGraphIndexing()) {
                                 indexPassageToGraph(passage);
                             }
@@ -508,7 +510,9 @@ public class IndexSyncService {
                             job.getErrorCount().incrementAndGet();
                             job.getErrors().add("Passage " + chunkId + ": " + e.getMessage());
                         }
-                        job.getPassagesProcessed().incrementAndGet();
+                        if (!vectorSyncChunkIds.contains(chunkId)) {
+                            job.getPassagesProcessed().incrementAndGet();
+                        }
                     }
                 }
 
@@ -647,29 +651,10 @@ public class IndexSyncService {
 
     private void syncPassagesToVector(SyncJob job, List<String> chunkIds, AutoSyncConfig config) {
         int limit = Math.min(chunkIds.size(), config.maxPassagesPerSync());
-        List<String> toSync = chunkIds.subList(0, limit);
+        List<String> toSync = new ArrayList<>(chunkIds.subList(0, limit));
 
-        for (String chunkId : toSync) {
-            if (job.isCancelled()) {
-                break;
-            }
-
-            try {
-                trackingService.findPassage(chunkId).ifPresent(passage -> {
-                    try {
-                        indexPassageToVector(passage);
-                    } catch (Exception e) {
-                        log.warn("Failed to vector-index passage {}", chunkId, e);
-                        job.getErrorCount().incrementAndGet();
-                        job.getErrors().add("Passage " + chunkId + ": " + e.getMessage());
-                    }
-                });
-            } catch (Exception e) {
-                log.warn("Failed to find passage {}", chunkId, e);
-                job.getErrorCount().incrementAndGet();
-            }
-
-            job.getPassagesProcessed().incrementAndGet();
+        if (!toSync.isEmpty() && !job.isCancelled()) {
+            runVectorPopulationSubprocess(job, toSync);
         }
 
         if (chunkIds.size() > limit) {
@@ -710,28 +695,43 @@ public class IndexSyncService {
     // INDEXING INTEGRATION
     // ═══════════════════════════════════════════════════════════════════════════
 
-    private void indexPassageToVector(IndexedPassage passage) {
-        if (embeddingModel == null || vectorStore == null) {
-            log.debug("Vector indexing unavailable: embeddingModel={}, vectorStore={}",
-                    embeddingModel != null, vectorStore != null);
+    private void runVectorPopulationSubprocess(SyncJob job, List<String> chunkIds) {
+        if (vectorStorePopulationService == null || !vectorStorePopulationService.isSubprocessModeEnabled()) {
+            String message = "Vector sync requires vector population subprocess mode";
+            log.warn("{}; refusing main-process embedding for {} passages", message, chunkIds.size());
+            job.getErrorCount().incrementAndGet();
+            job.getErrors().add(message);
+            job.getPassagesProcessed().addAndGet(chunkIds.size());
             return;
         }
 
-        String content = passage.getFullContent();
-        if (content == null || content.isBlank()) {
-            content = passage.getContentPreview();
-        }
-        if (content == null || content.isBlank()) {
-            log.debug("Skipping passage {} with no content", passage.getChunkId());
-            return;
-        }
+        String taskId = "index-sync-vector-" + job.getJobId();
+        try {
+            VectorStorePopulationService.PopulationResult result =
+                    vectorStorePopulationService.populateVectorStoreAsync(taskId).get();
+            if (!result.success()) {
+                String message = result.errorMessage() != null
+                        ? result.errorMessage()
+                        : "Vector population subprocess failed";
+                log.warn("Vector sync subprocess {} failed: {}", taskId, message);
+                job.getErrorCount().incrementAndGet();
+                job.getErrors().add(message);
+                return;
+            }
 
-        INDArray embedding = embeddingModel.embed(content);
-        Document doc = new Document(passage.getChunkId(), content,
-                Map.of("chunkId", passage.getChunkId(),
-                        "chunkIndex", passage.getChunkIndex() != null ? passage.getChunkIndex() : 0));
-        vectorStore.addWithEmbeddings(List.of(doc), embedding);
-        trackingService.markPassageVectorIndexed(passage.getChunkId(), passage.getChunkId());
+            trackingService.markPassagesVectorIndexed(chunkIds);
+            job.getPassagesProcessed().addAndGet(chunkIds.size());
+            log.info("Vector sync subprocess {} completed; marked {} passages indexed",
+                    taskId, chunkIds.size());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            job.getErrorCount().incrementAndGet();
+            job.getErrors().add("Vector population subprocess interrupted");
+        } catch (Exception e) {
+            log.warn("Vector sync subprocess {} failed", taskId, e);
+            job.getErrorCount().incrementAndGet();
+            job.getErrors().add("Vector population subprocess failed: " + e.getMessage());
+        }
     }
 
     private void indexPassageToGraph(IndexedPassage passage) {
@@ -756,33 +756,27 @@ public class IndexSyncService {
                 passage.getChunkIndex() != null ? passage.getChunkIndex() : 0
         );
         if (graphNode != null) {
-            trackingService.markPassageGraphIndexed(passage.getChunkId(), String.valueOf(graphNode.getId()));
+            trackingService.markPassageGraphIndexed(passage.getChunkId(), graphNode.getNodeId());
         }
     }
 
     private void indexDocumentPassagesToVector(IndexedDocument doc, SyncJob job) {
-        if (embeddingModel == null || vectorStore == null) {
-            log.debug("Vector indexing unavailable for document {}", doc.getId());
-            return;
-        }
-
         List<IndexedPassage> passages = doc.getPassages();
         if (passages == null || passages.isEmpty()) {
             return;
         }
 
+        List<String> chunkIds = new ArrayList<>();
         for (IndexedPassage passage : passages) {
             if (job.isCancelled()) break;
             if (!passage.needsVectorIndexing()) continue;
-
-            try {
-                indexPassageToVector(passage);
-                job.getPassagesProcessed().incrementAndGet();
-            } catch (Exception e) {
-                log.warn("Failed to vector-index passage {} of doc {}: {}",
-                        passage.getChunkId(), doc.getId(), e.getMessage());
-                job.getErrorCount().incrementAndGet();
+            if (passage.getChunkId() != null && !passage.getChunkId().isBlank()) {
+                chunkIds.add(passage.getChunkId());
             }
+        }
+
+        if (!chunkIds.isEmpty()) {
+            syncPassagesToVector(job, chunkIds, DEFAULT_CONFIG);
         }
     }
 

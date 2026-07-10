@@ -30,10 +30,15 @@ import java.util.concurrent.atomic.AtomicInteger;
  * Tracks and manages background processes launched by the chat agent.
  * Provides launching, output capture, status tracking, and kill operations.
  *
- * Output is captured to files under {@code ~/.kompile/process-output/<session-id>/}.
+ * Output is captured to files under:
+ * <ul>
+ *   <li>{@code <project>/.kompile/process-output/<session-id>/} when a project .kompile
+ *       directory is found in the working directory ancestry, and</li>
+ *   <li>{@code ~/.kompile/process-output/<session-id>/} as fallback.</li>
+ * </ul>
  * Process entries are tracked in memory and can be listed, queried, and cleaned up.
  */
-public class BackgroundProcessManager {
+public class BackgroundProcessManager implements AutoCloseable {
 
     /**
      * Callback invoked when a tracked background process exits.
@@ -146,8 +151,15 @@ public class BackgroundProcessManager {
     private static final Duration DEFAULT_RETENTION = Duration.ofHours(1);
 
     public BackgroundProcessManager(String sessionId) {
+        this(sessionId, null);
+    }
+
+    /**
+     * Create a manager with an optional working directory for log resolution.
+     */
+    public BackgroundProcessManager(String sessionId, Path workingDirectory) {
         this.sessionId = sessionId;
-        this.outputDir = KompileHome.homeDirectory().toPath()
+        this.outputDir = locateOutputRoot(workingDirectory)
                 .resolve("process-output")
                 .resolve(sessionId);
         this.ioExecutor = Executors.newCachedThreadPool(r -> {
@@ -166,6 +178,26 @@ public class BackgroundProcessManager {
             ioExecutor.shutdownNow();
         }, "bg-proc-manager-shutdown-" + sessionId);
         Runtime.getRuntime().addShutdownHook(this.shutdownHook);
+    }
+
+    /**
+     * Resolve where process-output logs should be rooted.
+     * Uses the nearest ancestor's {@code .kompile} directory when available,
+     * with fallback to {@code ~/.kompile}.
+     */
+    public static Path locateOutputRoot(Path workingDirectory) {
+        Path current = workingDirectory != null
+                ? workingDirectory.toAbsolutePath().normalize()
+                : Paths.get(System.getProperty("user.dir")).toAbsolutePath().normalize();
+
+        while (current != null) {
+            Path candidate = current.resolve(".kompile");
+            if (Files.isDirectory(candidate)) {
+                return candidate;
+            }
+            current = current.getParent();
+        }
+        return KompileHome.homeDirectory().toPath();
     }
 
     /**
@@ -237,13 +269,15 @@ public class BackgroundProcessManager {
         pb.directory(workDir != null ? workDir.toFile() : new File("."));
         pb.redirectErrorStream(true);
 
-        // Inherit key environment variables
+        // Inherit the same baseline environment used by managed agent subprocesses.
         Map<String, String> env = pb.environment();
         for (String key : List.of("PATH", "HOME", "USER", "SHELL", "LANG", "LC_ALL",
-                "JAVA_HOME", "MAVEN_HOME", "M2_HOME", "TERM")) {
+                "JAVA_HOME", "MAVEN_HOME", "M2_HOME", "TERM", "COLORTERM",
+                "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY")) {
             String val = System.getenv(key);
             if (val != null) env.put(key, val);
         }
+        env.put("GEMINI_CLI_TRUST_WORKSPACE", "true");
 
         Process process = pb.start();
         ProcessEntry entry = new ProcessEntry(
@@ -526,34 +560,56 @@ public class BackgroundProcessManager {
         if (entry == null) {
             return "Process not found: " + processId;
         }
+        return readOutputFile(entry.outputFile, tailLines);
+    }
 
-        Path file = entry.outputFile;
-        if (!Files.exists(file)) {
+    /**
+     * Read the last N lines of a captured output file. Safe for running processes:
+     * captureOutputAndWait flushes every line, so callers can use this as a live tail.
+     */
+    public static String readOutputFile(Path file, int tailLines) {
+        if (file == null || !Files.exists(file)) {
             return "(no output captured yet)";
         }
-
         try {
-            List<String> allLines = Files.readAllLines(file);
-            if (allLines.isEmpty()) {
+            TailResult tail = tailOutputFile(file, tailLines);
+            if (tail.lines().isEmpty()) {
                 return "(no output)";
             }
-
-            int start = Math.max(0, allLines.size() - tailLines);
-            List<String> tail = allLines.subList(start, allLines.size());
-
             StringBuilder sb = new StringBuilder();
-            if (start > 0) {
-                sb.append("... (").append(start).append(" earlier lines omitted)\n");
+            if (tail.omittedLines() > 0) {
+                sb.append("... (").append(tail.omittedLines()).append(" earlier lines omitted)\n");
             }
-            for (String line : tail) {
+            for (String line : tail.lines()) {
                 sb.append(line).append("\n");
             }
             return sb.toString().stripTrailing();
-
         } catch (IOException e) {
             return "Error reading output: " + e.getMessage();
         }
     }
+
+    /** Return the last N lines and omission count for a possibly still-growing output file. */
+    public static TailResult tailOutputFile(Path file, int tailLines) throws IOException {
+        if (file == null || tailLines <= 0 || !Files.exists(file)) {
+            return new TailResult(List.of(), 0);
+        }
+        Deque<String> tail = new ArrayDeque<>();
+        long total = 0;
+        try (java.util.stream.Stream<String> lines = Files.lines(file)) {
+            Iterator<String> iterator = lines.iterator();
+            while (iterator.hasNext()) {
+                total++;
+                tail.addLast(iterator.next());
+                while (tail.size() > tailLines) {
+                    tail.removeFirst();
+                }
+            }
+        }
+        return new TailResult(new ArrayList<>(tail), Math.max(0, total - tail.size()));
+    }
+
+    public record TailResult(List<String> lines, long omittedLines) {}
 
     /**
      * Remove completed/failed/killed process entries older than the default retention period.
@@ -608,6 +664,7 @@ public class BackgroundProcessManager {
      * and removes the JVM shutdown hook to prevent accumulation across multiple sessions.
      * Should be called when the chat session ends.
      */
+    @Override
     public void close() {
         // Kill all running processes
         for (ProcessEntry entry : processes.values()) {

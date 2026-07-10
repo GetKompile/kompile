@@ -138,7 +138,7 @@ CRAWL_RESPONSE=$(curl -sf -X POST http://localhost:$PORT/api/unified-crawl/start
             }
         ],
         "vectorIndex": {"enabled": true},
-        "graphExtraction": {"enabled": true}
+        "graphExtraction": {}
     }')
 
 echo "  Crawl response: $CRAWL_RESPONSE"

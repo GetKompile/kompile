@@ -17,6 +17,7 @@
 package ai.kompile.modelmanager;
 
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.utils.HashUtils;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -909,27 +910,7 @@ public class RegistryBasedModelManager {
      * Calculate SHA256 checksum of a file.
      */
     private String calculateSha256(Path file) throws IOException {
-        try {
-            java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
-            try (InputStream is = Files.newInputStream(file);
-                 BufferedInputStream bis = new BufferedInputStream(is, BUFFER_SIZE)) {
-                byte[] buffer = new byte[BUFFER_SIZE];
-                int bytesRead;
-                while ((bytesRead = bis.read(buffer)) != -1) {
-                    digest.update(buffer, 0, bytesRead);
-                }
-            }
-            byte[] hash = digest.digest();
-            StringBuilder hexString = new StringBuilder();
-            for (byte b : hash) {
-                String hex = Integer.toHexString(0xff & b);
-                if (hex.length() == 1) hexString.append('0');
-                hexString.append(hex);
-            }
-            return hexString.toString();
-        } catch (java.security.NoSuchAlgorithmException e) {
-            throw new IOException("SHA-256 algorithm not available", e);
-        }
+        return HashUtils.sha256Hex(file);
     }
 
     /**
@@ -983,12 +964,7 @@ public class RegistryBasedModelManager {
         }
 
         TokenizerConfig config = createTokenizerConfig(entry);
-        Map<String, Object> metadata = new HashMap<>();
-        if (entry.metadata != null) {
-            if (entry.metadata.embeddingDim != null) metadata.put("embedding_dim", entry.metadata.embeddingDim);
-            if (entry.metadata.modelType != null) metadata.put("model_type", entry.metadata.modelType);
-            if (entry.metadata.encoderType != null) metadata.put("encoder_type", entry.metadata.encoderType);
-        }
+        Map<String, Object> metadata = modelMetadataMap(entry.metadata);
 
         return new KompileModelManager.ModelBundle(modelId, modelPath, vocabPath, metadata, config);
     }
@@ -1033,12 +1009,7 @@ public class RegistryBasedModelManager {
         }
 
         TokenizerConfig config = createTokenizerConfig(entry);
-        Map<String, Object> metadata = new HashMap<>();
-        if (entry.metadata != null) {
-            if (entry.metadata.embeddingDim != null) metadata.put("embedding_dim", entry.metadata.embeddingDim);
-            if (entry.metadata.modelType != null) metadata.put("model_type", entry.metadata.modelType);
-            if (entry.metadata.encoderType != null) metadata.put("encoder_type", entry.metadata.encoderType);
-        }
+        Map<String, Object> metadata = modelMetadataMap(entry.metadata);
         return new KompileModelManager.ModelBundle(modelId, modelPath, vocabPath, metadata, config);
     }
 
@@ -1070,12 +1041,7 @@ public class RegistryBasedModelManager {
         }
 
         TokenizerConfig config = createTokenizerConfig(entry);
-        Map<String, Object> metadata = new HashMap<>();
-        if (entry.metadata != null) {
-            if (entry.metadata.embeddingDim != null) metadata.put("embedding_dim", entry.metadata.embeddingDim);
-            if (entry.metadata.modelType != null) metadata.put("model_type", entry.metadata.modelType);
-            if (entry.metadata.encoderType != null) metadata.put("encoder_type", entry.metadata.encoderType);
-        }
+        Map<String, Object> metadata = modelMetadataMap(entry.metadata);
         return new KompileModelManager.ModelBundle(modelId, modelPath, vocabPath, metadata, config);
     }
 
@@ -1085,12 +1051,7 @@ public class RegistryBasedModelManager {
         if (baseBundle == null) {
             return null;
         }
-        Map<String, Object> metadata = new HashMap<>();
-        if (entry.metadata != null) {
-            if (entry.metadata.embeddingDim != null) metadata.put("embedding_dim", entry.metadata.embeddingDim);
-            if (entry.metadata.modelType != null) metadata.put("model_type", entry.metadata.modelType);
-            if (entry.metadata.encoderType != null) metadata.put("encoder_type", entry.metadata.encoderType);
-        }
+        Map<String, Object> metadata = modelMetadataMap(entry.metadata);
         return new KompileModelManager.CrossEncoderBundle(
                 modelId,
                 baseBundle.getModelPath(),
@@ -1098,6 +1059,26 @@ public class RegistryBasedModelManager {
                 metadata,
                 baseBundle.getTokenizerConfig()
         );
+    }
+
+    private Map<String, Object> modelMetadataMap(ModelMetadata metadata) {
+        Map<String, Object> result = new HashMap<>();
+        if (metadata == null) {
+            return result;
+        }
+        if (metadata.embeddingDim != null) result.put("embedding_dim", metadata.embeddingDim);
+        if (metadata.hiddenSize != null) result.put("hidden_size", metadata.hiddenSize);
+        if (metadata.numLayers != null) result.put("num_layers", metadata.numLayers);
+        result.put("max_sequence_length", metadata.maxSequenceLength);
+        if (metadata.modelType != null) result.put("model_type", metadata.modelType);
+        if (metadata.encoderType != null) result.put("encoder_type", metadata.encoderType);
+        if (metadata.framework != null) result.put("framework", metadata.framework);
+        if (metadata.description != null) result.put("description", metadata.description);
+        if (metadata.ragRole != null) result.put("rag_role", metadata.ragRole);
+        if (metadata.supportedLanguages != null && !metadata.supportedLanguages.isEmpty()) {
+            result.put("supported_languages", List.copyOf(metadata.supportedLanguages));
+        }
+        return result;
     }
 
     private void downloadFile(String url, Path destination) throws IOException {
@@ -1161,6 +1142,7 @@ public class RegistryBasedModelManager {
             metadata.framework = metadataNode.has("framework") ? metadataNode.get("framework").asText() : null;
             metadata.description = metadataNode.has("description") ? metadataNode.get("description").asText() : null;
             metadata.ragRole = metadataNode.has("rag_role") ? metadataNode.get("rag_role").asText() : null;
+            metadata.supportedLanguages = readStringList(metadataNode.get("supported_languages"));
             entry.metadata = metadata;
         }
 
@@ -1175,6 +1157,34 @@ public class RegistryBasedModelManager {
         }
 
         return entry;
+    }
+
+    private List<String> readStringList(JsonNode node) {
+        if (node == null || node.isNull()) {
+            return null;
+        }
+        List<String> values = new ArrayList<>();
+        if (node.isArray()) {
+            for (JsonNode value : node) {
+                if (value != null && !value.isNull()) {
+                    String text = value.asText(null);
+                    if (text != null && !text.isBlank()) {
+                        values.add(text);
+                    }
+                }
+            }
+        } else {
+            String text = node.asText(null);
+            if (text != null && !text.isBlank()) {
+                for (String part : text.split(",")) {
+                    String trimmed = part.trim();
+                    if (!trimmed.isEmpty()) {
+                        values.add(trimmed);
+                    }
+                }
+            }
+        }
+        return values.isEmpty() ? null : values;
     }
 
     // ==================== Inner Classes (DTOs) ====================
@@ -1237,6 +1247,9 @@ public class RegistryBasedModelManager {
 
         @JsonProperty("rag_role")
         public String ragRole;
+
+        @JsonProperty("supported_languages")
+        public List<String> supportedLanguages;
 
         // Optimization fields
         @JsonProperty("optimized")

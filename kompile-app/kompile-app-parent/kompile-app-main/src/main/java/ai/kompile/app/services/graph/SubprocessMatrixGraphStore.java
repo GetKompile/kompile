@@ -29,7 +29,6 @@ import org.nd4j.linalg.api.ndarray.INDArray;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Component;
 
@@ -71,10 +70,8 @@ import java.util.Optional;
  */
 @Component
 @Primary
-@ConditionalOnProperty(
-        name  = "kompile.graph.subprocess.enabled",
-        havingValue = "true",
-        matchIfMissing = false)
+// Subprocess isolation is ALWAYS the primary path — the matrix graph never runs in the main JVM.
+// No Spring property gate: enable/disable, if ever needed, is kompile JSON managed-config, not a property file.
 public class SubprocessMatrixGraphStore implements MatrixGraphStore {
 
     private static final Logger log = LoggerFactory.getLogger(SubprocessMatrixGraphStore.class);
@@ -417,7 +414,9 @@ public class SubprocessMatrixGraphStore implements MatrixGraphStore {
                  "(graphId={}, nodes={}, edges={}) — the real matrix lives in the subprocess. " +
                  "Full-graph materialisation is unsupported in subprocess mode; use leaf ops (Phase 4).",
                  graphId, nodeCount, edgeCount);
-        return new AdjacencyMatrixGraph(graphId, 0);
+        AdjacencyMatrixGraph shell = new AdjacencyMatrixGraph(graphId, 0);
+        shell.markAsShell(nodeCount, edgeCount); // WP17e: so graph algorithms warn instead of silently empty
+        return shell;
     }
 
     /** Decode a JSON array of strings. */

@@ -25,6 +25,12 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 
+import ai.kompile.embedding.anserini.config.EmbeddingRestartConfig;
+import ai.kompile.embedding.anserini.config.EmbeddingRestartConfigService;
+import ai.kompile.embedding.anserini.config.EmbeddingRestartStatus;
+import org.springframework.context.annotation.Lazy;
+import org.springframework.context.annotation.Primary;
+
 import java.io.IOException;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -32,6 +38,9 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
 /**
@@ -52,13 +61,14 @@ import java.util.stream.Collectors;
 @Service("anseriniEmbeddingModelImpl")
 @ConditionalOnClass(name = "ai.kompile.embedding.anserini.AnseriniEmbeddingModelImpl")
 @ConditionalOnProperty(value = "kompile.embedding.anserini.enabled", havingValue = "true", matchIfMissing = true)
-@org.springframework.context.annotation.Lazy
-@org.springframework.context.annotation.Primary
+@Lazy
+@Primary
 public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScoped {
 
     private static final Logger log = LoggerFactory.getLogger(AnseriniEmbeddingModelImpl.class);
 
     private static final String DEFAULT_MODEL_IDENTIFIER = "bge-base-en-v1.5";
+    private static final double MIN_EMBEDDING_MAGNITUDE = 1e-18;
 
     /**
      * Enum indicating where the model was loaded from.
@@ -102,7 +112,7 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
 
     // Restart-governor configuration (manual toggle + native-crash threshold), read live.
     @Autowired(required = false)
-    private ai.kompile.embedding.anserini.config.EmbeddingRestartConfigService restartConfigService;
+    private EmbeddingRestartConfigService restartConfigService;
 
     // Model state (mirrors subprocess state)
     private volatile String modelIdentifier;
@@ -134,7 +144,7 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
     // Heavy-memory serialization gate — optional; absent in unit tests and CPU-only builds.
     // When present, ensures embedding and KGE training never run concurrently.
     @Autowired(required = false)
-    private ai.kompile.core.crawl.graph.HeavyMemoryCoordinator heavyMemoryCoordinator;
+    private HeavyMemoryCoordinator heavyMemoryCoordinator;
 
     // Job id of the crawl batch currently being embedded; set on the crawl thread at the top
     // of embedBatch() and read by the subprocess-reader-thread batch-resize callback.
@@ -168,12 +178,44 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
     // because ensureInitialized()/reloadModel() build a fresh launcher on each call, which would
     // reset any launcher-local counter and defeat the breaker — the root cause of the observed
     // hours-long embedding crash loop.
-    private final java.util.concurrent.atomic.AtomicInteger consecutiveNativeCrashes =
-            new java.util.concurrent.atomic.AtomicInteger(0);
+    private final AtomicInteger consecutiveNativeCrashes =
+            new AtomicInteger(0);
     // Hard cross-session ceiling on ALL restartable embedding failures (stall / native crash / exit-crash).
     // Lives on the @Service so resume()/poll spawning fresh launchers can't reset it and loop forever.
-    private final java.util.concurrent.atomic.AtomicInteger consecutiveFailures =
-            new java.util.concurrent.atomic.AtomicInteger(0);
+    private final AtomicInteger consecutiveFailures =
+            new AtomicInteger(0);
+    // Tracks whether the subprocess has ever produced a valid embedding result since the @Service started.
+    // Sticky: set on the first successful embedBatch() result; never reset.
+    // Distinguishes two stall types at the circuit breaker:
+    //   - LOAD stall (wasEverHealthy=false): model never initialized — restart is unlikely to help (e.g. CPU
+    //     too slow); defer after the FIRST stall (existing behaviour, unchanged).
+    //   - RUNTIME-DEGRADATION stall (wasEverHealthy=true): subprocess ran successfully for a while, then
+    //     degraded (e.g. accumulated memory / GC pressure). A fresh restart clears that state and is
+    //     restart-recoverable; allow up to MAX_RUNTIME_STALL_RESTARTS before deferring.
+    private final AtomicBoolean wasEverHealthy =
+            new AtomicBoolean(false);
+    // Separate cap for runtime-degradation stall restarts; deliberately small and independent from
+    // maxAttempts (which guards ordinary restarts) so the general churn ceiling is not disturbed.
+    private static final int MAX_RUNTIME_STALL_RESTARTS = 5;
+    private final AtomicInteger runtimeStallRestarts =
+            new AtomicInteger(0);
+
+    // Request-timeout forced-restart governor.
+    // consecutiveRequestTimeouts counts back-to-back embed/embedBatch TimeoutException hits with no
+    // intervening success.  When the count reaches the threshold (default 2, overridable via
+    // -Dkompile.embedding.maxConsecutiveRequestTimeouts) it arms forceRestartBeforeNextEmbed.
+    // ensureInitialized() picks that flag up lazily at the top of the next call so the restart
+    // happens off the embed-caller hot path and never races a concurrent in-flight request.
+    // requestTimeoutForcedRestarts is a hard cap (mirroring MAX_RUNTIME_STALL_RESTARTS) that prevents
+    // infinite restart loops on permanently-degraded boxes; it is NOT reset on successful model loads.
+    private static final int MAX_REQUEST_TIMEOUT_RESTARTS = 5;
+    private final AtomicInteger consecutiveRequestTimeouts =
+            new AtomicInteger(0);
+    private final AtomicBoolean forceRestartBeforeNextEmbed =
+            new AtomicBoolean(false);
+    private final AtomicInteger requestTimeoutForcedRestarts =
+            new AtomicInteger(0);
+
     private volatile boolean restartsPaused = false;
     private volatile String restartsPausedReason = null;
     private volatile String lastObservedCrashReason = null;
@@ -259,6 +301,15 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
         return storedEmbeddingProperties != null ? storedEmbeddingProperties.getEmbedBatchTimeoutSeconds() : 0;
     }
 
+    /**
+     * Maximum number of back-to-back embed/embedBatch TimeoutExceptions before a forced subprocess
+     * restart is armed.  Configurable via {@code -Dkompile.embedding.maxConsecutiveRequestTimeouts}.
+     * Default is 2 so a single spurious timeout doesn't trigger a restart, but two in a row do.
+     */
+    private int getMaxConsecutiveRequestTimeouts() {
+        return Integer.getInteger("kompile.embedding.maxConsecutiveRequestTimeouts", 2);
+    }
+
     /** Constructor with explicit batch sizes */
     public AnseriniEmbeddingModelImpl(String modelIdentifier, int optimalBatchSize, int maxBatchSize) {
         this(modelIdentifier, optimalBatchSize, maxBatchSize, null);
@@ -283,6 +334,54 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
      * Thread-safe - only one thread will perform initialization.
      */
     private void ensureInitialized() {
+        // --- Request-timeout lazy force-restart ---
+        // This check precedes the initialized fast-path: the subprocess may be marked initialized
+        // yet be unable to serve requests (heartbeat alive but every embed times out).  A lazy
+        // approach (armed by the timeout catch, executed here) avoids restarting on the hot embed
+        // path and prevents racing concurrent in-flight requests.
+        // Guards mirror the existing restart-governor: preempted/paused/disabled all suppress it.
+        if (forceRestartBeforeNextEmbed.get() && !preempted && !restartsPaused && isAutoRestartEnabled()) {
+            synchronized (launcherLock) {
+                // Double-check inside the lock; only one thread executes the teardown.
+                if (forceRestartBeforeNextEmbed.compareAndSet(true, false)) {
+                    int restartCount = requestTimeoutForcedRestarts.incrementAndGet();
+                    log.warn("REQUEST_TIMEOUT_FORCED_RESTART #{}/{}: {} consecutive request timeouts — "
+                            + "restarting embedding subprocess to clear degradation",
+                            restartCount, MAX_REQUEST_TIMEOUT_RESTARTS,
+                            consecutiveRequestTimeouts.get());
+                    consecutiveRequestTimeouts.set(0);
+                    // Hard cap: if the subprocess keeps timing out after every restart, defer.
+                    if (restartCount > MAX_REQUEST_TIMEOUT_RESTARTS) {
+                        pauseRestarts("Circuit breaker: " + restartCount
+                                + " request-timeout forced restarts exceeded cap of "
+                                + MAX_REQUEST_TIMEOUT_RESTARTS + " — subprocess persistently fails to "
+                                + "serve requests. Resume via the UI / POST /api/embedding-restart/resume.");
+                        log.warn("REQUEST_TIMEOUT_FORCED_RESTART capped after {} restarts (max {})",
+                                restartCount, MAX_REQUEST_TIMEOUT_RESTARTS);
+                        return;
+                    }
+                    // Also count toward the general churn ceiling so a box that crashes on every
+                    // restart eventually trips restartsPaused via the shared counter.
+                    if (consecutiveFailures.incrementAndGet() >= Math.max(2, nativeCrashThreshold())) {
+                        pauseRestarts("Circuit breaker: " + consecutiveFailures.get()
+                                + " consecutive failures (including request-timeout forced restart) — "
+                                + "deferred. Resume via the UI / POST /api/embedding-restart/resume.");
+                        return;
+                    }
+                    // Tear down state exactly as reloadModel() does (we already hold launcherLock).
+                    if (subprocessLauncher != null) {
+                        try { subprocessLauncher.stop(); } catch (Exception ignored) {}
+                        publishEvent(EmbeddingSubprocessEvent.subprocessStopped(this, modelIdentifier));
+                        subprocessLauncher = null;
+                    }
+                    initialized = false;
+                    modelSource = ModelSource.NOT_INITIALIZED;
+                    initializationError = null;
+                    // Fall through: initialized is now false, so the standard init path below fires.
+                }
+            }
+        }
+
         if (initialized) {
             return;
         }
@@ -460,27 +559,9 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
                 loadingPhase = LoadingPhase.FAILED;
                 loadingMessage = "Error: " + e.getMessage();
 
-                // Try to capture any metadata from subprocess launcher before deciding to stop
+                // A failed initialization attempt must remain failed even if the launcher has stale
+                // model metadata from an earlier subprocess state. Retry may keep the process alive.
                 if (subprocessLauncher != null) {
-                    // Check if subprocess actually loaded the model despite the error
-                    if (subprocessLauncher.isModelLoaded()) {
-                        int subDim = subprocessLauncher.getCurrentDimensions();
-                        String subEnc = subprocessLauncher.getEncoderType();
-                        if (subDim > 0) {
-                            this.embeddingDimensions = subDim;
-                            this.encoderType = subEnc;
-                            this.modelSource = ModelSource.REGISTRY;
-                            this.initialized = true;
-                            loadingPhase = LoadingPhase.COMPLETE;
-                            loadingMessage = "Model loaded (recovered from subprocess)";
-                            log.info("Recovered model metadata from subprocess: dims={}, type={}", subDim, subEnc);
-                            // Don't publish failed event, publish success instead
-                            publishEvent(EmbeddingSubprocessEvent.modelLoaded(this, modelIdentifier,
-                                    embeddingDimensions, encoderType));
-                            return; // Success!
-                        }
-                    }
-
                     // Only stop subprocess on non-retriable errors
                     if (!initializationErrorRetriable) {
                         try {
@@ -502,6 +583,16 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
                 loading = false;
             }
         }
+    }
+
+    /**
+     * Idempotently starts the configured embedding model without stopping a running subprocess.
+     * Scheduled startup polling must use this path; {@link #reloadModel()} is intentionally
+     * disruptive and is reserved for explicit model switches/restarts.
+     */
+    public boolean initializeIfNeeded() {
+        ensureInitialized();
+        return isInitialized();
     }
 
     private boolean isRetriableError(Exception e) {
@@ -665,18 +756,42 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
 
                 String reason = categorizeFailureReason(exitCode, crashReason);
 
-                // Stall circuit breaker: a heartbeat-timeout / no-heartbeat exit means the model could not
-                // initialize within the heartbeat window. On a slow CPU this is PERSISTENT — retrying just
-                // churns the subprocess (start -> stall -> kill), and that churn wedges the shared H2 DB.
-                // Defer on the FIRST stall (not after the full native-crash budget) so the loop never gets
-                // going. GPU loads fast and never stalls, so this only trips when the model genuinely
-                // cannot load in time.
+                // Stall circuit breaker: a heartbeat-timeout / no-heartbeat exit means either:
+                //   (a) LOAD STALL (wasEverHealthy=false): the model never initialized within the heartbeat
+                //       window — persistent on slow CPU. Retrying just churns (start→stall→kill) and wedges
+                //       the shared H2 DB. Defer on the FIRST stall.
+                //   (b) RUNTIME-DEGRADATION STALL (wasEverHealthy=true): the subprocess ran successfully for
+                //       a while, then slowed due to accumulated memory / GC pressure. A fresh restart clears
+                //       that state — restart-recoverable up to MAX_RUNTIME_STALL_RESTARTS times.
                 if ((crashReason != null && crashReason.toLowerCase().contains("heartbeat"))
                         || "STALLED_NO_HEARTBEAT".equals(reason)) {
-                    pauseRestarts("Circuit breaker: embedding stalled (heartbeat timeout) — deferred after "
-                            + "1 attempt; model load is too slow to initialize within the heartbeat window "
-                            + "(e.g. CPU). Resume via the UI / POST /api/embedding-restart/resume, or run on GPU.");
-                    return null;
+                    if (wasEverHealthy.get()) {
+                        // Runtime-degradation stall — allow a bounded number of restarts before deferring.
+                        int stallAttempt = runtimeStallRestarts.incrementAndGet();
+                        if (stallAttempt > MAX_RUNTIME_STALL_RESTARTS) {
+                            pauseRestarts("Circuit breaker: " + stallAttempt
+                                    + " runtime-degradation stalls (heartbeat timeout after healthy operation) "
+                                    + "— deferred after cap of " + MAX_RUNTIME_STALL_RESTARTS + ". "
+                                    + "Resume via the UI / POST /api/embedding-restart/resume.");
+                            return null;
+                        }
+                        log.warn("Runtime-degradation stall (subprocess was healthy) — restarting to clear "
+                                + "accumulated state, attempt {}/{}", stallAttempt, MAX_RUNTIME_STALL_RESTARTS);
+                        // Runtime-degradation stalls are governed by their own cap (MAX_RUNTIME_STALL_RESTARTS).
+                        // Return a restart config directly — do NOT fall through to the general churn ceiling,
+                        // which would double-count this failure and trip prematurely.
+                        long backoffMsStall = (long) (5000 * Math.pow(2.0, stallAttempt - 1));
+                        long heapBytesStall = 4L * 1024 * 1024 * 1024;
+                        return new EmbeddingSubprocessLauncher.RestartConfiguration(
+                                backoffMsStall, heapBytesStall, configuredOptimalBatch,
+                                Runtime.getRuntime().availableProcessors(), reason);
+                    } else {
+                        // Load stall — model never initialized; defer immediately (unchanged behaviour).
+                        pauseRestarts("Circuit breaker: embedding stalled (heartbeat timeout) — deferred after "
+                                + "1 attempt; model load is too slow to initialize within the heartbeat window "
+                                + "(e.g. CPU). Resume via the UI / POST /api/embedding-restart/resume, or run on GPU.");
+                        return null;
+                    }
                 }
 
                 // General churn ceiling: ANY restartable failure (incl. clean-ish exits that are neither
@@ -797,6 +912,40 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
 
     // ========== EmbeddingModel interface ==========
 
+    private void validateEmbeddingBatch(List<float[]> embeddings, int expectedCount, String label) {
+        if (embeddings == null) {
+            throw new IllegalStateException(label + " returned null embeddings");
+        }
+        if (embeddings.size() != expectedCount) {
+            throw new IllegalStateException(label + " returned " + embeddings.size()
+                    + " embeddings for " + expectedCount + " text(s)");
+        }
+        for (int i = 0; i < embeddings.size(); i++) {
+            validateEmbeddingVector(embeddings.get(i), label + " index=" + i);
+        }
+    }
+
+    private void validateEmbeddingVector(float[] embedding, String label) {
+        if (embedding == null || embedding.length == 0) {
+            throw new IllegalStateException(label + " produced no vector");
+        }
+        int expectedDimensions = dimensions();
+        if (expectedDimensions > 0 && embedding.length != expectedDimensions) {
+            throw new IllegalStateException(label + " produced dimension " + embedding.length
+                    + " but expected " + expectedDimensions);
+        }
+        double magnitudeSquared = 0.0;
+        for (float value : embedding) {
+            if (!Float.isFinite(value)) {
+                throw new IllegalStateException(label + " produced a non-finite vector value");
+            }
+            magnitudeSquared += (double) value * value;
+        }
+        if (magnitudeSquared <= MIN_EMBEDDING_MAGNITUDE) {
+            throw new IllegalStateException(label + " produced a near-zero vector");
+        }
+    }
+
     @Override
     public INDArray embed(String text) {
         if (text == null || text.isBlank()) return Nd4j.empty(DataType.FLOAT);
@@ -816,10 +965,23 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
             } else {
                 embedding = subprocessLauncher.embed(text).get(); // No timeout - wait indefinitely
             }
-            if (embedding == null || embedding.length == 0) {
-                return Nd4j.empty(DataType.FLOAT);
-            }
+            validateEmbeddingVector(embedding, "single embed");
+            // Success: lane is healthy — reset the request-timeout counter.
+            consecutiveRequestTimeouts.set(0);
             return Nd4j.create(embedding);
+        } catch (TimeoutException te) {
+            long timeoutSec = getEmbedTimeoutSeconds();
+            String msg = "Embedding lane timed out after " + timeoutSec + "s — lane-dead, single embed skipped";
+            log.error("EMBEDDING_TIMEOUT: single embed timed out after {}s in subprocess", timeoutSec);
+            int n = consecutiveRequestTimeouts.incrementAndGet();
+            if (n >= getMaxConsecutiveRequestTimeouts() && !restartsPaused && !preempted && isAutoRestartEnabled()) {
+                forceRestartBeforeNextEmbed.set(true);
+                log.warn("EMBEDDING_REQUEST_TIMEOUT_ARMING_RESTART: {} consecutive request timeouts — "
+                        + "forcing embedding subprocess restart before next embed to clear degradation", n);
+            }
+            publishToBus("ERROR", msg, false);
+            publishEvent(EmbeddingSubprocessEvent.error(this, modelIdentifier, msg, "TIMEOUT", "embed"));
+            return Nd4j.empty(DataType.FLOAT);
         } catch (Exception e) {
             log.error("Error embedding text via subprocess", e);
             return Nd4j.empty(DataType.FLOAT);
@@ -882,8 +1044,10 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
             }
 
             float[] embedding = response.embedding();
-            if (embedding == null || embedding.length == 0) {
-                return EmbedTimingResult.failure("Empty embedding", totalWallClockMs);
+            try {
+                validateEmbeddingVector(embedding, "timed embed");
+            } catch (IllegalStateException invalid) {
+                return EmbedTimingResult.failure(invalid.getMessage(), totalWallClockMs);
             }
 
             INDArray result = Nd4j.create(embedding);
@@ -952,25 +1116,48 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
             try (AutoCloseable gate = heavyMemoryCoordinator != null
                     ? heavyMemoryCoordinator.acquire("embedding", capturedJobId)
                     : null) {
-                // Use configurable timeout for batch embed (0 = no timeout)
+                // Use one timeout at this layer while the heavy-memory gate is held. The launcher
+                // request correlator must not expire earlier; fixed-shape CPU batches can take longer
+                // than the generic request timeout even when the subprocess is healthy.
                 List<float[]> result;
                 if (getEmbedBatchTimeoutSeconds() > 0) {
-                    result = subprocessLauncher.embedBatch(texts).get(getEmbedBatchTimeoutSeconds(), TimeUnit.SECONDS);
+                    result = subprocessLauncher.embedBatch(texts, 0).get(getEmbedBatchTimeoutSeconds(), TimeUnit.SECONDS);
                 } else {
-                    result = subprocessLauncher.embedBatch(texts).get(); // No timeout - wait indefinitely
+                    result = subprocessLauncher.embedBatch(texts, 0).get(); // No timeout - wait indefinitely
                 }
                 long elapsed = System.currentTimeMillis() - start;
 
-                if (result == null) {
-                    log.error("Subprocess returned null for batch of {} texts", texts.size());
-                    return List.of();
-                }
+                validateEmbeddingBatch(result, texts.size(), "batch embed");
 
                 log.info("EMBED_BATCH_DONE: {} texts in {}ms ({} ms/text) via subprocess",
                         texts.size(), elapsed, texts.isEmpty() ? 0 : elapsed / texts.size());
 
+                // Mark runtime health on the first successful batch result. This flag distinguishes
+                // a RUNTIME-DEGRADATION stall (subprocess was healthy, then slowed down due to
+                // accumulated memory) from a LOAD stall (model never initialized). Sticky — not reset.
+                if (!result.isEmpty()) {
+                    wasEverHealthy.set(true);
+                    // Success: lane is healthy — reset the request-timeout counter.
+                    consecutiveRequestTimeouts.set(0);
+                }
+
                 return result;
             }
+        } catch (TimeoutException te) {
+            long timeoutSec = getEmbedBatchTimeoutSeconds();
+            String msg = "Embedding lane timed out after " + timeoutSec + "s — lane-dead, batch skipped";
+            log.error("EMBEDDING_TIMEOUT: {} texts timed out after {}s in subprocess", texts.size(), timeoutSec);
+            int n = consecutiveRequestTimeouts.incrementAndGet();
+            if (n >= getMaxConsecutiveRequestTimeouts() && !restartsPaused && !preempted && isAutoRestartEnabled()) {
+                forceRestartBeforeNextEmbed.set(true);
+                log.warn("EMBEDDING_REQUEST_TIMEOUT_ARMING_RESTART: {} consecutive request timeouts — "
+                        + "forcing embedding subprocess restart before next embed to clear degradation", n);
+            }
+            publishToBus("ERROR", msg, false);
+            // Publish an event so the UI sees the timeout
+            publishEvent(EmbeddingSubprocessEvent.error(this, modelIdentifier, msg, "TIMEOUT", "embedBatch"));
+            // Return empty — the crawl-side isEmbeddingUnavailableError pattern will catch "Embedding lane"
+            return List.of();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             log.error("embedBatch interrupted while waiting for heavy-memory gate: {}", e.getMessage(), e);
@@ -1014,6 +1201,11 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
             return embeddingDimensions;
         }
         return -1;
+    }
+
+    @Override
+    public List<String> getSupportedLanguages() {
+        return AnseriniEncoderFactory.getSupportedLanguages(modelIdentifier);
     }
 
     @Override
@@ -1167,7 +1359,7 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
 
     private int nativeCrashThreshold() {
         return restartConfigService == null
-                ? ai.kompile.embedding.anserini.config.EmbeddingRestartConfig.DEFAULT_NATIVE_CRASH_THRESHOLD
+                ? EmbeddingRestartConfig.DEFAULT_NATIVE_CRASH_THRESHOLD
                 : restartConfigService.getConfig().nativeCrashThresholdOrDefault();
     }
 
@@ -1181,6 +1373,111 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
         this.restartsPausedReason = reason;
         log.warn("Embedding subprocess restarts PAUSED: {} (resume via the UI or POST /api/embedding-restart/resume)",
                 reason);
+    }
+
+    // ========== Package-private accessors for unit tests ==========
+    // (same pattern as EmbeddingSubprocessLauncher#resolveSystemPhysicalCeilingMb)
+
+    /** Expose wasEverHealthy for test assertions. // visible for testing */
+    boolean isWasEverHealthy() {
+        return wasEverHealthy.get();
+    }
+
+    /** Force-set wasEverHealthy from a test without running a real embed. // visible for testing */
+    void setWasEverHealthyForTest(boolean value) {
+        wasEverHealthy.set(value);
+    }
+
+    /** Check whether restarts are currently paused (circuit breaker tripped). // visible for testing */
+    boolean isRestartsPaused() {
+        return restartsPaused;
+    }
+
+    /** Expose the runtime-stall restart counter for test assertions. // visible for testing */
+    int getRuntimeStallRestarts() {
+        return runtimeStallRestarts.get();
+    }
+
+    /** Reset restart-governor state (paused, counters) for a clean test slate. // visible for testing */
+    void resetRestartGovernorForTest() {
+        this.restartsPaused = false;
+        this.restartsPausedReason = null;
+        this.consecutiveNativeCrashes.set(0);
+        this.consecutiveFailures.set(0);
+        this.runtimeStallRestarts.set(0);
+        this.consecutiveRequestTimeouts.set(0);
+        this.forceRestartBeforeNextEmbed.set(false);
+        this.requestTimeoutForcedRestarts.set(0);
+    }
+
+    /** Expose createRestartPolicyCallback so tests can drive it directly. // visible for testing */
+    EmbeddingSubprocessLauncher.RestartPolicyCallback createRestartPolicyCallbackForTest() {
+        return createRestartPolicyCallback();
+    }
+
+    /** Expose forceRestartBeforeNextEmbed flag for test assertions. // visible for testing */
+    boolean isForceRestartArmed() {
+        return forceRestartBeforeNextEmbed.get();
+    }
+
+    /** Expose consecutiveRequestTimeouts counter for test assertions. // visible for testing */
+    int getConsecutiveRequestTimeouts() {
+        return consecutiveRequestTimeouts.get();
+    }
+
+    /** Expose requestTimeoutForcedRestarts counter for test assertions. // visible for testing */
+    int getRequestTimeoutForcedRestarts() {
+        return requestTimeoutForcedRestarts.get();
+    }
+
+    /** Force-set consecutiveRequestTimeouts from a test. // visible for testing */
+    void setConsecutiveRequestTimeoutsForTest(int value) {
+        consecutiveRequestTimeouts.set(value);
+    }
+
+    /** Force-arm (or clear) forceRestartBeforeNextEmbed from a test. // visible for testing */
+    void setForceRestartArmedForTest(boolean value) {
+        forceRestartBeforeNextEmbed.set(value);
+    }
+
+    /** Directly set restartsPaused from a test (mirrors the effect of pauseRestarts()). // visible for testing */
+    void setRestartsPausedForTest(boolean paused) {
+        this.restartsPaused = paused;
+        if (!paused) this.restartsPausedReason = null;
+    }
+
+    /** Set consecutiveFailures counter from a test. // visible for testing */
+    void setConsecutiveFailuresForTest(int value) {
+        consecutiveFailures.set(value);
+    }
+
+    /**
+     * Package-private seam that exercises the force-restart decision logic in
+     * {@link #ensureInitialized()} without actually spawning a subprocess.
+     * Returns {@code true} if the restart WOULD have proceeded (flag was set,
+     * all guards passed, not capped), {@code false} if it was suppressed.
+     * // visible for testing
+     */
+    boolean triggerForceRestartCheckForTest() {
+        if (!forceRestartBeforeNextEmbed.get() || preempted || restartsPaused || !isAutoRestartEnabled()) {
+            return false;
+        }
+        if (!forceRestartBeforeNextEmbed.compareAndSet(true, false)) {
+            return false; // another thread beat us
+        }
+        int restartCount = requestTimeoutForcedRestarts.incrementAndGet();
+        consecutiveRequestTimeouts.set(0);
+        if (restartCount > MAX_REQUEST_TIMEOUT_RESTARTS) {
+            pauseRestarts("Circuit breaker (test): " + restartCount
+                    + " request-timeout forced restarts exceeded cap of " + MAX_REQUEST_TIMEOUT_RESTARTS);
+            return false;
+        }
+        if (consecutiveFailures.incrementAndGet() >= Math.max(2, nativeCrashThreshold())) {
+            pauseRestarts("Circuit breaker (test): " + consecutiveFailures.get()
+                    + " consecutive failures (including request-timeout forced restart)");
+            return false;
+        }
+        return true;
     }
 
     /**
@@ -1209,9 +1506,9 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
     }
 
     /** Returns the current restart-governor state for the status REST endpoint and UI. */
-    public ai.kompile.embedding.anserini.config.EmbeddingRestartStatus getRestartGovernorStatus() {
+    public EmbeddingRestartStatus getRestartGovernorStatus() {
         boolean running = subprocessLauncher != null && subprocessLauncher.isRunning();
-        return ai.kompile.embedding.anserini.config.EmbeddingRestartStatus.builder()
+        return EmbeddingRestartStatus.builder()
                 .autoRestartEnabled(isAutoRestartEnabled())
                 .nativeCrashThreshold(nativeCrashThreshold())
                 .restartsPaused(restartsPaused)

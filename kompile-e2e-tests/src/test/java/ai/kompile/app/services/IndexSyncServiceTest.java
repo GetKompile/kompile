@@ -16,8 +16,6 @@
 
 package ai.kompile.app.services;
 
-import ai.kompile.core.embeddings.EmbeddingModel;
-import ai.kompile.core.embeddings.VectorStore;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -45,19 +43,16 @@ class IndexSyncServiceTest {
     private ApplicationEventPublisher eventPublisher;
 
     @Mock
-    private EmbeddingModel embeddingModel;
-
-    @Mock
-    private VectorStore vectorStore;
-
-    @Mock
     private KnowledgeGraphService knowledgeGraphService;
+
+    @Mock
+    private VectorStorePopulationService vectorStorePopulationService;
 
     private IndexSyncService service;
 
     @BeforeEach
     void setUp() {
-        service = new IndexSyncService(trackingService, eventPublisher, embeddingModel, vectorStore, knowledgeGraphService);
+        service = new IndexSyncService(trackingService, eventPublisher, knowledgeGraphService, vectorStorePopulationService);
     }
 
     @Test

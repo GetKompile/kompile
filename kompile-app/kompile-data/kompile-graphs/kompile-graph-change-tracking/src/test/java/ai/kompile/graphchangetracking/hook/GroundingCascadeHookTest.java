@@ -76,9 +76,9 @@ class GroundingCascadeHookTest {
         IncrementalReasoningOrchestrator countingOrchestrator =
                 new IncrementalReasoningOrchestrator(groundingService, e -> {}) {
                     @Override
-                    public RegroundResult runFullReground(long factSheetId) {
+                    public RegroundResult runFullReground(long factSheetId, String trigger) {
                         callCount.incrementAndGet();
-                        RegroundResult result = super.runFullReground(factSheetId);
+                        RegroundResult result = super.runFullReground(factSheetId, trigger);
                         latch.countDown();
                         return result;
                     }
@@ -105,9 +105,9 @@ class GroundingCascadeHookTest {
         IncrementalReasoningOrchestrator trackingOrchestrator =
                 new IncrementalReasoningOrchestrator(groundingService, e -> {}) {
                     @Override
-                    public RegroundResult runFullReground(long factSheetId) {
+                    public RegroundResult runFullReground(long factSheetId, String trigger) {
                         runForFactSheet.set((int) factSheetId);
-                        RegroundResult r = super.runFullReground(factSheetId);
+                        RegroundResult r = super.runFullReground(factSheetId, trigger);
                         latch.countDown();
                         return r;
                     }

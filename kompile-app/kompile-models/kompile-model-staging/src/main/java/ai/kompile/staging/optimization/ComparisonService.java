@@ -19,18 +19,17 @@ package ai.kompile.staging.optimization;
 import ai.kompile.modelmanager.registry.ModelEntry;
 import ai.kompile.modelmanager.registry.ModelMetadata;
 import ai.kompile.modelmanager.registry.RegistryService;
-import org.nd4j.autodiff.samediff.SDVariable;
 import org.nd4j.autodiff.samediff.SameDiff;
 import org.nd4j.autodiff.samediff.serde.SDZSerializer;
 import org.nd4j.linalg.api.buffer.DataType;
 import org.nd4j.linalg.api.ndarray.INDArray;
-import org.nd4j.linalg.factory.Nd4j;
 import org.nd4j.linalg.ops.transforms.Transforms;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
@@ -40,7 +39,7 @@ import java.util.*;
 /**
  * Service for A/B comparison testing between optimized and original models.
  * Loads each model sequentially (to avoid 2x memory), runs inference with the
- * same dummy inputs, and reports element-wise diff metrics.
+ * same configured sample inputs, and reports element-wise diff metrics.
  */
 @Service
 public class ComparisonService {
@@ -102,7 +101,7 @@ public class ComparisonService {
             InferenceOutput optimizedOutput = runInference(optimizedPath, isZipFormat, request);
             ModelInferenceResult optimizedResult = buildInferenceResult("optimized", optimizedPath, optimizedOutput);
 
-            // Step 2: Run inference on original model (using same placeholder shapes)
+            // Step 2: Run inference on original model with the same configured samples
             log.info("Running inference on original model...");
             InferenceOutput originalOutput = runInference(originalPath, isZipFormat, request);
             ModelInferenceResult originalResult = buildInferenceResult("original", originalPath, originalOutput);
@@ -205,7 +204,7 @@ public class ComparisonService {
         }
 
         // Build placeholder inputs
-        Map<String, INDArray> placeholderValues = buildPlaceholderInputs(sd, request);
+        Map<String, INDArray> placeholderValues = buildPlaceholderInputs(modelPath, sd, request);
 
         try {
             long startTime = System.nanoTime();
@@ -231,38 +230,63 @@ public class ComparisonService {
         }
     }
 
-    private Map<String, INDArray> buildPlaceholderInputs(SameDiff sd, ComparisonRequest request) {
+    private Map<String, INDArray> buildPlaceholderInputs(Path modelPath, SameDiff sd, ComparisonRequest request) throws IOException {
         List<String> placeholders = sd.inputs();
         Map<String, INDArray> placeholderValues = new LinkedHashMap<>();
 
         if (placeholders == null || placeholders.isEmpty()) {
             return placeholderValues;
         }
-
-        for (String placeholder : placeholders) {
-            SDVariable var = sd.getVariable(placeholder);
-            if (var == null) continue;
-
-            long[] shape = var.getShape();
-            if (shape == null) {
-                shape = new long[]{1, request.getSequenceLength()};
-            }
-
-            // Replace dynamic (-1) dimensions
-            for (int i = 0; i < shape.length; i++) {
-                if (shape[i] <= 0) {
-                    shape[i] = (i == 0) ? 1 : request.getSequenceLength();
-                }
-            }
-
-            DataType dtype = var.dataType();
-            if (dtype == null) dtype = DataType.FLOAT;
-
-            INDArray input = Nd4j.ones(dtype, shape);
-            placeholderValues.put(placeholder, input);
+        Map<String, String> sampleInputs = request.getSampleInputs();
+        if (sampleInputs == null || sampleInputs.isEmpty()) {
+            throw new IllegalArgumentException("Comparison requires sampleInputs keyed by SameDiff placeholder name");
         }
 
-        return placeholderValues;
+        try {
+            for (String placeholder : placeholders) {
+                String configuredPath = sampleInputs.get(placeholder);
+                if (configuredPath == null || configuredPath.isBlank()) {
+                    throw new IllegalArgumentException("Missing comparison sample input for placeholder: " + placeholder);
+                }
+                Path inputPath = Path.of(configuredPath);
+                if (!inputPath.isAbsolute()) {
+                    Path parent = modelPath.toAbsolutePath().getParent();
+                    inputPath = (parent == null ? inputPath : parent.resolve(inputPath)).normalize();
+                }
+                if (!Files.isRegularFile(inputPath)) {
+                    throw new IllegalArgumentException("Comparison sample input does not exist: " + inputPath);
+                }
+                INDArray input = readSampleArray(inputPath);
+                placeholderValues.put(placeholder, input);
+                log.debug("Comparison placeholder {} loaded from {}: shape={}, dtype={}",
+                        placeholder, inputPath, Arrays.toString(input.shape()), input.dataType());
+            }
+            return placeholderValues;
+        } catch (RuntimeException | IOException e) {
+            for (INDArray arr : placeholderValues.values()) {
+                if (arr != null) {
+                    arr.close();
+                }
+            }
+            throw e;
+        }
+    }
+
+    private INDArray readSampleArray(Path inputPath) throws IOException {
+        if (inputPath.getFileName().toString().endsWith(".npy")) {
+            return readNpy(inputPath.toFile());
+        }
+        return org.nd4j.linalg.factory.Nd4j.readBinary(inputPath.toFile());
+    }
+
+    private INDArray readNpy(File inputFile) throws IOException {
+        try {
+            return org.nd4j.linalg.factory.Nd4j.createFromNpyFile(inputFile);
+        } catch (RuntimeException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IOException("Failed to read NPY comparison input: " + inputFile, e);
+        }
     }
 
     private ModelInferenceResult buildInferenceResult(String variant, Path modelPath, InferenceOutput output) throws IOException {
@@ -273,14 +297,9 @@ public class ComparisonService {
             INDArray arr = entry.getValue();
             shapes.put(entry.getKey(), arr.shape());
 
-            // Collect first 10 values as sample
-            INDArray flat = arr.reshape(-1);
-            int sampleSize = (int) Math.min(10, flat.length());
-            double[] sampleValues = new double[sampleSize];
-            for (int i = 0; i < sampleSize; i++) {
-                sampleValues[i] = flat.getDouble(i);
-            }
-            samples.put(entry.getKey(), sampleValues);
+            // Collect first 10 values as sample with one host copy.
+            double[] flatValues = arr.ravel('c').data().asDouble();
+            samples.put(entry.getKey(), Arrays.copyOf(flatValues, Math.min(10, flatValues.length)));
         }
 
         return ModelInferenceResult.builder()

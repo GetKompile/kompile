@@ -19,10 +19,13 @@ import ai.kompile.graph.reasoning.mebn.type.owl.OwlClass;
 import ai.kompile.graph.reasoning.mebn.type.owl.OwlIri;
 import ai.kompile.graph.reasoning.mebn.type.owl.OwlOntology;
 import ai.kompile.graph.reasoning.mebn.type.owl.OwlRlResult;
+import ai.kompile.graph.reasoning.model.GraphEntity;
 import ai.kompile.graph.reasoning.model.MutableReasoningGraph;
 import ai.kompile.graph.reasoning.owl.bridge.reasoner.OwlDlReasoningBridge;
 
 import org.junit.jupiter.api.Test;
+
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -51,6 +54,27 @@ class OwlDlConsistencyTest {
                 .addClass(cat)
                 .addClass(dog)
                 .build();
+    }
+
+    @Test
+    void disjointnessViolationDetectedFromAdditionalTypeMembership() {
+        OwlOntology ontology = buildDisjointTBox();
+
+        MutableReasoningGraph graph = new MutableReasoningGraph();
+        graph.addEntity(GraphEntity.builder("pet1")
+                .type("Cat")
+                .label("my pet")
+                .attribute("additionalTypes", List.of("Dog"))
+                .build());
+
+        OwlDlReasoningBridge bridge = new OwlDlReasoningBridge();
+        OwlRlResult result = bridge.reason(graph, ontology);
+
+        assertNotNull(result, "Result must not be null");
+        assertFalse(result.isConsistent(),
+                "A single individual asserted as Cat and Dog must violate Cat disjointWith Dog");
+        assertFalse(result.inconsistencies().isEmpty(),
+                "Must report at least one inconsistency for a multi-typed disjoint individual");
     }
 
     @Test

@@ -16,10 +16,13 @@
 
 package ai.kompile.app;
 
+import ai.kompile.app.config.Nd4jConfigMerger;
 import ai.kompile.app.config.Nd4jEnvironmentConfig;
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.core.embeddings.EmbeddingModel;
 import ai.kompile.utils.NativeImageInfo;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.beans.factory.annotation.Autowired;
 import io.anserini.search.LuceneRuntimeConfig;
 import jakarta.annotation.PreDestroy;
 import org.nd4j.imports.converters.DifferentialFunctionClassHolder;
@@ -61,6 +64,13 @@ public class MainApplication {
 
 
     private static final Logger logger = LoggerFactory.getLogger(MainApplication.class);
+
+    /**
+     * True once SpringApplication.run returned successfully. The ND4J cleanup
+     * handler halts immediately on normal shutdown but must delay the halt on
+     * startup failure so the failure report can print (see handler).
+     */
+    private static volatile boolean STARTUP_COMPLETED = false;
 
     // Define constants for our custom command-line properties
     public static final String MAX_FILE_SIZE_PROPERTY = "kompile.multipart.max-file-size";
@@ -117,6 +127,16 @@ public class MainApplication {
         // Also configure JavaCPP paths for native image mode (cachedir, pathsFirst, etc.)
         configureJavaCppForNativeImage();
 
+        // ND4JClassLoading captures the context classloader in static state; under
+        // native image a build-time-initialized copy holds a dead builder classloader
+        // and ServiceLoader silently finds no Nd4jBackend providers. Point it at the
+        // runtime classloader before the first Nd4j touch (harmless on the JVM).
+        org.nd4j.common.config.ND4JClassLoading.setNd4jClassloader(MainApplication.class.getClassLoader());
+        logger.info("Nd4jBackend discovery probe: services resource={}, classloader={}",
+                MainApplication.class.getClassLoader()
+                        .getResource("META-INF/services/org.nd4j.linalg.factory.Nd4jBackend"),
+                MainApplication.class.getClassLoader());
+
         // Skip ND4J initialization during Spring AOT processing (no native backend available at build time)
         if (!Boolean.getBoolean("spring.aot.processing")) {
             try {
@@ -145,8 +165,15 @@ public class MainApplication {
                         Nd4j.getEnvironment().maxMasterThreads(),
                         Nd4j.getEnvironment().isLifecycleTracking());
             } catch (Throwable e) {
+                // Log the full chain: under native image the root cause is typically a
+                // message-less ExceptionInInitializerError/NPE whose getMessage() is null.
                 logger.warn("ND4J initialization failed (backend may not be available). " +
-                        "Embedding operations will use subprocess mode. Error: {}", e.getMessage());
+                        "Embedding operations will use subprocess mode. Error: {}", e.getMessage(), e);
+                Throwable cause = e.getCause();
+                while (cause != null) {
+                    logger.warn("  caused by: {}: {}", cause.getClass().getName(), cause.getMessage());
+                    cause = cause.getCause();
+                }
             }
         } else {
             logger.info("Spring AOT processing mode - skipping ND4J initialization");
@@ -158,7 +185,31 @@ public class MainApplication {
         // NOTE: JavaCPP properties (logger.debug, pathsFirst) are now configured via
         // loadAndApplyPersistedNd4jConfig() above, loaded from persisted ND4J config
 
-        ConfigurableApplicationContext context = SpringApplication.run(MainApplication.class, args);
+        ConfigurableApplicationContext context;
+        try {
+            SpringApplication app = new SpringApplication(MainApplication.class);
+            // ApplicationFailedEvent fires BEFORE context close — the only spot
+            // that reliably beats the Nd4j cleanup handler's 2s halt (which kills
+            // the process mid-unwind, before the catch below can execute).
+            app.addListeners((org.springframework.context.ApplicationListener<org.springframework.boot.context.event.ApplicationFailedEvent>) ev -> {
+                System.err.println("=== APPLICATION FAILED (pre-close event; raw stack) ===");
+                if (ev.getException() != null) {
+                    ev.getException().printStackTrace(System.err);
+                }
+                System.err.flush();
+            });
+            context = app.run(args);
+            STARTUP_COMPLETED = true;
+        } catch (Throwable t) {
+            // The ND4J cleanup/exit shutdown handler races Spring's own failure
+            // reporter AND stops logback before this catch runs — logger.error here
+            // goes nowhere. Raw stderr survives; repeatedly cost hours of
+            // native-image diagnosis before this line existed.
+            System.err.println("=== Application startup failed (raw stack, logging may be down) ===");
+            t.printStackTrace(System.err);
+            logger.error("Application startup failed", t);
+            throw t;
+        }
         logger.info("RAG MCP Assistant (Multi-Module) is running!");
 
         logger.info("\n--- Final System Properties (includes multipart config if passed) ---");
@@ -217,10 +268,12 @@ public class MainApplication {
      *   <li>{@code embedding} → {@link ai.kompile.embedding.anserini.subprocess.EmbeddingSubprocessMain}</li>
      *   <li>{@code model-init} → {@link ai.kompile.app.subprocess.model.ModelInitSubprocessMain}</li>
      *   <li>{@code vlm-test} → {@link ai.kompile.app.subprocess.VlmTestSubprocessMain}</li>
-     *   <li>{@code graph} → {@link ai.kompile.app.subprocess.GraphSubprocessMain}</li>
      *   <li>{@code serving} → {@link ai.kompile.app.subprocess.ServingSubprocessMain}</li>
-     *   <li>{@code pipeline-serving} → ai.kompile.pipeline.serving.subprocess.PipelineServingSubprocessMain (via reflection)</li>
-     *   <li>{@code training} → {@link ai.kompile.staging.subprocess.TrainingSubprocessMain} (via reflection)</li>
+     *   <li>{@code graph-matrix} → {@link ai.kompile.app.subprocess.GraphMatrixSubprocessMain}</li>
+     *   <li>{@code learning} → {@link ai.kompile.app.learning.subprocess.LearningSubprocessMain}</li>
+     *   <li>{@code pipeline-serving} → {@link ai.kompile.pipeline.serving.subprocess.PipelineServingSubprocessMain}</li>
+     *   <li>{@code training} → ai.kompile.staging.subprocess.TrainingSubprocessMain (via reflection;
+     *       kompile-model-staging must NEVER become a compile dependency of kompile-app-main)</li>
      * </ul>
      *
      * @param type the subprocess type (kebab-case)
@@ -236,8 +289,9 @@ public class MainApplication {
         logger.info("Dispatching to subprocess: {} with {} args", type, args.length);
 
         // Map subprocess type to its main class.
-        // Most are direct references; training uses reflection since
-        // kompile-model-staging may not be on the classpath.
+        // Direct static references are used for all compile-time dependencies.
+        // Only "training" uses reflection since kompile-model-staging must NEVER be a
+        // compile dependency of kompile-app-main (hard project mandate).
         switch (type) {
             case "ingest":
                 ai.kompile.app.subprocess.IngestSubprocessMain.main(args);
@@ -254,20 +308,27 @@ public class MainApplication {
             case "vlm-test":
                 ai.kompile.app.subprocess.VlmTestSubprocessMain.main(args);
                 break;
-            case "graph":
-                ai.kompile.app.subprocess.GraphSubprocessMain.main(args);
-                break;
             case "serving":
                 ai.kompile.app.subprocess.ServingSubprocessMain.main(args);
                 break;
+            case "graph-matrix":
+                ai.kompile.app.subprocess.GraphMatrixSubprocessMain.main(args);
+                break;
+            case "learning":
+                ai.kompile.app.learning.subprocess.LearningSubprocessMain.main(args);
+                break;
             case "pipeline-serving":
-                invokeSubprocessMainByReflection("ai.kompile.pipeline.serving.subprocess.PipelineServingSubprocessMain", args);
+                ai.kompile.pipeline.serving.subprocess.PipelineServingSubprocessMain.main(args);
                 break;
             case "training":
+                // kompile-model-staging must NEVER be a compile dependency of kompile-app-main;
+                // training dispatch only works when staging is on a JVM classpath.
                 invokeSubprocessMainByReflection("ai.kompile.staging.subprocess.TrainingSubprocessMain", args);
                 break;
             default:
-                logger.error("Unknown subprocess type: {}. Supported types: ingest, vector-population, embedding, model-init, vlm-test, graph, serving, pipeline-serving, training", type);
+                logger.error("Unknown subprocess type: '{}'. Supported types: ingest, vector-population, "
+                        + "embedding, model-init, vlm-test, serving, graph-matrix, learning, "
+                        + "pipeline-serving, training", type);
                 System.exit(1);
         }
     }
@@ -313,37 +374,28 @@ public class MainApplication {
         logger.info("=== Loading Persisted ND4J Environment Configuration ===");
         logger.info("IMPORTANT: ND4J environment must be configured before SameDiff usage");
 
-        // Determine config file path (same logic as Nd4jEnvironmentConfigService)
-        String dataDir = System.getProperty("kompile.data.dir",
-                System.getProperty("user.home") + "/.kompile");
-        Path configFilePath = Paths.get(dataDir, "config", ND4J_CONFIG_FILENAME);
+        // Resolve the "effective" config path used for persistence: project dir when
+        // kompile.data.dir is explicitly set, global ~/.kompile otherwise.
+        String dataDirProp = System.getProperty("kompile.data.dir");
+        String effectiveDataDir = (dataDirProp != null && !dataDirProp.isBlank())
+                ? dataDirProp
+                : System.getProperty("user.home") + "/.kompile";
+        Path configFilePath = Paths.get(effectiveDataDir, "config", ND4J_CONFIG_FILENAME);
 
-        Nd4jEnvironmentConfig config = Nd4jEnvironmentConfig.defaults();
-        boolean needsPersist = false;
+        // Load with project-over-global precedence: global ~/.kompile/config/... is the base;
+        // the project <dataDir>/config/... is overlaid on top so project keys win per-key.
+        // Nd4jConfigMerger handles missing files and parse errors gracefully (falls back to
+        // the previous layer).
+        Nd4jEnvironmentConfig config = Nd4jConfigMerger.merge(dataDirProp, OBJECT_MAPPER);
 
-        if (Files.exists(configFilePath)) {
-            try {
-                String json = Files.readString(configFilePath);
-                logger.info("Found persisted ND4J config at: {} ({} bytes)", configFilePath, json.length());
-
-                Nd4jEnvironmentConfig loaded = OBJECT_MAPPER.readValue(json, Nd4jEnvironmentConfig.class);
-                // Merge with defaults to ensure all fields have values
-                config = Nd4jEnvironmentConfig.defaults().merge(loaded);
-                logger.info("Successfully loaded persisted ND4J environment configuration");
-            } catch (IOException e) {
-                // CRITICAL: Do NOT set needsPersist = true here!
-                // If file exists but reading fails (temporary lock, I/O error, etc.),
-                // we should NOT overwrite the user's config with defaults.
-                // This was causing the "random reset" bug where transient read failures
-                // would permanently destroy user settings.
-                logger.error("Failed to load persisted ND4J config from {}: {} - using defaults for THIS SESSION ONLY",
-                        configFilePath, e.getMessage());
-                logger.warn("The existing config file will NOT be overwritten. Fix the underlying I/O issue.");
-                // needsPersist remains false - do not overwrite user's config!
-            }
-        } else {
+        // Persist merged defaults to the effective path only when the file doesn't exist yet.
+        // CRITICAL: never overwrite an existing file here — a transient read error inside the
+        // merger logs an error and falls back but must not trigger a config reset.
+        boolean needsPersist = !Files.exists(configFilePath);
+        if (needsPersist) {
             logger.info("No persisted ND4J config found at {} - will create with defaults", configFilePath);
-            needsPersist = true;
+        } else {
+            logger.info("Found persisted ND4J config at: {}", configFilePath);
         }
 
         // CRITICAL: Apply the configuration BEFORE any SameDiff operations
@@ -809,10 +861,10 @@ public class MainApplication {
     public static class EmbeddingModelGracefulShutdownHandler {
         private static final Logger log = LoggerFactory.getLogger(EmbeddingModelGracefulShutdownHandler.class);
 
-        private ai.kompile.core.embeddings.EmbeddingModel embeddingModel;
+        private EmbeddingModel embeddingModel;
 
         public EmbeddingModelGracefulShutdownHandler(
-                @org.springframework.beans.factory.annotation.Autowired(required = false) ai.kompile.core.embeddings.EmbeddingModel embeddingModel) {
+                @Autowired(required = false) EmbeddingModel embeddingModel) {
             this.embeddingModel = embeddingModel;
         }
 
@@ -974,8 +1026,6 @@ public class MainApplication {
                 log.warn("ND4J cleanup steps skipped (ND4J may not be initialized): {}", e.getMessage());
             }
 
-            log.info("=== Cleanup complete. External process will terminate JVM in 2 seconds. ===");
-
             // Use Runtime.halt(0) rather than System.exit(0) here.
             // We are already executing inside a Spring @PreDestroy callback, which itself runs
             // inside the JVM shutdown-hook sequence.  System.exit() would attempt to re-enter
@@ -984,7 +1034,29 @@ public class MainApplication {
             // what we want here: all Spring beans have already been destroyed by the time this
             // handler fires (it is @Order(LOWEST_PRECEDENCE)), and the only remaining threads are
             // native OpenBLAS/MKL worker threads that never self-terminate.
-            Runtime.getRuntime().halt(0);
+            //
+            // EXCEPTION — startup failure: when the context fails to refresh, this
+            // @PreDestroy runs from handleRunFailure's close() BEFORE Spring's failure
+            // reporter and MainApplication.main's own catch get to print the stack.
+            // An immediate halt therefore hides every startup error (repeatedly cost
+            // hours of native-image diagnosis). Delay the halt so the report lands;
+            // still halt afterwards because the surviving native BLAS threads would
+            // otherwise keep the failed process alive forever.
+            if (STARTUP_COMPLETED) {
+                log.info("=== Cleanup complete. Terminating JVM now. ===");
+                Runtime.getRuntime().halt(0);
+            } else {
+                log.warn("=== Cleanup complete, but startup FAILED — delaying halt 15s so the failure report can print. ===");
+                Thread delayed = new Thread(() -> {
+                    try {
+                        Thread.sleep(15_000);
+                    } catch (InterruptedException ignored) {
+                    }
+                    Runtime.getRuntime().halt(1);
+                }, "delayed-halt-after-startup-failure");
+                delayed.setDaemon(true);
+                delayed.start();
+            }
         }
     }
 }

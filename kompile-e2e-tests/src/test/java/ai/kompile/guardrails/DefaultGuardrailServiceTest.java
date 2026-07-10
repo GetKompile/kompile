@@ -34,7 +34,7 @@ class DefaultGuardrailServiceTest {
 
     @BeforeEach
     void setUp() {
-        properties = new GuardrailsProperties();
+        properties = new GuardrailsProperties(null);
         properties.setEnabled(true);
     }
 

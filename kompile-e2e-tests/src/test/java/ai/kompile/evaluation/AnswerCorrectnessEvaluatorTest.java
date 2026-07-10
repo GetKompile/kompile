@@ -53,7 +53,7 @@ class AnswerCorrectnessEvaluatorTest {
 
     @BeforeEach
     void setUp() {
-        properties = new EvaluationProperties();
+        properties = new EvaluationProperties(null);
         properties.getAnswerCorrectness().setEnabled(true);
         properties.getAnswerCorrectness().setThreshold(0.7);
         properties.getAnswerCorrectness().setSemanticWeight(0.5);

@@ -33,9 +33,6 @@ import java.util.concurrent.Callable;
  *   # Update config settings
  *   kompile graph config set --model-provider openai --model-name gpt-4 --temperature 0.2
  *
- *   # Toggle extraction on/off
- *   kompile graph config toggle
- *
  *   # Reset to defaults
  *   kompile graph config reset
  *
@@ -60,7 +57,6 @@ import java.util.concurrent.Callable;
         subcommands = {
                 GraphConfigCommand.ShowCmd.class,
                 GraphConfigCommand.SetCmd.class,
-                GraphConfigCommand.ToggleCmd.class,
                 GraphConfigCommand.ResetCmd.class,
                 GraphConfigCommand.StatusCmd.class,
                 GraphConfigCommand.SchemaModes.class,
@@ -103,7 +99,7 @@ public class GraphConfigCommand implements Callable<Integer> {
                 JsonNode config = client.getObjectMapper().readTree(response);
                 System.out.println("Graph Extraction Configuration:");
                 System.out.println();
-                OutputFormatter.printKv("Enabled", config.path("enabled").asBoolean());
+                OutputFormatter.printKv("Mode", "mandatory");
                 OutputFormatter.printKv("Schema Mode", config.path("schemaEnforcement").asText("NONE"));
                 OutputFormatter.printKv("Batch Size", config.path("batchSize"));
                 System.out.println();
@@ -166,9 +162,6 @@ public class GraphConfigCommand implements Callable<Integer> {
             mixinStandardHelpOptions = true)
     static class SetCmd implements Callable<Integer> {
         @CommandLine.Mixin private AppClientMixin app;
-
-        @CommandLine.Option(names = "--enabled", description = "Enable/disable extraction")
-        private Boolean enabled;
 
         @CommandLine.Option(names = "--schema-mode",
                 description = "Schema enforcement: NONE, LENIENT, STRICT")
@@ -251,7 +244,6 @@ public class GraphConfigCommand implements Callable<Integer> {
             if (client == null) return 1;
             try {
                 Map<String, Object> body = new LinkedHashMap<>();
-                if (enabled != null) body.put("enabled", enabled);
                 if (schemaEnforcement != null) body.put("schemaEnforcement", schemaEnforcement);
                 if (batchSize != null) body.put("batchSize", batchSize);
                 if (modelProvider != null) body.put("extractionModelProvider", modelProvider);
@@ -283,36 +275,6 @@ public class GraphConfigCommand implements Callable<Integer> {
                 } else {
                     System.out.println("Configuration updated.");
                     body.forEach((k, v) -> OutputFormatter.printKv(k, v));
-                }
-                return 0;
-            } catch (Exception e) {
-                System.err.println("Error: " + e.getMessage());
-                return 1;
-            }
-        }
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // config toggle — toggle extraction on/off
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    @CommandLine.Command(name = "toggle", description = "Toggle graph extraction on/off",
-            mixinStandardHelpOptions = true)
-    static class ToggleCmd implements Callable<Integer> {
-        @CommandLine.Mixin private AppClientMixin app;
-
-        @Override
-        public Integer call() {
-            KompileHttpClient client = app.requireClient();
-            if (client == null) return 1;
-            try {
-                String response = client.postEmpty("/api/graph-extraction/config/toggle");
-                if (app.isJsonOutput()) {
-                    OutputFormatter.printJson(response);
-                } else {
-                    JsonNode config = client.getObjectMapper().readTree(response);
-                    boolean enabled = config.path("enabled").asBoolean();
-                    System.out.println("Graph extraction " + (enabled ? "ENABLED" : "DISABLED"));
                 }
                 return 0;
             } catch (Exception e) {

@@ -9,8 +9,12 @@
  */
 package ai.kompile.tool.graph;
 
+import ai.kompile.graph.reasoning.model.GraphEntity;
+import ai.kompile.graph.reasoning.model.GraphRelation;
+import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import ai.kompile.knowledgegraph.domain.*;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
+import ai.kompile.knowledgegraph.unified.UnifiedGraphBridge;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
@@ -33,6 +37,7 @@ public class GraphSearchTool {
     private static final Logger log = LoggerFactory.getLogger(GraphSearchTool.class);
 
     private final KnowledgeGraphService graphService;
+    private final UnifiedGraphBridge unifiedGraphBridge;
 
     // ═══════════════════════════════════════════════════════════════════════════
     // INPUT RECORDS
@@ -53,15 +58,28 @@ public class GraphSearchTool {
             Integer maxResults
     ) {}
 
-    public record GetNodeDetailInput(String nodeId) {}
+    public record GetNodeDetailInput(String nodeId, Long factSheetId) {
+        public GetNodeDetailInput(String nodeId) {
+            this(nodeId, null);
+        }
+    }
 
-    public record GetEdgeDetailInput(String edgeId) {}
+    public record GetEdgeDetailInput(String edgeId, Long factSheetId) {
+        public GetEdgeDetailInput(String edgeId) {
+            this(edgeId, null);
+        }
+    }
 
     public record FindEdgesBetweenInput(
             String sourceNodeId,
             String targetNodeId,
-            Boolean bidirectional
-    ) {}
+            Boolean bidirectional,
+            Long factSheetId
+    ) {
+        public FindEdgesBetweenInput(String sourceNodeId, String targetNodeId, Boolean bidirectional) {
+            this(sourceNodeId, targetNodeId, bidirectional, null);
+        }
+    }
 
     public record SearchByMetadataInput(
             String metadataKey,
@@ -71,9 +89,15 @@ public class GraphSearchTool {
             Integer maxResults
     ) {}
 
-    @Autowired
     public GraphSearchTool(KnowledgeGraphService graphService) {
+        this(graphService, null);
+    }
+
+    @Autowired
+    public GraphSearchTool(KnowledgeGraphService graphService,
+                           @org.springframework.lang.Nullable UnifiedGraphBridge unifiedGraphBridge) {
         this.graphService = graphService;
+        this.unifiedGraphBridge = unifiedGraphBridge;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -97,6 +121,11 @@ public class GraphSearchTool {
         NodeLevel type = parseNodeLevel(input.nodeType());
 
         try {
+            UnifiedGraph unified = unifiedGraph(input.factSheetId());
+            if (unified != null) {
+                return searchUnifiedNodes(input.query(), type, limit, unified);
+            }
+
             List<GraphNode> nodes;
             if (input.factSheetId() != null) {
                 nodes = graphService.searchNodesInFactSheetByType(
@@ -105,7 +134,7 @@ public class GraphSearchTool {
                 nodes = graphService.searchNodesGlobal(input.query(), type, limit);
             }
 
-            return buildNodeResults(input.query(), nodes, type);
+            return buildNodeResults(input.query(), nodes, type, sourceLabel(null));
 
         } catch (Exception e) {
             log.error("Graph search failed: {}", e.getMessage(), e);
@@ -127,6 +156,11 @@ public class GraphSearchTool {
         EdgeType type = parseEdgeType(input.edgeType());
 
         try {
+            UnifiedGraph unified = unifiedGraph(input.factSheetId());
+            if (unified != null) {
+                return searchUnifiedEdges(input.query(), type, input.minWeight(), limit, unified);
+            }
+
             List<GraphEdge> edges;
 
             if (input.factSheetId() != null && type != null && input.minWeight() != null) {
@@ -151,6 +185,7 @@ public class GraphSearchTool {
                     .collect(Collectors.toList());
 
             Map<String, Object> response = new LinkedHashMap<>();
+            response.put("source", sourceLabel(null));
             response.put("resultCount", results.size());
             if (input.query() != null) response.put("query", input.query());
             if (type != null) response.put("edgeType", type.name());
@@ -175,6 +210,12 @@ public class GraphSearchTool {
         try {
             Optional<GraphNode> opt = graphService.getNode(input.nodeId());
             if (opt.isEmpty()) {
+                UnifiedGraph unified = unifiedGraph(input.factSheetId());
+                if (unified != null) {
+                    return unified.entity(input.nodeId())
+                            .map(entity -> unifiedNodeDetail(entity, unified))
+                            .orElseGet(() -> Map.of("error", "Node not found: " + input.nodeId()));
+                }
                 return Map.of("error", "Node not found: " + input.nodeId());
             }
 
@@ -191,13 +232,16 @@ public class GraphSearchTool {
             detail.put("factSheetId", node.getFactSheetId());
             detail.put("namedGraphId", node.getNamedGraphId());
 
-            if (node.getParent() != null) {
-                detail.put("parentNodeId", node.getParent().getNodeId());
-                detail.put("parentTitle", node.getParent().getTitle());
+            if (node.getParentId() != null) {
+                detail.put("parentNodeId", node.getParentId());
+                detail.put("parentTitle", graphService.getNode(node.getParentId())
+                        .map(GraphNode::getTitle).orElse(null));
             }
             if (node.getSourceNode() != null) {
-                detail.put("sourceNodeId", node.getSourceNode().getNodeId());
-                detail.put("sourceTitle", node.getSourceNode().getTitle());
+                String sourceNodeId = node.getSourceNode().getNodeId();
+                detail.put("sourceNodeId", sourceNodeId);
+                detail.put("sourceTitle", graphService.getNode(sourceNodeId)
+                        .map(GraphNode::getTitle).orElse(null));
             }
             if (node.getMetadataJson() != null) {
                 detail.put("metadata", node.getMetadataJson());
@@ -231,6 +275,14 @@ public class GraphSearchTool {
         try {
             Optional<GraphEdge> opt = graphService.getEdge(input.edgeId());
             if (opt.isEmpty()) {
+                UnifiedGraph unified = unifiedGraph(input.factSheetId());
+                if (unified != null) {
+                    return unified.relations().stream()
+                            .filter(relation -> input.edgeId().equals(relation.id()))
+                            .findFirst()
+                            .map(relation -> unifiedEdgeDetailMap(relation, unified))
+                            .orElseGet(() -> Map.of("error", "Edge not found: " + input.edgeId()));
+                }
                 return Map.of("error", "Edge not found: " + input.edgeId());
             }
 
@@ -253,6 +305,11 @@ public class GraphSearchTool {
 
         try {
             boolean bidir = input.bidirectional() != null && input.bidirectional();
+            UnifiedGraph unified = unifiedGraph(input.factSheetId());
+            if (unified != null) {
+                return findUnifiedEdgesBetween(input.sourceNodeId(), input.targetNodeId(), bidir, unified);
+            }
+
             Optional<GraphEdge> edge;
 
             if (bidir) {
@@ -302,6 +359,10 @@ public class GraphSearchTool {
             // Use the general search and post-filter by metadata content
             List<GraphNode> candidates;
             NodeLevel type = parseNodeLevel(input.nodeType());
+            UnifiedGraph unified = unifiedGraph(input.factSheetId());
+            if (unified != null) {
+                return searchUnifiedMetadata(input.metadataKey(), input.metadataValue(), type, limit, unified);
+            }
 
             if (input.factSheetId() != null) {
                 candidates = graphService.getNodesInFactSheet(input.factSheetId());
@@ -326,7 +387,7 @@ public class GraphSearchTool {
                     .limit(limit)
                     .collect(Collectors.toList());
 
-            return buildNodeResults("metadata:" + input.metadataKey(), matched, type);
+            return buildNodeResults("metadata:" + input.metadataKey(), matched, type, sourceLabel(null));
 
         } catch (Exception e) {
             log.error("Metadata search failed: {}", e.getMessage(), e);
@@ -338,17 +399,207 @@ public class GraphSearchTool {
     // HELPERS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    private Map<String, Object> buildNodeResults(String query, List<GraphNode> nodes, NodeLevel type) {
+    private Map<String, Object> buildNodeResults(String query, List<GraphNode> nodes, NodeLevel type, String source) {
         List<Map<String, Object>> results = nodes.stream()
                 .map(this::nodeToMap)
                 .collect(Collectors.toList());
 
         Map<String, Object> response = new LinkedHashMap<>();
+        response.put("source", source);
         response.put("query", query);
         if (type != null) response.put("nodeType", type.name());
         response.put("resultCount", results.size());
         response.put("results", results);
         return response;
+    }
+
+    private UnifiedGraph unifiedGraph(Long factSheetId) {
+        if (unifiedGraphBridge == null || factSheetId == null) {
+            return null;
+        }
+        try {
+            return unifiedGraphBridge.export(factSheetId);
+        } catch (RuntimeException ex) {
+            log.warn("Falling back to live graph search; unified export failed for factSheet={}", factSheetId, ex);
+            return null;
+        }
+    }
+
+    private String sourceLabel(UnifiedGraph unified) {
+        return unified != null ? "unified_graph" : "knowledge_graph_service";
+    }
+
+    private Map<String, Object> searchUnifiedNodes(String query, NodeLevel type, int limit, UnifiedGraph unified) {
+        List<Map<String, Object>> results = unified.entities().stream()
+                .filter(entity -> matchesNodeType(entity, type))
+                .filter(entity -> matchesText(entitySearchText(entity), query))
+                .limit(limit)
+                .map(entity -> unifiedNodeToMap(entity, unified))
+                .collect(Collectors.toList());
+
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("source", sourceLabel(unified));
+        response.put("query", query);
+        if (type != null) response.put("nodeType", type.name());
+        response.put("resultCount", results.size());
+        response.put("results", results);
+        return response;
+    }
+
+    private Map<String, Object> searchUnifiedEdges(String query, EdgeType type, Double minWeight,
+                                                   int limit, UnifiedGraph unified) {
+        if ((query == null || query.isBlank()) && type == null && minWeight == null) {
+            return Map.of("error", "Provide at least a query, edgeType, or minWeight filter",
+                    "results", List.of());
+        }
+        List<Map<String, Object>> results = unified.relations().stream()
+                .filter(relation -> matchesEdgeType(relation, type))
+                .filter(relation -> minWeight == null || relation.weight() >= minWeight)
+                .filter(relation -> query == null || query.isBlank() || matchesText(relationSearchText(relation, unified), query))
+                .limit(limit)
+                .map(relation -> unifiedEdgeToMap(relation, unified))
+                .collect(Collectors.toList());
+
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("source", sourceLabel(unified));
+        response.put("resultCount", results.size());
+        if (query != null) response.put("query", query);
+        if (type != null) response.put("edgeType", type.name());
+        response.put("results", results);
+        return response;
+    }
+
+    private Map<String, Object> searchUnifiedMetadata(String metadataKey, String metadataValue,
+                                                      NodeLevel type, int limit, UnifiedGraph unified) {
+        String key = metadataKey.toLowerCase(Locale.ROOT);
+        String value = metadataValue == null ? null : metadataValue.toLowerCase(Locale.ROOT);
+        List<Map<String, Object>> results = unified.entities().stream()
+                .filter(entity -> matchesNodeType(entity, type))
+                .filter(entity -> unifiedMetadataMatches(entity, key, value))
+                .limit(limit)
+                .map(entity -> unifiedNodeToMap(entity, unified))
+                .collect(Collectors.toList());
+
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("source", sourceLabel(unified));
+        response.put("query", "metadata:" + metadataKey);
+        if (type != null) response.put("nodeType", type.name());
+        response.put("resultCount", results.size());
+        response.put("results", results);
+        return response;
+    }
+
+    private Map<String, Object> findUnifiedEdgesBetween(String sourceNodeId, String targetNodeId,
+                                                        boolean bidirectional, UnifiedGraph unified) {
+        Optional<GraphRelation> relation = unified.relations().stream()
+                .filter(r -> sourceNodeId.equals(r.sourceId()) && targetNodeId.equals(r.targetId())
+                        || bidirectional && sourceNodeId.equals(r.targetId()) && targetNodeId.equals(r.sourceId()))
+                .findFirst();
+        if (relation.isEmpty()) {
+            return Map.of(
+                    "source", sourceLabel(unified),
+                    "found", false,
+                    "sourceNodeId", sourceNodeId,
+                    "targetNodeId", targetNodeId
+            );
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("source", sourceLabel(unified));
+        result.put("found", true);
+        result.put("edge", unifiedEdgeDetailMap(relation.get(), unified));
+        return result;
+    }
+
+    private boolean matchesNodeType(GraphEntity entity, NodeLevel type) {
+        if (type == null) return true;
+        if (type.name().equalsIgnoreCase(entity.type())) return true;
+        return entity.typeMemberships().stream().anyMatch(t -> type.name().equalsIgnoreCase(t));
+    }
+
+    private boolean matchesEdgeType(GraphRelation relation, EdgeType type) {
+        return type == null || type.name().equalsIgnoreCase(relation.type());
+    }
+
+    private boolean matchesText(String text, String query) {
+        return text != null && text.toLowerCase(Locale.ROOT).contains(query.toLowerCase(Locale.ROOT));
+    }
+
+    private boolean unifiedMetadataMatches(GraphEntity entity, String key, String value) {
+        for (Map.Entry<String, Object> entry : entity.attributes().entrySet()) {
+            boolean keyMatch = entry.getKey() != null && entry.getKey().toLowerCase(Locale.ROOT).contains(key);
+            String rawValue = entry.getValue() == null ? "" : String.valueOf(entry.getValue()).toLowerCase(Locale.ROOT);
+            if (keyMatch && (value == null || rawValue.contains(value))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String entitySearchText(GraphEntity entity) {
+        return String.join(" ", entity.id(), entity.type(), entity.label(), String.valueOf(entity.tags()),
+                String.valueOf(entity.attributes()));
+    }
+
+    private String relationSearchText(GraphRelation relation, UnifiedGraph unified) {
+        String sourceLabel = unified.entity(relation.sourceId()).map(GraphEntity::label).orElse("");
+        String targetLabel = unified.entity(relation.targetId()).map(GraphEntity::label).orElse("");
+        return String.join(" ", relation.id(), relation.type(), relation.sourceId(), relation.targetId(),
+                sourceLabel, targetLabel, String.valueOf(relation.tags()), String.valueOf(relation.attributes()));
+    }
+
+    private Map<String, Object> unifiedNodeToMap(GraphEntity entity, UnifiedGraph unified) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("nodeId", entity.id());
+        m.put("title", entity.label() == null || entity.label().isBlank() ? "Untitled" : entity.label());
+        m.put("type", entity.type() == null || entity.type().isBlank() ? "UNKNOWN" : entity.type());
+        m.put("description", truncate(String.valueOf(entity.attributes().getOrDefault("description", "")), 200));
+        m.put("connections", incidentRelationCount(entity.id(), unified));
+        return m;
+    }
+
+    private Map<String, Object> unifiedNodeDetail(GraphEntity entity, UnifiedGraph unified) {
+        Map<String, Object> detail = unifiedNodeToMap(entity, unified);
+        detail.put("source", sourceLabel(unified));
+        detail.put("confidence", entity.confidence());
+        detail.put("weight", entity.weight());
+        detail.put("tags", entity.tags());
+        detail.put("metadata", entity.attributes());
+        Map<String, Long> edgeTypeCounts = unified.relations().stream()
+                .filter(relation -> entity.id().equals(relation.sourceId()) || entity.id().equals(relation.targetId()))
+                .collect(Collectors.groupingBy(GraphRelation::type, Collectors.counting()));
+        detail.put("edgesByType", edgeTypeCounts);
+        return detail;
+    }
+
+    private Map<String, Object> unifiedEdgeToMap(GraphRelation relation, UnifiedGraph unified) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("edgeId", relation.id());
+        m.put("edgeType", relation.type());
+        m.put("weight", relation.weight());
+        m.put("description", truncate(String.valueOf(relation.attributes().getOrDefault("description", "")), 150));
+        m.put("sourceNodeId", relation.sourceId());
+        m.put("sourceTitle", unified.entity(relation.sourceId()).map(GraphEntity::label).orElse(null));
+        m.put("targetNodeId", relation.targetId());
+        m.put("targetTitle", unified.entity(relation.targetId()).map(GraphEntity::label).orElse(null));
+        return m;
+    }
+
+    private Map<String, Object> unifiedEdgeDetailMap(GraphRelation relation, UnifiedGraph unified) {
+        Map<String, Object> m = unifiedEdgeToMap(relation, unified);
+        m.put("source", sourceLabel(unified));
+        m.put("bidirectional", !relation.directed());
+        m.put("confidence", relation.confidence());
+        m.put("provenance", relation.attributes().get("provenance"));
+        m.put("label", relation.attributes().get("label"));
+        m.put("metadataJson", relation.attributes());
+        m.put("createdAt", relation.timestamp());
+        return m;
+    }
+
+    private long incidentRelationCount(String nodeId, UnifiedGraph unified) {
+        return unified.relations().stream()
+                .filter(relation -> nodeId.equals(relation.sourceId()) || nodeId.equals(relation.targetId()))
+                .count();
     }
 
     private Map<String, Object> nodeToMap(GraphNode node) {
@@ -368,15 +619,32 @@ public class GraphSearchTool {
         m.put("edgeType", edge.getEdgeType().name());
         m.put("weight", edge.getWeight());
         m.put("description", truncate(edge.getDescription(), 150));
-        if (edge.getSourceNode() != null) {
-            m.put("sourceNodeId", edge.getSourceNode().getNodeId());
-            m.put("sourceTitle", edge.getSourceNode().getTitle());
+        if (edge.getSourceNodeId() != null) {
+            m.put("sourceNodeId", edge.getSourceNodeId());
+            m.put("sourceTitle", endpointTitle(edge.getSourceNodeId(), edge.getSourceNode()));
         }
-        if (edge.getTargetNode() != null) {
-            m.put("targetNodeId", edge.getTargetNode().getNodeId());
-            m.put("targetTitle", edge.getTargetNode().getTitle());
+        if (edge.getTargetNodeId() != null) {
+            m.put("targetNodeId", edge.getTargetNodeId());
+            m.put("targetTitle", endpointTitle(edge.getTargetNodeId(), edge.getTargetNode()));
         }
         return m;
+    }
+
+    /**
+     * Endpoint title for edge results. Store-loaded edges carry ids only —
+     * {@code GraphEdge.getSourceNode()} synthesizes a hollow node with a null title — so fall back
+     * to a store lookup. Bounded by the tool's result limit, so at most 2×limit lookups.
+     */
+    private String endpointTitle(String nodeId, GraphNode embedded) {
+        if (embedded != null && !embedded.isHollow()
+                && embedded.getTitle() != null && !embedded.getTitle().isBlank()) {
+            return embedded.getTitle();
+        }
+        try {
+            return graphService.getNode(nodeId).map(GraphNode::getTitle).orElse(null);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private Map<String, Object> edgeToDetailMap(GraphEdge edge) {

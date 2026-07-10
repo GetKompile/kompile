@@ -94,9 +94,9 @@ public class ConfigureCommand implements Callable<Integer> {
                 System.out.println(BOLD + "  What do you want to configure?" + RESET);
                 System.out.println();
                 List<String> items = List.of(
-                        "Initialize global ~/.kompile home and default configs",
+                        "Initialize this project's .kompile directory and global defaults",
                         "Application config: vector store, embeddings, ingestion, feature flags",
-                        "Chat session intent: choose mode, provider, and agent for this run",
+                        "Chat session intent: choose mode, provider, and agent for this project",
                         "Passthrough prep: inspect agents and MCP/tool injection guidance",
                         "Enforcer: project rules, banned tools, judge mode, semantic matching",
                         "Judge/performance harness: judge backend and quality scoring",
@@ -131,14 +131,19 @@ public class ConfigureCommand implements Callable<Integer> {
 
     private static void printStatus(Path workingDir) {
         File home = Info.homeDirectory();
+        Path projectRoot = ChatConfig.defaultProjectRoot();
+        Path projectChatConfig = ChatConfig.projectConfigPath(projectRoot);
+        Path globalChatConfig = ChatConfig.globalConfigPath();
         System.out.println(BOLD + "  Current status" + RESET);
-        System.out.println("    Home:       " + status(Files.isDirectory(home.toPath())) + " " + home.getAbsolutePath());
-        System.out.println("    App config: " + status(Files.isRegularFile(home.toPath().resolve("config").resolve(AppConfigWizard.APP_INDEX_CONFIG))));
-        System.out.println("    Chat:       " + status(ChatConfig.exists()) + " " + home.toPath().resolve("chat-config.json"));
-        System.out.println("    Enforcer:   " + status(EnforcerConfig.exists(workingDir)) + " " + EnforcerConfig.resolveConfigPath(workingDir));
-        System.out.println("    Judge:      " + status(Files.isRegularFile(HarnessConfig.getConfigFilePath())) + " " + HarnessConfig.getConfigFilePath());
-        System.out.println("    Code index: " + status(Files.isDirectory(LocalCodeIndexer.getBaseIndexDir())) + " " + LocalCodeIndexer.getBaseIndexDir());
-        System.out.println("    Agents:     " + detectedAgentsSummary());
+        System.out.println("    Home:          " + status(Files.isDirectory(home.toPath())) + " " + home.getAbsolutePath());
+        System.out.println("    Project:       " + status(Files.isDirectory(projectRoot.resolve(".kompile"))) + " " + projectRoot.resolve(".kompile"));
+        System.out.println("    App config:    " + status(Files.isRegularFile(home.toPath().resolve("config").resolve(AppConfigWizard.APP_INDEX_CONFIG))));
+        System.out.println("    Chat(project): " + status(ChatConfig.existsProject(projectRoot)) + " " + projectChatConfig);
+        System.out.println("    Chat(global):  " + status(ChatConfig.existsGlobal()) + " " + globalChatConfig);
+        System.out.println("    Enforcer:      " + status(EnforcerConfig.exists(workingDir)) + " " + EnforcerConfig.resolveConfigPath(workingDir));
+        System.out.println("    Judge:         " + status(Files.isRegularFile(HarnessConfig.getConfigFilePath())) + " " + HarnessConfig.getConfigFilePath());
+        System.out.println("    Code index:    " + status(Files.isDirectory(LocalCodeIndexer.getBaseIndexDir())) + " " + LocalCodeIndexer.getBaseIndexDir());
+        System.out.println("    Agents:        " + detectedAgentsSummary());
         System.out.println();
     }
 
@@ -203,20 +208,58 @@ public class ConfigureCommand implements Callable<Integer> {
         return input.trim().toLowerCase(Locale.ROOT).startsWith("y");
     }
 
+    private static Path resolveProjectDir(String projectDir) {
+        if (projectDir == null || projectDir.isBlank()) {
+            return ChatConfig.defaultProjectRoot();
+        }
+        return Path.of(projectDir).toAbsolutePath().normalize();
+    }
+
     @Command(name = "init", mixinStandardHelpOptions = true,
-            description = "Initialize ~/.kompile and write missing default config files.")
+            description = "Initialize this project's .kompile directory and write missing global default config files.")
     public static class InitConfigureCommand implements Callable<Integer> {
         @Option(names = "--app-wizard", description = "Run app configuration wizard after bootstrapping")
         boolean appWizard;
 
+        @Option(names = {"--project-dir", "-d"}, description = "Project directory to initialize (default: resolved project root)")
+        String projectDir;
+
+        @Option(names = "--global-only", description = "Initialize only global ~/.kompile defaults")
+        boolean globalOnly;
+
+        @Option(names = "--chat-wizard", description = "Run chat setup wizard after bootstrapping")
+        boolean chatWizard;
+
+        @Option(names = "--global-chat", description = "When used with --chat-wizard, save chat config globally")
+        boolean globalChat;
+
         @Override
         public Integer call() {
-            System.out.println("Initializing Kompile home...");
-            GlobalBootstrap.ensureHomeDirectory();
-            boolean wrote = GlobalBootstrap.ensureConfigs();
-            System.out.println(wrote ? "Default configs written." : "Default configs already exist.");
-            if (appWizard) AppConfigWizard.run();
-            return 0;
+            try {
+                Path projectRoot = resolveProjectDir(projectDir);
+                if (!globalOnly) {
+                    Path projectConfigDir = projectRoot.resolve(".kompile");
+                    Files.createDirectories(projectConfigDir);
+                    System.out.println("Project config directory: " + projectConfigDir);
+                }
+
+                System.out.println("Initializing Kompile home...");
+                GlobalBootstrap.ensureHomeDirectory();
+                boolean wrote = GlobalBootstrap.ensureConfigs();
+                System.out.println(wrote ? "Default configs written." : "Default configs already exist.");
+
+                if (chatWizard) {
+                    ChatConfig config = (globalOnly || globalChat)
+                            ? SetupWizard.runGlobal()
+                            : SetupWizard.run(ChatConfig.Scope.PROJECT, projectRoot);
+                    if (config == null) return 1;
+                }
+                if (appWizard) AppConfigWizard.run();
+                return 0;
+            } catch (Exception e) {
+                System.err.println("Initialization failed: " + e.getMessage());
+                return 1;
+            }
         }
     }
 
@@ -231,13 +274,21 @@ public class ConfigureCommand implements Callable<Integer> {
     }
 
     @Command(name = "chat", mixinStandardHelpOptions = true,
-            description = "Choose chat intent, provider, and agent. No implicit chat defaults are used.")
+            description = "Choose chat intent, provider, and agent. Saves project-local config by default.")
     public static class ChatConfigureCommand implements Callable<Integer> {
+        @Option(names = {"--project-dir", "-d"}, description = "Project directory to configure (default: resolved project root)")
+        String projectDir;
+
+        @Option(names = {"--global-config"}, description = "Save to global ~/.kompile/chat-config.json")
+        boolean globalConfig;
+
         @Override
         public Integer call() {
             System.out.println();
             System.out.println(DIM + "Chat is task-specific. This wizard asks for the session mode and agent/provider each time." + RESET);
-            ChatConfig config = SetupWizard.run();
+            ChatConfig config = globalConfig
+                    ? SetupWizard.runGlobal()
+                    : SetupWizard.run(ChatConfig.Scope.PROJECT, resolveProjectDir(projectDir));
             return config != null ? 0 : 1;
         }
     }

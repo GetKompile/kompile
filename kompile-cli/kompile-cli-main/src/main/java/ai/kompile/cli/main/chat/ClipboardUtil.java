@@ -19,6 +19,9 @@ package ai.kompile.cli.main.chat;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Base64;
 
 /**
  * Clipboard utilities for the TUI.
@@ -52,7 +55,7 @@ public class ClipboardUtil {
      */
     private static boolean tryOsc52(String text) {
         try {
-            String b64 = java.util.Base64.getEncoder().encodeToString(
+            String b64 = Base64.getEncoder().encodeToString(
                     text.getBytes(StandardCharsets.UTF_8));
             // OSC 52: \033]52;c;<base64-data>\a
             String osc52 = "\033]52;c;" + b64 + "\007";
@@ -112,8 +115,7 @@ public class ClipboardUtil {
     private static boolean isWsl() {
         try {
             String release = new String(
-                    java.nio.file.Files.readAllBytes(
-                            java.nio.file.Path.of("/proc/version")),
+                    Files.readAllBytes(Path.of("/proc/version")),
                     StandardCharsets.UTF_8);
             return release.toLowerCase().contains("microsoft");
         } catch (Exception e) {
@@ -121,12 +123,4 @@ public class ClipboardUtil {
         }
     }
 
-    /**
-     * Strip ANSI escape codes from text so clipboard content is clean.
-     */
-    public static String stripAnsi(String text) {
-        if (text == null) return null;
-        return text.replaceAll("\033\\[[;\\d]*m", "")
-                   .replaceAll("\033\\][^\007]*\007", "");
-    }
 }

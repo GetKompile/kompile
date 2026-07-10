@@ -319,7 +319,7 @@ public class EnforcerCommand implements Callable<Integer> {
             boolean interactive = printPrompt == null || printPrompt.isBlank();
             KompileTui tui = null;
             if (interactive) {
-                this.bgProcMgr = new BackgroundProcessManager(sessionId);
+                this.bgProcMgr = new BackgroundProcessManager(sessionId, wd);
                 EmulatedPassthroughCommand.registerEnforcerWatchers(this.bgProcMgr, evaluator, policy);
                 tui = new KompileTui(new BackgroundTaskManager(), this.bgProcMgr,
                         new MessageQueue(sessionId), renderer);
@@ -484,6 +484,9 @@ public class EnforcerCommand implements Callable<Integer> {
                 passthrough.enforcerService = service;
                 passthrough.enforcerConversationWindow = conversationWindow;
                 passthrough.enforcerExtraEnv = runtimePolicy.toEnvironment();
+                // Judge (null in keyword mode) enables the realtime JSONL semantic tap (WP9/F3):
+                // the judge evaluates the agent's native session log live during managed TUI turns.
+                passthrough.enforcerJudge = judge;
                 passthrough.enforcerDiffArchive = diffArchive;
                 passthrough.enforcerDiffPatternEvaluator = diffPatternEvaluator;
                 passthrough.enforcerAutoRollbackOnViolation = autoRollback;

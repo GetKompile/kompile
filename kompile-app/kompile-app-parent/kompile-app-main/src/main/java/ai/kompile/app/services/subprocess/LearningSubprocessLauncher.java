@@ -25,22 +25,18 @@ import ai.kompile.app.learning.subprocess.MebnLearningInput;
 import ai.kompile.app.learning.subprocess.PslLearningInput;
 import ai.kompile.app.learning.subprocess.ReasoningLearningSubprocessArgs;
 import ai.kompile.app.services.ResourceTelemetryService;
+import ai.kompile.app.services.scheduler.ResourceSchedulerConfigService;
 import ai.kompile.app.subprocess.ManagedSubprocessLauncher;
 import ai.kompile.core.kgembedding.KGEmbeddingAlgorithm;
 import ai.kompile.core.kgembedding.KGEmbeddingConfig;
-import ai.kompile.core.kgembedding.KGEmbeddingModel;
 import ai.kompile.core.kgembedding.KgeTrainingExecutor;
 import ai.kompile.core.kgembedding.Triple;
 import ai.kompile.core.reasoning.ReasoningLearningExecutor;
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.nd4j.linalg.api.ndarray.INDArray;
-import org.nd4j.linalg.factory.Nd4j;
 
-import java.util.stream.Collectors;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
@@ -50,7 +46,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -80,10 +75,6 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 @Service
 // On by default with no property required; runtime enable/disable is managed config, not a property file.
-@ConditionalOnProperty(
-        name = "kompile.learning.subprocess.enabled",
-        havingValue = "true",
-        matchIfMissing = true)
 public class LearningSubprocessLauncher extends ManagedSubprocessLauncher
         implements KgeTrainingExecutor, ReasoningLearningExecutor {
 
@@ -91,8 +82,12 @@ public class LearningSubprocessLauncher extends ManagedSubprocessLauncher
     private static final String MAIN_CLASS =
             "ai.kompile.app.learning.subprocess.LearningSubprocessMain";
 
-    @Value("${kompile.learning.subprocess.heap-mb:8192}")
-    private int heapMb;
+    /** Default heap for the learning subprocess (8 g); overridden per-type via the SubprocessConfigService JSON. */
+    private static final int DEFAULT_HEAP_MB = 8192;
+
+    /** UI-controllable managed-config (subprocess-ingest-config.json → subprocessTypes.learning). */
+    @Autowired(required = false)
+    private SubprocessConfigService subprocessConfig;
 
     /**
      * Hard override for the JavaCPP native cap in MB.
@@ -137,6 +132,10 @@ public class LearningSubprocessLauncher extends ManagedSubprocessLauncher
     @Autowired(required = false)
     private ResourceTelemetryService resourceTelemetryService;
 
+    /** Source of the declared heavy-memory budget (#3) that also caps this subprocess. Optional. */
+    @Autowired(required = false)
+    private ResourceSchedulerConfigService resourceSchedulerConfigService;
+
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     /** Per-run liveness for the heartbeat stale-watchdog (process tracking lives in the base). */
@@ -161,7 +160,22 @@ public class LearningSubprocessLauncher extends ManagedSubprocessLauncher
 
     @Override
     protected int getHeapMb() {
-        return heapMb;
+        return subprocessConfig != null
+                ? parseHeapMb(subprocessConfig.heapSizeForType("learning", "8g"), DEFAULT_HEAP_MB)
+                : DEFAULT_HEAP_MB;
+    }
+
+    /** Parse a heap-size string ({@code "8g"}, {@code "4096m"}, {@code "2048"}) to MB. */
+    private static int parseHeapMb(String heap, int defaultMb) {
+        if (heap == null || heap.isBlank()) return defaultMb;
+        String h = heap.trim().toLowerCase();
+        try {
+            if (h.endsWith("g")) return (int) (Double.parseDouble(h.substring(0, h.length() - 1)) * 1024);
+            if (h.endsWith("m")) return (int) Double.parseDouble(h.substring(0, h.length() - 1));
+            return Integer.parseInt(h);
+        } catch (NumberFormatException e) {
+            return defaultMb;
+        }
     }
 
     /**
@@ -192,36 +206,77 @@ public class LearningSubprocessLauncher extends ManagedSubprocessLauncher
             return maxPhysicalMbConfig;
         }
 
-        // Dynamic: derive from MemAvailable.
-        long memAvailableMb = -1L;
+        // The budget this run declares to the HeavyMemoryCoordinator (#3). Capping the subprocess at
+        // (at most) its declared footprint stops it from greedily claiming a fraction of ALL free RAM
+        // at spawn on large hosts — which would defeat the coordinator's reservation and block other
+        // admitted heavy ops. 0 when managed config is unavailable.
+        long declaredBudgetMb = declaredNativeBudgetMb();
+
+        // Dynamic ceiling from live MemAvailable — protects small hosts from over-claiming even when
+        // the declared budget is larger than the RAM actually free right now. -1 when unavailable.
+        long dynamicMb = -1L;
         if (resourceTelemetryService != null) {
             try {
-                memAvailableMb = resourceTelemetryService.latest().memAvailableMb();
+                long memAvailableMb = resourceTelemetryService.latest().memAvailableMb();
+                if (memAvailableMb > 0) {
+                    dynamicMb = (long) (memAvailableMb * nativeCapFraction);
+                }
             } catch (Exception e) {
                 log.debug("[learning] ResourceTelemetryService.latest() failed: {}", e.getMessage());
             }
         }
 
-        if (memAvailableMb > 0) {
-            long computed = (long) (memAvailableMb * nativeCapFraction);
-            // Apply floor
-            computed = Math.max(computed, nativeCapFloorMb);
-            // Apply ceiling (0 = no ceiling)
-            if (nativeCapCeilingMb > 0) {
-                computed = Math.min(computed, nativeCapCeilingMb);
-            }
-            log.info("[learning] native cap: {} MB (MemAvailable={} MB × fraction={}, floor={}, ceiling={})",
-                    computed, memAvailableMb, nativeCapFraction, nativeCapFloorMb,
-                    nativeCapCeilingMb > 0 ? nativeCapCeilingMb + " MB" : "none");
-            return computed;
+        // Effective cap = the smaller of the declared budget and the dynamic MemAvailable ceiling
+        // (whichever are known), so we never exceed what we declared NOR what the host can spare.
+        long cap;
+        if (declaredBudgetMb > 0 && dynamicMb > 0) {
+            cap = Math.min(declaredBudgetMb, dynamicMb);
+        } else if (declaredBudgetMb > 0) {
+            cap = declaredBudgetMb;
+        } else if (dynamicMb > 0) {
+            cap = dynamicMb;
+        } else {
+            // Fallback: 4 × heap (same as base class default).
+            long fallback = (long) getHeapMb() * 4L;
+            log.warn("[learning] neither declared budget nor MemAvailable available "
+                    + "(ResourceSchedulerConfigService/ResourceTelemetryService absent or not yet polled); "
+                    + "falling back to 4×heap = {} MB. "
+                    + "Set kompile.learning.subprocess.max-physical-mb to override.", fallback);
+            return fallback;
         }
 
-        // Fallback: 4 × heap (same as base class default).
-        long fallback = (long) heapMb * 4L;
-        log.warn("[learning] MemAvailable unavailable (ResourceTelemetryService absent or not yet polled); "
-                + "falling back to 4×heap = {} MB. "
-                + "Set kompile.learning.subprocess.max-physical-mb to override.", fallback);
-        return fallback;
+        // Apply floor then ceiling.
+        cap = Math.max(cap, nativeCapFloorMb);
+        if (nativeCapCeilingMb > 0) {
+            cap = Math.min(cap, nativeCapCeilingMb);
+        }
+        log.info("[learning] native cap: {} MB (declaredBudget={} MB, dynamicCeiling={} MB [MemAvailable×{}], floor={}, ceiling={})",
+                cap, declaredBudgetMb, dynamicMb, nativeCapFraction, nativeCapFloorMb,
+                nativeCapCeilingMb > 0 ? nativeCapCeilingMb + " MB" : "none");
+        return cap;
+    }
+
+    /**
+     * The native budget this learning run declares to the {@code HeavyMemoryCoordinator} (#3), in MB
+     * — the {@code "kge-training"} entry of {@code heavyMemoryOpEstimatesMb}. Returns 0 when the
+     * managed config is unavailable, in which case only the dynamic MemAvailable ceiling applies.
+     */
+    private long declaredNativeBudgetMb() {
+        if (resourceSchedulerConfigService == null) {
+            return 0L;
+        }
+        try {
+            Map<String, Long> estimates =
+                    resourceSchedulerConfigService.getConfiguration().getHeavyMemoryOpEstimatesMb();
+            if (estimates == null) {
+                return 0L;
+            }
+            Long budget = estimates.get("kge-training");
+            return budget != null && budget > 0 ? budget : 0L;
+        } catch (Exception e) {
+            log.debug("[learning] could not read declared heavy-memory budget: {}", e.getMessage());
+            return 0L;
+        }
     }
 
     @Override
@@ -259,30 +314,28 @@ public class LearningSubprocessLauncher extends ManagedSubprocessLauncher
      * {@link ai.kompile.app.subprocess.SubprocessEnvironmentPropagator#propagateToEnvironment}
      * and does not need a -D flag.
      */
+    /**
+     * KGE / SameDiff training defaults to the CPU backend (preserving the long-standing default) so a
+     * post-crawl training pass never contends for GPU memory with the live embedding lane, and never
+     * crashes loading a CUDA context on a no-GPU host. Declared via the device-abstract
+     * backend-preference mechanism — the base emits the real {@code org.nd4j.*.priority} selection
+     * flags. (GPU-accelerated KGE is a deliberate policy choice for later, not a device env-var hack.)
+     */
+    @Override
+    protected BackendPreference getBackendPreference() {
+        return BackendPreference.CPU;
+    }
+
     @Override
     protected List<String> getExtraJvmArgs() {
         List<String> args = new ArrayList<>();
 
-        // nd4j.backend.priority — BackendManager.PROP_PRIORITY.
-        // Controls the DeviceType priority list in BackendManager.loadSystemProperties().
-        // Only inject when the parent does not already carry this property; the parent's
-        // value is forwarded first by buildSystemPropertyFlags() and would otherwise win
-        // because -D is processed left-to-right (last value wins on hotspot).
-        if (System.getProperty("nd4j.backend.priority") == null) {
-            args.add("-Dnd4j.backend.priority=CPU");
-            log.debug("[learning] nd4j.backend.priority not set in parent — defaulting subprocess to CPU");
-        }
-
-        // nd4j.multibackend.enabled — Kompile DeviceAwareOpExecutioner gate.
-        // Prevents CUDA executioner dispatch (and SIGSEGV) when no GPU is present.
+        // Keep multi-backend probing off so nothing re-initialises a second (CUDA) backend after the
+        // CPU one is selected. Backend SELECTION itself is handled by getBackendPreference() above.
         if (System.getProperty("nd4j.multibackend.enabled") == null) {
             args.add("-Dnd4j.multibackend.enabled=false");
             log.debug("[learning] nd4j.multibackend.enabled not set in parent — defaulting subprocess to false");
         }
-
-        // org.nd4j.backend.multi.auto — BackendManager auto-enable multi-backend.
-        // When false BackendManager.autoInitialize() skips MultiBackendNativeOpsHolder,
-        // avoiding a second CUDA probe that would crash on a no-GPU host.
         if (System.getProperty("org.nd4j.backend.multi.auto") == null) {
             args.add("-Dorg.nd4j.backend.multi.auto=false");
             log.debug("[learning] org.nd4j.backend.multi.auto not set in parent — defaulting subprocess to false");
@@ -346,11 +399,36 @@ public class LearningSubprocessLauncher extends ManagedSubprocessLauncher
                                                Map<String, INDArray> priorEmbeddings,
                                                Map<String, INDArray> priorRelationEmbeddings,
                                                KgeTrainingExecutor.ProgressCallback callback) {
+        return trainOutOfProcess(crawlJobId, factSheetId, algorithm, config, triples,
+                priorEmbeddings, priorRelationEmbeddings, null, callback);
+    }
+
+    @Override
+    public KgeTrainingResult trainOutOfProcess(String crawlJobId,
+                                               Long factSheetId,
+                                               KGEmbeddingAlgorithm algorithm,
+                                               KGEmbeddingConfig config,
+                                               List<Triple> triples,
+                                               Path serializedWarmStartPath,
+                                               KgeTrainingExecutor.ProgressCallback callback) {
+        return trainOutOfProcess(crawlJobId, factSheetId, algorithm, config, triples,
+                Collections.emptyMap(), Collections.emptyMap(), serializedWarmStartPath, callback);
+    }
+
+    private KgeTrainingResult trainOutOfProcess(String crawlJobId,
+                                                Long factSheetId,
+                                                KGEmbeddingAlgorithm algorithm,
+                                                KGEmbeddingConfig config,
+                                                List<Triple> triples,
+                                                Map<String, INDArray> priorEmbeddings,
+                                                Map<String, INDArray> priorRelationEmbeddings,
+                                                Path serializedWarmStartPath,
+                                                KgeTrainingExecutor.ProgressCallback callback) {
         String runId = "learning-" + factSheetId + "-" + System.currentTimeMillis();
         log.info("Starting out-of-process KGE training: runId={}, algorithm={}, triples={}, " +
-                        "warmStartEntities={}, warmStartRelations={}",
+                        "warmStartEntities={}, warmStartRelations={}, serializedWarmStart={}",
                 runId, algorithm, triples.size(),
-                !priorEmbeddings.isEmpty(), !priorRelationEmbeddings.isEmpty());
+                !priorEmbeddings.isEmpty(), !priorRelationEmbeddings.isEmpty(), serializedWarmStartPath != null);
 
         Path argsFile = null;
         Path triplesFile = null;
@@ -361,38 +439,17 @@ public class LearningSubprocessLauncher extends ManagedSubprocessLauncher
             Files.writeString(triplesFile, objectMapper.writeValueAsString(triples), StandardCharsets.UTF_8);
             outputFile = Files.createTempFile("kompile-kge-out-", ".json");
 
-            // Serialize prior entity and relation embeddings to a temp file if warm-starting.
-            // Both maps are written into the same JSON file under "entities" and "relations".
-            // An empty map for either key tells the subprocess to cold-start that component.
+            // Prefer a pre-serialized warm-start artifact exported by the graph adapter. The
+            // map-based branch remains for tests/legacy callers, but production app-main should
+            // avoid rehydrating persisted embeddings into INDArray maps just to serialize them again.
             String warmStartPath = null;
-            if (!priorEmbeddings.isEmpty() || !priorRelationEmbeddings.isEmpty()) {
-                warmStartFile = Files.createTempFile("kompile-kge-warmstart-", ".json");
-                Map<String, float[]> entityVectors = priorEmbeddings.entrySet().stream()
-                        .collect(Collectors.toMap(
-                                Map.Entry::getKey,
-                                e -> {
-                                    INDArray arr = e.getValue();
-                                    float[] floats = new float[(int) arr.length()];
-                                    for (int i = 0; i < floats.length; i++) floats[i] = arr.getFloat(i);
-                                    return floats;
-                                }));
-                Map<String, float[]> relationVectors = priorRelationEmbeddings.entrySet().stream()
-                        .collect(Collectors.toMap(
-                                Map.Entry::getKey,
-                                e -> {
-                                    INDArray arr = e.getValue();
-                                    float[] floats = new float[(int) arr.length()];
-                                    for (int i = 0; i < floats.length; i++) floats[i] = arr.getFloat(i);
-                                    return floats;
-                                }));
-                Map<String, Object> warmStartJson = new HashMap<>();
-                warmStartJson.put("entities", entityVectors);
-                warmStartJson.put("relations", relationVectors);
-                Files.writeString(warmStartFile, objectMapper.writeValueAsString(warmStartJson),
-                        StandardCharsets.UTF_8);
-                warmStartPath = warmStartFile.toString();
-                log.info("[KGE {}] Wrote warm-start file: {} entity vectors, {} relation vectors to {}",
-                        runId, entityVectors.size(), relationVectors.size(), warmStartPath);
+            if (serializedWarmStartPath != null) {
+                warmStartFile = serializedWarmStartPath;
+                warmStartPath = serializedWarmStartPath.toString();
+                log.info("[KGE {}] Using serialized warm-start file {}", runId, warmStartPath);
+            } else if (!priorEmbeddings.isEmpty() || !priorRelationEmbeddings.isEmpty()) {
+                log.warn("[KGE {}] Ignoring INDArray warm-start maps in app-main; callers should use "
+                        + "the serialized warm-start overload", runId);
             }
 
             LearningSubprocessArgs subArgs = new LearningSubprocessArgs(
@@ -404,8 +461,8 @@ public class LearningSubprocessLauncher extends ManagedSubprocessLauncher
 
             CountDownLatch doneLatch = new CountDownLatch(1);
             AtomicReference<KgeTrainingResult> resultRef = new AtomicReference<>();
-            // Set true the instant a Completed message arrives — BEFORE the (slow) embeddings load —
-            // so the process-exit handler can't race ahead and report a bogus "no completion message".
+            // Set true the instant a Completed message arrives so the process-exit handler can't
+            // race ahead and report a bogus "no completion message".
             AtomicBoolean completedReceived = new AtomicBoolean(false);
             AtomicLong hb = new AtomicLong(System.currentTimeMillis());
             lastHeartbeatByRun.put(runId, hb);
@@ -417,17 +474,21 @@ public class LearningSubprocessLauncher extends ManagedSubprocessLauncher
                             resultRef, completedReceived, doneLatch, hb, callback));
 
             run.process().onExit().thenRun(() -> {
-                // Only treat the exit as a failure if NO Completed message was received. The Completed
-                // handler parses the embeddings file and builds ~N INDArrays (hundreds of ms) BEFORE it
-                // sets resultRef, and the subprocess exits the moment it sends Completed — so without the
-                // completedReceived guard a fast exit clobbers a genuine success with a bogus failure.
+                // Only treat the exit as a failure if NO Completed message was received. The
+                // subprocess exits soon after sending Completed; the guard prevents a fast exit from
+                // clobbering a genuine success with a bogus failure.
                 if (!completedReceived.get() && resultRef.compareAndSet(null,
                         KgeTrainingResult.failure("Subprocess exited without a completion message"))) {
                     doneLatch.countDown();
                 }
                 lastHeartbeatByRun.remove(runId);
                 finishRun(runId);
-                cleanupQuiet(finalArgs, finalTriples, finalOutputFile, finalWarmStart);
+                if (completedReceived.get()) {
+                    // The caller owns the embeddings artifact on success and deletes it after write-back.
+                    cleanupQuiet(finalArgs, finalTriples, finalWarmStart);
+                } else {
+                    cleanupQuiet(finalArgs, finalTriples, finalOutputFile, finalWarmStart);
+                }
             });
 
             if (!doneLatch.await(jobTimeoutMs, TimeUnit.MILLISECONDS)) {
@@ -455,14 +516,17 @@ public class LearningSubprocessLauncher extends ManagedSubprocessLauncher
             String crawlJobId, long factSheetId, List<String> ruleTexts,
             Map<String, Double> observedAtoms, List<String> targetAtoms,
             Map<String, Double> groundTruthLabels, String programKey, String weightStoreDirPath,
-            int maxEpochs, double learningRate, ReasoningLearningExecutor.ProgressCallback callback) {
+            int maxEpochs, double learningRate, double tolerance, int batchSize, long seed,
+            double weightPriorStrength, double weightPriorMean, double[] perRuleMeans,
+            ReasoningLearningExecutor.ProgressCallback callback) {
 
         String runId = "psl-" + factSheetId + "-" + System.currentTimeMillis();
         log.info("Starting out-of-process PSL weight learning: runId={}, factSheetId={}", runId, factSheetId);
         Path argsFile = null, inputFile = null;
         try {
             PslLearningInput input = new PslLearningInput(
-                    ruleTexts, observedAtoms, targetAtoms, groundTruthLabels, programKey, weightStoreDirPath);
+                    ruleTexts, observedAtoms, targetAtoms, groundTruthLabels, programKey, weightStoreDirPath,
+                    tolerance, batchSize, seed, weightPriorStrength, weightPriorMean, perRuleMeans);
             inputFile = input.writeToFile();
             ReasoningLearningSubprocessArgs subArgs = new ReasoningLearningSubprocessArgs(
                     factSheetId, "PSL", inputFile.toString(), weightStoreDirPath, maxEpochs, learningRate);
@@ -562,20 +626,10 @@ public class LearningSubprocessLauncher extends ManagedSubprocessLauncher
                     catch (Exception ex) { log.debug("[KGE {}] callback error: {}", runId, ex.getMessage()); }
                 }
             } else if (msg instanceof Completed c) {
-                log.info("[KGE {}] Completed: loss={}, entities={}, relations={}",
-                        runId, c.finalLoss(), c.entities(), c.relations());
-                // Mark completion BEFORE the slow embeddings load (see onExit) so a fast subprocess
-                // exit cannot race in and overwrite this genuine success with a bogus failure.
+                log.info("[KGE {}] Completed: loss={}, entities={}, relations={}, output={}",
+                        runId, c.finalLoss(), c.entities(), c.relations(), outputFile);
                 completedReceived.set(true);
-                try {
-                    resultRef.set(KgeTrainingResult.success(loadEmbeddingsShim(outputFile), c.finalLoss()));
-                } catch (Exception loadEx) {
-                    // Training succeeded but the embeddings file could not be read back — report THAT
-                    // accurately rather than the misleading "exited without a completion message".
-                    log.error("[KGE {}] training completed but loading embeddings failed: {}",
-                            runId, loadEx.getMessage());
-                    resultRef.set(KgeTrainingResult.failure("Embeddings load failed: " + loadEx.getMessage()));
-                }
+                resultRef.set(KgeTrainingResult.success(outputFile, c.entities(), c.relations(), c.finalLoss()));
                 doneLatch.countDown();
             } else if (msg instanceof Failed f) {
                 log.warn("[KGE {}] Failed: {}", runId, f.reason());
@@ -630,35 +684,6 @@ public class LearningSubprocessLauncher extends ManagedSubprocessLauncher
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────
-
-    private KGEmbeddingModel loadEmbeddingsShim(Path outputFile) {
-        try {
-            Map<String, Object> raw = objectMapper.readValue(outputFile.toFile(),
-                    new TypeReference<Map<String, Object>>() {});
-            @SuppressWarnings("unchecked")
-            Map<String, List<Number>> entityRaw = (Map<String, List<Number>>) raw.get("entities");
-            @SuppressWarnings("unchecked")
-            Map<String, List<Number>> relationRaw = (Map<String, List<Number>>) raw.get("relations");
-            return new DeserializedEmbeddingShim(toINDArrayMap(entityRaw), toINDArrayMap(relationRaw));
-        } catch (Exception e) {
-            log.error("Failed to load embeddings from {}: {}", outputFile, e.getMessage());
-            throw new RuntimeException("Cannot load embeddings: " + e.getMessage(), e);
-        }
-    }
-
-    private static Map<String, INDArray> toINDArrayMap(Map<String, List<Number>> raw) {
-        if (raw == null) return Collections.emptyMap();
-        Map<String, INDArray> result = new HashMap<>(raw.size() * 2);
-        for (Map.Entry<String, List<Number>> entry : raw.entrySet()) {
-            List<Number> nums = entry.getValue();
-            float[] floats = new float[nums.size()];
-            for (int i = 0; i < nums.size(); i++) {
-                floats[i] = nums.get(i).floatValue();
-            }
-            result.put(entry.getKey(), Nd4j.create(floats));
-        }
-        return result;
-    }
 
     private static String algorithmKey(KGEmbeddingAlgorithm algorithm) {
         return switch (algorithm) {

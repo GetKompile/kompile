@@ -17,6 +17,7 @@
 package ai.kompile.knowledgegraph.resolution;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -127,7 +128,7 @@ public class SessionEntityState {
     public List<TrackedEntity> getRecentEntities() {
         List<TrackedEntity> result = new ArrayList<>(entities.values());
         // Reverse to get most recent first (LinkedHashMap with access-order)
-        java.util.Collections.reverse(result);
+        Collections.reverse(result);
         return result;
     }
 

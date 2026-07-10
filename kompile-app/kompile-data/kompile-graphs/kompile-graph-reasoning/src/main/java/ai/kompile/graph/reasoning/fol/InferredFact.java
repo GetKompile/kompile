@@ -10,6 +10,7 @@
 package ai.kompile.graph.reasoning.fol;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -197,7 +198,7 @@ public record InferredFact(
         s = s.substring(1, s.length() - 1); // strip braces
 
         // Parse into key→value map (handles simple string, number, array values)
-        java.util.Map<String, String> raw = new java.util.LinkedHashMap<>();
+        Map<String, String> raw = new LinkedHashMap<>();
         parseRawJson(s, raw);
 
         String atomKey = unquote(raw.get("atomKey"));
@@ -258,7 +259,7 @@ public record InferredFact(
         if (!s.startsWith("[") || !s.endsWith("]")) return List.of();
         s = s.substring(1, s.length() - 1).trim();
         if (s.isEmpty()) return List.of();
-        List<String> result = new java.util.ArrayList<>();
+        List<String> result = new ArrayList<>();
         // Split on commas not inside quotes (simple case: no embedded commas in values)
         int start = 0;
         boolean inQuote = false;
@@ -278,7 +279,7 @@ public record InferredFact(
      * Parse a flat JSON object body (between the outer braces) into a raw string map.
      * Handles string, number, and array values. Does not handle nested objects.
      */
-    private static void parseRawJson(String body, java.util.Map<String, String> out) {
+    private static void parseRawJson(String body, Map<String, String> out) {
         int i = 0;
         int n = body.length();
         while (i < n) {

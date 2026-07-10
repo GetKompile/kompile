@@ -52,7 +52,7 @@ public class StreamingMarkdownRenderer {
     private static final Pattern STRIKETHROUGH_PATTERN = Pattern.compile("~~(.+?)~~");
     private static final Pattern LINK_PATTERN = Pattern.compile("\\[([^]]+)]\\(([^)]+)\\)");
     private static final Pattern UNORDERED_LIST_PATTERN = Pattern.compile("^(\\s*)[-*+]\\s+(.+)$");
-    private static final Pattern ORDERED_LIST_PATTERN = Pattern.compile("^(\\s*)\\d+\\.\\s+(.+)$");
+    private static final Pattern ORDERED_LIST_PATTERN = Pattern.compile("^(\\s*)(\\d+)\\.\\s+(.+)$");
     private static final Pattern BLOCKQUOTE_PATTERN = Pattern.compile("^>\\s?(.*)$");
     private static final Pattern HR_PATTERN = Pattern.compile("^([-*_])\\1{2,}\\s*$");
 
@@ -197,8 +197,9 @@ public class StreamingMarkdownRenderer {
         Matcher olMatcher = ORDERED_LIST_PATTERN.matcher(line);
         if (olMatcher.matches()) {
             String indent = olMatcher.group(1);
-            String text = olMatcher.group(2);
-            String bullet = term.dim("  " + indent) + term.cyan("•") + " ";
+            String number = olMatcher.group(2);
+            String text = olMatcher.group(3);
+            String bullet = term.dim("  " + indent) + term.cyan(number + ".") + " ";
             System.out.println(bullet + renderInline(text));
             System.out.flush();
             return;
@@ -221,7 +222,7 @@ public class StreamingMarkdownRenderer {
     private String renderInline(String text) {
         // Bold before italic to avoid conflict on single *
         text = replacePatterned(text, BOLD_PATTERN, m -> term.bold(m.group(1)));
-        text = replacePatterned(text, ITALIC_PATTERN, m -> term.dim(m.group(1)));
+        text = replacePatterned(text, ITALIC_PATTERN, m -> term.italic(m.group(1)));
         text = replacePatterned(text, INLINE_CODE_PATTERN, m ->
                 term.yellow("`" + m.group(1) + "`"));
         text = replacePatterned(text, STRIKETHROUGH_PATTERN, m -> {

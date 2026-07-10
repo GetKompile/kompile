@@ -21,12 +21,23 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
+
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
 public class ComparisonRequest {
     private String sampleText;
+
     @Builder.Default
     private int sequenceLength = 8;
+
+    /**
+     * Real comparison input arrays keyed by SameDiff placeholder name.
+     * Relative paths resolve against each model file's parent directory.
+     */
+    @Builder.Default
+    private Map<String, String> sampleInputs = new LinkedHashMap<>();
 }

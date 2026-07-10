@@ -19,6 +19,7 @@ package ai.kompile.crawler.web;
 import ai.kompile.core.crawler.*;
 import ai.kompile.crawler.AbstractCrawlJob;
 
+import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedDeque;
@@ -77,7 +78,7 @@ public class WebCrawlJob extends AbstractCrawlJob {
                 .collect(Collectors.toList());
 
         return CrawlState.builder()
-                .timestamp(java.time.Instant.now())
+                .timestamp(Instant.now())
                 .visitedUrls(Collections.unmodifiableSet(new HashSet<>(visitedUrls)))
                 .contentHashes(Collections.unmodifiableMap(new HashMap<>(contentHashes)))
                 .pendingUrls(pending)

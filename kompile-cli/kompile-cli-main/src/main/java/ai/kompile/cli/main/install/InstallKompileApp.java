@@ -65,6 +65,15 @@ public class InstallKompileApp implements Callable<Integer> {
             description = "Install from a local JAR file (e.g., a pre-built exec JAR)")
     private File localJar;
 
+    @CommandLine.Option(names = {"--backend"},
+            description = "Expected ND4J backend for kompile-app-main: auto, cpu, cuda-12.9. Default: ${DEFAULT-VALUE}",
+            defaultValue = "auto")
+    private String backend = "auto";
+
+    @CommandLine.Option(names = {"--allow-backend-change"},
+            description = "Allow replacing an installed CPU app component with CUDA or CUDA with CPU")
+    private boolean allowBackendChange = false;
+
     @Override
     public Integer call() throws Exception {
         ComponentRegistry registry = new ComponentRegistry();
@@ -82,6 +91,8 @@ public class InstallKompileApp implements Callable<Integer> {
         ComponentInstaller installer = new ComponentInstaller(registry);
         installer.setForceDownload(force);
         installer.setVerbose(verbose);
+        installer.setExpectedBackend(backend);
+        installer.setAllowBackendChange(allowBackendChange);
 
         try {
             File installedJar;

@@ -17,16 +17,27 @@ package ai.kompile.app.services.graph;
 
 import ai.kompile.app.services.subprocess.GraphMatrixSubprocessLauncher;
 import ai.kompile.app.subprocess.GraphMatrixSubprocessMain;
+import ai.kompile.core.embeddings.EmbeddingModel;
 import ai.kompile.core.graphrag.GraphConstructor;
 import ai.kompile.core.graphrag.GraphRagService;
+import org.nd4j.linalg.api.ndarray.INDArray;
+import org.springframework.beans.factory.ObjectProvider;
 import ai.kompile.core.graphrag.maintenance.model.GraphPruneResult;
-import ai.kompile.core.graphrag.model.Graph;
-import ai.kompile.core.graphrag.model.schema.GraphSchema;
-import ai.kompile.core.graphrag.model.schema.SchemaEnforcementMode;
 import ai.kompile.core.graphrag.query.GraphRagQuery;
 import ai.kompile.core.graphrag.query.GraphRagResult;
 import ai.kompile.core.kgembedding.KGEmbeddingAlgorithm;
-import ai.kompile.core.retrievers.RetrievedDoc;
+import ai.kompile.event.attribution.llm.AttributionLlmService;
+import ai.kompile.event.attribution.service.BayesianNetworkService;
+import ai.kompile.event.attribution.service.EventAttributionService;
+import ai.kompile.event.attribution.service.PslReasoningService;
+import ai.kompile.graph.reasoning.domain.AttributionQuery;
+import ai.kompile.graph.reasoning.domain.AttributionResult;
+import ai.kompile.graph.reasoning.domain.BayesianInferenceResult;
+import ai.kompile.graph.reasoning.domain.MpeResult;
+import ai.kompile.graph.reasoning.domain.PslInferenceResult;
+import ai.kompile.graph.reasoning.domain.SensitivityResult;
+import ai.kompile.graph.reasoning.mebn.MTheory;
+import ai.kompile.graph.reasoning.mebn.type.TypeHierarchy;
 import ai.kompile.knowledgegraph.domain.EdgeProvenance;
 import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.EntityMention;
@@ -34,16 +45,15 @@ import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
 import ai.kompile.knowledgegraph.matrix.model.AdjacencyMatrixGraph;
+import ai.kompile.knowledgegraph.matrix.service.MatrixGraphConstructor;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.databind.JavaType;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import org.nd4j.linalg.api.ndarray.INDArray;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
@@ -63,9 +73,9 @@ import java.util.Optional;
 import java.util.Set;
 
 /**
- * Produces {@code @Primary} concrete-class beans for {@link GraphConstructor}, {@link GraphRagService},
- * and {@link KnowledgeGraphService} that delegate every call to the persistent
- * {@link GraphMatrixSubprocessMain} via {@code POST /invoke}.
+ * Produces {@code @Primary} concrete-class beans for graph services that delegate store/reasoning calls
+ * to the persistent {@link GraphMatrixSubprocessMain} via {@code POST /invoke}. Graph extraction itself
+ * stays in the main app so configured CLI/LFM agents are available.
  *
  * <p>Activated only when {@code kompile.graph.subprocess.enabled=true}. With the flag off (default)
  * the existing in-process service implementations remain primary and these beans are not created.</p>
@@ -94,26 +104,51 @@ public class GraphServiceSubprocessClients {
 
     @Bean
     @Primary
-    @ConditionalOnProperty(name = "kompile.graph.subprocess.enabled", havingValue = "true")
-    public GraphConstructor graphConstructorSubprocessProxy(GraphMatrixSubprocessLauncher launcher,
-                                                            ObjectMapper mapper) {
-        return new SubprocessGraphConstructorClient(launcher, mapper);
+    public GraphConstructor graphConstructorMainProcess(MatrixGraphConstructor constructor) {
+        return constructor;
     }
 
     @Bean
     @Primary
-    @ConditionalOnProperty(name = "kompile.graph.subprocess.enabled", havingValue = "true")
     public GraphRagService graphRagServiceSubprocessProxy(GraphMatrixSubprocessLauncher launcher,
-                                                          ObjectMapper mapper) {
-        return new SubprocessGraphRagServiceClient(launcher, mapper);
+                                                          ObjectMapper mapper,
+                                                          ObjectProvider<EmbeddingModel> embeddingProvider) {
+        return new SubprocessGraphRagServiceClient(launcher, mapper, embeddingProvider);
     }
 
     @Bean
     @Primary
-    @ConditionalOnProperty(name = "kompile.graph.subprocess.enabled", havingValue = "true")
     public KnowledgeGraphService knowledgeGraphServiceSubprocessProxy(GraphMatrixSubprocessLauncher launcher,
                                                                       ObjectMapper mapper) {
         return new SubprocessKnowledgeGraphServiceClient(launcher, mapper);
+    }
+
+    @Bean
+    @Primary
+    public BayesianNetworkService bayesianNetworkServiceSubprocessProxy(
+            GraphMatrixSubprocessLauncher launcher,
+            ObjectMapper mapper,
+            KnowledgeGraphService graphService) {
+        return new SubprocessBayesianNetworkServiceClient(launcher, mapper, graphService);
+    }
+
+    @Bean
+    @Primary
+    public PslReasoningService pslReasoningServiceSubprocessProxy(
+            GraphMatrixSubprocessLauncher launcher,
+            ObjectMapper mapper,
+            KnowledgeGraphService graphService) {
+        return new SubprocessPslReasoningServiceClient(launcher, mapper, graphService);
+    }
+
+    @Bean
+    @Primary
+    public EventAttributionService eventAttributionServiceSubprocessProxy(
+            GraphMatrixSubprocessLauncher launcher,
+            ObjectMapper mapper,
+            KnowledgeGraphService graphService,
+            AttributionLlmService llmService) {
+        return new SubprocessEventAttributionServiceClient(launcher, mapper, graphService, llmService);
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -283,7 +318,10 @@ public class GraphServiceSubprocessClients {
     static final class SubprocessGraphRagServiceClient extends SubprocessRpcBase
             implements GraphRagService {
 
-        SubprocessGraphRagServiceClient(GraphMatrixSubprocessLauncher launcher, ObjectMapper mapper) {
+        private static final Logger ragLog = LoggerFactory.getLogger(SubprocessGraphRagServiceClient.class);
+
+        SubprocessGraphRagServiceClient(GraphMatrixSubprocessLauncher launcher, ObjectMapper mapper,
+                                        ObjectProvider<EmbeddingModel> embeddingProvider) {
             super(GraphRagService.class.getName(), launcher, mapper);
         }
 
@@ -295,46 +333,157 @@ public class GraphServiceSubprocessClients {
     }
 
     // ══════════════════════════════════════════════════════════════════════════
-    // GraphConstructor client
+    // Reasoning service clients
     // ══════════════════════════════════════════════════════════════════════════
 
-    static final class SubprocessGraphConstructorClient extends SubprocessRpcBase
-            implements GraphConstructor {
+    static final class SubprocessBayesianNetworkServiceClient extends BayesianNetworkService {
+        private final SubprocessRpcBase rpc;
+        private final ObjectMapper mapper;
+        private final JavaType typeBayesianInferenceResult;
+        private final JavaType typeMpeResult;
+        private final JavaType typeSensitivityResult;
+        private final JavaType typeMapStringObject;
+        private final JavaType typeMTheory;
 
-        SubprocessGraphConstructorClient(GraphMatrixSubprocessLauncher launcher, ObjectMapper mapper) {
-            super(GraphConstructor.class.getName(), launcher, mapper);
+        SubprocessBayesianNetworkServiceClient(GraphMatrixSubprocessLauncher launcher,
+                                               ObjectMapper mapper,
+                                               KnowledgeGraphService graphService) {
+            super(graphService);
+            this.mapper = mapper;
+            this.rpc = new SubprocessRpcBase(BayesianNetworkService.class.getName(), launcher, mapper) {};
+            var tf = mapper.getTypeFactory();
+            this.typeBayesianInferenceResult = tf.constructType(BayesianInferenceResult.class);
+            this.typeMpeResult = tf.constructType(MpeResult.class);
+            this.typeSensitivityResult = tf.constructType(SensitivityResult.class);
+            this.typeMapStringObject = tf.constructMapType(Map.class, String.class, Object.class);
+            this.typeMTheory = tf.constructType(MTheory.class);
         }
 
         @Override
-        public void configure(ExtractionModelConfig config) {
-            rpcVoid("configure", new Object[]{config});
+        public BayesianInferenceResult queryMebnFromKg(Collection<String> seedNodeIds,
+                                                       Map<String, Integer> evidence,
+                                                       int maxDepth, int maxNodes) {
+            return rpc.rpc("queryMebnFromKg",
+                    new Object[]{seedNodeIds, evidence, maxDepth, maxNodes}, typeBayesianInferenceResult);
         }
 
         @Override
-        public Graph constructGraph(String collectionName) {
-            return rpc("constructGraph", new Object[]{collectionName},
-                    mapper.getTypeFactory().constructType(Graph.class));
+        public BayesianInferenceResult queryMebnFromKg(Collection<String> seedNodeIds,
+                                                       Map<String, Integer> evidence,
+                                                       int maxDepth, int maxNodes,
+                                                       TypeHierarchy typeHierarchy) {
+            return rpc.rpc("queryMebnFromKg",
+                    new Object[]{seedNodeIds, evidence, maxDepth, maxNodes, typeHierarchy},
+                    typeBayesianInferenceResult);
         }
 
         @Override
-        public Graph constructGraphFromDocs(List<RetrievedDoc> docs, GraphSchema graphSchema,
-                                            SchemaEnforcementMode enforcementMode) {
-            return rpc("constructGraphFromDocs", new Object[]{docs, graphSchema, enforcementMode},
-                    mapper.getTypeFactory().constructType(Graph.class));
+        public BayesianInferenceResult queryAllPosteriors(Collection<String> seedNodeIds,
+                                                          Map<String, Integer> evidence,
+                                                          int maxDepth, int maxNodes) {
+            return rpc.rpc("queryAllPosteriors",
+                    new Object[]{seedNodeIds, evidence, maxDepth, maxNodes}, typeBayesianInferenceResult);
         }
 
-        /**
-         * ProgressListener is a functional interface that cannot cross the wire — pass null;
-         * the server substitutes a no-op listener.
-         */
         @Override
-        public Graph constructGraphFromDocs(List<RetrievedDoc> docs, GraphSchema graphSchema,
-                                            SchemaEnforcementMode enforcementMode,
-                                            boolean skipEmbedding, boolean skipMatrixGraph,
-                                            ProgressListener progressListener) {
-            return rpc("constructGraphFromDocs",
-                    new Object[]{docs, graphSchema, enforcementMode, skipEmbedding, skipMatrixGraph, null},
-                    mapper.getTypeFactory().constructType(Graph.class));
+        public BayesianInferenceResult queryPosterior(Collection<String> seedNodeIds,
+                                                      String queryNodeId,
+                                                      Map<String, Integer> evidence,
+                                                      int maxDepth, int maxNodes) {
+            return rpc.rpc("queryPosterior",
+                    new Object[]{seedNodeIds, queryNodeId, evidence, maxDepth, maxNodes},
+                    typeBayesianInferenceResult);
+        }
+
+        @Override
+        public MpeResult mostProbableExplanation(Collection<String> seedNodeIds,
+                                                 Map<String, Integer> evidence,
+                                                 int maxDepth, int maxNodes) {
+            return rpc.rpc("mostProbableExplanation",
+                    new Object[]{seedNodeIds, evidence, maxDepth, maxNodes}, typeMpeResult);
+        }
+
+        @Override
+        public SensitivityResult sensitivityAnalysis(Collection<String> seedNodeIds,
+                                                     String queryNodeId,
+                                                     Map<String, Integer> evidence,
+                                                     double epsilon,
+                                                     int maxDepth, int maxNodes) {
+            return rpc.rpc("sensitivityAnalysis",
+                    new Object[]{seedNodeIds, queryNodeId, evidence, epsilon, maxDepth, maxNodes},
+                    typeSensitivityResult);
+        }
+
+        @Override
+        public Map<String, Object> getMebnStatistics(Collection<String> seedNodeIds,
+                                                     int maxDepth, int maxNodes) {
+            return rpc.rpc("getMebnStatistics", new Object[]{seedNodeIds, maxDepth, maxNodes},
+                    typeMapStringObject);
+        }
+
+        @Override
+        public MTheory buildMebnTheory(Collection<String> seedNodeIds, int maxDepth, int maxNodes) {
+            return rpc.rpc("buildMebnTheory", new Object[]{seedNodeIds, maxDepth, maxNodes}, typeMTheory);
+        }
+    }
+
+    static final class SubprocessPslReasoningServiceClient extends PslReasoningService {
+        private final SubprocessRpcBase rpc;
+        private final JavaType typePslInferenceResult;
+        private final JavaType typeMapStringObject;
+
+        SubprocessPslReasoningServiceClient(GraphMatrixSubprocessLauncher launcher,
+                                            ObjectMapper mapper,
+                                            KnowledgeGraphService graphService) {
+            super(graphService);
+            this.rpc = new SubprocessRpcBase(PslReasoningService.class.getName(), launcher, mapper) {};
+            var tf = mapper.getTypeFactory();
+            this.typePslInferenceResult = tf.constructType(PslInferenceResult.class);
+            this.typeMapStringObject = tf.constructMapType(Map.class, String.class, Object.class);
+        }
+
+        @Override
+        public PslInferenceResult infer(Collection<String> seedNodeIds,
+                                        Map<String, Double> evidence,
+                                        int maxDepth, int maxNodes) {
+            return rpc.rpc("infer", new Object[]{seedNodeIds, evidence, maxDepth, maxNodes},
+                    typePslInferenceResult);
+        }
+
+        @Override
+        public PslInferenceResult inferWithRules(Collection<String> seedNodeIds,
+                                                 List<String> ruleStrings,
+                                                 Map<String, Double> evidence,
+                                                 int maxDepth, int maxNodes) {
+            return rpc.rpc("inferWithRules",
+                    new Object[]{seedNodeIds, ruleStrings, evidence, maxDepth, maxNodes},
+                    typePslInferenceResult);
+        }
+
+        @Override
+        public Map<String, Object> programStatistics(Collection<String> seedNodeIds,
+                                                     int maxDepth, int maxNodes) {
+            return rpc.rpc("programStatistics", new Object[]{seedNodeIds, maxDepth, maxNodes},
+                    typeMapStringObject);
+        }
+    }
+
+    static final class SubprocessEventAttributionServiceClient extends EventAttributionService {
+        private final SubprocessRpcBase rpc;
+        private final JavaType typeAttributionResult;
+
+        SubprocessEventAttributionServiceClient(GraphMatrixSubprocessLauncher launcher,
+                                                ObjectMapper mapper,
+                                                KnowledgeGraphService graphService,
+                                                AttributionLlmService llmService) {
+            super(graphService, llmService);
+            this.rpc = new SubprocessRpcBase(EventAttributionService.class.getName(), launcher, mapper) {};
+            this.typeAttributionResult = mapper.getTypeFactory().constructType(AttributionResult.class);
+        }
+
+        @Override
+        public AttributionResult explain(AttributionQuery query) {
+            return rpc.rpc("explain", new Object[]{query}, typeAttributionResult);
         }
     }
 
@@ -368,7 +517,9 @@ public class GraphServiceSubprocessClients {
         private final JavaType typeListNodeSpec;
         private final JavaType typeListSnippetSpec;
         private final JavaType typeListNodeMetadataUpdate;
+        private final JavaType typeListNodeUpdate;
         private final JavaType typeListEdgeSpec;
+        private final JavaType typeListEdgeMetadataUpdate;
 
         SubprocessKnowledgeGraphServiceClient(GraphMatrixSubprocessLauncher launcher,
                                               ObjectMapper mapper) {
@@ -397,7 +548,11 @@ public class GraphServiceSubprocessClients {
             typeListSnippetSpec     = tf.constructCollectionType(List.class, KnowledgeGraphService.SnippetSpec.class);
             typeListNodeMetadataUpdate = tf.constructCollectionType(List.class,
                     KnowledgeGraphService.NodeMetadataUpdate.class);
+            typeListNodeUpdate      = tf.constructCollectionType(List.class,
+                    KnowledgeGraphService.NodeUpdate.class);
             typeListEdgeSpec        = tf.constructCollectionType(List.class, KnowledgeGraphService.EdgeSpec.class);
+            typeListEdgeMetadataUpdate = tf.constructCollectionType(List.class,
+                    KnowledgeGraphService.EdgeMetadataUpdate.class);
         }
 
         // ── Node management ───────────────────────────────────────────────────
@@ -481,6 +636,11 @@ public class GraphServiceSubprocessClients {
         }
 
         @Override
+        public List<GraphNode> getNodesByExternalIds(List<KnowledgeGraphService.ExternalNodeLookup> lookups) {
+            return rpc("getNodesByExternalIds", new Object[]{lookups}, typeListGraphNode);
+        }
+
+        @Override
         public List<GraphNode> getChildren(String parentNodeId) {
             return rpc("getChildren", new Object[]{parentNodeId}, typeListGraphNode);
         }
@@ -499,6 +659,12 @@ public class GraphServiceSubprocessClients {
         @Override
         public int updateNodeKgeMetadataBatch(List<KnowledgeGraphService.NodeMetadataUpdate> updates) {
             Integer result = rpc("updateNodeKgeMetadataBatch", new Object[]{updates}, typeInt);
+            return result != null ? result : 0;
+        }
+
+        @Override
+        public int updateNodesBatch(List<KnowledgeGraphService.NodeUpdate> updates) {
+            Integer result = rpc("updateNodesBatch", new Object[]{updates}, typeInt);
             return result != null ? result : 0;
         }
 
@@ -548,6 +714,12 @@ public class GraphServiceSubprocessClients {
         @Override
         public int createEdgesBatch(List<KnowledgeGraphService.EdgeSpec> specs) {
             Integer result = rpc("createEdgesBatch", new Object[]{specs}, typeInt);
+            return result != null ? result : 0;
+        }
+
+        @Override
+        public int updateEdgeMetadataBatch(List<KnowledgeGraphService.EdgeMetadataUpdate> updates) {
+            Integer result = rpc("updateEdgeMetadataBatch", new Object[]{updates}, typeInt);
             return result != null ? result : 0;
         }
 

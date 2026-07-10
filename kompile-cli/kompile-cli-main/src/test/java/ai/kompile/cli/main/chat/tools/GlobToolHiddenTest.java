@@ -26,6 +26,7 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
 import java.util.Comparator;
 import java.util.Set;
 import java.util.UUID;
@@ -55,9 +56,8 @@ class GlobToolHiddenTest {
         return new ToolContext("test-" + UUID.randomUUID(), agent, perms, workingDir, registry);
     }
 
-    // Hidden files are nested under a visible directory: the glob "**/*.conf" only matches files
-    // with a directory component (Java PathMatcher does not match a root-level file against "**/"),
-    // so this layout isolates hidden-vs-visible handling from that matcher quirk.
+    // Hidden files are nested under a visible directory so this layout isolates
+    // hidden-vs-visible handling from root-level glob matching.
     private Path layout() throws IOException {
         Path tmp = Files.createTempDirectory("glob-hidden-test");
         Files.createDirectories(tmp.resolve("visible"));
@@ -101,6 +101,85 @@ class GlobToolHiddenTest {
             assertTrue(result.getOutput().contains("h.conf"), "hidden dir should be searched: " + result.getOutput());
             assertTrue(result.getOutput().contains(".secret.conf"), "hidden file should be searched: " + result.getOutput());
             assertFalse(result.getOutput().contains("g.conf"), ".git must stay pruned even with hidden=true: " + result.getOutput());
+        } finally {
+            deleteRecursively(tmp);
+        }
+    }
+
+    @Test
+    void bareFilenamePatternSearchesRecursivelyByBasename() throws Exception {
+        Path tmp = Files.createTempDirectory("glob-bare-recursive-test");
+        try {
+            Files.createDirectories(tmp.resolve("a/b"));
+            Files.writeString(tmp.resolve("a/b/cli-agents.json"), "[]\n");
+            Files.writeString(tmp.resolve("a/b/MyTaskTest.java"), "class MyTaskTest {}\n");
+
+            ObjectNode exactParams = om.createObjectNode();
+            exactParams.put("pattern", "cli-agents.json");
+            ToolResult exact = tool.execute(exactParams, ctxFor(tmp));
+            assertFalse(exact.isError(), exact.getOutput());
+            assertTrue(exact.getOutput().contains("a/b/cli-agents.json"), exact.getOutput());
+
+            ObjectNode wildcardParams = om.createObjectNode();
+            wildcardParams.put("pattern", "*Task*Test.java");
+            ToolResult wildcard = tool.execute(wildcardParams, ctxFor(tmp));
+            assertFalse(wildcard.isError(), wildcard.getOutput());
+            assertTrue(wildcard.getOutput().contains("a/b/MyTaskTest.java"), wildcard.getOutput());
+        } finally {
+            deleteRecursively(tmp);
+        }
+    }
+
+    @Test
+    void leadingGlobstarIncludesSearchRoot() throws Exception {
+        Path tmp = Files.createTempDirectory("glob-root-globstar-test");
+        try {
+            Files.createDirectories(tmp.resolve("module"));
+            Files.writeString(tmp.resolve("pom.xml"), "<project/>\n");
+            Files.writeString(tmp.resolve("module/pom.xml"), "<project/>\n");
+
+            ObjectNode params = om.createObjectNode();
+            params.put("pattern", "**/pom.xml");
+            ToolResult result = tool.execute(params, ctxFor(tmp));
+
+            assertFalse(result.isError(), result.getOutput());
+            assertTrue(result.getOutput().contains("pom.xml"), result.getOutput());
+            assertTrue(result.getOutput().contains("module/pom.xml"), result.getOutput());
+            assertEquals(2, result.getMetadata().get("totalMatches"));
+        } finally {
+            deleteRecursively(tmp);
+        }
+    }
+
+    @Test
+    void traversalDepthMatchesGlobShape() {
+        assertEquals(Integer.MAX_VALUE, GlobTool.traversalDepthForGlob("*.txt"));
+        assertEquals(2, GlobTool.traversalDepthForGlob("src/*.java"));
+        assertEquals(3, GlobTool.traversalDepthForGlob("src/main/*.java"));
+        assertEquals(Integer.MAX_VALUE, GlobTool.traversalDepthForGlob("**/*.java"));
+    }
+
+    @Test
+    void newestMatchesAreSelectedAfterScanningPastInitialResultCap() throws Exception {
+        Path tmp = Files.createTempDirectory("glob-newest-selection-test");
+        try {
+            long baseTime = System.currentTimeMillis() - 1_000_000L;
+            for (int i = 0; i < 220; i++) {
+                Path file = tmp.resolve("f" + String.format("%03d", i) + ".txt");
+                Files.writeString(file, "x\n");
+                Files.setLastModifiedTime(file, FileTime.fromMillis(baseTime + (i * 1000L)));
+            }
+
+            ObjectNode params = om.createObjectNode();
+            params.put("pattern", "*.txt");
+            ToolResult result = tool.execute(params, ctxFor(tmp));
+
+            assertFalse(result.isError(), result.getOutput());
+            assertEquals(220, result.getMetadata().get("totalMatches"));
+            assertEquals(100, result.getMetadata().get("count"));
+            assertTrue((Boolean) result.getMetadata().get("truncated"));
+            assertTrue(result.getOutput().contains("f219.txt"), result.getOutput());
+            assertFalse(result.getOutput().contains("f000.txt"), result.getOutput());
         } finally {
             deleteRecursively(tmp);
         }

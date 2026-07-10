@@ -528,24 +528,27 @@ public class CrossEncoderRerankerAdapter implements Reranker {
                     throw new RuntimeException("No output tensor found from model");
                 }
 
-                // Extract scores - handle different output shapes
+                // Extract scores - handle different output shapes. Copy the output tensor to host
+                // once; scalar getDouble(...) loops can trigger one CUDA sync per score.
                 long[] shape = outputTensor.shape();
+                double[] flatScores = outputTensor.ravel('c').data().asDouble();
                 if (shape.length == 1) {
                     // Shape [batch]
                     for (int i = 0; i < batchLen; i++) {
-                        scores.add(outputTensor.getDouble(i));
+                        scores.add(flatScores[i]);
                     }
                 } else if (shape.length == 2 && shape[1] == 1) {
                     // Shape [batch, 1]
                     for (int i = 0; i < batchLen; i++) {
-                        scores.add(outputTensor.getDouble(i, 0));
+                        scores.add(flatScores[i]);
                     }
                 } else if (shape.length == 2 && shape[1] == 2) {
                     // Shape [batch, 2] - logits for [not_relevant, relevant]
                     // Use softmax to get probability of relevance
                     for (int i = 0; i < batchLen; i++) {
-                        double logit0 = outputTensor.getDouble(i, 0);
-                        double logit1 = outputTensor.getDouble(i, 1);
+                        int base = i * 2;
+                        double logit0 = flatScores[base];
+                        double logit1 = flatScores[base + 1];
                         double expMax = Math.max(logit0, logit1);
                         double exp0 = Math.exp(logit0 - expMax);
                         double exp1 = Math.exp(logit1 - expMax);
@@ -557,7 +560,7 @@ public class CrossEncoderRerankerAdapter implements Reranker {
                     log.warn("Unexpected output shape: {}. Taking first element as score.",
                             java.util.Arrays.toString(shape));
                     for (int i = 0; i < batchLen; i++) {
-                        scores.add(outputTensor.getDouble(i));
+                        scores.add(flatScores[i]);
                     }
                 }
 

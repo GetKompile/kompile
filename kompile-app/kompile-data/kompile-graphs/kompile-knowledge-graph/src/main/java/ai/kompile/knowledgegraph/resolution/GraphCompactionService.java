@@ -34,6 +34,7 @@ import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.CancellationException;
 import java.util.function.Supplier;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
@@ -2438,7 +2439,7 @@ public class GraphCompactionService {
         Set<String> aliases = new LinkedHashSet<>();
 
         // Pattern 1: Parenthetical — "München (Munich)" or "東京 (Tokyo)"
-        java.util.regex.Matcher parenMatcher = PARENTHETICAL_PATTERN.matcher(title.trim());
+        Matcher parenMatcher = PARENTHETICAL_PATTERN.matcher(title.trim());
         if (parenMatcher.matches()) {
             String outside = parenMatcher.group(1).trim();
             String inside = parenMatcher.group(2).trim();
@@ -2653,7 +2654,7 @@ public class GraphCompactionService {
 
     private static double scoreAbbreviationOneSided(String abbreviated, String full) {
         // Check if one has an initial pattern like "r. thompson"
-        java.util.regex.Matcher m = INITIAL_PATTERN.matcher(abbreviated);
+        Matcher m = INITIAL_PATTERN.matcher(abbreviated);
         if (!m.find()) return 0.0;
 
         char initial = Character.toLowerCase(m.group(1).charAt(0));
@@ -2667,7 +2668,7 @@ public class GraphCompactionService {
         if (Character.toLowerCase(fullParts[0].charAt(0)) != initial) return 0.0;
 
         // Check: remaining parts match
-        String fullRemainder = String.join(" ", java.util.Arrays.copyOfRange(fullParts, 1, fullParts.length));
+        String fullRemainder = String.join(" ", Arrays.copyOfRange(fullParts, 1, fullParts.length));
         if (abbrRemainder.equals(fullRemainder)) {
             return 0.90;
         }

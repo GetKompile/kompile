@@ -35,6 +35,8 @@ import org.nd4j.linalg.api.buffer.DataType;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.dataset.MultiDataSet;
 import org.nd4j.linalg.factory.Nd4j;
+import org.nd4j.linalg.indexing.INDArrayIndex;
+import org.nd4j.linalg.indexing.NDArrayIndex;
 import org.nd4j.linalg.learning.config.IUpdater;
 import org.nd4j.linalg.learning.config.NoOp;
 import org.nd4j.linalg.lossfunctions.LossFunctions;
@@ -46,6 +48,10 @@ import java.util.*;
 
 
 public class SameDiffTrainerRunner implements PipelineStepRunner {
+
+    private static final int MIN_BATCH_SIZE = 1;
+    private static final int MAX_FIT_RETRIES = 3;
+    private static final long INITIAL_RETRY_BACKOFF_MS = 250L;
 
     private SameDiff sd;
     private List<String> inputFeatures;
@@ -285,24 +291,128 @@ public class SameDiffTrainerRunner implements PipelineStepRunner {
             }
         }
 
-        MultiDataSet multiDataSet = new MultiDataSet(features, labelArrays);
-
         try {
-            sd.fit(multiDataSet); // numEpochs parameter is not used by SameDiff.fit directly for single iteration.
-            // Pipeline would call this step repeatedly if multiple epochs are desired.
-        } catch (Exception e) {
-            throw e;
-        }
+            fitWithRetry(features, labelArrays);
+            // Pipeline calls this step repeatedly if multiple epochs are desired.
 
-        if (modelSaveOutputPath != null && !modelSaveOutputPath.isEmpty()) {
-            File saveFile = new File(modelSaveOutputPath);
-            File parentDir = saveFile.getParentFile();
-            if (parentDir != null && !parentDir.exists()) {
-
+            if (modelSaveOutputPath != null && !modelSaveOutputPath.isEmpty()) {
+                File saveFile = new File(modelSaveOutputPath);
+                File parentDir = saveFile.getParentFile();
+                if (parentDir != null && !parentDir.exists()) {
+                    parentDir.mkdirs();
+                }
+                sd.save(saveFile, true);
             }
-            sd.save(saveFile, true);
+            return Data.empty();
+        } finally {
+            closeArrays(features);
+            closeArrays(labelArrays);
         }
-        return Data.empty();
+    }
+
+    private void fitWithRetry(INDArray[] features, INDArray[] labelArrays) throws Exception {
+        int currentBatchSize = inferBatchSize(features, labelArrays);
+        int attempt = 0;
+        while (true) {
+            INDArray[] featureBatch = null;
+            INDArray[] labelBatch = null;
+            try {
+                featureBatch = copyBatch(features, currentBatchSize);
+                labelBatch = copyBatch(labelArrays, currentBatchSize);
+                validateArrays(featureBatch, "features");
+                validateArrays(labelBatch, "labels");
+                sd.fit(new MultiDataSet(featureBatch, labelBatch));
+                return;
+            } catch (Exception e) {
+                attempt++;
+                if (attempt >= MAX_FIT_RETRIES || currentBatchSize <= MIN_BATCH_SIZE) {
+                    throw new IllegalStateException("SameDiff fit failed after " + attempt
+                            + " attempt(s) at batchSize=" + currentBatchSize + ": " + e.getMessage(), e);
+                }
+                currentBatchSize = Math.max(MIN_BATCH_SIZE, currentBatchSize / 2);
+                try {
+                    Thread.sleep(retryBackoffMs(attempt));
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw interrupted;
+                }
+            } finally {
+                closeArrays(featureBatch);
+                closeArrays(labelBatch);
+            }
+        }
+    }
+
+    private int inferBatchSize(INDArray[] features, INDArray[] labelArrays) {
+        int batchSize = Integer.MAX_VALUE;
+        batchSize = inferBatchSize(features, batchSize);
+        batchSize = inferBatchSize(labelArrays, batchSize);
+        return batchSize == Integer.MAX_VALUE ? MIN_BATCH_SIZE : Math.max(MIN_BATCH_SIZE, batchSize);
+    }
+
+    private int inferBatchSize(INDArray[] arrays, int current) {
+        if (arrays == null) {
+            return current;
+        }
+        int batchSize = current;
+        for (INDArray array : arrays) {
+            if (array != null && array.rank() > 0 && array.size(0) > 0) {
+                batchSize = Math.min(batchSize, (int) Math.min(Integer.MAX_VALUE, array.size(0)));
+            }
+        }
+        return batchSize;
+    }
+
+    private INDArray[] copyBatch(INDArray[] arrays, int batchSize) {
+        if (arrays == null) {
+            return null;
+        }
+        INDArray[] copies = new INDArray[arrays.length];
+        for (int i = 0; i < arrays.length; i++) {
+            INDArray source = arrays[i];
+            if (source == null) {
+                continue;
+            }
+            if (source.rank() > 0 && source.size(0) > batchSize) {
+                INDArrayIndex[] indices = new INDArrayIndex[source.rank()];
+                indices[0] = NDArrayIndex.interval(0, batchSize);
+                for (int d = 1; d < indices.length; d++) {
+                    indices[d] = NDArrayIndex.all();
+                }
+                copies[i] = source.get(indices).dup('c');
+            } else {
+                copies[i] = source.dup('c');
+            }
+        }
+        return copies;
+    }
+
+    private void validateArrays(INDArray[] arrays, String label) {
+        if (arrays == null || arrays.length == 0) {
+            throw new IllegalStateException("Training " + label + " are empty");
+        }
+        for (int i = 0; i < arrays.length; i++) {
+            INDArray array = arrays[i];
+            if (array == null || array.isEmpty()) {
+                throw new IllegalStateException("Training " + label + "[" + i + "] is empty");
+            }
+        }
+    }
+
+    private long retryBackoffMs(int attempt) {
+        int shift = Math.min(Math.max(0, attempt - 1), 4);
+        return INITIAL_RETRY_BACKOFF_MS * (1L << shift);
+    }
+
+    private void closeArrays(INDArray[] arrays) {
+        if (arrays == null) {
+            return;
+        }
+        for (INDArray array : arrays) {
+            if (array != null && !array.wasClosed()) {
+                array.close();
+            }
+        }
     }
 
     @Override

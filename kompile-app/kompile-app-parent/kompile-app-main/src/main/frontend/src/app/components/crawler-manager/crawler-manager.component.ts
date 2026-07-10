@@ -28,6 +28,9 @@ import { MatChipsModule } from '@angular/material/chips';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { MatSlideToggleModule } from '@angular/material/slide-toggle';
 import { MatDialog, MatDialogModule } from '@angular/material/dialog';
+import { MatExpansionModule } from '@angular/material/expansion';
+import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
+import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 import { JobLogViewerComponent } from '../job-history/job-log-viewer/job-log-viewer.component';
 import { ResourceStripComponent } from '../resource-strip/resource-strip.component';
 import { CrawlStepMonitorComponent } from '../crawl-step-monitor/crawl-step-monitor.component';
@@ -41,7 +44,14 @@ import {
   CrawlStepInfo,
   StartCrawlRequest
 } from '../../services/crawler.service';
-import { UnifiedCrawlService, JobDetail, UnifiedCrawlRequest } from '../../services/unified-crawl.service';
+import {
+  UnifiedCrawlService,
+  JobDetail,
+  UnifiedCrawlRequest,
+  PipelineStepCatalogEntry,
+  SingleSourceRunRequest,
+  SingleSourceRunResponse
+} from '../../services/unified-crawl.service';
 import { DistributedCrawlService } from '../../services/distributed-crawl.service';
 import { WebSocketService } from '../../services/websocket.service';
 import { GraphExtractionService, GraphExtractionConfig } from '../../services/graph-extraction.service';
@@ -65,6 +75,9 @@ import { catchError } from 'rxjs/operators';
     MatTooltipModule,
     MatSlideToggleModule,
     MatDialogModule,
+    MatExpansionModule,
+    MatProgressSpinnerModule,
+    MatSnackBarModule,
     JobLogViewerComponent,
     ResourceStripComponent,
     CrawlStepMonitorComponent
@@ -106,6 +119,19 @@ export class CrawlerManagerComponent implements OnInit, OnDestroy {
   extractionAgentLabel: string | null = null;
   private wsSubs: Subscription[] = [];
 
+  // ── Single-source crawl panel ─────────────────────────────────────────────
+  ssMode: 'file' | 'url' | 'text' = 'file';
+  ssPathOrUrl = '';
+  ssText = '';
+  ssLabel = '';
+  ssDryRun = true;
+  ssRunning = false;
+  ssResult: SingleSourceRunResponse | null = null;
+  ssError: string | null = null;
+  ssStepCatalog: PipelineStepCatalogEntry[] = [];
+  ssStepSelections: { [id: string]: 'run' | 'skip' } = {};
+  private ssStepCatalogLoaded = false;
+
   constructor(
     private crawlerService: CrawlerService,
     private unifiedCrawlService: UnifiedCrawlService,
@@ -114,7 +140,8 @@ export class CrawlerManagerComponent implements OnInit, OnDestroy {
     private wsService: WebSocketService,
     private graphExtractionService: GraphExtractionService,
     private dialog: MatDialog,
-    private zone: NgZone
+    private zone: NgZone,
+    private snackBar: MatSnackBar
   ) {}
 
   ngOnInit(): void {
@@ -636,5 +663,97 @@ export class CrawlerManagerComponent implements OnInit, OnDestroy {
 
   trackByJobId(_i: number, job: CrawlJobSummary): string {
     return job.jobId;
+  }
+
+  // ── Single-source crawl panel ─────────────────────────────────────────────
+
+  /** Load the step catalog the first time the panel opens. */
+  onSsPanelOpened(): void {
+    if (this.ssStepCatalogLoaded) return;
+    this.ssStepCatalogLoaded = true;
+    this.unifiedCrawlService.getStepCatalog().subscribe({
+      next: (catalog) => {
+        this.ssStepCatalog = catalog;
+        this.ssStepSelections = {};
+        for (const step of catalog) {
+          this.ssStepSelections[step.id] = 'run';
+        }
+        this.cdr.markForCheck();
+      },
+      error: () => { /* non-fatal — step selector remains hidden */ }
+    });
+  }
+
+  /**
+   * Set a step's run/skip selection and cascade dependents: any dependent currently set
+   * to 'run' is forced to 'skip' when its dependency is no longer 'run'.
+   */
+  ssSetsStepSelection(stepId: string, value: 'run' | 'skip'): void {
+    this.ssStepSelections[stepId] = value;
+    for (const step of this.ssStepCatalog) {
+      if (step.dependsOn.includes(stepId) && value !== 'run') {
+        if (this.ssStepSelections[step.id] === 'run') {
+          this.ssStepSelections[step.id] = 'skip';
+        }
+      }
+    }
+  }
+
+  /** True when any direct dependency of this step is set to 'skip'. */
+  ssIsStepDependencyBlocked(step: PipelineStepCatalogEntry): boolean {
+    return step.dependsOn.some(depId => this.ssStepSelections[depId] === 'skip');
+  }
+
+  /** True when the Run button should be disabled. */
+  get ssCanRun(): boolean {
+    if (this.ssRunning) return false;
+    if (this.ssMode === 'text') return this.ssText.trim().length > 0;
+    return this.ssPathOrUrl.trim().length > 0;
+  }
+
+  runSingleSource(): void {
+    this.ssRunning = true;
+    this.ssResult = null;
+    this.ssError = null;
+    this.cdr.markForCheck();
+
+    const request: SingleSourceRunRequest = { dryRun: this.ssDryRun };
+
+    if (this.ssMode === 'text') {
+      request.content = this.ssText.trim();
+      if (this.ssLabel.trim()) request.label = this.ssLabel.trim();
+    } else {
+      request.pathOrUrl = this.ssPathOrUrl.trim();
+    }
+
+    if (!this.ssDryRun) {
+      request.waitTimeoutSeconds = 5;
+      // Include steps only when the user deviated from the default run-everything
+      const hasSkip = this.ssStepCatalog.some(
+        s => !s.foundational && this.ssStepSelections[s.id] === 'skip'
+      );
+      if (hasSkip) {
+        request.steps = this.ssStepCatalog
+          .filter(s => !s.foundational && this.ssStepSelections[s.id] === 'run')
+          .map(s => s.id);
+      }
+    }
+
+    this.unifiedCrawlService.runSingleSource(request).subscribe({
+      next: (resp) => {
+        this.ssRunning = false;
+        this.ssResult = resp;
+        if (!resp.dryRun && resp.jobId) {
+          this.snackBar.open(`Job started: ${resp.jobId.substring(0, 8)}`, 'OK', { duration: 4000 });
+          this.loadJobs();
+        }
+        this.cdr.markForCheck();
+      },
+      error: (err: any) => {
+        this.ssRunning = false;
+        this.ssError = err.error?.error || err.message || err.statusText || 'Unknown error';
+        this.cdr.markForCheck();
+      }
+    });
   }
 }

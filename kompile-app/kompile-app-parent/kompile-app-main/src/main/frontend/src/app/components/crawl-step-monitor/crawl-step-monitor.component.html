@@ -23,8 +23,9 @@
         <mat-icon class="csm-chevron" [class.csm-chevron-open]="isStepExpanded(step.stepId)">chevron_right</mat-icon>
         <mat-icon class="csm-type-icon">{{ getStepTypeIcon(step.stepType) }}</mat-icon>
         <div class="csm-title">
-          <strong>{{ step.displayName || step.stepId }}</strong>
-          <span class="csm-subtitle">{{ step.stepType }} &bull; {{ step.status }}</span>
+          <strong>{{ step.displayName || getPhaseLabel(step.stepId) }}</strong>
+          <span class="csm-subtitle">{{ getStepSubtitle(step) }}</span>
+          <span class="csm-live-hint" *ngIf="getStepLiveHint(step) as hint">{{ hint }}</span>
         </div>
 
         <!-- Header hint badges so users know what's inside before expanding -->

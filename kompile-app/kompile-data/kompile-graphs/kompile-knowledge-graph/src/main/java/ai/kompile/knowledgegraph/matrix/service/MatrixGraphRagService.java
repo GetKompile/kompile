@@ -531,10 +531,10 @@ public class MatrixGraphRagService implements GraphRagService {
         if (node == null || node.getMetadata() == null) {
             return 0.0;
         }
-        java.util.Map<String, Object> meta = node.getMetadata();
+        Map<String, Object> meta = node.getMetadata();
         // Prefer grounded (PSL-inferred) confidence: max over "inferred.<predicate>.confidence".
         double grounded = -1.0;
-        for (java.util.Map.Entry<String, Object> e : meta.entrySet()) {
+        for (Map.Entry<String, Object> e : meta.entrySet()) {
             String k = e.getKey();
             if (k != null && k.startsWith("inferred.") && k.endsWith(".confidence")
                     && e.getValue() instanceof Number num) {
@@ -867,7 +867,7 @@ public class MatrixGraphRagService implements GraphRagService {
 
         Map<String, Object> nodeMeta = node.getMetadata();
         if (nodeMeta != null && !nodeMeta.isEmpty()) {
-            entity.setMetadata(new java.util.LinkedHashMap<>(nodeMeta));
+            entity.setMetadata(new LinkedHashMap<>(nodeMeta));
 
             // Confidence from metadata if present
             Object confObj = nodeMeta.get("confidence");
@@ -875,7 +875,7 @@ public class MatrixGraphRagService implements GraphRagService {
                 entity.setConfidence(((Number) confObj).doubleValue());
             }
         } else {
-            entity.setMetadata(new java.util.LinkedHashMap<>());
+            entity.setMetadata(new LinkedHashMap<>());
         }
 
         // textUnits: description + content_preview snippet from metadata

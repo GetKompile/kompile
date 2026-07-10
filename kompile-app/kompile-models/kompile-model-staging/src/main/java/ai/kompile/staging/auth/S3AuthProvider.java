@@ -16,6 +16,7 @@
 
 package ai.kompile.staging.auth;
 
+import ai.kompile.utils.HashUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -25,7 +26,6 @@ import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
@@ -190,10 +190,8 @@ public class S3AuthProvider implements ArchiveAuthProvider {
         return bytesToHex(hmacSha256(key, data));
     }
 
-    private String sha256Hex(String data) throws Exception {
-        MessageDigest digest = MessageDigest.getInstance("SHA-256");
-        byte[] hash = digest.digest(data.getBytes(StandardCharsets.UTF_8));
-        return bytesToHex(hash);
+    private String sha256Hex(String data) {
+        return HashUtils.sha256Hex(data);
     }
 
     private String bytesToHex(byte[] bytes) {

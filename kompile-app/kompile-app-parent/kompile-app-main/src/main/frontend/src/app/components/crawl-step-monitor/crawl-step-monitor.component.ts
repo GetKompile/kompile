@@ -193,6 +193,64 @@ export class CrawlStepMonitorComponent {
     return 'step-' + (status || 'pending').toLowerCase();
   }
 
+  getPhaseLabel(phase: string | undefined | null): string {
+    const key = (phase || '').toUpperCase();
+    const labels: { [key: string]: string } = {
+      DISCOVERING: 'Discovering sources',
+      LOADING: 'Loading documents',
+      CONVERTING: 'Converting documents',
+      ROUTING: 'Routing content',
+      CHUNKING: 'Chunking documents',
+      GRAPH_PREP: 'Preparing graph context',
+      GRAPH_EXTRACTION: 'LLM graph extraction',
+      MODEL_ROUTING: 'Selecting model backend',
+      RESOURCE_GATE: 'Waiting for memory slot',
+      ENTITY_RESOLUTION: 'Resolving graph entities',
+      EDGE_COMPUTATION: 'Graph edge cleanup',
+      EMBEDDING: 'Embedding & vector indexing',
+      VECTOR_INDEXING: 'Embedding & vector indexing',
+      INDEXING: 'Embedding & vector indexing',
+      ENRICHMENT: 'Post-Crawl Enrichment',
+      LEARNING: 'KGE Training (Learning)',
+      CRAWL_SURFACE: 'Publishing crawl results',
+      SURFACING: 'Publishing crawl surface'
+    };
+    return labels[key] || (phase ? phase.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, c => c.toUpperCase()) : 'Crawl step');
+  }
+
+  getStatusLabel(status: string | undefined | null): string {
+    const key = (status || '').toUpperCase();
+    const labels: { [key: string]: string } = {
+      RUNNING: 'running',
+      BACKPRESSURE: 'waiting',
+      COMPLETED: 'done',
+      FAILED: 'failed',
+      SKIPPED: 'skipped',
+      DEFERRED: 'deferred',
+      CANCELLED: 'cancelled',
+      PENDING: 'pending'
+    };
+    return labels[key] || (status || 'pending').toLowerCase();
+  }
+
+  getStepSubtitle(step: PipelineStepProgress): string {
+    const type = this.getPhaseLabel(step.stepType || step.stepId);
+    const status = this.getStatusLabel(step.status);
+    return `${type} · ${status}`;
+  }
+
+  getStepLiveHint(step: PipelineStepProgress): string {
+    if (step.message) return step.message;
+    const events = this.getStepEvents(step);
+    if (events.length) return events[events.length - 1].message;
+    const calls = this.getStepLlmCalls(step);
+    if (calls.length) {
+      const last = calls[calls.length - 1];
+      return `${last.backendId || last.taskType}: ${last.success ? 'completed' : (last.errorCategory || 'failed')}`;
+    }
+    return '';
+  }
+
   /**
    * True for every terminal state where the user can request a re-run.
    * RUNNING/PENDING → no button (step is already active or not yet reached).
@@ -320,8 +378,8 @@ export class CrawlStepMonitorComponent {
     return stages;
   }
 
-  /** Number of top-level orchestrator stages (mirrors GraphHydrationOrchestrator.TOTAL_STAGES = 3). */
-  private static readonly HYDRATION_TOTAL_STAGES = 3;
+  /** Number of top-level orchestrator stages used until the backend reports totalItems. */
+  private static readonly HYDRATION_TOTAL_STAGES = 4;
 
   /** Abbreviate a raw message from `[STAGE_ID] text` to just the text part, up to 80 chars. */
   private shortMessage(message: string, stageId: string): string {

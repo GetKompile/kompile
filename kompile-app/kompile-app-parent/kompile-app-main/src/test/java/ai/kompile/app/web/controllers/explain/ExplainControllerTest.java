@@ -74,7 +74,7 @@ class ExplainControllerTest {
                         .computedAt(Instant.now())
                         .build());
         orchestrator = new ExplainOrchestrator(groundingService, kgService, attributionService, pslService, bayesianService);
-        controller = new ExplainController(orchestrator, groundingService);
+        controller = new ExplainController(orchestrator, groundingService, null);
     }
 
     // ── Validation ───────────────────────────────────────────────────────────────
@@ -86,14 +86,14 @@ class ExplainControllerTest {
         @Test
         @DisplayName("blank target throws IllegalArgumentException")
         void blankTarget_throws() {
-            ExplainRequest req = new ExplainRequest("", 1L, 3, null, null);
+            ExplainRequest req = new ExplainRequest("", 1L, 3, null, null, null);
             assertThrows(IllegalArgumentException.class, () -> controller.explain(req));
         }
 
         @Test
         @DisplayName("null target throws IllegalArgumentException")
         void nullTarget_throws() {
-            ExplainRequest req = new ExplainRequest(null, 1L, 3, null, null);
+            ExplainRequest req = new ExplainRequest(null, 1L, 3, null, null, null);
             assertThrows(IllegalArgumentException.class, () -> controller.explain(req));
         }
     }
@@ -108,9 +108,9 @@ class ExplainControllerTest {
         @DisplayName("unknown atom routes to GROUNDING, returns UNKNOWN verdict")
         void atomKey_unknownAtom_returnsUnknown() {
             ExplainRequest req = new ExplainRequest(
-                    "isEmployedBy(Alice, Acme)", 42L, 3, null, "sess-1");
+                    "isEmployedBy(Alice, Acme)", 42L, 3, null, "sess-1", null);
 
-            ResponseEntity<ExplainResponse> resp = controller.explain(req);
+            ResponseEntity<ExplainResponse> resp = explainTyped(req);
 
             assertEquals(HttpStatus.OK, resp.getStatusCode());
             assertNotNull(resp.getBody());
@@ -133,9 +133,9 @@ class ExplainControllerTest {
             ));
 
             ExplainRequest req = new ExplainRequest(
-                    "worksAt(Bob, Corp)", 42L, 3, null, null);
+                    "worksAt(Bob, Corp)", 42L, 3, null, null, null);
 
-            ResponseEntity<ExplainResponse> resp = controller.explain(req);
+            ResponseEntity<ExplainResponse> resp = explainTyped(req);
 
             assertEquals(HttpStatus.OK, resp.getStatusCode());
             assertNotNull(resp.getBody());
@@ -150,9 +150,9 @@ class ExplainControllerTest {
         @DisplayName("null factSheetId defaults to 0 (global)")
         void nullFactSheetId_usesGlobal() {
             ExplainRequest req = new ExplainRequest(
-                    "foo(X)", null, 0, null, null);
+                    "foo(X)", null, 0, null, null, null);
 
-            ResponseEntity<ExplainResponse> resp = controller.explain(req);
+            ResponseEntity<ExplainResponse> resp = explainTyped(req);
             assertEquals(HttpStatus.OK, resp.getStatusCode());
             assertEquals("GROUNDING", resp.getBody().inferenceMode());
         }
@@ -162,9 +162,9 @@ class ExplainControllerTest {
         void explicitGroundingMode_overridesAutoDetect() {
             // Target has no parentheses — would auto-route to HYBRID — but mode=GROUNDING forces it
             ExplainRequest req = new ExplainRequest(
-                    "someEntityId", 1L, 3, "GROUNDING", null);
+                    "someEntityId", 1L, 3, "GROUNDING", null, null);
 
-            ResponseEntity<ExplainResponse> resp = controller.explain(req);
+            ResponseEntity<ExplainResponse> resp = explainTyped(req);
             assertEquals(HttpStatus.OK, resp.getStatusCode());
             assertEquals("GROUNDING", resp.getBody().inferenceMode());
         }
@@ -188,9 +188,9 @@ class ExplainControllerTest {
                             .build());
 
             ExplainRequest req = new ExplainRequest(
-                    "causal:PaymentFailure", 1L, 0, null, null);
+                    "causal:PaymentFailure", 1L, 0, null, null, null);
 
-            ResponseEntity<ExplainResponse> resp = controller.explain(req);
+            ResponseEntity<ExplainResponse> resp = explainTyped(req);
 
             assertEquals(HttpStatus.OK, resp.getStatusCode());
             assertNotNull(resp.getBody());
@@ -211,9 +211,9 @@ class ExplainControllerTest {
         void causalPrefix_noChains_zeroConfidence() {
             // Default mock already returns empty AttributionResult (set up in @BeforeEach)
             ExplainRequest req = new ExplainRequest(
-                    "causal:UnknownEvent", 1L, 0, null, null);
+                    "causal:UnknownEvent", 1L, 0, null, null, null);
 
-            ResponseEntity<ExplainResponse> resp = controller.explain(req);
+            ResponseEntity<ExplainResponse> resp = explainTyped(req);
 
             assertEquals(HttpStatus.OK, resp.getStatusCode());
             assertEquals("CAUSAL", resp.getBody().inferenceMode());
@@ -225,9 +225,9 @@ class ExplainControllerTest {
         @DisplayName("explicit mode=CAUSAL overrides auto-detection")
         void explicitCausalMode() {
             ExplainRequest req = new ExplainRequest(
-                    "someTarget", 1L, 0, "CAUSAL", null);
+                    "someTarget", 1L, 0, "CAUSAL", null, null);
 
-            ResponseEntity<ExplainResponse> resp = controller.explain(req);
+            ResponseEntity<ExplainResponse> resp = explainTyped(req);
 
             assertEquals(HttpStatus.OK, resp.getStatusCode());
             assertEquals("CAUSAL", resp.getBody().inferenceMode());
@@ -245,9 +245,9 @@ class ExplainControllerTest {
         void bareEntityId_routesToHybrid() {
             // No parentheses, no causal: prefix → HYBRID
             ExplainRequest req = new ExplainRequest(
-                    "entity-node-123", 1L, 0, null, null);
+                    "entity-node-123", 1L, 0, null, null, null);
 
-            ResponseEntity<ExplainResponse> resp = controller.explain(req);
+            ResponseEntity<ExplainResponse> resp = explainTyped(req);
 
             assertEquals(HttpStatus.OK, resp.getStatusCode());
             assertNotNull(resp.getBody());
@@ -267,8 +267,8 @@ class ExplainControllerTest {
         @Test
         @DisplayName("trail is always non-null")
         void trail_isAlwaysNonNull() {
-            ExplainRequest req = new ExplainRequest("foo(X)", 1L, 0, null, null);
-            ResponseEntity<ExplainResponse> resp = controller.explain(req);
+            ExplainRequest req = new ExplainRequest("foo(X)", 1L, 0, null, null, null);
+            ResponseEntity<ExplainResponse> resp = explainTyped(req);
             assertNotNull(resp.getBody());
             assertNotNull(resp.getBody().trail());
         }
@@ -276,10 +276,16 @@ class ExplainControllerTest {
         @Test
         @DisplayName("computedAt is always set")
         void computedAt_isSet() {
-            ExplainRequest req = new ExplainRequest("bar(Y)", 1L, 0, null, null);
-            ResponseEntity<ExplainResponse> resp = controller.explain(req);
+            ExplainRequest req = new ExplainRequest("bar(Y)", 1L, 0, null, null, null);
+            ResponseEntity<ExplainResponse> resp = explainTyped(req);
             assertNotNull(resp.getBody());
             assertNotNull(resp.getBody().computedAt());
         }
+    }
+
+    /** The controller returns {@code ResponseEntity<?>} since the PROV formats landed; narrow it for assertions. */
+    @SuppressWarnings("unchecked")
+    private ResponseEntity<ExplainResponse> explainTyped(ExplainRequest req) {
+        return (ResponseEntity<ExplainResponse>) controller.explain(req);
     }
 }

@@ -16,7 +16,7 @@
 
 package ai.kompile.cli.mcp.stdio;
 
-import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.common.logs.LogPaths;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -37,7 +37,7 @@ import java.time.format.DateTimeFormatter;
  * it in the chat UI. To keep initialization warnings, skill-loading errors, and third-party
  * library chatter out of the UI, the MCP stdio server redirects {@code System.err} to this
  * logger early in {@code runInProcess()}. All diagnostics are written to
- * {@code ~/.kompile/logs/mcp-stderr.log} instead of the process stderr stream.</p>
+ * {@code <kompile-home>/logs/mcp-stderr.log} instead of the process stderr stream.</p>
  *
  * <p>The log is rotated when it exceeds {@value #MAX_LOG_SIZE} bytes. Writes are synchronized
  * so this sink is safe to share across threads.</p>
@@ -54,7 +54,7 @@ public final class McpStderrLogger {
     private final PrintStream printStream;
 
     public McpStderrLogger() {
-        this(KompileHome.homeDirectory().toPath().resolve("logs").resolve("mcp-stderr.log"));
+        this(LogPaths.logsDirectory().toPath().resolve("mcp-stderr.log"));
     }
 
     public McpStderrLogger(Path logFile) {

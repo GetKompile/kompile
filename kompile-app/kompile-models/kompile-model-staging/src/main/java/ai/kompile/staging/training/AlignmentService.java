@@ -16,6 +16,7 @@
 
 package ai.kompile.staging.training;
 
+import ai.kompile.staging.config.StagingPropertyKeys;
 import ai.kompile.staging.web.dto.*;
 import ai.kompile.core.staging.TrainingJobStatus;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -41,13 +42,16 @@ import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Service for alignment training jobs (RLHF, DPO, KTO, ORPO, PPO, GRPO).
- * Uses reflection to access DL4J alignment trainers when available, with simulation fallback.
+ * Missing model artifacts are treated as hard failures.
  */
 @Service
 public class AlignmentService {
     private static final Logger log = LoggerFactory.getLogger(AlignmentService.class);
+    private static final int MIN_TRAINING_BATCH_SIZE = 1;
+    private static final int MAX_TRAINING_STEP_RETRIES = 3;
+    private static final long INITIAL_RETRY_BACKOFF_MS = 250L;
 
-    @Value("${kompile.staging.models-dir:#{systemProperties['user.home'] + '/.kompile/models'}}")
+    @Value(StagingPropertyKeys.MODELS_DIR_VALUE)
     private String modelsDir;
 
     private final Map<String, TrainingJobStatus> activeJobs = new ConcurrentHashMap<>();
@@ -112,7 +116,7 @@ public class AlignmentService {
 
     /**
      * Execute the alignment training process. Loads SameDiff model directly
-     * and trains with algorithm-specific loss. Falls back to simulation if model not found.
+     * and trains with algorithm-specific loss.
      */
     private void executeAlignment(String jobId, AlignmentConfigRequest request) {
         long startMs = System.currentTimeMillis();
@@ -152,12 +156,10 @@ public class AlignmentService {
             // Try to load actual model
             File modelFile = resolveModelFile(request.getBaseModelId());
 
-            if (modelFile != null && modelFile.exists()) {
-                executeRealAlignment(jobId, request, modelFile, algorithm, epochs, loggingSteps, learningRate, startMs);
-            } else {
-                emitLog(jobId, "INFO", "Model file not found, running in simulation mode");
-                executeSimulatedAlignment(jobId, request, algorithm, epochs, loggingSteps, startMs);
+            if (modelFile == null || !modelFile.exists()) {
+                throw new IllegalStateException("Base model file not found for " + request.getBaseModelId());
             }
+            executeRealAlignment(jobId, request, modelFile, algorithm, epochs, loggingSteps, learningRate, startMs);
 
         } catch (Exception e) {
             log.error("Alignment job {} failed", jobId, e);
@@ -214,8 +216,10 @@ public class AlignmentService {
             long stepsPerEpoch = 300;
             long totalSteps = stepsPerEpoch * epochs;
             long globalStep = 0;
+            int effectiveBatchSize = 8;
 
-            emitLog(jobId, "INFO", String.format("Starting %s training: %d epochs, lr=%.2e", algorithm, epochs, learningRate));
+            emitLog(jobId, "INFO", String.format("Starting %s training: %d epochs, lr=%.2e, batchSize=%d",
+                    algorithm, epochs, learningRate, effectiveBatchSize));
 
             for (int epoch = 0; epoch < epochs; epoch++) {
                 if (Thread.currentThread().isInterrupted()) {
@@ -233,31 +237,21 @@ public class AlignmentService {
 
                     globalStep++;
 
-                    // Create preference data batch
-                    INDArray input = Nd4j.randn(8, 768);
-                    INDArray label = Nd4j.zeros(8, 10);
-                    for (int i = 0; i < 8; i++) {
-                        label.putScalar(i, i % 10, 1.0);
-                    }
-
-                    MultiDataSet mds = new org.nd4j.linalg.dataset.MultiDataSet(
-                            new INDArray[]{input}, new INDArray[]{label});
-                    sd.fit(mds);
-
-                    double loss = sd.calcRegularizationScore();
+                    AlignmentStepResult stepResult = fitAlignmentStepWithRetry(
+                            sd, effectiveBatchSize, jobId, algorithm, globalStep);
+                    double loss = stepResult.loss();
+                    effectiveBatchSize = stepResult.batchSize();
 
                     if (globalStep % loggingSteps == 0 || globalStep == 1) {
                         emitLog(jobId, "INFO",
-                                String.format("Step %d/%d | %s Loss: %.4f", globalStep, totalSteps, algorithm, loss));
+                                String.format("Step %d/%d | %s Loss: %.4f | Batch: %d",
+                                        globalStep, totalSteps, algorithm, loss, effectiveBatchSize));
                     }
 
                     double epochProgress = (double) (step + 1) / stepsPerEpoch;
                     double overallProgress = ((double) epoch + epochProgress) / epochs;
                     updateJobStatus(jobId, "TRAINING", epoch + 1, overallProgress,
                             String.format("Epoch %d/%d, Step %d/%d", epoch + 1, epochs, globalStep, totalSteps));
-
-                    input.close();
-                    label.close();
                 }
 
                 emitLog(jobId, "INFO", String.format("Epoch %d/%d completed", epoch + 1, epochs));
@@ -280,68 +274,69 @@ public class AlignmentService {
         }
     }
 
-    /**
-     * Simulated alignment training when model files are not available.
-     */
-    private void executeSimulatedAlignment(String jobId, AlignmentConfigRequest request,
-                                            String algorithm, int epochs, int loggingSteps,
-                                            long startMs) {
-        long stepsPerEpoch = 300;
-        long totalSteps = stepsPerEpoch * epochs;
-        long globalStep = 0;
+    private record AlignmentStepResult(double loss, int batchSize) {}
 
-        Random rng = new Random(request.getTrainingConfig() != null ? request.getTrainingConfig().getSeed() : 42);
-
-        emitLog(jobId, "INFO", "Starting simulated " + algorithm + " training: " + epochs + " epochs, ~" + totalSteps + " total steps");
-
-        for (int epoch = 0; epoch < epochs; epoch++) {
-            if (Thread.currentThread().isInterrupted()) {
-                handleCancellation(jobId, startMs);
-                return;
-            }
-
-            emitLog(jobId, "INFO", String.format("Epoch %d/%d starting", epoch + 1, epochs));
-
-            for (long step = 0; step < stepsPerEpoch; step++) {
-                if (Thread.currentThread().isInterrupted()) {
-                    handleCancellation(jobId, startMs);
-                    return;
+    private AlignmentStepResult fitAlignmentStepWithRetry(SameDiff sd,
+                                                          int initialBatchSize,
+                                                          String jobId,
+                                                          String algorithm,
+                                                          long globalStep) throws InterruptedException {
+        int currentBatchSize = Math.max(MIN_TRAINING_BATCH_SIZE, initialBatchSize);
+        int attempt = 0;
+        while (true) {
+            INDArray input = null;
+            INDArray label = null;
+            try {
+                input = Nd4j.randn(currentBatchSize, 768);
+                label = Nd4j.zeros(currentBatchSize, 10);
+                for (int i = 0; i < currentBatchSize; i++) {
+                    label.putScalar(i, i % 10, 1.0);
                 }
 
-                globalStep++;
-
-                double progress = (double) globalStep / totalSteps;
-                Map<String, Double> stepMetrics = simulateAlignmentMetrics(algorithm, progress, rng, request);
-
-                if (globalStep % loggingSteps == 0 || globalStep == 1) {
-                    StringBuilder metricsStr = new StringBuilder();
-                    metricsStr.append(String.format("Step %d/%d", globalStep, totalSteps));
-                    for (Map.Entry<String, Double> entry : stepMetrics.entrySet()) {
-                        metricsStr.append(String.format(" | %s: %.4f", entry.getKey(), entry.getValue()));
-                    }
-                    emitLog(jobId, "INFO", metricsStr.toString());
-                }
-
-                double epochProgress = (double) (step + 1) / stepsPerEpoch;
-                double overallProgress = ((double) epoch + epochProgress) / epochs;
-                updateJobStatus(jobId, "TRAINING", epoch + 1, overallProgress,
-                        String.format("Epoch %d/%d, Step %d/%d", epoch + 1, epochs, globalStep, totalSteps));
-
-                try {
-                    Thread.sleep(40);
-                } catch (InterruptedException e) {
+                sd.fit(new MultiDataSet(new INDArray[]{input}, new INDArray[]{label}));
+                double loss = sd.calcRegularizationScore();
+                validateFiniteLoss(algorithm + " loss", loss);
+                return new AlignmentStepResult(loss, currentBatchSize);
+            } catch (Exception e) {
+                if (e instanceof InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
-                    handleCancellation(jobId, startMs);
-                    return;
+                    throw interrupted;
                 }
+                attempt++;
+                int reducedBatchSize = Math.max(MIN_TRAINING_BATCH_SIZE, currentBatchSize / 2);
+                if (attempt >= MAX_TRAINING_STEP_RETRIES || currentBatchSize <= MIN_TRAINING_BATCH_SIZE) {
+                    throw new IllegalStateException(algorithm + " step " + globalStep + " failed after " + attempt
+                            + " attempt(s) at batchSize=" + currentBatchSize + ": " + e.getMessage(), e);
+                }
+                long backoffMs = retryBackoffMs(attempt);
+                emitLog(jobId, "WARN", String.format(
+                        "%s step %d failed (attempt %d/%d, batchSize=%d): %s. Retrying with batchSize=%d after %dms",
+                        algorithm, globalStep, attempt, MAX_TRAINING_STEP_RETRIES, currentBatchSize,
+                        e.getMessage(), reducedBatchSize, backoffMs));
+                currentBatchSize = reducedBatchSize;
+                Thread.sleep(backoffMs);
+            } finally {
+                closeArray(input);
+                closeArray(label);
             }
-
-            emitLog(jobId, "INFO", String.format("Epoch %d/%d completed", epoch + 1, epochs));
         }
+    }
 
-        Map<String, Double> finalMetrics = simulateAlignmentMetrics(algorithm, 1.0, rng, request);
-        double finalLoss = finalMetrics.getOrDefault("loss", 0.0);
-        completeAlignment(jobId, request, algorithm, epochs, globalStep, totalSteps, finalLoss, startMs);
+    private void validateFiniteLoss(String label, double loss) {
+        if (!Double.isFinite(loss)) {
+            throw new IllegalStateException(label + " is non-finite: " + loss);
+        }
+    }
+
+    private long retryBackoffMs(int attempt) {
+        int shift = Math.min(Math.max(0, attempt - 1), 4);
+        return INITIAL_RETRY_BACKOFF_MS * (1L << shift);
+    }
+
+    private void closeArray(INDArray array) {
+        if (array != null && !array.wasClosed()) {
+            array.close();
+        }
     }
 
     private void completeAlignment(String jobId, AlignmentConfigRequest request,
@@ -591,53 +586,6 @@ public class AlignmentService {
         if (directFb.exists()) return directFb;
 
         return null;
-    }
-
-    private Map<String, Double> simulateAlignmentMetrics(String algorithm, double progress,
-                                                          Random rng, AlignmentConfigRequest request) {
-        Map<String, Double> metrics = new LinkedHashMap<>();
-        double noise = rng.nextGaussian() * 0.02;
-
-        switch (algorithm) {
-            case "DPO":
-                metrics.put("loss", Math.max(0.01, 0.7 * Math.exp(-2.5 * progress) + 0.05 + noise));
-                metrics.put("chosen_reward", 0.5 + progress * 1.5 + noise);
-                metrics.put("rejected_reward", 0.3 - progress * 0.5 + noise);
-                metrics.put("reward_margin", metrics.get("chosen_reward") - metrics.get("rejected_reward"));
-                metrics.put("accuracy", Math.min(0.95, 0.55 + progress * 0.35 + noise));
-                break;
-            case "KTO":
-                metrics.put("loss", Math.max(0.01, 0.8 * Math.exp(-2.0 * progress) + 0.08 + noise));
-                metrics.put("kto_chosen_loss", Math.max(0.01, 0.5 * Math.exp(-2.5 * progress) + noise));
-                metrics.put("kto_rejected_loss", Math.max(0.01, 0.3 * Math.exp(-1.5 * progress) + noise));
-                metrics.put("implicit_reward", 0.3 + progress * 1.2 + noise);
-                break;
-            case "ORPO":
-                metrics.put("loss", Math.max(0.01, 0.6 * Math.exp(-2.0 * progress) + 0.04 + noise));
-                metrics.put("sft_loss", Math.max(0.01, 1.5 * Math.exp(-3.0 * progress) + 0.1 + noise));
-                metrics.put("odds_ratio_loss", Math.max(0.01, 0.4 * Math.exp(-2.0 * progress) + noise));
-                metrics.put("log_odds_ratio", progress * 2.0 + noise);
-                break;
-            case "PPO":
-                metrics.put("loss", Math.max(0.01, 0.9 * Math.exp(-1.8 * progress) + 0.1 + noise));
-                metrics.put("policy_loss", Math.max(0.01, 0.5 * Math.exp(-2.0 * progress) + noise));
-                metrics.put("value_loss", Math.max(0.01, 0.3 * Math.exp(-2.5 * progress) + noise));
-                metrics.put("mean_reward", progress * 1.0 + noise);
-                metrics.put("kl_divergence", 0.01 + progress * 0.02 + Math.abs(noise * 0.5));
-                metrics.put("clip_fraction", Math.max(0, 0.2 - progress * 0.15 + noise * 0.5));
-                break;
-            case "GRPO":
-                metrics.put("loss", Math.max(0.01, 0.75 * Math.exp(-2.2 * progress) + 0.06 + noise));
-                metrics.put("group_reward_mean", progress * 0.8 + noise);
-                metrics.put("group_reward_std", Math.max(0.01, 0.5 * (1.0 - progress * 0.6) + noise * 0.5));
-                metrics.put("kl_divergence", 0.01 + progress * 0.015 + Math.abs(noise * 0.3));
-                metrics.put("advantage_mean", progress * 0.5 + noise);
-                break;
-            default:
-                metrics.put("loss", Math.max(0.01, 0.7 * Math.exp(-2.5 * progress) + 0.05 + noise));
-        }
-
-        return metrics;
     }
 
     private Map<String, String> algorithmEntry(String id, String name, String description) {

@@ -35,6 +35,7 @@ import java.util.Locale;
 public class ClaudeCodeDecoder extends AbstractTuiDecoder {
 
     private boolean projectMcpPromptConfirmed;
+    private boolean folderTrustConfirmed;
 
     @Override
     public String agentName() {
@@ -76,6 +77,12 @@ public class ClaudeCodeDecoder extends AbstractTuiDecoder {
         if (text.contains("auto-accept") || text.contains("bypassing permissions")) return true;
         if (text.contains("accept edits") || text.contains("shift+tab")) return true;
         if (text.contains("tokens") && text.length() < 100) return true;
+        if (text.contains("/effort") && text.length() < 100) return true;
+        if (text.contains("/model") && text.length() < 120
+                && (text.contains("switch") || text.contains("model"))) return true;
+        if (text.contains("fast mode is now available")) return true;
+        if (text.contains("newest model") || text.contains("meet fable")) return true;
+        if (text.contains("included in your plan limits") || text.contains("usage credits to")) return true;
         if (text.startsWith("/ ") && text.length() < 100) return true;
         if (text.startsWith("? ") && text.length() < 100) return true;
         if (text.startsWith("mcp ") && text.contains("connected") && text.length() < 100) return true;
@@ -99,12 +106,23 @@ public class ClaudeCodeDecoder extends AbstractTuiDecoder {
 
     @Override
     public String buildInputResponses(String rawChunk, VirtualTerminal vt) {
-        if (projectMcpPromptConfirmed) return "";
         String haystack = (rawChunk == null ? "" : rawChunk) + '\n' + (vt == null ? "" : vt.getFullScreen());
-        if (haystack.contains("new")
-                && haystack.contains("MCP")
-                && haystack.contains("servers")
-                && haystack.contains("Enter")
+        String lower = haystack.toLowerCase(Locale.ROOT);
+
+        // Startup "trust this folder" prompt: "Is this a project you created or one you trust?"
+        // with "Yes, I trust this folder" (default) / "No, exit". Left unanswered, the first user
+        // message's submit CR selects the default and the message TEXT is discarded — so the first
+        // turn is silently lost. Accept it (default option 1) once, before the message is sent.
+        if (!folderTrustConfirmed
+                && (lower.contains("trust this folder") || lower.contains("is this a project you created"))) {
+            folderTrustConfirmed = true;
+            return "\r";
+        }
+
+        // Project MCP-servers confirmation prompt.
+        if (!projectMcpPromptConfirmed
+                && haystack.contains("new") && haystack.contains("MCP")
+                && haystack.contains("servers") && haystack.contains("Enter")
                 && haystack.contains("confirm")) {
             projectMcpPromptConfirmed = true;
             return "\r";
@@ -115,5 +133,15 @@ public class ClaudeCodeDecoder extends AbstractTuiDecoder {
     @Override
     public long startupSettleMillis() {
         return 5000L;
+    }
+
+    @Override
+    public long submitDelayMillis() {
+        // ink's paste heuristic treats text+CR arriving in one burst as a single
+        // multi-line paste and swallows the CR instead of submitting — the message
+        // then sits in the input box forever. A pause between the prompt text and
+        // the submit key (same pattern as codex 300ms / opencode 500ms) makes the
+        // CR arrive as a distinct keypress.
+        return 250L;
     }
 }

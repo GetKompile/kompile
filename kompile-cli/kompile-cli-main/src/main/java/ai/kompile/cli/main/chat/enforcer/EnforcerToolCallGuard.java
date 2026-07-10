@@ -25,15 +25,28 @@ import java.util.Set;
 
 /**
  * Pre-execution guard for MCP tools while enforcer mode is active.
+ *
+ * <p>The LLM judge is created LAZILY, on the first tool call that keyword rules cannot
+ * decide. Constructing it eagerly spawned a persistent judge subprocess inside every
+ * {@code kompile mcp-stdio} launch that inherited the enforcer environment — blocking
+ * the MCP initialize handshake for the whole agent-CLI boot (the "slow tool injection"
+ * stall) and re-entering MCP injection recursively via the judge's own agent process.</p>
  */
 public class EnforcerToolCallGuard implements AutoCloseable {
 
-    private static final Set<String> ALWAYS_ALLOW = Set.of();
-
     private final ObjectMapper objectMapper;
     private final EnforcerRuntimePolicy runtimePolicy;
-    private final EnforcerJudge judge;
     private final KeywordEnforcerEvaluator keywordEvaluator;
+
+    /** Lazily-created LLM judge; guarded by {@link #judgeLock}. */
+    private volatile EnforcerJudge judge;
+    private volatile boolean judgeInitAttempted;
+    private final Object judgeLock = new Object();
+
+    public EnforcerToolCallGuard(ObjectMapper objectMapper,
+                                 EnforcerRuntimePolicy runtimePolicy) {
+        this(objectMapper, runtimePolicy, null);
+    }
 
     public EnforcerToolCallGuard(ObjectMapper objectMapper,
                                  EnforcerRuntimePolicy runtimePolicy,
@@ -41,6 +54,7 @@ public class EnforcerToolCallGuard implements AutoCloseable {
         this.objectMapper = objectMapper;
         this.runtimePolicy = runtimePolicy;
         this.judge = judge;
+        this.judgeInitAttempted = judge != null;
         // Always build keyword evaluator as a fallback / fast-path filter
         this.keywordEvaluator = runtimePolicy != null && runtimePolicy.getPolicy() != null
                 ? KeywordEnforcerEvaluator.fromPolicy(runtimePolicy.getPolicy(), objectMapper)
@@ -64,9 +78,33 @@ public class EnforcerToolCallGuard implements AutoCloseable {
                 || !runtimePolicy.getPolicy().hasRules()) {
             return null;
         }
-        HarnessConfig config = runtimePolicy.getHarnessConfig();
-        EnforcerJudge judge = new EnforcerJudge(config, objectMapper);
-        return new EnforcerToolCallGuard(objectMapper, runtimePolicy, judge);
+        // No judge here — it is created on first use so MCP server startup never
+        // blocks on (or recursively spawns) a judge agent process.
+        return new EnforcerToolCallGuard(objectMapper, runtimePolicy);
+    }
+
+    /**
+     * Create (once) and return the LLM judge, or {@code null} when construction failed.
+     * Deliberately off the constructor path — see the class javadoc.
+     */
+    private EnforcerJudge lazyJudge() {
+        EnforcerJudge existing = judge;
+        if (existing != null || judgeInitAttempted) {
+            return existing;
+        }
+        synchronized (judgeLock) {
+            if (!judgeInitAttempted) {
+                judgeInitAttempted = true;
+                try {
+                    HarnessConfig config = runtimePolicy != null ? runtimePolicy.getHarnessConfig() : null;
+                    judge = new EnforcerJudge(config != null ? config : HarnessConfig.load(objectMapper),
+                            objectMapper);
+                } catch (Exception e) {
+                    System.err.println("[enforcer] Could not create tool-call judge: " + e.getMessage());
+                }
+            }
+            return judge;
+        }
     }
 
     public boolean isActive() {
@@ -80,9 +118,6 @@ public class EnforcerToolCallGuard implements AutoCloseable {
         }
         if (toolName == null || toolName.isBlank()) {
             return EnforcerToolCallDecision.block("Missing MCP tool name");
-        }
-        if (ALWAYS_ALLOW.contains(toolName)) {
-            return EnforcerToolCallDecision.allow("Infrastructure tool allowed");
         }
 
         // Fast-path: keyword evaluation (instant, no LLM needed)
@@ -100,8 +135,9 @@ public class EnforcerToolCallGuard implements AutoCloseable {
             }
         }
 
-        // Full LLM evaluation for nuanced rules
-        if (judge == null || !judge.isAvailable()) {
+        // Full LLM evaluation for nuanced rules (judge created on first need)
+        EnforcerJudge llmJudge = lazyJudge();
+        if (llmJudge == null || !llmJudge.isAvailable()) {
             // No LLM judge available — keyword check already passed, allow
             if (keywordEvaluator != null && keywordEvaluator.isAvailable()) {
                 return EnforcerToolCallDecision.allow("Passed keyword check (no LLM judge available)");
@@ -113,7 +149,7 @@ public class EnforcerToolCallGuard implements AutoCloseable {
             String serializedArgs = objectMapper.writeValueAsString(args == null ? Map.of() : args);
             EnforcerConversationContext context = EnforcerConversationContext.read(
                     runtimePolicy.getContextFile(), objectMapper);
-            EnforcerToolCallDecision decision = judge.evaluateToolCall(
+            EnforcerToolCallDecision decision = llmJudge.evaluateToolCall(
                     toolName, serializedArgs, runtimePolicy.getPolicy(), context);
             if (decision.isRewrite() && decision.getRewrittenArgs() == null) {
                 return EnforcerToolCallDecision.block(
@@ -126,15 +162,18 @@ public class EnforcerToolCallGuard implements AutoCloseable {
     }
 
     public String describe() {
-        String judgeDescription = judge != null ? judge.describe() : "none";
+        // Never force judge construction just to describe it.
+        EnforcerJudge built = judge;
+        String judgeDescription = built != null ? built.describe() : "lazy (created on first use)";
         String sessionId = runtimePolicy != null ? runtimePolicy.getSessionId() : "none";
         return "session=" + sessionId + ", judge=" + judgeDescription;
     }
 
     @Override
     public void close() {
-        if (judge != null) {
-            judge.close();
+        EnforcerJudge built = judge;
+        if (built != null) {
+            built.close();
         }
     }
 }

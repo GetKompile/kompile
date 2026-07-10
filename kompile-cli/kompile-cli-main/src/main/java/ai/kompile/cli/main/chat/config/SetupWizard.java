@@ -52,6 +52,20 @@ public class SetupWizard {
      * Returns a valid ChatConfig or null if the user cancels.
      */
     public static ChatConfig run() {
+        return run(ChatConfig.Scope.PROJECT, ChatConfig.defaultProjectRoot());
+    }
+
+    public static ChatConfig runGlobal() {
+        return run(ChatConfig.Scope.GLOBAL, null);
+    }
+
+    public static ChatConfig run(ChatConfig.Scope scope) {
+        return run(scope, ChatConfig.defaultProjectRoot());
+    }
+
+    public static ChatConfig run(ChatConfig.Scope scope, Path projectRoot) {
+        ChatConfig.Scope targetScope = scope != null ? scope : ChatConfig.Scope.PROJECT;
+        Path targetPath = ChatConfig.configPath(targetScope, projectRoot).toAbsolutePath().normalize();
         Terminal terminal = null;
         try {
             terminal = TerminalBuilder.builder().system(true).build();
@@ -62,7 +76,8 @@ public class SetupWizard {
             System.out.println(BOLD + CYAN + "  │       Kompile Chat Setup             │" + RESET);
             System.out.println(BOLD + CYAN + "  ╰──────────────────────────────────────╯" + RESET);
             System.out.println();
-            System.out.println("  " + DIM + "(Config will be saved to ~/.kompile/chat-config.json)" + RESET);
+            System.out.println("  " + DIM + "(Config will be saved to "
+                    + targetScope.name().toLowerCase() + " " + targetPath + ")" + RESET);
             System.out.println();
 
             // Step 1: Select chat mode — ALWAYS first
@@ -111,35 +126,38 @@ public class SetupWizard {
                 passthroughAgent = selectPassthroughAgent(reader);
                 if (passthroughAgent == null) return null;
 
-                // Step 2b: Optional rule enforcement (judge/enforcer).
-                // The Y/N answer is recorded on the ChatConfig (enforcementEnabled) so the
-                // router honors it for THIS session — a stale .kompile/enforcer-config.json
-                // can no longer force enforcement back on after the user answers "N".
-                System.out.println();
-                if (promptYesNo(reader,
-                        "Enable rule enforcement (judge/enforcer) for this session?", false)) {
-                    Path enforcerWd = Path.of(System.getProperty("user.dir"))
-                            .toAbsolutePath().normalize();
-                    try {
-                        EnforcerConfig enforcerConfig =
-                                EnforcerSetupWizard.runWithReader(reader, enforcerWd, passthroughAgent);
-                        if (enforcerConfig != null) {
-                            enforcementChoice = Boolean.TRUE;
-                            passthroughManaged = true; // enforcement requires the managed REPL
-                            System.out.println(GREEN + "  ✓ Enforcement configured ("
-                                    + (enforcerConfig.isKeywordMode() ? "keyword rules" : "LLM judge")
-                                    + ") → .kompile/enforcer-config.json" + RESET);
-                        } else {
-                            enforcementChoice = Boolean.FALSE; // cancelled → no enforcement this run
-                            System.out.println(YELLOW
-                                    + "  Enforcement setup cancelled — continuing without it." + RESET);
+                if (passthroughManaged) {
+                    // Step 2b: Optional rule enforcement (judge/enforcer).
+                    // The Y/N answer is recorded on the ChatConfig (enforcementEnabled) so the
+                    // router honors it for THIS session — a stale .kompile/enforcer-config.json
+                    // can no longer force enforcement back on after the user answers "N".
+                    System.out.println();
+                    if (promptYesNo(reader,
+                            "Enable rule enforcement (judge/enforcer) for this session?", false)) {
+                        Path enforcerWd = Path.of(System.getProperty("user.dir"))
+                                .toAbsolutePath().normalize();
+                        try {
+                            EnforcerConfig enforcerConfig =
+                                    EnforcerSetupWizard.runWithReader(reader, enforcerWd, passthroughAgent);
+                            if (enforcerConfig != null) {
+                                enforcementChoice = Boolean.TRUE;
+                                System.out.println(GREEN + "  ✓ Enforcement configured ("
+                                        + (enforcerConfig.isKeywordMode() ? "keyword rules" : "LLM judge")
+                                        + ") → .kompile/enforcer-config.json" + RESET);
+                            } else {
+                                enforcementChoice = Boolean.FALSE; // cancelled → no enforcement this run
+                                System.out.println(YELLOW
+                                        + "  Enforcement setup cancelled — continuing without it." + RESET);
+                            }
+                        } catch (Exception e) {
+                            enforcementChoice = Boolean.FALSE;
+                            System.err.println("  Enforcer setup failed: " + e.getMessage());
                         }
-                    } catch (Exception e) {
-                        enforcementChoice = Boolean.FALSE;
-                        System.err.println("  Enforcer setup failed: " + e.getMessage());
+                    } else {
+                        enforcementChoice = Boolean.FALSE; // explicit opt-out for THIS session
                     }
                 } else {
-                    enforcementChoice = Boolean.FALSE; // explicit opt-out for THIS session
+                    enforcementChoice = Boolean.FALSE; // direct style has no managed enforcer layer
                 }
             }
 
@@ -176,13 +194,20 @@ public class SetupWizard {
             config.setEnforcementEnabled(enforcementChoice);
 
             try {
-                config.save();
+                config.save(targetScope, projectRoot);
                 System.out.println();
                 System.out.println(GREEN + "  ✓ Configuration saved!" + RESET);
                 System.out.println();
+                System.out.println("  Config:   " + BOLD + targetPath + RESET);
                 System.out.println("  Chat Mode: " + BOLD + chatMode + RESET);
                 if ("passthrough".equals(chatMode)) {
                     System.out.println("  Agent:     " + BOLD + passthroughAgent + RESET);
+                    System.out.println("  Style:     " + BOLD
+                            + (passthroughManaged ? "Kompile managed" : "Direct") + RESET);
+                    if (passthroughManaged && enforcementChoice != null) {
+                        System.out.println("  Enforcer:  " + BOLD
+                                + (Boolean.TRUE.equals(enforcementChoice) ? "enabled" : "disabled") + RESET);
+                    }
                 } else {
                     System.out.println("  Provider: " + BOLD + provider + RESET);
                     System.out.println("  Model:    " + BOLD + model + RESET);
@@ -304,8 +329,11 @@ public class SetupWizard {
 
         if (availableAgents.isEmpty()) {
             System.out.println(YELLOW + "  Warning: No CLI agents found on PATH." + RESET);
-            System.out.println("  Install Claude Code, Codex, Gemini, Qwen, or OpenCode first.");
-            System.out.println("  Docs: https://docs.anthropic.com/en/docs/claude-code/overview");
+            String supportedAgents = String.join(", ", ChatConfig.getPassthroughAgents().values());
+            if (supportedAgents.isBlank()) {
+                supportedAgents = "Claude Code, Codex, Gemini, OpenCode, Qwen, Pi";
+            }
+            System.out.println("  Install one of: " + supportedAgents + ".");
             return null;
         }
 

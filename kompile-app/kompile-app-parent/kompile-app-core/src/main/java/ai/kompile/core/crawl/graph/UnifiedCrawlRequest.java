@@ -52,8 +52,9 @@ public class UnifiedCrawlRequest {
     @Builder.Default
     private List<UnifiedCrawlSource> sources = new ArrayList<>();
 
-    /** Graph extraction configuration (null or disabled = skip graph extraction) */
-    private GraphExtractionConfig graphExtraction;
+    /** Graph extraction configuration. Graph extraction is mandatory; null is normalized to defaults. */
+    @Builder.Default
+    private GraphExtractionConfig graphExtraction = GraphExtractionConfig.builder().build();
 
     /** Vector indexing configuration (null or disabled = skip vector indexing) */
     private VectorIndexConfig vectorIndex;
@@ -131,6 +132,15 @@ public class UnifiedCrawlRequest {
      */
     @Builder.Default
     private List<String> archivedSteps = new ArrayList<>();
+
+    /**
+     * When TRUE and {@link #enabledSteps} is non-empty, the resolved step plan honors the selection
+     * strictly: only the enabled steps, their transitive hard dependencies, and foundational steps
+     * RUN — the mandatory graph spine (GRAPH_PREP/GRAPH_EXTRACTION/SURFACING/ENTITY_RESOLUTION/
+     * EDGE_COMPUTATION) is NOT force-added. Null/false = legacy behavior (spine always seeded).
+     * Lets a single-source run select e.g. only VECTOR_INDEXING or only GRAPH_EXTRACTION.
+     */
+    private Boolean strictSteps;
 
     /**
      * Strategy for partitioning sources across workers in distributed crawls.

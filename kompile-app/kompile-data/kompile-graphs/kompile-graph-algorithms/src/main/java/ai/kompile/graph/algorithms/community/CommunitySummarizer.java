@@ -11,6 +11,8 @@ package ai.kompile.graph.algorithms.community;
 
 import ai.kompile.core.llm.chat.LLMChat;
 import ai.kompile.graph.algorithms.LouvainCommunityDetection;
+import ai.kompile.graph.reasoning.model.GraphEntity;
+import ai.kompile.graph.reasoning.model.ReasoningGraph;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.slf4j.Logger;
@@ -67,6 +69,25 @@ public class CommunitySummarizer {
         return summaries;
     }
 
+    public List<CommunitySummary> summarize(Map<String, Integer> assignments,
+                                            ReasoningGraph graph,
+                                            int maxNodesPerPrompt) {
+        Map<Integer, List<String>> grouped = LouvainCommunityDetection.groupByCommunity(assignments);
+        List<CommunitySummary> summaries = new ArrayList<>(grouped.size());
+
+        for (Map.Entry<Integer, List<String>> entry : grouped.entrySet()) {
+            int communityId = entry.getKey();
+            List<String> members = entry.getValue();
+            List<String> sample = members.size() > maxNodesPerPrompt
+                    ? members.subList(0, maxNodesPerPrompt)
+                    : members;
+
+            String summary = generateSummary(communityId, members.size(), sample, graph);
+            summaries.add(new CommunitySummary(communityId, members, summary, Instant.now()));
+        }
+        return summaries;
+    }
+
     private String generateSummary(int communityId, int totalSize, List<String> sample,
                                     KnowledgeGraphService kgs) {
         StringBuilder context = new StringBuilder();
@@ -83,6 +104,29 @@ public class CommunitySummarizer {
             context.append("\n");
         }
 
+        return completeSummary(communityId, totalSize, context.toString());
+    }
+
+    private String generateSummary(int communityId, int totalSize, List<String> sample,
+                                   ReasoningGraph graph) {
+        StringBuilder context = new StringBuilder();
+        context.append("Community ").append(communityId)
+                .append(" (").append(totalSize).append(" members):\n");
+        for (String nodeId : sample) {
+            Optional<GraphEntity> entity = graph.entity(nodeId);
+            if (entity.isEmpty()) continue;
+            GraphEntity e = entity.get();
+            context.append("- ").append(safe(e.label()));
+            String description = e.stringAttribute("description");
+            if (description != null && !description.isBlank()) {
+                context.append(": ").append(safe(description));
+            }
+            context.append("\n");
+        }
+        return completeSummary(communityId, totalSize, context.toString());
+    }
+
+    private String completeSummary(int communityId, int totalSize, String context) {
         if (llmChat == null) {
             return "LLM unavailable. " + totalSize + " nodes in community " + communityId + ".";
         }

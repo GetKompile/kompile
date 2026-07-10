@@ -287,6 +287,11 @@ public class PipelineConfigService {
      * Check if graph optimization is enabled.
      * @return true if SameDiff graph optimization is enabled when loading models
      */
+    /** Returns true if the config JSON file already exists on disk (written by a previous run or CLI init). */
+    public boolean isConfigFilePersisted() {
+        return configFilePath != null && Files.exists(configFilePath);
+    }
+
     public boolean isOptimizeGraphOnLoad() {
         lock.readLock().lock();
         try {

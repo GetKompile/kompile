@@ -10,7 +10,6 @@
 package ai.kompile.cli.main.chat.tools.grounding;
 
 import ai.kompile.cli.main.chat.tools.CliTool;
-import ai.kompile.cli.main.chat.tools.KompileBackendClient;
 import ai.kompile.cli.main.chat.tools.McpToolAnnotations;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolExecutionException;
@@ -19,8 +18,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
-import java.net.ConnectException;
-import java.time.Duration;
 import java.util.Map;
 
 /**
@@ -46,15 +43,18 @@ import java.util.Map;
  */
 public class GraphReasonTool implements CliTool {
 
-    private final KompileBackendClient backend;
+    private final GroundingBackendClient groundingClient;
     private final ObjectMapper objectMapper;
 
     public GraphReasonTool(String baseUrl, ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
-        this.backend = KompileBackendClient.getInstance();
-        if (baseUrl != null && !baseUrl.isEmpty()) {
-            backend.setBaseUrl(baseUrl);
-        }
+        this.groundingClient = new GroundingBackendClient(baseUrl);
+    }
+
+    /** Visible for testing — lets a {@code MockRestServiceServer} intercept HTTP calls. */
+    GraphReasonTool(GroundingBackendClient groundingClient, ObjectMapper objectMapper) {
+        this.objectMapper = objectMapper;
+        this.groundingClient = groundingClient;
     }
 
     @Override
@@ -114,7 +114,7 @@ public class GraphReasonTool implements CliTool {
             return ToolResult.error("target is required");
         }
 
-        if (!backend.isAvailable()) {
+        if (!groundingClient.isAvailable()) {
             return ToolResult.error("graph_reason requires a running kompile-app. " +
                     "Start kompile-app or use --url to connect.");
         }
@@ -126,8 +126,8 @@ public class GraphReasonTool implements CliTool {
             if (!params.path("factSheetId").isMissingNode()) body.set("factSheetId", params.get("factSheetId"));
             if (!params.path("depth").isMissingNode())       body.set("depth", params.get("depth"));
 
-            var resp = backend.post("/api/explain",
-                    objectMapper.writeValueAsString(body), Duration.ofSeconds(30));
+            var resp = groundingClient.post("/api/explain",
+                    objectMapper.writeValueAsString(body));
 
             if (resp.statusCode() != 200) {
                 return ToolResult.error("graph_reason failed (HTTP " + resp.statusCode() + "): "
@@ -151,8 +151,6 @@ public class GraphReasonTool implements CliTool {
                     formatReasonResult(target, verdict, conf, summary, derivation, evidence, rules),
                     meta);
 
-        } catch (ConnectException e) {
-            return ToolResult.error("Cannot connect to kompile-app. " + e.getMessage());
         } catch (Exception e) {
             return ToolResult.error("graph_reason error: " + e.getMessage());
         }

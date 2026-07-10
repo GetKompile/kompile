@@ -162,6 +162,66 @@ class PriorProviderCascadeTest {
                 "Non-zero embedding prior must be in (0,1]; got " + prior);
     }
 
+    // ─── Tier (c'): WP19 topology prior ──────────────────────────────────────
+
+    @Test
+    void topologyPrior_disabledWeight_returnsSkipSentinel() {
+        PriorContext ctx = PriorContext.builder().pageRankPercentile(0.9).build();
+        assertEquals(-1.0, CascadePriorProvider.topologyPrior(ctx, 0.0), 1e-9,
+                "weight 0 must disable the tier (skip sentinel), so lower tiers still fire");
+    }
+
+    @Test
+    void topologyPrior_noPercentile_returnsSkipSentinel() {
+        assertEquals(-1.0, CascadePriorProvider.topologyPrior(PriorContext.EMPTY, 0.5), 1e-9,
+                "absent PageRank percentile must skip the tier");
+    }
+
+    @Test
+    void topologyPrior_fullWeight_returnsRawPercentile() {
+        PriorContext hub = PriorContext.builder().pageRankPercentile(0.95).build();
+        PriorContext leaf = PriorContext.builder().pageRankPercentile(0.05).build();
+        assertEquals(0.95, CascadePriorProvider.topologyPrior(hub, 1.0), 1e-9);
+        assertEquals(0.05, CascadePriorProvider.topologyPrior(leaf, 1.0), 1e-9);
+    }
+
+    @Test
+    void topologyPrior_partialWeight_interpolatesFromUniform() {
+        // prior = 0.5 + 0.5*(0.9 - 0.5) = 0.7
+        PriorContext ctx = PriorContext.builder().pageRankPercentile(0.9).build();
+        assertEquals(0.7, CascadePriorProvider.topologyPrior(ctx, 0.5), 1e-9);
+    }
+
+    @Test
+    void cascade_topologyFires_whenEnabledAndNoRicherSignal() {
+        OpinionStore store = new InMemoryOpinionStore(); // empty → no opinion tier
+        // No embedding, no type-freq, no timestamp → topology is the first tier to fire.
+        PriorContext ctx = PriorContext.builder().pageRankPercentile(0.8).build();
+        CascadePriorProvider provider = new CascadePriorProvider(store, null, 1.0);
+        assertEquals(0.8, provider.priorFor("hub.entity", ctx), 1e-9,
+                "with topology enabled and no richer signal, the topology tier supplies the prior");
+    }
+
+    @Test
+    void cascade_opinionBeatsTopology() {
+        OpinionStore store = new InMemoryOpinionStore();
+        store.put("signal", Opinion.fromSoftTruth(0.7, 10)); // tier (b) is above topology
+        PriorContext ctx = PriorContext.builder().pageRankPercentile(0.99).build();
+        CascadePriorProvider provider = new CascadePriorProvider(store, null, 1.0);
+        assertEquals(Opinion.fromSoftTruth(0.7, 10).expectation(), provider.priorFor("signal", ctx), 1e-9,
+                "a held opinion (tier b) must outrank the topology positional prior (tier c')");
+    }
+
+    @Test
+    void cascade_defaultWeight_leavesTopologyDormant() {
+        OpinionStore store = new InMemoryOpinionStore();
+        // Default 2-arg constructor → weight 0. Even with a percentile present, topology must not fire;
+        // with no other signal the waterfall falls through to uniform 0.5 (backward-compatible).
+        PriorContext ctx = PriorContext.builder().pageRankPercentile(0.95).build();
+        CascadePriorProvider provider = new CascadePriorProvider(store);
+        assertEquals(0.5, provider.priorFor("some.entity", ctx), 1e-9);
+    }
+
     // ─── Tier (d): Type-frequency shrinkage ──────────────────────────────────
 
     @Test

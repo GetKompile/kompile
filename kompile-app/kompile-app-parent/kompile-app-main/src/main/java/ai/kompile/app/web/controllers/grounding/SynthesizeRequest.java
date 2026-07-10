@@ -1,0 +1,29 @@
+/*
+ * Copyright 2025 Kompile Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ */
+package ai.kompile.app.web.controllers.grounding;
+
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+
+/**
+ * Request body for POST /api/kb-grounding/synthesize (WP12c). Synthesizes ranked answers to
+ * {@code query} by fusing calibrated signals about each candidate entity. {@code expectedType}
+ * (nullable) demands an answer of a given entity type; {@code maxCandidates} (nullable) caps how
+ * many candidates are scored (0/null → configured default).
+ *
+ * <p>The grounding context (which entity + relation to KB-verify each candidate against) is derived
+ * from the query automatically — the caller supplies only the question.</p>
+ */
+@JsonIgnoreProperties(ignoreUnknown = true)
+public record SynthesizeRequest(
+        String query,
+        Long factSheetId,
+        String expectedType,
+        Integer maxCandidates
+) {}

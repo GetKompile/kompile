@@ -27,6 +27,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -86,6 +87,9 @@ public class OntologyConformanceTagger {
      * Absent on conforming edges.
      */
     public static final String META_EDGE_VIOLATION = "ontology.edge.violation";
+
+    /** Chunk size for {@link KnowledgeGraphService#updateNodeKgeMetadataBatch} flush calls. */
+    private static final int BATCH_CHUNK = 512;
 
     @Autowired(required = false)
     @Nullable
@@ -175,12 +179,16 @@ public class OntologyConformanceTagger {
         log.info("[OntologyConformanceTagger factSheet={}] tagging nodes against ontology " +
                 "({} allowed entity types)", factSheetId, allowedLower.size());
 
-        // ── Tag ENTITY nodes ──────────────────────────────────────────────────
+        // ── Tag ENTITY nodes (batched via updateNodeKgeMetadataBatch) ────────
         int nodesConformant    = 0;
         int nodesNonConformant = 0;
 
         List<GraphNode> entityNodes = knowledgeGraphService.getNodesByTypeInFactSheet(
                 factSheetId, NodeLevel.ENTITY);
+
+        // Buffer tag-delta updates (only the two conformance keys, not the full metadata).
+        // updateNodeKgeMetadataBatch MERGES, so existing metadata keys are preserved.
+        List<KnowledgeGraphService.NodeMetadataUpdate> nodeBatch = new ArrayList<>(BATCH_CHUNK);
 
         for (GraphNode node : entityNodes) {
             try {
@@ -188,30 +196,32 @@ public class OntologyConformanceTagger {
                 boolean conformant = entityType != null
                         && allowedLower.contains(entityType.toLowerCase(Locale.ROOT));
 
-                // Read the existing metadata, merge the conformance keys, persist
-                Map<String, Object> meta = new LinkedHashMap<>(node.getMetadata());
+                Map<String, Object> tagDelta = new LinkedHashMap<>(2);
                 if (conformant) {
-                    meta.put(META_CONFORMANT, "true");
-                    meta.remove(META_VIOLATION); // clear any stale violation from a prior run
+                    tagDelta.put(META_CONFORMANT, "true");
                     nodesConformant++;
                 } else {
-                    meta.put(META_CONFORMANT, "false");
+                    tagDelta.put(META_CONFORMANT, "false");
                     String reason = entityType == null
                             ? "entity type unknown (null)"
                             : "unknown entity type '" + entityType + "' not in bound ontology";
-                    meta.put(META_VIOLATION, reason);
+                    tagDelta.put(META_VIOLATION, reason);
                     nodesNonConformant++;
                 }
+                nodeBatch.add(new KnowledgeGraphService.NodeMetadataUpdate(node.getNodeId(), tagDelta));
 
-                knowledgeGraphService.updateNode(
-                        node.getNodeId(),
-                        node.getTitle(),
-                        node.getDescription(),
-                        meta);
+                if (nodeBatch.size() >= BATCH_CHUNK) {
+                    knowledgeGraphService.updateNodeKgeMetadataBatch(nodeBatch);
+                    nodeBatch.clear();
+                }
             } catch (Exception e) {
                 log.debug("[OntologyConformanceTagger factSheet={}] Failed to tag node {}: {}",
                         factSheetId, node.getNodeId(), e.getMessage());
             }
+        }
+        if (!nodeBatch.isEmpty()) {
+            knowledgeGraphService.updateNodeKgeMetadataBatch(nodeBatch);
+            // nodeBatch goes out of scope here — no need to clear
         }
 
         log.info("[OntologyConformanceTagger factSheet={}] node tagging complete: " +
@@ -229,6 +239,8 @@ public class OntologyConformanceTagger {
                         .collect(Collectors.toSet());
 
                 List<GraphEdge> edges = knowledgeGraphService.getEdgesInFactSheet(factSheetId);
+                // Buffer non-conformant edge metadata updates; flush in one batch RPC
+                List<KnowledgeGraphService.EdgeMetadataUpdate> edgeBatch = new ArrayList<>();
                 for (GraphEdge edge : edges) {
                     try {
                         String relType = extractRelationshipType(edge);
@@ -242,17 +254,17 @@ public class OntologyConformanceTagger {
                             String reason = relType == null
                                     ? "relationship type unknown (null)"
                                     : "unknown relationship type '" + relType + "' not in bound ontology";
-                            // Write violation via edge update — weight preserved, description updated
-                            knowledgeGraphService.updateEdge(
-                                    edge.getEdgeId(),
-                                    edge.getWeight(),
-                                    META_EDGE_VIOLATION + "=" + reason);
+                            edgeBatch.add(new KnowledgeGraphService.EdgeMetadataUpdate(
+                                    edge.getEdgeId(), Map.of(META_EDGE_VIOLATION, reason)));
                             edgesNonConformant++;
                         }
                     } catch (Exception e) {
                         log.debug("[OntologyConformanceTagger factSheet={}] Failed to tag edge {}: {}",
                                 factSheetId, edge.getEdgeId(), e.getMessage());
                     }
+                }
+                if (!edgeBatch.isEmpty()) {
+                    knowledgeGraphService.updateEdgeMetadataBatch(edgeBatch);
                 }
 
                 log.info("[OntologyConformanceTagger factSheet={}] edge tagging complete: " +

@@ -43,6 +43,10 @@ public class WorkflowRun {
     private String id;
     private String processDefinitionId;
     private int processVersion;
+    /** Immutable release selected when the run started. Continues to resolve while draining. */
+    private String processReleaseId;
+    /** Deployment environment used to select the active release. */
+    private String releaseEnvironment;
     /** ID of the frozen ontology snapshot bound to this run. */
     private String ontologySnapshotId;
     private RunStatus status;
@@ -66,4 +70,21 @@ public class WorkflowRun {
     private String riskAssessmentId;
     /** ID of the process suggestion that triggered this run. */
     private String sourceSuggestionId;
+
+    /**
+     * Backward-compatible constructor for callers compiled before release pinning was introduced.
+     */
+    public WorkflowRun(String id, String processDefinitionId, int processVersion,
+                       String ontologySnapshotId, RunStatus status, Instant startedAt,
+                       Instant completedAt, Instant estimatedCompletion,
+                       List<StepExecution> stepExecutions, List<ApprovalRequest> pendingApprovals,
+                       List<ControlAttestation> controlResults, Map<String, Object> runData,
+                       List<String> graphNodeIds, Map<String, Object> metrics,
+                       double overallLikelihood, String riskAssessmentId,
+                       String sourceSuggestionId) {
+        this(id, processDefinitionId, processVersion, null, null, ontologySnapshotId, status,
+                startedAt, completedAt, estimatedCompletion, stepExecutions, pendingApprovals,
+                controlResults, runData, graphNodeIds, metrics, overallLikelihood,
+                riskAssessmentId, sourceSuggestionId);
+    }
 }

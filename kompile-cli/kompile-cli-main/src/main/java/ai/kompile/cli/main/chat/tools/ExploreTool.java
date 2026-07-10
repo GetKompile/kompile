@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.chat.tools;
 
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.utils.FormatUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -25,10 +26,10 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.LinkOption;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Pattern;
-import java.util.stream.Stream;
 
 /**
  * Explore a codebase directory recursively to understand its structure.
@@ -47,7 +48,8 @@ public class ExploreTool implements CliTool {
 
     private static final int DEFAULT_DEPTH = 3;
     private static final int MAX_DEPTH = 10;
-    private static final int MAX_ENTRIES = 500;
+    private static final int DEFAULT_MAX_ENTRIES = 500;
+    private static final int HARD_MAX_ENTRIES = 2_000;
     private static final int DEFAULT_GLIMPSE_LINES = 10;
 
     /** Hard wall-clock cap on a single explore so a deep tree on a large repo can't hang the
@@ -95,6 +97,12 @@ public class ExploreTool implements CliTool {
     }
 
     @Override
+    public String compactHint() {
+        return "Recursive project tree. Params: path, depth, hidden/show_hidden, max_entries, "
+                + "include_glimpses. Prunes heavy dirs; output may be truncated.";
+    }
+
+    @Override
     public JsonNode parameterSchema() {
         ObjectMapper om = JsonUtils.standardMapper();
         ObjectNode schema = om.createObjectNode();
@@ -121,11 +129,19 @@ public class ExploreTool implements CliTool {
 
         ObjectNode filterPattern = props.putObject("filter");
         filterPattern.put("type", "string");
-        filterPattern.put("description", "Regex pattern to filter shown entries (e.g. '.*\\.java' to only show Java files in tree)");
+        filterPattern.put("description", "Regex pattern to filter shown entries by basename or relative path (e.g. '.*\\.java')");
+
+        ObjectNode maxEntries = props.putObject("max_entries");
+        maxEntries.put("type", "integer");
+        maxEntries.put("description", "Maximum entries to show per directory after sorting (default: 500, max: 2000)");
 
         ObjectNode showHidden = props.putObject("show_hidden");
         showHidden.put("type", "boolean");
-        showHidden.put("description", "Include hidden files/directories (default: false)");
+        showHidden.put("description", "Include hidden files/directories (default: false). Alias: hidden");
+
+        ObjectNode hidden = props.putObject("hidden");
+        hidden.put("type", "boolean");
+        hidden.put("description", "Alias for show_hidden, matching grep/glob parameter naming");
 
         ObjectNode respectGitignore = props.putObject("respect_gitignore");
         respectGitignore.put("type", "boolean");
@@ -149,9 +165,12 @@ public class ExploreTool implements CliTool {
         int depth = Math.min(params.path("depth").asInt(DEFAULT_DEPTH), MAX_DEPTH);
         boolean includeGlimpses = params.path("include_glimpses").isMissingNode() ||
                 params.path("include_glimpses").asBoolean(true);
-        int glimpseLines = Math.min(params.path("glimpse_lines").asInt(DEFAULT_GLIMPSE_LINES), 50);
+        int glimpseLines = Math.max(0, Math.min(params.path("glimpse_lines").asInt(DEFAULT_GLIMPSE_LINES), 50));
         String filterStr = params.path("filter").asText("");
-        boolean showHidden = params.path("show_hidden").asBoolean(false);
+        int maxEntries = Math.max(1, Math.min(params.path("max_entries").asInt(DEFAULT_MAX_ENTRIES), HARD_MAX_ENTRIES));
+        boolean showHidden = params.has("show_hidden")
+                ? params.path("show_hidden").asBoolean(false)
+                : params.path("hidden").asBoolean(false);
         boolean respectGitignore = params.path("respect_gitignore").isMissingNode() ||
                 params.path("respect_gitignore").asBoolean(true);
 
@@ -163,13 +182,15 @@ public class ExploreTool implements CliTool {
 
         Pattern filter = filterStr.isEmpty() ? null : Pattern.compile(filterStr);
         Set<String> gitignorePatterns = respectGitignore ? loadGitignore(dir) : Set.of();
-        SearchExclusions.GitignoreDirFilter gitFilter = SearchExclusions.loadGitignoreDirFilter(dir);
+        SearchExclusions.GitignoreDirFilter gitFilter = respectGitignore
+                ? SearchExclusions.loadGitignoreDirFilter(dir)
+                : SearchExclusions.GitignoreDirFilter.EMPTY;
 
         // Collect tree structure (bounded by a hard wall-clock deadline)
         long deadline = System.currentTimeMillis() + TIMEOUT_MILLIS;
         AtomicBoolean timedOut = new AtomicBoolean(false);
         TreeNode root = buildTree(dir, dir, depth, showHidden, gitignorePatterns, filter,
-                gitFilter, deadline, timedOut);
+                gitFilter, maxEntries, glimpseLines, deadline, timedOut);
 
         // Compute statistics
         Stats stats = computeStats(root);
@@ -192,9 +213,13 @@ public class ExploreTool implements CliTool {
         // Summary stats
         sb.append("**Files**: ").append(stats.fileCount)
                 .append(" | **Directories**: ").append(stats.dirCount)
-                .append(" | **Total size**: ").append(formatSize(stats.totalSize)).append("\n");
+                .append(" | **Total size**: ").append(FormatUtils.formatBytesCompact(stats.totalSize)).append("\n");
         if (stats.entriesExceeded) {
-            sb.append("*(tree truncated at ").append(MAX_ENTRIES).append(" entries)*\n");
+            sb.append("*(tree truncated at ").append(maxEntries).append(" entries per directory");
+            if (stats.omittedEntryCount > 0) {
+                sb.append("; ").append(stats.omittedEntryCount).append(" entries omitted");
+            }
+            sb.append(")*\n");
         }
         if (timedOut.get()) {
             sb.append("*(exploration timed out after ").append(TIMEOUT_MILLIS / 1000)
@@ -219,9 +244,9 @@ public class ExploreTool implements CliTool {
         sb.append("```\n");
 
         // Key file glimpses
-        if (includeGlimpses && !root.keyFileContents.isEmpty()) {
+        if (includeGlimpses && !stats.keyFiles.isEmpty()) {
             sb.append("\n### Key Files\n");
-            for (Map.Entry<String, String> entry : root.keyFileContents.entrySet()) {
+            for (Map.Entry<String, String> entry : stats.keyFiles.entrySet()) {
                 sb.append("\n**").append(entry.getKey()).append("**\n```\n");
                 String content = entry.getValue();
                 String[] lines = content.split("\n", -1);
@@ -230,7 +255,7 @@ public class ExploreTool implements CliTool {
                     sb.append(lines[i]).append("\n");
                 }
                 if (lines.length > glimpseLines) {
-                    sb.append("... (").append(lines.length - glimpseLines).append(" more lines)\n");
+                    sb.append("... (more lines)\n");
                 }
                 sb.append("```\n");
             }
@@ -241,10 +266,20 @@ public class ExploreTool implements CliTool {
         metadata.put("dirCount", stats.dirCount);
         metadata.put("totalSize", stats.totalSize);
         metadata.put("depth", depth);
+        metadata.put("maxEntriesPerDirectory", maxEntries);
+        metadata.put("shownEntryCount", stats.shownEntryCount);
+        metadata.put("scannedEntryCount", stats.scannedEntryCount);
+        metadata.put("omittedEntryCount", stats.omittedEntryCount);
+        metadata.put("symlinkCount", stats.symlinkCount);
+        metadata.put("errorCount", stats.errorCount);
         metadata.put("truncated", stats.entriesExceeded || timedOut.get());
         metadata.put("timedOut", timedOut.get());
         if (!stats.languageCounts.isEmpty()) {
             metadata.put("languages", stats.languageCounts);
+        }
+        metadata.put("entries", collectEntries(root));
+        if (!stats.errors.isEmpty()) {
+            metadata.put("errors", stats.errors);
         }
 
         return ToolResult.success("explore: " + displayPath, sb.toString(), metadata);
@@ -253,6 +288,7 @@ public class ExploreTool implements CliTool {
     private TreeNode buildTree(Path root, Path current, int maxDepth, boolean showHidden,
                                Set<String> gitignorePatterns, Pattern filter,
                                SearchExclusions.GitignoreDirFilter gitFilter,
+                               int maxEntries, int glimpseLines,
                                long deadline, AtomicBoolean timedOut) {
         TreeNode node = new TreeNode();
         node.name = current.getFileName() != null ? current.getFileName().toString() : current.toString();
@@ -266,80 +302,117 @@ public class ExploreTool implements CliTool {
         }
 
         try (DirectoryStream<Path> stream = Files.newDirectoryStream(current)) {
-            List<Path> entries = new ArrayList<>();
+            PriorityQueue<EntryWithType> keptEntries =
+                    new PriorityQueue<>(maxEntries, EntryWithType.WORST_DISPLAY_ORDER);
+            boolean entriesExceeded = false;
+            int candidateCount = 0;
             for (Path entry : stream) {
-                entries.add(entry);
-            }
-
-            // Sort: directories first, then alphabetical
-            entries.sort((a, b) -> {
-                boolean aDir = Files.isDirectory(a);
-                boolean bDir = Files.isDirectory(b);
-                if (aDir != bDir) return aDir ? -1 : 1;
-                return a.getFileName().toString().compareToIgnoreCase(b.getFileName().toString());
-            });
-
-            int entryCount = 0;
-            for (Path entry : entries) {
-                if (entryCount >= MAX_ENTRIES) {
-                    node.entriesExceeded = true;
+                if (System.currentTimeMillis() > deadline) {
+                    timedOut.set(true);
+                    entriesExceeded = true;
                     break;
                 }
+
+                String name = entry.getFileName().toString();
+                if (!showHidden && name.startsWith(".")) {
+                    continue;
+                }
+
+                BasicFileAttributes attrs = null;
+                String entryError = null;
+                try {
+                    attrs = Files.readAttributes(entry, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+                } catch (IOException e) {
+                    entryError = e.getMessage();
+                }
+
+                boolean isDirectory = attrs != null && attrs.isDirectory();
+                if (isDirectory && (SearchExclusions.isExcludedDir(name, showHidden)
+                        || gitFilter.isIgnoredDir(gitFilter.relativePath(entry, root), name))) {
+                    continue;
+                }
+
+                if (attrs != null && !gitignorePatterns.isEmpty()) {
+                    String relativePath = root.relativize(entry).toString();
+                    if (isGitignored(relativePath, name, isDirectory, gitignorePatterns)) {
+                        continue;
+                    }
+                }
+
+                if (filter != null && attrs != null && !isDirectory && !matchesFilter(filter, root, entry, name)) {
+                    continue;
+                }
+
+                EntryWithType candidate = new EntryWithType(entry, attrs, entryError);
+                candidateCount++;
+                if (keptEntries.size() < maxEntries) {
+                    keptEntries.add(candidate);
+                } else if (EntryWithType.DISPLAY_ORDER.compare(candidate, keptEntries.peek()) < 0) {
+                    keptEntries.poll();
+                    keptEntries.add(candidate);
+                }
+            }
+            node.scannedEntries = candidateCount;
+            node.omittedEntries = Math.max(0, candidateCount - keptEntries.size());
+            node.entriesExceeded = entriesExceeded || node.omittedEntries > 0;
+
+            List<EntryWithType> entries = new ArrayList<>(keptEntries);
+            entries.sort(EntryWithType.DISPLAY_ORDER);
+
+            for (EntryWithType entry : entries) {
                 if (System.currentTimeMillis() > deadline) {
                     timedOut.set(true);
                     node.entriesExceeded = true;
                     break;
                 }
 
-                String name = entry.getFileName().toString();
+                String name = entry.path().getFileName().toString();
+                Path entryPath = entry.path();
+                BasicFileAttributes attrs = entry.attrs();
+                boolean isDirectory = entry.isDirectory();
 
-                // Skip hidden files unless requested
-                if (!showHidden && name.startsWith(".")) continue;
-
-                // Skip well-known non-source directories (shared SearchExclusions source of
-                // truth) and project-specific git-ignored data directories.
-                if (Files.isDirectory(entry)
-                        && (SearchExclusions.isExcludedDir(name, showHidden)
-                            || gitFilter.isIgnoredDir(root.relativize(entry).toString(), name))) {
-                    continue;
-                }
-
-                // Respect .gitignore
-                if (!gitignorePatterns.isEmpty()) {
-                    String relativePath = root.relativize(entry).toString();
-                    if (isGitignored(relativePath, name, Files.isDirectory(entry), gitignorePatterns)) {
-                        continue;
+                if (entry.error() != null) {
+                    TreeNode errorNode = new TreeNode();
+                    errorNode.name = name;
+                    errorNode.path = root.relativize(entryPath).toString();
+                    errorNode.error = entry.error();
+                    node.children.add(errorNode);
+                } else if (isDirectory) {
+                    TreeNode child = buildTree(root, entryPath, maxDepth - 1, showHidden, gitignorePatterns, filter,
+                            gitFilter, maxEntries, glimpseLines, deadline, timedOut);
+                    if (filter == null || matchesFilter(filter, root, entryPath, name) || child.hasVisibleContent()) {
+                        node.children.add(child);
                     }
-                }
-
-                // Apply filter
-                if (filter != null && !Files.isDirectory(entry)) {
-                    if (!filter.matcher(name).matches()) continue;
-                }
-
-                if (Files.isDirectory(entry)) {
-                    TreeNode child = buildTree(root, entry, maxDepth - 1, showHidden, gitignorePatterns, filter,
-                            gitFilter, deadline, timedOut);
-                    node.children.add(child);
-                    entryCount += 1 + child.totalEntries();
-                } else {
+                } else if (entry.isRegularFile()) {
                     TreeNode fileNode = new TreeNode();
                     fileNode.name = name;
                     fileNode.isDirectory = false;
-                    fileNode.path = root.relativize(entry).toString();
-                    try {
-                        fileNode.size = Files.size(entry);
-                    } catch (IOException ignored) {}
+                    fileNode.path = root.relativize(entryPath).toString();
+                    fileNode.size = attrs.size();
                     node.children.add(fileNode);
-                    entryCount++;
 
                     // Capture key file content for glimpses
                     if (KEY_FILES.contains(name) && fileNode.size < 100_000) {
                         try {
-                            String content = Files.readString(entry);
-                            node.keyFileContents.put(fileNode.path, content);
-                        } catch (IOException ignored) {}
+                            if (!SearchExclusions.isLikelyBinaryFile(entryPath)) {
+                                node.keyFileContents.put(fileNode.path, readFileGlimpse(entryPath, glimpseLines + 1));
+                            }
+                        } catch (IOException ignored) {
+                        }
                     }
+                } else if (entry.isSymlink()) {
+                    TreeNode symlinkNode = new TreeNode();
+                    symlinkNode.name = name;
+                    symlinkNode.path = root.relativize(entryPath).toString();
+                    symlinkNode.isSymlink = true;
+                    symlinkNode.symlinkTarget = readSymlinkTarget(entryPath);
+                    node.children.add(symlinkNode);
+                } else {
+                    TreeNode otherNode = new TreeNode();
+                    otherNode.name = name;
+                    otherNode.path = root.relativize(entryPath).toString();
+                    otherNode.entryType = "other";
+                    node.children.add(otherNode);
                 }
             }
         } catch (IOException e) {
@@ -349,9 +422,76 @@ public class ExploreTool implements CliTool {
         return node;
     }
 
+    private static String readFileGlimpse(Path file, int linesToRead) throws IOException {
+        StringBuilder sb = new StringBuilder();
+        int linesRead = 0;
+        try (BufferedReader reader = Files.newBufferedReader(file)) {
+            String line;
+            while ((line = reader.readLine()) != null && linesToRead > 0 && linesRead < linesToRead) {
+                sb.append(line).append('\n');
+                linesRead++;
+            }
+        }
+        return sb.toString().trim();
+    }
+
+    private static String readSymlinkTarget(Path path) {
+        try {
+            return Files.readSymbolicLink(path).toString();
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    private static boolean matchesFilter(Pattern filter, Path root, Path entry, String name) {
+        if (filter == null) {
+            return true;
+        }
+        String relative = root.relativize(entry).toString().replace('\\', '/');
+        return filter.matcher(name).find() || filter.matcher(relative).find();
+    }
+
+    private record EntryWithType(Path path, BasicFileAttributes attrs, String error) {
+        private static final Comparator<EntryWithType> DISPLAY_ORDER = Comparator
+                .comparingInt(EntryWithType::typeOrder)
+                .thenComparing(e -> e.name().toLowerCase(Locale.ROOT))
+                .thenComparing(EntryWithType::name);
+        private static final Comparator<EntryWithType> WORST_DISPLAY_ORDER = DISPLAY_ORDER.reversed();
+
+        String name() {
+            return path.getFileName().toString();
+        }
+
+        int typeOrder() {
+            if (isDirectory()) {
+                return 0;
+            }
+            if (isRegularFile() || isSymlink()) {
+                return 1;
+            }
+            return 2;
+        }
+
+        boolean isDirectory() {
+            return attrs != null && attrs.isDirectory();
+        }
+
+        boolean isRegularFile() {
+            return attrs != null && attrs.isRegularFile();
+        }
+
+        boolean isSymlink() {
+            return attrs != null && attrs.isSymbolicLink();
+        }
+    }
+
     private void renderTree(StringBuilder sb, TreeNode node, String prefix, boolean isRoot) {
         if (isRoot) {
-            sb.append(node.name).append("/\n");
+            sb.append(node.name).append("/");
+            if (node.error != null) {
+                sb.append(" (error: ").append(node.error).append(")");
+            }
+            sb.append("\n");
         }
 
         List<TreeNode> children = node.children;
@@ -364,27 +504,42 @@ public class ExploreTool implements CliTool {
             sb.append(prefix).append(connector);
             if (child.isDirectory) {
                 sb.append(child.name).append("/");
+                if (child.error != null) {
+                    sb.append(" (error: ").append(child.error).append(")");
+                }
                 if (child.collapsed) {
                     sb.append(" (...)");
                 } else if (child.entriesExceeded) {
-                    sb.append(" (truncated)");
+                    sb.append(" (truncated");
+                    if (child.omittedEntries > 0) {
+                        sb.append(", ").append(child.omittedEntries).append(" omitted");
+                    }
+                    sb.append(")");
                 }
                 int fileCount = child.fileCount();
                 int dirCount = child.dirCount();
-                if (fileCount > 0 || dirCount > 0) {
+                int symlinkCount = child.symlinkCount();
+                if (fileCount > 0 || dirCount > 0 || symlinkCount > 0) {
                     sb.append(" [");
                     if (dirCount > 0) sb.append(dirCount).append(" dirs, ");
                     sb.append(fileCount).append(" files");
+                    if (symlinkCount > 0) sb.append(", ").append(symlinkCount).append(" symlinks");
                     sb.append("]");
                 }
                 sb.append("\n");
                 if (!child.collapsed) {
                     renderTree(sb, child, prefix + childPrefix, false);
                 }
+            } else if (child.isSymlink) {
+                sb.append(child.name).append(" -> ");
+                sb.append(child.symlinkTarget != null ? child.symlinkTarget : "(unreadable target)");
+                sb.append("\n");
+            } else if (child.error != null) {
+                sb.append(child.name).append(" (unreadable: ").append(child.error).append(")\n");
             } else {
                 sb.append(child.name);
                 if (child.size > 0) {
-                    sb.append(" (").append(formatSize(child.size)).append(")");
+                    sb.append(" (").append(FormatUtils.formatBytesCompact(child.size)).append(")");
                 }
                 sb.append("\n");
             }
@@ -399,11 +554,27 @@ public class ExploreTool implements CliTool {
 
     private void computeStatsRecursive(TreeNode node, Stats stats) {
         if (node.entriesExceeded) stats.entriesExceeded = true;
+        stats.scannedEntryCount += node.scannedEntries;
+        stats.omittedEntryCount += node.omittedEntries;
+        if (node.error != null) {
+            stats.errorCount++;
+            stats.errors.add(errorMetadata(node));
+        }
 
         for (TreeNode child : node.children) {
+            stats.shownEntryCount++;
             if (child.isDirectory) {
                 stats.dirCount++;
                 computeStatsRecursive(child, stats);
+            } else if (child.isSymlink) {
+                stats.symlinkCount++;
+                if (child.error != null) {
+                    stats.errorCount++;
+                    stats.errors.add(errorMetadata(child));
+                }
+            } else if (child.error != null) {
+                stats.errorCount++;
+                stats.errors.add(errorMetadata(child));
             } else {
                 stats.fileCount++;
                 stats.totalSize += child.size;
@@ -421,6 +592,47 @@ public class ExploreTool implements CliTool {
 
         // Bubble up key file contents
         stats.keyFiles.putAll(node.keyFileContents);
+    }
+
+    private static List<Map<String, Object>> collectEntries(TreeNode root) {
+        List<Map<String, Object>> entries = new ArrayList<>();
+        collectEntriesRecursive(root, 0, entries);
+        return entries;
+    }
+
+    private static void collectEntriesRecursive(TreeNode node, int depth, List<Map<String, Object>> entries) {
+        for (TreeNode child : node.children) {
+            Map<String, Object> entry = new LinkedHashMap<>();
+            entry.put("path", child.path);
+            entry.put("name", child.name);
+            entry.put("type", child.entryType());
+            entry.put("depth", depth + 1);
+            if (child.size > 0) {
+                entry.put("size", child.size);
+            }
+            if (child.symlinkTarget != null) {
+                entry.put("symlinkTarget", child.symlinkTarget);
+            }
+            if (child.entriesExceeded) {
+                entry.put("truncated", true);
+                entry.put("omittedEntries", child.omittedEntries);
+            }
+            if (child.error != null) {
+                entry.put("error", child.error);
+            }
+            entries.add(entry);
+            if (child.isDirectory && !child.collapsed) {
+                collectEntriesRecursive(child, depth + 1, entries);
+            }
+        }
+    }
+
+    private static Map<String, Object> errorMetadata(TreeNode node) {
+        Map<String, Object> error = new LinkedHashMap<>();
+        error.put("path", node.path);
+        error.put("type", node.entryType());
+        error.put("message", node.error);
+        return error;
     }
 
     private Set<String> loadGitignore(Path dir) {
@@ -474,25 +686,40 @@ public class ExploreTool implements CliTool {
         return dot >= 0 ? filename.substring(dot).toLowerCase() : "";
     }
 
-    private static String formatSize(long bytes) {
-        if (bytes < 1024) return bytes + "B";
-        if (bytes < 1024 * 1024) return String.format("%.1fK", bytes / 1024.0);
-        if (bytes < 1024L * 1024 * 1024) return String.format("%.1fM", bytes / (1024.0 * 1024));
-        return String.format("%.1fG", bytes / (1024.0 * 1024 * 1024));
-    }
-
     // ── Internal data structures ──────────────────────────────────────────
 
     private static class TreeNode {
         String name;
         String path;
         boolean isDirectory;
+        boolean isSymlink;
+        String symlinkTarget;
+        String entryType;
         long size;
         boolean collapsed;
         boolean entriesExceeded;
+        int scannedEntries;
+        int omittedEntries;
         String error;
         List<TreeNode> children = new ArrayList<>();
         Map<String, String> keyFileContents = new LinkedHashMap<>();
+
+        String entryType() {
+            if (isDirectory) {
+                return "directory";
+            }
+            if (isSymlink) {
+                return "symlink";
+            }
+            if (error != null) {
+                return "error";
+            }
+            return entryType != null ? entryType : "file";
+        }
+
+        boolean hasVisibleContent() {
+            return collapsed || entriesExceeded || error != null || !children.isEmpty();
+        }
 
         int totalEntries() {
             int count = children.size();
@@ -506,7 +733,7 @@ public class ExploreTool implements CliTool {
             int count = 0;
             for (TreeNode child : children) {
                 if (child.isDirectory) count += child.fileCount();
-                else count++;
+                else if (!child.isSymlink && child.error == null) count++;
             }
             return count;
         }
@@ -521,14 +748,32 @@ public class ExploreTool implements CliTool {
             }
             return count;
         }
+
+        int symlinkCount() {
+            int count = 0;
+            for (TreeNode child : children) {
+                if (child.isDirectory) {
+                    count += child.symlinkCount();
+                } else if (child.isSymlink) {
+                    count++;
+                }
+            }
+            return count;
+        }
     }
 
     private static class Stats {
         int fileCount;
         int dirCount;
+        int symlinkCount;
+        int shownEntryCount;
+        int scannedEntryCount;
+        int omittedEntryCount;
+        int errorCount;
         long totalSize;
         boolean entriesExceeded;
         Map<String, Integer> languageCounts = new LinkedHashMap<>();
         Map<String, String> keyFiles = new LinkedHashMap<>();
+        List<Map<String, Object>> errors = new ArrayList<>();
     }
 }

@@ -17,17 +17,32 @@
 package ai.kompile.cli.main.app;
 
 import ai.kompile.cli.common.http.KompileHttpClient;
+import ai.kompile.cli.common.logs.LogPaths;
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.graph.CliExtractionLlmClient;
 import ai.kompile.cli.main.graph.CliGraphExtractor;
+import ai.kompile.utils.StringUtils;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import picocli.CommandLine;
 
+import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStreamReader;
+import java.net.URI;
+import java.net.URLEncoder;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.LocalTime;
 import java.util.*;
 import java.util.concurrent.Callable;
 
@@ -46,6 +61,8 @@ import java.util.concurrent.Callable;
                 CrawlCommand.PauseCmd.class,
                 CrawlCommand.ResumeCmd.class,
                 CrawlCommand.CancelCmd.class,
+                CrawlCommand.LogsCmd.class,
+                CrawlCommand.TailCmd.class,
                 CrawlCommand.CleanupCmd.class,
                 CrawlCommand.SourcesCmd.class,
                 CrawlWizardCmd.class
@@ -53,6 +70,8 @@ import java.util.concurrent.Callable;
         mixinStandardHelpOptions = true
 )
 public class CrawlCommand implements Callable<Integer> {
+
+    private static final ObjectMapper JSON = JsonUtils.standardMapper();
 
     @CommandLine.Mixin
     private AppClientMixin app;
@@ -145,8 +164,8 @@ public class CrawlCommand implements Callable<Integer> {
         // --- graph extraction ---
 
         @CommandLine.Option(names = {"--graph"},
-                description = "Enable knowledge graph extraction")
-        private boolean graphExtraction;
+                description = "Compatibility flag; knowledge graph extraction is always enabled")
+        private boolean graphExtraction = true;
 
         @CommandLine.Option(names = {"--graph-entities"}, split = ",",
                 description = "Entity types for graph extraction (comma-separated)")
@@ -226,6 +245,18 @@ public class CrawlCommand implements Callable<Integer> {
                 description = "Name of the fact sheet to register crawled documents in")
         private String factSheetName;
 
+        @CommandLine.Option(names = {"--language-detection"},
+                description = "Enable language detection preprocessing and persist canonical language metadata")
+        private boolean languageDetection;
+
+        @CommandLine.Option(names = {"--translate-to"},
+                description = "Translate detected non-target-language documents to this target language during preprocessing")
+        private String translateToLanguage;
+
+        @CommandLine.Option(names = {"--translation-dual-index"},
+                description = "Keep original-language documents alongside translated documents")
+        private boolean translationDualIndex;
+
         @CommandLine.Option(names = {"--watch", "-w"},
                 description = "Watch job progress until completion")
         private boolean watch;
@@ -237,8 +268,7 @@ public class CrawlCommand implements Callable<Integer> {
 
             // --vlm-model implies --multimodal
             if (vlmModel != null) multimodal = true;
-            // --schema-preset implies --graph
-            if (schemaPresetId != null) graphExtraction = true;
+            graphExtraction = true;
             // --graph-auto-start implies --graph-local
             if (graphAutoStart) graphLocal = true;
 
@@ -462,24 +492,27 @@ public class CrawlCommand implements Callable<Integer> {
             }
             request.put("sources", sourceList);
 
-            // Graph extraction config
-            if (graphExtraction) {
-                Map<String, Object> graphConfig = new LinkedHashMap<>();
-                // When local mode is active, disable server-side extraction
-                graphConfig.put("enabled", !graphLocal);
-                if (schemaPresetId != null) graphConfig.put("schemaPresetId", schemaPresetId);
-                if (graphEntityTypes != null && !graphEntityTypes.isEmpty()) graphConfig.put("entityTypes", graphEntityTypes);
-                if (graphRelationTypes != null && !graphRelationTypes.isEmpty()) graphConfig.put("relationshipTypes", graphRelationTypes);
-                if (graphModelProvider != null) graphConfig.put("llmProvider", graphModelProvider);
-                if (graphModelName != null) graphConfig.put("modelName", graphModelName);
-                if (graphTemperature != null) graphConfig.put("temperature", graphTemperature);
-                if (graphMinConfidence != null) graphConfig.put("minConfidence", graphMinConfidence);
-                if (graphAutoAccept != null) graphConfig.put("autoAccept", graphAutoAccept);
-                if (graphAutoAcceptThreshold != null) graphConfig.put("autoAcceptThreshold", graphAutoAcceptThreshold);
-                if (graphSchemaMode != null) graphConfig.put("schemaMode", graphSchemaMode);
-                if (graphCustomPrompt != null) graphConfig.put("customPrompt", graphCustomPrompt);
-                request.put("graphExtraction", graphConfig);
+            Map<String, Object> preprocessingConfig = buildPreprocessingConfig();
+            if (preprocessingConfig != null) {
+                request.put("preprocessing", preprocessingConfig);
             }
+
+            // Graph extraction config. Graph extraction is mandatory; local mode may add a
+            // post-crawl local pass but never disables server-side graph construction.
+            Map<String, Object> graphConfig = new LinkedHashMap<>();
+            graphConfig.put("enabled", true);
+            if (schemaPresetId != null) graphConfig.put("schemaPresetId", schemaPresetId);
+            if (graphEntityTypes != null && !graphEntityTypes.isEmpty()) graphConfig.put("entityTypes", graphEntityTypes);
+            if (graphRelationTypes != null && !graphRelationTypes.isEmpty()) graphConfig.put("relationshipTypes", graphRelationTypes);
+            if (graphModelProvider != null) graphConfig.put("llmProvider", graphModelProvider);
+            if (graphModelName != null) graphConfig.put("modelName", graphModelName);
+            if (graphTemperature != null) graphConfig.put("temperature", graphTemperature);
+            if (graphMinConfidence != null) graphConfig.put("minConfidence", graphMinConfidence);
+            if (graphAutoAccept != null) graphConfig.put("autoAccept", graphAutoAccept);
+            if (graphAutoAcceptThreshold != null) graphConfig.put("autoAcceptThreshold", graphAutoAcceptThreshold);
+            if (graphSchemaMode != null) graphConfig.put("schemaMode", graphSchemaMode);
+            if (graphCustomPrompt != null) graphConfig.put("customPrompt", graphCustomPrompt);
+            request.put("graphExtraction", graphConfig);
 
             // Vector index config
             Map<String, Object> vectorConfig = new LinkedHashMap<>();
@@ -511,6 +544,29 @@ public class CrawlCommand implements Callable<Integer> {
 
             String response = client.postString("/api/unified-crawl/start", request);
             return handleStartResponse(client, response, true);
+        }
+
+        private Map<String, Object> buildPreprocessingConfig() {
+            boolean translationEnabled = translateToLanguage != null && !translateToLanguage.isBlank();
+            if (!languageDetection && !translationEnabled) {
+                return null;
+            }
+
+            Map<String, Object> preprocessing = new LinkedHashMap<>();
+            preprocessing.put("enabled", true);
+
+            Map<String, Object> languageConfig = new LinkedHashMap<>();
+            languageConfig.put("enabled", true);
+            preprocessing.put("languageDetection", languageConfig);
+
+            Map<String, Object> translationConfig = new LinkedHashMap<>();
+            translationConfig.put("enabled", translationEnabled);
+            translationConfig.put("targetLanguage", translationEnabled ? translateToLanguage.trim() : "en");
+            translationConfig.put("preserveOriginal", true);
+            translationConfig.put("dualIndex", translationDualIndex);
+            preprocessing.put("translation", translationConfig);
+
+            return preprocessing;
         }
 
         private int handleStartResponse(KompileHttpClient client, String response, boolean unified)
@@ -564,8 +620,11 @@ public class CrawlCommand implements Callable<Integer> {
                     int indexed = job.path("documentsIndexed").asInt(0);
                     int entities = job.path("entitiesExtracted").asInt(0);
                     int errors = job.path("errorCount").asInt(0);
-                    line = String.format("  %-12s  Loaded: %-6d  Indexed: %-6d  Entities: %-6d  Errors: %d",
-                            status, loaded, indexed, entities, errors);
+                    String phase = StringUtils.truncateToLength(formatUnifiedPhase(job), 28);
+                    String activeStep = StringUtils.truncateToLength(activePipelineStepMessage(job), 72);
+                    line = String.format("  %-12s  Phase: %-28s  Loaded: %-6d  Indexed: %-6d  Entities: %-6d  Errors: %d%s",
+                            status, phase, loaded, indexed, entities, errors,
+                            activeStep.isBlank() ? "" : "  " + activeStep);
                 } else {
                     int discovered = job.path("discovered").asInt(
                             job.path("progress").path("discovered").asInt(0));
@@ -767,6 +826,209 @@ public class CrawlCommand implements Callable<Integer> {
         }
     }
 
+    private static String formatUnifiedPhase(JsonNode job) {
+        String phase = text(job, "currentPhase");
+        JsonNode activeStep = activePipelineStep(job);
+        if (activeStep != null && phase.equals(text(activeStep, "stepId"))) {
+            String displayName = firstNonBlank(text(activeStep, "displayName"), text(activeStep, "name"));
+            if (displayName != null) {
+                return displayName;
+            }
+        }
+        return displayPhase(phase);
+    }
+
+    private static String activePipelineStepMessage(JsonNode job) {
+        JsonNode activeStep = activePipelineStep(job);
+        if (activeStep == null) {
+            return "";
+        }
+        String stepName = firstNonBlank(
+                text(activeStep, "displayName"),
+                text(activeStep, "name"),
+                displayPhase(text(activeStep, "stepId")));
+        String message = firstNonBlank(text(activeStep, "message"), text(activeStep, "currentItem"));
+        return message == null ? stepName : stepName + ": " + message;
+    }
+
+    private static JsonNode activePipelineStep(JsonNode job) {
+        JsonNode steps = job.path("pipelineSteps");
+        if (!steps.isArray()) {
+            return null;
+        }
+        String currentPhase = text(job, "currentPhase");
+        JsonNode currentPhaseStep = null;
+        JsonNode runningStep = null;
+        for (JsonNode step : steps) {
+            String stepId = text(step, "stepId");
+            String status = text(step, "status");
+            boolean activeStatus = "RUNNING".equals(status) || "BACKPRESSURE".equals(status);
+            if (currentPhase.equals(stepId)) {
+                currentPhaseStep = step;
+                if (activeStatus) {
+                    return step;
+                }
+            }
+            if (activeStatus && runningStep == null) {
+                runningStep = step;
+            }
+        }
+        return runningStep != null ? runningStep : currentPhaseStep;
+    }
+
+    private static String displayPhase(String phase) {
+        if (phase == null || phase.isBlank()) {
+            return "Starting";
+        }
+        return switch (phase) {
+            case "QUEUED" -> "Queued";
+            case "DISCOVERING" -> "Discovering documents";
+            case "LOADING" -> "Loading documents";
+            case "OCR_PROCESSING" -> "OCR processing";
+            case "CONVERTING" -> "Converting documents";
+            case "PREPROCESSING" -> "Document preprocessing";
+            case "ROUTING" -> "Routing documents";
+            case "GRAPH_PREP" -> "Preparing graph extraction";
+            case "CHUNKING" -> "Chunking documents";
+            case "GRAPH_EXTRACTION" -> "Extracting graph";
+            case "SURFACING" -> "Publishing crawl surface";
+            case "ENTITY_RESOLUTION" -> "Resolving entities";
+            case "EDGE_COMPUTATION" -> "Graph edge cleanup";
+            case "EMBEDDING", "INDEXING", "VECTOR_INDEXING" -> "Embedding & vector indexing";
+            case "ENRICHMENT" -> "Post-Crawl Enrichment";
+            case "LEARNING" -> "KGE Training (Learning)";
+            case "COMPLETED" -> "Completed";
+            case "FAILED" -> "Failed";
+            case "CANCELLED" -> "Cancelled";
+            case "PENDING" -> "Pending";
+            case "RUNNING" -> "Running";
+            case "PAUSED" -> "Paused";
+            default -> titleCasePhase(phase);
+        };
+    }
+
+    private static String titleCasePhase(String phase) {
+        String[] parts = phase.replace('_', ' ').toLowerCase(Locale.ROOT).split(" ");
+        StringBuilder builder = new StringBuilder(phase.length());
+        for (String part : parts) {
+            if (part.isBlank()) {
+                continue;
+            }
+            if (builder.length() > 0) {
+                builder.append(' ');
+            }
+            builder.append(Character.toUpperCase(part.charAt(0))).append(part.substring(1));
+        }
+        return builder.toString();
+    }
+
+    private static String text(JsonNode node, String field) {
+        if (node == null || field == null || !node.hasNonNull(field)) {
+            return "";
+        }
+        return node.get(field).asText("").trim();
+    }
+
+    private static String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value.trim();
+            }
+        }
+        return null;
+    }
+
+    private static JsonNode parseJson(String json) {
+        if (json == null || json.isBlank()) {
+            return null;
+        }
+        try {
+            return JSON.readTree(json);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static long modifiedMillis(Path path) {
+        try {
+            return Files.getLastModifiedTime(path).toMillis();
+        } catch (IOException e) {
+            return 0L;
+        }
+    }
+
+    private static long sizeBytes(Path path) {
+        try {
+            return Files.size(path);
+        } catch (IOException e) {
+            return 0L;
+        }
+    }
+
+    private static String logJobId(Path file) {
+        String name = file.getFileName() != null ? file.getFileName().toString() : file.toString();
+        return name.endsWith(".log") ? name.substring(0, name.length() - 4) : name;
+    }
+
+    private static String shortTime(String value) {
+        if (value == null || value.isBlank()) {
+            return LocalTime.now().withNano(0).toString();
+        }
+        String text = value.trim();
+        int t = text.indexOf('T');
+        if (t >= 0 && text.length() >= t + 9) {
+            return text.substring(t + 1, t + 9);
+        }
+        if (text.length() >= 19 && text.charAt(10) == ' ') {
+            return text.substring(11, 19);
+        }
+        return StringUtils.truncateToLength(text, 19);
+    }
+
+    private static void printCrawlLogLine(String line) {
+        JsonNode record = parseJson(line);
+        if (record == null) {
+            System.out.println(line);
+            return;
+        }
+        String timestamp = shortTime(text(record, "timestamp"));
+        String level = firstNonBlank(text(record, "level"), "INFO");
+        String phase = displayPhase(text(record, "phase"));
+        String message = firstNonBlank(text(record, "message"), "");
+        String details = text(record, "details");
+        if (!details.isBlank()) {
+            message = message.isBlank() ? details : message + "  " + details;
+        }
+        System.out.printf("[%s] %-5s %-28s %s%n",
+                timestamp,
+                StringUtils.truncateToLength(level, 5),
+                StringUtils.truncateToLength(phase, 28),
+                message);
+    }
+
+    private static String encodePathSegment(String value) {
+        return URLEncoder.encode(value, StandardCharsets.UTF_8).replace("+", "%20");
+    }
+
+    private static String crawlProgressSummary(JsonNode snapshot) {
+        if (snapshot == null || snapshot.isMissingNode() || snapshot.isNull()) {
+            return "";
+        }
+        List<String> parts = new ArrayList<>();
+        appendNumber(parts, snapshot, "documentsLoaded", "loaded");
+        appendNumber(parts, snapshot, "documentsIndexed", "indexed");
+        appendNumber(parts, snapshot, "entitiesExtracted", "entities");
+        appendNumber(parts, snapshot, "relationshipsExtracted", "relations");
+        appendNumber(parts, snapshot, "errorCount", "errors");
+        return parts.isEmpty() ? "" : "  " + String.join(" ", parts);
+    }
+
+    private static void appendNumber(List<String> parts, JsonNode node, String field, String label) {
+        if (node != null && node.has(field) && node.get(field).canConvertToLong()) {
+            parts.add(label + "=" + node.get(field).asLong());
+        }
+    }
+
     // -----------------------------------------------------------------------
     // crawl status [jobId]
     // -----------------------------------------------------------------------
@@ -837,6 +1099,11 @@ public class CrawlCommand implements Callable<Integer> {
             if (job.has("name")) OutputFormatter.printKv("Name", job.path("name").asText());
 
             if (isUnified) {
+                OutputFormatter.printKv("Phase", formatUnifiedPhase(job));
+                String activeStep = activePipelineStepMessage(job);
+                if (!activeStep.isBlank()) {
+                    OutputFormatter.printKv("Active Step", activeStep);
+                }
                 OutputFormatter.printKv("Docs Loaded", job.path("documentsLoaded"));
                 OutputFormatter.printKv("Docs Indexed", job.path("documentsIndexed"));
                 OutputFormatter.printKv("Entities", job.path("entitiesExtracted"));
@@ -915,6 +1182,265 @@ public class CrawlCommand implements Callable<Integer> {
             JsonNode array = client.getObjectMapper().valueToTree(allJobs);
             OutputFormatter.printTable(array, "jobId", "status", "name", "startTime");
             return 0;
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // crawl logs [jobId]
+    // -----------------------------------------------------------------------
+
+    @CommandLine.Command(name = "logs",
+            aliases = {"log"},
+            description = "Read retained crawl JSONL logs from ~/.kompile/logs/crawls",
+            mixinStandardHelpOptions = true)
+    static class LogsCmd implements Callable<Integer> {
+        @CommandLine.Mixin
+        private AppClientMixin app;
+
+        @CommandLine.Parameters(index = "0", arity = "0..1",
+                description = "Job ID (omit to list local crawl log files)")
+        private String jobId;
+
+        @CommandLine.Option(names = {"-n", "--lines"}, defaultValue = "50",
+                description = "Number of recent lines to show (default: ${DEFAULT-VALUE})")
+        private int lines;
+
+        @CommandLine.Option(names = "--all",
+                description = "Show all retained log lines for the job")
+        private boolean all;
+
+        @CommandLine.Option(names = "--raw",
+                description = "Print raw JSONL instead of formatted log lines")
+        private boolean raw;
+
+        @Override
+        public Integer call() {
+            try {
+                if (jobId == null || jobId.isBlank()) {
+                    return listLocalLogs();
+                }
+                return showLocalLog();
+            } catch (IOException e) {
+                System.err.println("Error reading crawl logs: " + e.getMessage());
+                return 1;
+            }
+        }
+
+        private int listLocalLogs() throws IOException {
+            Path dir = LogPaths.crawlsRoot().toPath();
+            if (!Files.isDirectory(dir)) {
+                System.out.println("No crawl logs found at " + dir);
+                return 0;
+            }
+
+            List<Path> files;
+            try (var stream = Files.list(dir)) {
+                files = stream
+                        .filter(path -> Files.isRegularFile(path) && path.getFileName().toString().endsWith(".log"))
+                        .sorted(Comparator.comparingLong(CrawlCommand::modifiedMillis).reversed())
+                        .toList();
+            }
+
+            if (app.isJsonOutput()) {
+                ArrayNode array = JSON.createArrayNode();
+                for (Path file : files) {
+                    ObjectNode node = JSON.createObjectNode();
+                    node.put("jobId", logJobId(file));
+                    node.put("path", file.toString());
+                    node.put("sizeBytes", sizeBytes(file));
+                    node.put("modifiedAt", Instant.ofEpochMilli(modifiedMillis(file)).toString());
+                    array.add(node);
+                }
+                System.out.println(JSON.writerWithDefaultPrettyPrinter().writeValueAsString(array));
+                return 0;
+            }
+
+            if (files.isEmpty()) {
+                System.out.println("No crawl logs found at " + dir);
+                return 0;
+            }
+
+            System.out.printf("%-44s %10s %s%n", "JOB ID", "BYTES", "MODIFIED");
+            for (Path file : files) {
+                System.out.printf("%-44s %10d %s%n",
+                        StringUtils.truncateToLength(logJobId(file), 44),
+                        sizeBytes(file),
+                        Instant.ofEpochMilli(modifiedMillis(file)));
+            }
+            return 0;
+        }
+
+        private int showLocalLog() throws IOException {
+            Path file = LogPaths.crawlLogFile(jobId).toPath();
+            if (!Files.isRegularFile(file)) {
+                System.err.println("No crawl log found for job '" + jobId + "' at " + file);
+                return 1;
+            }
+
+            List<String> allLines = Files.readAllLines(file, StandardCharsets.UTF_8);
+            int start = all ? 0 : Math.max(0, allLines.size() - Math.max(0, lines));
+            List<String> selected = allLines.subList(start, allLines.size());
+
+            if (app.isJsonOutput()) {
+                ArrayNode array = JSON.createArrayNode();
+                for (String line : selected) {
+                    JsonNode parsed = parseJson(line);
+                    if (parsed != null) {
+                        array.add(parsed);
+                    } else {
+                        array.add(line);
+                    }
+                }
+                System.out.println(JSON.writerWithDefaultPrettyPrinter().writeValueAsString(array));
+                return 0;
+            }
+
+            if (selected.isEmpty()) {
+                System.out.println("Crawl log is empty: " + file);
+                return 0;
+            }
+            for (String line : selected) {
+                if (raw) {
+                    System.out.println(line);
+                } else {
+                    printCrawlLogLine(line);
+                }
+            }
+            if (!all && allLines.size() > selected.size()) {
+                System.out.printf("%n... showing last %d of %d lines (%s)%n",
+                        selected.size(), allLines.size(), file);
+            }
+            return 0;
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // crawl tail [jobId]
+    // -----------------------------------------------------------------------
+
+    @CommandLine.Command(name = "tail",
+            description = "Tail live crawl progress events via SSE",
+            mixinStandardHelpOptions = true)
+    static class TailCmd implements Callable<Integer> {
+        @CommandLine.Mixin
+        private AppClientMixin app;
+
+        @CommandLine.Parameters(index = "0", arity = "0..1",
+                description = "Job ID to tail (omit for all crawl jobs)")
+        private String jobId;
+
+        @CommandLine.Option(names = "--raw",
+                description = "Print raw SSE data payloads")
+        private boolean raw;
+
+        @Override
+        public Integer call() {
+            KompileHttpClient client = app.requireClient();
+            if (client == null) return 1;
+
+            String streamPath = (jobId == null || jobId.isBlank())
+                    ? "/api/crawl-events/stream"
+                    : "/api/crawl-events/stream/" + encodePathSegment(jobId);
+            String url = client.getBaseUrl() + streamPath;
+
+            if (!app.isJsonOutput()) {
+                System.out.println("Tailing crawl events from " + url + " (Ctrl+C to stop)...");
+                System.out.println();
+            }
+
+            try {
+                HttpClient httpClient = HttpClient.newBuilder()
+                        .connectTimeout(Duration.ofSeconds(10))
+                        .build();
+                HttpRequest request = HttpRequest.newBuilder()
+                        .uri(URI.create(url))
+                        .header("Accept", "text/event-stream")
+                        .GET()
+                        .build();
+                HttpResponse<java.io.InputStream> response = httpClient.send(request,
+                        HttpResponse.BodyHandlers.ofInputStream());
+
+                if (response.statusCode() != 200) {
+                    System.err.println("HTTP " + response.statusCode() + " from " + url);
+                    return 1;
+                }
+
+                try (BufferedReader reader = new BufferedReader(
+                        new InputStreamReader(response.body(), StandardCharsets.UTF_8))) {
+                    String eventName = "";
+                    StringBuilder data = new StringBuilder();
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        if (line.startsWith("event:")) {
+                            eventName = line.substring(6).trim();
+                        } else if (line.startsWith("data:")) {
+                            if (data.length() > 0) {
+                                data.append('\n');
+                            }
+                            data.append(line.substring(5).trim());
+                        } else if (line.isBlank()) {
+                            if (data.length() > 0) {
+                                renderSseEvent(eventName, data.toString());
+                            }
+                            eventName = "";
+                            data.setLength(0);
+                        }
+                    }
+                }
+                return 0;
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return 1;
+            } catch (Exception e) {
+                System.err.println("Error tailing crawl events: " + e.getMessage());
+                return 1;
+            }
+        }
+
+        private void renderSseEvent(String eventName, String data) throws IOException {
+            if ("heartbeat".equals(eventName)) {
+                return;
+            }
+            if (raw) {
+                System.out.println(data);
+                return;
+            }
+
+            JsonNode payload = parseJson(data);
+            if (app.isJsonOutput()) {
+                ObjectNode node = JSON.createObjectNode();
+                node.put("event", eventName);
+                if (payload != null) {
+                    node.set("data", payload);
+                } else {
+                    node.put("data", data);
+                }
+                System.out.println(JSON.writeValueAsString(node));
+                return;
+            }
+
+            if (payload == null) {
+                System.out.printf("[%s] %-18s %s%n", shortTime(null), eventName, StringUtils.truncateToLength(data, 120));
+                return;
+            }
+
+            JsonNode snapshot = payload.path("snapshot");
+            String effectiveEvent = firstNonBlank(text(payload, "eventType"), eventName, "event");
+            String effectiveJobId = firstNonBlank(text(payload, "jobId"), text(snapshot, "jobId"), text(snapshot, "id"));
+            String phase = firstNonBlank(text(payload, "phase"), text(snapshot, "currentPhase"), text(snapshot, "phase"));
+            String message = firstNonBlank(text(payload, "message"), text(snapshot, "message"), "");
+            String progress = crawlProgressSummary(snapshot);
+            String jobPart = effectiveJobId == null ? "" : " job=" + StringUtils.truncateToLength(effectiveJobId, 24);
+            String phasePart = phase == null ? "" : " phase=" + StringUtils.truncateToLength(displayPhase(phase), 28);
+            String messagePart = message.isBlank() ? "" : "  " + StringUtils.truncateToLength(message, 100);
+
+            System.out.printf("[%s] %-18s%s%s%s%s%n",
+                    shortTime(text(payload, "timestamp")),
+                    StringUtils.truncateToLength(effectiveEvent, 18),
+                    jobPart,
+                    phasePart,
+                    progress,
+                    messagePart);
         }
     }
 

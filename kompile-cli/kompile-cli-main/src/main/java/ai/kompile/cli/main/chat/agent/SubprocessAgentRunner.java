@@ -17,22 +17,30 @@
 package ai.kompile.cli.main.chat.agent;
 
 import ai.kompile.cli.main.chat.ChatHistory;
+import ai.kompile.utils.AnsiConstants;
 import ai.kompile.utils.FormatUtils;
 import ai.kompile.cli.main.chat.ChatSessionMetrics;
 import ai.kompile.cli.main.chat.McpUrlResolver;
 import ai.kompile.cli.main.chat.PassthroughStreamParser;
+import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.SystemPromptManager;
+import ai.kompile.cli.main.chat.mcp.McpToolInjection;
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.skill.CustomSkillLoader;
 import ai.kompile.cli.main.chat.skill.SkillRegistry;
 import ai.kompile.cli.main.chat.skill.SkillsInjection;
 import ai.kompile.cli.main.chat.ToolCallIndex;
+import ai.kompile.cli.main.chat.terminal.InterruptEscalation;
+import ai.kompile.cli.main.chat.terminal.ScriptPtyProvider;
+import ai.kompile.core.agent.AgentProvider;
+import ai.kompile.core.agent.CliAgentRegistry;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -136,13 +144,6 @@ public class SubprocessAgentRunner {
     private static final String YELLOW = "\033[33m";
     private static final String DIM = "\033[2m";
     private static final String BOLD = "\033[1m";
-
-    private static final String ANSI_REGEX =
-            "\033\\[[0-9;?><]*[a-zA-Z]"
-            + "|\033\\].*?(?:\033\\\\|\007)"
-            + "|\033[()][0-9A-B]"
-            + "|\033[>=<]"
-            + "|\033\\\\";
 
     public SubprocessAgentRunner(String agent, String workingDir, boolean skipPermissions,
                                   boolean injectTools, String kompileUrl, int mcpPort,
@@ -271,7 +272,7 @@ public class SubprocessAgentRunner {
         if (!injectTools) return;
         try {
             String sseUrl = mcpUrlResolver.resolveMcpUrl(kompileUrl, mcpPort);
-            injectedSettingsFile = ai.kompile.cli.main.chat.mcp.McpToolInjection.injectTools(
+            injectedSettingsFile = McpToolInjection.injectTools(
                     Path.of(workingDir), agent, sseUrl);
             if (injectedSettingsFile != null) {
                 String mode = (sseUrl != null && !sseUrl.isBlank()) ? "sse" : "stdio";
@@ -330,7 +331,7 @@ public class SubprocessAgentRunner {
             killProcess(tuiProcess);
             tuiProcess = null;
         }
-        ai.kompile.cli.main.chat.mcp.McpToolInjection.removeTools(injectedSettingsFile);
+        McpToolInjection.removeTools(injectedSettingsFile);
         if (skillsInjection != null) {
             skillsInjection.cleanup();
         }
@@ -352,13 +353,38 @@ public class SubprocessAgentRunner {
     }
 
     /**
+     * PATH resolutions cached for a short TTL. Judge construction paths call this in
+     * loops (e.g. {@code CliJudgeBackend.anyAgentAvailable()} probes every known agent
+     * per judge build), and each uncached call stats PATH-entries × 4 extensions.
+     * Negative results are cached too — agents that are not installed are re-probed at
+     * most once per TTL window, and a fresh install is picked up within it.
+     */
+    private static final ConcurrentHashMap<String, AgentBinaryResolution>
+            AGENT_BINARY_CACHE = new ConcurrentHashMap<>();
+    private static final long AGENT_BINARY_CACHE_TTL_MS = 30_000L;
+
+    private record AgentBinaryResolution(String path, long resolvedAtMs) {}
+
+    /**
      * Check if an agent binary exists on PATH.
      */
     public static String resolveAgentBinary(String name) {
+        String cacheKey = name.toLowerCase();
+        AgentBinaryResolution cachedResolution = AGENT_BINARY_CACHE.get(cacheKey);
+        if (cachedResolution != null
+                && System.currentTimeMillis() - cachedResolution.resolvedAtMs() < AGENT_BINARY_CACHE_TTL_MS) {
+            return cachedResolution.path();
+        }
+        String resolved = resolveAgentBinaryUncached(name);
+        AGENT_BINARY_CACHE.put(cacheKey, new AgentBinaryResolution(resolved, System.currentTimeMillis()));
+        return resolved;
+    }
+
+    private static String resolveAgentBinaryUncached(String name) {
         // Resolve command name from the registry (matches by name or command),
         // then fall back to using the input directly for unknown agents.
         String binary = name.toLowerCase();
-        for (ai.kompile.core.agent.AgentProvider agent : ai.kompile.core.agent.CliAgentRegistry.loadAll()) {
+        for (AgentProvider agent : CliAgentRegistry.loadAll()) {
             if (agent.getName().equalsIgnoreCase(name)
                     || agent.getCommand().equalsIgnoreCase(name)
                     || agent.getDisplayName().equalsIgnoreCase(name)) {
@@ -396,7 +422,7 @@ public class SubprocessAgentRunner {
         if (agentBinary == null) {
             emitLine(renderer.red("  Agent '" + agent + "' not found on PATH."));
             emitLine(renderer.dim("  Supported agents: " + String.join(", ",
-                    ai.kompile.cli.main.chat.config.ChatConfig.getPassthroughAgentOrder())));
+                    ChatConfig.getPassthroughAgentOrder())));
             return "";
         }
 
@@ -566,7 +592,7 @@ public class SubprocessAgentRunner {
         if (agentBinary == null) {
             emitLine(renderer.red("  Agent '" + agent + "' not found on PATH."));
             emitLine(renderer.dim("  Supported agents: " + String.join(", ",
-                    ai.kompile.cli.main.chat.config.ChatConfig.getPassthroughAgentOrder())));
+                    ChatConfig.getPassthroughAgentOrder())));
             return "";
         }
 
@@ -1108,16 +1134,7 @@ public class SubprocessAgentRunner {
      * all stages. Package-private for testing.
      */
     static String escalatingUnixInterrupt(Process process, int sigintGraceMs, int sigtermGraceMs) throws Exception {
-        long pid = process.pid();
-        new ProcessBuilder("kill", "-INT", String.valueOf(pid))
-                .redirectErrorStream(true).start().waitFor();
-        if (process.waitFor(sigintGraceMs, TimeUnit.MILLISECONDS)) return "INT";
-        new ProcessBuilder("kill", "-TERM", String.valueOf(pid))
-                .redirectErrorStream(true).start().waitFor();
-        if (process.waitFor(sigtermGraceMs, TimeUnit.MILLISECONDS)) return "TERM";
-        new ProcessBuilder("kill", "-9", String.valueOf(pid))
-                .redirectErrorStream(true).start().waitFor();
-        return process.waitFor(1000, TimeUnit.MILLISECONDS) ? "KILL" : "ALIVE";
+        return new InterruptEscalation(sigintGraceMs, sigtermGraceMs, 1000, false).escalate(process);
     }
 
     // ========================================================================
@@ -1337,10 +1354,26 @@ public class SubprocessAgentRunner {
     // ========================================================================
 
     private List<String> buildCommand(String binary, String message) {
+        return buildManagedCommand(agent, binary, message, firstMessageSent, agentSessionId,
+                skipPermissions, Path.of(workingDir), systemPromptManager);
+    }
+
+    /**
+     * Build the same provider-aware one-shot command used by managed terminals.
+     * MCP subagents use this too so Codex/OpenCode/Gemini/Qwen receive the same
+     * prompt flags, JSON output mode, permission bypass flags, and system-prompt
+     * arguments as the interactive managed UI path.
+     */
+    public static List<String> buildManagedCommand(String agentName, String binary, String message,
+                                                   boolean firstMessageSent, String agentSessionId,
+                                                   boolean skipPermissions, Path workingDir,
+                                                   SystemPromptManager systemPromptManager) {
         List<String> cmd = new ArrayList<>();
         cmd.add(binary);
 
+        String agent = agentName != null ? agentName : "";
         String name = agent.toLowerCase();
+        Path resolvedWorkingDir = workingDir != null ? workingDir : Path.of(".");
 
         if (name.contains("claude")) {
             cmd.add("-p");
@@ -1348,7 +1381,7 @@ public class SubprocessAgentRunner {
             cmd.add("--output-format");
             cmd.add("stream-json");
             cmd.add("--verbose");
-            AgentFlagOverrides.addPermissionBypassFlags(cmd, agent, skipPermissions, Path.of(workingDir));
+            AgentFlagOverrides.addPermissionBypassFlags(cmd, agent, skipPermissions, resolvedWorkingDir);
             if (firstMessageSent) {
                 if (agentSessionId != null) {
                     cmd.add("--resume");
@@ -1367,12 +1400,12 @@ public class SubprocessAgentRunner {
                     cmd.add("--last");
                 }
                 cmd.add("--json");
-                AgentFlagOverrides.addPermissionBypassFlags(cmd, agent, skipPermissions, Path.of(workingDir));
+                AgentFlagOverrides.addPermissionBypassFlags(cmd, agent, skipPermissions, resolvedWorkingDir);
                 cmd.add(message);
             } else {
                 cmd.add("exec");
                 cmd.add("--json");
-                AgentFlagOverrides.addPermissionBypassFlags(cmd, agent, skipPermissions, Path.of(workingDir));
+                AgentFlagOverrides.addPermissionBypassFlags(cmd, agent, skipPermissions, resolvedWorkingDir);
                 cmd.add(message);
             }
         } else if (name.contains("gemini")) {
@@ -1380,7 +1413,7 @@ public class SubprocessAgentRunner {
             cmd.add(message);
             cmd.add("-o");
             cmd.add("stream-json");
-            AgentFlagOverrides.addPermissionBypassFlags(cmd, agent, skipPermissions, Path.of(workingDir));
+            AgentFlagOverrides.addPermissionBypassFlags(cmd, agent, skipPermissions, resolvedWorkingDir);
             if (firstMessageSent) {
                 cmd.add("--resume");
                 cmd.add("latest");
@@ -1388,7 +1421,7 @@ public class SubprocessAgentRunner {
         } else if (name.contains("qwen")) {
             cmd.add("-o");
             cmd.add("stream-json");
-            AgentFlagOverrides.addPermissionBypassFlags(cmd, agent, skipPermissions, Path.of(workingDir));
+            AgentFlagOverrides.addPermissionBypassFlags(cmd, agent, skipPermissions, resolvedWorkingDir);
             if (firstMessageSent) {
                 cmd.add("--continue");
             }
@@ -1399,7 +1432,7 @@ public class SubprocessAgentRunner {
             cmd.add("run");
             cmd.add("--format");
             cmd.add("json");
-            AgentFlagOverrides.addPermissionBypassFlags(cmd, agent, skipPermissions, Path.of(workingDir));
+            AgentFlagOverrides.addPermissionBypassFlags(cmd, agent, skipPermissions, resolvedWorkingDir);
             if (firstMessageSent && agentSessionId != null) {
                 cmd.add("--session");
                 cmd.add(agentSessionId);
@@ -1410,7 +1443,7 @@ public class SubprocessAgentRunner {
             cmd.add("json");
             cmd.add("-p");
             cmd.add(message);
-            AgentFlagOverrides.addPermissionBypassFlags(cmd, agent, skipPermissions, Path.of(workingDir));
+            AgentFlagOverrides.addPermissionBypassFlags(cmd, agent, skipPermissions, resolvedWorkingDir);
             if (firstMessageSent) {
                 cmd.add("--continue");
             }
@@ -1482,41 +1515,7 @@ public class SubprocessAgentRunner {
     // ========================================================================
 
     private static List<String> wrapWithPty(List<String> cmd) {
-        boolean isWindows = System.getProperty("os.name", "").toLowerCase().startsWith("win");
-        if (isWindows) return cmd;
-
-        try {
-            Process check = new ProcessBuilder("which", "script")
-                    .redirectErrorStream(true).start();
-            int rc = check.waitFor();
-            if (rc != 0) return cmd;
-        } catch (Exception e) {
-            return cmd;
-        }
-
-        boolean isMac = System.getProperty("os.name", "").toLowerCase().contains("mac");
-        List<String> wrapped = new ArrayList<>();
-        wrapped.add("script");
-        wrapped.add("-q");
-        if (isMac) {
-            wrapped.add("/dev/null");
-            wrapped.addAll(cmd);
-        } else {
-            wrapped.add("/dev/null");
-            wrapped.add("-c");
-            StringBuilder cmdStr = new StringBuilder();
-            for (int i = 0; i < cmd.size(); i++) {
-                if (i > 0) cmdStr.append(' ');
-                String arg = cmd.get(i);
-                if (arg.contains(" ") || arg.contains("'") || arg.contains("\"")) {
-                    cmdStr.append("'").append(arg.replace("'", "'\\''")).append("'");
-                } else {
-                    cmdStr.append(arg);
-                }
-            }
-            wrapped.add(cmdStr.toString());
-        }
-        return wrapped;
+        return ScriptPtyProvider.INSTANCE.wrap(cmd);
     }
 
     // ========================================================================
@@ -1550,21 +1549,9 @@ public class SubprocessAgentRunner {
     private void killProcess(Process process) {
         if (process == null || !process.isAlive()) return;
         try {
-            long pid = process.pid();
             boolean isUnix = !System.getProperty("os.name", "").toLowerCase().startsWith("win");
             if (isUnix) {
-                new ProcessBuilder("kill", "-INT", String.valueOf(pid))
-                        .redirectErrorStream(true).start().waitFor();
-                if (process.isAlive()) {
-                    Thread.sleep(500);
-                    new ProcessBuilder("kill", "-TERM", String.valueOf(pid))
-                            .redirectErrorStream(true).start().waitFor();
-                }
-                if (process.isAlive()) {
-                    Thread.sleep(300);
-                    new ProcessBuilder("kill", "-9", String.valueOf(pid))
-                            .redirectErrorStream(true).start().waitFor();
-                }
+                InterruptEscalation.hardSingle().escalate(process);
             } else {
                 process.destroyForcibly();
             }
@@ -1587,7 +1574,7 @@ public class SubprocessAgentRunner {
     }
 
     static String stripAnsi(String s) {
-        return s.replaceAll(ANSI_REGEX, "");
+        return AnsiConstants.stripAnsi(s);
     }
 
 }

@@ -47,6 +47,19 @@ public interface GraphEdgeComputationService {
     void computeEmbeddingSimilarityEdges(Long factSheetId, double minSimilarity, int maxEdgesPerNode);
 
     /**
+     * Populate missing DOCUMENT-node embeddings before similarity computation.
+     *
+     * <p>The injected embedding model and active knowledge-graph store decide how vectors are
+     * produced and persisted. Implementations must not select a concrete tensor backend.</p>
+     *
+     * @param factSheetId fact-sheet scope; {@code null} means all document nodes
+     * @return number of embeddings persisted by the active store
+     */
+    default int backfillDocumentNodeEmbeddings(Long factSheetId) {
+        return 0;
+    }
+
+    /**
      * Compute embedding similarity edges for a specific node
      *
      * @param nodeId Node UUID

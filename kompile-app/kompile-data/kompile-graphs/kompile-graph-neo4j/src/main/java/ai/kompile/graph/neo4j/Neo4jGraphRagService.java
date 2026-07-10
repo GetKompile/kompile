@@ -37,6 +37,7 @@ import org.springframework.util.StringUtils;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -55,7 +56,7 @@ public class Neo4jGraphRagService implements GraphRagService {
 
     // Per-conversation entity tracking
     private final Map<String, SessionEntityState> sessionEntities = new ConcurrentHashMap<>();
-    private final java.util.concurrent.atomic.AtomicInteger turnCounter = new java.util.concurrent.atomic.AtomicInteger(0);
+    private final AtomicInteger turnCounter = new AtomicInteger(0);
 
     private static final Pattern ENTITY_MENTION_PATTERN = Pattern.compile(
             "\\b(that|the|this|those)\\s+(company|person|organization|place|product|event|ceo|founder|manager)\\b",
@@ -67,6 +68,25 @@ public class Neo4jGraphRagService implements GraphRagService {
             YIELD node, score
             RETURN node.description AS context, node.title AS title, node.id AS entityId, labels(node) AS labels, score
             """;
+
+    private static float[] toHostFloatVector(INDArray array) {
+        long length = array.length();
+        if (length > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException("INDArray too large to materialize as float[]: " + length);
+        }
+        if (array.elementWiseStride() == 1) {
+            return array.data().getFloatsAt(array.offset(), (int) length);
+        }
+        INDArray copy = null;
+        try {
+            copy = array.dup('c');
+            return copy.data().getFloatsAt(copy.offset(), (int) length);
+        } finally {
+            if (copy != null && !copy.wasClosed()) {
+                copy.close();
+            }
+        }
+    }
 
     public Neo4jGraphRagService(Driver neo4jDriver, EmbeddingModel embeddingModel,
                                  LLMChat llmChat, KompileChatMemory chatMemory) {
@@ -192,7 +212,7 @@ public class Neo4jGraphRagService implements GraphRagService {
     private String retrieveContextWithEntityTracking(INDArray queryVector, int topK, SessionEntityState entityState) {
         try (Session session = neo4jDriver.session()) {
             List<Record> records = session.run(VECTOR_SEARCH_QUERY,
-                    Values.parameters("topK", topK, "queryVector", queryVector.toFloatVector())).list();
+                    Values.parameters("topK", topK, "queryVector", toHostFloatVector(queryVector))).list();
 
             StringBuilder contextBuilder = new StringBuilder();
             for (Record record : records) {

@@ -132,6 +132,43 @@ export interface ModelInfo {
   opTypeCounts: { [key: string]: string };
 }
 
+export interface QuantizationComparisonRequest {
+  baseModelId: string;
+  variants: QuantizationVariantRequest[];
+  includeGraphComparison?: boolean;
+}
+
+export interface QuantizationVariantRequest {
+  modelId: string;
+  quantizationType?: string;
+}
+
+export interface QuantizationComparisonResponse {
+  success: boolean;
+  error?: string;
+  baseModelId: string;
+  baseModel?: QuantizationVariantResult;
+  variants: QuantizationVariantResult[];
+  smallestModelId?: string;
+  bestSizeReductionModelId?: string;
+  verdict?: string;
+}
+
+export interface QuantizationVariantResult {
+  success: boolean;
+  modelId: string;
+  quantizationType?: string;
+  error?: string;
+  modelFile?: string;
+  sizeBytes: number;
+  sizeDeltaBytes: number;
+  sizeReductionPercent: number;
+  opsCount: number;
+  varsCount: number;
+  opTypeCounts: { [key: string]: string };
+  graphComparison?: CompilerCompareResponse;
+}
+
 export interface TritonCompileRequest {
   modelId: string;
   numWarps?: number;
@@ -347,6 +384,11 @@ export class CompilerService {
       model1Id,
       model2Id
     }).pipe(catchError(this.handleError));
+  }
+
+  compareQuantizationVariants(request: QuantizationComparisonRequest): Observable<QuantizationComparisonResponse> {
+    return this.http.post<QuantizationComparisonResponse>(`${this.baseUrl}/quantization/compare`, request)
+      .pipe(catchError(this.handleError));
   }
 
   // ==================== Triton Compiler ====================

@@ -90,7 +90,7 @@ public class ProcessingRouteConfig {
 
     /** Whether capacity-based fallback routing is enabled */
     @Builder.Default
-    private boolean fallbackEnabled = false;
+    private boolean fallbackEnabled = true;
 
     /** Ordered list of processing backends (evaluated by priority, lowest first) */
     @Builder.Default
@@ -106,6 +106,20 @@ public class ProcessingRouteConfig {
     /** Minimum text chars per page to consider a page text-extractable (used in AUTO mode) */
     @Builder.Default
     private int textThresholdCharsPerPage = 50;
+
+    /**
+     * When {@code true} (default), the {@code CrawlLlmDispatcher} will try the
+     * {@code LOCAL_MODEL/serving} backend as an availability-gated default entry when
+     * this route has no explicit backends configured.  Set to {@code false} to
+     * suppress this behaviour and rely solely on explicit backend declarations.
+     *
+     * <p>Auto-participation additionally requires the serving subprocess to be running
+     * with a model loaded ({@code LocalServingBackend.isAvailable()}); to disable the
+     * whole staging→serving auto-load pipeline, use the {@code kbServingAutoLoadEnabled}
+     * KbConfig knob instead.</p>
+     */
+    @Builder.Default
+    private boolean servingLaneEnabled = true;
 
     /**
      * A processing backend that can handle document processing tasks.
@@ -141,7 +155,12 @@ public class ProcessingRouteConfig {
         @Builder.Default
         private long maxMemoryBytes = 0;
 
-        /** For CLI_AGENT: agent provider name (from AgentRegistryService) */
+        /** For CLI_AGENT: agent provider name (from AgentRegistryService).
+         *  For LOCAL_MODEL: set to {@code "serving"} to route this backend to the out-of-process LLM
+         *  serving subprocess (a quota-free local lane via {@code LocalServingBackend}) instead of the
+         *  in-process LLMChat. Best configured as a low-priority backend so it's used as a fallback
+         *  when CLI/API backends are rate-limited or quota-exhausted; it is skipped/failed-over when
+         *  the serving subprocess isn't running with a model loaded. */
         private String agentName;
 
         /** For API_AGENT: endpoint URL */

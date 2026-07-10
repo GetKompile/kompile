@@ -23,15 +23,14 @@ import ai.kompile.knowledgegraph.reasoning.IncrementalReasoningOrchestrator;
 import ai.kompile.knowledgegraph.reasoning.RegroundResult;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
 
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * L3 Grounding Cascade Hook — implements {@link GroundingResetPort} and drives the
@@ -62,12 +61,30 @@ import java.util.concurrent.atomic.AtomicInteger;
 @Slf4j
 public class GroundingCascadeHook implements GroundingResetPort {
 
+    // ── Defaults for debounce parameters ────────────────────────────────────────
+
+    /** Default quiet-period after the last mutation before the cascade fires (ms). */
+    static final long DEFAULT_DEBOUNCE_MS = 15_000L;
+
+    /** Default maximum wait before forcing a cascade run even under continuous mutations (ms). */
+    static final long DEFAULT_MAX_WAIT_MS = 300_000L;
+
+    // ── Debounce state (one entry per fact sheet) ────────────────────────────────
+
+    /** Per-fact-sheet: timestamp of the last mutation that touched this fact sheet. */
+    private final ConcurrentHashMap<Long, AtomicLong> lastMutationAt = new ConcurrentHashMap<>();
+
+    /** Per-fact-sheet: timestamp when we first started waiting (for max-wait cap). */
+    private final ConcurrentHashMap<Long, AtomicLong> debounceStartAt = new ConcurrentHashMap<>();
+
+    /** Per-fact-sheet: whether a debounce task is currently scheduled (not yet running). */
+    private final ConcurrentHashMap<Long, AtomicBoolean> debounceScheduled = new ConcurrentHashMap<>();
+
     /**
-     * Coalescing policy: at most one cascade task may be queued (pending or running) per fact
-     * sheet at any time. When {@code schedule()} is called and the flag for that fact sheet is
-     * already {@code true}, the new request is silently dropped. The flag is cleared when the
-     * running task completes so the next call can queue again. This collapses a burst of
-     * per-node mutation events (e.g. a crawl inserting 10 000 nodes) into a single reground.
+     * Coalescing policy for RUNNING cascades: at most one cascade task may be running per fact
+     * sheet at any time. The debounce gate above prevents a second debounce task from being
+     * scheduled while one is pending; this flag prevents a new cascade from starting while the
+     * previous one is still running.
      */
     private final ConcurrentHashMap<Long, AtomicBoolean> pendingFlags = new ConcurrentHashMap<>();
 
@@ -98,16 +115,50 @@ public class GroundingCascadeHook implements GroundingResetPort {
     /** Per-factSheet single-threaded executors — serializes cascade runs per fact sheet. */
     private final ConcurrentHashMap<Long, ExecutorService> executors = new ConcurrentHashMap<>();
 
+    /**
+     * Shared scheduler for debounce timers. A single thread is sufficient because debounce tasks
+     * are short (they either reschedule themselves or submit to the per-factSheet cascade executor).
+     */
+    private final ScheduledExecutorService debounceScheduler =
+            Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread t = new Thread(r, "grounding-debounce");
+                t.setDaemon(true);
+                return t;
+            });
+
+    /** Quiet period after last mutation (ms) before the cascade fires. Configurable for tests. */
+    private final long debounceMs;
+
+    /** Maximum total wait before a forced cascade run, even under continuous mutations (ms). */
+    private final long maxWaitMs;
+
     @Autowired
     public GroundingCascadeHook(IncrementalReasoningOrchestrator orchestrator,
                                 @Nullable GraphEnrichmentService graphEnrichmentService) {
-        this.orchestrator = orchestrator;
-        this.graphEnrichmentService = graphEnrichmentService;
+        this(orchestrator, graphEnrichmentService, DEFAULT_DEBOUNCE_MS, DEFAULT_MAX_WAIT_MS);
     }
 
     /** Backward-compatible constructor for tests that do not wire the enrichment service. */
     public GroundingCascadeHook(IncrementalReasoningOrchestrator orchestrator) {
-        this(orchestrator, null);
+        this(orchestrator, null, DEFAULT_DEBOUNCE_MS, DEFAULT_MAX_WAIT_MS);
+    }
+
+    /**
+     * Full constructor for tests that need custom debounce timing.
+     *
+     * @param orchestrator          the reasoning orchestrator
+     * @param graphEnrichmentService optional enrichment service (may be null)
+     * @param debounceMs            quiet-period after last mutation before cascade fires (ms)
+     * @param maxWaitMs             max total wait before forced cascade, even under continuous mutations (ms)
+     */
+    public GroundingCascadeHook(IncrementalReasoningOrchestrator orchestrator,
+                                @Nullable GraphEnrichmentService graphEnrichmentService,
+                                long debounceMs,
+                                long maxWaitMs) {
+        this.orchestrator = orchestrator;
+        this.graphEnrichmentService = graphEnrichmentService;
+        this.debounceMs = debounceMs;
+        this.maxWaitMs = maxWaitMs;
     }
 
     /**
@@ -124,6 +175,9 @@ public class GroundingCascadeHook implements GroundingResetPort {
     /**
      * Submit a cascade task to the per-factSheet executor using {@link GroundingProgressEvent#TRIGGER_CASCADE}
      * as the default trigger label.
+     *
+     * <p>This variant bypasses the debounce window and submits immediately. Use it for
+     * high-priority triggers (changeset completed, agent assert) where latency matters.</p>
      *
      * @param factSheetId the fact sheet to re-ground
      * @param logLabel    human-readable label for logging only (not propagated to progress events)
@@ -143,12 +197,22 @@ public class GroundingCascadeHook implements GroundingResetPort {
      * {@code compareAndSet(false, true)} claims the slot; the running task clears it on
      * completion so the next external trigger can queue again.</p>
      *
+     * <p>The stale flag is marked IMMEDIATELY before the task is submitted so that any
+     * verify/explain served between now and cascade completion correctly reports {@code stale=true}.</p>
+     *
      * @param factSheetId the fact sheet to re-ground
      * @param logLabel    human-readable trigger label for logging
      * @param trigger     one of the {@link GroundingProgressEvent} TRIGGER_* constants, propagated
      *                    to every {@link GroundingProgressEvent} emitted by this cascade run
      */
     public void schedule(long factSheetId, String logLabel, String trigger) {
+        // Mark stale IMMEDIATELY so that any verify/explain served while the cascade is pending
+        // reports stale=true. This is intentionally before the coalescing gate so the flag is
+        // always accurate regardless of whether this call wins the gate.
+        if (kbGroundingService != null) {
+            kbGroundingService.markStale(factSheetId);
+        }
+
         // ── Coalescing gate ──────────────────────────────────────────────────────
         AtomicBoolean pending = pendingFlags.computeIfAbsent(factSheetId, id -> new AtomicBoolean(false));
         if (!pending.compareAndSet(false, true)) {
@@ -157,12 +221,96 @@ public class GroundingCascadeHook implements GroundingResetPort {
             return;
         }
 
-        // Mark stale BEFORE submitting so that any verify/explain served between now and cascade
-        // completion correctly reports stale=true.
+        submitCascadeTask(factSheetId, logLabel, trigger, pending);
+    }
+
+    /**
+     * Schedule a debounced cascade for {@code factSheetId}.
+     *
+     * <p>Unlike {@link #schedule}, this method does NOT immediately submit a cascade task. Instead
+     * it records the current time as the "last mutation" timestamp and ensures a single debounce
+     * check task is scheduled. The check task fires after {@link #debounceMs} of quiet time and
+     * either submits the cascade or reschedules itself if mutations are still arriving.</p>
+     *
+     * <p>A max-wait cap ({@link #maxWaitMs}) ensures the cascade always fires eventually even
+     * during a sustained crawl with continuous batch mutations.</p>
+     *
+     * <p>The KB stale flag is marked immediately on the <em>first</em> call for a given fact
+     * sheet (when {@code debounceStartAt} has no entry yet) so the stale indicator stays
+     * truthful throughout the debounce window.</p>
+     *
+     * @param factSheetId the fact sheet to eventually re-ground
+     * @param logLabel    human-readable trigger label for logging
+     * @param trigger     one of the {@link GroundingProgressEvent} TRIGGER_* constants
+     */
+    public void scheduleDebounced(long factSheetId, String logLabel, String trigger) {
+        long now = System.currentTimeMillis();
+
+        // Update the "last mutation" timestamp for this fact sheet.
+        lastMutationAt.computeIfAbsent(factSheetId, id -> new AtomicLong(0L)).set(now);
+
+        // Record when we first started waiting (for max-wait cap).
+        AtomicLong startAt = debounceStartAt.computeIfAbsent(factSheetId, id -> new AtomicLong(0L));
+        startAt.compareAndSet(0L, now);   // only sets if not already tracking
+
+        // Mark stale immediately on first call so stale flag is truthful during the debounce window.
         if (kbGroundingService != null) {
             kbGroundingService.markStale(factSheetId);
         }
 
+        // Ensure only one debounce check task is scheduled at a time.
+        AtomicBoolean scheduled = debounceScheduled.computeIfAbsent(factSheetId, id -> new AtomicBoolean(false));
+        if (!scheduled.compareAndSet(false, true)) {
+            // A check task is already scheduled — the timestamp update above is sufficient
+            // for the pending check to pick up the latest mutation time.
+            log.debug("GroundingCascadeHook: debounce touch for factSheet={} trigger={} (timer already running)",
+                    factSheetId, logLabel);
+            return;
+        }
+
+        log.debug("GroundingCascadeHook: debounce timer started for factSheet={} trigger={} quietMs={} maxWaitMs={}",
+                factSheetId, logLabel, debounceMs, maxWaitMs);
+        scheduleDebounceCheck(factSheetId, trigger, logLabel);
+    }
+
+    /**
+     * Internal: schedule a single debounce check task that fires after {@link #debounceMs}.
+     * The task re-evaluates whether the quiet period has elapsed (or the max-wait cap has been
+     * reached) and either fires the cascade or reschedules itself.
+     */
+    private void scheduleDebounceCheck(long factSheetId, String trigger, String logLabel) {
+        debounceScheduler.schedule(() -> {
+            long now = System.currentTimeMillis();
+            long lastMut = lastMutationAt.getOrDefault(factSheetId, new AtomicLong(0L)).get();
+            long start = debounceStartAt.getOrDefault(factSheetId, new AtomicLong(now)).get();
+            long quietMs = now - lastMut;
+            long waitedMs = now - start;
+
+            boolean quietPeriodElapsed = quietMs >= debounceMs;
+            boolean maxWaitExceeded = waitedMs >= maxWaitMs;
+
+            if (quietPeriodElapsed || maxWaitExceeded) {
+                // Clear debounce state before firing so new mutations after the cascade can
+                // start a fresh debounce window.
+                debounceScheduled.getOrDefault(factSheetId, new AtomicBoolean(true)).set(false);
+                debounceStartAt.remove(factSheetId);
+
+                String reason = maxWaitExceeded ? "max-wait" : "quiet";
+                log.debug("GroundingCascadeHook: debounce fired ({}) for factSheet={} after {}ms quiet / {}ms total",
+                        reason, factSheetId, quietMs, waitedMs);
+                schedule(factSheetId, logLabel + ":debounce-" + reason, trigger);
+            } else {
+                // Still receiving mutations — reschedule the check after another debounceMs.
+                long remainingMs = debounceMs - quietMs;
+                log.debug("GroundingCascadeHook: debounce rescheduled for factSheet={} quietMs={} remainMs={}",
+                        factSheetId, quietMs, remainingMs);
+                scheduleDebounceCheck(factSheetId, trigger, logLabel);
+            }
+        }, debounceMs, TimeUnit.MILLISECONDS);
+    }
+
+    /** Internal: submit the actual cascade task to the per-factSheet executor. */
+    private void submitCascadeTask(long factSheetId, String logLabel, String trigger, AtomicBoolean pending) {
         ExecutorService executor = executors.computeIfAbsent(factSheetId, id ->
                 Executors.newSingleThreadExecutor(new NamedThreadFactory("grounding-cascade-" + id)));
 

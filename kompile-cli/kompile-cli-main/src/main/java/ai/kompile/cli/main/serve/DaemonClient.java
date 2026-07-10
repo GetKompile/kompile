@@ -27,7 +27,10 @@ import java.nio.channels.SocketChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Client-side connector to the kompile daemon Unix domain socket.
@@ -222,7 +225,7 @@ public class DaemonClient implements Closeable {
                     ProcessHandle.of(Long.parseLong(pid)).ifPresentOrElse(
                             ph -> {
                                 ph.info().startInstant().ifPresent(start -> {
-                                    long uptimeSec = java.time.Duration.between(start, java.time.Instant.now()).getSeconds();
+                                    long uptimeSec = Duration.between(start, Instant.now()).getSeconds();
                                     long hours = uptimeSec / 3600;
                                     long mins = (uptimeSec % 3600) / 60;
                                     sb.append(" (uptime: ");
@@ -297,8 +300,8 @@ public class DaemonClient implements Closeable {
         // Track whether daemon sent at least one response.
         // If the daemon dies before responding, we must throw so the caller
         // can fall back to in-process mode instead of silently producing no output.
-        java.util.concurrent.atomic.AtomicBoolean receivedAny = new java.util.concurrent.atomic.AtomicBoolean(false);
-        java.util.concurrent.atomic.AtomicBoolean daemonClosed = new java.util.concurrent.atomic.AtomicBoolean(false);
+        AtomicBoolean receivedAny = new AtomicBoolean(false);
+        AtomicBoolean daemonClosed = new AtomicBoolean(false);
 
         // daemon→stdout in a background thread
         Thread outPump = new Thread(() -> {

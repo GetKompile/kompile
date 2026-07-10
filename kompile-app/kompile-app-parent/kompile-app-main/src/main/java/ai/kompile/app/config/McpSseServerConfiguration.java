@@ -22,7 +22,22 @@ import ai.kompile.app.tools.*;
 import ai.kompile.core.mcp.optimization.McpOptimizationConfig;
 import ai.kompile.core.mcp.optimization.McpOptimizationConfig.MetaToolMode;
 import ai.kompile.core.mcp.optimization.McpOptimizationConfigProvider;
+import ai.kompile.knowledgegraph.tool.KnowledgeGraphToolImpl;
+import ai.kompile.process.discovery.ProcessDiscoveryTool;
+import ai.kompile.process.discovery.ProcessMiningTool;
+import ai.kompile.process.tool.ProcessEngineTool;
 import ai.kompile.tool.filesystem.FilesystemToolImpl;
+import ai.kompile.tool.graph.GraphAlgorithmsTool;
+import ai.kompile.tool.graph.GraphCommunityTool;
+import ai.kompile.tool.graph.GraphHybridReasoningTool;
+import ai.kompile.tool.graph.GraphLabelTool;
+import ai.kompile.tool.graph.GraphMutationTool;
+import ai.kompile.tool.graph.GraphReasoningQueryTool;
+import ai.kompile.tool.graph.GraphSearchTool;
+import ai.kompile.tool.graph.GraphTraversalTool;
+import ai.kompile.tool.graph.NamedGraphTool;
+import ai.kompile.tool.graphlocalization.GraphLocalizationToolImpl;
+import ai.kompile.tool.knowledge.UnifiedKnowledgeTool;
 import ai.kompile.tool.rag.RagToolImpl;
 import ai.kompile.tool.tablesearch.TableSearchToolImpl;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -113,6 +128,58 @@ public class McpSseServerConfiguration {
     @Autowired(required = false)
     private DiffIndexTool diffIndexTool;
 
+    // Graph & KB grounding tools — the graph surface chat-spawned agents rely on
+    @Autowired(required = false)
+    private KbVerifyExplainTool kbVerifyExplainTool;
+
+    @Autowired(required = false)
+    private KbGroundingTool kbGroundingTool;
+
+    @Autowired(required = false)
+    private KnowledgeGraphToolImpl knowledgeGraphTool;
+
+    @Autowired(required = false)
+    private UnifiedKnowledgeTool unifiedKnowledgeTool;
+
+    @Autowired(required = false)
+    private GraphSearchTool graphSearchTool;
+
+    @Autowired(required = false)
+    private GraphMutationTool graphMutationTool;
+
+    @Autowired(required = false)
+    private GraphTraversalTool graphTraversalTool;
+
+    @Autowired(required = false)
+    private GraphCommunityTool graphCommunityTool;
+
+    @Autowired(required = false)
+    private GraphAlgorithmsTool graphAlgorithmsTool;
+
+    @Autowired(required = false)
+    private GraphLabelTool graphLabelTool;
+
+    @Autowired(required = false)
+    private NamedGraphTool namedGraphTool;
+
+    @Autowired(required = false)
+    private GraphHybridReasoningTool graphHybridReasoningTool;
+
+    @Autowired(required = false)
+    private GraphReasoningQueryTool graphReasoningQueryTool;
+
+    @Autowired(required = false)
+    private GraphLocalizationToolImpl graphLocalizationTool;
+
+    @Autowired(required = false)
+    private ProcessDiscoveryTool processDiscoveryTool;
+
+    @Autowired(required = false)
+    private ProcessMiningTool processMiningTool;
+
+    @Autowired(required = false)
+    private ProcessEngineTool processEngineTool;
+
     @Autowired(required = false)
     private ToolResponseCompressorRegistry compressorRegistry;
 
@@ -139,6 +206,7 @@ public class McpSseServerConfiguration {
      */
     @Bean
     public ToolCallbackProvider kompileToolCallbackProvider() {
+      try {
         List<Object> toolObjects = new ArrayList<>();
 
         // Add core tools from kompile-tool modules
@@ -159,6 +227,29 @@ public class McpSseServerConfiguration {
         addToolIfAvailable(toolObjects, agentTaskTool, "Agent Task");
         addToolIfAvailable(toolObjects, diffTrackerTool, "Diff Tracker");
         addToolIfAvailable(toolObjects, diffIndexTool, "Diff Index");
+
+        // Graph & KB grounding tools — kb_verify_explain, kb_query/kb_assert, knowledge-graph
+        // search and graph mutation/community/algorithm tools, so chat-spawned agents get the
+        // graph surface alongside RAG.
+        addToolIfAvailable(toolObjects, kbVerifyExplainTool, "KB Verify/Explain");
+        addToolIfAvailable(toolObjects, kbGroundingTool, "KB Grounding");
+        addToolIfAvailable(toolObjects, knowledgeGraphTool, "Knowledge Graph");
+        addToolIfAvailable(toolObjects, unifiedKnowledgeTool, "Unified Knowledge");
+        addToolIfAvailable(toolObjects, graphSearchTool, "Graph Search");
+        addToolIfAvailable(toolObjects, graphMutationTool, "Graph Mutation");
+        addToolIfAvailable(toolObjects, graphTraversalTool, "Graph Traversal");
+        addToolIfAvailable(toolObjects, graphCommunityTool, "Graph Community");
+        addToolIfAvailable(toolObjects, graphAlgorithmsTool, "Graph Algorithms");
+        addToolIfAvailable(toolObjects, graphLabelTool, "Graph Label");
+        addToolIfAvailable(toolObjects, namedGraphTool, "Named Graph");
+        addToolIfAvailable(toolObjects, graphHybridReasoningTool, "Graph Hybrid Reasoning");
+        addToolIfAvailable(toolObjects, graphReasoningQueryTool, "Graph Reasoning Query");
+        addToolIfAvailable(toolObjects, graphLocalizationTool, "Graph Localization");
+
+        // Process tools — process mining, workflow discovery, and engine operations
+        addToolIfAvailable(toolObjects, processDiscoveryTool, "Process Discovery");
+        addToolIfAvailable(toolObjects, processMiningTool, "Process Mining");
+        addToolIfAvailable(toolObjects, processEngineTool, "Process Engine");
 
         // Meta-tools are always registered; the mode filter below decides which
         // tool *names* the MCP client actually sees.
@@ -185,6 +276,12 @@ public class McpSseServerConfiguration {
             return new CompressingToolCallbackProvider(base, null, objectMapper, allowedToolNames);
         }
         return base;
+      } catch (Throwable t) {
+        // Under native image the AOT instance supplier swallows the cause chain
+        // ("Instantiation of supplied bean failed") — log it before rethrowing.
+        logger.error("kompileToolCallbackProvider construction failed", t);
+        throw t;
+      }
     }
 
     /**

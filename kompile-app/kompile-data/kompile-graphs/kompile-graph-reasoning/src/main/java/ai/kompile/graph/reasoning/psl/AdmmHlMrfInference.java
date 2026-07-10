@@ -17,6 +17,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -500,7 +501,7 @@ public class AdmmHlMrfInference implements HlMrfSolver {
 
     private static List<String> ruleAtomKeys(GroundRule gr) {
         // Collect unique ordered atom keys from body then head
-        java.util.LinkedHashSet<String> keys = new java.util.LinkedHashSet<>();
+        LinkedHashSet<String> keys = new LinkedHashSet<>();
         for (GroundRule.Lit l : gr.body()) keys.add(l.atomKey());
         for (GroundRule.Lit l : gr.head()) keys.add(l.atomKey());
         return new ArrayList<>(keys);

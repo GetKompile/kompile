@@ -45,6 +45,21 @@ class GraphEntityTypeMembershipTest {
     }
 
     @Test
+    void typeMemberships_includeCrawlerEntityTypeAliases() {
+        GraphEntity snakeCase = GraphEntity.builder("email")
+                .type("ENTITY")
+                .attribute("entity_type", "EMAIL_MESSAGE")
+                .build();
+        GraphEntity camelCase = GraphEntity.builder("workbook")
+                .type("ENTITY")
+                .attribute("entityType", "SPREADSHEET")
+                .build();
+
+        assertEquals(List.of("ENTITY", "EMAIL_MESSAGE"), new ArrayList<>(snakeCase.typeMemberships()));
+        assertEquals(List.of("ENTITY", "SPREADSHEET"), new ArrayList<>(camelCase.typeMemberships()));
+    }
+
+    @Test
     void typeMemberships_ignoreBareProbabilisticCandidateMaps() {
         GraphEntity entity = GraphEntity.builder("n1")
                 .type("Account")

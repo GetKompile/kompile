@@ -32,6 +32,16 @@
 </properties>
 
     <dependencies>
+        <!-- Hibernate 6 loads its ByteBuddy BytecodeProvider via ServiceLoader at EntityManagerFactory
+             bootstrap. byte-buddy is excluded from spring-boot-starter-data-jpa tree-wide
+             (kompile-app/pom.xml dependencyManagement, native-image hygiene — native profiles handle it
+             via initialize-at-run-time + AOT bytecode provider), which breaks the JVM exec-jar tier with
+             NoClassDefFoundError. Declare it explicitly so the runnable jar carries it. -->
+        <dependency>
+            <groupId>net.bytebuddy</groupId>
+            <artifactId>byte-buddy</artifactId>
+            <version>1.14.13</version>
+        </dependency>
         <dependency>
             <groupId>ai.kompile</groupId>
             <artifactId>kompile-cli-common</artifactId>
@@ -57,6 +67,110 @@
         <dependency>
             <groupId>ai.kompile</groupId>
             <artifactId>kompile-app-core</artifactId>
+        </dependency>
+        <!-- Shared DTO kernel (web.dto) — depended on by both the web and service layers;
+             extracting it below both broke the former services⇄web circular dependency. -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-dto</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <!-- Low-level config properties/holders (the app-main-decoupled subset of app.config). -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-config</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <!-- Runtime observability: Micrometer binders plus Actuator/Prometheus endpoints. -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-metrics</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <!-- Isolated subprocess entry-point modules (Mains bundle into the uber jar; app-main's
+             launchers reference them by string and share their args/message data classes). -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-subprocess-common</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-subprocess-learning</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-subprocess-graph</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-subprocess-serving</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-subprocess-model</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-subprocess-ingest</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <!-- Feature modules extracted from app-main (Spring-wired on the classpath, same packages). -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-rag</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-source</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-facts</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-ingest</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <!-- Platform/resource kernel (model/gpu/memory/resource/scheduler) — the low-level layer
+             the rest of the service package sits on. See services-decomposition-spec.md. -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-platform</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-mcp</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-agent</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-crawl</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-enforcer</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-diff</artifactId>
+            <version>${project.version}</version>
         </dependency>
         <dependency>
             <groupId>ai.kompile</groupId>
@@ -195,6 +309,31 @@
             <artifactId>nd4j-api</artifactId>
         </dependency>
 
+        <!-- Compute backend for the DIST server path. Generated RAG projects add their
+             own backend dependency in their own pom; the installed kompile-server (exec
+             jar or native image) runs app-main directly, so without a backend dependency
+             HERE the image/exec-jar ships with nd4j-api only and ND4J cannot initialize —
+             fatal under native's closed world. Select via -Dnd4j.backend (or the root
+             backend-* alias profiles, -Dkompile.backend=cuda-12.9 etc.); defaults to
+             nd4j-native. Generated projects that pick a different backend simply end up
+             multibackend (supported — runtime auto-picks). -->
+        <dependency>
+            <groupId>org.eclipse.deeplearning4j</groupId>
+            <artifactId>${nd4j.backend}</artifactId>
+            <version>${nd4j.version}</version>
+        </dependency>
+        <!-- Platform-classified twin: carries the compute library (libnd4jcpu.so /
+             libnd4jcuda.so). Without it the image/exec-jar ships the JavaCPP JNI
+             wrappers but no libnd4j — the backend then silently falls back to CPU
+             (or fails). ${javacpp.platform} is set by the root pom's OS profiles.
+             Same pattern PomModelBuilder emits for generated projects. -->
+        <dependency>
+            <groupId>org.eclipse.deeplearning4j</groupId>
+            <artifactId>${nd4j.backend}</artifactId>
+            <version>${nd4j.version}</version>
+            <classifier>${javacpp.platform}</classifier>
+        </dependency>
+
         <!-- Jetty for MCP server HTTP transport -->
         <dependency>
             <groupId>org.eclipse.jetty</groupId>
@@ -223,6 +362,10 @@
         <dependency>
             <groupId>ai.kompile</groupId>
             <artifactId>kompile-loader-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-loader-tika</artifactId>
         </dependency>
         <dependency>
             <groupId>ai.kompile</groupId>
@@ -453,6 +596,20 @@
             <version>${project.version}</version>
         </dependency>
 
+        <!-- Graph search/mutation/community/algorithms tools for the MCP servers -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-tool-graph</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Graph localization tools (multi-hop topology search, structural patterns, centrality) -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-tool-graph-localization</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
         <!-- Table search tool -->
         <dependency>
             <groupId>ai.kompile</groupId>
@@ -665,6 +822,29 @@
             </activation>
             <build>
                 <plugins>
+                    <!-- Side-loaded natives: the image cannot carry the JavaCPP/ND4J .so files,
+                         so unpack them from the dependency jars into target/native-libs.
+                         NativeLibraryResolver loads them from the dist lib/ dir at runtime
+                         (build-dist.sh copies target/native-libs → dist lib/; the native-dist
+                         assembly packages them as lib/). Mirrors the generated-project poms. -->
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-dependency-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>unpack-native-libs</id>
+                                <phase>prepare-package</phase>
+                                <goals>
+                                    <goal>unpack-dependencies</goal>
+                                </goals>
+                                <configuration>
+                                    <outputDirectory>${project.build.directory}/native-libs</outputDirectory>
+                                    <includeTypes>jar</includeTypes>
+                                    <includes>**/*.so,**/*.so.*,**/*.dylib,**/*.dll</includes>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
                     <plugin>
                         <groupId>org.graalvm.buildtools</groupId>
                         <artifactId>native-maven-plugin</artifactId>
@@ -682,7 +862,15 @@
                             <mainClass>${start-class}</mainClass>
                             <imageName>kompile-app</imageName>
                             <buildArgs>
-                                <buildArg>-J-Xmx24g</buildArg>
+                                <buildArg>-J-Xmx80g</buildArg>
+                                <buildArg>--enable-monitoring=jfr</buildArg>
+                                <!-- Oracle GraalVM's enterprise ML branch-profile inference loads its
+                                     BUNDLED ai.onnxruntime inside the compiler, colliding with
+                                     initialize-at-run-time=ai.onnxruntime (class-init violation at
+                                     image write; reproduced on spin builds, heuristic on this one).
+                                     Enterprise-only flag — keep in poms, NOT in the embedded
+                                     native-image.properties (breaks GraalVM CE consumer builds). -->
+                                <buildArg>-H:-MLProfileInference</buildArg>
                                 <buildArg>--verbose</buildArg>
                                 <buildArg>--no-fallback</buildArg>
                                 <buildArg>--allow-incomplete-classpath</buildArg>
@@ -690,7 +878,11 @@
                                 <buildArg>-H:DeadlockWatchdogInterval=30</buildArg>
                                 <buildArg>-H:+DeadlockWatchdogExitOnTimeout</buildArg>
                                 <buildArg>--enable-url-protocols=https,http</buildArg>
-                                <buildArg>-Dorg.bytedeco.javacpp.nopointergc=true</buildArg>
+                                <!-- NOTE: do NOT put -Dorg.bytedeco.javacpp.* here — buildArg -D flags
+                                     set BUILDER-JVM properties only and never reach the runtime image.
+                                     (A nopointergc=true entry sat here doing nothing; runtime probing
+                                     2026-07-03 confirmed it has no effect on boot either — and as a
+                                     runtime default it would leak native memory. Removed.) -->
                                 <!-- Build-time initialization (logging + ND4J deallocation) -->
                                 <buildArg>--initialize-at-build-time=org.slf4j</buildArg>
                                 <buildArg>--initialize-at-build-time=ch.qos.logback</buildArg>
@@ -743,12 +935,20 @@
                                 <buildArg>--initialize-at-run-time=org.apache.tomcat.util.compat,org.apache.catalina.webresources.DirResourceSet,org.apache.tomcat.jni.SSL,org.apache.tomcat.util.net.openssl.OpenSSLContext,org.apache.tomcat.util.net.openssl.OpenSSLEngine,org.apache.catalina.mbeans.MBeanUtils,org.apache.catalina.mbeans.MBeanFactory</buildArg>
                                 <buildArg>--initialize-at-run-time=org.jline.nativ.JLineLibrary,org.jline.terminal.impl.jna,org.jline.terminal.impl.jna.linux.LinuxNativePty$UtilLibrary</buildArg>
                                 <buildArg>--initialize-at-run-time=org.springframework.ai.chat.client.advisor,reactor.core.scheduler,org.springframework.web.reactive.function.client.DefaultExchangeStrategiesBuilder,org.springframework.boot.loader.ref.DefaultCleaner,org.springframework.boot.loader.ref.Cleaner,org.springframework.core.io.VfsUtils</buildArg>
+                                <!-- Microsoft ONNX Runtime Java SDK (ai.onnxruntime) - distinct from bytedeco/onnxruntime wrapper -->
+                                <buildArg>--initialize-at-run-time=ai.onnxruntime</buildArg>
+                                <!-- Holds the context classloader in static state; build-time init
+                                     bakes a dead builder classloader and Nd4jBackend service discovery
+                                     silently returns empty (NoAvailableBackendException). -->
+                                <buildArg>--initialize-at-run-time=org.nd4j.common.config.ND4JClassLoading</buildArg>
                                 <buildArg>-H:+AllowDeprecatedBuilderClassesOnImageClasspath</buildArg>
                                 <buildArg>-H:LargeArrayThreshold=8192</buildArg>
                                 <!-- Exclude ByteBuddy bytecode provider from ServiceLoader - Hibernate falls back to property-based selection -->
                                 <buildArg>-H:ServiceLoaderFeatureExcludeServices=org.hibernate.bytecode.spi.BytecodeProvider</buildArg>
-                                <!-- Agent-generated configs for main app -->
-                                <buildArg>-H:ConfigurationFileDirectories=${project.basedir}/src/main/resources/META-INF/native-image/main</buildArg>
+                                <!-- Agent-generated configs for main app and all subprocess types.
+                                     graph/ and serving/ directories are created by a separate agent;
+                                     referenced here so the unified binary picks them up when present. -->
+                                <buildArg>-H:ConfigurationFileDirectories=${project.basedir}/src/main/resources/META-INF/native-image/main,${project.basedir}/src/main/resources/META-INF/native-image/ingest,${project.basedir}/src/main/resources/META-INF/native-image/vector,${project.basedir}/src/main/resources/META-INF/native-image/embedding,${project.basedir}/src/main/resources/META-INF/native-image/model-init,${project.basedir}/src/main/resources/META-INF/native-image/graph,${project.basedir}/src/main/resources/META-INF/native-image/serving</buildArg>
                                 <!-- Resource inclusion -->
                                 <buildArg>-H:IncludeResources=static/.*</buildArg>
                                 <buildArg>-H:IncludeResources=application.*</buildArg>
@@ -790,6 +990,17 @@
                                 <goals>
                                     <goal>process-aot</goal>
                                 </goals>
+                            </execution>
+                            <!-- Dist builds always ship the JVM/JBang jar fallback alongside the
+                                 native binary; kompile-dist/dist.xml hard-references the exec jar. -->
+                            <execution>
+                                <id>repackage-exec</id>
+                                <goals>
+                                    <goal>repackage</goal>
+                                </goals>
+                                <configuration>
+                                    <classifier>exec</classifier>
+                                </configuration>
                             </execution>
                         </executions>
                         <configuration>
@@ -1467,6 +1678,84 @@
                 </plugins>
             </build>
         </profile>
+
+        <!-- Uber-jar profile: produces target/kompile-app-main-<version>-exec.jar (the JBang/jar
+             deployment fallback) while leaving the default thin jar (used by generated RAG
+             projects) untouched. Activation: -Dkompile.uber. Dist builds (-Dkompile.dist) get the
+             same exec jar via the repackage-exec execution in the `native` profile above.
+             The exec classifier mirrors the convention used in kompile-model-staging/pom.xml. -->
+        <profile>
+            <id>uber</id>
+            <activation>
+                <property>
+                    <name>kompile.uber</name>
+                </property>
+            </activation>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.springframework.boot</groupId>
+                        <artifactId>spring-boot-maven-plugin</artifactId>
+                        <version>${spring-boot.version}</version>
+                        <configuration>
+                            <mainClass>${start-class}</mainClass>
+                            <classifier>exec</classifier>
+                            <excludes>
+                                <exclude>
+                                    <groupId>org.projectlombok</groupId>
+                                    <artifactId>lombok</artifactId>
+                                </exclude>
+                            </excludes>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <id>repackage-exec</id>
+                                <goals>
+                                    <goal>repackage</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <!-- CUDA dual-backend: when -Dkompile.cuda activates the CUDA-variant dist build,
+             the primary ${nd4j.backend} dep is already swapped to nd4j-cuda-12.9 (via root
+             pom's backend-cuda-12.9 alias profile). Without this profile the exec/uber jar
+             ships ONLY the CUDA backend — BackendManager cannot fall back to CPU, and any
+             subprocess spawned with CUDA_VISIBLE_DEVICES=-1 (or
+             LearningSubprocessLauncher's default -Dnd4j.backend.priority=CPU) crashes at
+             Nd4j clinit with no rescue path.
+             Real incident: CUDA-700 context-poison 2026-07-05 — GPU lane died, CPU
+             fallback was absent because nd4j-native was not on the classpath, hard crash.
+             Documented intent: docs/architecture/release-distribution-unification.md ~line 160
+             "jar tier keeps runtime multi-backend selection (BackendManager, both jars on
+             classpath)". This profile pins nd4j-native alongside nd4j-cuda-* so both
+             backends coexist at runtime; BackendManager auto-picks CUDA when GPUs are
+             present and silently falls back to CPU (CUDA_VISIBLE_DEVICES=-1 / priority=CPU)
+             without crashing. -->
+        <profile>
+            <id>cuda-dual-backend</id>
+            <activation>
+                <property>
+                    <name>kompile.cuda</name>
+                </property>
+            </activation>
+            <dependencies>
+                <dependency>
+                    <groupId>org.eclipse.deeplearning4j</groupId>
+                    <artifactId>nd4j-native</artifactId>
+                    <version>${nd4j.version}</version>
+                </dependency>
+                <dependency>
+                    <groupId>org.eclipse.deeplearning4j</groupId>
+                    <artifactId>nd4j-native</artifactId>
+                    <version>${nd4j.version}</version>
+                    <classifier>${javacpp.platform}</classifier>
+                </dependency>
+            </dependencies>
+        </profile>
     </profiles>
 
     <build>
@@ -1520,7 +1809,8 @@
                 </configuration>
                 <!-- No repackage execution - this is a library module.
                      Use 'mvn spring-boot:run' for development.
-                     For production, use the generated RAG app from kompile CLI. -->
+                     For production, use the generated RAG app from kompile CLI.
+                     To produce an exec jar: mvn package -Dkompile.uber (activates the 'uber' profile). -->
             </plugin>
         </plugins>
     </build>

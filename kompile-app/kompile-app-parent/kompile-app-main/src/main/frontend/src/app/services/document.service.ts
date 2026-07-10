@@ -27,8 +27,12 @@ import {
   AddTextResponse,
   AddDiscordRequest,
   DiscordResponse,
+  SlackResponse,
   FileUploadResponse,
+  FileSourceCrawlResponse,
   SimpleMessageResponse,
+  SingleSourceCrawlPreviewRequest,
+  SingleSourceCrawlPreviewResponse,
   LoaderInfo,
   ChunkerInfo,
   BatchProcessRequest,
@@ -42,7 +46,8 @@ import {
   UploadedFileInfo,
   CancelTaskResponse,
   ProcessingModeInfo,
-  SubprocessIngestConfig
+  SubprocessIngestConfig,
+  PdfProcessingConfig
 } from '../models/api-models';
 import { BaseService } from './base.service';
 
@@ -117,6 +122,82 @@ export class DocumentService extends BaseService {
   addTextContent(request: AddTextRequest): Observable<AddTextResponse> {
     return this.http.post<AddTextResponse>(`${this.backendUrl}/documents/add-text`, request)
       .pipe(catchError(this.handleError));
+  }
+
+  previewSingleSourceCrawl(request: SingleSourceCrawlPreviewRequest): Observable<SingleSourceCrawlPreviewResponse> {
+    return this.http.post<SingleSourceCrawlPreviewResponse>(`${this.backendUrl}/documents/preview-source-crawl`, request)
+      .pipe(catchError(this.handleError));
+  }
+
+  previewSingleSourceFilesCrawl(files: File[], options: {
+    loaderName?: string;
+    chunkerName?: string;
+    maxDocuments?: number;
+    useCompositePdfLoader?: boolean;
+    pdfProcessingConfig?: PdfProcessingConfig;
+  } = {}): Observable<SingleSourceCrawlPreviewResponse> {
+    const formData = this.buildSingleSourceFilesFormData(files, options.loaderName, options.chunkerName);
+    if (options.maxDocuments !== undefined) {
+      formData.append('maxDocuments', String(options.maxDocuments));
+    }
+    this.appendPdfRoutingOptions(formData, options.useCompositePdfLoader, options.pdfProcessingConfig);
+    return this.http.post<SingleSourceCrawlPreviewResponse>(`${this.backendUrl}/documents/preview-source-crawl-files`, formData)
+      .pipe(catchError(this.handleError));
+  }
+
+  addFilesAsSourceCrawl(files: File[], options: {
+    loaderName?: string;
+    chunkerName?: string;
+    processingMode?: string;
+    useCompositePdfLoader?: boolean;
+    pdfProcessingConfig?: PdfProcessingConfig;
+  } = {}): Observable<FileSourceCrawlResponse> {
+    const formData = this.buildSingleSourceFilesFormData(files, options.loaderName, options.chunkerName);
+    formData.append('processingMode', options.processingMode || 'auto');
+    this.appendPdfRoutingOptions(formData, options.useCompositePdfLoader, options.pdfProcessingConfig);
+    return this.http.post<FileSourceCrawlResponse>(`${this.backendUrl}/documents/add-files`, formData)
+      .pipe(catchError(this.handleError));
+  }
+
+  private buildSingleSourceFilesFormData(files: File[], loaderName?: string, chunkerName?: string): FormData {
+    const formData: FormData = new FormData();
+    files.forEach(file => {
+      formData.append('files', file, file.name);
+    });
+    if (loaderName) {
+      formData.append('loader', loaderName);
+    }
+    if (chunkerName) {
+      formData.append('chunkerName', chunkerName);
+    }
+    return formData;
+  }
+
+  private appendPdfRoutingOptions(
+    formData: FormData,
+    useCompositePdfLoader?: boolean,
+    pdfConfig?: PdfProcessingConfig
+  ): void {
+    if (useCompositePdfLoader !== undefined) {
+      formData.append('useCompositePdfLoader', String(useCompositePdfLoader));
+    }
+    if (!pdfConfig) {
+      return;
+    }
+    formData.append('pdfProcessingMode', pdfConfig.processingMode);
+    formData.append('extractTables', String(pdfConfig.extractTables));
+    if (pdfConfig.vlmModelId) {
+      formData.append('vlmModelId', pdfConfig.vlmModelId);
+    }
+    if (pdfConfig.tableExtractionMethod) {
+      formData.append('tableExtractionMethod', pdfConfig.tableExtractionMethod);
+    }
+    if (pdfConfig.tableStorageMode) {
+      formData.append('tableStorageMode', pdfConfig.tableStorageMode);
+    }
+    if (pdfConfig.autoModeMinCharacters !== undefined) {
+      formData.append('autoModeMinCharacters', String(pdfConfig.autoModeMinCharacters));
+    }
   }
 
   /**
@@ -350,6 +431,20 @@ export class DocumentService extends BaseService {
   }
 
   /**
+   * Add a server-side path as a source.
+   */
+  addPathSource(path: string, options: {
+    loaderName?: string;
+    chunkerName?: string;
+  }): Observable<SimpleMessageResponse> {
+    return this.addPath({
+      path,
+      loader: options.loaderName,
+      chunkerName: options.chunkerName
+    });
+  }
+
+  /**
    * Add text content as a source.
    */
   addTextSource(textContent: string, options: {
@@ -398,7 +493,7 @@ export class DocumentService extends BaseService {
     chunkerName?: string;
     rebuildIndex?: boolean;
   }): Observable<SimpleMessageResponse> {
-    return this.http.post<SimpleMessageResponse>(`${this.backendUrl}/confluence/ingest`, {
+    return this.http.post<SimpleMessageResponse>(`${this.backendUrl}/documents/add-confluence`, {
       baseUrl: options.baseUrl,
       email: options.email,
       apiToken: options.apiToken,
@@ -425,20 +520,27 @@ export class DocumentService extends BaseService {
     historyMode?: boolean;
     chunkerName?: string;
     rebuildIndex?: boolean;
-  }): Observable<SimpleMessageResponse> {
-    const endpoint = options.historyMode ? '/slack/history/ingest' : '/slack/ingest';
-    return this.http.post<SimpleMessageResponse>(`${this.backendUrl}${endpoint}`, {
+  }): Observable<SlackResponse> {
+    const endpoint = options.historyMode ? '/documents/add-slack-history' : '/documents/add-slack';
+    const body = options.historyMode ? {
+      channelId: options.channelId,
+      token: options.token,
+      startDate: options.startDate,
+      endDate: options.endDate,
+      daysBack: options.daysBack ?? 30,
+      maxMessages: options.messageLimit ?? 1000,
+      includeThreads: options.includeThreads ?? true,
+      loadAllChannels: options.loadAllChannels ?? false,
+      chunkerName: options.chunkerName
+    } : {
       channelId: options.channelId,
       token: options.token,
       messageLimit: options.messageLimit ?? 100,
       includeThreads: options.includeThreads ?? true,
-      startDate: options.startDate,
-      endDate: options.endDate,
-      daysBack: options.daysBack ?? 30,
-      loadAllChannels: options.loadAllChannels ?? false,
-      chunkerName: options.chunkerName,
-      rebuildIndex: options.rebuildIndex
-    }).pipe(catchError(this.handleError));
+      chunkerName: options.chunkerName
+    };
+    return this.http.post<SlackResponse>(`${this.backendUrl}${endpoint}`, body)
+      .pipe(catchError(this.handleError));
   }
 
   getProcessingStatus(): Observable<any> {

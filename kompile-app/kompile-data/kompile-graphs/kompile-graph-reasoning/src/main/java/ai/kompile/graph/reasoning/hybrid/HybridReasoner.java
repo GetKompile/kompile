@@ -19,6 +19,7 @@ import ai.kompile.graph.reasoning.bayesian.BayesianNetwork;
 import ai.kompile.graph.reasoning.bayesian.GraphBayesianNetworkBuilder;
 import ai.kompile.graph.reasoning.bayesian.VariableElimination;
 import ai.kompile.graph.reasoning.embedding.Embeddings;
+import ai.kompile.graph.reasoning.embedding.GraphEmbeddingResolver;
 import ai.kompile.graph.reasoning.model.GraphEntity;
 import ai.kompile.graph.reasoning.model.ReasoningGraph;
 import ai.kompile.graph.reasoning.psl.GraphPslProgramBuilder;
@@ -64,10 +65,21 @@ public class HybridReasoner {
     private Structural structural = Structural.PSL;
     private double structuralWeight = 0.6;
     private double semanticWeight = 0.4;
+    private int semanticResolutionHops;
 
     public HybridReasoner structural(Structural structural) { this.structural = structural; return this; }
     public HybridReasoner structuralWeight(double w) { this.structuralWeight = w; return this; }
     public HybridReasoner semanticWeight(double w) { this.semanticWeight = w; return this; }
+
+    /**
+     * Resolve missing entity vectors through relation embeddings and neighboring entities before
+     * semantic scoring. The default is {@code 0}, preserving direct-vector-only behavior; a small
+     * value such as {@code 2} is useful for sparse crawled graphs.
+     */
+    public HybridReasoner semanticResolutionHops(int hops) {
+        this.semanticResolutionHops = Math.max(0, hops);
+        return this;
+    }
 
     /**
      * @param entityId        the ranked entity
@@ -89,6 +101,18 @@ public class HybridReasoner {
      */
     public List<ScoredEntity> rank(ReasoningGraph graph, double[] queryEmbedding) {
         Map<String, Double> structuralScores = structuralScores(graph);
+        return rankWithStructuralScores(graph, structuralScores, queryEmbedding);
+    }
+
+    /**
+     * Rank with structural scores already computed by a caller. This is the inexpensive entry point
+     * for online learning and cascades that already ran PSL/MEBN inference and only need to add the
+     * semantic component without repeating structural inference.
+     */
+    public List<ScoredEntity> rankWithStructuralScores(ReasoningGraph graph,
+                                                        Map<String, Double> structuralScores,
+                                                        double[] queryEmbedding) {
+        Map<String, Double> suppliedStructural = structuralScores == null ? Map.of() : structuralScores;
 
         double sw = structuralWeight;
         double mw = (queryEmbedding == null) ? 0.0 : semanticWeight;
@@ -101,10 +125,17 @@ public class HybridReasoner {
 
         List<ScoredEntity> out = new ArrayList<>(graph.entityCount());
         for (GraphEntity e : graph.entities()) {
-            double s = structuralScores.getOrDefault(e.id(), 0.0);
-            double sem = (mw > 0.0 && e.hasEmbedding())
-                    ? Math.max(0.0, Embeddings.cosine(e.embedding(), queryEmbedding))
-                    : 0.0;
+            double s = suppliedStructural.getOrDefault(e.id(), 0.0);
+            double directMagnitude = e.hasEmbedding() ? Embeddings.magnitude(e.embedding()) : 0.0;
+            double[] semanticVector = Double.isFinite(directMagnitude) && directMagnitude > 0.0
+                    ? e.embedding() : null;
+            if (mw > 0.0 && semanticVector == null && semanticResolutionHops > 0) {
+                GraphEmbeddingResolver.Resolved resolved = GraphEmbeddingResolver.resolve(
+                        graph, e.id(), semanticResolutionHops);
+                semanticVector = resolved.present() ? resolved.vector() : null;
+            }
+            double cosine = mw > 0.0 ? Embeddings.cosine(semanticVector, queryEmbedding) : 0.0;
+            double sem = Double.isFinite(cosine) ? Math.max(0.0, cosine) : 0.0;
             double blended = (sw * s + mw * sem) / total;
             out.add(new ScoredEntity(e.id(), blended, s, sem));
         }

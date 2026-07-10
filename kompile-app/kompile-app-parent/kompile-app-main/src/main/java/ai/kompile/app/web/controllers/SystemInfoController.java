@@ -51,7 +51,7 @@ public class SystemInfoController {
     static {
         Map<String, Integer> ports = new LinkedHashMap<>();
         ports.put("kompile-app-main", 8080);
-        ports.put("kompile-model-staging", 8081);
+        ports.put("kompile-model-staging", 8090);
         COMPONENT_DEFAULT_PORTS = Collections.unmodifiableMap(ports);
     }
 

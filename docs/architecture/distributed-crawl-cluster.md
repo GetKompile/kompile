@@ -103,7 +103,7 @@ worker's free-slot capacity** (a worker with 3 free slots gets ~3× the sources 
     {"label": "SFTP reports", "sourceType": "SFTP", "pathOrUrl": "/reports"}
   ],
   "distribution": { "partitionStrategy": "ROUND_ROBIN", "workerCount": 0, "mergeResults": true },
-  "graphExtraction": { "enabled": true },
+  "graphExtraction": {},
   "vectorIndex": { "enabled": true }
 }
 ```

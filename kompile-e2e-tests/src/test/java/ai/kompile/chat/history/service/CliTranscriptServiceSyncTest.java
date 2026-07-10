@@ -51,7 +51,7 @@ class CliTranscriptServiceSyncTest {
 
     @BeforeEach
     void setUp() {
-        properties = new ChatHistoryProperties();
+        properties = new ChatHistoryProperties(null);
         properties.setCliConversationsPath(tempDir.toString());
         cliTranscriptService = new CliTranscriptService(properties, chatHistoryService);
         cliTranscriptService.init();

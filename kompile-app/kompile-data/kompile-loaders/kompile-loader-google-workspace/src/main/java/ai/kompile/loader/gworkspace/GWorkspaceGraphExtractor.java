@@ -21,10 +21,15 @@ import ai.kompile.core.graphrag.GraphConstants;
 import ai.kompile.core.graphrag.format.GraphExtractionSchema;
 import static ai.kompile.core.graphrag.GraphConstants.*;
 import ai.kompile.core.graphrag.format.GraphExtractionSchema.*;
+import ai.kompile.core.graphrag.model.Entity;
+import ai.kompile.core.graphrag.model.Graph;
+import ai.kompile.core.graphrag.model.Relationship;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.ai.document.Document;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
@@ -801,7 +806,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                     if (email == null) continue;
 
                     addPersonEntity(entities, email, name);
-                    Map<String, String> sharedRelProps = new java.util.LinkedHashMap<>(fileRelProps);
+                    Map<String, String> sharedRelProps = new LinkedHashMap<>(fileRelProps);
                     if (role != null) sharedRelProps.put("role", role);
                     relations.add(new ExtractedRelation(
                             entityId("drive:" + fileId),
@@ -1112,11 +1117,11 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
         Object tableGraphObj = meta.get(META_TABLE_GRAPH);
         if (tableGraphObj instanceof String tableGraphJson && !((String) tableGraphObj).isBlank()) {
             try {
-                com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
-                ai.kompile.core.graphrag.model.Graph cellGraph = mapper.readValue(tableGraphJson,
-                        ai.kompile.core.graphrag.model.Graph.class);
+                ObjectMapper mapper = new ObjectMapper();
+                Graph cellGraph = mapper.readValue(tableGraphJson,
+                        Graph.class);
                 if (cellGraph.getEntities() != null) {
-                    for (ai.kompile.core.graphrag.model.Entity e : cellGraph.getEntities()) {
+                    for (Entity e : cellGraph.getEntities()) {
                         if (e == null || e.getId() == null || e.getTitle() == null || e.getType() == null) {
                             log.debug("Skipping table graph entity with null id/title/type: {}", e);
                             continue;
@@ -1134,7 +1139,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                     }
                 }
                 if (cellGraph.getRelationships() != null) {
-                    for (ai.kompile.core.graphrag.model.Relationship r : cellGraph.getRelationships()) {
+                    for (Relationship r : cellGraph.getRelationships()) {
                         if (r == null || r.getSource() == null || r.getTarget() == null || r.getType() == null) {
                             log.debug("Skipping table graph relationship with null source/target/type: {}", r);
                             continue;
@@ -1419,7 +1424,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
         Object recurrenceObj = meta.get("gworkspace.calendar.recurrence");
         if (recurrenceObj instanceof List<?> recList && !recList.isEmpty()) {
             eventProps.put("recurrence", recList.stream()
-                    .map(Object::toString).collect(java.util.stream.Collectors.joining(";")));
+                    .map(Object::toString).collect(Collectors.joining(";")));
         }
 
         addEntity(entities, new ExtractedEntity(
@@ -1645,7 +1650,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
     // ========== Person entity helpers ==========
 
     private void addPersonEntity(Map<String, ExtractedEntity> entities, String email, String name) {
-        if (email == null) return;
+        if (email == null || email.isBlank()) return;
         email = email.toLowerCase().trim();
 
         List<String> aliases = new ArrayList<>();
@@ -1666,7 +1671,13 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
     }
 
     private static String personEntityId(String email) {
-        return entityId("person:" + (email != null ? email.toLowerCase().trim() : "unknown"));
+        // Null/blank email → no stable person identity. Return null so the caller's relation target is
+        // null (dropped at persist) rather than pointing at a shared "person:unknown" node that
+        // dangles (addPersonEntity creates no such node) and conflates every unidentifiable sender.
+        if (email == null || email.isBlank()) {
+            return null;
+        }
+        return entityId("person:" + email.toLowerCase().trim());
     }
 
     // ========== Email parsing helpers ==========
@@ -1773,7 +1784,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
     // ========== Common utilities ==========
 
     private static String entityId(String key) {
-        return UUID.nameUUIDFromBytes(key.getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+        return UUID.nameUUIDFromBytes(key.getBytes(StandardCharsets.UTF_8)).toString();
     }
 
     private void addEntity(Map<String, ExtractedEntity> index, ExtractedEntity entity) {

@@ -18,15 +18,16 @@ import { Component, OnInit, OnDestroy, ViewChild, ElementRef, AfterViewChecked, 
 import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import { HttpClient } from '@angular/common/http';
 import { MatDialog } from '@angular/material/dialog';
+import { MatSnackBar } from '@angular/material/snack-bar';
 import { Router } from '@angular/router';
-import { Subscription, fromEvent } from 'rxjs';
+import { Subscription, fromEvent, firstValueFrom } from 'rxjs';
 import { throttleTime, takeUntil, filter } from 'rxjs/operators';
 import { Subject } from 'rxjs';
 import { ConfirmDialogComponent, ConfirmDialogData } from '../confirm-dialog/confirm-dialog.component';
 
 // Services
 import { ConversationalRagService } from '../../services/conversational-rag.service';
-import { LocalAgentChatService } from '../../services/local-agent-chat.service';
+import { LocalAgentChatService, ContextBudget, CompactChatResponse } from '../../services/local-agent-chat.service';
 import { AgentService } from '../../services/agent.service';
 import { ChatStorageService } from '../../services/chat-storage.service';
 import { ChatHistoryService, ChatMessageDto } from '../../services/chat-history.service';
@@ -72,6 +73,18 @@ interface UnifiedMessage {
   isStreaming?: boolean;
   error?: boolean;
 
+  // System-message flavor: monitor wake-ups keep their "Monitor" label, compaction
+  // notices render as an in-flow divider banner instead of a chat bubble.
+  kind?: 'monitor' | 'compaction' | 'notice';
+  compaction?: {
+    tokensBefore: number;
+    tokensAfter: number;
+    contextWindow: number;
+    model?: string;
+    summary?: string;
+    usedFallback?: boolean;
+  };
+
   // RAG-specific fields
   documents?: RetrievedDocument[];
   documentsExpanded?: boolean;
@@ -101,6 +114,8 @@ interface UnifiedMessage {
   latencyMs?: number;
   tokenCount?: number;
   attachments?: MessageAttachment[];
+  /** True when the user cancelled streaming before the response completed */
+  stopped?: boolean;
   tokenMetrics?: {
     outputTokens: number;
     inputTokens: number;
@@ -264,6 +279,11 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
   skipPermissions: boolean = true;
   agentsLoading: boolean = false;
 
+  // Context budget of the selected agent's model (staging metadata for local models,
+  // model catalogs otherwise) — drives the usage indicator and auto-compaction.
+  contextBudget: ContextBudget | null = null;
+  isCompacting: boolean = false;
+
   // API Agent configuration UI state
   showApiAgentConfig: boolean = false;
   apiAgentName: string = '';
@@ -349,6 +369,62 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
   showSyncComplete: boolean = false;
   private syncPollTimer: any = null;
 
+  // ── Synced-session grouping (Task 3) ──────────────────────────────────────
+  /** Which sources have their synced-session section expanded in the sidebar */
+  syncedGroupExpanded: { [source: string]: boolean } = {};
+  /** How many sessions to show per source before "Show more" */
+  private readonly SYNCED_PAGE_SIZE = 50;
+  /** Current page per source (0-indexed; each page adds SYNCED_PAGE_SIZE items) */
+  syncedGroupPage: { [source: string]: number } = {};
+
+  /** All distinct source keys present in syncedSessions (excluding app-only sessions) */
+  getSyncedSources(): string[] {
+    const sources = new Set<string>();
+    for (const s of this.syncedSessions) {
+      if (s.source) sources.add(s.source);
+    }
+    return Array.from(sources).sort();
+  }
+
+  /** Sessions for one source, filtered by search query, limited to current page */
+  getSyncedSessionsForSource(source: string): ChatSession[] {
+    const page = this.syncedGroupPage[source] ?? 0;
+    const limit = (page + 1) * this.SYNCED_PAGE_SIZE;
+    const query = this.chatSearchQuery.trim().toLowerCase();
+    return this.syncedSessions
+      .filter(s => s.source === source &&
+        (!query || (s.name || '').toLowerCase().includes(query)))
+      .slice(0, limit);
+  }
+
+  /** Total number of sessions for a source (after search filter) */
+  getSyncedSourceTotal(source: string): number {
+    const query = this.chatSearchQuery.trim().toLowerCase();
+    return this.syncedSessions.filter(s => s.source === source &&
+      (!query || (s.name || '').toLowerCase().includes(query))).length;
+  }
+
+  /** True when there are more sessions to load in this source's group */
+  hasSyncedMore(source: string): boolean {
+    const page = this.syncedGroupPage[source] ?? 0;
+    return this.getSyncedSourceTotal(source) > (page + 1) * this.SYNCED_PAGE_SIZE;
+  }
+
+  /** Load next page of sessions for a source */
+  showMoreSynced(source: string): void {
+    this.syncedGroupPage[source] = (this.syncedGroupPage[source] ?? 0) + 1;
+    this.cdr.markForCheck();
+  }
+
+  toggleSyncedGroup(source: string): void {
+    this.syncedGroupExpanded[source] = !this.syncedGroupExpanded[source];
+    this.cdr.markForCheck();
+  }
+
+  isSyncedGroupExpanded(source: string): boolean {
+    return !!this.syncedGroupExpanded[source];
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════════
   // SUBSCRIPTIONS
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -382,15 +458,39 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     private ngZone: NgZone,
     private sanitizer: DomSanitizer,
     private dialog: MatDialog,
+    private snackBar: MatSnackBar,
     private router: Router
   ) {}
 
   /**
-   * Handle clicks on source reference links in message content
+   * Delegated click handler for dynamically-injected content inside [innerHTML]
+   * bindings — covers source-ref links and code-copy buttons.
+   *
+   * Code-copy button: the renderer injects a <button class="code-copy-btn"
+   * data-code="..."> element with no inline onclick (onclick is stripped by
+   * DOMPurify). Clicks bubble up here via event delegation, avoiding the need
+   * for inline handlers that would be indistinguishable from LLM-supplied ones.
    */
   @HostListener('click', ['$event'])
   onContentClick(event: Event): void {
     const target = event.target as HTMLElement;
+
+    // Delegated: code-copy button inside rendered markdown
+    const copyBtn = target.closest('.code-copy-btn') as HTMLElement | null;
+    if (copyBtn) {
+      event.preventDefault();
+      const encoded = copyBtn.getAttribute('data-code');
+      if (encoded !== null) {
+        const text = decodeURIComponent(encoded);
+        navigator.clipboard.writeText(text).then(() => {
+          copyBtn.textContent = 'Copied!';
+          setTimeout(() => { copyBtn.textContent = 'Copy'; }, 2000);
+        }).catch(() => {});
+      }
+      return;
+    }
+
+    // Delegated: source-ref link inside rendered markdown
     if (target.classList.contains('source-ref-link')) {
       event.preventDefault();
       const messageId = target.getAttribute('data-message-id');
@@ -434,6 +534,21 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
       this.folderService.selectedFolder$.subscribe(folder => {
         this.selectedFolder = folder;
         this.cdr.markForCheck();
+      })
+    );
+
+    // Server-side auto-compaction (the backend compacted the history it was sent):
+    // surface it as the same in-flow divider banner as a client-initiated compact.
+    this.subscriptions.push(
+      this.agentChatService.getCompaction().subscribe(event => {
+        this.addCompactionNotice({
+          tokensBefore: event.tokensBefore || 0,
+          tokensAfter: event.tokensAfter || 0,
+          contextWindow: event.contextWindow || 0,
+          model: event.model,
+          summary: event.summary,
+          usedFallback: event.usedFallback
+        });
       })
     );
   }
@@ -505,6 +620,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     const systemMsg: UnifiedMessage = {
       id: 'monitor-' + event.monitorId + '-' + Date.now(),
       role: 'system',
+      kind: 'monitor',
       content: `${prefix} **${event.title}**\n\n${body}`,
       timestamp: event.firedAt ? new Date(event.firedAt) : new Date()
     };
@@ -629,7 +745,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
           .filter(s => s.source) // Only sessions with a source (synced from CLI)
           .map(s => ({
             id: s.sessionId,
-            name: s.title || 'Imported Chat',
+            name: this.sanitizeSessionTitle(s.title || ''),
             messages: [],
             createdAt: s.createdAt,
             updatedAt: s.updatedAt,
@@ -719,7 +835,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
           .filter(s => s.source)
           .map(s => ({
             id: s.sessionId,
-            name: s.title || 'Imported Chat',
+            name: this.sanitizeSessionTitle(s.title || ''),
             messages: [],
             createdAt: s.createdAt,
             updatedAt: s.updatedAt,
@@ -751,10 +867,63 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     return map[agentName] || agentName;
   }
 
+  /**
+   * Returns only app-created (non-synced) sessions for the flat sidebar list.
+   * Synced sessions are now rendered in per-source grouped sections.
+   */
+  getLocalSessions(): ChatSession[] {
+    const query = this.chatSearchQuery.trim().toLowerCase();
+    let local = this.sessions.filter(s => s.messages && s.messages.length > 0 && !s.synced);
+
+    // Source filter
+    if (this.sourceFilter && this.sourceFilter !== 'all') {
+      if (this.sourceFilter === 'app') {
+        local = local.filter(s => !s.source && !s.agentName);
+      } else {
+        local = local.filter(s =>
+          s.source === this.sourceFilter ||
+          this.agentNameToSource(s.agentName) === this.sourceFilter
+        );
+      }
+    }
+
+    if (!this.showArchivedChats) {
+      local = local.filter(s => !s.archived);
+    }
+
+    if (query) {
+      local = local.filter(s =>
+        (s.name || '').toLowerCase().includes(query) ||
+        s.messages.some(m => m.content.toLowerCase().includes(query))
+      );
+    }
+
+    if (this.currentSession) {
+      local = local.filter(s => s.id !== this.currentSession!.id);
+    }
+
+    return local.sort((a, b) =>
+      new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+    );
+  }
+
   getAllSessions(): ChatSession[] {
     // Merge local sessions (with messages) with synced sessions
     let local = this.sessions.filter(s => s.messages && s.messages.length > 0);
-    let all = [...local, ...this.syncedSessions];
+
+    // Deduplicate synced shells against local sessions: a synced entry matching a
+    // local session by id, or by normalized title + source, is the same conversation
+    // seen through two channels — the local copy wins (it has full message content).
+    // Local sessions without a source never collapse against sourced synced entries.
+    const localIds = new Set(local.map(s => s.id));
+    const localKeys = new Set(local.map(s => this.sessionDedupKey(s)).filter(k => k !== null));
+    const synced = this.syncedSessions.filter(s => {
+      if (localIds.has(s.id)) return false;
+      const key = this.sessionDedupKey(s);
+      return key === null || !localKeys.has(key);
+    });
+
+    let all = [...local, ...synced];
 
     // Source filter — match both synced session source AND local session agentName
     if (this.sourceFilter && this.sourceFilter !== 'all') {
@@ -797,6 +966,17 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     return all;
   }
 
+  /**
+   * Identity key for cross-channel session dedup: normalized title + source.
+   * Null when the session has no source — app-created chats without provenance
+   * must never collapse against a sourced synced session that shares a title.
+   */
+  private sessionDedupKey(session: ChatSession): string | null {
+    const source = session.source || this.agentNameToSource(session.agentName);
+    if (!source) return null;
+    return (session.name || '').trim().toLowerCase() + '|' + source;
+  }
+
   sessionMatchesSourceFilter(session: ChatSession): boolean {
     if (this.sourceFilter === 'all') return true;
     if (this.sourceFilter === 'app') return !session.source && !session.agentName;
@@ -835,6 +1015,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
       },
       error: (err) => {
         console.error('Failed to load synced session:', err);
+        this.snackBar.open('Failed to load session', 'Dismiss', { duration: 4000 });
       }
     });
   }
@@ -870,6 +1051,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
 
     if (session.agentName) {
       this.selectedAgent = this.agents.find(a => a.name === session.agentName) || null;
+      this.refreshContextBudget();
     }
 
     // Reset agent session when loading a different session
@@ -921,6 +1103,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
       },
       error: (err) => {
         console.error('Failed to add session to folder:', err);
+        this.snackBar.open('Failed to add to folder', 'Dismiss', { duration: 4000 });
       }
     });
   }
@@ -937,6 +1120,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
       },
       error: (err) => {
         console.error('Failed to remove session from folder:', err);
+        this.snackBar.open('Failed to remove from folder', 'Dismiss', { duration: 4000 });
       }
     });
   }
@@ -1059,6 +1243,15 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
         this.currentSession?.name || 'Chat',
         this.selectedAgent
       );
+    }
+
+    // Model-aware auto-compaction: shrink the wire history BEFORE this turn when it
+    // approaches the input budget of what we're chatting with (staging window for
+    // local models, catalog window for CLI/API models). Threshold-checked
+    // synchronously so the send path only yields when a compaction round-trip is
+    // actually needed.
+    if (this.needsCompactionBeforeSend()) {
+      await this.compactContext(false);
     }
 
     const startTime = Date.now();
@@ -1227,6 +1420,70 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     this.shouldScrollToBottom = true;
   }
 
+  /**
+   * Retry an errored assistant message by re-sending the preceding user message.
+   * Removes all messages from the errored message onwards, then re-sends.
+   */
+  retryMessage(messageIndex: number): void {
+    if (this.isStreaming || this.isLoading) return;
+
+    // Find the preceding user message
+    let userIdx = messageIndex - 1;
+    while (userIdx >= 0 && this.messages[userIdx].role !== 'user') {
+      userIdx--;
+    }
+    if (userIdx < 0) {
+      this.snackBar.open('No user message to retry', 'Dismiss', { duration: 3000 });
+      return;
+    }
+
+    const userContent = this.messages[userIdx].content;
+    // Remove the errored message (and anything after it, e.g. partial assistant)
+    this.messages = this.messages.slice(0, messageIndex);
+    this.updateCurrentSession();
+
+    // Re-send
+    this.sendAgentMessage(userContent);
+  }
+
+  /**
+   * Sanitize a raw session title that may contain HTML tags, markdown syntax,
+   * or CLI noise (e.g. "<permissions instructions> File…", "______").
+   * Rules applied in order:
+   *  1. Strip HTML tags.
+   *  2. Remove markdown formatting characters (**, __, ~~, #, `, [](), ![]()).
+   *  3. Collapse whitespace/underscore/dash-only runs.
+   *  4. Trim to ≤60 chars on a word boundary.
+   *  5. Fallback to "Chat — {short date}" when result is empty.
+   */
+  sanitizeSessionTitle(raw: string): string {
+    if (!raw) return this.fallbackSessionTitle();
+
+    // 1. Strip HTML tags
+    let title = raw.replace(/<[^>]*>/g, ' ');
+    // 2. Remove markdown syntax characters
+    title = title
+      .replace(/!\[.*?\]\(.*?\)/g, '')   // image links
+      .replace(/\[.*?\]\(.*?\)/g, '')    // links
+      .replace(/```[\s\S]*?```/g, '')    // code fences
+      .replace(/`[^`]*`/g, '')           // inline code
+      .replace(/[*_~#>]+/g, ' ');        // bold/italic/heading/blockquote markers
+    // 3. Collapse whitespace, underscore-only and dash-only runs
+    title = title.replace(/[\s_-]+/g, ' ').trim();
+    // 4. Trim to ≤60 chars, break on word boundary
+    if (title.length > 60) {
+      const cut = title.substring(0, 60).lastIndexOf(' ');
+      title = (cut > 20 ? title.substring(0, cut) : title.substring(0, 60)).trimEnd() + '…';
+    }
+    // 5. Fallback
+    return title.length > 0 ? title : this.fallbackSessionTitle();
+  }
+
+  private fallbackSessionTitle(): string {
+    const d = new Date();
+    return `Chat — ${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
+  }
+
   private updateCurrentSession(): void {
     if (this.currentSession) {
       this.currentSession.messages = [...this.messages];
@@ -1236,8 +1493,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
       if (this.currentSession.name === 'New Chat' && this.messages.length > 0) {
         const firstUserMsg = this.messages.find(m => m.role === 'user');
         if (firstUserMsg) {
-          const name = firstUserMsg.content.substring(0, 30);
-          this.currentSession.name = name + (firstUserMsg.content.length > 30 ? '...' : '');
+          this.currentSession.name = this.sanitizeSessionTitle(firstUserMsg.content);
         }
       }
 
@@ -1262,15 +1518,16 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     this.isStreaming = false;
     this.isLoading = false;
 
-    // Mark the last message as not streaming
+    // Mark the last message as stopped — do NOT mutate .content
+    // (the template renders a small badge outside the markdown area instead)
     if (this.messages.length > 0) {
       const lastMsg = this.messages[this.messages.length - 1];
       if (lastMsg.isStreaming) {
         lastMsg.isStreaming = false;
-        // The service already appends [Stopped], so we just ensure streaming is false
-        if (!lastMsg.content.includes('[Stopped]')) {
-          lastMsg.content += ' [Stopped]';
-        }
+        lastMsg.stopped = true;
+        // Strip any trailing "[Stopped]" the service may have appended so the
+        // content stays clean; the template renders the badge separately.
+        lastMsg.content = lastMsg.content.replace(/\s*\[Stopped\]\s*$/, '').trimEnd();
       }
     }
 
@@ -1549,6 +1806,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
           if (this.selectedAgent) {
             this.loadAgentCapabilities(this.selectedAgent);
           }
+          this.refreshContextBudget();
           this.cdr.detectChanges();
         });
       },
@@ -1584,6 +1842,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
               const firstAvailable = agents.find((a: AgentProvider) => a.available);
               this.selectedAgent = firstAvailable || null;
             }
+            this.refreshContextBudget();
           }
           this.cdr.detectChanges();
         });
@@ -1605,7 +1864,168 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
       this.saveSessions();
     }
     this.loadAgentCapabilities(agent);
+    this.refreshContextBudget();
     this.cdr.detectChanges();
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // CONTEXT BUDGET & COMPACTION
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Fetch the context budget of the selected agent's model. The backend picks the
+   * authoritative source per lane: live staging metadata for local models
+   * (kompile-local / local-staging), the model catalogs for CLI/API agents.
+   */
+  private refreshContextBudget(): void {
+    const agent = this.selectedAgent;
+    if (!agent) {
+      this.contextBudget = null;
+      return;
+    }
+    this.agentChatService.getContextBudget(agent.name).subscribe({
+      next: budget => {
+        this.contextBudget = budget;
+        this.cdr.markForCheck();
+      },
+      error: () => {
+        this.contextBudget = null;
+        this.cdr.markForCheck();
+      }
+    });
+  }
+
+  /** ~Tokens the next request's history will carry (chars/4 over the wire session). */
+  get estimatedContextTokens(): number {
+    const msgs = this.agentSession?.messages ?? [];
+    let chars = 0;
+    for (const m of msgs) {
+      chars += (m.content || '').length;
+    }
+    return Math.round(chars / 4);
+  }
+
+  /** Context usage as a percentage of the model's input budget, or null when unknown. */
+  get contextUsagePercent(): number | null {
+    if (!this.contextBudget || this.contextBudget.inputBudgetTokens <= 0) {
+      return null;
+    }
+    return Math.min(100,
+      Math.round(this.estimatedContextTokens * 100 / this.contextBudget.inputBudgetTokens));
+  }
+
+  /**
+   * Synchronous threshold check for pre-send auto-compaction: true when the wire
+   * history approaches the model's input budget and should be compacted before
+   * the next request.
+   */
+  private needsCompactionBeforeSend(): boolean {
+    const budget = this.contextBudget;
+    if (!this.selectedAgent || !this.agentSession || !budget) return false;
+    const trigger = budget.inputBudgetTokens * (budget.compactTriggerRatio || 0.8);
+    return this.estimatedContextTokens > trigger;
+  }
+
+  /**
+   * Compact the conversation: the backend summarizes older messages through the same
+   * lane this chat talks to and returns the compacted history. The visible transcript
+   * stays intact — only what is SENT to the model shrinks.
+   */
+  async compactContext(manual: boolean = true): Promise<void> {
+    const agent = this.selectedAgent;
+    const session = this.agentSession;
+    if (!agent || this.isCompacting) return;
+    if (!session || session.messages.length === 0) {
+      if (manual) {
+        this.addSystemNotice('Nothing to compact yet — send a few messages first.');
+      }
+      return;
+    }
+
+    const history = session.messages
+      .filter(m => (m.role === 'USER' || m.role === 'ASSISTANT') && (m.content || '').trim().length > 0)
+      .map(m => ({ role: m.role, content: m.content }));
+    if (history.length === 0) {
+      if (manual) {
+        this.addSystemNotice('Nothing to compact yet — send a few messages first.');
+      }
+      return;
+    }
+
+    this.isCompacting = true;
+    this.cdr.markForCheck();
+    try {
+      const result = await firstValueFrom(this.agentChatService.compactChat(agent.name, history));
+      if (result?.compacted && result.compactedHistory && result.compactedHistory.length > 0) {
+        this.applyCompactedHistory(session, result);
+        this.addCompactionNotice({
+          tokensBefore: result.tokensBefore || 0,
+          tokensAfter: result.tokensAfter || 0,
+          contextWindow: result.contextWindow || 0,
+          model: result.model || agent.name,
+          summary: result.summary,
+          usedFallback: result.usedFallback
+        });
+      } else if (manual) {
+        this.addSystemNotice('Nothing to compact — the conversation already fits the context window.');
+      }
+    } catch (error: unknown) {
+      if (manual) {
+        this.addSystemNotice('⚠️ Compaction failed: '
+          + (error instanceof Error ? error.message : 'backend unavailable'));
+      }
+    } finally {
+      this.isCompacting = false;
+      this.cdr.markForCheck();
+    }
+  }
+
+  /** Adopt the compacted history as the wire session the next requests are built from. */
+  private applyCompactedHistory(session: LocalAgentSession, result: CompactChatResponse): void {
+    session.messages = (result.compactedHistory || []).map(entry => ({
+      id: this.generateId(),
+      sessionId: session.id,
+      role: (entry.role || 'ASSISTANT').toUpperCase() === 'USER' ? 'USER' as const : 'ASSISTANT' as const,
+      content: entry.content,
+      timestamp: new Date().toISOString(),
+      streaming: false
+    }));
+  }
+
+  /** Push an informational system message into the visible transcript. */
+  private addSystemNotice(content: string): void {
+    this.messages.push({
+      id: this.generateId(),
+      role: 'system',
+      kind: 'notice',
+      content,
+      timestamp: new Date()
+    });
+    this.updateCurrentSession();
+    this.shouldScrollToBottom = true;
+    this.cdr.markForCheck();
+  }
+
+  /**
+   * Push a compaction divider into the transcript. Rendered as a full-width in-flow
+   * banner (not a chat bubble) with the token math and an expandable "summary sent to
+   * the model" — the visible indication that compaction happened at this point.
+   */
+  private addCompactionNotice(info: NonNullable<UnifiedMessage['compaction']>): void {
+    this.messages.push({
+      id: this.generateId(),
+      role: 'system',
+      kind: 'compaction',
+      compaction: info,
+      // Plain-text fallback for copy/export and older renderers.
+      content: `Context compacted: ~${this.formatTokenCount(info.tokensBefore)} → `
+        + `~${this.formatTokenCount(info.tokensAfter)} tokens`
+        + (info.model ? ` (${info.model})` : ''),
+      timestamp: new Date()
+    });
+    this.updateCurrentSession();
+    this.shouldScrollToBottom = true;
+    this.cdr.markForCheck();
   }
 
   private loadAgentCapabilities(agent: AgentProvider): void {
@@ -1637,7 +2057,10 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
               this.selectedAgent.skipPermissions = this.skipPermissions;
             }
           },
-          error: (err: any) => console.error('Failed to persist skipPermissions:', err)
+          error: (err: any) => {
+        console.error('Failed to persist skipPermissions:', err);
+        this.snackBar.open('Failed to save permission setting', 'Dismiss', { duration: 4000 });
+      }
         });
     }
   }
@@ -1739,6 +2162,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
       error: (err: any) => {
         this.apiAgentSaving = false;
         this.apiAgentTestResult = 'Error: ' + (err.error?.error || err.message || 'Failed to save');
+        this.snackBar.open('Failed to save API agent', 'Dismiss', { duration: 4000 });
         this.cdr.markForCheck();
       }
     });
@@ -1826,6 +2250,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
       error: (err: any) => {
         this.kompileLocalLoading = false;
         console.error('Failed to connect kompile-local:', err);
+        this.snackBar.open('Failed to connect Kompile Local', 'Dismiss', { duration: 4000 });
         this.cdr.markForCheck();
       }
     });
@@ -1844,6 +2269,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
       error: (err: any) => {
         this.kompileLocalLoading = false;
         console.error('Failed to disconnect kompile-local:', err);
+        this.snackBar.open('Failed to disconnect Kompile Local', 'Dismiss', { duration: 4000 });
         this.cdr.markForCheck();
       }
     });
@@ -1862,6 +2288,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
       error: (err: any) => {
         this.kompileLocalLoading = false;
         console.error('Failed to refresh kompile-local:', err);
+        this.snackBar.open('Failed to refresh Kompile Local status', 'Dismiss', { duration: 4000 });
         this.cdr.markForCheck();
       }
     });
@@ -1990,6 +2417,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
         this.cliImporting = null;
         const errorMsg = err?.error?.error || 'Import failed';
         console.error('CLI import failed:', errorMsg);
+        this.snackBar.open('Import failed: ' + errorMsg, 'Dismiss', { duration: 5000 });
         this.cdr.markForCheck();
       }
     });
@@ -2375,7 +2803,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
       return match; // Return unchanged if index is out of bounds
     });
 
-    return this.sanitizer.bypassSecurityTrustHtml(content);
+    return this.markdownRenderer.sanitizeAndTrust(content);
   }
 
   /**
@@ -2418,22 +2846,18 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
 
   getRenderedMarkdown(message: UnifiedMessage): SafeHtml {
     if (!message.content) {
-      return this.sanitizer.bypassSecurityTrustHtml('');
+      return this.markdownRenderer.sanitizeAndTrust('');
     }
 
     // Don't cache streaming messages — content changes every chunk
     if (message.isStreaming) {
-      return this.sanitizer.bypassSecurityTrustHtml(
-        this.markdownRenderer.renderMarkdown(message.content)
-      );
+      return this.markdownRenderer.renderMarkdownSafe(message.content);
     }
 
     const cacheKey = message.id + ':' + message.content.length;
     let cached = this.renderedMarkdownCache.get(cacheKey);
     if (!cached) {
-      cached = this.sanitizer.bypassSecurityTrustHtml(
-        this.markdownRenderer.renderMarkdown(message.content)
-      );
+      cached = this.markdownRenderer.renderMarkdownSafe(message.content);
       this.renderedMarkdownCache.set(cacheKey, cached);
       // Keep cache bounded
       if (this.renderedMarkdownCache.size > 500) {
@@ -2484,9 +2908,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     for (const segment of segments) {
       if (segment.renderedContent === undefined &&
           (segment.type === 'text' || segment.type === 'thinking')) {
-        segment.renderedContent = this.sanitizer.bypassSecurityTrustHtml(
-          this.markdownRenderer.renderMarkdown(segment.content)
-        );
+        segment.renderedContent = this.markdownRenderer.renderMarkdownSafe(segment.content);
       }
     }
   }
@@ -2576,6 +2998,11 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     } else {
       this.copyToClipboard(content, index);
     }
+  }
+
+  /** Public alias so the template can call it directly (e.g. tool-use copy button) */
+  copyToClipboardPublic(content: string, index: number): void {
+    this.copyToClipboard(content, index);
   }
 
   private copyToClipboard(content: string, index: number): void {

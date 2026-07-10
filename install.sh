@@ -22,9 +22,13 @@ set -euo pipefail
 INSTALL_DIR="${KOMPILE_INSTALL_DIR:-${HOME}/.kompile}"
 BASE_URL="${KOMPILE_BASE_URL:-}"
 VERSION="${KOMPILE_VERSION:-}"
-VARIANT="${KOMPILE_VARIANT:-hosted}"
+# Default: try the `full` variant first (CLI + server jars + bundled runtime),
+# fall back to `cli-only` if the full variant is not published for this platform.
+# Override with --variant or KOMPILE_VARIANT.
+VARIANT="${KOMPILE_VARIANT:-}"       # empty = auto (try full then cli-only)
 GITHUB_REPO="GetKompile/kompile"
 VERBOSE=false
+MODIFY_PATH="${KOMPILE_MODIFY_PATH:-0}"
 
 # ── Argument parsing ─────────────────────────────────────────────────────────
 
@@ -35,15 +39,21 @@ while [ $# -gt 0 ]; do
         --dir|-d)       INSTALL_DIR="$2"; shift 2 ;;
         --url|-u)       BASE_URL="$2"; shift 2 ;;
         --verbose)      VERBOSE=true; shift ;;
+        --modify-path)  MODIFY_PATH=1; shift ;;
         --help|-h)
             echo "Usage: install.sh [OPTIONS]"
             echo ""
             echo "Options:"
             echo "  --version, -v VERSION   Version to install (default: latest)"
-            echo "  --variant VARIANT       Distribution variant (default: hosted)"
-            echo "                          Options: cli-only, hosted, cpu-intel, cpu-arm, cuda, amd-zluda"
+            echo "  --variant VARIANT       Distribution variant (default: auto)"
+            echo "                          Auto tries 'full' first, falls back to 'cli-only'."
+            echo "                          Options: full, cli-only, hosted, cpu-intel, cpu-arm, cuda, amd-zluda"
+            echo "                          The 'full' variant includes server jars and a bundled Java runtime."
+            echo "                          'kompile project init' works fully only with the full variant."
             echo "  --dir, -d DIR           Install directory (default: ~/.kompile)"
             echo "  --url, -u URL           Base URL for distribution archives"
+            echo "  --modify-path           Append the PATH export line to your shell profile idempotently"
+            echo "                          (same effect as setting KOMPILE_MODIFY_PATH=1)"
             echo "  --verbose               Show detailed output"
             echo "  --help, -h              Show this help"
             exit 0
@@ -119,15 +129,41 @@ VERSION="$(resolve_version)"
 
 # ── Download URL ─────────────────────────────────────────────────────────────
 
-if [ -n "${BASE_URL}" ]; then
-    # Custom base URL: expect <base>/<filename>
-    ARCHIVE_NAME="kompile-dist-${VERSION}-${VARIANT}-${PLATFORM}.${ARCHIVE_EXT}"
-    DOWNLOAD_URL="${BASE_URL%/}/${ARCHIVE_NAME}"
-else
-    # GitHub Releases
-    ARCHIVE_NAME="kompile-dist-${VERSION}-${VARIANT}-${PLATFORM}.${ARCHIVE_EXT}"
-    DOWNLOAD_URL="https://github.com/${GITHUB_REPO}/releases/download/v${VERSION}/${ARCHIVE_NAME}"
+# Check whether a URL is reachable (HEAD request).
+url_exists() {
+    local url="$1"
+    if command -v curl &>/dev/null; then
+        curl -fsS --head -o /dev/null "${url}" 2>/dev/null
+    elif command -v wget &>/dev/null; then
+        wget -q --spider "${url}" 2>/dev/null
+    else
+        return 1
+    fi
+}
+
+resolve_download_url() {
+    local variant="$1"
+    local name="kompile-dist-${VERSION}-${variant}-${PLATFORM}.${ARCHIVE_EXT}"
+    if [ -n "${BASE_URL}" ]; then
+        echo "${BASE_URL%/}/${name}"
+    else
+        echo "https://github.com/${GITHUB_REPO}/releases/download/v${VERSION}/${name}"
+    fi
+}
+
+if [ -z "${VARIANT}" ]; then
+    # Auto: try full variant first, fall back to cli-only.
+    FULL_URL="$(resolve_download_url full)"
+    if url_exists "${FULL_URL}"; then
+        VARIANT="full"
+    else
+        echo "  (full distribution not published for ${PLATFORM} — installing cli-only; server components unavailable)"
+        VARIANT="cli-only"
+    fi
 fi
+
+ARCHIVE_NAME="kompile-dist-${VERSION}-${VARIANT}-${PLATFORM}.${ARCHIVE_EXT}"
+DOWNLOAD_URL="$(resolve_download_url "${VARIANT}")"
 
 # ── Progress display ─────────────────────────────────────────────────────────
 
@@ -146,6 +182,7 @@ info "Variant:   ${VARIANT}"
 info "Platform:  ${PLATFORM}"
 info "Install:   ${INSTALL_DIR}"
 info "Archive:   ${ARCHIVE_NAME}"
+info "URL:       ${DOWNLOAD_URL}"
 
 step "Creating install directory"
 mkdir -p "${INSTALL_DIR}"
@@ -241,6 +278,15 @@ if [ -d "${INSTALL_DIR}/bin" ]; then
     chmod +x "${INSTALL_DIR}/bin/"* 2>/dev/null || true
 fi
 
+# Make bundled Java runtime executable and report its version.
+if [ -f "${INSTALL_DIR}/runtime/bin/java" ]; then
+    chmod +x "${INSTALL_DIR}/runtime/bin/java"
+    # Also mark the rest of the runtime bin/ executables.
+    chmod +x "${INSTALL_DIR}/runtime/bin/"* 2>/dev/null || true
+    BUNDLED_JAVA_VERSION=$("${INSTALL_DIR}/runtime/bin/java" -version 2>&1 | head -1 || true)
+    echo "  Bundled Java runtime: ${BUNDLED_JAVA_VERSION}"
+fi
+
 # Create standard directory structure
 step "Initializing kompile home directory"
 for dir in config data/input_documents/uploads data/shared_files data/prompt-templates \
@@ -274,26 +320,51 @@ echo ""
 
 # Check if bin is on PATH
 BIN_DIR="${INSTALL_DIR}/bin"
+
+SHELL_NAME="$(basename "${SHELL:-/bin/bash}")"
+case "${SHELL_NAME}" in
+    zsh)   PROFILE_FILE="${HOME}/.zshrc" ;;
+    fish)  PROFILE_FILE="${HOME}/.config/fish/config.fish" ;;
+    *)     PROFILE_FILE="${HOME}/.bashrc" ;;
+esac
+
 if [[ ":${PATH}:" != *":${BIN_DIR}:"* ]]; then
     echo "Add kompile to your PATH by adding this to your shell profile:"
     echo ""
 
-    SHELL_NAME="$(basename "${SHELL:-/bin/bash}")"
-    case "${SHELL_NAME}" in
-        zsh)   PROFILE_FILE="~/.zshrc" ;;
-        fish)  PROFILE_FILE="~/.config/fish/config.fish" ;;
-        *)     PROFILE_FILE="~/.bashrc" ;;
-    esac
-
     if [ "${SHELL_NAME}" = "fish" ]; then
-        echo "  echo 'set -gx PATH ${BIN_DIR} \$PATH' >> ${PROFILE_FILE}"
+        PATH_LINE="set -gx PATH ${BIN_DIR} \$PATH"
+        echo "  echo '${PATH_LINE}' >> ${PROFILE_FILE}"
     else
-        echo "  echo 'export PATH=\"${BIN_DIR}:\$PATH\"' >> ${PROFILE_FILE}"
+        PATH_LINE="export PATH=\"${BIN_DIR}:\$PATH\""
+        echo "  echo '${PATH_LINE}' >> ${PROFILE_FILE}"
     fi
     echo ""
     echo "Then reload your shell:"
     echo "  source ${PROFILE_FILE}"
     echo ""
+
+    # --modify-path / KOMPILE_MODIFY_PATH=1: append idempotently.
+    if [ "${MODIFY_PATH}" = "1" ]; then
+        if [ "${SHELL_NAME}" = "fish" ]; then
+            if ! grep -qF "${BIN_DIR}" "${PROFILE_FILE}" 2>/dev/null; then
+                echo "  # Added by kompile installer" >> "${PROFILE_FILE}"
+                echo "set -gx PATH ${BIN_DIR} \$PATH" >> "${PROFILE_FILE}"
+                echo "  PATH export appended to ${PROFILE_FILE}"
+            else
+                echo "  PATH already present in ${PROFILE_FILE} — not duplicated"
+            fi
+        else
+            if ! grep -qF "${BIN_DIR}" "${PROFILE_FILE}" 2>/dev/null; then
+                echo "" >> "${PROFILE_FILE}"
+                echo "# Added by kompile installer" >> "${PROFILE_FILE}"
+                echo "export PATH=\"${BIN_DIR}:\$PATH\"" >> "${PROFILE_FILE}"
+                echo "  PATH export appended to ${PROFILE_FILE}"
+            else
+                echo "  PATH already present in ${PROFILE_FILE} — not duplicated"
+            fi
+        fi
+    fi
 fi
 
 echo "Get started:"
@@ -303,3 +374,21 @@ echo "  kompile chat                          # start an AI chat"
 echo "  kompile web                           # launch the web UI"
 echo "  kompile --help                        # see all commands"
 echo ""
+if [ "${VARIANT}" = "cli-only" ]; then
+    echo "Note: installed the cli-only variant. 'kompile project init' works fully only with the"
+    echo "full variant (includes server + bundled runtime). Re-run without --variant to try the"
+    echo "full distribution, or: install.sh --variant full"
+    echo ""
+fi
+
+# ── Post-install diagnostics ──────────────────────────────────────────────────
+# Run 'kompile doctor' so users see an immediate health summary.  Failures do
+# NOT abort the installer — the exit is always clean even if probes warn.
+KOMPILE_BIN="${INSTALL_DIR}/bin/kompile"
+if [ -x "${KOMPILE_BIN}" ]; then
+    echo ""
+    echo "── Running post-install diagnostics ──────────────────────────────────"
+    # Forward the install dir so doctor's component lookups check THIS install,
+    # not the ~/.kompile default (matters for --dir / custom KOMPILE_INSTALL_DIR).
+    KOMPILE_INSTALL_DIR="${INSTALL_DIR}" "${KOMPILE_BIN}" doctor --no-color || true
+fi

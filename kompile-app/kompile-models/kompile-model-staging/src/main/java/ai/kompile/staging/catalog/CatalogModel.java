@@ -85,6 +85,17 @@ public class CatalogModel {
         private List<String> visionEncoderOutputNames;
         @JsonProperty("vision_encoder_primary_output_name")
         private String visionEncoderPrimaryOutputName;
+        // Resource requirements (0 = unknown/not set)
+        /** Host RAM in MB needed to run inference. */
+        @JsonProperty("ram_mb")
+        private Integer ramMb;
+        /** GPU VRAM in MB needed; 0 means CPU-capable (no GPU required). */
+        @JsonProperty("vram_mb")
+        private Integer vramMb;
+        /** On-disk footprint in MB (download + extracted). */
+        @JsonProperty("disk_mb")
+        private Integer diskMb;
+
         // Optimization tracking
         private Boolean optimized;
         @JsonProperty("optimized_at")

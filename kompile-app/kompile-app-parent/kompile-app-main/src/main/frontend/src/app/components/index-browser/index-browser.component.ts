@@ -15,6 +15,7 @@
  */
 
 import { Component, OnInit, ViewChild, ChangeDetectorRef, AfterViewInit, OnDestroy } from '@angular/core';
+import { Router } from '@angular/router';
 import { MatTableDataSource } from '@angular/material/table';
 import { MatPaginator, PageEvent } from '@angular/material/paginator';
 import { MatSort } from '@angular/material/sort';
@@ -250,9 +251,6 @@ export class IndexBrowserComponent implements OnInit, AfterViewInit, OnDestroy {
   isDeduplicating = false;
   duplicateAnalysis: DuplicateAnalysisResponse | null = null;
 
-  // Graph tab state
-  graphFocusNodeId: string | null = null;
-
   // Tables tab state
   tables: TableSummary[] = [];
   isLoadingTables = false;
@@ -283,7 +281,8 @@ export class IndexBrowserComponent implements OnInit, AfterViewInit, OnDestroy {
     private dialog: MatDialog,
     private cdr: ChangeDetectorRef,
     private snackBar: MatSnackBar,
-    private mainPanelNavigationService: MainPanelNavigationService
+    private mainPanelNavigationService: MainPanelNavigationService,
+    private router: Router
   ) { }
 
   ngOnInit(): void {
@@ -1882,9 +1881,14 @@ export class IndexBrowserComponent implements OnInit, AfterViewInit, OnDestroy {
     this.navigateToGraphTab(entity.nodeId || entity.id);
   }
 
+  /**
+   * Navigate to the Graphs Hub (/graph) Explore → Visualizer tab, focusing the given node.
+   * Uses ?section=explore&tab=visualizer&focusNode=<id> deep-link parameters.
+   */
   navigateToGraphTab(nodeId: string): void {
-    this.graphFocusNodeId = nodeId;
-    this.selectedTabIndex = TAB_GRAPH;
+    this.router.navigate(['/graph'], {
+      queryParams: { section: 'explore', tab: 'visualizer', focusNode: nodeId }
+    });
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════

@@ -16,6 +16,7 @@
 
 package ai.kompile.process.discovery.mining.tree;
 
+import java.io.Serializable;
 import java.util.List;
 
 /**
@@ -36,7 +37,9 @@ import java.util.List;
  *   <li>{@code TAU} (τ) — a silent leaf, used to model skips/optionality.</li>
  * </ul>
  */
-public final class ProcessTreeNode {
+public final class ProcessTreeNode implements Serializable {
+
+    private static final long serialVersionUID = 1L;
 
     public enum Operator {
         SEQUENCE("→"), // →

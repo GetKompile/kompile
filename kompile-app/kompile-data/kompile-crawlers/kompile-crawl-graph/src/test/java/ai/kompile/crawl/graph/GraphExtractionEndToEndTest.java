@@ -17,6 +17,7 @@
 package ai.kompile.crawl.graph;
 
 import ai.kompile.core.crawl.graph.*;
+import ai.kompile.core.graphrag.GraphConstants;
 import ai.kompile.core.loaders.DocumentLoader;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
 import ai.kompile.core.llm.chat.LLMChat;
@@ -247,7 +248,6 @@ class GraphExtractionEndToEndTest {
                 .name("multi-doc merge")
                 .sources(List.of(fileSource("docs")))
                 .graphExtraction(GraphExtractionConfig.builder()
-                        .enabled(true)
                         .entityResolution(true)
                         .minConfidence(0.0)
                         .build())
@@ -293,7 +293,6 @@ class GraphExtractionEndToEndTest {
                 .name("no-resolution")
                 .sources(List.of(fileSource("docs")))
                 .graphExtraction(GraphExtractionConfig.builder()
-                        .enabled(true)
                         .entityResolution(false)
                         .build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
@@ -303,6 +302,107 @@ class GraphExtractionEndToEndTest {
 
         assertEquals(2, job.getResultGraph().getEntities().size(),
                 "Without resolution, both Alice entities should remain");
+    }
+
+    @Test
+    @DisplayName("Multi-chunk path: two docs with DIFFERENT source paths are NOT grouped — entities attributed independently")
+    void chunksPerPrompt_crossDocumentBoundary_neverMixed() throws Exception {
+        // Two chunks from DIFFERENT source documents → with the fix they must NOT be grouped.
+        // Each gets its own LLM call → entity resolution OFF → 2 distinct Alice entities.
+        Map<String, Object> metaA = Map.of(GraphConstants.META_SOURCE_PATH, "/data/doc_a.txt");
+        Map<String, Object> metaB = Map.of(GraphConstants.META_SOURCE_PATH, "/data/doc_b.txt");
+        when(loader.load(any(DocumentSourceDescriptor.class), any())).thenReturn(List.of(
+                new Document("Doc A: Alice from Alpha Corp.", metaA),
+                new Document("Doc B: Alice from Beta Corp.", metaB)
+        ));
+
+        // Enable chunksPerPrompt=2 so that without the fix the docs WOULD be grouped
+        CrawlRuntimeConfigManager.CrawlRuntimeConfig cfg = CrawlRuntimeConfigManager.CrawlRuntimeConfig.defaults();
+        cfg.retainResultGraph = true;
+        cfg.graphExtractionChunksPerPrompt = 2;
+        doReturn(cfg).when(runtimeConfigManager).refreshRuntimeConfig();
+
+        String r1 = buildJson(
+                List.of(entity("e1", "Alice", "PERSON", "From Alpha", 0.9)),
+                List.of()
+        );
+        String r2 = buildJson(
+                List.of(entity("e2", "Alice", "PERSON", "From Beta", 0.88)),
+                List.of()
+        );
+        // Separate per-doc calls expected (one per source document).
+        when(callResponseSpec.content()).thenReturn(r1, r2);
+
+        UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
+                .name("cross-doc boundary")
+                .sources(List.of(fileSource("docs")))
+                .graphExtraction(GraphExtractionConfig.builder()
+                        .entityResolution(false)
+                        .minConfidence(0.0)
+                        .build())
+                .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
+                .build());
+        awaitCompletion(job);
+
+        // Without the fix (docs grouped): only 1 LLM call → only r1 consumed → 1 entity
+        // With the fix (docs separated):  2 LLM calls → r1 and r2 consumed → 2 entities
+        assertEquals(2, job.getEntitiesExtracted().get(),
+                "Each source document must produce its own entity (cross-doc boundary respected)");
+    }
+
+    @Test
+    @DisplayName("Multi-chunk path: one doc's LLM returns empty — errorCount increments only for that doc")
+    void chunksPerPrompt_perDocErrorCounting() throws Exception {
+        // Two docs from DIFFERENT source paths → each gets its own LLM call.
+        // Doc B's call returns empty → errorCount += 1 only; doc A still succeeds.
+        Map<String, Object> metaA = Map.of(GraphConstants.META_SOURCE_PATH, "/data/ok_doc.txt");
+        Map<String, Object> metaB = Map.of(GraphConstants.META_SOURCE_PATH, "/data/bad_doc.txt");
+        when(loader.load(any(DocumentSourceDescriptor.class), any())).thenReturn(List.of(
+                new Document("Good doc: Carol at Microsoft.", metaA),
+                new Document("Bad doc: will fail.", metaB)
+        ));
+
+        // chunksPerPrompt=2 so the old code would group these; the fix keeps them separate
+        CrawlRuntimeConfigManager.CrawlRuntimeConfig cfg = CrawlRuntimeConfigManager.CrawlRuntimeConfig.defaults();
+        cfg.retainResultGraph = true;
+        cfg.graphExtractionChunksPerPrompt = 2;
+        doReturn(cfg).when(runtimeConfigManager).refreshRuntimeConfig();
+
+        String goodResponse = buildJson(
+                List.of(entity("e1", "Carol", "PERSON", "Employee", 0.9)),
+                List.of()
+        );
+
+        when(llmChat.prompt(anyString())).thenAnswer(inv -> {
+            String prompt = inv.getArgument(0);
+            LLMChat.CallResponseSpec resp = mock(LLMChat.CallResponseSpec.class);
+            if (prompt.contains("Good doc") || prompt.contains("Carol")) {
+                when(resp.content()).thenReturn(goodResponse);
+            } else {
+                when(resp.content()).thenReturn(""); // blank = extraction failure for bad_doc
+            }
+            LLMChat.ChatClientRequestSpec spec = mock(LLMChat.ChatClientRequestSpec.class);
+            when(spec.call()).thenReturn(resp);
+            return spec;
+        });
+
+        UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
+                .name("per-doc error count")
+                .sources(List.of(fileSource("docs")))
+                .graphExtraction(GraphExtractionConfig.builder()
+                        .entityResolution(false)
+                        .minConfidence(0.0)
+                        .build())
+                .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
+                .build());
+        awaitCompletion(job);
+
+        // Carol from the good doc must be extracted
+        assertEquals(1, job.getEntitiesExtracted().get(),
+                "Good doc entity must be extracted independently of bad doc failure");
+        // Job must still complete (not FAILED)
+        assertEquals(UnifiedCrawlJob.Status.COMPLETED, job.getStatus().get(),
+                "Job must COMPLETE even when one doc fails extraction");
     }
 
     @Test
@@ -327,7 +427,6 @@ class GraphExtractionEndToEndTest {
                 .name("case-insensitive test")
                 .sources(List.of(fileSource("docs")))
                 .graphExtraction(GraphExtractionConfig.builder()
-                        .enabled(true)
                         .entityResolution(true)
                         .build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
@@ -363,7 +462,6 @@ class GraphExtractionEndToEndTest {
                 .name("type-matters test")
                 .sources(List.of(fileSource("docs")))
                 .graphExtraction(GraphExtractionConfig.builder()
-                        .enabled(true)
                         .entityResolution(true)
                         .build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
@@ -488,7 +586,6 @@ class GraphExtractionEndToEndTest {
                 .name("confidence filter")
                 .sources(List.of(fileSource("docs")))
                 .graphExtraction(GraphExtractionConfig.builder()
-                        .enabled(true)
                         .minConfidence(0.7)
                         .build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
@@ -524,7 +621,6 @@ class GraphExtractionEndToEndTest {
                 .name("high threshold")
                 .sources(List.of(fileSource("docs")))
                 .graphExtraction(GraphExtractionConfig.builder()
-                        .enabled(true)
                         .minConfidence(0.99)
                         .build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
@@ -684,7 +780,6 @@ class GraphExtractionEndToEndTest {
                 .name("custom prompt test")
                 .sources(List.of(fileSource("docs")))
                 .graphExtraction(GraphExtractionConfig.builder()
-                        .enabled(true)
                         .entityTypes(List.of("TREATMENT", "DISEASE", "SYMPTOM"))
                         .customPrompt("Extract medical entities only. Ignore non-medical terms.")
                         .build())
@@ -715,7 +810,6 @@ class GraphExtractionEndToEndTest {
                 .name("rel types test")
                 .sources(List.of(fileSource("docs")))
                 .graphExtraction(GraphExtractionConfig.builder()
-                        .enabled(true)
                         .relationshipTypes(List.of("WORKS_AT", "MANAGES", "REPORTS_TO"))
                         .build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
@@ -737,7 +831,7 @@ class GraphExtractionEndToEndTest {
     // ──────────────────────────────────────────────────────────────────
 
     private UnifiedCrawlJob startJobWithGraph(List<String> entityTypes) {
-        GraphExtractionConfig.GraphExtractionConfigBuilder gc = GraphExtractionConfig.builder().enabled(true);
+        GraphExtractionConfig.GraphExtractionConfigBuilder gc = GraphExtractionConfig.builder();
         if (entityTypes != null) gc.entityTypes(entityTypes);
 
         return service.startJob(UnifiedCrawlRequest.builder()

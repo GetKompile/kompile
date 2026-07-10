@@ -17,6 +17,7 @@
 import { Component, OnInit, OnDestroy, Input } from '@angular/core';
 import { Subject, interval } from 'rxjs';
 import { takeUntil, switchMap, filter } from 'rxjs/operators';
+import { pauseWhenHidden } from '../../services/visibility.util';
 import { CrossIndexService } from '../../services/cross-index.service';
 import {
   CrossIndexSummary,
@@ -346,9 +347,10 @@ export class CrossIndexStatusComponent implements OnInit, OnDestroy {
   }
 
   private pollSyncStatus(jobId: string): void {
-    interval(1000)
+    interval(5000)
       .pipe(
         takeUntil(this.destroy$),
+        pauseWhenHidden(),
         switchMap(() => this.crossIndexService.getSyncJobStatus(jobId)),
         filter(response => response !== null)
       )

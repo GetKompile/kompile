@@ -19,6 +19,7 @@ package ai.kompile.cli.main.config;
 import ai.kompile.cli.common.config.ArchiveInfo;
 import ai.kompile.cli.common.config.ConfigArchiveManifest;
 import ai.kompile.cli.common.config.ConfigArchiveService;
+import ai.kompile.utils.FormatUtils;
 import picocli.CommandLine.Command;
 
 import java.util.List;
@@ -53,7 +54,7 @@ public class ConfigListArchivesCommand implements Callable<Integer> {
         for (ArchiveInfo info : archives) {
             System.out.printf("  %-50s  %8s  %s%n",
                     info.getFileName(),
-                    formatSize(info.getSizeBytes()),
+                    FormatUtils.formatBytes(info.getSizeBytes()),
                     info.getLastModified().substring(0, 19).replace('T', ' '));
 
             ConfigArchiveManifest m = info.getManifest();
@@ -79,9 +80,4 @@ public class ConfigListArchivesCommand implements Callable<Integer> {
         return 0;
     }
 
-    private static String formatSize(long bytes) {
-        if (bytes < 1024) return bytes + " B";
-        if (bytes < 1024 * 1024) return String.format("%.1f KB", bytes / 1024.0);
-        return String.format("%.1f MB", bytes / (1024.0 * 1024.0));
-    }
 }

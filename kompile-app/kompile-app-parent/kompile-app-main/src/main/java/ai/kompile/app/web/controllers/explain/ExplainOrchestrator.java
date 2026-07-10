@@ -9,17 +9,8 @@
  */
 package ai.kompile.app.web.controllers.explain;
 
-import ai.kompile.knowledgegraph.reasoning.KnowledgeGraphReasoningAdapter;
-import ai.kompile.knowledgegraph.reasoning.TraceHumanizer;
 import ai.kompile.app.ontology.GraphOntologyBindingService;
 import ai.kompile.app.ontology.OwlOntologyBridge;
-import ai.kompile.graph.reasoning.mebn.type.owl.OwlOntology;
-import ai.kompile.graph.reasoning.mebn.type.owl.OwlRlReasoner;
-import ai.kompile.graph.reasoning.mebn.type.owl.OwlRlResult;
-import ai.kompile.process.ontology.OntologySchema;
-import ai.kompile.process.ontology.OntologySchemaTypeRegistry;
-import ai.kompile.graph.reasoning.model.ReasoningGraph;
-import ai.kompile.graph.reasoning.mebn.type.TypeHierarchy;
 import ai.kompile.event.attribution.service.BayesianNetworkService;
 import ai.kompile.event.attribution.service.EventAttributionService;
 import ai.kompile.event.attribution.service.PslReasoningService;
@@ -34,10 +25,19 @@ import ai.kompile.graph.reasoning.fol.EntailmentRecord;
 import ai.kompile.graph.reasoning.fol.grounding.DerivationTree;
 import ai.kompile.graph.reasoning.fol.grounding.VerifyResult;
 import ai.kompile.graph.reasoning.hybrid.HybridReasoner;
+import ai.kompile.graph.reasoning.mebn.type.TypeHierarchy;
+import ai.kompile.graph.reasoning.mebn.type.owl.OwlOntology;
+import ai.kompile.graph.reasoning.mebn.type.owl.OwlRlReasoner;
+import ai.kompile.graph.reasoning.mebn.type.owl.OwlRlResult;
 import ai.kompile.graph.reasoning.model.ReasoningGraph;
+import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import ai.kompile.knowledgegraph.grounding.KbGroundingService;
 import ai.kompile.knowledgegraph.reasoning.KnowledgeGraphReasoningAdapter;
+import ai.kompile.knowledgegraph.reasoning.TraceHumanizer;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
+import ai.kompile.knowledgegraph.unified.UnifiedGraphBridge;
+import ai.kompile.process.ontology.OntologySchema;
+import ai.kompile.process.ontology.OntologySchemaTypeRegistry;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
@@ -100,6 +100,12 @@ public class ExplainOrchestrator {
     @org.springframework.lang.Nullable
     private final OwlOntologyBridge owlOntologyBridge;
 
+    /**
+     * Optional bridge to the persisted unified graph snapshot. Null in plain-lib/test contexts.
+     */
+    @org.springframework.lang.Nullable
+    private final UnifiedGraphBridge unifiedGraphBridge;
+
     /** Primary Spring constructor: all dependencies including TraceHumanizer. */
     @Autowired
     public ExplainOrchestrator(KbGroundingService groundingService,
@@ -109,7 +115,8 @@ public class ExplainOrchestrator {
                                BayesianNetworkService bayesianService,
                                @org.springframework.lang.Nullable TraceHumanizer traceHumanizer,
                                @org.springframework.lang.Nullable GraphOntologyBindingService ontologyBindingService,
-                               @org.springframework.lang.Nullable OwlOntologyBridge owlOntologyBridge) {
+                               @org.springframework.lang.Nullable OwlOntologyBridge owlOntologyBridge,
+                               @org.springframework.lang.Nullable UnifiedGraphBridge unifiedGraphBridge) {
         this.groundingService = groundingService;
         this.graphService = graphService;
         this.attributionService = attributionService;
@@ -118,6 +125,7 @@ public class ExplainOrchestrator {
         this.traceHumanizer = traceHumanizer;
         this.ontologyBindingService = ontologyBindingService;
         this.owlOntologyBridge = owlOntologyBridge;
+        this.unifiedGraphBridge = unifiedGraphBridge;
     }
 
     /** Test / legacy constructor: no TraceHumanizer (falls back to empty maps). */
@@ -126,7 +134,7 @@ public class ExplainOrchestrator {
                                EventAttributionService attributionService,
                                PslReasoningService pslService,
                                BayesianNetworkService bayesianService) {
-        this(groundingService, graphService, attributionService, pslService, bayesianService, null, null, null);
+        this(groundingService, graphService, attributionService, pslService, bayesianService, null, null, null, null);
     }
 
     /**
@@ -253,7 +261,7 @@ public class ExplainOrchestrator {
     // ── HYBRID trail ─────────────────────────────────────────────────────────────
 
     private ReasoningTrail hybridTrail(String entityId, long factSheetId) {
-        ReasoningGraph subgraph = new KnowledgeGraphReasoningAdapter(graphService).subgraph(List.of(entityId));
+        ReasoningGraph subgraph = hybridGraph(entityId, factSheetId);
 
         HybridReasoner reasoner = new HybridReasoner();
         List<HybridReasoner.ScoredEntity> scores = reasoner.rank(subgraph);
@@ -287,6 +295,24 @@ public class ExplainOrchestrator {
                 .computedAt(Instant.now())
                 .naturalLanguageSummary(summary)
                 .build();
+    }
+
+    private ReasoningGraph hybridGraph(String entityId, long factSheetId) {
+        if (unifiedGraphBridge != null) {
+            try {
+                UnifiedGraph unified = unifiedGraphBridge.export(factSheetId);
+                UnifiedGraph neighborhood = unified.neighborhood(List.of(entityId), 1);
+                if (neighborhood.containsEntity(entityId)) {
+                    return neighborhood;
+                }
+                log.warn("Unified graph export for factSheet={} did not contain hybrid target {}; falling back",
+                        factSheetId, entityId);
+            } catch (RuntimeException ex) {
+                log.warn("Falling back to adapter subgraph for hybrid explanation; unified export failed for factSheet={}",
+                        factSheetId, ex);
+            }
+        }
+        return new KnowledgeGraphReasoningAdapter(graphService).subgraph(List.of(entityId));
     }
 
     // ── CAUSAL trail ─────────────────────────────────────────────────────────────
@@ -505,10 +531,13 @@ public class ExplainOrchestrator {
             OwlOntology tbox = owlOntologyBridge.toOwlOntology(schema);
             OwlRlResult owl = new OwlRlReasoner().reason(abox, tbox);
             Map<String, List<String>> byType = new LinkedHashMap<>();
-            for (Map.Entry<String, String> e : owl.inferredTypes().entrySet()) {
-                String typeName = localName(e.getValue());
-                if (e.getKey() == null || typeName == null || typeName.isBlank()) continue;
-                byType.computeIfAbsent(typeName, k -> new ArrayList<>()).add(e.getKey());
+            for (Map.Entry<String, List<String>> e : owl.inferredTypeCandidates().entrySet()) {
+                if (e.getKey() == null) continue;
+                for (String classIri : e.getValue()) {
+                    String typeName = localName(classIri);
+                    if (typeName == null || typeName.isBlank()) continue;
+                    byType.computeIfAbsent(typeName, k -> new ArrayList<>()).add(e.getKey());
+                }
             }
             return byType;
         } catch (RuntimeException ex) {

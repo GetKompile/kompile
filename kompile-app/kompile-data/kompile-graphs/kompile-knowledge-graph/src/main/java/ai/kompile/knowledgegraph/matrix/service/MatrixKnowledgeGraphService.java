@@ -34,9 +34,13 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.*;
+import java.util.Base64;
+import java.util.Locale;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 /**
@@ -198,7 +202,7 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
      */
     private static String semanticRelationType(String edgeTypeKey) {
         if (edgeTypeKey == null || edgeTypeKey.isBlank()
-                || GENERIC_EDGE_KEYS.contains(edgeTypeKey.toUpperCase(java.util.Locale.ROOT))) {
+                || GENERIC_EDGE_KEYS.contains(edgeTypeKey.toUpperCase(Locale.ROOT))) {
             return null;
         }
         try {
@@ -622,7 +626,10 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
             if (s.sourceNodeId() == null || s.targetNodeId() == null) continue;
             try {
                 if (!edgeExists(s.sourceNodeId(), s.targetNodeId())) {
-                    createEdge(s.sourceNodeId(), s.targetNodeId(), s.edgeType(), s.weight(), s.description());
+                    createEdgeWithMetadata(
+                            s.sourceNodeId(), s.targetNodeId(), s.edgeType(), s.weight(),
+                            s.label(), s.description(), s.metaJson(), s.provenance(),
+                            s.factSheetId());
                     created++;
                 }
             } catch (Exception e) {
@@ -2105,8 +2112,8 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
      * MatrixGraphNode stores its level as a String, so the requested levels are matched by name.
      */
     @Override
-    public List<String> findOrphanNodeIds(Long factSheetId, java.util.Set<NodeLevel> levels) {
-        java.util.Set<String> wanted =
+    public List<String> findOrphanNodeIds(Long factSheetId, Set<NodeLevel> levels) {
+        Set<String> wanted =
                 ((levels == null || levels.isEmpty()) ? DEFAULT_ORPHAN_LEVELS : levels)
                         .stream().map(Enum::name).collect(Collectors.toSet());
         String gid = graphIdForFactSheet(factSheetId);
@@ -2389,7 +2396,7 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
     @Override
     public void storeNodeKgEmbedding(String nodeId, INDArray embedding,
                                       KGEmbeddingAlgorithm algorithm,
-                                      Long version, java.time.Instant updatedAt) {
+                                      Long version, Instant updatedAt) {
         if (nodeId == null || embedding == null) return;
         String gid = graphIdHolding(nodeId);
         Optional<MatrixGraphNode> opt = graphStore.getNode(gid, nodeId);
@@ -2401,7 +2408,7 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
         if (node.getMetadata() == null) node.setMetadata(new HashMap<>());
         byte[] bytes = KGE_CONVERTER.convertToDatabaseColumn(embedding);
         if (bytes == null) return;
-        node.getMetadata().put(META_KGE_EMB, java.util.Base64.getEncoder().encodeToString(bytes));
+        node.getMetadata().put(META_KGE_EMB, Base64.getEncoder().encodeToString(bytes));
         if (algorithm != null) node.getMetadata().put(META_KGE_ALGO, algorithm.name());
         if (version != null)   node.getMetadata().put(META_KGE_VER,  version.toString());
         if (updatedAt != null) node.getMetadata().put(META_KGE_UPD_AT, String.valueOf(updatedAt.toEpochMilli()));
@@ -2442,7 +2449,7 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
                     }
                     Object updAt = n.getMetadata().get(META_KGE_UPD_AT);
                     if (updAt != null) {
-                        try { gn.setKgEmbeddingUpdatedAt(java.time.Instant.ofEpochMilli(Long.parseLong(updAt.toString()))); }
+                        try { gn.setKgEmbeddingUpdatedAt(Instant.ofEpochMilli(Long.parseLong(updAt.toString()))); }
                         catch (NumberFormatException ignored) {}
                     }
                     return gn;
@@ -2474,7 +2481,7 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
         if (node.getMetadata() == null) node.setMetadata(new HashMap<>());
         byte[] bytes = KGE_CONVERTER.convertToDatabaseColumn(embedding);
         if (bytes == null) return;
-        node.getMetadata().put(META_KGE_EMB, java.util.Base64.getEncoder().encodeToString(bytes));
+        node.getMetadata().put(META_KGE_EMB, Base64.getEncoder().encodeToString(bytes));
         node.getMetadata().put("_kge_edgeType", edgeTypeName);
         if (algorithm != null) node.getMetadata().put(META_KGE_ALGO, algorithm.name());
         if (version != null)   node.getMetadata().put(META_KGE_VER,  version.toString());
@@ -2519,7 +2526,7 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
     public void clearKgEmbeddings(Long factSheetId) {
         // Read the scoped graph when a fact sheet is given, else every segmented graph. Re-read per
         // pass (Supplier) so the second pass doesn't see pseudo-nodes the first pass already removed.
-        java.util.function.Supplier<List<MatrixGraphNode>> source = () -> factSheetId != null
+        Supplier<List<MatrixGraphNode>> source = () -> factSheetId != null
                 ? graphStore.getAllNodes(graphIdForFactSheet(factSheetId))
                 : allNodesAcrossGraphs();
         // Remove pseudo edge-type nodes
@@ -2547,7 +2554,7 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
     private static INDArray decodeKgeEmbedding(Object b64value) {
         if (b64value == null) return null;
         try {
-            byte[] bytes = java.util.Base64.getDecoder().decode(b64value.toString());
+            byte[] bytes = Base64.getDecoder().decode(b64value.toString());
             return KGE_CONVERTER.convertToEntityAttribute(bytes);
         } catch (Exception e) {
             return null;

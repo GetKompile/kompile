@@ -16,6 +16,7 @@
 
 package ai.kompile.process.discovery.mining.log;
 
+import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -27,7 +28,9 @@ import java.util.List;
  * <p>The activity-label projection of a trace (see {@link #activitySequence()}) is its <em>variant</em>
  * — the unit every discovery algorithm actually consumes.
  */
-public final class Trace {
+public final class Trace implements Serializable {
+
+    private static final long serialVersionUID = 1L;
 
     private final String caseId;
     private final List<Event> events;

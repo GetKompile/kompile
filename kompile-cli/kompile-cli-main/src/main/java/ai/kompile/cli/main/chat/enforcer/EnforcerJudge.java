@@ -63,13 +63,57 @@ public class EnforcerJudge implements EnforcerEvaluator {
     public EnforcerJudge(HarnessConfig config, ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
         this.backend = JudgeBackendFactory.create(config, objectMapper);
-        this.backend.warmUp(SYSTEM_PROMPT);
+        warmUpAsync();
     }
 
     public EnforcerJudge(JudgeBackend backend, ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
         this.backend = backend;
-        this.backend.warmUp(SYSTEM_PROMPT);
+        warmUpAsync();
+    }
+
+    /** The background warm-up thread, kept so {@link #awaitWarm(long)} can join it. */
+    private volatile Thread warmupThread;
+
+    /**
+     * Warm the backend on a background daemon thread. A synchronous warm-up here used to
+     * spawn (and wait up to 30s on) a persistent judge agent process INSIDE the caller's
+     * startup path — for the MCP stdio server that stalled the initialize handshake of
+     * every agent session with the enforcer environment set. The first {@code generate()}
+     * call still ensures the process itself, so correctness does not depend on this.
+     */
+    private void warmUpAsync() {
+        Thread warmup = new Thread(() -> {
+            try {
+                backend.warmUp(SYSTEM_PROMPT);
+            } catch (Throwable t) {
+                // Best-effort: first evaluate() will retry via the backend's own ensure path.
+            }
+        }, "enforcer-judge-warmup");
+        warmup.setDaemon(true);
+        this.warmupThread = warmup;
+        warmup.start();
+    }
+
+    /**
+     * Block until the background warm-up finishes (or the timeout elapses). Optional —
+     * evaluation works without it — for callers that want first-judgement latency to
+     * exclude backend boot (e.g. latency-sensitive monitors, timing tests).
+     *
+     * @return true if the warm-up completed within the timeout
+     */
+    public boolean awaitWarm(long timeoutMs) {
+        Thread warmup = warmupThread;
+        if (warmup == null) {
+            return true;
+        }
+        try {
+            warmup.join(timeoutMs);
+            return !warmup.isAlive();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
     }
 
     @Override
@@ -78,8 +122,12 @@ public class EnforcerJudge implements EnforcerEvaluator {
         return evaluate(userPrompt, agentOutput, policy, attempt, EnforcerConversationContext.empty());
     }
 
+    // synchronized: a single judge backend (esp. a persistent-subprocess pipe) is single-flight.
+    // The realtime JSONL tap (poll thread) and the turn-gate (main thread) share this judge, so all
+    // three evaluators serialize on the judge instance to avoid concurrent backend calls / interleaved
+    // judgement-log writes. Uncontended today (turn-gate was the only caller) — no behavior change.
     @Override
-    public EnforcerDecision evaluate(String userPrompt, String agentOutput,
+    public synchronized EnforcerDecision evaluate(String userPrompt, String agentOutput,
                                      EnforcerPolicy policy, int attempt,
                                      EnforcerConversationContext context) throws Exception {
         if (!isAvailable()) {
@@ -102,7 +150,7 @@ public class EnforcerJudge implements EnforcerEvaluator {
         return evaluatePartialOutput(userPrompt, partialOutput, policy, EnforcerConversationContext.empty());
     }
 
-    public EnforcerDecision evaluatePartialOutput(String userPrompt, String partialOutput,
+    public synchronized EnforcerDecision evaluatePartialOutput(String userPrompt, String partialOutput,
                                                   EnforcerPolicy policy,
                                                   EnforcerConversationContext context) throws Exception {
         if (!isAvailable()) {
@@ -125,7 +173,7 @@ public class EnforcerJudge implements EnforcerEvaluator {
         return evaluateToolCall(toolName, toolInput, policy, EnforcerConversationContext.empty());
     }
 
-    public EnforcerToolCallDecision evaluateToolCall(String toolName, String toolInput,
+    public synchronized EnforcerToolCallDecision evaluateToolCall(String toolName, String toolInput,
                                                      EnforcerPolicy policy,
                                                      EnforcerConversationContext context) throws Exception {
         if (!isAvailable()) {
@@ -317,25 +365,4 @@ public class EnforcerJudge implements EnforcerEvaluator {
                 .append(formatted)
                 .append("\n[END RECENT CHAT MESSAGES]\n\n");
     }
-
-    static final String PARTIAL_SYSTEM_PROMPT = """
-            You are Kompile Enforcer, a real-time stream interruption judge evaluating partial (incomplete) output.
-
-            CRITICAL: Respond with ONLY a single JSON object. No prose, no markdown, no code fences.
-
-            Only interrupt when the partial output has already violated the rules in a way later text cannot repair.
-            When uncertain, mark compliant=true.
-
-            {"compliant":true|false,"stop":true|false,"severity":"info|warning|error|critical","violations":["..."],"correction_prompt":"...","reasoning":"..."}
-            """;
-
-    static final String TOOL_CALL_SYSTEM_PROMPT = """
-            You are Kompile Enforcer, a pre-execution MCP tool-call gate. Decide if this tool call may execute.
-
-            CRITICAL: Respond with ONLY a single JSON object. No prose, no markdown, no code fences.
-
-            {"action":"ALLOW|BLOCK|REWRITE","reason":"...","violations":["..."],"correction_prompt":"...","rewrittenArgs":null}
-
-            BLOCK when execution would violate the rules or when a safe rewrite is not obvious.
-            """;
 }

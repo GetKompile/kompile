@@ -27,6 +27,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.stream.Collectors;
+import java.util.Locale;
 
 /**
  * Implementation of FactSheetGraphService for building knowledge graphs from indexed documents.
@@ -239,7 +240,7 @@ public class FactSheetGraphServiceImpl implements FactSheetGraphService {
                 for (Map.Entry<String, Object> entry : globalStats.entrySet()) {
                     String key = entry.getKey();
                     if (key != null && key.startsWith("edges_") && entry.getValue() instanceof Number num) {
-                        String edgeType = key.substring("edges_".length()).toUpperCase(java.util.Locale.ROOT);
+                        String edgeType = key.substring("edges_".length()).toUpperCase(Locale.ROOT);
                         long count = num.longValue();
                         if (count > 0) {
                             edgesByType.put(edgeType, count);

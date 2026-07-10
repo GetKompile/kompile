@@ -990,6 +990,10 @@ public class TerminalRenderer {
         return ansiEnabled ? DIM + text + RESET : text;
     }
 
+    public String italic(String text) {
+        return ansiEnabled ? ITALIC + text + RESET : text;
+    }
+
     public String red(String text) {
         return ansiEnabled ? FG_RED + text + RESET : text;
     }

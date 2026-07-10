@@ -101,17 +101,23 @@ class OwlDlSubsumptionTest {
         assertNotNull(result, "Result must not be null");
         assertTrue(result.isConsistent(), "Ontology with Dog ⊑ Mammal ⊑ Animal must be consistent");
 
-        // The DL reasoner should infer rex: Mammal or rex: Animal (first non-asserted)
-        // rex was asserted as Dog; first non-asserted inferred type should be Mammal or Animal
+        // The legacy view should still expose one non-asserted inferred type for older callers.
         String inferredType = result.inferredTypes().get("rex");
         assertNotNull(inferredType,
                 "DL reasoner should infer at least one additional type for rex. All inferred types: "
                 + result.inferredTypes());
 
-        // The inferred type should be either Mammal or Animal (both are superclasses of Dog)
         boolean isMammalOrAnimal = inferredType.equals(M_IRI) || inferredType.equals(A_IRI);
         assertTrue(isMammalOrAnimal,
                 "Inferred type for rex should be Mammal or Animal IRI, got: " + inferredType);
+
+        List<String> allInferredTypes = result.inferredTypeCandidates().get("rex");
+        assertNotNull(allInferredTypes,
+                "Full candidate view should include all non-asserted superclasses for rex");
+        assertTrue(allInferredTypes.contains(M_IRI),
+                "DL reasoner should preserve rex:Mammal in the full inferred type set: " + allInferredTypes);
+        assertTrue(allInferredTypes.contains(A_IRI),
+                "DL reasoner should preserve rex:Animal in the full inferred type set: " + allInferredTypes);
     }
 
     /**
@@ -199,7 +205,7 @@ class OwlDlSubsumptionTest {
         // Without ∃P.D ⊑ E in the lib TBox, the bridge cannot infer i1:E.
         // Document this clearly in the test output:
         System.out.println("[OwlDlSubsumptionTest] Inferred types for complex restriction test: "
-                + result.inferredTypes());
+                + result.inferredTypeCandidates());
         System.out.println("[OwlDlSubsumptionTest] This is expected to be empty because"
                 + " ∃P.D ⊑ E is a complex axiom dropped by OwlOntologyMapper"
                 + " (known limitation — see bridge Javadoc).");
@@ -219,7 +225,7 @@ class OwlDlSubsumptionTest {
         assertNotNull(result);
         assertTrue(result.isConsistent());
         assertEquals(0, result.inferredRelations().size());
-        assertEquals(0, result.inferredTypes().size());
+        assertEquals(0, result.inferredTypeCount());
         assertEquals(0, result.inconsistencies().size());
     }
 

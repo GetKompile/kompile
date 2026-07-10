@@ -39,6 +39,7 @@ import java.util.concurrent.Callable;
 
 import static ai.kompile.cli.main.project.ProjectCommandUtils.firstNonBlank;
 import static ai.kompile.cli.main.project.ProjectCommandUtils.jsonString;
+import static ai.kompile.cli.main.project.ProjectCommandUtils.requireExistingProjectRoot;
 import static ai.kompile.cli.main.project.ProjectCommandUtils.resolveProjectRoot;
 import static ai.kompile.cli.main.project.ProjectPrintUtils.printModels;
 import static ai.kompile.cli.main.project.ProjectPrintUtils.printPipelines;
@@ -74,7 +75,7 @@ public class ProjectModelCommand implements Callable<Integer> {
         @Override
         public Integer call() {
             KompileProjectStore store = new KompileProjectStore();
-            KompileProjectManifest manifest = store.load(resolveProjectRoot(store, root));
+            KompileProjectManifest manifest = store.load(requireExistingProjectRoot(store, root));
             printModels(manifest);
             return 0;
         }
@@ -131,11 +132,11 @@ public class ProjectModelCommand implements Callable<Integer> {
         @Option(names = "--artifact", description = "Local artifact file to copy into data/models/<path>/ as the model file.")
         private File artifact;
 
-        @Option(names = "--placeholder", description = "Create a tiny CPU placeholder model artifact for smoke/no-op serving.")
-        private boolean placeholder;
-
         @Option(names = "--description", description = "Model description recorded in project and staging metadata.")
         private String description;
+
+        @Option(names = "--supported-languages", description = "Comma-separated BCP-47 language tags this model supports, or * for multilingual/any.")
+        private String supportedLanguages;
 
         @Option(names = "--staging", negatable = true, defaultValue = "true",
                 description = "Update data/models/registry.json for model-staging.")
@@ -151,11 +152,11 @@ public class ProjectModelCommand implements Callable<Integer> {
         @Override
         public Integer call() throws IOException {
             KompileProjectStore store = new KompileProjectStore();
-            Path projectRoot = resolveProjectRoot(store, root);
+            Path projectRoot = requireExistingProjectRoot(store, root);
             String type = normalizeRegistryType(firstNonBlank(registryType, registryTypeForRole(role)));
             String resolvedPath = firstNonBlank(path, defaultRegistryPath(type, modelId));
             String resolvedModelFile = firstNonBlank(modelFile,
-                    artifact == null ? defaultModelFile(type, modelId, placeholder) : artifact.toPath().getFileName().toString());
+                    artifact == null ? defaultModelFile(type, modelId) : artifact.toPath().getFileName().toString());
             String resolvedVocabFile = firstNonBlank(vocabFile, defaultVocabFile(type));
             KompileProjectModel model = new KompileProjectModel();
             model.setId(id);
@@ -176,6 +177,9 @@ public class ProjectModelCommand implements Callable<Integer> {
             if (description != null) {
                 model.getMetadata().put("description", description);
             }
+            if (supportedLanguages != null && !supportedLanguages.isBlank()) {
+                model.getMetadata().put("registry.supportedLanguages", supportedLanguages.trim());
+            }
             if (required != null) {
                 model.setRequired(required);
             }
@@ -183,7 +187,7 @@ public class ProjectModelCommand implements Callable<Integer> {
             KompileProjectManifest manifest = store.registerModel(projectRoot, model);
             KompileProjectModel registered = store.findModel(manifest, firstNonBlank(id, modelId))
                     .orElseGet(() -> store.findModel(manifest, modelId).orElse(model));
-            materializeModelArtifact(projectRoot, registered, artifact, placeholder);
+            materializeModelArtifact(projectRoot, registered, artifact);
             if (updateStagingRegistry == null || updateStagingRegistry) {
                 writeStagingRegistry(projectRoot, manifest);
             }
@@ -219,7 +223,7 @@ public class ProjectModelCommand implements Callable<Integer> {
         @Override
         public Integer call() throws Exception {
             KompileProjectStore store = new KompileProjectStore();
-            Path projectRoot = resolveProjectRoot(store, root);
+            Path projectRoot = requireExistingProjectRoot(store, root);
 
             // Resolve clone URL
             String cloneUrl = repo.startsWith("http") || repo.startsWith("git@")
@@ -283,7 +287,7 @@ public class ProjectModelCommand implements Callable<Integer> {
         @Override
         public Integer call() {
             KompileProjectStore store = new KompileProjectStore();
-            KompileProjectManifest manifest = store.load(resolveProjectRoot(store, root));
+            KompileProjectManifest manifest = store.load(requireExistingProjectRoot(store, root));
             printPipelines(manifest);
             return 0;
         }
@@ -329,7 +333,7 @@ public class ProjectModelCommand implements Callable<Integer> {
         @Override
         public Integer call() {
             KompileProjectStore store = new KompileProjectStore();
-            Path projectRoot = resolveProjectRoot(store, root);
+            Path projectRoot = requireExistingProjectRoot(store, root);
             KompileProjectPipeline pipeline = new KompileProjectPipeline();
             pipeline.setId(id);
             pipeline.setPipelineId(pipelineId);
@@ -386,11 +390,12 @@ public class ProjectModelCommand implements Callable<Integer> {
     static String stagingModelEntryJson(KompileProjectModel model) {
         String type = registryType(model);
         String modelId = firstNonBlank(model.getRegistryModelId(), model.getModelId(), model.getId());
-        String modelFile = metadataValue(model, "registry.modelFile", defaultModelFile(type, modelId, false));
+        String modelFile = metadataValue(model, "registry.modelFile", defaultModelFile(type, modelId));
         String vocabFile = metadataValue(model, "registry.vocabFile", defaultVocabFile(type));
         String framework = metadataValue(model, "registry.framework", defaultFramework(type));
         String modelType = metadataValue(model, "registry.modelType", defaultMetadataModelType(type));
         String description = metadataValue(model, "description", null);
+        String supportedLanguages = metadataValue(model, "registry.supportedLanguages", null);
         String source = firstNonBlank(model.getSource(), "project");
         String sourceRepository = model.getSourceRepository();
         String status = model.getLifecycle() == KompileProjectLifecycleState.ACTIVE ? "active" : "staged";
@@ -411,6 +416,7 @@ public class ProjectModelCommand implements Callable<Integer> {
                 + "\"description\":" + jsonString(description) + ","
                 + "\"source_origin\":" + jsonString(source) + ","
                 + "\"source_repository\":" + jsonString(sourceRepository)
+                + supportedLanguagesMetadataJson(supportedLanguages)
                 + "},"
                 + "\"tokenizer\":{"
                 + "\"do_lower_case\":true,"
@@ -424,44 +430,23 @@ public class ProjectModelCommand implements Callable<Integer> {
     }
 
     static void materializeModelArtifact(Path projectRoot, KompileProjectModel model,
-                                          File artifact, boolean placeholder) throws IOException {
-        if (artifact == null && !placeholder) {
+                                          File artifact) throws IOException {
+        if (artifact == null) {
             return;
         }
         Path modelDir = projectModelDirectory(projectRoot, model);
         Files.createDirectories(modelDir);
         String modelFile = metadataValue(model, "registry.modelFile",
-                defaultModelFile(registryType(model), model.getModelId(), placeholder));
+                defaultModelFile(registryType(model), model.getModelId()));
         Path modelPath = modelDir.resolve(modelFile).normalize();
         if (!modelPath.startsWith(modelDir)) {
             throw new IllegalArgumentException("Model file escapes project model directory: " + modelFile);
         }
-        if (artifact != null) {
-            Path source = artifact.toPath().toAbsolutePath().normalize();
-            if (!Files.isRegularFile(source)) {
-                throw new IllegalArgumentException("Model artifact does not exist: " + source);
-            }
-            Files.copy(source, modelPath, StandardCopyOption.REPLACE_EXISTING);
-        } else {
-            Files.writeString(modelPath, "KOMPILE_CPU_PLACEHOLDER_MODEL\n"
-                    + "model_id=" + firstNonBlank(model.getModelId(), model.getId(), "model") + "\n"
-                    + "backend=" + metadataValue(model, "registry.backend", "cpu") + "\n"
-                    + "parameters=0\n", StandardCharsets.UTF_8);
+        Path source = artifact.toPath().toAbsolutePath().normalize();
+        if (!Files.isRegularFile(source)) {
+            throw new IllegalArgumentException("Model artifact does not exist: " + source);
         }
-
-        String vocabFile = metadataValue(model, "registry.vocabFile", defaultVocabFile(registryType(model)));
-        Path vocabPath = modelDir.resolve(vocabFile).normalize();
-        if (!vocabPath.startsWith(modelDir)) {
-            throw new IllegalArgumentException("Vocab file escapes project model directory: " + vocabFile);
-        }
-        if (placeholder && !Files.exists(vocabPath)) {
-            if (vocabFile.endsWith(".json")) {
-                Files.writeString(vocabPath, "{\"type\":\"placeholder\",\"tokens\":[\"<pad>\",\"<unk>\"]}\n",
-                        StandardCharsets.UTF_8);
-            } else {
-                Files.writeString(vocabPath, "[PAD]\n[UNK]\nhello\nworld\n", StandardCharsets.UTF_8);
-            }
-        }
+        Files.copy(source, modelPath, StandardCopyOption.REPLACE_EXISTING);
     }
 
     // ==================== Registry type helpers ====================
@@ -478,6 +463,26 @@ public class ProjectModelCommand implements Callable<Integer> {
             }
         }
         return fallback;
+    }
+
+    static String supportedLanguagesMetadataJson(String supportedLanguages) {
+        if (firstNonBlank(supportedLanguages) == null) {
+            return "";
+        }
+        StringBuilder json = new StringBuilder(",\"supported_languages\":[");
+        boolean first = true;
+        for (String part : supportedLanguages.split(",")) {
+            String language = part.trim();
+            if (language.isEmpty()) {
+                continue;
+            }
+            if (!first) {
+                json.append(',');
+            }
+            json.append(jsonString(language));
+            first = false;
+        }
+        return first ? "" : json.append(']').toString();
     }
 
     static String registryTypeForRole(String role) {
@@ -517,9 +522,9 @@ public class ProjectModelCommand implements Callable<Integer> {
         };
     }
 
-    static String defaultModelFile(String type, String modelId, boolean placeholder) {
+    static String defaultModelFile(String type, String modelId) {
         return switch (normalizeRegistryType(type)) {
-            case "llm_ggml" -> placeholder ? firstNonBlank(modelId, "model") + ".gguf" : "model.gguf";
+            case "llm_ggml" -> "model.gguf";
             case "vlm_pipeline" -> "pipeline.json";
             default -> "model.sdz";
         };

@@ -340,8 +340,8 @@ public class NamedGraphTool {
         m.put("edgeCount", graph.getEdgeCount());
         m.put("childGraphCount", graph.getChildGraphCount());
         m.put("factSheetId", graph.getFactSheetId());
-        if (graph.getParentGraph() != null) {
-            m.put("parentGraphId", graph.getParentGraph().getGraphId());
+        if (graph.getParentGraphId() != null) {
+            m.put("parentGraphId", graph.getParentGraphId());
         }
         m.put("createdAt", graph.getCreatedAt());
         m.put("updatedAt", graph.getUpdatedAt());

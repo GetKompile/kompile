@@ -17,14 +17,20 @@ package ai.kompile.graph.reasoning.learning;
 
 import ai.kompile.graph.reasoning.embedding.learn.EmbeddingConfig;
 import ai.kompile.graph.reasoning.embedding.learn.EmbeddingLearner;
+import ai.kompile.graph.reasoning.embedding.Embeddings;
+import ai.kompile.graph.reasoning.embedding.GraphEmbeddingResolver;
 import ai.kompile.graph.reasoning.hybrid.HybridReasoner;
 import ai.kompile.graph.reasoning.hybrid.HybridReasoner.ScoredEntity;
+import ai.kompile.graph.reasoning.model.GraphEntity;
 import ai.kompile.graph.reasoning.mebn.MTheory;
 import ai.kompile.graph.reasoning.model.MutableReasoningGraph;
 import ai.kompile.graph.reasoning.model.ReasoningGraph;
 import ai.kompile.graph.reasoning.psl.PslProgram;
+import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -61,6 +67,9 @@ import java.util.Objects;
  */
 public final class HybridConsensusTrainer {
 
+    /** Named layer used when embeddings are learned into a {@link UnifiedGraph}. */
+    public static final String LEARNED_EMBEDDING_LAYER = "hybrid-consensus.learned";
+
     private HybridConsensusTrainer() {
     }
 
@@ -86,7 +95,24 @@ public final class HybridConsensusTrainer {
             PslWeightLearningService pslLearner, int pslSteps,
             boolean trainMebn, MebnWeightLearner mebnLearner, MTheory mebnTheory, ReasoningGraph mebnGraph, int mebnEpochs,
             boolean trainEmbeddings, EmbeddingLearner embLearner, EmbeddingConfig embConfig,
-            HybridReasoner reasoner, double consensusWeight, int rounds) {
+            HybridReasoner reasoner, double consensusWeight, int rounds,
+            Map<String, String> entityAliases, double[] queryEmbedding) {
+
+        public Plan {
+            entityAliases = entityAliases == null ? Map.of() : Map.copyOf(entityAliases);
+            queryEmbedding = queryEmbedding == null ? null : queryEmbedding.clone();
+        }
+
+        /** Backward-compatible plan without explicit PSL aliases or semantic query. */
+        public Plan(PslWeightLearningService pslLearner, int pslSteps,
+                    boolean trainMebn, MebnWeightLearner mebnLearner, MTheory mebnTheory,
+                    ReasoningGraph mebnGraph, int mebnEpochs,
+                    boolean trainEmbeddings, EmbeddingLearner embLearner, EmbeddingConfig embConfig,
+                    HybridReasoner reasoner, double consensusWeight, int rounds) {
+            this(pslLearner, pslSteps, trainMebn, mebnLearner, mebnTheory, mebnGraph,
+                    mebnEpochs, trainEmbeddings, embLearner, embConfig, reasoner,
+                    consensusWeight, rounds, Map.of(), null);
+        }
     }
 
     /**
@@ -100,7 +126,39 @@ public final class HybridConsensusTrainer {
      */
     public record Result(
             PslProgram trainedProgram, boolean mebnTrained, boolean embeddingsTrained,
-            Map<String, Double> consensusTargets, List<ScoredEntity> ranking, int rounds, int modelsTrained) {
+            Map<String, Double> consensusTargets, List<ScoredEntity> ranking, int rounds,
+            int modelsTrained, boolean semanticConsensus, int semanticAnchorCount,
+            String embeddingLayer) {
+    }
+
+    /**
+     * A cheap online consensus that combines caller-supplied structural scores with graph semantic
+     * context. No PSL or Bayesian inference is performed by this operation.
+     */
+    public record ContextualConsensus(
+            Map<String, Double> targets, List<ScoredEntity> ranking,
+            boolean semanticConsensus, int semanticAnchorCount,
+            int inferredSemanticAnchorCount) {
+        public ContextualConsensus {
+            targets = targets == null ? Map.of() : Map.copyOf(targets);
+            ranking = ranking == null ? List.of() : List.copyOf(ranking);
+            semanticAnchorCount = Math.max(0, semanticAnchorCount);
+            inferredSemanticAnchorCount = Math.max(0, inferredSemanticAnchorCount);
+        }
+
+        public static ContextualConsensus observedOnly(Map<String, Double> observed) {
+            return new ContextualConsensus(observed, List.of(), false, 0, 0);
+        }
+    }
+
+    private record SemanticQuery(double[] vector, int anchorCount, int inferredAnchorCount) {
+        private static SemanticQuery empty() {
+            return new SemanticQuery(null, 0, 0);
+        }
+
+        private boolean present() {
+            return vector != null && vector.length > 0;
+        }
     }
 
     /** Run one joint, hybrid-supervised training step over all enabled models. */
@@ -118,6 +176,9 @@ public final class HybridConsensusTrainer {
         boolean mebnTrained = false;
         boolean embTrained = false;
         int rounds = Math.max(1, plan.rounds());
+        ReasoningGraph rankingGraph = graph;
+        String embeddingLayer = null;
+        SemanticQuery semanticQuery = SemanticQuery.empty();
 
         for (int round = 0; round < rounds; round++) {
             // (1) Co-train embeddings INTO the graph so the hybrid reasoner sees fresh semantic signal.
@@ -128,14 +189,31 @@ public final class HybridConsensusTrainer {
                     plan.embLearner().learnInto(mutableGraph,
                             plan.embConfig() != null ? plan.embConfig() : EmbeddingConfig.defaults());
                     embTrained = true;
+                    rankingGraph = graph;
+                } catch (RuntimeException ignored) {
+                    // Embeddings are an optional signal — a training failure must not abort the cascade.
+                }
+            } else if (plan.trainEmbeddings() && plan.embLearner() != null
+                    && graph instanceof UnifiedGraph unifiedGraph && !graph.isEmpty()) {
+                try {
+                    plan.embLearner().learnIntoLayer(unifiedGraph, LEARNED_EMBEDDING_LAYER,
+                            plan.embConfig() != null ? plan.embConfig() : EmbeddingConfig.defaults());
+                    embTrained = true;
+                    embeddingLayer = LEARNED_EMBEDDING_LAYER;
+                    rankingGraph = unifiedGraph.withEmbeddingLayer(LEARNED_EMBEDDING_LAYER);
                 } catch (RuntimeException ignored) {
                     // Embeddings are an optional signal — a training failure must not abort the cascade.
                 }
             }
             // (2) Rank entities via the hybrid reasoner: the structural ⊕ semantic ranked response.
-            ranking = plan.reasoner().rank(graph);
+            semanticQuery = semanticQuery(rankingGraph, observed, plan.entityAliases(),
+                    plan.queryEmbedding());
+            ranking = semanticQuery.present()
+                    ? plan.reasoner().rank(rankingGraph, semanticQuery.vector())
+                    : plan.reasoner().rank(rankingGraph);
             // (3) Derive the single consensus signal: observed targets pulled toward the ranking.
-            consensus = consensusTargets(observed, ranking, plan.consensusWeight());
+            consensus = consensusTargets(observed, ranking, plan.consensusWeight(),
+                    plan.entityAliases());
             // (4) Co-train PSL rule weights against the consensus.
             if (plan.pslLearner() != null && !trained.rules().isEmpty() && !consensus.isEmpty()) {
                 trained = plan.pslLearner().updateOnBatch(trained, consensus, Math.max(1, plan.pslSteps()));
@@ -148,7 +226,157 @@ public final class HybridConsensusTrainer {
             }
         }
         int models = 1 + (mebnTrained ? 1 : 0) + (embTrained ? 1 : 0);
-        return new Result(trained, mebnTrained, embTrained, consensus, ranking, rounds, models);
+        return new Result(trained, mebnTrained, embTrained, consensus, ranking, rounds,
+                models, semanticQuery.present(), semanticQuery.anchorCount(), embeddingLayer);
+    }
+
+    /**
+     * Add semantic context to structural scores that a caller already computed, then derive the
+     * observed-to-hybrid training targets. Sparse vectors are resolved from the graph, and raw
+     * structural consensus remains the fallback when no usable semantic context exists.
+     */
+    public static ContextualConsensus contextualConsensus(
+            ReasoningGraph graph, Map<String, Double> observedTargets,
+            Map<String, Double> structuralScores, Map<String, String> entityAliases,
+            HybridReasoner reasoner, double consensusWeight) {
+        Map<String, Double> observed = observedTargets == null ? Map.of() : observedTargets;
+        Map<String, String> aliases = entityAliases == null ? Map.of() : entityAliases;
+        Map<String, Double> structural = structuralScores == null ? Map.of() : structuralScores;
+        if (observed.isEmpty()) {
+            return ContextualConsensus.observedOnly(observed);
+        }
+        if (graph == null || graph.isEmpty()) {
+            return new ContextualConsensus(
+                    consensusTargets(observed, structural, consensusWeight, aliases),
+                    List.of(), false, 0, 0);
+        }
+
+        Objects.requireNonNull(reasoner, "reasoner");
+        SemanticQuery query = semanticQuery(graph, observed, aliases, null);
+        if (!query.present()) {
+            return new ContextualConsensus(
+                    consensusTargets(observed, structural, consensusWeight, aliases),
+                    List.of(), false, 0, 0);
+        }
+
+        List<ScoredEntity> ranking = reasoner.rankWithStructuralScores(
+                graph, structural, query.vector());
+        return new ContextualConsensus(
+                consensusTargets(observed, ranking, consensusWeight, aliases),
+                ranking, true, query.anchorCount(), query.inferredAnchorCount());
+    }
+
+    /**
+     * Build the semantic query used by joint training. Observed atom arguments are resolved through
+     * {@code entityAliases} (for example PSL constants {@code n0 -> graph-entity-id}) and weighted by
+     * their observed truth. If no observed argument resolves, the graph's embedded entities form a
+     * confidence-weighted fallback context.
+     */
+    static SemanticQuery semanticQuery(ReasoningGraph graph, Map<String, Double> observed,
+                                       Map<String, String> entityAliases, double[] explicitQuery) {
+        if (explicitQuery != null && explicitQuery.length > 0
+                && Embeddings.magnitude(explicitQuery) > 0.0) {
+            return new SemanticQuery(Embeddings.normalize(explicitQuery), 0, 0);
+        }
+
+        Map<String, Double> weights = new LinkedHashMap<>();
+        Map<String, String> aliases = entityAliases == null ? Map.of() : entityAliases;
+        if (observed != null) {
+            for (Map.Entry<String, Double> entry : observed.entrySet()) {
+                double weight = clamp01(entry.getValue() == null ? 0.0 : entry.getValue());
+                if (weight <= 0.0) {
+                    continue;
+                }
+                for (String token : atomArguments(entry.getKey())) {
+                    String entityId = aliases.getOrDefault(token, token);
+                    if (graph.entity(entityId).isPresent()) {
+                        weights.merge(entityId, weight, Math::max);
+                    }
+                }
+            }
+        }
+
+        Map<String, GraphEmbeddingResolver.Resolved> resolved = resolveAnchors(graph, weights);
+        if (resolved.values().stream().noneMatch(GraphEmbeddingResolver.Resolved::present)) {
+            weights.clear();
+            for (GraphEntity entity : graph.entities()) {
+                if (entity.hasEmbedding()) {
+                    weights.put(entity.id(), Math.max(1.0e-6, clamp01(entity.confidence())));
+                }
+            }
+            resolved = resolveAnchors(graph, weights);
+        }
+        if (weights.isEmpty()) {
+            return SemanticQuery.empty();
+        }
+
+        Map<Integer, Integer> dimensionCounts = new HashMap<>();
+        for (String entityId : weights.keySet()) {
+            GraphEmbeddingResolver.Resolved anchor = resolved.get(entityId);
+            if (anchor != null && anchor.present()) {
+                dimensionCounts.merge(anchor.vector().length, 1, Integer::sum);
+            }
+        }
+        int dimension = dimensionCounts.entrySet().stream()
+                .max(Map.Entry.<Integer, Integer>comparingByValue()
+                        .thenComparing(Map.Entry::getKey))
+                .map(Map.Entry::getKey)
+                .orElse(0);
+        if (dimension == 0) {
+            return SemanticQuery.empty();
+        }
+
+        double[] sum = new double[dimension];
+        double totalWeight = 0.0;
+        int anchors = 0;
+        int inferredAnchors = 0;
+        for (Map.Entry<String, Double> weighted : weights.entrySet()) {
+            GraphEmbeddingResolver.Resolved anchor = resolved.get(weighted.getKey());
+            double[] vector = anchor != null && anchor.present() ? anchor.vector() : null;
+            if (vector == null || vector.length != dimension || Embeddings.magnitude(vector) == 0.0) {
+                continue;
+            }
+            double weight = weighted.getValue();
+            for (int i = 0; i < dimension; i++) {
+                sum[i] += vector[i] * weight;
+            }
+            totalWeight += weight;
+            anchors++;
+            if (anchor.origin() != GraphEmbeddingResolver.Origin.DIRECT_ENTITY) {
+                inferredAnchors++;
+            }
+        }
+        if (anchors == 0 || totalWeight == 0.0 || Embeddings.magnitude(sum) == 0.0) {
+            return SemanticQuery.empty();
+        }
+        for (int i = 0; i < sum.length; i++) {
+            sum[i] /= totalWeight;
+        }
+        return new SemanticQuery(Embeddings.normalize(sum), anchors, inferredAnchors);
+    }
+
+    private static Map<String, GraphEmbeddingResolver.Resolved> resolveAnchors(
+            ReasoningGraph graph, Map<String, Double> weights) {
+        Map<String, GraphEmbeddingResolver.Resolved> resolved = new LinkedHashMap<>();
+        for (String entityId : weights.keySet()) {
+            resolved.put(entityId, GraphEmbeddingResolver.resolve(graph, entityId));
+        }
+        return resolved;
+    }
+
+    private static List<String> atomArguments(String atomKey) {
+        if (atomKey == null || atomKey.isBlank()) {
+            return List.of();
+        }
+        int open = atomKey.indexOf('(');
+        int close = atomKey.lastIndexOf(')');
+        if (open < 0 || close <= open) {
+            return List.of(atomKey.trim());
+        }
+        return Arrays.stream(atomKey.substring(open + 1, close).split(","))
+                .map(String::trim)
+                .filter(token -> !token.isEmpty())
+                .toList();
     }
 
     // ── Consensus signal derivation (pure, unit-testable) ───────────────────────────────────────
@@ -160,7 +388,28 @@ public final class HybridConsensusTrainer {
      * Atoms whose entities are not in the ranking keep their observed value.
      */
     public static Map<String, Double> consensusTargets(Map<String, Double> observed, List<ScoredEntity> ranking, double w) {
-        return blend(observed, normalizeScores(ranking), clamp01(w));
+        return consensusTargets(observed, ranking, w, Map.of());
+    }
+
+    /**
+     * Consensus overload that resolves atom constants to ranked graph entity ids. This is required
+     * for programs built by {@code GraphPslProgramBuilder}, which intentionally replaces arbitrary
+     * entity ids with safe constants such as {@code n0}.
+     */
+    public static Map<String, Double> consensusTargets(Map<String, Double> observed,
+                                                       List<ScoredEntity> ranking,
+                                                       double w,
+                                                       Map<String, String> entityAliases) {
+        Map<String, Double> byEntity = new HashMap<>(normalizeScores(ranking));
+        if (entityAliases != null) {
+            for (Map.Entry<String, String> alias : entityAliases.entrySet()) {
+                Double score = byEntity.get(alias.getValue());
+                if (score != null) {
+                    byEntity.put(alias.getKey(), score);
+                }
+            }
+        }
+        return blend(observed, byEntity, clamp01(w));
     }
 
     /**
@@ -170,7 +419,24 @@ public final class HybridConsensusTrainer {
      * inference purely to rank, which is what makes a per-cascade (online) consensus affordable.
      */
     public static Map<String, Double> consensusTargets(Map<String, Double> observed, Map<String, Double> entityScores, double w) {
-        return blend(observed, normalizeScoreMap(entityScores), clamp01(w));
+        return consensusTargets(observed, entityScores, w, Map.of());
+    }
+
+    /** Precomputed-score overload with PSL/entity alias resolution. */
+    public static Map<String, Double> consensusTargets(Map<String, Double> observed,
+                                                       Map<String, Double> entityScores,
+                                                       double w,
+                                                       Map<String, String> entityAliases) {
+        Map<String, Double> byEntity = new HashMap<>(normalizeScoreMap(entityScores));
+        if (entityAliases != null) {
+            for (Map.Entry<String, String> alias : entityAliases.entrySet()) {
+                Double score = byEntity.get(alias.getValue());
+                if (score != null) {
+                    byEntity.put(alias.getKey(), score);
+                }
+            }
+        }
+        return blend(observed, byEntity, clamp01(w));
     }
 
     /** Shared blend: each atom's target = (1-w)·observed + w·(normalized structural score of its entities). */

@@ -41,6 +41,7 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
+import java.net.URISyntaxException;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -100,7 +101,7 @@ public class DL4JRunner implements PipelineStepRunner {
             if (!modelFile.exists() || !modelFile.isFile()) {
                 throw new FileNotFoundException("Model file not found or is not a regular file: " + modelFile.getAbsolutePath());
             }
-        } catch (java.net.URISyntaxException e) {
+        } catch (URISyntaxException e) {
             throw new IllegalArgumentException("Invalid model URI syntax: " + modelUriString, e);
         }
 

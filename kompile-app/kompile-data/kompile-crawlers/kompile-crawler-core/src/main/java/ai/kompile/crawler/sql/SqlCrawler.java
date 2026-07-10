@@ -379,7 +379,7 @@ public class SqlCrawler extends AbstractCrawler {
         CrawlConfig config = job.getConfig();
 
         List<List<String>> withHeader = new ArrayList<>();
-        withHeader.add(new ArrayList<>(java.util.Arrays.asList(columnNames)));
+        withHeader.add(new ArrayList<>(Arrays.asList(columnNames)));
         withHeader.addAll(rows);
         String markdown = TableCellGraphBuilder.toMarkdown(withHeader, true);
 

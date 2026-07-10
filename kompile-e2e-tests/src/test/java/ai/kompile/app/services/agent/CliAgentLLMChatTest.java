@@ -20,13 +20,17 @@ import ai.kompile.core.agent.AgentProvider;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.io.TempDir;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.chat.prompt.Prompt;
 import reactor.core.publisher.Flux;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -42,6 +46,21 @@ class CliAgentLLMChatTest {
 
     @Mock
     private AgentRegistryService agentRegistryService;
+
+    @Mock
+    private CliAgentModelService cliAgentModelService;
+
+    @Mock
+    private HeadlessInteractiveSessionPool sessionPool;
+
+    @Mock
+    private OpencodeServeManager opencodeServeManager;
+
+    @Mock
+    private ExtractionConsensusService consensusService;
+
+    @TempDir
+    Path tempDir;
 
     private CliAgentLLMChat llmChat;
 
@@ -67,7 +86,12 @@ class CliAgentLLMChatTest {
         AgentProcessDiagnosticService diagnosticService = new AgentProcessDiagnosticService();
         AgentSubprocessExecutor subprocessExecutor = new AgentSubprocessExecutor(
                 agentRegistryService, diagnosticService, streamParser);
-        llmChat = new CliAgentLLMChat(agentRegistryService, subprocessExecutor, streamParser);
+        when(cliAgentModelService.classifyOutcome(anyString(), anyBoolean()))
+                .thenReturn(CliAgentModelService.ModelOutcome.OK);
+        when(sessionPool.prompt(any(), any(), any(), anyString(), anyInt(), anyInt()))
+                .thenAnswer(invocation -> invocation.getArgument(3, String.class));
+        llmChat = new CliAgentLLMChat(agentRegistryService, subprocessExecutor, streamParser,
+                cliAgentModelService, sessionPool, opencodeServeManager, consensusService);
     }
 
     // ── isAvailable ──────────────────────────────────────────────────────────────
@@ -83,7 +107,8 @@ class CliAgentLLMChatTest {
         ClaudeStreamParser parser = new ClaudeStreamParser();
         AgentSubprocessExecutor exec = new AgentSubprocessExecutor(
                 agentRegistryService, new AgentProcessDiagnosticService(), parser);
-        CliAgentLLMChat noAgentChat = new CliAgentLLMChat(agentRegistryService, exec, parser);
+        CliAgentLLMChat noAgentChat = new CliAgentLLMChat(agentRegistryService, exec, parser,
+                cliAgentModelService, sessionPool, opencodeServeManager, consensusService);
         assertFalse(noAgentChat.isAvailable());
     }
 
@@ -101,8 +126,7 @@ class CliAgentLLMChatTest {
 
     @Test
     void prompt_withPromptObject_returnsRequestSpec() {
-        org.springframework.ai.chat.prompt.Prompt p =
-                new org.springframework.ai.chat.prompt.Prompt("test prompt");
+        Prompt p = new Prompt("test prompt");
         assertNotNull(llmChat.prompt(p));
     }
 
@@ -123,6 +147,35 @@ class CliAgentLLMChatTest {
     }
 
     @Test
+    void subprocessExecutor_closesStdinForOneShotAgents() throws Exception {
+        Path script = tempDir.resolve("stdin-check.sh");
+        Files.writeString(script, "#!/bin/sh\n"
+                + "if read line; then echo stdin:$line; else echo stdin:closed; fi\n"
+                + "printf 'args:'; printf '%s|' \"$@\"; printf '\\n'\n");
+        assertTrue(script.toFile().setExecutable(true), "test script should be executable");
+
+        AgentProvider stdinAgent = AgentProvider.builder()
+                .name("stdin-check-cli")
+                .displayName("Stdin Check")
+                .command(script.toString())
+                .available(true)
+                .isDefault(false)
+                .description("Agent that reports stdin state")
+                .build();
+        when(agentRegistryService.getAgent("stdin-check-cli")).thenReturn(Optional.of(stdinAgent));
+
+        AgentSubprocessExecutor exec = new AgentSubprocessExecutor(
+                agentRegistryService, new AgentProcessDiagnosticService(), new ClaudeStreamParser());
+
+        AgentSubprocessExecutor.SubprocessResult result = exec.executeSync(
+                "stdin-check-cli", "payload prompt", false, false, tempDir.toString(), 5);
+
+        assertTrue(result.isSuccess(), "script should complete without waiting for stdin: " + result);
+        assertTrue(result.content().contains("stdin:closed"), "executor should close child stdin: " + result.content());
+        assertTrue(result.content().contains("payload prompt"), "prompt should still be passed in argv: " + result.content());
+    }
+
+    @Test
     void executeAgent_withSystemMessage_prependsSystemPrefix() {
         String result = llmChat.executeAgent("question", "You are a helper");
         assertNotNull(result);
@@ -138,7 +191,8 @@ class CliAgentLLMChatTest {
         ClaudeStreamParser parser = new ClaudeStreamParser();
         AgentSubprocessExecutor exec = new AgentSubprocessExecutor(
                 agentRegistryService, new AgentProcessDiagnosticService(), parser);
-        CliAgentLLMChat noAgent = new CliAgentLLMChat(agentRegistryService, exec, parser);
+        CliAgentLLMChat noAgent = new CliAgentLLMChat(agentRegistryService, exec, parser,
+                cliAgentModelService, sessionPool, opencodeServeManager, consensusService);
 
         String result = noAgent.executeAgent("test", null);
         assertNotNull(result);
