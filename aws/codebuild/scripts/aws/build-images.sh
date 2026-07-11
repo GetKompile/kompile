@@ -34,11 +34,7 @@ families=("${@:-auto}")
     echo "build-images: skipping linux-arm64 (set GRAALVM_ARM_ARCHIVE_URL + JDK11_ARM_ARCHIVE_URL)" >&2
   fi
   families+=(android)
-  if [ -n "${HEXAGON_SDK_ARCHIVE_URL:-}" ]; then
-    families+=(hexagon)
-  else
-    echo "build-images: skipping hexagon (set HEXAGON_SDK_ARCHIVE_URL)" >&2
-  fi
+  families+=(hexagon)
 }
 
 if [ "$push" = true ]; then
@@ -76,7 +72,7 @@ for family in "${families[@]}"; do
         --build-arg "ANDROID_NDK_VERSION=${ANDROID_NDK_VERSION:-r27d}" ;;
     cuda-13.1)
       build cuda-13.1 cuda "${jdk_args[@]}" \
-        --build-arg "BASE_IMAGE=${CUDA_13_1_BASE_IMAGE:-nvidia/cuda:13.1.0-cudnn-devel-ubuntu24.04}" ;;
+        --build-arg "BASE_IMAGE=${CUDA_13_1_BASE_IMAGE:-nvidia/cuda:13.1.2-cudnn-devel-ubuntu24.04}" ;;
     cuda-12.9)
       build cuda-12.9 cuda "${jdk_args[@]}" \
         --build-arg "BASE_IMAGE=${CUDA_12_9_BASE_IMAGE:-nvidia/cuda:12.9.1-cudnn-devel-ubuntu22.04}" ;;
@@ -91,7 +87,7 @@ for family in "${families[@]}"; do
         --build-arg "PJRT_PLUGIN_URL=${PJRT_PLUGIN_URL:-}" ;;
     hexagon)
       build hexagon hexagon "${jdk_args[@]}" \
-        --build-arg "HEXAGON_SDK_ARCHIVE_URL=${HEXAGON_SDK_ARCHIVE_URL:?}" ;;
+        --build-arg "HEXAGON_SDK_ARCHIVE_URL=${HEXAGON_SDK_ARCHIVE_URL:-}" ;;
     windows)
       echo "build-images: windows images cannot be built from a Linux Docker daemon." >&2
       echo "  Preferred: scripts/aws/bake-ami.sh $config windows   (WINDOWS_EC2 fleet AMI)" >&2

@@ -5,7 +5,7 @@ ARG BASE_IMAGE=public.ecr.aws/amazonlinux/amazonlinux:2023
 FROM ${BASE_IMAGE}
 ARG GRAALVM_ARCHIVE_URL
 ARG JDK11_ARCHIVE_URL
-ARG HEXAGON_SDK_ARCHIVE_URL
+ARG HEXAGON_SDK_ARCHIVE_URL=
 RUN dnf install -y gcc gcc-c++ gcc-gfortran make git tar gzip unzip zip curl wget which findutils \
       patch diffutils perl python3 python3-pip ruby maven cmake protobuf-compiler ccache jq \
       libarchive-devel zlib-devel libuuid-devel libxml2-devel elfutils-libelf-devel \
@@ -16,12 +16,16 @@ RUN curl -fsSL "${GRAALVM_ARCHIVE_URL}" -o /tmp/graal.tgz \
     && curl -fsSL "${JDK11_ARCHIVE_URL}" -o /tmp/jdk.tgz \
     && mkdir -p /opt/jdk11 && tar -xzf /tmp/jdk.tgz -C /opt/jdk11 --strip-components=1 \
     && rm /tmp/*.tgz
-RUN test -n "${HEXAGON_SDK_ARCHIVE_URL}" \
-    && curl -fsSL "${HEXAGON_SDK_ARCHIVE_URL}" -o /tmp/hexagon-sdk \
-    && mkdir -p /opt/hexagon \
-    && { unzip -q /tmp/hexagon-sdk -d /opt/hexagon 2>/dev/null \
-         || tar -xzf /tmp/hexagon-sdk -C /opt/hexagon --strip-components=1; } \
-    && rm /tmp/hexagon-sdk
+# hexagon-mlir is BSD-3 open source (Dec 2025): the DL4J hexagon build needs
+# NO Qualcomm SDK (runtime is dlopen'd). Optional archive only for on-device
+# tooling experiments.
+RUN mkdir -p /opt/hexagon \
+    && if [ -n "${HEXAGON_SDK_ARCHIVE_URL}" ]; then \
+         curl -fsSL "${HEXAGON_SDK_ARCHIVE_URL}" -o /tmp/hexagon-sdk \
+         && { unzip -q /tmp/hexagon-sdk -d /opt/hexagon 2>/dev/null \
+              || tar -xzf /tmp/hexagon-sdk -C /opt/hexagon --strip-components=1; } \
+         && rm /tmp/hexagon-sdk; \
+       fi
 ENV GRAALVM_HOME=/opt/graalvm JAVA11_HOME=/opt/jdk11 \
     HEXAGON_SDK_ROOT=/opt/hexagon CCACHE_DIR=/root/.ccache
 RUN /opt/jdk11/bin/java -version && test -d /opt/hexagon

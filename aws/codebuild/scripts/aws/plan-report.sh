@@ -37,7 +37,7 @@ done
 families=(linux cuda-12.9 cuda-13.1 amd tpu)
 { [ -n "${GRAALVM_ARM_ARCHIVE_URL:-}" ] && [ -n "${JDK11_ARM_ARCHIVE_URL:-}" ]; } && families+=(linux-arm64)
 families+=(android)
-[ -n "${HEXAGON_SDK_ARCHIVE_URL:-}" ] && families+=(hexagon)
+families+=(hexagon)
 for family in "${families[@]}"; do
   check "image ${ECR_REPOSITORY}:${family}" \
     aws ecr describe-images --region "$AWS_REGION" --repository-name "$ECR_REPOSITORY" \

@@ -60,9 +60,6 @@ done < <(targets_matching "$targets_file" "$kind" "${ENABLED_TARGETS:-}")
 if [ "$needs_arm" = 1 ] && { [ -z "${GRAALVM_ARM_ARCHIVE_URL:-}" ] || [ -z "${JDK11_ARM_ARCHIVE_URL:-}" ]; }; then
   warn "linux-arm64 targets selected but GRAALVM_ARM_ARCHIVE_URL/JDK11_ARM_ARCHIVE_URL are empty: the arm64 image will not be built and those builds will fail at image pull"
 fi
-if [ "$needs_hexagon" = 1 ] && [ -z "${HEXAGON_SDK_ARCHIVE_URL:-}" ]; then
-  warn "hexagon build target selected but HEXAGON_SDK_ARCHIVE_URL is empty: the image builds without the SDK and compilation will fail"
-fi
 if [ -n "${WEBHOOK_BRANCH:-}" ] && [ -z "${GITHUB_TOKEN_SECRET:-}" ]; then
   warn "WEBHOOK_BRANCH is set but GITHUB_TOKEN_SECRET is empty: CodeBuild cannot create repository webhooks without imported GitHub credentials (admin:repo_hook), and those stacks will fail to deploy"
 fi
