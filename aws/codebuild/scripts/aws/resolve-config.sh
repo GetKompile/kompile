@@ -37,3 +37,7 @@ emit HEXAGON_IMAGE "${base}:hexagon"
 emit MACOS_IMAGE "aws/codebuild/macos-arm-base:14"
 emit SPIN_REPOSITORY "${prefix}-spins"
 emit SPINS_IMAGE "aws/codebuild/amazonlinux-x86_64-standard:5.0"
+# Verified toolchain defaults (same as the wizard offers) so headless
+# provisioning works without hand-filling archive URLs.
+emit GRAALVM_ARCHIVE_URL "https://github.com/graalvm/graalvm-ce-builds/releases/download/jdk-21.0.2/graalvm-community-jdk-21.0.2_linux-x64_bin.tar.gz"
+emit JDK11_ARCHIVE_URL "https://github.com/adoptium/temurin11-binaries/releases/download/jdk-11.0.25%2B9/OpenJDK11U-jdk_x64_linux_hotspot_11.0.25_9.tar.gz"

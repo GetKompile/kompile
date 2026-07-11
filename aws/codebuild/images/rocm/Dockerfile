@@ -46,7 +46,8 @@ RUN set -e; mkdir -p /opt/zluda; url="${ZLUDA_ARCHIVE_URL}"; \
       find /opt/zluda -name 'libcuda.so*' | grep -q . \
         || { echo "libcuda.so missing from ZLUDA archive" >&2; exit 1; }; \
     fi
-# setup_zluda() in libnd4j reads ZLUDA_PATH; ZLUDA_HOME kept for kit config.
+# libnd4j/workflows read ZLUDA_PATH and ROCM_PATH; *_HOME kept for kit config.
 ENV GRAALVM_HOME=/opt/graalvm JAVA11_HOME=/opt/jdk11 ROCM_HOME=/opt/rocm \
-    ZLUDA_HOME=/opt/zluda ZLUDA_PATH=/opt/zluda CUDA_HOME=/usr/local/cuda CCACHE_DIR=/root/.ccache
+    ROCM_PATH=/opt/rocm ZLUDA_HOME=/opt/zluda ZLUDA_PATH=/opt/zluda \
+    CUDA_HOME=/usr/local/cuda CCACHE_DIR=/root/.ccache
 RUN nvcc --version && test -d /opt/rocm && /opt/jdk11/bin/java -version && jq --version

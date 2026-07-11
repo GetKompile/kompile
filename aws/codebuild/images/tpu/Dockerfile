@@ -18,6 +18,10 @@ RUN curl -fsSL "${GRAALVM_ARCHIVE_URL}" -o /tmp/graal.tgz \
     && rm /tmp/*.tgz
 RUN mkdir -p /opt/pjrt \
     && if [ -n "${PJRT_PLUGIN_URL}" ]; then curl -fsSL "${PJRT_PLUGIN_URL}" -o /opt/pjrt/libtpu.so; fi
+# DL4J workflows/libnd4j read PJRT_PATH / PJRT_PLUGIN_LIBRARY_PATH /
+# TPU_LIBRARY_PATH (NOT PJRT_LIBRARY_PATH, kept only for kit config).
 ENV GRAALVM_HOME=/opt/graalvm JAVA11_HOME=/opt/jdk11 \
-    PJRT_LIBRARY_PATH=/opt/pjrt/libtpu.so CCACHE_DIR=/root/.ccache
+    PJRT_PATH=/opt/pjrt PJRT_PLUGIN_LIBRARY_PATH=/opt/pjrt/libtpu.so \
+    TPU_LIBRARY_PATH=/opt/pjrt/libtpu.so PJRT_LIBRARY_PATH=/opt/pjrt/libtpu.so \
+    CCACHE_DIR=/root/.ccache
 RUN /opt/jdk11/bin/java -version && mvn --version && cmake --version

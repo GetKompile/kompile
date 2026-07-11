@@ -53,7 +53,9 @@ if [ -z "$libtpu" ]; then
   libtpu="$(python3 -c 'import libtpu, os; print(os.path.join(os.path.dirname(libtpu.__file__), "libtpu.so"))')"
 fi
 [ -f "$libtpu" ] || { echo "libtpu.so not found"; exit 2; }
-export PJRT_LIBRARY_PATH="$libtpu"
+# DL4J reads PJRT_PATH / PJRT_PLUGIN_LIBRARY_PATH / TPU_LIBRARY_PATH.
+export PJRT_PATH="$(dirname "$libtpu")" PJRT_PLUGIN_LIBRARY_PATH="$libtpu" \
+       TPU_LIBRARY_PATH="$libtpu" PJRT_LIBRARY_PATH="$libtpu"
 echo "using libtpu: $libtpu"
 
 rm -rf ~/deeplearning4j
