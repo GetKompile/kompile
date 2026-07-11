@@ -52,7 +52,7 @@ case "${BUILD_TARGET}" in
     modules=:libtokenizers,:tokenizers-native-preset,:tokenizers-native
     profiles=()
     ;;
-  linux-cuda-12.6|linux-cuda-12.9)
+  linux-cuda-12.9|linux-cuda-13.1)
     cuda="${BUILD_TARGET##*-}"
     bash "${dl4j}/change-cuda-versions.sh" "${cuda}"
     profiles=(-Pcuda)

@@ -34,7 +34,7 @@ for secret in "${GITHUB_TOKEN_SECRET:-}" "${DL4J_TOKEN_SECRET:-}" "${GITHUB_RELE
   fi
 done
 
-families=(linux cuda-12.6 cuda-12.9 amd tpu)
+families=(linux cuda-12.9 cuda-13.1 amd tpu)
 { [ -n "${GRAALVM_ARM_ARCHIVE_URL:-}" ] && [ -n "${JDK11_ARM_ARCHIVE_URL:-}" ]; } && families+=(linux-arm64)
 families+=(android)
 [ -n "${HEXAGON_SDK_ARCHIVE_URL:-}" ] && families+=(hexagon)

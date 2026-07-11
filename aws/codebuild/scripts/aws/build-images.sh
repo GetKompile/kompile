@@ -27,7 +27,7 @@ fi
 
 families=("${@:-auto}")
 [ "${families[0]}" = auto ] && {
-  families=(linux cuda-12.6 cuda-12.9 amd tpu)
+  families=(linux cuda-12.9 cuda-13.1 amd tpu)
   if [ -n "${GRAALVM_ARM_ARCHIVE_URL:-}" ] && [ -n "${JDK11_ARM_ARCHIVE_URL:-}" ]; then
     families+=(linux-arm64)
   else
@@ -74,9 +74,9 @@ for family in "${families[@]}"; do
     android)
       build android android "${jdk_args[@]}" \
         --build-arg "ANDROID_NDK_VERSION=${ANDROID_NDK_VERSION:-r27d}" ;;
-    cuda-12.6)
-      build cuda-12.6 cuda "${jdk_args[@]}" \
-        --build-arg "BASE_IMAGE=${CUDA_12_6_BASE_IMAGE:-nvidia/cuda:12.6.3-cudnn-devel-ubuntu22.04}" ;;
+    cuda-13.1)
+      build cuda-13.1 cuda "${jdk_args[@]}" \
+        --build-arg "BASE_IMAGE=${CUDA_13_1_BASE_IMAGE:-nvidia/cuda:13.1.0-cudnn-devel-ubuntu24.04}" ;;
     cuda-12.9)
       build cuda-12.9 cuda "${jdk_args[@]}" \
         --build-arg "BASE_IMAGE=${CUDA_12_9_BASE_IMAGE:-nvidia/cuda:12.9.1-cudnn-devel-ubuntu22.04}" ;;
