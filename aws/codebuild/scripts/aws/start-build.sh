@@ -20,6 +20,7 @@ release_tag="${5:-${RELEASE_TAG:-}}"
 overrides=("name=BUILD_TARGET,value=$target,type=PLAINTEXT")
 [ -n "$dl4j_ref" ] && overrides+=("name=DL4J_REF,value=$dl4j_ref,type=PLAINTEXT")
 [ -n "$release_tag" ] && overrides+=("name=RELEASE_TAG,value=$release_tag,type=PLAINTEXT")
+[ -n "${SPIN_SOURCE_TARGET:-}" ] && overrides+=("name=SPIN_SOURCE_TARGET,value=$SPIN_SOURCE_TARGET,type=PLAINTEXT")
 
 args=(--region "$AWS_REGION" --project-name "${PROJECT_PREFIX:-kompile}-$target"
       --environment-variables-override "${overrides[@]}")

@@ -33,6 +33,19 @@ git -C "${dl4j}" checkout --detach FETCH_HEAD
 export JAVA_HOME="${JAVA11_HOME}"
 export PATH="${JAVA_HOME}/bin:${PATH}"
 export MAVEN_OPTS="${DL4J_MAVEN_OPTS:-}"
+# Optimized combos (workflow matrices): strip helper/extension suffixes from
+# the target name, apply -Dlibnd4j.extension/-Dlibnd4j.helper + platform.extension.
+base="${BUILD_TARGET}" opt_ext="" opt_helper=""
+case "$base" in
+  *-avx2) opt_ext=avx2; base="${base%-avx2}" ;;
+  *-avx512) opt_ext=avx512; base="${base%-avx512}" ;;
+esac
+case "$base" in
+  *-onednn) opt_helper=onednn; base="${base%-onednn}" ;;
+  *-cudnn) opt_helper=cudnn; base="${base%-cudnn}" ;;
+  *-compile) opt_helper=compile; base="${base%-compile}" ;;
+esac
+
 platform=linux-x86_64
 profiles=(-Pcpu)
 modules=:nd4j-native,:nd4j-native-preset,:libnd4j
@@ -40,7 +53,7 @@ args=(-Dlibnd4j.generate.flatc=ON -Dlibnd4j.sdx.standalone=ON -Dlibnd4j.triton=O
       -Dlibnd4j.oom.memory.threshold=95 -Dlibnd4j.oom.velocity.threshold=40)
 validation=false
 
-case "${BUILD_TARGET}" in
+case "${base}" in
   linux-x86_64) platform=linux-x86_64 ;;
   linux-x86_64-compat) platform=linux-x86_64; args+=(-Dlibnd4j.cpu.compat=true) ;;
   linux-arm64) platform=linux-arm64; profiles+=(-Posx-aarch64-protoc); args+=(-Dlibnd4j.arch=armv8-a) ;;
@@ -53,7 +66,7 @@ case "${BUILD_TARGET}" in
     profiles=()
     ;;
   linux-cuda-12.9|linux-cuda-13.1)
-    cuda="${BUILD_TARGET##*-}"
+    cuda="${base##*-}"
     bash "${dl4j}/change-cuda-versions.sh" "${cuda}"
     profiles=(-Pcuda)
     modules=":nd4j-cuda-${cuda},:nd4j-cuda-${cuda}-preset,:libnd4j"
@@ -77,6 +90,11 @@ case "${BUILD_TARGET}" in
   windows-*) echo "Windows targets require buildspec-windows.yml" >&2; exit 2 ;;
   *) echo "Unknown BUILD_TARGET: ${BUILD_TARGET}" >&2; exit 2 ;;
 esac
+if { [ -n "$opt_ext" ] || [ -n "$opt_helper" ]; } && [ "$validation" = false ]; then
+  args+=("-Djavacpp.platform.extension=${opt_helper:+-$opt_helper}${opt_ext:+-$opt_ext}")
+  [ -n "$opt_ext" ] && args+=("-Dlibnd4j.extension=$opt_ext")
+  [ -n "$opt_helper" ] && args+=("-Dlibnd4j.helper=$opt_helper")
+fi
 
 cd "${dl4j}"
 if [ "${validation}" = true ]; then

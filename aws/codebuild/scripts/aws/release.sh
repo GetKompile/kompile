@@ -83,8 +83,12 @@ echo "== release $version: publishing spins =="
 spins_project="$prefix-kompile-spins"
 if [ -n "$(aws codebuild batch-get-projects --region "$AWS_REGION" --names "$spins_project" \
       --query 'projects[0].name' --output text 2>/dev/null | grep -v '^None$' || true)" ]; then
-  sid="$("$here/start-build.sh" "$config" kompile-spins "" "" "$version" | sed -n 's/^Started //p')"
-  spin_failures="$(wait_builds "$sid")"
+  sids=()
+  for st in ${RELEASE_SPIN_TARGETS:-linux-x86_64}; do
+    sid="$(SPIN_SOURCE_TARGET=$st "$here/start-build.sh" "$config" kompile-spins "" "" "$version" | sed -n 's/^Started //p')"
+    [ -n "$sid" ] && sids+=("$sid")
+  done
+  spin_failures="$(wait_builds "$(IFS=' '; echo "${sids[*]}")")"
   [ -z "${spin_failures// /}" ] || echo "release: spins build FAILED:$spin_failures" >&2
 else
   echo "release: kompile-spins project not deployed; skipping container publish" >&2

@@ -61,7 +61,11 @@ if [ -z "$version" ]; then
   version="$(basename "$dist_dir" | sed -n 's/^kompile-dist-\([^-]*\)-.*/\1/p')"
   version="${version:-adhoc}"
 fi
-log "dist: $(basename "$dist_dir"); version: $version"
+flavor=""
+if [ -n "$s3_version" ] && [ "$s3_target" != linux-x86_64 ]; then
+  flavor="$(printf '%s' "$s3_target" | sed 's/^linux-x86_64-//; s/^linux-//')"
+fi
+log "dist: $(basename "$dist_dir"); version: $version${flavor:+; flavor: $flavor}"
 
 has_artifact() {
   case "$1" in
@@ -92,10 +96,11 @@ for product in $products; do
     skipped+=("$product")
     continue
   fi
+  vtag="$version${flavor:+-$flavor}" ltag="${flavor:+$flavor-}latest"
   tags=()
-  [ -n "$ecr_base" ] && tags+=("$ecr_base:$product-$version" "$ecr_base:$product-latest")
-  [ -n "$ghcr_owner" ] && tags+=("ghcr.io/$ghcr_owner/kompile-$product:$version" "ghcr.io/$ghcr_owner/kompile-$product:latest")
-  [ "${#tags[@]}" -gt 0 ] || tags=("kompile-$product:$version")
+  [ -n "$ecr_base" ] && tags+=("$ecr_base:$product-$vtag" "$ecr_base:$product-$ltag")
+  [ -n "$ghcr_owner" ] && tags+=("ghcr.io/$ghcr_owner/kompile-$product:$vtag" "ghcr.io/$ghcr_owner/kompile-$product:$ltag")
+  [ "${#tags[@]}" -gt 0 ] || tags=("kompile-$product:$vtag")
   tag_args=()
   for t in "${tags[@]}"; do tag_args+=(-t "$t"); done
   log "building $product (${tags[0]})"

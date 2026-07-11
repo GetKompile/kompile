@@ -19,6 +19,18 @@ targets:
   cross-macosx-arm64: {host: macos-arm64, kind: build, variant: cli-only, kompile: false, workflow: build-deploy-cross-platform.yml}
   cross-windows-x86_64: {host: windows-x86_64, kind: build, variant: cli-only, kompile: false, workflow: build-deploy-cross-platform.yml}
   windows-x86_64: {host: windows-x86_64, kind: build, variant: cli-only, kompile: false, workflow: build-deploy-windows.yml}
+  linux-x86_64-avx2: {host: linux-x86_64, kind: build, variant: cpu-intel, kompile: true, workflow: build-deploy-linux-x86_64.yml}
+  linux-x86_64-avx512: {host: linux-x86_64, kind: build, variant: cpu-intel, kompile: true, workflow: build-deploy-linux-x86_64.yml}
+  linux-x86_64-onednn: {host: linux-x86_64, kind: build, variant: cpu-intel, kompile: true, workflow: build-deploy-linux-x86_64.yml}
+  linux-x86_64-compile: {host: linux-x86_64, kind: build, variant: cpu-intel, kompile: true, workflow: build-deploy-linux-x86_64.yml}
+  linux-x86_64-onednn-avx2: {host: linux-x86_64, kind: build, variant: cpu-intel, kompile: true, workflow: build-deploy-linux-x86_64.yml}
+  linux-x86_64-onednn-avx512: {host: linux-x86_64, kind: build, variant: cpu-intel, kompile: true, workflow: build-deploy-linux-x86_64.yml}
+  linux-x86_64-compile-avx2: {host: linux-x86_64, kind: build, variant: cpu-intel, kompile: true, workflow: build-deploy-linux-x86_64.yml}
+  linux-x86_64-compile-avx512: {host: linux-x86_64, kind: build, variant: cpu-intel, kompile: true, workflow: build-deploy-linux-x86_64.yml}
+  linux-cuda-12.9-cudnn: {host: linux-cuda-x86_64, kind: build, variant: cuda, kompile: true, image: CUDA_12_9_IMAGE, workflow: build-deploy-linux-cuda-12.9.yml}
+  linux-cuda-12.9-compile: {host: linux-cuda-x86_64, kind: build, variant: cuda, kompile: true, image: CUDA_12_9_IMAGE, workflow: build-deploy-linux-cuda-12.9.yml}
+  linux-cuda-13.1-cudnn: {host: linux-cuda-x86_64, kind: build, variant: cuda, kompile: true, image: CUDA_13_1_IMAGE, workflow: build-deploy-linux-cuda-13.1.yml}
+  linux-cuda-13.1-compile: {host: linux-cuda-x86_64, kind: build, variant: cuda, kompile: true, image: CUDA_13_1_IMAGE, workflow: build-deploy-linux-cuda-13.1.yml}
   linux-cuda-13.1: {host: linux-cuda-x86_64, kind: build, variant: cuda, kompile: true, image: CUDA_13_1_IMAGE, workflow: build-deploy-linux-cuda-13.1.yml}
   linux-cuda-12.9: {host: linux-cuda-x86_64, kind: build, variant: cuda, kompile: true, image: CUDA_12_9_IMAGE, workflow: build-deploy-linux-cuda-12.9.yml}
   windows-cuda-13.1: {host: windows-gpu-x86_64, kind: build, variant: cli-only, kompile: false, workflow: build-deploy-windows-cuda-13.1.yml}
