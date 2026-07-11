@@ -55,6 +55,11 @@ wait_builds() { # wait_builds ID[,ID...] — poll until all terminal; echo failu
   done
 }
 
+if [ "${SOURCE_MODE:-github}" = s3 ]; then
+  echo "== release $version: uploading local tree (SOURCE_MODE=s3) =="
+  "$here/sync-source.sh" "$config"
+fi
+
 echo "== release $version: starting build matrix =="
 ids=() started=() missing=()
 while read -r target _; do

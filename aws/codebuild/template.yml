@@ -4,7 +4,12 @@ Description: One parameterized CodeBuild project for any target in aws/codebuild
 Parameters:
   ProjectName: {Type: String}
   SourceLocation: {Type: String}
-  KompileSourceVersion: {Type: String}
+  SourceType:
+    Type: String
+    Default: GITHUB
+    AllowedValues: [GITHUB, S3]
+    Description: S3 builds from an uploaded zip of the local tree (no git push).
+  KompileSourceVersion: {Type: String, Default: ""}
   BuildspecPath: {Type: String}
   BuildTarget: {Type: String}
   BuildImage: {Type: String}
@@ -92,6 +97,7 @@ Conditions:
   HasGithubReleaseToken: !Not [!Equals [!Ref GithubReleaseTokenSecret, ""]]
   HasWebhook: !Not [!Equals [!Ref WebhookBranch, ""]]
   HasSpinRepo: !Not [!Equals [!Ref SpinRepository, ""]]
+  SourceIsS3: !Equals [!Ref SourceType, S3]
 
 Resources:
   LogGroup:
@@ -146,11 +152,11 @@ Resources:
       TimeoutInMinutes: 480
       QueuedTimeoutInMinutes: 480
       Source:
-        Type: GITHUB
-        Location: !Ref SourceLocation
-        GitCloneDepth: 1
-        BuildSpec: !Ref BuildspecPath
-      SourceVersion: !Ref KompileSourceVersion
+        !If
+          - SourceIsS3
+          - {Type: S3, Location: !Ref SourceLocation, BuildSpec: !Ref BuildspecPath}
+          - {Type: GITHUB, Location: !Ref SourceLocation, GitCloneDepth: 1, BuildSpec: !Ref BuildspecPath}
+      SourceVersion: !If [SourceIsS3, !Ref "AWS::NoValue", !Ref KompileSourceVersion]
       Artifacts: {Type: S3, Location: !Ref ArtifactBucket, NamespaceType: BUILD_ID, Packaging: ZIP}
       Cache: {Type: S3, Location: !Sub "${CacheBucket}/kompile-codebuild"}
       Triggers:

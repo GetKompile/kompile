@@ -64,6 +64,11 @@ if [ -n "$gh_secret" ]; then
   fi
 fi
 
+if [ "$(cfg SOURCE_MODE)" = s3 ]; then
+  echo "== source upload (SOURCE_MODE=s3: building the local tree, no push) =="
+  "$here/sync-source.sh" "$merged"
+fi
+
 echo "== container images =="
 "$here/build-images.sh" "$merged" auto
 

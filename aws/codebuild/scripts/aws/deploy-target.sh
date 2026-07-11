@@ -36,10 +36,15 @@ if [ -n "$FLEET_ARN" ]; then
   [ -n "$fleet_compute" ] && COMPUTE_TYPE="$fleet_compute"
 fi
 
+source_type=GITHUB source_loc="$SOURCE_LOCATION" source_ver="$KOMPILE_REF"
+if [ "${SOURCE_MODE:-github}" = s3 ]; then
+  source_type=S3 source_loc="${ARTIFACT_BUCKET}/source/kompile.zip" source_ver=""
+fi
 args=(
   "ProjectName=${PROJECT_PREFIX:-kompile}-$target"
-  "SourceLocation=$SOURCE_LOCATION"
-  "KompileSourceVersion=$KOMPILE_REF"
+  "SourceLocation=$source_loc"
+  "SourceType=$source_type"
+  "KompileSourceVersion=$source_ver"
   "BuildspecPath=$BUILD_SPEC"
   "BuildTarget=$target"
   "BuildImage=$BUILD_IMAGE"
