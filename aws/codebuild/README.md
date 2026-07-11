@@ -2,7 +2,7 @@
 
 Builds deeplearning4j from source at any ref, then the kompile distribution,
 for every non-release platform workflow under
-`../deeplearning4j/.github/workflows` — 33 targets mapped in `targets.yml`.
+`../deeplearning4j/.github/workflows` — 34 targets mapped in `targets.yml`.
 Artifacts publish to S3 always, and to GitHub Releases when configured.
 
 Both repositories are public: **anyone can fork/clone this and stand up the
@@ -120,7 +120,7 @@ config restricts both deploys and batch starts to an allowlist.
 and `kompile` (whether to build kompile after DL4J):
 
 - `linux-x86_64`/`-compat` → `cpu-intel`; `linux-arm64` → `cpu-arm`;
-  `linux-cuda-12.6`/`12.9` → `cuda`; `linux-zluda` → `amd-zluda`;
+  `linux-cuda-12.9`/`13.1` → `cuda`; `linux-zluda` → `amd-zluda`;
   `macos-arm64` → `cli-only`.
 - Android, cross-platform tokenizers, TPU, Hexagon, Windows, and validation
   targets build DL4J only (`kompile: false`) — their installed Maven
@@ -148,12 +148,12 @@ Every successful build uploads `dist/` twice:
 ## Build lanes and what enables them
 
 **Linux container lanes (work out of the box):** linux-x86_64 (+compat,
-cross, cpu validation), CUDA 12.6/12.9 builds (compilation needs no GPU),
+cross, cpu validation), CUDA 12.9/13.1 builds (compilation needs no GPU),
 ZLUDA build, TPU build, and GPU validation on on-demand
 `LINUX_GPU_CONTAINER` (`GPU_COMPUTE_TYPE`, default SMALL = 1× A10G).
-Optional inputs unlock more: arm64 GraalVM/JDK archive URLs → `linux-arm64`
-(image cross-built with buildx/QEMU); Android cmdline-tools URL + NDK version
-→ android targets; a licensed `HEXAGON_SDK_ARCHIVE_URL` → hexagon build.
+Android (pinned NDK direct-download) and Hexagon (hexagon-mlir is BSD-3;
+no SDK) also build out of the box. Optional: arm64 GraalVM/JDK archive URLs
+enable `linux-arm64` (image cross-built with buildx/QEMU).
 
 **Reserved fleet lanes (billed while provisioned — see Costs):**
 

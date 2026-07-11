@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build and push the CodeBuild container images.
 #   build-images.sh CONFIG [auto|family ...]
-# Families: linux linux-arm64 android cuda-12.6 cuda-12.9 amd tpu hexagon
+# Families: linux linux-arm64 android cuda-12.9 cuda-13.1 amd tpu hexagon
 # "auto" (default) builds every family whose inputs are satisfied and skips
 # the rest with a warning, so one-go provisioning never dies here.
 # Windows is intentionally NOT a container family on a Linux workstation:

@@ -439,5 +439,5 @@ elif ask_yn "Run one-go provisioning now (provision.sh $config build)?" y; then
 else
   echo "When ready:"
   echo "  $here/provision.sh $config build"
-  echo "  $here/start-all.sh $config build [KOMPILE_REF] [DL4J_REF] [RELEASE_TAG]"
+  echo "  $here/release.sh $config v1.0.0    # setup -> run -> publish, one command"
 fi

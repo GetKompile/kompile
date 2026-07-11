@@ -1,6 +1,6 @@
-# Hexagon build image. The Hexagon SDK is Qualcomm-proprietary and cannot be
-# fetched anonymously: HEXAGON_SDK_ARCHIVE_URL must point at a private or
-# presigned archive (zip or tar.gz) you are licensed to use.
+# Hexagon build image. Needs NO Qualcomm SDK: hexagon-mlir is BSD-3 open
+# source and libnd4j dlopen()s the runtime. HEXAGON_SDK_ARCHIVE_URL is an
+# optional extra for on-device tooling experiments only.
 ARG BASE_IMAGE=public.ecr.aws/amazonlinux/amazonlinux:2023
 FROM ${BASE_IMAGE}
 ARG GRAALVM_ARCHIVE_URL
