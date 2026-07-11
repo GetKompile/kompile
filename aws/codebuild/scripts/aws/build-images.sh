@@ -33,11 +33,7 @@ families=("${@:-auto}")
   else
     echo "build-images: skipping linux-arm64 (set GRAALVM_ARM_ARCHIVE_URL + JDK11_ARM_ARCHIVE_URL)" >&2
   fi
-  if [ -n "${ANDROID_COMMAND_LINE_TOOLS_URL:-}" ] && [ -n "${ANDROID_NDK_VERSION:-}" ]; then
-    families+=(android)
-  else
-    echo "build-images: skipping android (set ANDROID_COMMAND_LINE_TOOLS_URL + ANDROID_NDK_VERSION)" >&2
-  fi
+  families+=(android)
   if [ -n "${HEXAGON_SDK_ARCHIVE_URL:-}" ]; then
     families+=(hexagon)
   else
@@ -77,8 +73,7 @@ for family in "${families[@]}"; do
       true ;;
     android)
       build android android "${jdk_args[@]}" \
-        --build-arg "ANDROID_COMMAND_LINE_TOOLS_URL=${ANDROID_COMMAND_LINE_TOOLS_URL:?}" \
-        --build-arg "ANDROID_NDK_VERSION=${ANDROID_NDK_VERSION:?}" ;;
+        --build-arg "ANDROID_NDK_VERSION=${ANDROID_NDK_VERSION:-r27d}" ;;
     cuda-12.6)
       build cuda-12.6 cuda "${jdk_args[@]}" \
         --build-arg "BASE_IMAGE=${CUDA_12_6_BASE_IMAGE:-nvidia/cuda:12.6.3-cudnn-devel-ubuntu22.04}" ;;

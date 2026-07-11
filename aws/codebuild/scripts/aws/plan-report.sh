@@ -36,7 +36,7 @@ done
 
 families=(linux cuda-12.6 cuda-12.9 amd tpu)
 { [ -n "${GRAALVM_ARM_ARCHIVE_URL:-}" ] && [ -n "${JDK11_ARM_ARCHIVE_URL:-}" ]; } && families+=(linux-arm64)
-{ [ -n "${ANDROID_COMMAND_LINE_TOOLS_URL:-}" ] && [ -n "${ANDROID_NDK_VERSION:-}" ]; } && families+=(android)
+families+=(android)
 [ -n "${HEXAGON_SDK_ARCHIVE_URL:-}" ] && families+=(hexagon)
 for family in "${families[@]}"; do
   check "image ${ECR_REPOSITORY}:${family}" \

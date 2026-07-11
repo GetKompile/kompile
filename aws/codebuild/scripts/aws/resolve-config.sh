@@ -35,6 +35,7 @@ emit AMD_IMAGE "${base}:amd"
 emit TPU_IMAGE "${base}:tpu"
 emit HEXAGON_IMAGE "${base}:hexagon"
 emit MACOS_IMAGE "aws/codebuild/macos-arm-base:14"
+emit ANDROID_NDK_VERSION "r27d"
 emit SPIN_REPOSITORY "${prefix}-spins"
 emit SPINS_IMAGE "aws/codebuild/amazonlinux-x86_64-standard:5.0"
 # Verified toolchain defaults (same as the wizard offers) so headless

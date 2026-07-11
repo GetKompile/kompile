@@ -36,7 +36,8 @@ export MAVEN_OPTS="${DL4J_MAVEN_OPTS:-}"
 platform=linux-x86_64
 profiles=(-Pcpu)
 modules=:nd4j-native,:nd4j-native-preset,:libnd4j
-args=(-Dlibnd4j.generate.flatc=ON -Dlibnd4j.sdx.standalone=ON -Dlibnd4j.triton=ON)
+args=(-Dlibnd4j.generate.flatc=ON -Dlibnd4j.sdx.standalone=ON -Dlibnd4j.triton=ON
+      -Dlibnd4j.oom.memory.threshold=95 -Dlibnd4j.oom.velocity.threshold=40)
 validation=false
 
 case "${BUILD_TARGET}" in

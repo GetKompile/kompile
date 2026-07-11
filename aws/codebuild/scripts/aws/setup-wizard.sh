@@ -221,21 +221,14 @@ if ask_yn "Enable the linux-arm64 lane (arm image via buildx/QEMU)?" "$([ -n "$G
   ask_url "JDK 11 linux-aarch64 tar.gz" "${JDK11_ARM_ARCHIVE_URL:-$DEFAULT_JDK11_ARM}"
   JDK11_ARM_ARCHIVE_URL="$REPLY"
 fi
-ANDROID_COMMAND_LINE_TOOLS_URL="${ANDROID_COMMAND_LINE_TOOLS_URL:-}"
 ANDROID_NDK_VERSION="${ANDROID_NDK_VERSION:-}"
 ZLUDA_ARCHIVE_URL="${ZLUDA_ARCHIVE_URL:-}"
 PJRT_PLUGIN_URL="${PJRT_PLUGIN_URL:-}"
 HEXAGON_SDK_ARCHIVE_URL="${HEXAGON_SDK_ARCHIVE_URL:-}"
 if ask_yn "Configure specialized lane inputs (android NDK, ZLUDA, TPU PJRT, Hexagon SDK)?" \
-          "$([ -n "$ANDROID_COMMAND_LINE_TOOLS_URL" ] && echo y || echo n)"; then
-  ask "Android cmdline-tools linux zip URL (empty disables android targets)" "$ANDROID_COMMAND_LINE_TOOLS_URL"
-  ANDROID_COMMAND_LINE_TOOLS_URL="$REPLY"
-  if [ -n "$ANDROID_COMMAND_LINE_TOOLS_URL" ]; then
-    ask_required "Android NDK version" "${ANDROID_NDK_VERSION:-27.0.12077973}"
-    ANDROID_NDK_VERSION="$REPLY"
-  else
-    ANDROID_NDK_VERSION=""
-  fi
+          "$([ -n "${ANDROID_NDK_VERSION:-}" ] && echo y || echo n)"; then
+  ask_required "Android NDK version (direct-download pin)" "${ANDROID_NDK_VERSION:-r27d}"
+  ANDROID_NDK_VERSION="$REPLY"
   ask "ZLUDA archive URL override (empty = pinned vosen/ZLUDA ${ZLUDA_VERSION:-v6} release, auto-bootstrapped)" "$ZLUDA_ARCHIVE_URL"
   ZLUDA_ARCHIVE_URL="$REPLY"
   ask "PJRT plugin (libtpu.so) URL (optional)" "$PJRT_PLUGIN_URL"
@@ -359,7 +352,6 @@ set_kv GRAALVM_ARCHIVE_URL "$GRAALVM_ARCHIVE_URL" "$config"
 set_kv JDK11_ARCHIVE_URL "$JDK11_ARCHIVE_URL" "$config"
 set_kv GRAALVM_ARM_ARCHIVE_URL "$GRAALVM_ARM_ARCHIVE_URL" "$config"
 set_kv JDK11_ARM_ARCHIVE_URL "$JDK11_ARM_ARCHIVE_URL" "$config"
-set_kv ANDROID_COMMAND_LINE_TOOLS_URL "$ANDROID_COMMAND_LINE_TOOLS_URL" "$config"
 set_kv ANDROID_NDK_VERSION "$ANDROID_NDK_VERSION" "$config"
 set_kv ZLUDA_ARCHIVE_URL "$ZLUDA_ARCHIVE_URL" "$config"
 set_kv PJRT_PLUGIN_URL "$PJRT_PLUGIN_URL" "$config"
