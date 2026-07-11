@@ -70,11 +70,14 @@ if [ "$do_fleets" = 1 ]; then
   done
 fi
 
-if [ "$do_images" = 1 ] && [ -n "${ECR_REPOSITORY:-}" ]; then
-  if aws ecr describe-repositories --region "$AWS_REGION" --repository-names "$ECR_REPOSITORY" >/dev/null 2>&1; then
-    echo "deleting ECR repository $ECR_REPOSITORY"
-    aws ecr delete-repository --region "$AWS_REGION" --repository-name "$ECR_REPOSITORY" --force >/dev/null
-  fi
+if [ "$do_images" = 1 ]; then
+  for repo in "${ECR_REPOSITORY:-}" "${SPIN_REPOSITORY:-}"; do
+    [ -n "$repo" ] || continue
+    if aws ecr describe-repositories --region "$AWS_REGION" --repository-names "$repo" >/dev/null 2>&1; then
+      echo "deleting ECR repository $repo"
+      aws ecr delete-repository --region "$AWS_REGION" --repository-name "$repo" --force >/dev/null
+    fi
+  done
 fi
 
 if [ "$do_buckets" = 1 ]; then

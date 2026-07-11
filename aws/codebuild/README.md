@@ -88,6 +88,19 @@ a secondary in-build clone, so DL4J pushes cannot trigger these projects
 directly — use a schedule or a small GitHub Action in your DL4J fork that
 calls `start-build` with the pushed ref.
 
+## Releasing (setup -> run -> publish, one command)
+
+```bash
+scripts/aws/release.sh CONFIG v1.2.3
+```
+
+Provisions (idempotent), starts every deployed build target with
+RELEASE_TAG=v1.2.3 (dists -> S3 layout + GitHub Release assets), waits,
+then runs kompile-spins for the same version (container images -> ECR +
+GHCR), and prints where everything landed. `--skip-provision` /
+`--kind all` available. Note: plain start-all does NOT sequence
+kompile-spins after the matrix — use release.sh for publishing.
+
 ## Starting builds
 
 ```bash

@@ -20,7 +20,11 @@ cat > "$work/bin/aws" <<'FAKE'
 case "$1 $2" in
   "sts get-caller-identity") echo 123456789012 ;;
   "configure get") echo us-east-1 ;;
-  "codebuild batch-get-fleets"|"codebuild batch-get-projects") echo None ;;
+  "codebuild batch-get-fleets") echo None ;;
+  "codebuild batch-get-projects")
+    if [ -n "${DRYRUN_PROJECTS_EXIST:-}" ]; then echo "$*" | grep -o 'kompile-[a-z0-9.-]*' | head -1; else echo None; fi ;;
+  "codebuild start-build") printf 'START %s\n' "$*" >> "${DRYRUN_LOG:?}"; echo fake-build-id ;;
+  "codebuild batch-get-builds") printf 'fake-build-id\tSUCCEEDED\n' ;;
   "cloudformation deploy") printf '%s\n' "$*" >> "${DRYRUN_LOG:?}" ;;
   "cloudformation delete-stack") printf 'DELETE %s\n' "$*" >> "${DRYRUN_LOG:?}" ;;
   "cloudformation list-change-sets") echo cs-fake ;;
@@ -131,6 +135,17 @@ if command -v cfn-lint >/dev/null 2>&1; then
 else
   echo "cfn-lint not installed; skipping template spec lint (pip install cfn-lint)"
 fi
+
+# --- release.sh: setup->run->publish orchestration (spins last) ---------------
+: > "$DRYRUN_LOG"
+DRYRUN_PROJECTS_EXIST=1 "$here/release.sh" "$merged" v9.9.9 --skip-provision > "$work/release.out" 2>&1 \
+  || fail "release.sh failed: $(tail -20 "$work/release.out")"
+starts="$(grep -c '^START' "$DRYRUN_LOG" || true)"
+[ "$starts" -ge 19 ] || fail "release started only $starts builds"
+grep '^START' "$DRYRUN_LOG" | tail -1 | grep -q 'kompile-kompile-spins' \
+  || fail "release did not run kompile-spins LAST"
+grep -q 'RELEASE_TAG,value=v9.9.9' "$DRYRUN_LOG" || fail "release tag not propagated"
+grep -q 'outputs' "$work/release.out" || fail "release printed no outputs summary"
 
 # --- setup wizard, scripted (public repos, no publishing, decline provision) --
 wizard_config="$work/wizard.env"
