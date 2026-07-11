@@ -236,7 +236,7 @@ if ask_yn "Configure specialized lane inputs (android NDK, ZLUDA, TPU PJRT, Hexa
   else
     ANDROID_NDK_VERSION=""
   fi
-  ask "ZLUDA archive URL (empty = ROCm/CUDA-only amd image)" "$ZLUDA_ARCHIVE_URL"
+  ask "ZLUDA archive URL override (empty = pinned vosen/ZLUDA ${ZLUDA_VERSION:-v6} release, auto-bootstrapped)" "$ZLUDA_ARCHIVE_URL"
   ZLUDA_ARCHIVE_URL="$REPLY"
   ask "PJRT plugin (libtpu.so) URL (optional)" "$PJRT_PLUGIN_URL"
   PJRT_PLUGIN_URL="$REPLY"

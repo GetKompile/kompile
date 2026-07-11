@@ -89,6 +89,7 @@ for family in "${families[@]}"; do
       build amd rocm "${jdk_args[@]}" \
         --build-arg "BASE_IMAGE=${ROCM_BASE_IMAGE:-rocm/dev-ubuntu-22.04:6.4-complete}" \
         --build-arg "CUDA_TOOLKIT_VERSION=${CUDA_VERSION:-12.9}" \
+        --build-arg "ZLUDA_VERSION=${ZLUDA_VERSION:-v6}" \
         --build-arg "ZLUDA_ARCHIVE_URL=${ZLUDA_ARCHIVE_URL:-}" ;;
     tpu)
       build tpu tpu "${jdk_args[@]}" \
