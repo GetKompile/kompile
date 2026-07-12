@@ -50,10 +50,14 @@ case "$target" in
       -Djavacpp.platform.extension=-avx512 \
       ${common[@]+"${common[@]}"} ${test_args[@]+"${test_args[@]}"} ;;
   vulkan-smoke-linux)
-    # Desktop Vulkan on the GPU host. Needs a Vulkan ICD inside the container
-    # (NVIDIA driver injection) — verify with vulkaninfo on first run.
-    mvn -Pvulkan -pl :nd4j-vulkan,:nd4j-vulkan-preset,platform-tests --also-make test \
-      -Dtest='TestVulkan*' ${common[@]+"${common[@]}"} ${test_args[@]+"${test_args[@]}"} ;;
+    # Mirrors run-vulkan-smoke-tests.yml: lavapipe (CPU Vulkan ICD) — no GPU
+    # host needed. Build with the vulkan property, then run the smoke test.
+    export VK_ICD_FILENAMES="${VK_ICD_FILENAMES:-/usr/share/vulkan/icd.d/lvp_icd.x86_64.json}"
+    mvn -Pvulkan -Dlibnd4j.vulkan -pl :nd4j-vulkan,:nd4j-vulkan-preset,:libnd4j --also-make install \
+      -Dplatform.classifier=linux-x86_64 ${build_common[@]+"${build_common[@]}"}
+    mvn -Pvulkan -pl :nd4j-vulkan,platform-tests --also-make test \
+      "-Dtest=${VULKAN_TEST_FILTER:-VulkanBackendSmokeTest}" \
+      ${common[@]+"${common[@]}"} ${test_args[@]+"${test_args[@]}"} ;;
   mlx-smoke-macos)
     mvn -Pmlx -pl :nd4j-mlx,:nd4j-mlx-platform,platform-tests --also-make test \
       -Djavacpp.platform=macosx-arm64 ${common[@]+"${common[@]}"} ${test_args[@]+"${test_args[@]}"} ;;

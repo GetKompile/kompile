@@ -10,7 +10,7 @@ RUN dnf install -y gcc gcc-c++ gcc-gfortran make git tar gzip unzip zip curl wge
     && dnf clean all
 # Vulkan backend (nd4j-vulkan, ADR-0110): headers/loader/SPIR-V tooling.
 # Tolerated if a package is missing on this base — only linux-vulkan needs it.
-RUN dnf install -y vulkan-headers vulkan-loader-devel glslang spirv-tools 2>/dev/null \
+RUN dnf install -y vulkan-headers vulkan-loader-devel vulkan-tools glslang spirv-tools mesa-vulkan-drivers 2>/dev/null \
     || echo "WARN: vulkan toolchain packages unavailable; the linux-vulkan lane needs them"
 RUN test -n "${GRAALVM_ARCHIVE_URL}" && curl -fsSL "${GRAALVM_ARCHIVE_URL}" -o /tmp/graal.tgz \
     && mkdir -p /opt/graalvm && tar -xzf /tmp/graal.tgz -C /opt/graalvm --strip-components=1 && rm /tmp/graal.tgz

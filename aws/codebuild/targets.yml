@@ -36,7 +36,7 @@ targets:
   windows-cuda-13.1: {host: windows-gpu-x86_64, kind: build, variant: cli-only, kompile: false, workflow: build-deploy-windows-cuda-13.1.yml}
   windows-cuda-12.9: {host: windows-gpu-x86_64, kind: build, variant: cli-only, kompile: false, workflow: build-deploy-windows-cuda-12.9.yml}
   linux-zluda: {host: linux-amd-x86_64, kind: build, variant: amd-zluda, kompile: true, workflow: build-deploy-linux-zluda.yml}
-  linux-vulkan: {host: linux-x86_64, kind: build, variant: cli-only, kompile: false, workflow: platform-tests/build-vulkan.sh}
+  linux-vulkan: {host: linux-x86_64, kind: build, variant: cli-only, kompile: false, workflow: build-deploy-linux-vulkan.yml}
   android-arm64-vulkan: {host: linux-android-x86_64, kind: build, variant: cli-only, kompile: false, workflow: VULKAN_ANDROID_BUILD.md}
   linux-tpu-pjrt: {host: linux-tpu-x86_64, kind: build, variant: cli-only, kompile: false, workflow: build-deploy-linux-tpu.yml}
   linux-hexagon: {host: linux-hexagon-x86_64, kind: build, variant: cli-only, kompile: false, workflow: build-deploy-linux-hexagon.yml}
@@ -53,7 +53,7 @@ targets:
   zluda-smoke-linux: {host: linux-amd-gpu-x86_64, kind: validation, variant: cli-only, kompile: false, workflow: run-zluda-smoke-tests.yml}
   tpu-smoke-linux: {host: linux-tpu-hw-x86_64, kind: validation, variant: cli-only, kompile: false, workflow: run-tpu-smoke-tests.yml}
   hexagon-smoke-linux: {host: linux-hexagon-hw-x86_64, kind: validation, variant: cli-only, kompile: false, workflow: run-hexagon-smoke-tests.yml}
-  vulkan-smoke-linux: {host: linux-gpu-x86_64, kind: validation, variant: cli-only, kompile: false, workflow: platform-tests/test-vulkan.sh}
+  vulkan-smoke-linux: {host: linux-x86_64, kind: validation, variant: cli-only, kompile: false, workflow: run-vulkan-smoke-tests.yml}
   test-multiple-cuda-arches: {host: linux-gpu-x86_64, kind: validation, variant: cli-only, kompile: false, workflow: test_multiple_arch.yaml}
   run-tests-matrix: {host: configurable, kind: validation, variant: cli-only, kompile: false, workflow: run-tests.yml}
   kompile-spins: {host: linux-x86_64, kind: build, variant: cli-only, kompile: false, image: SPINS_IMAGE, buildspec: aws/codebuild/buildspec-spins.yml, privileged: true, workflow: kompile-internal}

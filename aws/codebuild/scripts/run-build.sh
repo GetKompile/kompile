@@ -77,14 +77,17 @@ case "${base}" in
     args+=(-Dlibnd4j.chip=cuda -Dlibnd4j.cuda.compile.skip=false -Dlibnd4j.cpu.compile.skip=true "-Dlibnd4j.compute=${CUDA_COMPUTE_CAPABILITIES:?}" "-Dlibnd4j.zluda=${ZLUDA_TARGET:?}")
     ;;
   linux-vulkan)
+    # Mirrors build-deploy-linux-vulkan.yml: profile + property (the property
+    # gates the libnd4j native vulkan compile) + platform classifier.
     profiles=(-Pvulkan); modules=:nd4j-vulkan,:nd4j-vulkan-preset,:libnd4j
+    args+=(-Dlibnd4j.vulkan -Dplatform.classifier=linux-x86_64)
     ;;
   android-arm64-vulkan)
     # The kompile-local mobile artifact: Vulkan backend cross-compiled for
     # Android (MLIR->SPIR-V kernels, Adreno/Mali) per VULKAN_ANDROID_BUILD.md.
     platform=android-arm64; profiles=(-Pandroid-arm64 -Pvulkan)
     modules=:nd4j-vulkan,:nd4j-vulkan-preset,:libnd4j
-    args+=("-Dandroid.ndk=${ANDROID_NDK_HOME:?}")
+    args+=(-Dlibnd4j.vulkan "-Dandroid.ndk=${ANDROID_NDK_HOME:?}")
     ;;
   linux-tpu-pjrt)
     profiles=(-Ptpu); modules=:nd4j-tpu,:nd4j-tpu-preset,:libnd4j
