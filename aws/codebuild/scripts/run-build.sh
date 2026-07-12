@@ -79,6 +79,13 @@ case "${base}" in
   linux-vulkan)
     profiles=(-Pvulkan); modules=:nd4j-vulkan,:nd4j-vulkan-preset,:libnd4j
     ;;
+  android-arm64-vulkan)
+    # The kompile-local mobile artifact: Vulkan backend cross-compiled for
+    # Android (MLIR->SPIR-V kernels, Adreno/Mali) per VULKAN_ANDROID_BUILD.md.
+    platform=android-arm64; profiles=(-Pandroid-arm64 -Pvulkan)
+    modules=:nd4j-vulkan,:nd4j-vulkan-preset,:libnd4j
+    args+=("-Dandroid.ndk=${ANDROID_NDK_HOME:?}")
+    ;;
   linux-tpu-pjrt)
     profiles=(-Ptpu); modules=:nd4j-tpu,:nd4j-tpu-preset,:libnd4j
     args+=(-Dlibnd4j.tpu -Dplatform.classifier=linux-x86_64)

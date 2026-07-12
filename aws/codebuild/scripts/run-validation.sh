@@ -49,6 +49,11 @@ case "$target" in
     mvn -Pcpu -pl platform-tests test -Dlibnd4j.extension=avx512 \
       -Djavacpp.platform.extension=-avx512 \
       ${common[@]+"${common[@]}"} ${test_args[@]+"${test_args[@]}"} ;;
+  vulkan-smoke-linux)
+    # Desktop Vulkan on the GPU host. Needs a Vulkan ICD inside the container
+    # (NVIDIA driver injection) — verify with vulkaninfo on first run.
+    mvn -Pvulkan -pl :nd4j-vulkan,:nd4j-vulkan-preset,platform-tests --also-make test \
+      -Dtest='TestVulkan*' ${common[@]+"${common[@]}"} ${test_args[@]+"${test_args[@]}"} ;;
   mlx-smoke-macos)
     mvn -Pmlx -pl :nd4j-mlx,:nd4j-mlx-platform,platform-tests --also-make test \
       -Djavacpp.platform=macosx-arm64 ${common[@]+"${common[@]}"} ${test_args[@]+"${test_args[@]}"} ;;
