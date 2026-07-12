@@ -76,6 +76,9 @@ case "${base}" in
     profiles=(-Pcuda); modules=:nd4j-cuda-12.9,:nd4j-cuda-12.9-preset,:libnd4j
     args+=(-Dlibnd4j.chip=cuda -Dlibnd4j.cuda.compile.skip=false -Dlibnd4j.cpu.compile.skip=true "-Dlibnd4j.compute=${CUDA_COMPUTE_CAPABILITIES:?}" "-Dlibnd4j.zluda=${ZLUDA_TARGET:?}")
     ;;
+  linux-vulkan)
+    profiles=(-Pvulkan); modules=:nd4j-vulkan,:nd4j-vulkan-preset,:libnd4j
+    ;;
   linux-tpu-pjrt)
     profiles=(-Ptpu); modules=:nd4j-tpu,:nd4j-tpu-preset,:libnd4j
     args+=(-Dlibnd4j.tpu -Dplatform.classifier=linux-x86_64)

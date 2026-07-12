@@ -36,6 +36,7 @@ targets:
   windows-cuda-13.1: {host: windows-gpu-x86_64, kind: build, variant: cli-only, kompile: false, workflow: build-deploy-windows-cuda-13.1.yml}
   windows-cuda-12.9: {host: windows-gpu-x86_64, kind: build, variant: cli-only, kompile: false, workflow: build-deploy-windows-cuda-12.9.yml}
   linux-zluda: {host: linux-amd-x86_64, kind: build, variant: amd-zluda, kompile: true, workflow: build-deploy-linux-zluda.yml}
+  linux-vulkan: {host: linux-x86_64, kind: build, variant: cli-only, kompile: false, workflow: platform-tests/build-vulkan.sh}
   linux-tpu-pjrt: {host: linux-tpu-x86_64, kind: build, variant: cli-only, kompile: false, workflow: build-deploy-linux-tpu.yml}
   linux-hexagon: {host: linux-hexagon-x86_64, kind: build, variant: cli-only, kompile: false, workflow: build-deploy-linux-hexagon.yml}
   cpu-sanity-linux: {host: linux-x86_64, kind: validation, variant: cli-only, kompile: false, workflow: cpu-sanity-check-tests.yaml}
