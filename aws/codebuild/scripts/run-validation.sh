@@ -49,6 +49,16 @@ case "$target" in
     mvn -Pcpu -pl platform-tests test -Dlibnd4j.extension=avx512 \
       -Djavacpp.platform.extension=-avx512 \
       ${common[@]+"${common[@]}"} ${test_args[@]+"${test_args[@]}"} ;;
+  gpu-multidevice-linux)
+    # Multi-GPU device management on 4x V100 (BUILD_GENERAL1_LARGE). Device
+    # selection/arbitration is ND4J's job (DeviceMemoryManager, placement
+    # planner) — the lane only provides the hardware; NO vendor device env
+    # vars (CUDA_VISIBLE_DEVICES) are ever set here.
+    build_cuda
+    mvn -Pcuda -pl platform-tests test -Djavacpp.platform=linux-x86_64 \
+      "-Dtest=${MULTIDEVICE_TEST_FILTER:-*MultiDevice*,DeviceRoutingTest,DevicePlacementPlanner*,CudaMemoryPool*,*GpuFailover*}" \
+      "-Dlibnd4j.compute=${CUDA_COMPUTE_CAPABILITIES:?}" \
+      ${common[@]+"${common[@]}"} ${test_args[@]+"${test_args[@]}"} ;;
   vulkan-smoke-linux)
     # Mirrors run-vulkan-smoke-tests.yml: lavapipe (CPU Vulkan ICD) — no GPU
     # host needed. Build with the vulkan property, then run the smoke test.

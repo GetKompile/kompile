@@ -6,6 +6,7 @@ version: 2
 #   variant   — kompile distribution variant passed to build-dist.sh
 #   kompile   — whether the target builds the kompile distribution after DL4J
 #   image     — optional env-key override for the build image (per-CUDA-version images)
+#   compute   — optional per-target compute override (multi-GPU lanes)
 #   workflow  — the source GitHub workflow in ../deeplearning4j/.github/workflows
 targets:
   linux-x86_64: {host: linux-x86_64, kind: build, variant: cpu-intel, kompile: true, workflow: build-deploy-linux-x86_64.yml}
@@ -54,6 +55,7 @@ targets:
   tpu-smoke-linux: {host: linux-tpu-hw-x86_64, kind: validation, variant: cli-only, kompile: false, workflow: run-tpu-smoke-tests.yml}
   hexagon-smoke-linux: {host: linux-hexagon-hw-x86_64, kind: validation, variant: cli-only, kompile: false, workflow: run-hexagon-smoke-tests.yml}
   vulkan-smoke-linux: {host: linux-x86_64, kind: validation, variant: cli-only, kompile: false, workflow: run-vulkan-smoke-tests.yml}
+  gpu-multidevice-linux: {host: linux-gpu-x86_64, kind: validation, variant: cli-only, kompile: false, compute: BUILD_GENERAL1_LARGE, workflow: platform-tests(device-management)}
   test-multiple-cuda-arches: {host: linux-gpu-x86_64, kind: validation, variant: cli-only, kompile: false, workflow: test_multiple_arch.yaml}
   run-tests-matrix: {host: configurable, kind: validation, variant: cli-only, kompile: false, workflow: run-tests.yml}
   kompile-spins: {host: linux-x86_64, kind: build, variant: cli-only, kompile: false, image: SPINS_IMAGE, buildspec: aws/codebuild/buildspec-spins.yml, privileged: true, workflow: kompile-internal}

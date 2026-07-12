@@ -24,6 +24,8 @@ TARGET_IMAGE_KEY="$(target_field "$targets_file" "$target" image)"
 
 configure_host "$host"
 [ -n "$buildspec_override" ] && BUILD_SPEC="$buildspec_override"
+compute_override="$(target_field "$targets_file" "$target" compute)"
+[ -n "$compute_override" ] && COMPUTE_TYPE="$compute_override"
 if [ -n "$SKIP_REASON" ]; then
   echo "SKIP $target: $SKIP_REASON"
   exit 3
