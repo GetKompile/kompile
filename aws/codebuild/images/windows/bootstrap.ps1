@@ -12,6 +12,36 @@ if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
 }
 choco install -y git maven cmake protoc ccache strawberryperl python ruby 7zip msys2
 
+# MSYS2 MINGW64 toolchain — mirrors the DL4J Windows workflows' pacman list
+# (build-deploy-windows*.yml). Without this the libnd4j native Windows build
+# has no gcc/gfortran/nasm/ragel/SDL2, and — critically — no Vulkan headers or
+# loader, so windows-x86_64 and its Vulkan support cannot compile.
+$msys = 'C:\tools\msys64'
+if (-not (Test-Path "$msys\usr\bin\pacman.exe")) { throw "MSYS2 not found at $msys after choco install" }
+$pacman = "$msys\usr\bin\pacman.exe"
+$mingwPkgs = @(
+  'mingw-w64-x86_64-toolchain', 'mingw-w64-x86_64-gcc', 'mingw-w64-x86_64-gcc-fortran',
+  'mingw-w64-x86_64-cmake', 'mingw-w64-x86_64-make', 'mingw-w64-x86_64-libtool',
+  'mingw-w64-x86_64-libwinpthread-git', 'mingw-w64-x86_64-nasm', 'mingw-w64-x86_64-ragel',
+  'mingw-w64-x86_64-pkg-config', 'mingw-w64-x86_64-gnupg', 'mingw-w64-x86_64-SDL2',
+  'mingw-w64-x86_64-vulkan-headers', 'mingw-w64-x86_64-vulkan-loader'
+)
+# Refresh + upgrade the base (each pacman call is a fresh subprocess, so the
+# MSYS2 runtime self-update on the first pass is picked up by the second).
+& $pacman -Syu  --noconfirm 2>&1 | Out-Null
+& $pacman -Syuu --noconfirm 2>&1 | Out-Null
+& $pacman -S --needed --noconfirm @mingwPkgs
+if ($LASTEXITCODE -ne 0) { throw "pacman failed to install the MINGW64 toolchain" }
+$env:MSYSTEM = 'MINGW64'
+[Environment]::SetEnvironmentVariable('MSYSTEM', 'MINGW64', 'Machine')
+# Put the MinGW64 bin on the machine PATH so run-build.ps1's bash/cmake find
+# g++, gfortran, and the vulkan loader import lib during the native build.
+$mingwBin = "$msys\mingw64\bin"
+$machinePath0 = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+if ($machinePath0 -notlike "*$mingwBin*") {
+  [Environment]::SetEnvironmentVariable('Path', "$machinePath0;$mingwBin", 'Machine')
+}
+
 function Install-ZipTo([string]$Url, [string]$Dest) {
   $zip = Join-Path $env:TEMP ([IO.Path]::GetRandomFileName() + ".zip")
   Invoke-WebRequest $Url -OutFile $zip
@@ -53,4 +83,6 @@ if ($machinePath -notlike '*Git\bin*') {
 
 & 'C:\opt\jdk11\bin\java.exe' -version
 & 'C:\opt\graalvm\bin\native-image.cmd' --version
-Write-Host "Windows toolchain bootstrap complete."
+& "$mingwBin\gcc.exe" --version | Select-Object -First 1
+if (-not (Test-Path "$msys\mingw64\include\vulkan\vulkan.h")) { throw "Vulkan headers missing from MINGW64 toolchain" }
+Write-Host "Windows toolchain bootstrap complete (MINGW64 + Vulkan headers/loader present)."
