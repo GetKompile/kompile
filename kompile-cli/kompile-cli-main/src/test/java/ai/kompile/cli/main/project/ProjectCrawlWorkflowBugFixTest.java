@@ -264,6 +264,38 @@ class ProjectCrawlWorkflowBugFixTest {
                 "auto-ingest CRAWL step should reference the generated VLM crawl profile");
     }
 
+    @Test
+    void projectCrawlServe_startsServicesBeforeAutoIngestWorkflow(@TempDir Path tmp) {
+        int initExit = execute("project", "init",
+                "--root", tmp.toString(),
+                "--name", "workflow-serve-test",
+                "--backend", "local",
+                "--preset", "vlm-ocr");
+        assertEquals(0, initExit, "project init should succeed");
+
+        PrintStream originalOut = System.out;
+        ByteArrayOutputStream captured = new ByteArrayOutputStream();
+        try {
+            System.setOut(new PrintStream(captured));
+            int crawlExit = execute("project", "crawl",
+                    "--root", tmp.toString(),
+                    "--serve",
+                    "--dry-run");
+            assertEquals(0, crawlExit, "crawl --serve dry-run should succeed");
+        } finally {
+            System.setOut(originalOut);
+        }
+
+        String output = captured.toString();
+        int startWorkflow = output.indexOf("Workflow: Start services (start-services)");
+        int crawlWorkflow = output.lastIndexOf("Workflow: Auto ingest (auto-ingest)");
+        assertTrue(startWorkflow >= 0, "--serve should select the start-services workflow. Output: " + output);
+        assertTrue(crawlWorkflow > startWorkflow,
+                "start-services must run before auto-ingest. Output: " + output);
+        assertTrue(output.contains("Pipeline serving is app-managed for this project — no standalone service started."),
+                "VLM/OCR projects should explicitly skip standalone serving without creating a no-op PID. Output: " + output);
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     /** Manifest with a single auto-ingest crawl profile — minimal viable manifest. */

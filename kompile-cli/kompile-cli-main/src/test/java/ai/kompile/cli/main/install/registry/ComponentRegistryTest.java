@@ -70,8 +70,25 @@ public class ComponentRegistryTest {
         ComponentRegistry registry = new ComponentRegistry();
         assertTrue(registry.getComponent(ComponentRegistry.KOMPILE_APP_MAIN).isPresent());
         assertTrue(registry.getComponent(ComponentRegistry.KOMPILE_MODEL_STAGING).isPresent());
+        assertTrue(registry.getComponent(ComponentRegistry.KOMPILE_GRAPH_SERVICE).isPresent());
         assertTrue(registry.getComponent(ComponentRegistry.KOMPILE_CLI).isPresent());
         assertFalse(registry.getComponent("nonexistent").isPresent());
+    }
+
+    @Test
+    public void testGraphServiceLifecycleMetadata() {
+        ComponentRegistry.ComponentDescriptor graph = new ComponentRegistry()
+                .getComponent(ComponentRegistry.KOMPILE_GRAPH_SERVICE)
+                .orElseThrow();
+
+        assertEquals(8095, graph.getDefaultPort().orElseThrow());
+        assertEquals("graph", graph.getType());
+        assertEquals("kompile-graph-service", graph.getArtifactId());
+        assertEquals("exec", graph.getArtifactClassifier().orElseThrow());
+        assertEquals("ai.kompile.graph.service.GraphServiceApplication", graph.getMainClass().orElseThrow());
+        assertTrue(new ComponentRegistry().resolveDownloadUrl(
+                ComponentRegistry.KOMPILE_GRAPH_SERVICE,
+                ComponentRegistry.ReleaseSource.MAVEN).endsWith("-exec.jar"));
     }
 
     @Test

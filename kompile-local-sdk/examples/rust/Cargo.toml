@@ -1,0 +1,19 @@
+[package]
+name = "chat-with-graph"
+version = "0.1.0"
+edition = "2021"
+description = "Kompile Local SDK — Rust reference pipeline (chat_with_graph)"
+
+[[bin]]
+name = "chat_with_graph"
+path = "chat_with_graph.rs"
+
+[dependencies]
+# No external crates needed — uses std only.
+# kompile_reasoning.rs and sdx_llm.rs are included via #[path] directives.
+
+[build-dependencies]
+# build.rs emits link-search paths for both libraries.
+
+# Runtime: set LD_LIBRARY_PATH or KGR_LIB_DIR / SDX_LLM_LIB_DIR before running.
+# Build:   KGR_LIB_DIR=<sdk>/lib SDX_LLM_LIB_DIR=<sdk>/lib cargo run --release

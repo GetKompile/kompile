@@ -104,6 +104,10 @@ public class ConversationExporter {
 
         String effectiveSessionId = sessionId != null ? sessionId : UUID.randomUUID().toString();
         Path effectiveWorkingDirectory = normalizeWorkingDirectory(workingDirectory);
+        turns = canonicalResumeTurns(turns);
+        if (turns.isEmpty()) {
+            throw new IOException("No nonblank conversation turns to export");
+        }
 
         // Dynamic provider/model resolution: discovers authenticated providers
         // from OpenCode's auth.json and session history, then maps the source
@@ -135,6 +139,23 @@ public class ConversationExporter {
                 throw new IOException("Unsupported agent: " + agent +
                         ". Supported: " + String.join(", ", SUPPORTED_AGENTS));
         }
+    }
+
+    /**
+     * Produces the one canonical transcript shape consumed by every native resume exporter.
+     * Native CLIs only share user/assistant roles, so agent-specific and tool roles are
+     * represented as user context while assistant output remains assistant output.
+     */
+    static List<ChatHistory.Turn> canonicalResumeTurns(List<ChatHistory.Turn> turns) {
+        List<ChatHistory.Turn> canonical = new ArrayList<>(turns.size());
+        for (ChatHistory.Turn turn : turns) {
+            if (turn == null || turn.content() == null || turn.content().isBlank()) {
+                continue;
+            }
+            String role = "assistant".equalsIgnoreCase(turn.role()) ? "assistant" : "user";
+            canonical.add(new ChatHistory.Turn(role, turn.content(), turn.rawContentBlocks()));
+        }
+        return List.copyOf(canonical);
     }
 
     /**
@@ -979,10 +1000,6 @@ public class ConversationExporter {
         String lastMsgId = null;
         long msgTimestamp = now;
         long lastTimestamp = now;
-
-        if (!turns.isEmpty() && "assistant".equals(turns.get(0).role())) {
-            throw new IllegalArgumentException("Cannot export assistant-first conversation to OpenCode format without an original user turn");
-        }
 
         for (ChatHistory.Turn turn : turns) {
             String content = turn.content();

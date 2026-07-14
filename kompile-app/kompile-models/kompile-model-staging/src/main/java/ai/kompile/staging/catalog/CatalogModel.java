@@ -16,6 +16,7 @@
 
 package ai.kompile.staging.catalog;
 
+import ai.kompile.modelmanager.registry.AudioSynthesisConfig;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -40,6 +41,8 @@ public class CatalogModel {
     private Map<String, String> files;
     private CatalogModelMetadata metadata;
     private String modelType;
+    @JsonProperty("audio_synthesis")
+    private AudioSynthesisConfig audioSynthesis;
     private boolean installed;
     /**
      * Whether this model has a SameDiff (.fb/.sdz) file on disk and can be

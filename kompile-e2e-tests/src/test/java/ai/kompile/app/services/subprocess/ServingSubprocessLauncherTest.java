@@ -126,6 +126,32 @@ class ServingSubprocessLauncherTest {
         assertFalse(launcher.isRunning());
     }
 
+    // ── model readiness ───────────────────────────────────────────────────────
+
+    @Test
+    void statusIndicatesModelReady_rejectsListeningServerWhileModelLoads() {
+        String status = "{\"loaded\":false,\"loading\":true,\"loadingModelId\":\"lfm2.5-1.2b-instruct\"}";
+        assertFalse(launcher.statusIndicatesModelReady(status, "lfm2.5-1.2b-instruct"));
+    }
+
+    @Test
+    void statusIndicatesModelReady_acceptsLoadedExpectedModel() {
+        String status = "{\"loaded\":true,\"loading\":false,\"modelId\":\"lfm2.5-1.2b-instruct\"}";
+        assertTrue(launcher.statusIndicatesModelReady(status, "lfm2.5-1.2b-instruct"));
+    }
+
+    @Test
+    void statusIndicatesModelReady_rejectsDifferentLoadedModel() {
+        String status = "{\"loaded\":true,\"modelId\":\"some-other-model\"}";
+        assertFalse(launcher.statusIndicatesModelReady(status, "lfm2.5-1.2b-instruct"));
+    }
+
+    @Test
+    void statusIndicatesModelReady_rejectsInvalidStatus() {
+        assertFalse(launcher.statusIndicatesModelReady("not-json", "lfm2.5-1.2b-instruct"));
+        assertFalse(launcher.statusIndicatesModelReady(null, "lfm2.5-1.2b-instruct"));
+    }
+
     // ── lifecycle: isRunning reflects internal state ───────────────────────────
 
     @Test

@@ -8,6 +8,7 @@ import ai.kompile.staging.conversion.ConversionService;
 import ai.kompile.staging.download.DownloadService;
 import ai.kompile.staging.optimization.OptimizationService;
 import ai.kompile.staging.web.dto.TrainingArtifactStageRequest;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -249,6 +250,56 @@ class StagingServicePromoteTest {
         assertTrue(Files.exists(productionDir.resolve("vision_encoder.onnx")));
         assertTrue(Files.exists(productionDir.resolve("embed_tokens.onnx")));
         assertTrue(Files.exists(productionDir.resolve("tokenizer.json")));
+    }
+
+    @Test
+    void promoteAudioSynthesis_preservesServingAbiAcrossRestartSafeSidecar() throws Exception {
+        String modelId = "audio-synthesis-test";
+        Path stagingDir = tempDir.resolve(".staging/verified").resolve(modelId);
+        Files.createDirectories(stagingDir);
+        Files.write(stagingDir.resolve("model.sdz"), new byte[]{1, 2, 3, 4});
+
+        AudioSynthesisConfig config = AudioSynthesisConfig.builder()
+                .tokenizerType(AudioSynthesisConfig.UTF8_BYTES_TOKENIZER)
+                .tokenIdsInput("text_tokens")
+                .waveformOutput("waveform")
+                .tokenDataType("int32")
+                .sampleRateHz(24_000)
+                .voice("standard")
+                .language("en")
+                .build();
+        new ObjectMapper().writeValue(stagingDir.resolve(".audio-synthesis.json").toFile(), config);
+
+        StagingModelInfo info = StagingModelInfo.create(
+                modelId, "huggingface:example/audio", ModelType.AUDIO_SYNTHESIS);
+        info.withStatus(StagingStatus.READY, 100, "Ready");
+        injectStagingModel(modelId, info);
+
+        assertTrue(stagingService.promoteModel(modelId, null));
+
+        ModelEntry model = registryService.getModel(modelId).orElseThrow();
+        assertEquals(ModelType.AUDIO_SYNTHESIS, model.getType());
+        assertEquals("audio-synthesis/" + modelId, model.getPath());
+        assertEquals("model.sdz", model.getModelFile());
+        assertEquals(config, model.getAudioSynthesis());
+        assertTrue(Files.isRegularFile(tempDir.resolve(model.getPath()).resolve(".audio-synthesis.json")));
+    }
+
+    @Test
+    void promoteAudioSynthesis_rejectsMissingServingAbiWithoutMovingArtifact() throws Exception {
+        String modelId = "audio-synthesis-missing-config";
+        Path stagingDir = tempDir.resolve(".staging/verified").resolve(modelId);
+        Files.createDirectories(stagingDir);
+        Files.write(stagingDir.resolve("model.sdz"), new byte[]{1, 2, 3, 4});
+
+        StagingModelInfo info = StagingModelInfo.create(
+                modelId, "huggingface:example/audio", ModelType.AUDIO_SYNTHESIS);
+        info.withStatus(StagingStatus.READY, 100, "Ready");
+        injectStagingModel(modelId, info);
+
+        assertFalse(stagingService.promoteModel(modelId, null));
+        assertTrue(registryService.getModel(modelId).isEmpty());
+        assertTrue(Files.isRegularFile(stagingDir.resolve("model.sdz")));
     }
 
     @Test

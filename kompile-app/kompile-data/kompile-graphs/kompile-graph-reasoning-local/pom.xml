@@ -1,0 +1,278 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~
+  ~  Licensed under the Apache License, Version 2.0 (the "License");
+  ~  you may not use this file except in compliance with the License.
+  ~  You may obtain a copy of the License at
+  ~
+  ~  http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~  Unless required by applicable law or agreed to in writing, software
+  ~   distributed under the License is distributed on an "AS IS" BASIS,
+  ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-graphs</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>kompile-graph-reasoning-local</artifactId>
+    <name>Kompile Graph Reasoning Local</name>
+    <description>
+        Infra-free facade over the graph reasoning library that loads a .kgraph file and
+        dispatches MCP-style JSON tool calls against it fully locally — no Spring, no JPA,
+        no jackson-databind. Designed to be AOT-compiled into a C shared library for mobile
+        and edge deployments (P1 spike; C shim is a separate native profile).
+
+        The single entry point is LocalToolDispatcher.dispatch(toolName, argsJson) which
+        routes to CoreHandlers (implemented), GroundingHandlers, InferenceHandlers, and
+        AnalyticsHandlers (stubs for parallel agent fill-in).
+
+        Dependencies: kompile-graph-reasoning (lib) + slf4j-api (transitive) + junit (test).
+    </description>
+
+    <dependencies>
+        <!-- GraalVM native-image API — provided (only present in GraalVM JDK).
+             Used by GraphReasoningCApi (@CEntryPoint) and Nd4jSubstitutions (@TargetClass).
+             Must be provided scope so it is NOT bundled in the shared library classpath. -->
+        <dependency>
+            <groupId>org.graalvm.nativeimage</groupId>
+            <artifactId>svm</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.graalvm.sdk</groupId>
+            <artifactId>graal-sdk</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- The infra-free reasoning library. nd4j-api is a transitive compile dep of
+             kompile-graph-reasoning (used by TensorHlMrfInference). We keep it on the
+             JVM compile classpath so the module compiles normally; the native-image build
+             excludes ND4J at analysis time via Nd4jSubstitutions @TargetClass stubs.
+             Kotlin stdlib (pulled by Dorkbox Annotations via nd4j-api) and oshi (OS HW
+             probe, only needed by nd4j GPU detection) are excluded to reduce native image
+             size — neither is reachable from the @CEntryPoint entry points. -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-graph-reasoning</artifactId>
+            <version>${project.version}</version>
+            <exclusions>
+                <!-- Kotlin stdlib: pulled by Dorkbox Annotations (nd4j-api transitive).
+                     Not reachable from kgr_* entry points; excluding reduces image size. -->
+                <exclusion>
+                    <groupId>org.jetbrains.kotlin</groupId>
+                    <artifactId>kotlin-stdlib</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.jetbrains.kotlin</groupId>
+                    <artifactId>kotlin-stdlib-jdk7</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.jetbrains.kotlin</groupId>
+                    <artifactId>kotlin-stdlib-jdk8</artifactId>
+                </exclusion>
+                <!-- oshi-core: OS hardware probe (CPU/GPU discovery) used by nd4j-api.
+                     Not reachable once TensorHlMrfInference.isAvailable() is constant-folded. -->
+                <exclusion>
+                    <groupId>com.github.oshi</groupId>
+                    <artifactId>oshi-core</artifactId>
+                </exclusion>
+                <!-- JNA (transitive of oshi): native OS interface, not needed here. -->
+                <exclusion>
+                    <groupId>net.java.dev.jna</groupId>
+                    <artifactId>jna-platform</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>net.java.dev.jna</groupId>
+                    <artifactId>jna</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+
+        <!-- Logging API (transitive via kompile-graph-reasoning; explicit for clarity). -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+        </dependency>
+
+        <!-- Test -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- ND4J backend for test runs that exercise PSL inference inside GraphQueryEngine. -->
+        <dependency>
+            <groupId>org.eclipse.deeplearning4j</groupId>
+            <artifactId>${nd4j.backend}</artifactId>
+            <version>${nd4j.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.eclipse.deeplearning4j</groupId>
+            <artifactId>${nd4j.backend}</artifactId>
+            <version>${nd4j.version}</version>
+            <classifier>${javacpp.platform}</classifier>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <profiles>
+        <!--
+            native-clib: Build libkompile_reasoning.so via GraalVM native-image (shared mode).
+
+            Activation: mvn -Dkompile.dist package   (same flag as kompile-pipelines)
+
+            Output (in target/):
+              libkompile_reasoning.so / .dylib
+              kompile_reasoning.h   (generated kgr_* function declarations)
+              graal_isolate.h       (GraalVM isolate lifecycle API)
+
+            ND4J exclusion strategy:
+              kompile-graph-reasoning has nd4j-api as a transitive compile dep.
+              Nd4jSubstitutions @TargetClass stubs constant-fold the two
+              isAvailable() guards so TensorHlMrfInference and
+              SameDiffSgdHlMrfInference become dead code in the image.
+        -->
+        <profile>
+            <id>native-library</id>
+            <activation>
+                <property>
+                    <name>kompile.dist</name>
+                </property>
+            </activation>
+
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.graalvm.buildtools</groupId>
+                        <artifactId>native-maven-plugin</artifactId>
+                        <version>${native-maven-plugin.version}</version>
+                        <extensions>true</extensions>
+                        <executions>
+                            <execution>
+                                <id>build-native-shared</id>
+                                <goals>
+                                    <goal>compile-no-fork</goal>
+                                </goals>
+                                <phase>package</phase>
+                            </execution>
+                        </executions>
+                        <configuration>
+                            <imageName>libkompile_reasoning</imageName>
+                            <buildArgs>
+                                <!-- Produce a C shared library with kgr_* entry points -->
+                                <buildArg>--shared</buildArg>
+                                <!-- No JVM fallback — fail fast if anything is missing -->
+                                <buildArg>--no-fallback</buildArg>
+                                <!-- Heap budget for the image builder (ND4J analysis is heavy) -->
+                                <buildArg>-J-Xmx12g</buildArg>
+                                <!-- Initialize logging at build time (avoids runtime init) -->
+                                <buildArg>--initialize-at-build-time=org.slf4j</buildArg>
+                                <!-- Allow missing optional deps (jackson, logback in submodules) -->
+                                <buildArg>--allow-incomplete-classpath</buildArg>
+                                <!-- Include SPI registrations so MiniJson / graph formats load -->
+                                <buildArg>-H:IncludeResources=META-INF/services/.*</buildArg>
+                                <!-- Include our serialization config -->
+                                <buildArg>-H:IncludeResources=META-INF/native-image/.*</buildArg>
+                                <!-- Pruning: remove saturated type flows (dead code elimination) -->
+                                <buildArg>-H:+RemoveSaturatedTypeFlows</buildArg>
+                                <!-- Symbol export allowlist: only kgr_* symbols are exported;
+                                     graal_*, JNI_*, and IsolateEnterStub__* are hidden (local).
+                                     This prevents symbol collision when libkompile_reasoning.so
+                                     is co-loaded with another GraalVM native-image library
+                                     (e.g. libsdx_llm.so) in the same process.  Both libraries
+                                     embed an independent GraalVM runtime; without visibility
+                                     hiding the duplicate graal_* symbols from the first-loaded
+                                     library intercept calls intended for the second, causing
+                                     ExceptionInInitializerError inside the second isolate.
+
+                                     IMPLEMENTATION NOTE - WHY -B, NOT -Wl,-version-script:
+                                     GraalVM 21 BinutilsCCLinkerInvocation unconditionally
+                                     generates an anonymous GNU-ld version script
+                                     (exported_symbols.list) for ALL @CEntryPoint symbols and
+                                     injects it as -Wl,-version-script,PATH early in the
+                                     gcc linker command.  GNU ld forbids combining an anonymous
+                                     version tag with a named one ("anonymous version tag cannot
+                                     be combined with other version tags"), so passing a second
+                                     version-script via NativeLinkerOption would fatal-error.
+
+                                     The fix: src/main/linker/ld is a thin bash wrapper that
+                                     intercepts the ld invocation (via -B src/main/linker which
+                                     makes GCC search that directory for "ld" first), strips
+                                     GraalVM's auto-generated version-script argument, and
+                                     substitutes kgr_exports.lds as the sole version script.
+                                     Result: only kgr_* symbols appear in .dynsym.
+
+                                     Linux only: GNU ld supports version scripts.
+                                     macOS: use -exported_symbols_list in a separate profile. -->
+                                <buildArg>-H:NativeLinkerOption=-B${project.basedir}/src/main/linker</buildArg>
+                                <!-- NOTE: gc=epsilon (no-op collector) was intentionally
+                                     removed. This library serves long-lived embedded sessions:
+                                     a mobile chat app dispatches unbounded tool calls against a
+                                     single isolate for the lifetime of the user session. Epsilon
+                                     GC never reclaims heap, guaranteeing OOM in real use. The
+                                     default serial GC is the correct choice: it is compact (no
+                                     background threads), has low overhead, and reclaims garbage
+                                     between tool calls so the RSS plateau stays bounded. -->
+                            </buildArgs>
+                            <!-- ND4J exclusion is handled via Maven <exclusions> on the
+                                 kompile-graph-reasoning dependency above.  The
+                                 Nd4jSubstitutions @TargetClass stubs constant-fold the two
+                                 TensorHlMrfInference.isAvailable() guards so no ND4J class
+                                 is reachable from the entry points. -->
+                        </configuration>
+                    </plugin>
+
+                    <!--
+                        SDK zip: assemble include/ + lib/ + bindings/ + README.md into
+                        a versioned zip attached with classifier native-sdk.
+                        Layout mirrors the SDX sdx-runtime-sdk shape so future
+                        ios/android classifiers slot in beside it.
+
+                        Output: target/kompile-graph-reasoning-local-<version>-native-sdk.zip
+                        The assembly is bound to the package phase so it runs AFTER
+                        native-image produces libkompile_reasoning.so.
+                    -->
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-assembly-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>assemble-native-sdk</id>
+                                <phase>package</phase>
+                                <goals>
+                                    <goal>single</goal>
+                                </goals>
+                                <configuration>
+                                    <descriptors>
+                                        <descriptor>src/main/assembly/native-sdk.xml</descriptor>
+                                    </descriptors>
+                                    <!-- Attach the zip so 'mvn install' copies it to ~/.m2 -->
+                                    <attach>true</attach>
+                                    <!-- Do not prepend the artifact id again (the descriptor id
+                                         is already appended by the assembly plugin) -->
+                                    <appendAssemblyId>true</appendAssemblyId>
+                                    <!-- Tolerate missing lib/ entries on non-Linux
+                                         (dylib / dll won't exist on the wrong platform) -->
+                                    <ignoreMissingDescriptor>false</ignoreMissingDescriptor>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+</project>

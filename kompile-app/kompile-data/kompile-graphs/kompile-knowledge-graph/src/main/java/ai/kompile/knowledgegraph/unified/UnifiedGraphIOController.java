@@ -5,6 +5,7 @@
  */
 package ai.kompile.knowledgegraph.unified;
 
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -19,6 +20,7 @@ import java.io.IOException;
 import java.util.Map;
 
 /** HTTP transport for the portable {@code .kgraph} contract used by CLI and MCP clients. */
+@ConditionalOnProperty(prefix = "kompile.graph.http", name = "enabled", havingValue = "true")
 @RestController
 @RequestMapping(UnifiedGraphIOController.BASE_PATH)
 public class UnifiedGraphIOController {

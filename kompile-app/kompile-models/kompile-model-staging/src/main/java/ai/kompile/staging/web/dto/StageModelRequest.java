@@ -16,6 +16,7 @@
 
 package ai.kompile.staging.web.dto;
 
+import ai.kompile.modelmanager.registry.AudioSynthesisConfig;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -40,5 +41,6 @@ public class StageModelRequest {
     private String revision;
     private String authToken;
     private String tokenizerUrl;
+    private AudioSynthesisConfig audioSynthesis;
     private Map<String, String> files;
 }

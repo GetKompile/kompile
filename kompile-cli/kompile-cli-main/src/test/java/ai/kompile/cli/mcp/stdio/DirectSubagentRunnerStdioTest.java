@@ -25,6 +25,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
@@ -38,6 +39,24 @@ class DirectSubagentRunnerStdioTest {
 
     @TempDir
     Path tempDir;
+
+    @Test
+    void codexMcpOverridesPrecedeExecSubcommand() {
+        List<String> base = SubprocessAgentRunner.buildManagedCommand(
+                "codex", "/tmp/codex", "review", false, null,
+                false, tempDir, null);
+
+        List<String> command = SubprocessAgentRunner.prependGlobalOptions(
+                base, List.of("-c", "mcp_servers.kompile.command=\"/tmp/kompile\""));
+
+        assertEquals(List.of(
+                "/tmp/codex",
+                "-c",
+                "mcp_servers.kompile.command=\"/tmp/kompile\"",
+                "exec",
+                "--json",
+                "review"), command);
+    }
 
     @Test
     void runSubagentUsesManagedRunnerAndCapturesOutput() throws Exception {

@@ -33,6 +33,7 @@ import ai.kompile.app.subprocess.SubprocessRegistry;
 import ai.kompile.cli.common.logs.AgentLogRecord;
 import ai.kompile.cli.common.logs.SubprocessLogWriter;
 import ai.kompile.cli.common.util.JsonUtils;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.nd4j.common.config.ND4JEnvironmentVars;
 import org.nd4j.common.config.ND4JSystemProperties;
@@ -1169,10 +1170,15 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
                         .build();
                 HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
                 if (response.statusCode() == 200) {
-                    logger.info("Serving subprocess is ready: {}", response.body());
-                    return;
+                    if (statusIndicatesModelReady(response.body(), lastModelId)) {
+                        logger.info("Serving subprocess model is ready: {}", response.body());
+                        return;
+                    }
+                    logger.debug("Serving subprocess HTTP server is up but model '{}' is not ready yet: {}",
+                            lastModelId, response.body());
+                } else {
+                    logger.debug("Serving subprocess returned HTTP {}: {}", response.statusCode(), response.body());
                 }
-                logger.debug("Serving subprocess returned HTTP {}: {}", response.statusCode(), response.body());
             } catch (IOException e) {
                 // Connection refused — subprocess not yet listening
                 logger.debug("Serving subprocess not yet listening ({}): {}", statusUrl, e.getMessage());
@@ -1184,6 +1190,26 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
         running.set(false);
         throw new TimeoutException("Serving subprocess did not become ready within "
                 + READY_POLL_TIMEOUT_MS + " ms on port " + servingPort);
+    }
+
+    /**
+     * A listening HTTP server is not sufficient readiness: model loading and DSP warmup
+     * continue after the status endpoint starts returning 200. Require the requested model
+     * to be fully loaded before exposing the subprocess as ready.
+     */
+    boolean statusIndicatesModelReady(String statusJson, String expectedModelId) {
+        if (statusJson == null || statusJson.isBlank() || expectedModelId == null || expectedModelId.isBlank()) {
+            return false;
+        }
+        try {
+            JsonNode status = resolvedMapper().readTree(statusJson);
+            return status.path("loaded").asBoolean(false)
+                    && expectedModelId.equals(status.path("modelId").asText(null));
+        } catch (Exception e) {
+            logger.debug("Invalid serving status response while waiting for model '{}': {}",
+                    expectedModelId, e.getMessage());
+            return false;
+        }
     }
 
     // ── HTTP proxy helpers ────────────────────────────────────────────────────

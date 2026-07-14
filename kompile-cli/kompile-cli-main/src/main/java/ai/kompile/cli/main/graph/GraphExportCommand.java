@@ -54,7 +54,7 @@ public class GraphExportCommand implements Callable<Integer> {
             System.err.println("Unknown format '" + format + "'. Supported: " + SUPPORTED_FORMATS);
             return 1;
         }
-        KompileHttpClient client = app.requireClient();
+        KompileHttpClient client = isUnifiedFormat(format) ? app.requireGraphClient() : app.requireClient();
         if (client == null) return 1;
         try {
             String url;

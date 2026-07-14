@@ -30,6 +30,9 @@ spring:
 kompile:
   data:
     dir: ${KOMPILE_GRAPH_DATA_DIR:${user.home}/.kompile/graph-service}
+  graph:
+    http:
+      enabled: true
   jpa:
     graph:
       enabled: true

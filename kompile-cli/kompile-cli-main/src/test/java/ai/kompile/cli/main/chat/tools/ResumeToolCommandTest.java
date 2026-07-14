@@ -23,6 +23,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.lang.reflect.Method;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -79,6 +80,153 @@ class ResumeToolCommandTest {
     void nonCodexResumeUsesSseMcpWhenUrlExists() throws Exception {
         assertEquals("sse", mcpModeForResume("claude", "http://localhost:8080/mcp/sse"));
         assertEquals("stdio", mcpModeForResume("claude", ""));
+    }
+
+    @Test
+    void sessionIdentifierColumnPreservesFullUuidAndCompactsLongProviderIds() {
+        String uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        assertEquals(uuid, ResumeTool.fitSessionIdentifier(uuid, 36));
+
+        String longId = "ses_abcdefghijklmnopqrstuvwxyz0123456789";
+        String fitted = ResumeTool.fitSessionIdentifier(longId, 20);
+        assertEquals(20, fitted.length());
+        assertTrue(fitted.startsWith("ses_"));
+        assertTrue(fitted.contains("…"));
+        assertTrue(fitted.endsWith("456789"));
+    }
+
+    @Test
+    void kompileSubagentTranscriptsAreExcludedFromResumeListings() {
+        assertFalse(ResumeTool.isResumableKompileSession(
+                "subagent-codex-12345678-1234-1234-1234-123456789abc"));
+        assertFalse(ResumeTool.isResumableKompileSession(
+                "SUBAGENT-claude-12345678-1234-1234-1234-123456789abc"));
+        assertFalse(ResumeTool.isResumableKompileSession(
+                "test-logsubagent-12345678-1234-1234-1234-123456789abc"));
+        assertTrue(ResumeTool.isResumableKompileSession("passthrough-codex-wrapper"));
+        assertTrue(ResumeTool.isResumableKompileSession("ordinary-session"));
+        assertFalse(ResumeTool.isResumableKompileSession(null));
+    }
+
+    @Test
+    void localProviderTabsExcludeSyntheticKompileWrappers() {
+        assertTrue(ResumeTool.isProviderBackedSyntheticWrapper("emulated-legacy", "claude"));
+        assertTrue(ResumeTool.isProviderBackedSyntheticWrapper("passthrough-wrapper", "codex"));
+        assertTrue(ResumeTool.isProviderBackedSyntheticWrapper("managed-wrapper", "opencode"));
+        assertTrue(ResumeTool.isProviderBackedSyntheticWrapper("enforcer-wrapper", "opencode"));
+        assertTrue(ResumeTool.isProviderBackedSyntheticWrapper("cli-wrapper", "opencode"));
+        assertTrue(ResumeTool.isProviderBackedSyntheticWrapper("MANAGED-wrapper", "qwen"));
+        assertFalse(ResumeTool.isProviderBackedSyntheticWrapper("ordinary-session", "claude"));
+        assertFalse(ResumeTool.isProviderBackedSyntheticWrapper("managed-enforcer", "pi"));
+    }
+
+    @Test
+    void displayedNativeUuidMatchesHiddenKompileWrapperForCommands() {
+        String wrapperId = "passthrough-codex-wrapper";
+        String nativeUuid = "12345678-1234-1234-1234-123456789abc";
+
+        assertTrue(ResumeTool.sessionIdentifierMatches(
+                wrapperId, nativeUuid, nativeUuid, ResumeTool.IdentifierMatch.EXACT));
+        assertTrue(ResumeTool.sessionIdentifierMatches(
+                wrapperId, nativeUuid, "12345678", ResumeTool.IdentifierMatch.PREFIX));
+        assertTrue(ResumeTool.sessionIdentifierMatches(
+                wrapperId, nativeUuid, "1234-1234", ResumeTool.IdentifierMatch.SUBSTRING));
+        assertFalse(ResumeTool.sessionIdentifierMatches(
+                wrapperId, nativeUuid, "deadbeef", ResumeTool.IdentifierMatch.PREFIX));
+    }
+
+    @Test
+    void expandedMetadataIncludesCanonicalIdSourceCountAndWorkingDirectory() {
+        String uuid = "12345678-1234-1234-1234-123456789abc";
+
+        List<String> lines = ResumeTool.expandedMetadataLines(
+                uuid, uuid, "test-source", 7, "/work/project");
+
+        assertEquals(List.of(
+                "Session ID / UUID: " + uuid,
+                "Source: test-source  ·  Messages: 7  ·  Working directory: /work/project"), lines);
+    }
+
+    @Test
+    void expandedMetadataKeepsKompileTranscriptIdWhenNativeUuidDiffers() {
+        List<String> lines = ResumeTool.expandedMetadataLines(
+                "12345678-1234-1234-1234-123456789abc",
+                "kompile-wrapper-id",
+                "kompile",
+                -1,
+                "");
+
+        assertEquals("Kompile transcript ID: kompile-wrapper-id", lines.get(1));
+        assertTrue(lines.get(2).contains("Messages: unknown"));
+        assertTrue(lines.get(2).contains("Working directory: unknown"));
+    }
+
+    @Test
+    void providerNativeConversationReplacesWrapperWithRecordedNativeId() {
+        String nativeId = "12345678-1234-1234-1234-123456789abc";
+        ResumeTool.ConversationSummary wrapper = conversation(
+                "emulated-wrapper", "Wrapper prompt", "claude", "kompile", 200_000L);
+        ResumeTool.ConversationSummary nativeConversation = conversation(
+                nativeId, "Native Claude title", "claude", "claude-code", 100_000L);
+
+        List<ResumeTool.ConversationSummary> deduplicated = ResumeTool.deduplicateConversations(
+                List.of(wrapper, nativeConversation), Map.of(wrapper.sessionId(), nativeId));
+
+        assertEquals(List.of(nativeConversation), deduplicated);
+    }
+
+    @Test
+    void legacySyntheticWrapperIsRemovedForUniqueNearbyNativeSession() {
+        ResumeTool.ConversationSummary wrapper = conversation(
+                "emulated-legacy", "/model", "claude", "kompile", 1_000_000L);
+        ResumeTool.ConversationSummary nativeConversation = conversation(
+                "native-near", "List MCP tools", "claude", "claude-code", 1_180_000L);
+        ResumeTool.ConversationSummary unrelated = conversation(
+                "native-far", "Independent session", "claude", "claude-code", 2_000_000L);
+
+        List<ResumeTool.ConversationSummary> deduplicated = ResumeTool.deduplicateConversations(
+                List.of(wrapper, nativeConversation, unrelated), Map.of());
+
+        assertEquals(List.of(nativeConversation, unrelated), deduplicated);
+    }
+
+    @Test
+    void legacySyntheticWrapperIsKeptWhenNearbyNativeMatchIsAmbiguous() {
+        ResumeTool.ConversationSummary wrapper = conversation(
+                "passthrough-legacy", "Prompt", "codex", "kompile", 1_000_000L);
+        ResumeTool.ConversationSummary first = conversation(
+                "native-before", "First", "codex", "codex", 999_000L);
+        ResumeTool.ConversationSummary second = conversation(
+                "native-after", "Second", "codex", "codex", 1_001_000L);
+
+        List<ResumeTool.ConversationSummary> deduplicated = ResumeTool.deduplicateConversations(
+                List.of(wrapper, first, second), Map.of());
+
+        assertEquals(List.of(wrapper, first, second), deduplicated);
+    }
+
+    @Test
+    void ordinaryKompileConversationIsNotTimeMatchedToNativeSession() {
+        ResumeTool.ConversationSummary kompileConversation = conversation(
+                "ordinary-session", "Prompt", "claude", "kompile", 1_000_000L);
+        ResumeTool.ConversationSummary nativeConversation = conversation(
+                "native-near", "Native", "claude", "claude-code", 1_001_000L);
+
+        List<ResumeTool.ConversationSummary> deduplicated = ResumeTool.deduplicateConversations(
+                List.of(kompileConversation, nativeConversation), Map.of());
+
+        assertEquals(List.of(kompileConversation, nativeConversation), deduplicated);
+    }
+
+    private static ResumeTool.ConversationSummary conversation(
+            String sessionId,
+            String title,
+            String agent,
+            String source,
+            long timestamp) {
+        return new ResumeTool.ConversationSummary(
+                sessionId, title, String.valueOf(timestamp), agent, source,
+                String.valueOf(timestamp), timestamp, -1, null);
     }
 
     private List<String> buildAgentResumeCommand(String agent,

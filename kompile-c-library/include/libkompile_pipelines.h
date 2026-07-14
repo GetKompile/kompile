@@ -8,6 +8,16 @@
 extern "C" {
 #endif
 
+graal_isolatethread_t* kompileCreateIsolate();
+
+int kompileDetachThread(graal_isolatethread_t* thread);
+
+int kompileTearDownIsolate(graal_isolatethread_t* thread);
+
+graal_isolatethread_t* kompileAttachThread(graal_isolate_t* isolate);
+
+int kompileAbiVersion(graal_isolatethread_t* thread);
+
 int initPipeline(graal_isolatethread_t* thread, void * handlesPtr, char* pipelinePathPtr);
 
 int runPipeline(graal_isolatethread_t* thread, void * handlesPtr, void * inputPtr, void * resultPtr);

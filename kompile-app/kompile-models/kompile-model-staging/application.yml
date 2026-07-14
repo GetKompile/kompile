@@ -22,6 +22,8 @@ kompile:
       enabled: true
     model-dir: ${user.home}/.kompile/models
     staging-dir: ${user.home}/.kompile/models/.staging
+    generated-artifacts-dir: ${user.home}/.kompile/models/.generated
+    artifact-transfer-token: ${KOMPILE_STAGING_ARTIFACT_TOKEN:}
 
   # Archive configuration
   archive:

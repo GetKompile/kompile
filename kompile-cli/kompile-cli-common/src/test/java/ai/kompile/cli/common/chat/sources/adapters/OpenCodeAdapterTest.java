@@ -179,6 +179,127 @@ class OpenCodeAdapterTest {
     }
 
     @Test
+    void readsInstalledSessionMessageSchemaWithoutSequenceColumn() throws Exception {
+        Path db = tempDir.resolve("installed-session-message-opencode.db");
+        createSessionTable(db);
+        try (Connection connection = connect(db);
+             Statement statement = connection.createStatement()) {
+            statement.execute("""
+                    CREATE TABLE session_message (
+                        id TEXT PRIMARY KEY,
+                        session_id TEXT NOT NULL,
+                        type TEXT NOT NULL,
+                        time_created INTEGER NOT NULL,
+                        time_updated INTEGER NOT NULL,
+                        data TEXT NOT NULL
+                    )
+                    """);
+            insertSession(connection, "installed-session", "Installed schema", "/work/current", 3_000L);
+            insertUnsequencedSessionMessage(
+                    connection,
+                    "assistant-message",
+                    "installed-session",
+                    "assistant",
+                    2_000L,
+                    """
+                    {"content":[{"type":"text","text":"Second turn"}]}
+                    """);
+            insertUnsequencedSessionMessage(
+                    connection,
+                    "user-message",
+                    "installed-session",
+                    "user",
+                    1_000L,
+                    """
+                    {"text":"First turn","files":[],"agents":[]}
+                    """);
+        }
+
+        OpenCodeAdapter adapter = new TestOpenCodeAdapter(db);
+        List<ChatTurn> turns = adapter.readTurns("installed-session");
+
+        assertEquals(2, turns.size());
+        assertEquals("user", turns.get(0).role());
+        assertEquals("First turn", turns.get(0).content());
+        assertEquals("assistant", turns.get(1).role());
+        assertEquals("Second turn", turns.get(1).content());
+    }
+
+    @Test
+    void usesMessagePartsWhenSessionMessageContainsOnlyControlEvents() throws Exception {
+        Path db = tempDir.resolve("installed-hybrid-opencode.db");
+        createSessionTable(db);
+        try (Connection connection = connect(db);
+             Statement statement = connection.createStatement()) {
+            statement.execute("""
+                    CREATE TABLE message (
+                        id TEXT PRIMARY KEY,
+                        session_id TEXT NOT NULL,
+                        time_created INTEGER,
+                        data TEXT NOT NULL
+                    )
+                    """);
+            statement.execute("""
+                    CREATE TABLE part (
+                        id TEXT PRIMARY KEY,
+                        message_id TEXT NOT NULL,
+                        session_id TEXT NOT NULL,
+                        time_created INTEGER,
+                        data TEXT NOT NULL
+                    )
+                    """);
+            statement.execute("""
+                    CREATE TABLE session_message (
+                        id TEXT PRIMARY KEY,
+                        session_id TEXT NOT NULL,
+                        type TEXT NOT NULL,
+                        time_created INTEGER NOT NULL,
+                        time_updated INTEGER NOT NULL,
+                        data TEXT NOT NULL
+                    )
+                    """);
+
+            insertSession(connection, "hybrid-session", "Hybrid", "/work/hybrid", 5_000L);
+            insertMessage(connection, "hybrid-user", "hybrid-session", 1_000L, """
+                    {"role":"user","time":{"created":1000}}
+                    """);
+            insertPart(connection, "hybrid-user-text", "hybrid-user", "hybrid-session", 1_001L, """
+                    {"type":"text","text":"Define JSON in one sentence"}
+                    """);
+            insertMessage(connection, "hybrid-assistant", "hybrid-session", 2_000L, """
+                    {"role":"assistant","time":{"created":2000}}
+                    """);
+            insertPart(connection, "hybrid-assistant-text", "hybrid-assistant",
+                    "hybrid-session", 2_001L, """
+                    {"type":"text","text":"JSON is a text format for structured data."}
+                    """);
+
+            insertUnsequencedSessionMessage(connection, "agent-event-1", "hybrid-session",
+                    "agent-switched", 900L, """
+                    {"agent":"build"}
+                    """);
+            insertUnsequencedSessionMessage(connection, "model-event", "hybrid-session",
+                    "model-switched", 901L, """
+                    {"model":{"id":"test-model"}}
+                    """);
+            insertUnsequencedSessionMessage(connection, "agent-event-2", "hybrid-session",
+                    "agent-switched", 902L, """
+                    {"agent":"build"}
+                    """);
+        }
+
+        OpenCodeAdapter adapter = new TestOpenCodeAdapter(db);
+        assertEquals(2, adapter.list().get(0).messageCount());
+
+        List<ChatTurn> turns = adapter.readTurns("hybrid-session");
+        assertEquals(2, turns.size());
+        assertEquals("user", turns.get(0).role());
+        assertEquals("Define JSON in one sentence", turns.get(0).content());
+        assertEquals("assistant", turns.get(1).role());
+        assertEquals("JSON is a text format for structured data.", turns.get(1).content());
+    }
+
+    @Test
     void prefersSessionMessageRowsWhenLegacyTablesAlsoExist() throws Exception {
         Path db = tempDir.resolve("mixed-opencode.db");
         createSessionTable(db);
@@ -229,6 +350,108 @@ class OpenCodeAdapterTest {
         assertEquals("current message", turns.get(0).content());
     }
 
+    @Test
+    void excludesChildSessionsFromNativeResumeListing() throws Exception {
+        Path db = tempDir.resolve("root-only-opencode.db");
+        createSessionTable(db);
+        try (Connection connection = connect(db);
+             Statement statement = connection.createStatement()) {
+            statement.execute("ALTER TABLE session ADD COLUMN parent_id TEXT");
+            insertSession(connection, "root-session", "Native root title", "/work/project", 1_000L);
+            insertSession(connection, "child-session", "Explore (@explore subagent)", "/work/project", 2_000L);
+            statement.execute("UPDATE session SET parent_id = 'root-session' WHERE id = 'child-session'");
+        }
+
+        OpenCodeAdapter adapter = new TestOpenCodeAdapter(db);
+
+        assertEquals(1, adapter.discover().sessionCount());
+        List<ChatSessionSummary> summaries = adapter.list();
+        assertEquals(1, summaries.size());
+        assertEquals("root-session", summaries.get(0).sessionId());
+        assertEquals("Native root title", summaries.get(0).title());
+    }
+
+    @Test
+    void legacySchemaFallsBackToTheExactWorkingDirectory() throws Exception {
+        Path db = tempDir.resolve("project-opencode.db");
+        createSessionTable(db);
+        try (Connection connection = connect(db)) {
+            insertSession(connection, "matching", "Matching", "/work/project", 3_000L);
+            insertSession(connection, "nested", "Nested", "/work/project/child", 2_000L);
+            insertSession(connection, "unrelated", "Unrelated", "/other/project", 1_000L);
+        }
+
+        OpenCodeAdapter adapter = new TestOpenCodeAdapter(db);
+
+        List<ChatSessionSummary> summaries = adapter.list(Path.of("/work/project"));
+        assertEquals(1, summaries.size());
+        assertEquals("matching", summaries.get(0).sessionId());
+        assertEquals("/work/project", summaries.get(0).workingDirectory());
+    }
+
+    @Test
+    void projectScopedListMatchesNativeOpenCodeRootsAndDefaultLimit() throws Exception {
+        Path db = tempDir.resolve("native-project-opencode.db");
+        createSessionTable(db);
+        try (Connection connection = connect(db);
+             Statement statement = connection.createStatement()) {
+            statement.execute("ALTER TABLE session ADD COLUMN project_id TEXT");
+            statement.execute("ALTER TABLE session ADD COLUMN parent_id TEXT");
+            statement.execute("""
+                    CREATE TABLE project (
+                        id TEXT PRIMARY KEY,
+                        worktree TEXT NOT NULL
+                    )
+                    """);
+            statement.execute("INSERT INTO project(id, worktree) VALUES "
+                    + "('current-project', '/work/project'), "
+                    + "('other-project', '/other/project')");
+
+            for (int i = 0; i < 102; i++) {
+                insertProjectSession(
+                        connection,
+                        String.format("root-%03d", i),
+                        "Native title " + i,
+                        i % 2 == 0 ? "/work/project" : "/work/project/module",
+                        10_000L + i,
+                        "current-project",
+                        null);
+            }
+            insertProjectSession(
+                    connection,
+                    "child-session",
+                    "Explore (@explore subagent)",
+                    "/work/project",
+                    99_999L,
+                    "current-project",
+                    "root-101");
+            insertProjectSession(
+                    connection,
+                    "unrelated",
+                    "Other project",
+                    "/other/project",
+                    100_000L,
+                    "other-project",
+                    null);
+        }
+
+        OpenCodeAdapter adapter = new TestOpenCodeAdapter(db);
+        List<ChatSessionSummary> summaries =
+                adapter.list(Path.of("/work/project/deeper"));
+
+        assertTrue(adapter.isWorkingDirectoryScopeAuthoritative());
+        assertEquals(100, summaries.size());
+        assertEquals("root-101", summaries.get(0).sessionId());
+        assertEquals("Native title 101", summaries.get(0).title());
+        assertEquals("root-002", summaries.get(99).sessionId());
+        assertTrue(summaries.stream()
+                .anyMatch(summary -> "/work/project/module".equals(summary.workingDirectory())));
+        assertFalse(summaries.stream()
+                .anyMatch(summary -> "child-session".equals(summary.sessionId())));
+        assertFalse(summaries.stream()
+                .anyMatch(summary -> "unrelated".equals(summary.sessionId())));
+    }
+
     private static void createSessionTable(Path db) throws Exception {
         try (Connection connection = connect(db);
              Statement statement = connection.createStatement()) {
@@ -260,6 +483,28 @@ class OpenCodeAdapterTest {
         }
     }
 
+    private static void insertProjectSession(
+            Connection connection,
+            String id,
+            String title,
+            String directory,
+            long updated,
+            String projectId,
+            String parentId) throws Exception {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "INSERT INTO session("
+                        + "id, title, directory, time_updated, project_id, parent_id"
+                        + ") VALUES (?, ?, ?, ?, ?, ?)")) {
+            statement.setString(1, id);
+            statement.setString(2, title);
+            statement.setString(3, directory);
+            statement.setLong(4, updated);
+            statement.setString(5, projectId);
+            statement.setString(6, parentId);
+            statement.executeUpdate();
+        }
+    }
+
     private static void insertMessage(Connection connection, String id, String sessionId,
                                       long created, String data) throws Exception {
         try (PreparedStatement statement = connection.prepareStatement(
@@ -281,6 +526,27 @@ class OpenCodeAdapterTest {
             statement.setString(3, sessionId);
             statement.setLong(4, created);
             statement.setString(5, data);
+            statement.executeUpdate();
+        }
+    }
+
+    private static void insertUnsequencedSessionMessage(
+            Connection connection,
+            String id,
+            String sessionId,
+            String type,
+            long created,
+            String data) throws Exception {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "INSERT INTO session_message("
+                        + "id, session_id, type, time_created, time_updated, data"
+                        + ") VALUES (?, ?, ?, ?, ?, ?)")) {
+            statement.setString(1, id);
+            statement.setString(2, sessionId);
+            statement.setString(3, type);
+            statement.setLong(4, created);
+            statement.setLong(5, created);
+            statement.setString(6, data);
             statement.executeUpdate();
         }
     }

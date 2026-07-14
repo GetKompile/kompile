@@ -117,6 +117,42 @@
                     </execution>
                 </executions>
             </plugin>
+            <!-- Roster gate: cli-agents.json is the single source of truth for every CLI
+                 agent lane (passthrough, delegation, managed TUI). A partial roster baked
+                 into ~/.m2 silently ships agent-lockout in every downstream binary, and
+                 tests don't run in dist/native lanes — so this check is bound to validate
+                 and fires on EVERY build, including -DskipTests. Removing an agent must be
+                 deliberate: update this gate, CliAgentRegistryTest, and the matching gate
+                 in kompile-cli-main/pom.xml in the same commit. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-antrun-plugin</artifactId>
+                <version>3.1.0</version>
+                <executions>
+                    <execution>
+                        <id>verify-cli-agent-roster</id>
+                        <phase>validate</phase>
+                        <goals>
+                            <goal>run</goal>
+                        </goals>
+                        <configuration>
+                            <target>
+                                <condition property="cliAgentsRosterComplete">
+                                    <and>
+                                        <resourcecontains resource="${project.basedir}/src/main/resources/cli-agents.json" substring="&quot;claude-cli&quot;"/>
+                                        <resourcecontains resource="${project.basedir}/src/main/resources/cli-agents.json" substring="&quot;codex-cli&quot;"/>
+                                        <resourcecontains resource="${project.basedir}/src/main/resources/cli-agents.json" substring="&quot;gemini-cli&quot;"/>
+                                        <resourcecontains resource="${project.basedir}/src/main/resources/cli-agents.json" substring="&quot;opencode-cli&quot;"/>
+                                        <resourcecontains resource="${project.basedir}/src/main/resources/cli-agents.json" substring="&quot;qwen-cli&quot;"/>
+                                        <resourcecontains resource="${project.basedir}/src/main/resources/cli-agents.json" substring="&quot;pi-cli&quot;"/>
+                                    </and>
+                                </condition>
+                                <fail unless="cliAgentsRosterComplete">cli-agents.json is missing part of the required agent roster (claude-cli, codex-cli, gemini-cli, opencode-cli, qwen-cli, pi-cli). This registry feeds ALL agent lanes; a partial roster ships agent-lockout in every downstream binary. If the roster is genuinely changing, update this gate, CliAgentRegistryTest, and the registry gate in kompile-cli-main/pom.xml in the same commit.</fail>
+                            </target>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
         </plugins>
     </build>
 </project>

@@ -1977,7 +1977,18 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     private void refreshManagedSlashCompletion(LineReaderImpl impl) {
         try {
             updateSlashCompletionPanel(impl.getBuffer().toString(), impl.getBuffer().cursor());
-            impl.callWidget(LineReader.REDISPLAY);
+            // Do NOT call callWidget(REDISPLAY) here. This method is invoked from inside
+            // a widget dispatch (SELF_INSERT / BACKWARD_DELETE_CHAR / COMPLETE_WORD) via
+            // wrapSlashRefreshWidget. A re-entrant callWidget(REDISPLAY) corrupts JLine's
+            // internal cursor/display state mid-dispatch: the nested REDISPLAY updates
+            // JLine's screen model while the outer widget has not returned yet, so the
+            // subsequent post-dispatch JLine redraw uses stale state and produces garbled
+            // output. The corruption is specifically visible when "/" appears at a non-zero
+            // buffer position (e.g. "a/"): slashCompletionLines stays empty, the panel
+            // is cleared via raw ANSI inside redrawActivityPanelOnly(), and the re-entrant
+            // REDISPLAY then disagrees with JLine's own cursor tracking for the input line.
+            // JLine's readLine() loop redraws the input line automatically after every
+            // widget dispatch, so the explicit re-entrant call is both redundant and harmful.
         } catch (Exception ignored) {
             // Completion display must never interfere with typing.
         }
@@ -3543,7 +3554,9 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                                 // transcript — its cursor addressing decodes to "[C[C…" garbage — so mirror
                                 // the agent's real screen (the mirror IS the picker, no text banner). An
                                 // inline numbered menu decodes fine and gets the explicit text banner.
-                                boolean fullScreen = vt.isInAlternateScreen();
+                                // NOTE: claude's whole TUI lives in alt-screen so alt-screen alone
+                                // does NOT mean a dialog is up — gate via decoder.altScreenIsDialog().
+                                boolean fullScreen = vt.isInAlternateScreen() && decoder.altScreenIsDialog();
                                 if (fullScreen) enterMirrorForDialog();
                                 if (!agentAwaitingInput) {
                                     agentAwaitingInput = true;
@@ -3638,6 +3651,14 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             // the persistent decoder is reused across turns, so this clears both
             // any prior turn and startup banners; only the response accumulates.
             if (agentDecoder != null) agentDecoder.resetHistory();
+            // FIX 4: Seed the baseline so still-visible rows from the previous turn (which the
+            // agent has not yet cleared) don't get re-emitted as new content on the first
+            // processDecodedTuiScreen call. Observe the current screen once after the reset so
+            // tuiLastRenderedContent begins at the pre-message snapshot rather than blank.
+            if (agentDecoder != null && virtualTerminal != null) {
+                agentDecoder.observe(virtualTerminal);
+                tuiLastRenderedContent = agentDecoder.renderHistory();
+            }
 
             // Send the message via stdin
             lastSentMessage = message;

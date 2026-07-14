@@ -28,6 +28,10 @@ import java.util.Locale;
  *       with {@code ┃} borders, model bar ("Build · &lt;model&gt;"), keybinding hints,
  *       and a centered logo built from block glyphs</li>
  *   <li>Sends terminal queries: DSR(x3), Kitty(?u), OSC 10/11, DECRPM</li>
+ *   <li>Bubble Tea framework: disables DECAWM (ESC[?7l) and enters the alternate
+ *       screen at startup (ESC[?1049h). The ENTIRE TUI lives in the alternate screen
+ *       — it never leaves it until exit. Transient pickers (agent/model selector)
+ *       are drawn IN the same alternate screen, not in an additional nested one.</li>
  * </ul>
  */
 public class OpenCodeDecoder extends AbstractTuiDecoder {
@@ -35,6 +39,24 @@ public class OpenCodeDecoder extends AbstractTuiDecoder {
     @Override
     public String agentName() {
         return "opencode";
+    }
+
+    /**
+     * OpenCode's entire TUI lives in the alternate screen — it enters it at startup
+     * (ESC[?1049h via Bubble Tea) and stays there until exit. Consequently,
+     * {@code isInAlternateScreen()} is always true during normal operation and
+     * carries no signal that a picker or dialog is open. Return {@code false} to
+     * prevent every detected prompt from triggering full-screen mirror mode.
+     * <p>
+     * Evidence: (1) The PTY dump shows {@code ESC[?1049h ESC[2J} as the very first
+     * bytes; (2) VirtualTerminal's DECAWM comment explicitly names "opencode/bubbletea"
+     * as disabling wrap via {@code ESC[?7l} to draw precise box borders — a property
+     * of a persistent full-screen TUI, not a transient overlay; (3) the decoder test
+     * feeds {@code \033[?1049h\033[2J} as the initialisation sequence.
+     */
+    @Override
+    public boolean altScreenIsDialog() {
+        return false;
     }
 
     @Override
@@ -54,6 +76,24 @@ public class OpenCodeDecoder extends AbstractTuiDecoder {
                 || lower.contains("ctrl+p commands")
                 || lower.contains("ctrl+p command")
                 || (lower.contains("opencode") && lower.contains("mcp"));
+    }
+
+    /**
+     * Override to add OpenCode-specific affordances and generation guard.
+     * <p>
+     * The base class excludes {@code "esc to interrupt"} as a generation marker, but
+     * OpenCode uses {@code "esc interrupt"} (no "to"). Without this override the base
+     * class would not suppress prompt detection while OpenCode is actively generating.
+     * We gate on {@link #isResponding} which checks OpenCode's exact markers, then
+     * delegate to the base-class logic for the actual affordance scan (numbered menus,
+     * y/n, decision questions, trailing-question scoping).
+     */
+    @Override
+    public boolean isAwaitingUserInput(VirtualTerminal vt) {
+        // Never fire while OpenCode is actively generating — its "esc interrupt" banner
+        // is not caught by the base-class "esc to interrupt" exclusion.
+        if (isResponding(vt)) return false;
+        return super.isAwaitingUserInput(vt);
     }
 
     @Override

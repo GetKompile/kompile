@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  native-sdk.xml — Maven Assembly descriptor for the Kompile graph-reasoning
+  native SDK zip artifact.
+
+  Produced during the native-library Maven profile (activated by -Dkompile.dist
+  or -Pnative-library).
+
+  Output artifact:
+    target/kompile-graph-reasoning-local-<version>-native-sdk.zip
+
+  Layout (mirrors SDX sdx-runtime-sdk shape so iOS/Android classifiers slot in):
+
+    include/kompile_reasoning.h      — canonical public C header
+    lib/libkompile_reasoning.so      — shared library (Linux x86_64)
+    bindings/python/kompile_reasoning.py  — ctypes binding
+    README.md                        — quickstart
+
+  Attached classifier: native-sdk
+-->
+<assembly xmlns="http://maven.apache.org/ASSEMBLY/2.2.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/ASSEMBLY/2.2.0
+                              https://maven.apache.org/xsd/assembly-2.2.0.xsd">
+
+    <id>native-sdk</id>
+    <formats>
+        <format>zip</format>
+    </formats>
+    <includeBaseDirectory>false</includeBaseDirectory>
+
+    <!-- include/ — canonical checked-in public header -->
+    <fileSets>
+        <fileSet>
+            <directory>${project.basedir}/include</directory>
+            <outputDirectory>include</outputDirectory>
+            <includes>
+                <include>kompile_reasoning.h</include>
+            </includes>
+        </fileSet>
+
+        <!-- bindings/ — language wrappers -->
+        <fileSet>
+            <directory>${project.basedir}/bindings/python</directory>
+            <outputDirectory>bindings/python</outputDirectory>
+            <includes>
+                <include>kompile_reasoning.py</include>
+            </includes>
+        </fileSet>
+
+        <!-- README at root of zip -->
+        <fileSet>
+            <directory>${project.basedir}</directory>
+            <outputDirectory>.</outputDirectory>
+            <includes>
+                <include>README.md</include>
+            </includes>
+        </fileSet>
+    </fileSets>
+
+    <!-- lib/ — native shared library produced by native-image -->
+    <files>
+        <!-- Linux -->
+        <file>
+            <source>${project.build.directory}/libkompile_reasoning.so</source>
+            <outputDirectory>lib</outputDirectory>
+            <destName>libkompile_reasoning.so</destName>
+            <!-- filtered=false so binary is not corrupted -->
+        </file>
+    </files>
+
+</assembly>

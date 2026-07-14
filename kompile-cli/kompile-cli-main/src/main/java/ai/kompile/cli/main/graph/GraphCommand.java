@@ -126,7 +126,7 @@ public class GraphCommand implements Callable<Integer> {
             if (client == null) return 1;
             try {
                 Map<String, Object> body = new LinkedHashMap<>();
-                body.put("nodeType", type);
+                body.put("type", type);
                 body.put("externalId", externalId);
                 body.put("title", title);
                 if (description != null) body.put("description", description);

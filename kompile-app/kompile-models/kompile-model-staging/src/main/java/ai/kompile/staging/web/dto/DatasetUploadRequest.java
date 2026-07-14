@@ -30,7 +30,7 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class DatasetUploadRequest {
     private String name;
-    private String format; // JSONL, CSV, PARQUET, TEXT
+    private String format; // JSONL, CLAUDE_CODE_JSONL, OPENCODE_JSONL, CSV, PARQUET, TEXT
     private String task; // CAUSAL_LM, SEQ2SEQ, CLASSIFICATION, PREFERENCE
     private String inputColumn;
     private String outputColumn;

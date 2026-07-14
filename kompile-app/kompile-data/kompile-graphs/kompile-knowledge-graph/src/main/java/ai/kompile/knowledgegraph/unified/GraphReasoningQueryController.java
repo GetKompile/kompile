@@ -6,6 +6,7 @@
 package ai.kompile.knowledgegraph.unified;
 
 import ai.kompile.graph.reasoning.query.GraphQueryEngine;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -15,6 +16,7 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.Map;
 
 /** HTTP transport for the generic graph reasoning query contract used by CLI and MCP clients. */
+@ConditionalOnProperty(prefix = "kompile.graph.http", name = "enabled", havingValue = "true")
 @RestController
 @RequestMapping(GraphReasoningQueryController.BASE_PATH)
 public class GraphReasoningQueryController {

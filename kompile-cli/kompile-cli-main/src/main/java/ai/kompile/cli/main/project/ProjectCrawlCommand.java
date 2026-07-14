@@ -167,6 +167,19 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                     : null;
             if (workflow != null) {
                 printCrawlPlan(store, manifest, workflow, projectRoot);
+                if (Boolean.TRUE.equals(serve)) {
+                    int targetPort = port != null ? port : 8080;
+                    if (new ServiceManager().checkHealth(targetPort)) {
+                        System.out.println("App already running at http://localhost:" + targetPort
+                                + " — skipping start-services.");
+                    } else {
+                        int serveExit = runServeSelection(store, manifest, projectRoot, null,
+                                false, false, false, appUrl, port, dryRun);
+                        if (serveExit != 0) {
+                            return serveExit;
+                        }
+                    }
+                }
                 return runWorkflow(store, manifest, workflow, projectRoot, appUrl, port, dryRun);
             }
 
@@ -203,6 +216,17 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                             false, false, false, appUrl, port, dryRun);
                     if (serveExit != 0) {
                         return serveExit;
+                    }
+                    if (!dryRun) {
+                        KompileProjectWorkflowStep readiness = new KompileProjectWorkflowStep();
+                        readiness.setTimeoutSeconds(120);
+                        String targetBaseUrl = firstNonBlank(appUrl,
+                                "http://localhost:" + targetPort);
+                        if (runHealthCheckStep(readiness, projectRoot, targetBaseUrl, false) != 0) {
+                            System.err.println("Project services started, but kompile-app did not become ready at "
+                                    + targetBaseUrl + " within 120 seconds.");
+                            return 1;
+                        }
                     }
                 }
             }
@@ -485,6 +509,16 @@ public class ProjectCrawlCommand implements Callable<Integer> {
         commandStep.setWorkingDirectory(firstNonBlank(script.getWorkingDirectory(), step.getWorkingDirectory(), "."));
         Map<String, String> environment = new LinkedHashMap<>(defaultServeEnvironment(manifest, script, projectRoot));
         environment.putAll(step.getEnvironment());
+        if ("start-serving".equals(normalizeScriptId(script))
+                && firstNonBlank(environment.get("KOMPILE_SERVING_COMMAND"),
+                System.getenv("KOMPILE_SERVING_COMMAND")) == null) {
+            Optional<String> servingCommand = defaultServingCommand(manifest, projectRoot);
+            if (servingCommand.isEmpty()) {
+                System.out.println("  Pipeline serving is app-managed for this project — no standalone service started.");
+                return 0;
+            }
+            environment.put("KOMPILE_SERVING_COMMAND", servingCommand.get());
+        }
         commandStep.setEnvironment(environment);
         return runCommandStep(commandStep, projectRoot, dryRun);
     }
@@ -641,8 +675,6 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                 environment.put("KOMPILE_STAGING_COMMAND",
                         "echo 'Model staging not found — install with: kompile install kompile-model-staging' >&2; exit 1");
             }
-        } else if ("start-serving".equals(scriptId) && firstNonBlank(System.getenv("KOMPILE_SERVING_COMMAND")) == null) {
-            defaultServingCommand(manifest, projectRoot).ifPresent(command -> environment.put("KOMPILE_SERVING_COMMAND", command));
         } else if ("start-app".equals(scriptId) && firstNonBlank(System.getenv("KOMPILE_APP_COMMAND")) == null) {
             defaultAppCommand(projectRoot).ifPresentOrElse(
                     command -> environment.put("KOMPILE_APP_COMMAND", command),
@@ -685,6 +717,13 @@ public class ProjectCrawlCommand implements Callable<Integer> {
 
     private static Optional<String> defaultServingCommand(KompileProjectManifest manifest,
                                                           Path projectRoot) throws IOException {
+        boolean standaloneServingRequired = manifest.getPipelines().stream()
+                .filter(KompileProjectPipeline::isActive)
+                .anyMatch(pipeline -> "SERVING".equals(normalizeEnum(pipeline.getRole()))
+                        || hasTag(pipeline.getTags(), "serving"));
+        if (!standaloneServingRequired) {
+            return Optional.empty();
+        }
         String servingPort = firstNonBlank(System.getenv("KOMPILE_SERVING_PORT"),
                 System.getProperty("kompile.serving.port"), "8091");
         if (isPortInUse(Integer.parseInt(servingPort))) {
@@ -735,6 +774,7 @@ public class ProjectCrawlCommand implements Callable<Integer> {
         if (appJar.isPresent()) {
             return Optional.of("exec java -jar " + shellQuote(appJar.get().toString())
                     + " --server.port=" + shellQuote(port)
+                    + " --kompile.project.root=" + shellQuote(projectRoot.toAbsolutePath().normalize().toString())
                     + " --spring.main.banner-mode=off");
         }
         Optional<Path> sourceRoot = findSourceRoot(projectRoot);

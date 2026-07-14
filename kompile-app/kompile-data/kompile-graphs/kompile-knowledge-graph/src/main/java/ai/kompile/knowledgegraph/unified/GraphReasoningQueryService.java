@@ -9,6 +9,7 @@ import ai.kompile.graph.reasoning.explain.ReasoningTrace;
 import ai.kompile.graph.reasoning.hybrid.HybridReasoner;
 import ai.kompile.graph.reasoning.query.GraphQueryEngine;
 import ai.kompile.graph.reasoning.unified.UnifiedGraph;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -24,6 +25,7 @@ public class GraphReasoningQueryService {
     private final UnifiedGraphBridge bridge;
     private final GraphQueryEngine engine;
 
+    @Autowired
     public GraphReasoningQueryService(UnifiedGraphBridge bridge) {
         this(bridge, new GraphQueryEngine());
     }

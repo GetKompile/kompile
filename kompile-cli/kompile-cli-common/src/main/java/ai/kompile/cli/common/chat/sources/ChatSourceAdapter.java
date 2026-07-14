@@ -45,6 +45,30 @@ public interface ChatSourceAdapter {
         return sessions.subList(0, limit);
     }
 
+    /**
+     * List sessions relevant to a working directory. Implementations with a native
+     * project index should override this so callers do not enumerate every project
+     * and discard unrelated sessions afterwards.
+     *
+     * <p>The default deliberately returns the unfiltered list; callers still apply
+     * their normal path check, preserving adapters that cannot filter efficiently.</p>
+     */
+    default List<ChatSessionSummary> list(Path workingDirectory) throws IOException {
+        return list();
+    }
+
+    /**
+     * Whether {@link #list(Path)} already applies the provider's native local scope.
+     *
+     * <p>Most adapters still rely on the caller's exact-directory safety filter. Providers
+     * such as OpenCode define "local" as the containing VCS project, so their filtered
+     * result must remain authoritative even when individual sessions were started in a
+     * nested directory.</p>
+     */
+    default boolean isWorkingDirectoryScopeAuthoritative() {
+        return false;
+    }
+
     List<ChatTurn> readTurns(String sessionId) throws IOException;
 
     default Optional<Path> resolveWorkingDirectory(String sessionId) throws IOException {

@@ -61,6 +61,11 @@ public class SdkScaffold implements Callable<Integer> {
             description = "Include model bundle in project (default: ${DEFAULT-VALUE})")
     private boolean includeModel;
 
+    @CommandLine.Option(names = "--include-graph",
+            description = "Path to a .kgraph file to embed in the generated project (copies to " +
+                    "ios: Resources/Graphs/, android: app/src/main/assets/graphs/)")
+    private File includeGraph;
+
     @Override
     public Integer call() throws Exception {
         if (!"ios".equals(platform) && !"android".equals(platform)) {
@@ -105,6 +110,10 @@ public class SdkScaffold implements Callable<Integer> {
         } catch (Exception e) {
             System.err.println("  SDK download failed (will scaffold without SDK binary): " + e.getMessage());
         }
+
+        // TODO(P3): add kompile-reasoning xcframework/aar copy step here once
+        // SdkConstants.createKompileReasoningDescriptor returns ios-arm64/android-arm64 artifacts.
+        // See SdkConstants.createKompileReasoningDescriptor() for the descriptor.
 
         // 2. Download model bundle
         Path modelBundlePath = null;
@@ -170,7 +179,27 @@ public class SdkScaffold implements Callable<Integer> {
             System.out.println("  Model copied to: " + modelDest);
         }
 
-        // 6. Print build instructions
+        // 6. Copy .kgraph file if provided
+        if (includeGraph != null) {
+            System.out.println("\nStep 6: Embedding graph file...");
+            if (!includeGraph.exists()) {
+                System.err.println("  WARNING: --include-graph path does not exist: " + includeGraph);
+            } else {
+                Path graphDest;
+                if ("ios".equals(platform)) {
+                    graphDest = output.resolve(projectName).resolve("Resources/Graphs");
+                } else {
+                    graphDest = output.resolve("app/src/main/assets/graphs");
+                }
+                Files.createDirectories(graphDest);
+                Files.copy(includeGraph.toPath(),
+                        graphDest.resolve(includeGraph.getName()),
+                        StandardCopyOption.REPLACE_EXISTING);
+                System.out.println("  Graph copied to: " + graphDest);
+            }
+        }
+
+        // 7. Print build instructions
         System.out.println("\n=== Project scaffolded successfully! ===\n");
         if ("ios".equals(platform)) {
             System.out.println("To build the iOS project:");
@@ -180,6 +209,10 @@ public class SdkScaffold implements Callable<Integer> {
             if ("remote".equals(mode) || "hybrid".equals(mode)) {
                 System.out.println("  4. Set your API key in Settings within the app");
             }
+            if (includeGraph != null) {
+                System.out.println("  Your graph is available at " + projectName + "/Resources/Graphs/" +
+                        includeGraph.getName() + " — load it with kgr_open() at app startup.");
+            }
         } else {
             System.out.println("To build the Android project:");
             System.out.println("  1. Open " + output.toAbsolutePath() + " in Android Studio");
@@ -187,6 +220,10 @@ public class SdkScaffold implements Callable<Integer> {
             System.out.println("  3. Run on a device or emulator");
             if ("remote".equals(mode) || "hybrid".equals(mode)) {
                 System.out.println("  4. Set your API key in Settings within the app");
+            }
+            if (includeGraph != null) {
+                System.out.println("  Your graph is available at app/src/main/assets/graphs/" +
+                        includeGraph.getName() + ".");
             }
         }
 

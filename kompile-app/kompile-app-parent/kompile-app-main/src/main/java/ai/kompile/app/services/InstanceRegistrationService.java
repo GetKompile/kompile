@@ -21,12 +21,15 @@ import ai.kompile.cli.common.registry.InstanceRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Service;
 
 import jakarta.annotation.PreDestroy;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Instant;
 
 /**
@@ -46,7 +49,12 @@ public class InstanceRegistrationService {
     private static final String INSTANCE_TYPE = "app";
 
     private final ServerPortService serverPortService;
+
+    @Value("${kompile.project.root:}")
+    private String configuredProjectRoot;
+
     private volatile boolean registered = false;
+    private volatile String registeredInstanceName;
 
     @Autowired
     public InstanceRegistrationService(ServerPortService serverPortService) {
@@ -59,12 +67,19 @@ public class InstanceRegistrationService {
         try {
             int port = serverPortService.getActualPort();
             long pid = ProcessHandle.current().pid();
+            Path projectRoot = resolveProjectRoot(configuredProjectRoot);
+            String instanceName = projectRoot == null
+                    ? INSTANCE_NAME
+                    : "app-" + sanitize(projectRoot.getFileName().toString()) + "-" + port;
 
-            InstanceInfo info = new InstanceInfo(INSTANCE_NAME, INSTANCE_TYPE, port, pid, null, null, Instant.now());
+            InstanceInfo info = new InstanceInfo(instanceName, INSTANCE_TYPE, port, pid, null,
+                    projectRoot == null ? null : projectRoot.toString(), Instant.now());
             InstanceRegistry.register(info);
+            registeredInstanceName = instanceName;
             registered = true;
 
-            log.info("Registered app instance in ~/.kompile/instances/ (port={}, pid={})", port, pid);
+            log.info("Registered app instance in ~/.kompile/instances/ (name={}, project={}, port={}, pid={})",
+                    instanceName, projectRoot, port, pid);
         } catch (Exception e) {
             log.warn("Failed to register app instance: {}", e.getMessage());
         }
@@ -76,10 +91,28 @@ public class InstanceRegistrationService {
             return;
         }
         try {
-            InstanceRegistry.unregister(INSTANCE_NAME);
-            log.info("Unregistered app instance from ~/.kompile/instances/");
+            InstanceRegistry.unregister(registeredInstanceName);
+            log.info("Unregistered app instance {} from ~/.kompile/instances/", registeredInstanceName);
         } catch (Exception e) {
             log.warn("Failed to unregister app instance: {}", e.getMessage());
         }
+    }
+
+    static Path resolveProjectRoot(String configuredRoot) {
+        String value = configuredRoot;
+        if (value == null || value.isBlank()) {
+            value = System.getenv("KOMPILE_PROJECT_ROOT");
+        }
+        if (value != null && !value.isBlank()) {
+            return Path.of(value).toAbsolutePath().normalize();
+        }
+        Path workingDirectory = Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
+        return Files.isRegularFile(workingDirectory.resolve("kompile.project.json"))
+                ? workingDirectory : null;
+    }
+
+    static String sanitize(String value) {
+        String sanitized = value.replaceAll("[^a-zA-Z0-9._-]", "-");
+        return sanitized.isBlank() ? "project" : sanitized;
     }
 }

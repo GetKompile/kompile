@@ -1,0 +1,61 @@
+# XcodeGen project spec for KompileChatLocal
+# Usage: cd mobile/ios && xcodegen generate
+# Prerequisites: brew install xcodegen (macOS)
+#
+# After generating, open KompileChatLocal.xcodeproj in Xcode 16+.
+# See README.md for the full build workflow.
+
+name: KompileChatLocal
+options:
+  bundleIdPrefix: ai.kompile
+  deploymentTarget:
+    iOS: "16.0"
+  xcodeVersion: "16.0"
+  createIntermediateGroups: true
+  defaultConfig: Debug
+
+configs:
+  Debug: debug
+  Release: release
+
+settings:
+  base:
+    SWIFT_VERSION: "5.10"
+    ENABLE_BITCODE: NO
+    # Bridging header: relative to the project root (mobile/ios/)
+    SWIFT_OBJC_BRIDGING_HEADER: KompileChatLocal/BridgingHeader/KompileChatLocal-Bridging-Header.h
+    # Framework search path — xcframeworks drop into mobile/ios/Frameworks/
+    FRAMEWORK_SEARCH_PATHS: $(PROJECT_DIR)/Frameworks $(inherited)
+    # Header search path for the kompile_reasoning.h copy (optional convenience copy)
+    HEADER_SEARCH_PATHS: $(PROJECT_DIR)/KompileChatLocal/BridgingHeader $(inherited)
+    PRODUCT_BUNDLE_IDENTIFIER: ai.kompile.chat.local
+    DEVELOPMENT_TEAM: ""   # <-- fill in your Apple Team ID
+
+targets:
+  KompileChatLocal:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: KompileChatLocal
+        excludes:
+          - "**/.gitkeep"
+    resources:
+      - path: KompileChatLocal/Resources
+        excludes:
+          - "**/.gitkeep"
+    # Optional xcframeworks — add ONLY when the artifacts exist.
+    # Uncomment each block after dropping the xcframework into Frameworks/
+    # and re-running `xcodegen generate`.
+    #
+    # dependencies:
+    #   - framework: Frameworks/kompile-reasoning-ios-arm64.xcframework
+    #     embed: true
+    #     link: true
+    #   - framework: Frameworks/sdx-llm-ios.xcframework
+    #     embed: true
+    #     link: true
+    settings:
+      base:
+        INFOPLIST_FILE: KompileChatLocal/Info.plist
+        CODE_SIGN_STYLE: Automatic

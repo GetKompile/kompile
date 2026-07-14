@@ -47,6 +47,9 @@ public class InstanceDiscovery {
         try {
             List<InstanceInfo> instances = InstanceRegistry.listAll();
             for (InstanceInfo info : instances) {
+                if (!isAppInstance(info)) {
+                    continue;
+                }
                 String url = info.getUrl();
                 if (probeMcp(url)) {
                     return url;
@@ -65,6 +68,14 @@ public class InstanceDiscovery {
         }
 
         return null;
+    }
+
+    /** Prevent auxiliary services with an actuator endpoint from being mistaken for kompile-app. */
+    static boolean isAppInstance(InstanceInfo info) {
+        if (info == null || info.getType() == null) {
+            return false;
+        }
+        return "app".equals(info.getType()) || "kompile-app-main".equals(info.getType());
     }
 
     /**

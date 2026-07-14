@@ -163,7 +163,8 @@ public class ResumeCommand implements Callable<Integer> {
      */
     private int listConversations() {
         try {
-            List<ChatHistory.ConversationSummary> conversations = ChatHistory.listConversations();
+            List<ChatHistory.ConversationSummary> conversations =
+                    ChatHistory.listResumableConversations();
             if (conversations.isEmpty()) {
                 System.out.println("No saved conversations found.");
                 return 0;

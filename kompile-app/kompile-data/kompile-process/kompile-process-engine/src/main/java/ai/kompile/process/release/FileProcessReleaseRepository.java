@@ -4,6 +4,7 @@ import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Repository;
 
@@ -30,6 +31,7 @@ public class FileProcessReleaseRepository implements ProcessReleaseRepository {
     private final Path releaseDirectory;
     private final ObjectMapper objectMapper;
 
+    @Autowired
     public FileProcessReleaseRepository(
             @Value("${kompile.process.release-dir:${user.home}/.kompile/processes/releases}")
             String releaseDirectory) {

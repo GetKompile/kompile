@@ -634,7 +634,10 @@ public class ModelStagingTool {
                     .source(catalogModel.getSource())
                     .repository(catalogModel.getRepo())
                     .modelId(catalogModel.getId())
+                    .modelType(catalogModel.getModelType() != null
+                            ? ModelType.fromValue(catalogModel.getModelType()) : null)
                     .format(catalogModel.getFormat())
+                    .audioSynthesis(catalogModel.getAudioSynthesis())
                     .files(catalogModel.getFiles() != null ? catalogModel.getFiles() : new HashMap<>())
                     .build();
 
@@ -2560,6 +2563,11 @@ public class ModelStagingTool {
         map.put("source", model.getSource());
         map.put("repo", model.getRepo());
         map.put("format", model.getFormat());
+        if (model.getModelType() != null) map.put("modelType", model.getModelType());
+        if (model.getAudioSynthesis() != null) {
+            map.put("audioSynthesis", objectMapper.convertValue(
+                    model.getAudioSynthesis(), Map.class));
+        }
         if (model.getMetadata() != null) {
             Map<String, Object> meta = new LinkedHashMap<>();
             if (model.getMetadata().getEmbeddingDim() != null) meta.put("embeddingDim", model.getMetadata().getEmbeddingDim());

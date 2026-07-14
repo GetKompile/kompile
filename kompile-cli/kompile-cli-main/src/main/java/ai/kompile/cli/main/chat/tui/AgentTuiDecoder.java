@@ -123,6 +123,16 @@ public interface AgentTuiDecoder {
     }
 
     /**
+     * Whether the alternate screen being active implies a full-screen dialog that must be
+     * mirrored rather than decoded. Most agents use the alternate screen ONLY for transient
+     * pickers (so alt-screen == dialog); Claude Code is the exception because its entire TUI
+     * lives in the alternate screen.
+     */
+    default boolean altScreenIsDialog() {
+        return true;
+    }
+
+    /**
      * Extract the current text intended for live rendering. The default is the
      * final content extractor; decoders can override if their live screen needs
      * different filtering from their final transcript.

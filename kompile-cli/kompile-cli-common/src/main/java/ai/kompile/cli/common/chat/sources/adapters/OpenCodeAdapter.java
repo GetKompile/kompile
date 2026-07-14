@@ -44,10 +44,10 @@ import java.util.Optional;
 /**
  * Reads OpenCode conversations from its SQLite store.
  *
- * <p>OpenCode currently has two transcript layouts in the wild: the legacy
- * {@code message}/{@code part} tables and the newer {@code session_message}
- * table. This adapter detects the schema per database and supports both so an
- * upgrade does not make older (or newly-created) sessions disappear.</p>
+ * <p>OpenCode has two transcript layouts in the wild: {@code message}/{@code part}
+ * rows and exported {@code session_message} rows. Some current databases contain
+ * both, with {@code session_message} holding only control events; the adapter
+ * distinguishes those from conversational rows before choosing a layout.</p>
  */
 public class OpenCodeAdapter implements ChatSourceAdapter {
 
@@ -56,6 +56,9 @@ public class OpenCodeAdapter implements ChatSourceAdapter {
     private static final String LEGACY_MESSAGE_TABLE = "message";
     private static final String LEGACY_PART_TABLE = "part";
     private static final String SESSION_MESSAGE_TABLE = "session_message";
+    private static final String SESSION_MESSAGE_CONVERSATION_TYPES =
+            "('user','assistant','system','synthetic','shell','compaction')";
+    private static final int NATIVE_PROJECT_LIST_LIMIT = 100;
 
     @Override
     public String id() {
@@ -104,10 +107,14 @@ public class OpenCodeAdapter implements ChatSourceAdapter {
         }
 
         try (Connection conn = open(db);
-             Statement st = conn.createStatement();
-             ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM session")) {
-            int count = rs.next() ? rs.getInt(1) : 0;
-            return SourceInfo.available(id(), displayName(), db.toString(), count);
+             Statement st = conn.createStatement()) {
+            String rootFilter = columnExists(conn, "session", "parent_id")
+                    ? " WHERE parent_id IS NULL"
+                    : "";
+            try (ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM session" + rootFilter)) {
+                int count = rs.next() ? rs.getInt(1) : 0;
+                return SourceInfo.available(id(), displayName(), db.toString(), count);
+            }
         } catch (SQLException e) {
             return SourceInfo.unavailable(id(), displayName(), db.toString(),
                     "database unreadable: " + e.getMessage());
@@ -116,11 +123,27 @@ public class OpenCodeAdapter implements ChatSourceAdapter {
 
     @Override
     public List<ChatSessionSummary> list() throws IOException {
-        return list(-1);
+        return listInternal(-1, null);
+    }
+
+    @Override
+    public List<ChatSessionSummary> list(Path workingDirectory) throws IOException {
+        return listInternal(NATIVE_PROJECT_LIST_LIMIT, workingDirectory == null
+                ? null
+                : workingDirectory.toAbsolutePath().normalize());
+    }
+
+    @Override
+    public boolean isWorkingDirectoryScopeAuthoritative() {
+        return true;
     }
 
     @Override
     public List<ChatSessionSummary> list(int limit) throws IOException {
+        return listInternal(limit, null);
+    }
+
+    private List<ChatSessionSummary> listInternal(int limit, Path workingDirectory) throws IOException {
         if (limit == 0 || !ChatAdapterSupport.sqliteAvailable()) {
             return Collections.emptyList();
         }
@@ -131,16 +154,39 @@ public class OpenCodeAdapter implements ChatSourceAdapter {
 
         List<ChatSessionSummary> out = new ArrayList<>();
         try (Connection conn = open(db)) {
+            String projectId = workingDirectory == null
+                    ? null
+                    : resolveProjectId(conn, workingDirectory);
+            boolean projectScoped = projectId != null
+                    && columnExists(conn, "session", "project_id");
+
+            List<String> filters = new ArrayList<>();
+            if (columnExists(conn, "session", "parent_id")) {
+                filters.add("s.parent_id IS NULL");
+            }
+            if (workingDirectory != null) {
+                filters.add(projectScoped ? "s.project_id = ?" : "s.directory = ?");
+            }
+            String where = filters.isEmpty()
+                    ? ""
+                    : " WHERE " + String.join(" AND ", filters);
             String sql = "SELECT s.id, s.title, s.directory, s.time_updated, "
                     + messageCountExpression(conn) + " AS mc "
-                    + "FROM session s ORDER BY s.time_updated DESC, s.id DESC";
+                    + "FROM session s" + where
+                    + " ORDER BY s.time_updated DESC";
             if (limit >= 0) {
                 sql += " LIMIT ?";
             }
 
             try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                int parameter = 1;
+                if (workingDirectory != null) {
+                    ps.setString(parameter++, projectScoped
+                            ? projectId
+                            : workingDirectory.toString());
+                }
                 if (limit >= 0) {
-                    ps.setInt(1, limit);
+                    ps.setInt(parameter, limit);
                 }
                 try (ResultSet rs = ps.executeQuery()) {
                     while (rs.next()) {
@@ -166,13 +212,76 @@ public class OpenCodeAdapter implements ChatSourceAdapter {
         return out;
     }
 
+    /**
+     * Resolve the project identity OpenCode uses for its native session list.
+     * OpenCode scopes resume history by project ID (normally the containing Git
+     * worktree), not by the exact directory recorded on each session.
+     */
+    private static String resolveProjectId(Connection conn, Path workingDirectory)
+            throws SQLException {
+        if (!columnExists(conn, "session", "project_id")) {
+            return null;
+        }
+
+        Path target = workingDirectory.toAbsolutePath().normalize();
+        if (tableExists(conn, "project")
+                && columnExists(conn, "project", "id")
+                && columnExists(conn, "project", "worktree")) {
+            String bestId = null;
+            int bestDepth = -1;
+            try (Statement statement = conn.createStatement();
+                 ResultSet rs = statement.executeQuery("SELECT id, worktree FROM project")) {
+                while (rs.next()) {
+                    String id = rs.getString("id");
+                    String worktree = rs.getString("worktree");
+                    if (id == null || id.isBlank() || worktree == null || worktree.isBlank()) {
+                        continue;
+                    }
+                    try {
+                        Path root = Path.of(worktree).toAbsolutePath().normalize();
+                        if ((target.equals(root) || target.startsWith(root))
+                                && root.getNameCount() > bestDepth) {
+                            bestId = id;
+                            bestDepth = root.getNameCount();
+                        }
+                    } catch (RuntimeException ignored) {
+                        // Ignore malformed legacy project paths and try session metadata below.
+                    }
+                }
+            }
+            if (bestId != null) {
+                return bestId;
+            }
+        }
+
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT project_id FROM session "
+                        + "WHERE directory = ? AND project_id IS NOT NULL "
+                        + "ORDER BY time_updated DESC LIMIT 1")) {
+            ps.setString(1, target.toString());
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    String projectId = rs.getString(1);
+                    if (projectId != null && !projectId.isBlank()) {
+                        return projectId;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
     private static String messageCountExpression(Connection conn) throws SQLException {
         boolean hasSessionMessages = tableExists(conn, SESSION_MESSAGE_TABLE);
         boolean hasLegacyMessages = tableExists(conn, LEGACY_MESSAGE_TABLE);
 
         if (hasSessionMessages && hasLegacyMessages) {
-            return "CASE WHEN EXISTS (SELECT 1 FROM session_message sm0 WHERE sm0.session_id = s.id) "
-                    + "THEN (SELECT COUNT(*) FROM session_message sm WHERE sm.session_id = s.id) "
+            return "CASE WHEN EXISTS (SELECT 1 FROM session_message sm0 "
+                    + "WHERE sm0.session_id = s.id AND LOWER(sm0.type) IN "
+                    + SESSION_MESSAGE_CONVERSATION_TYPES + ") "
+                    + "THEN (SELECT COUNT(*) FROM session_message sm "
+                    + "WHERE sm.session_id = s.id AND LOWER(sm.type) IN "
+                    + SESSION_MESSAGE_CONVERSATION_TYPES + ") "
                     + "ELSE (SELECT COUNT(*) FROM message m WHERE m.session_id = s.id) END";
         }
         if (hasSessionMessages) {
@@ -195,12 +304,17 @@ public class OpenCodeAdapter implements ChatSourceAdapter {
         }
 
         try (Connection conn = open(db)) {
-            if (tableExists(conn, SESSION_MESSAGE_TABLE)
-                    && hasSessionRows(conn, SESSION_MESSAGE_TABLE, sessionId)) {
+            boolean hasSessionMessages = tableExists(conn, SESSION_MESSAGE_TABLE);
+            boolean hasLegacyMessages = tableExists(conn, LEGACY_MESSAGE_TABLE);
+
+            if (hasSessionMessages && hasConversationalSessionRows(conn, sessionId)) {
                 return readSessionMessages(conn, sessionId);
             }
-            if (tableExists(conn, LEGACY_MESSAGE_TABLE)) {
+            if (hasLegacyMessages && hasSessionRows(conn, LEGACY_MESSAGE_TABLE, sessionId)) {
                 return readLegacyMessages(conn, sessionId);
+            }
+            if (hasSessionMessages && hasSessionRows(conn, SESSION_MESSAGE_TABLE, sessionId)) {
+                return readSessionMessages(conn, sessionId);
             }
             return Collections.emptyList();
         } catch (SQLException e) {
@@ -211,8 +325,11 @@ public class OpenCodeAdapter implements ChatSourceAdapter {
     private static List<ChatTurn> readSessionMessages(Connection conn, String sessionId)
             throws SQLException {
         List<ChatTurn> out = new ArrayList<>();
+        String orderBy = columnExists(conn, SESSION_MESSAGE_TABLE, "seq")
+                ? "seq ASC, time_created ASC, id ASC"
+                : "time_created ASC, id ASC";
         String sql = "SELECT type, data, time_created FROM session_message "
-                + "WHERE session_id = ? ORDER BY seq ASC, time_created ASC, id ASC";
+                + "WHERE session_id = ? ORDER BY " + orderBy;
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, sessionId);
             try (ResultSet rs = ps.executeQuery()) {
@@ -230,7 +347,11 @@ public class OpenCodeAdapter implements ChatSourceAdapter {
         return out;
     }
 
-    private static ChatTurn parseSessionMessage(String storedType, String data, long created) {
+    /**
+     * Parses one exported {@code session_message} row using the same normalization as transcript import.
+     * This is also used by training dataset ingestion for OpenCode JSONL exports.
+     */
+    public static ChatTurn parseSessionMessage(String storedType, String data, long created) {
         if (data == null || data.isBlank()) {
             return null;
         }
@@ -598,9 +719,36 @@ public class OpenCodeAdapter implements ChatSourceAdapter {
         }
     }
 
+    private static boolean columnExists(Connection conn, String table, String column) throws SQLException {
+        if (!table.matches("[A-Za-z0-9_]+")) {
+            return false;
+        }
+        try (Statement statement = conn.createStatement();
+             ResultSet rs = statement.executeQuery("PRAGMA table_info(" + table + ")")) {
+            while (rs.next()) {
+                if (column.equalsIgnoreCase(rs.getString("name"))) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     private static boolean hasSessionRows(Connection conn, String table, String sessionId)
             throws SQLException {
         String sql = "SELECT 1 FROM " + table + " WHERE session_id = ? LIMIT 1";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, sessionId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next();
+            }
+        }
+    }
+
+    private static boolean hasConversationalSessionRows(Connection conn, String sessionId)
+            throws SQLException {
+        String sql = "SELECT 1 FROM session_message WHERE session_id = ? AND LOWER(type) IN "
+                + SESSION_MESSAGE_CONVERSATION_TYPES + " LIMIT 1";
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, sessionId);
             try (ResultSet rs = ps.executeQuery()) {

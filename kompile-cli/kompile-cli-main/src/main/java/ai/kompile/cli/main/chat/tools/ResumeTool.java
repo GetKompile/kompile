@@ -16,6 +16,9 @@
 
 package ai.kompile.cli.main.chat.tools;
 
+import ai.kompile.cli.common.chat.sources.ChatSessionSummary;
+import ai.kompile.cli.common.chat.sources.ChatSourceAdapter;
+import ai.kompile.cli.common.chat.sources.ChatSourceRegistry;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.utils.HashUtils;
 import ai.kompile.cli.main.chat.ChatHistory;
@@ -100,9 +103,12 @@ public class ResumeTool implements CliTool {
     private int currentTab = 0;
     private int currentPage = 0;
     private static final int PAGE_SIZE = 15;
+    private static final long LEGACY_WRAPPER_DEDUP_WINDOW_MILLIS = TimeUnit.MINUTES.toMillis(5);
     private String searchQuery = "";
     private String filterAgent = "";
     private String filterSource = "";
+    private final Set<String> expandedConversationKeys = new HashSet<>();
+    private final Map<String, List<String>> previewCache = new HashMap<>();
 
     // Sort state
     private String sortField = "date"; // date, title, agent
@@ -277,7 +283,15 @@ public class ResumeTool implements CliTool {
             // Index out of range — return null to signal invalid selection
             return null;
         } catch (NumberFormatException e) {
-            // Not a number, try alias resolution then fall back to raw input
+            // Not a number, resolve against both stored and displayed identifiers.
+        }
+
+        ConversationSummary listed = findListedConversation(input, IdentifierMatch.EXACT);
+        if (listed == null) {
+            listed = findListedConversation(input, IdentifierMatch.PREFIX);
+        }
+        if (listed != null) {
+            return listed.sessionId();
         }
 
         // Try to resolve as a Claude Code alias (slug / customTitle) before returning raw
@@ -324,69 +338,81 @@ public class ResumeTool implements CliTool {
             if (zeroBasedIndex >= 0 && zeroBasedIndex < filteredConversations.size()) {
                 return filteredConversations.get(zeroBasedIndex).sessionId();
             }
-            // Number but out of range — fall through to partial match
-            // (the number might be part of a session ID)
+            // Number but out of range — fall through to identifier matching.
         } catch (NumberFormatException e) {
-            // Not a number — continue to partial matching
+            // Not a number — continue to identifier matching.
         }
 
-        // Partial string matching: check if input is a prefix or substring of any session ID
-        String lower = trimmed.toLowerCase();
-
-        // Exact match first
-        for (ConversationSummary convo : filteredConversations) {
-            if (convo.sessionId().equalsIgnoreCase(trimmed)) {
-                return convo.sessionId();
+        for (IdentifierMatch match : IdentifierMatch.values()) {
+            ConversationSummary conversation = findListedConversation(trimmed, match);
+            if (conversation != null) {
+                return conversation.sessionId();
             }
-        }
-
-        // Prefix match (e.g., first few chars of a UUID)
-        ConversationSummary prefixMatch = null;
-        int prefixCount = 0;
-        for (ConversationSummary convo : filteredConversations) {
-            if (convo.sessionId().toLowerCase().startsWith(lower)) {
-                prefixMatch = convo;
-                prefixCount++;
-            }
-        }
-        if (prefixCount == 1) {
-            return prefixMatch.sessionId();
-        }
-
-        // Substring match (e.g., partial UUID from the middle)
-        ConversationSummary substringMatch = null;
-        int substringCount = 0;
-        for (ConversationSummary convo : filteredConversations) {
-            if (convo.sessionId().toLowerCase().contains(lower)) {
-                substringMatch = convo;
-                substringCount++;
-            }
-        }
-        if (substringCount == 1) {
-            return substringMatch.sessionId();
-        }
-
-        // Also check allConversations in case filtered list is narrower
-        for (ConversationSummary convo : allConversations) {
-            if (convo.sessionId().equalsIgnoreCase(trimmed)) {
-                return convo.sessionId();
-            }
-        }
-        prefixMatch = null;
-        prefixCount = 0;
-        for (ConversationSummary convo : allConversations) {
-            if (convo.sessionId().toLowerCase().startsWith(lower)) {
-                prefixMatch = convo;
-                prefixCount++;
-            }
-        }
-        if (prefixCount == 1) {
-            return prefixMatch.sessionId();
         }
 
         // No match found — return the raw input so loadConversation can try
         // external sources (claude-code, codex, etc.) with it directly
         return trimmed;
+    }
+
+    private ConversationSummary findListedConversation(String selection, IdentifierMatch match) {
+        ConversationSummary conversation = findUniqueIdentifierMatch(
+                filteredConversations, selection, match);
+        return conversation != null
+                ? conversation
+                : findUniqueIdentifierMatch(allConversations, selection, match);
+    }
+
+    private ConversationSummary findUniqueIdentifierMatch(
+            List<ConversationSummary> conversations,
+            String selection,
+            IdentifierMatch match) {
+        if (conversations == null || selection == null || selection.isBlank()) {
+            return null;
+        }
+        List<ConversationSummary> matches = conversations.stream()
+                .filter(conversation -> sessionIdentifierMatches(
+                        conversation.sessionId(),
+                        displaySessionIdentifier(conversation),
+                        selection,
+                        match))
+                .toList();
+        return matches.size() == 1 ? matches.get(0) : null;
+    }
+
+    static boolean sessionIdentifierMatches(
+            String storedId,
+            String displayedId,
+            String selection,
+            IdentifierMatch match) {
+        if (selection == null || match == null) {
+            return false;
+        }
+        String needle = selection.toLowerCase(Locale.ROOT);
+        return identifierMatches(storedId, needle, match)
+                || (!Objects.equals(storedId, displayedId)
+                && identifierMatches(displayedId, needle, match));
+    }
+
+    private static boolean identifierMatches(
+            String candidate,
+            String lowerSelection,
+            IdentifierMatch match) {
+        if (candidate == null) {
+            return false;
+        }
+        String normalized = candidate.toLowerCase(Locale.ROOT);
+        return switch (match) {
+            case EXACT -> normalized.equals(lowerSelection);
+            case PREFIX -> normalized.startsWith(lowerSelection);
+            case SUBSTRING -> normalized.contains(lowerSelection);
+        };
+    }
+
+    enum IdentifierMatch {
+        EXACT,
+        PREFIX,
+        SUBSTRING
     }
 
     /**
@@ -541,6 +567,13 @@ public class ResumeTool implements CliTool {
                         }
                     }
                     break;
+                case "expand":
+                case "preview":
+                case "x":
+                    if (!rest.isEmpty()) {
+                        toggleConversationExpansion(rest.trim());
+                    }
+                    break;
                 case "migrate":
                 case "m":
                     if (!rest.isEmpty()) {
@@ -656,13 +689,31 @@ public class ResumeTool implements CliTool {
         harvestedExternalIds.clear();
         sessionFilePaths.clear();
         nativeSessionIds.clear();
+        expandedConversationKeys.clear();
+        previewCache.clear();
 
         // Load kompile sessions (always loaded - these are local passthrough sessions)
         try {
-            List<ChatHistory.ConversationSummary> kompileSessions = ChatHistory.listConversations();
+            List<ChatHistory.ConversationSummary> kompileSessions =
+                    ChatHistory.listResumableConversations();
             for (ChatHistory.ConversationSummary session : kompileSessions) {
-                // Collect harvested external session IDs for deduplication
-                harvestedExternalIds.addAll(session.harvestedSourceIds());
+                if (!isResumableKompileSession(session.sessionId())) {
+                    continue;
+                }
+                String normalizedAgent = normalizeAgentName(session.agent());
+                if (localOnly && isProviderBackedSyntheticWrapper(
+                        session.sessionId(), normalizedAgent)) {
+                    continue;
+                }
+                // Collect both recorded and canonical native IDs for stable deduplication.
+                for (String harvestedId : session.harvestedSourceIds()) {
+                    harvestedExternalIds.add(harvestedId);
+                    String canonicalId = ChatHistory.normalizeNativeSessionId(
+                            harvestedId, normalizeAgentName(session.agent()));
+                    if (canonicalId != null && !canonicalId.isBlank()) {
+                        harvestedExternalIds.add(canonicalId);
+                    }
+                }
                 // The last harvested id IS the underlying agent's real session id —
                 // the one native resume must be given instead of the kompile id.
                 if (!session.harvestedSourceIds().isEmpty()) {
@@ -698,10 +749,9 @@ public class ResumeTool implements CliTool {
         loadExternalConversations("qwen", "qwen");
         loadExternalConversations("gemini", "gemini");
 
-        // Fallback dedup: for sessions that predate the [harvested:] marker,
-        // remove external sessions that overlap in time with a kompile passthrough session.
-        // A kompile passthrough session and its source JSONL will have very close modification times.
-        deduplicateByTimeProximity();
+        // Deduplicate by canonical source/session identity. For harvested Kompile wrappers,
+        // use the underlying native ID so repeated harvests collapse deterministically.
+        deduplicateConversations();
 
         // Sort by last modified (most recent first)
         allConversations.sort(Comparator.comparing(ConversationSummary::lastModifiedTimestamp).reversed());
@@ -709,34 +759,125 @@ public class ResumeTool implements CliTool {
     }
 
     /**
-     * Remove external agent sessions that are likely duplicates of kompile passthrough sessions.
-     * A kompile passthrough session harvests the agent's JSONL, so both appear with very close
-     * modification times and matching agents. This catches pre-[harvested:] sessions.
+     * Remove duplicates using provider-owned session identities. Provider-native rows win over
+     * Kompile wrappers so the title, UUID, and transcript metadata match the provider's picker.
+     * Legacy synthetic wrappers that predate native-ID harvesting are collapsed only when there is
+     * one uniquely closest native session for the same agent in a tight completion-time window.
      */
-    private void deduplicateByTimeProximity() {
-        // Collect kompile passthrough sessions with their timestamps
-        List<ConversationSummary> kompileSessions = allConversations.stream()
-                .filter(c -> "kompile".equals(c.source()) && c.sessionId().startsWith("passthrough-"))
-                .collect(Collectors.toList());
-        if (kompileSessions.isEmpty()) return;
+    private void deduplicateConversations() {
+        List<ConversationSummary> unique = deduplicateConversations(allConversations, nativeSessionIds);
+        allConversations.clear();
+        allConversations.addAll(unique);
+    }
 
-        // For each external session, check if it's within 2 minutes of a kompile passthrough
-        // session with a matching agent — if so, it's likely the same conversation
-        Set<String> toRemove = new HashSet<>();
-        for (ConversationSummary external : allConversations) {
-            if ("kompile".equals(external.source())) continue;
-            for (ConversationSummary kompile : kompileSessions) {
-                if (!kompile.agent().equals(external.agent())) continue;
-                long timeDiff = Math.abs(kompile.lastModifiedTimestamp() - external.lastModifiedTimestamp());
-                if (timeDiff < 120_000) { // 2 minutes
-                    toRemove.add(external.sessionId());
-                    break;
-                }
+    static List<ConversationSummary> deduplicateConversations(
+            List<ConversationSummary> conversations,
+            Map<String, String> nativeSessionIds) {
+        Map<String, ConversationSummary> unique = new LinkedHashMap<>();
+        for (ConversationSummary conversation : conversations) {
+            String nativeId = "kompile".equals(conversation.source())
+                    ? nativeSessionIds.get(conversation.sessionId())
+                    : conversation.sessionId();
+            String key = nativeId == null || nativeId.isBlank()
+                    ? conversationKey(conversation)
+                    : "native\u0000" + conversation.agent() + "\u0000" + nativeId;
+            ConversationSummary previous = unique.get(key);
+            if (previous == null || preferConversation(conversation, previous)) {
+                unique.put(key, conversation);
             }
         }
-        if (!toRemove.isEmpty()) {
-            allConversations.removeIf(c -> toRemove.contains(c.sessionId()) && !"kompile".equals(c.source()));
+
+        List<ConversationSummary> canonical = new ArrayList<>(unique.values());
+        Set<String> redundantLegacyWrappers = new HashSet<>();
+        for (ConversationSummary conversation : canonical) {
+            if (isLegacySyntheticWrapper(conversation, nativeSessionIds)
+                    && hasUniqueNearbyNativeSession(conversation, canonical)) {
+                redundantLegacyWrappers.add(conversationKey(conversation));
+            }
         }
+        canonical.removeIf(conversation -> redundantLegacyWrappers.contains(conversationKey(conversation)));
+        return canonical;
+    }
+
+    private static boolean preferConversation(
+            ConversationSummary candidate,
+            ConversationSummary previous) {
+        boolean candidateNative = !"kompile".equals(candidate.source());
+        boolean previousNative = !"kompile".equals(previous.source());
+        if (candidateNative != previousNative) {
+            return candidateNative;
+        }
+        return candidate.lastModifiedTimestamp() > previous.lastModifiedTimestamp();
+    }
+
+    private static boolean isLegacySyntheticWrapper(
+            ConversationSummary conversation,
+            Map<String, String> nativeSessionIds) {
+        if (!"kompile".equals(conversation.source())
+                || nativeSessionIds.containsKey(conversation.sessionId())) {
+            return false;
+        }
+        return isSyntheticWrapperId(conversation.sessionId());
+    }
+
+    private static boolean hasUniqueNearbyNativeSession(
+            ConversationSummary wrapper,
+            List<ConversationSummary> conversations) {
+        if (wrapper.lastModifiedTimestamp() <= 0) {
+            return false;
+        }
+
+        long closestDelta = Long.MAX_VALUE;
+        int closestCount = 0;
+        for (ConversationSummary candidate : conversations) {
+            if ("kompile".equals(candidate.source())
+                    || !Objects.equals(wrapper.agent(), candidate.agent())
+                    || candidate.lastModifiedTimestamp() <= 0) {
+                continue;
+            }
+            long delta = Math.abs(wrapper.lastModifiedTimestamp() - candidate.lastModifiedTimestamp());
+            if (delta > LEGACY_WRAPPER_DEDUP_WINDOW_MILLIS) {
+                continue;
+            }
+            if (delta < closestDelta) {
+                closestDelta = delta;
+                closestCount = 1;
+            } else if (delta == closestDelta) {
+                closestCount++;
+            }
+        }
+        return closestCount == 1;
+    }
+
+    private static String conversationKey(ConversationSummary conversation) {
+        return conversation.source() + "\u0000" + conversation.sessionId();
+    }
+
+    static boolean isProviderBackedSyntheticWrapper(String sessionId, String normalizedAgent) {
+        if (!isSyntheticWrapperId(sessionId)) {
+            return false;
+        }
+        return switch (normalizedAgent) {
+            case "claude", "codex", "gemini", "opencode", "qwen" -> true;
+            default -> false;
+        };
+    }
+
+    private static boolean isSyntheticWrapperId(String sessionId) {
+        if (sessionId == null) {
+            return false;
+        }
+        String normalized = sessionId.toLowerCase(Locale.ROOT);
+        return normalized.startsWith("emulated-")
+                || normalized.startsWith("passthrough-")
+                || normalized.startsWith("managed-")
+                || normalized.startsWith("enforcer-")
+                || normalized.startsWith("cli-");
+    }
+
+    static boolean isResumableKompileSession(String sessionId) {
+        return sessionId != null
+                && !sessionId.toLowerCase(Locale.ROOT).contains("subagent-");
     }
 
     /**
@@ -831,6 +972,11 @@ public class ResumeTool implements CliTool {
      */
     private void loadExternalConversations(String source, String agentName) {
         try {
+            if (Set.of("claude-code", "opencode", "codex").contains(source)) {
+                loadAdapterConversations(source, agentName);
+                return;
+            }
+
             String homeDir = System.getProperty("user.home");
 
             switch (source) {
@@ -1019,6 +1165,56 @@ public class ResumeTool implements CliTool {
     }
 
     /**
+     * Load provider-native resume entries through the same adapters used by transcript imports.
+     * This keeps native titles, canonical IDs, and root-session filtering consistent everywhere.
+     */
+    private void loadAdapterConversations(String source, String agentName) throws IOException {
+        Optional<ChatSourceAdapter> optionalAdapter = ChatSourceRegistry.getInstance().find(source);
+        if (optionalAdapter.isEmpty()) {
+            return;
+        }
+
+        ChatSourceAdapter adapter = optionalAdapter.get();
+        boolean nativeLocalScope = localOnly && adapter.isWorkingDirectoryScopeAuthoritative();
+        List<ChatSessionSummary> sessions = localOnly
+                ? adapter.list(Path.of(currentWorkingDir))
+                : adapter.list();
+        for (ChatSessionSummary summary : sessions) {
+            String sessionId = summary.sessionId();
+            if (sessionId == null || sessionId.isBlank()) {
+                continue;
+            }
+
+            String workingDirectory = summary.workingDirectory();
+            if ((workingDirectory == null || workingDirectory.isBlank()) && localOnly) {
+                try {
+                    workingDirectory = adapter.resolveWorkingDirectory(sessionId)
+                            .map(Path::toString)
+                            .orElse(null);
+                } catch (Exception ignore) {
+                }
+            }
+            if (localOnly && !nativeLocalScope
+                    && !cwdMatches(workingDirectory, currentWorkingDir)) {
+                continue;
+            }
+
+            long modified = summary.lastModifiedMillis();
+            String title = summary.title() == null ? "" : summary.title().trim();
+            allConversations.add(new ConversationSummary(
+                    sessionId,
+                    title,
+                    String.valueOf(modified),
+                    agentName.toLowerCase(Locale.ROOT),
+                    source,
+                    formatDate(modified),
+                    modified,
+                    summary.messageCount(),
+                    workingDirectory));
+        }
+    }
+
+    /**
      * Lazy-load title from file only when needed (e.g., when viewing or resuming).
      * Uses cached file paths from enumeration for O(1) lookup instead of re-walking directories.
      * Returns the formatted title or falls back to the session ID.
@@ -1171,7 +1367,7 @@ public class ResumeTool implements CliTool {
                 // Build O(1) index for allConversations persistence
                 Map<String, Integer> allConvoIndex = new HashMap<>();
                 for (int j = 0; j < allConversations.size(); j++) {
-                    allConvoIndex.put(allConversations.get(j).sessionId(), j);
+                    allConvoIndex.put(conversationKey(allConversations.get(j)), j);
                 }
 
                 // Load titles in parallel (file path lookup is O(1) via sessionFilePaths cache)
@@ -1188,12 +1384,9 @@ public class ResumeTool implements CliTool {
                 for (Map.Entry<Integer, String> entry : loadedTitles.entrySet()) {
                     int i = entry.getKey();
                     ConversationSummary convo = filteredConversations.get(i);
-                    ConversationSummary updated = new ConversationSummary(
-                            convo.sessionId(), entry.getValue(), convo.started(),
-                            convo.agent(), convo.source(), convo.lastModified(),
-                            convo.lastModifiedTimestamp());
+                ConversationSummary updated = convo.withTitle(entry.getValue());
                     filteredConversations.set(i, updated);
-                    Integer allIdx = allConvoIndex.get(convo.sessionId());
+                    Integer allIdx = allConvoIndex.get(conversationKey(convo));
                     if (allIdx != null) {
                         allConversations.set(allIdx, updated);
                     }
@@ -1330,7 +1523,7 @@ public class ResumeTool implements CliTool {
         terminal.writer().println();
 
         // Commands
-        terminal.writer().println(DIM + "Commands: <agent#> (1-5) or tab <n> | search <query> | filter agent=<name> | sort <field> [asc|desc] | all | local | page <n> | view <id> | resume <id> [uuid] | next | prev | clear | q" + RESET);
+        terminal.writer().println(DIM + "Commands: <agent#> or tab <n> | search <query> | expand <row|id> | view <row|id> | resume <row|id> [uuid] | all | local | next | prev | clear | q" + RESET);
         terminal.writer().println();
         terminal.writer().flush();
     }
@@ -1370,24 +1563,179 @@ public class ResumeTool implements CliTool {
             return;
         }
 
-        // Header - show title instead of ID
-        terminal.writer().println(BOLD + "  #" + DIM + "  Title" + " ".repeat(54) + "Agent" + " ".repeat(14) + "Date" + RESET);
-        terminal.writer().println(DIM + "  " + "─".repeat(100) + RESET);
+        terminal.writer().println(BOLD + String.format(
+                "  %-3s %-44s  %-36s  %-10s  %s",
+                "#", "Title", "Session ID / UUID", "Agent", "Date") + RESET);
+        terminal.writer().println(DIM + "  " + "─".repeat(114) + RESET);
 
-        // Conversations - load titles lazily for external conversations on this page only
         for (int i = start; i < end; i++) {
-            ConversationSummary convo = filteredConversations.get(i);
-            int num = i - start + 1;
-            String title = convo.title() != null && !convo.title().isEmpty() ? convo.title() :
-                    convo.agent() + " session " + convo.sessionId().substring(0, Math.min(8, convo.sessionId().length()));
-            String titleDisplay = title.length() > 60 ? title.substring(0, 57) + "..." : title;
-            String agentDisplay = convo.agent().length() > 14 ? convo.agent().substring(0, 14) : convo.agent();
-            String dateDisplay = convo.lastModified() != null ? convo.lastModified() : "";
+            ConversationSummary conversation = filteredConversations.get(i);
+            int number = i - start + 1;
+            String key = conversationKey(conversation);
+            boolean expanded = expandedConversationKeys.contains(key);
+            String title = conversation.title() == null || conversation.title().isBlank()
+                    ? conversation.agent() + " session"
+                    : conversation.title();
+            String marker = expanded ? "▾" : "▸";
+            String color = number % 2 == 0 ? WHITE : DIM;
 
-            String color = (num % 2 == 0) ? WHITE : DIM;
-            terminal.writer().println(color + String.format("  %2d %-60s  %-14s  %s",
-                    num, titleDisplay, agentDisplay, dateDisplay) + RESET);
+            terminal.writer().println(color + String.format(
+                    "  %s%2d %-44s  %-36s  %-10s  %s",
+                    marker,
+                    number,
+                    truncateColumn(title, 44),
+                    fitSessionIdentifier(displaySessionIdentifier(conversation), 36),
+                    truncateColumn(conversation.agent(), 10),
+                    conversation.lastModified() == null ? "" : conversation.lastModified()) + RESET);
+
+            if (expanded) {
+                renderExpandedConversation(conversation);
+            }
         }
+    }
+
+    private void toggleConversationExpansion(String selection) {
+        ConversationSummary conversation = resolveConversationSummary(selection);
+        if (conversation == null) {
+            terminal.writer().println(RED + "Invalid selection — use a visible row number or session ID." + RESET);
+            terminal.writer().flush();
+            return;
+        }
+
+        String key = conversationKey(conversation);
+        if (!expandedConversationKeys.remove(key)) {
+            expandedConversationKeys.add(key);
+        }
+    }
+
+    private ConversationSummary resolveConversationSummary(String selection) {
+        try {
+            int displayNumber = Integer.parseInt(selection);
+            int index = currentPage * PAGE_SIZE + displayNumber - 1;
+            if (displayNumber > 0 && index >= 0 && index < filteredConversations.size()) {
+                return filteredConversations.get(index);
+            }
+            return null;
+        } catch (NumberFormatException ignore) {
+        }
+
+        ConversationSummary exact = findUniqueIdentifierMatch(
+                filteredConversations, selection, IdentifierMatch.EXACT);
+        return exact != null
+                ? exact
+                : findUniqueIdentifierMatch(
+                        filteredConversations, selection, IdentifierMatch.PREFIX);
+    }
+
+    private void renderExpandedConversation(ConversationSummary conversation) {
+        String displayId = displaySessionIdentifier(conversation);
+        for (String line : expandedMetadataLines(
+                displayId,
+                conversation.sessionId(),
+                conversation.source(),
+                conversation.messageCount(),
+                conversation.workingDirectory())) {
+            terminal.writer().println(DIM + "       " + line + RESET);
+        }
+
+        List<String> preview = previewCache.computeIfAbsent(
+                conversationKey(conversation),
+                ignored -> loadConversationPreview(conversation));
+        for (String line : preview) {
+            terminal.writer().println(DIM + "       " + line + RESET);
+        }
+        terminal.writer().println();
+    }
+
+    static List<String> expandedMetadataLines(
+            String displayId,
+            String transcriptId,
+            String source,
+            int messageCount,
+            String workingDirectory) {
+        String identifier = displayId == null || displayId.isBlank() ? "unknown" : displayId;
+        String count = messageCount < 0 ? "unknown" : Integer.toString(messageCount);
+        String directory = workingDirectory == null || workingDirectory.isBlank()
+                ? "unknown"
+                : workingDirectory;
+        String sourceName = source == null || source.isBlank() ? "unknown" : source;
+
+        List<String> lines = new ArrayList<>();
+        lines.add("Session ID / UUID: " + identifier);
+        if (transcriptId != null
+                && !transcriptId.isBlank()
+                && !Objects.equals(identifier, transcriptId)) {
+            lines.add("Kompile transcript ID: " + transcriptId);
+        }
+        lines.add("Source: " + sourceName
+                + "  ·  Messages: " + count
+                + "  ·  Working directory: " + directory);
+        return List.copyOf(lines);
+    }
+
+    private List<String> loadConversationPreview(ConversationSummary summary) {
+        try {
+            List<ChatHistory.Turn> turns;
+            if ("kompile".equals(summary.source())) {
+                turns = reader.readKompileSession(summary.sessionId());
+            } else {
+                turns = reader.readExternalSession(summary.source(), summary.sessionId());
+            }
+
+            List<String> preview = new ArrayList<>();
+            for (ChatHistory.Turn turn : turns) {
+                if (turn == null || turn.content() == null || turn.content().isBlank()) {
+                    continue;
+                }
+                String role = turn.role() == null ? "message" : turn.role().toLowerCase(Locale.ROOT);
+                if (!"user".equals(role) && !"assistant".equals(role)) {
+                    continue;
+                }
+                String content = turn.content().replaceAll("\\s+", " ").trim();
+                preview.add(role + ": " + truncateColumn(content, 104));
+                if (preview.size() == 3) {
+                    break;
+                }
+            }
+            return preview.isEmpty() ? List.of("(no user/assistant preview available)") : preview;
+        } catch (Exception e) {
+            return List.of("(preview unavailable: " + truncateColumn(
+                    e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage(), 88) + ")");
+        }
+    }
+
+    private String displaySessionIdentifier(ConversationSummary conversation) {
+        return nativeSessionIds.getOrDefault(conversation.sessionId(), conversation.sessionId());
+    }
+
+    static String fitSessionIdentifier(String sessionId, int width) {
+        if (sessionId == null) {
+            return "";
+        }
+        if (sessionId.length() <= width) {
+            return sessionId;
+        }
+        if (width < 5) {
+            return sessionId.substring(0, width);
+        }
+        int prefixLength = (width - 1) / 2;
+        int suffixLength = width - prefixLength - 1;
+        return sessionId.substring(0, prefixLength)
+                + "…"
+                + sessionId.substring(sessionId.length() - suffixLength);
+    }
+
+    private static String truncateColumn(String value, int width) {
+        if (value == null) {
+            return "";
+        }
+        if (value.length() <= width) {
+            return value;
+        }
+        if (width <= 3) {
+            return value.substring(0, width);
+        }
+        return value.substring(0, width - 3) + "...";
     }
 
     /**
@@ -1411,19 +1759,16 @@ public class ResumeTool implements CliTool {
         // Build O(1) index for allConversations persistence
         Map<String, Integer> allConvoIndex = new HashMap<>();
         for (int j = 0; j < allConversations.size(); j++) {
-            allConvoIndex.put(allConversations.get(j).sessionId(), j);
+            allConvoIndex.put(conversationKey(allConversations.get(j)), j);
         }
 
         // Load titles (small batch — up to PAGE_SIZE items)
         for (int i : needTitles) {
             ConversationSummary convo = filteredConversations.get(i);
             String title = loadTitleForConversation(convo.sessionId(), convo.source());
-            ConversationSummary updated = new ConversationSummary(
-                    convo.sessionId(), title, convo.started(),
-                    convo.agent(), convo.source(), convo.lastModified(),
-                    convo.lastModifiedTimestamp());
+            ConversationSummary updated = convo.withTitle(title);
             filteredConversations.set(i, updated);
-            Integer allIdx = allConvoIndex.get(convo.sessionId());
+            Integer allIdx = allConvoIndex.get(conversationKey(convo));
             if (allIdx != null) {
                 allConversations.set(allIdx, updated);
             }
@@ -2597,6 +2942,12 @@ public class ResumeTool implements CliTool {
             convoNode.put("agent", convo.agent());
             convoNode.put("source", convo.source());
             convoNode.put("last_modified", convo.lastModified());
+            if (convo.messageCount() >= 0) {
+                convoNode.put("message_count", convo.messageCount());
+            }
+            if (convo.workingDirectory() != null && !convo.workingDirectory().isBlank()) {
+                convoNode.put("working_directory", convo.workingDirectory());
+            }
             // Kompile session ids (passthrough-*/emulated-*) only name the local
             // transcript — surface the underlying agent's real session id for callers
             // that resume via the agent's own CLI.
@@ -3035,6 +3386,7 @@ public class ResumeTool implements CliTool {
         terminal.writer().println("  " + GREEN + "sort title [asc|desc]" + RESET + "         Sort by title (default: asc, A-Z)");
         terminal.writer().println("  " + GREEN + "sort agent [asc|desc]" + RESET + "         Sort by agent name (default: asc, with date secondary)");
         terminal.writer().println("  " + GREEN + "page <n>" + RESET + "                      Go to specific page number (1-based)");
+        terminal.writer().println("  " + GREEN + "expand <row|session-id>" + RESET + "       Toggle inline metadata and transcript preview");
         terminal.writer().println("  " + GREEN + "view <session-id>" + RESET + "             View conversation transcript");
         terminal.writer().println("  " + GREEN + "migrate <session-id>" + RESET + "          Migrate conversation to different format");
         terminal.writer().println("  " + GREEN + "resume <session-id>" + RESET + "           Resume conversation with designated agent");
@@ -3054,14 +3406,33 @@ public class ResumeTool implements CliTool {
     /**
      * Conversation summary record for the resume tool.
      */
-    private record ConversationSummary(
+    record ConversationSummary(
             String sessionId,
             String title,
             String started,
             String agent,
             String source,
             String lastModified,
-            long lastModifiedTimestamp
+            long lastModifiedTimestamp,
+            int messageCount,
+            String workingDirectory
     ) {
+        private ConversationSummary(
+                String sessionId,
+                String title,
+                String started,
+                String agent,
+                String source,
+                String lastModified,
+                long lastModifiedTimestamp) {
+            this(sessionId, title, started, agent, source, lastModified,
+                    lastModifiedTimestamp, -1, null);
+        }
+
+        private ConversationSummary withTitle(String newTitle) {
+            return new ConversationSummary(
+                    sessionId, newTitle, started, agent, source, lastModified,
+                    lastModifiedTimestamp, messageCount, workingDirectory);
+        }
     }
 }

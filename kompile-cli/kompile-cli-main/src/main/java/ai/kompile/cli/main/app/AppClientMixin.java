@@ -18,6 +18,7 @@ package ai.kompile.cli.main.app;
 
 import ai.kompile.cli.common.http.KompileHttpClient;
 import ai.kompile.cli.common.mcp.InstanceDiscovery;
+import ai.kompile.cli.main.graph.GraphServiceRouting;
 import picocli.CommandLine;
 
 /**
@@ -32,6 +33,10 @@ public class AppClientMixin {
     @CommandLine.Option(names = {"--port", "-p"}, description = "Localhost port of kompile-app")
     private Integer port;
 
+    @CommandLine.Option(names = {"--graph-url"},
+            description = "Base URL of the authoritative kompile-graph-service")
+    private String graphUrl;
+
     @CommandLine.Option(names = {"--json"}, description = "Output raw JSON instead of formatted text")
     private boolean jsonOutput;
 
@@ -44,6 +49,31 @@ public class AppClientMixin {
      * Returns null and prints an error if the instance is unreachable.
      */
     public KompileHttpClient requireClient() {
+        String resolved = resolveAppUrl();
+        KompileHttpClient client = new KompileHttpClient(resolved);
+        if (!client.isHealthy()) {
+            System.err.println("Error: kompile-app is not reachable at " + resolved);
+            System.err.println("Start the application or specify --url / --port.");
+            return null;
+        }
+        OutputFormatter.info("Connected to " + resolved);
+        return client;
+    }
+
+    /** Resolves the standalone graph service for graph-owned contracts. */
+    public KompileHttpClient requireGraphClient() {
+        GraphServiceRouting.Resolution route = GraphServiceRouting.resolve(graphUrl);
+        KompileHttpClient client = new KompileHttpClient(route.baseUrl());
+        if (!client.isHealthy()) {
+            System.err.println("Error: kompile-graph-service is not reachable at " + route.baseUrl());
+            System.err.println("Start kompile-graph-service or specify --graph-url.");
+            return null;
+        }
+        OutputFormatter.info("Connected to graph service at " + route.baseUrl());
+        return client;
+    }
+
+    private String resolveAppUrl() {
         String resolved;
         if (url != null && !url.isBlank()) {
             resolved = url;
@@ -55,14 +85,6 @@ public class AppClientMixin {
                 resolved = "http://localhost:8080";
             }
         }
-
-        KompileHttpClient client = new KompileHttpClient(resolved);
-        if (!client.isHealthy()) {
-            System.err.println("Error: kompile-app is not reachable at " + resolved);
-            System.err.println("Start the application or specify --url / --port.");
-            return null;
-        }
-        OutputFormatter.info("Connected to " + resolved);
-        return client;
+        return resolved;
     }
 }

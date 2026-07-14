@@ -1,5 +1,6 @@
 package ai.kompile.process.release;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -23,6 +24,7 @@ public class FileExecutableArtifactResolver implements ExecutableArtifactResolve
     private final Path artifactRoot;
     private final long maxArtifactBytes;
 
+    @Autowired
     public FileExecutableArtifactResolver(
             @Value("${kompile.process.artifact-dir:${user.home}/.kompile/processes/artifacts}")
             String artifactRoot,

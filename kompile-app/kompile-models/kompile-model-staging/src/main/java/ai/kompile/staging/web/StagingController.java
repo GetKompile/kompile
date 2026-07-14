@@ -456,7 +456,8 @@ public class StagingController {
                             .repository(catalogModel.getRepo())
                             .modelId(catalogModel.getId())
                             .modelType(modelType)
-                            .format(catalogModel.getFormat());
+                            .format(catalogModel.getFormat())
+                            .audioSynthesis(catalogModel.getAudioSynthesis());
                     if (catalogModel.getFiles() != null && !catalogModel.getFiles().isEmpty()) {
                         dlBuilder.files(new HashMap<>(catalogModel.getFiles()));
                     }
@@ -643,7 +644,8 @@ public class StagingController {
                 .format(request.getFormat())
                 .revision(request.getRevision())
                 .authToken(request.getAuthToken())
-                .tokenizerUrl(request.getTokenizerUrl());
+                .tokenizerUrl(request.getTokenizerUrl())
+                .audioSynthesis(request.getAudioSynthesis());
         if (request.getFiles() != null && !request.getFiles().isEmpty()) {
             builder.files(new HashMap<>(request.getFiles()));
         }
@@ -867,7 +869,8 @@ public class StagingController {
                             .repository(catalogModel.getRepo())
                             .modelId(catalogModel.getId())
                             .modelType(modelType)
-                            .format(catalogModel.getFormat());
+                            .format(catalogModel.getFormat())
+                            .audioSynthesis(catalogModel.getAudioSynthesis());
                     if (catalogModel.getFiles() != null && !catalogModel.getFiles().isEmpty()) {
                         dlBuilder.files(new HashMap<>(catalogModel.getFiles()));
                     }
@@ -915,6 +918,9 @@ public class StagingController {
         }
 
         String modelId = catalogModel.getId();
+        if (catalogContainsId(catalogService.getAudioSynthesis(), modelId)) {
+            return ModelType.AUDIO_SYNTHESIS;
+        }
         if (catalogContainsId(catalogService.getLlm(), modelId)) {
             return ModelType.LLM_GGML;
         }

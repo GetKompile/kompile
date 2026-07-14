@@ -111,7 +111,7 @@ public final class McpToolInjectionSupport {
 
     static CliLauncher findCliLauncher() {
         String binaryOverride = firstNonBlank(System.getProperty("kompile.cli.binary"), System.getenv("KOMPILE_CLI_BINARY"));
-        if (binaryOverride != null && !binaryOverride.isBlank()) {
+        if (isRunnableCommand(binaryOverride)) {
             return new CliLauncher(binaryOverride, List.of());
         }
 
@@ -202,6 +202,26 @@ public final class McpToolInjectionSupport {
             }
         }
         return null;
+    }
+
+    /**
+     * Bare command names are resolved by the child process through PATH. Explicit paths must
+     * already name an executable; otherwise a stale KOMPILE_CLI_BINARY value would make Codex
+     * accept the MCP configuration and then fail its server startup with os error 2.
+     */
+    private static boolean isRunnableCommand(String command) {
+        if (command == null || command.isBlank()) {
+            return false;
+        }
+        try {
+            Path candidate = Path.of(command);
+            boolean explicitPath = candidate.isAbsolute()
+                    || command.contains("/")
+                    || command.contains("\\");
+            return !explicitPath || Files.isExecutable(candidate);
+        } catch (RuntimeException ignored) {
+            return false;
+        }
     }
 
     static record CliLauncher(String command, List<String> prefixArgs) {

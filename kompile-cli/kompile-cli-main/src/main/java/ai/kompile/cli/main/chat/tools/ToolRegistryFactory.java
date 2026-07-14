@@ -40,6 +40,7 @@ import ai.kompile.cli.main.chat.tools.grounding.GraphImportTool;
 import ai.kompile.cli.main.chat.tools.grounding.GraphReasonTool;
 import ai.kompile.cli.main.chat.tools.grounding.GraphReasoningQueryTool;
 import ai.kompile.cli.main.chat.tui.SidePanelManager;
+import ai.kompile.cli.main.graph.GraphServiceRouting;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 /**
@@ -82,6 +83,7 @@ public class ToolRegistryFactory {
                                        ChatConfig chatConfig,
                                        RoleManager roleManager) {
         ToolRegistry registry = new ToolRegistry(objectMapper);
+        String graphBaseUrl = GraphServiceRouting.resolve(null).baseUrl();
 
         // File I/O tools
         registry.register(new ReadTool());
@@ -134,12 +136,12 @@ public class ToolRegistryFactory {
         registry.register(new AskGraphSynthesizeTool(baseUrl, objectMapper));
         registry.register(new AskGraphSubscribeTool(baseUrl, objectMapper));
         registry.register(new GraphReasonTool(baseUrl, objectMapper));
-        registry.register(new GraphImportTool(baseUrl, objectMapper));
-        registry.register(new GraphExportTool(baseUrl, objectMapper));
+        registry.register(new GraphImportTool(graphBaseUrl, objectMapper));
+        registry.register(new GraphExportTool(graphBaseUrl, objectMapper));
         registry.register(new CrawlSourceTool(baseUrl, objectMapper));
         registry.register(new ProcessMiningCliTool(baseUrl, objectMapper));
         registry.register(new AskGraphClaimTool(baseUrl, objectMapper));
-        registry.register(new GraphReasoningQueryTool(baseUrl, objectMapper));
+        registry.register(new GraphReasoningQueryTool(graphBaseUrl, objectMapper));
         registry.register(new GraphBayesTool(baseUrl, objectMapper));
         registry.register(new GraphEmbeddingsTool(baseUrl, objectMapper));
         registry.register(new GraphSimulateTool(baseUrl, objectMapper));

@@ -101,6 +101,7 @@ import ai.kompile.cli.main.chat.tools.grounding.GraphExportTool;
 import ai.kompile.cli.main.chat.tools.grounding.GraphImportTool;
 import ai.kompile.cli.main.chat.tools.grounding.GraphReasonTool;
 import ai.kompile.cli.main.chat.tools.grounding.GraphReasoningQueryTool;
+import ai.kompile.cli.main.graph.GraphServiceRouting;
 import ai.kompile.cli.main.chat.tui.SidePanelManager;
 import ai.kompile.cli.main.coordination.CoordinationStateManager;
 import ai.kompile.cli.main.coordination.FileWatcherService;
@@ -152,6 +153,10 @@ public class McpStdioCommand implements Callable<Integer> {
 
     @CommandLine.Option(names = {"--url"}, description = "Base URL of the kompile-app instance (e.g. http://localhost:8080)")
     private String baseUrl;
+
+    @CommandLine.Option(names = {"--graph-url"},
+            description = "Base URL of the authoritative kompile-graph-service for graph-owned tools")
+    private String graphUrl;
 
     @CommandLine.Option(names = {"--no-daemon"}, description = "Skip daemon bridge, always run in-process",
             defaultValue = "true")
@@ -779,7 +784,11 @@ public class McpStdioCommand implements Callable<Integer> {
                             var content = callResult.putArray("content");
                             var textObj = content.addObject();
                             textObj.put("type", "text");
+                            String dispatchPlan = "multi_task".equals(toolName)
+                                    ? StdioMultiTaskTool.dispatchPlan(argMap) + "\n"
+                                    : "";
                             textObj.put("text", "Tool '" + toolName + "' running in background.\n\n"
+                                    + dispatchPlan
                                     + "**Task ID**: `" + taskId + "`\n"
                                     + "**Poll**: Call `poll` tool with `task_id=\"" + taskId + "\"`\n"
                                     + "**Log**: `tail -f " + (progressLogger != null ? progressLogger.getLogFile() : LogPaths.logsDirectory().toPath().resolve("mcp-activity.log")) + "`");
@@ -1208,6 +1217,10 @@ public class McpStdioCommand implements Callable<Integer> {
     private Map<String, ToolDef> buildToolMap(ObjectMapper om, Path wd) {
         long t0 = System.currentTimeMillis();
         Map<String, ToolDef> tools = new LinkedHashMap<>();
+        GraphServiceRouting.Resolution graphRoute = GraphServiceRouting.resolve(graphUrl);
+        String graphBaseUrl = graphRoute.baseUrl();
+        System.err.println("[MCP] Authoritative graph contracts routed to " + graphBaseUrl
+                + " (source: " + graphRoute.source() + ")");
 
         // Reuse SharedResourcePool to avoid duplicating registry/config construction
         // that the daemon path already consolidates. Saves ~35MB of redundant class loading.
@@ -1308,7 +1321,7 @@ public class McpStdioCommand implements Callable<Integer> {
         // ── Full knowledge graph CRUD + graph capabilities ─────────────────
         registerCliTool(tools, new KnowledgeGraphTool(baseUrl, om), om, wd);
 
-        // ── KB Grounding tools (LLM→MCP→KB path, require kompile-app backend) ──
+        // ── KB Grounding tools (most still require the kompile-app compatibility backend) ──
         registerCliTool(tools, new AskGraphVerifyTool(baseUrl, om), om, wd);
         registerCliTool(tools, new AskGraphQueryTool(baseUrl, om), om, wd);
         registerCliTool(tools, new AskGraphExplainTool(baseUrl, om), om, wd);
@@ -1319,8 +1332,8 @@ public class McpStdioCommand implements Callable<Integer> {
         registerCliTool(tools, new GraphReasonTool(baseUrl, om), om, wd);
         registerCliTool(tools, new AskGraphFusedTool(baseUrl, om), om, wd);
         registerCliTool(tools, new AskGraphSynthesizeTool(baseUrl, om), om, wd);
-        registerCliTool(tools, new GraphImportTool(baseUrl, om), om, wd);
-        registerCliTool(tools, new GraphExportTool(baseUrl, om), om, wd);
+        registerCliTool(tools, new GraphImportTool(graphBaseUrl, om), om, wd);
+        registerCliTool(tools, new GraphExportTool(graphBaseUrl, om), om, wd);
         registerCliTool(tools, new CrawlSourceTool(baseUrl, om), om, wd);
 
         // ── Graph analytics (require kompile-app backend) ─────────────────
@@ -1328,9 +1341,9 @@ public class McpStdioCommand implements Callable<Integer> {
         registerCliTool(tools, new GraphForecastTool(baseUrl, om), om, wd);
         registerCliTool(tools, new GraphCentralityTool(baseUrl, om), om, wd);
 
-        // ── Graph reasoning & advanced analytics (require kompile-app backend) ──
+        // ── Graph reasoning & advanced analytics (unified query can use graph-service) ──
         registerCliTool(tools, new AskGraphClaimTool(baseUrl, om), om, wd);
-        registerCliTool(tools, new GraphReasoningQueryTool(baseUrl, om), om, wd);
+        registerCliTool(tools, new GraphReasoningQueryTool(graphBaseUrl, om), om, wd);
         registerCliTool(tools, new GraphBayesTool(baseUrl, om), om, wd);
         registerCliTool(tools, new GraphEmbeddingsTool(baseUrl, om), om, wd);
         registerCliTool(tools, new GraphSimulateTool(baseUrl, om), om, wd);

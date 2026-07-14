@@ -1727,8 +1727,10 @@ public class KompileModelManager {
     public List<SdkDescriptor> listAvailableSdks() {
         List<SdkDescriptor> sdks = new ArrayList<>();
 
-        // Add hardcoded SDK
+        // Add hardcoded SDKs
         sdks.add(SdkConstants.createSdxRuntimeDescriptor(null, null));
+        sdks.add(SdkConstants.createKompileReasoningDescriptor(null, null));
+        sdks.add(SdkConstants.createKompileLocalSdkDescriptor(null, null));
 
         // Merge from registry
         JsonNode registry = loadLocalRegistry();

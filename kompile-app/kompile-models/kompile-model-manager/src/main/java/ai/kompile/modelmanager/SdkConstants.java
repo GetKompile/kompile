@@ -36,6 +36,12 @@ public class SdkConstants {
     public static final String DEFAULT_SDX_SDK_BASE_URL = "https://github.com/deeplearning4j/deeplearning4j/releases/download/";
     public static final String DEFAULT_SDX_SDK_VERSION = "1.0.0-SNAPSHOT";
 
+    public static final String ENV_KGR_SDK_BASE_URL = "KOMPILE_KGR_SDK_BASE_URL";
+    public static final String PROP_KGR_SDK_BASE_URL = "kompile.kgr.sdk.base-url";
+    public static final String DEFAULT_KGR_SDK_BASE_URL = "https://github.com/deeplearning4j/kompile/releases/download/";
+    public static final String DEFAULT_KGR_SDK_VERSION = "0.1.0-SNAPSHOT";
+    public static final String DEFAULT_LOCAL_SDK_VERSION = "0.1.0-SNAPSHOT";
+
     // ==================== Base Platform Classifiers ====================
 
     public static final String LINUX_X86_64 = "linux-x86_64";
@@ -173,6 +179,82 @@ public class SdkConstants {
     }
 
     /**
+     * Resolves the effective base URL for kompile-reasoning (kgr) artifacts from
+     * environment variable, system property, or default.
+     *
+     * <p>Tag family decision (2026-07-12): separate {@code kgr-v{v}} tags in the kompile
+     * GitHub repo — decouples from dl4j's {@code sdx-v{v}} cadence.</p>
+     */
+    public static String resolveKgrBaseUrl() {
+        String envUrl = System.getenv(ENV_KGR_SDK_BASE_URL);
+        if (envUrl != null && !envUrl.trim().isEmpty()) {
+            return envUrl.trim();
+        }
+        String propUrl = System.getProperty(PROP_KGR_SDK_BASE_URL);
+        if (propUrl != null && !propUrl.trim().isEmpty()) {
+            return propUrl.trim();
+        }
+        return DEFAULT_KGR_SDK_BASE_URL;
+    }
+
+    /**
+     * Creates an SdkDescriptor for {@code kompile-reasoning} (libkompile_reasoning).
+     *
+     * <p>Tag family: {@code kgr-v{version}} on the kompile GitHub repo.</p>
+     * <p>URL pattern: {@code {baseUrl}kgr-v{version}/{sdkId}-{classifier}.{ext}}</p>
+     *
+     * <p>Active platform: linux-x86_64 (zip).</p>
+     * <p>Placeholder platforms included in the map for future builds:</p>
+     * <ul>
+     *   <li>ios-arm64 (xcframework) — FUTURE: P2/P3 — xcframework/aar not yet built</li>
+     *   <li>android-arm64 (aar) — FUTURE: P2/P3 — xcframework/aar not yet built</li>
+     * </ul>
+     */
+    public static SdkDescriptor createKompileReasoningDescriptor(String version, String baseUrl) {
+        if (version == null) version = DEFAULT_KGR_SDK_VERSION;
+        if (baseUrl == null) baseUrl = resolveKgrBaseUrl();
+
+        String sdkId = "kompile-reasoning";
+        String tag = "kgr-v" + version;
+        String versionUrl = baseUrl.endsWith("/") ? baseUrl + tag + "/" : baseUrl + "/" + tag + "/";
+
+        Map<String, SdkDescriptor.PlatformArtifact> artifacts = new LinkedHashMap<>();
+
+        // linux-x86_64: active, zip artifact available now
+        addArtifactWithUrl(artifacts, sdkId, LINUX_X86_64, "zip", versionUrl);
+
+        // FUTURE: P2/P3 — xcframework/aar not yet built
+        addArtifactWithUrl(artifacts, sdkId, IOS_ARM64, "xcframework", versionUrl);
+        // FUTURE: P2/P3 — xcframework/aar not yet built
+        addArtifactWithUrl(artifacts, sdkId, ANDROID_ARM64, "aar", versionUrl);
+
+        return new SdkDescriptor(sdkId, version, versionUrl, artifacts);
+    }
+
+    /**
+     * Creates an SdkDescriptor for the combined {@code kompile-local-sdk} zip
+     * (libkompile_reasoning + libsdx_llm + all language bindings, ~122 MB).
+     *
+     * <p>Tag family: {@code kompile-local-sdk-v{version}} on the kompile GitHub repo.</p>
+     * <p>URL pattern: {@code {baseUrl}kompile-local-sdk-v{version}/{sdkId}-{classifier}.{ext}}</p>
+     */
+    public static SdkDescriptor createKompileLocalSdkDescriptor(String version, String baseUrl) {
+        if (version == null) version = DEFAULT_LOCAL_SDK_VERSION;
+        if (baseUrl == null) baseUrl = resolveKgrBaseUrl();
+
+        String sdkId = "kompile-local-sdk";
+        String tag = "kompile-local-sdk-v" + version;
+        String versionUrl = baseUrl.endsWith("/") ? baseUrl + tag + "/" : baseUrl + "/" + tag + "/";
+
+        Map<String, SdkDescriptor.PlatformArtifact> artifacts = new LinkedHashMap<>();
+
+        // linux-x86_64: the 122MB combined artifact
+        addArtifactWithUrl(artifacts, sdkId, LINUX_X86_64, "zip", versionUrl);
+
+        return new SdkDescriptor(sdkId, version, versionUrl, artifacts);
+    }
+
+    /**
      * Creates an SdkDescriptor for the SDX Runtime with all known platform artifacts.
      */
     public static SdkDescriptor createSdxRuntimeDescriptor(String version, String baseUrl) {
@@ -206,6 +288,26 @@ public class SdkConstants {
         String fileName = getArtifactFileName(sdkId, classifier);
         String downloadUrl = baseUrl + fileName;
         String packaging = getPackagingForPlatform(classifier);
+        artifacts.put(classifier, new SdkDescriptor.PlatformArtifact(
+                classifier, fileName, packaging, downloadUrl, null));
+    }
+
+    /**
+     * Adds a platform artifact with an explicit packaging type (overrides the platform-inferred type).
+     */
+    private static void addArtifactWithUrl(Map<String, SdkDescriptor.PlatformArtifact> artifacts,
+                                           String sdkId, String classifier, String packaging,
+                                           String baseUrl) {
+        String suffix;
+        if ("xcframework".equals(packaging)) {
+            suffix = ".xcframework.zip";
+        } else if ("aar".equals(packaging)) {
+            suffix = ".aar";
+        } else {
+            suffix = ".zip";
+        }
+        String fileName = sdkId + "-" + classifier + suffix;
+        String downloadUrl = baseUrl + fileName;
         artifacts.put(classifier, new SdkDescriptor.PlatformArtifact(
                 classifier, fileName, packaging, downloadUrl, null));
     }

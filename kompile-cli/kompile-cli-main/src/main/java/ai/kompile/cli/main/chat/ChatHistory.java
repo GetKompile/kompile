@@ -340,6 +340,18 @@ public class ChatHistory {
      * Lists all saved conversations from the index.
      */
     public static List<ConversationSummary> listConversations() {
+        return listConversations(true);
+    }
+
+    /**
+     * Lists user-resumable Kompile conversations while rejecting persisted
+     * multi-task/subagent transcripts before any transcript file is opened.
+     */
+    public static List<ConversationSummary> listResumableConversations() {
+        return listConversations(false);
+    }
+
+    private static List<ConversationSummary> listConversations(boolean includeSubagents) {
         Path dir = KompileHome.homeDirectory().toPath().resolve("conversations");
         List<ConversationSummary> results = new ArrayList<>();
 
@@ -347,14 +359,27 @@ public class ChatHistory {
             return results;
         }
 
-        File[] files = dir.toFile().listFiles((d, name) -> name.endsWith(".txt") && !name.equals("index.properties"));
-        if (files == null) return results;
+        File[] candidates = dir.toFile().listFiles((d, name) ->
+                name.endsWith(".txt")
+                        && !name.equals("index.properties")
+                        && (includeSubagents
+                        || !name.toLowerCase(Locale.ROOT).contains("subagent-")));
+        if (candidates == null) {
+            return results;
+        }
 
-        // Sort by modified time, newest first
-        Arrays.sort(files, (a, b) -> Long.compare(b.lastModified(), a.lastModified()));
+        // Read each mtime once. Calling File.lastModified() inside the sort comparator
+        // turns a large transcript directory into an O(n log n) stat storm.
+        List<TranscriptFile> files = Arrays.stream(candidates)
+                .map(file -> new TranscriptFile(file, file.lastModified()))
+                .sorted(Comparator.comparingLong(
+                        TranscriptFile::lastModified).reversed())
+                .toList();
 
-        for (File file : files) {
-            String sid = file.getName().replace(".txt", "");
+        for (TranscriptFile transcript : files) {
+            File file = transcript.file();
+            String fileName = file.getName();
+            String sid = fileName.substring(0, fileName.length() - ".txt".length());
             String title = "";
             List<String> harvested = new ArrayList<>();
             try (BufferedReader reader = new BufferedReader(new FileReader(file, StandardCharsets.UTF_8))) {
@@ -396,7 +421,7 @@ public class ChatHistory {
                         title.length() > 80 ? title.substring(0, 77) + "..." : title,
                         started,
                         agent,
-                        file.lastModified(),
+                        transcript.lastModified(),
                         harvested
                 ));
             } catch (IOException e) {
@@ -527,6 +552,9 @@ public class ChatHistory {
 
     public Path getTranscriptFile() {
         return transcriptFile;
+    }
+
+    private record TranscriptFile(File file, long lastModified) {
     }
 
     public static record Turn(String role, String content, com.fasterxml.jackson.databind.node.ArrayNode rawContentBlocks) {

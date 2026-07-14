@@ -16,6 +16,11 @@
 
 package ai.kompile.staging.catalog;
 
+import ai.kompile.modelmanager.registry.AudioSynthesisConfig;
+import ai.kompile.modelmanager.registry.ModelEntry;
+import ai.kompile.modelmanager.registry.ModelMetadata;
+import ai.kompile.modelmanager.registry.ModelStatus;
+import ai.kompile.modelmanager.registry.ModelType;
 import ai.kompile.modelmanager.registry.RegistryService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -42,10 +47,11 @@ class CatalogServiceResourceTest {
     Path tempDir;
 
     private CatalogService catalogService;
+    private RegistryService registryService;
 
     @BeforeEach
     void setUp() throws Exception {
-        RegistryService registryService = new RegistryService(tempDir);
+        registryService = new RegistryService(tempDir);
         catalogService = new CatalogService();
         // Inject registry via reflection (Spring-wired in prod)
         Field regField = CatalogService.class.getDeclaredField("registryService");
@@ -129,7 +135,7 @@ class CatalogServiceResourceTest {
                 .filter(m -> "smoldocling-256m".equals(m.getId()))
                 .findFirst();
         assertTrue(opt.isPresent(), "smoldocling-256m must be in vlm section");
-        assertEquals("ds4sd/SmolDocling-256M-preview", opt.get().getRepo());
+        assertEquals("docling-project/SmolDocling-256M-preview", opt.get().getRepo());
         assertEquals("huggingface", opt.get().getSource());
     }
 
@@ -176,6 +182,42 @@ class CatalogServiceResourceTest {
         assertEquals(3072, meta.getRamMb());
         assertEquals(0, meta.getVramMb());
         assertEquals(750, meta.getDiskMb());
+    }
+
+    // ── audio synthesis registry projection ──────────────────────────────────
+
+    @Test
+    void audioRegistryEntryRetainsTypedServingAbiInCatalog() {
+        AudioSynthesisConfig audioConfig = AudioSynthesisConfig.builder()
+                .tokenizerType(AudioSynthesisConfig.UTF8_BYTES_TOKENIZER)
+                .tokenIdsInput("tokens")
+                .waveformOutput("samples")
+                .tokenDataType("int32")
+                .sampleRateHz(16_000)
+                .voice("standard")
+                .language("en")
+                .build();
+        registryService.addModel(ModelEntry.builder()
+                .modelId("catalog-audio")
+                .type(ModelType.AUDIO_SYNTHESIS)
+                .path("audio-synthesis/catalog-audio")
+                .modelFile("model.sdz")
+                .checksum("sha256:" + "0".repeat(64))
+                .metadata(ModelMetadata.builder()
+                        .version("v1")
+                        .framework("samediff")
+                        .build())
+                .audioSynthesis(audioConfig)
+                .status(ModelStatus.ACTIVE)
+                .build());
+
+        List<CatalogModel> audio = catalogService.getAudioSynthesis();
+        assertEquals(1, audio.size());
+        assertEquals("catalog-audio", audio.get(0).getId());
+        assertEquals("audio_synthesis", audio.get(0).getModelType());
+        assertEquals(audioConfig, audio.get(0).getAudioSynthesis());
+        assertEquals(audio.get(0), catalogService.getModel("catalog-audio").orElseThrow());
+        assertEquals(1, catalogService.getCatalog().getAudioSynthesis().size());
     }
 
     // ── catalog totals ───────────────────────────────────────────────────────

@@ -1,0 +1,8 @@
+# Mined PSL rules for fact sheet 1
+# Generated: 2026-07-14T05:21:06.263702781Z
+# Rule count: 2
+# Source: ProcessCausalAnalyzer (chi-squared-significant directly-follows arcs) + Declare->PSL constraint encodings (entailment pass), when present
+# Arcs used:
+#
+0.99: Occurs("Document") -> Occurs("Entity") ^2
+0.99: Occurs("Entity") -> Occurs("Document") ^2

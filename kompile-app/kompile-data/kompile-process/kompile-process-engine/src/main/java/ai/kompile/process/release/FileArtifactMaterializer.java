@@ -1,5 +1,6 @@
 package ai.kompile.process.release;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -21,6 +22,7 @@ public class FileArtifactMaterializer implements ArtifactMaterializer {
     private final Path artifactRoot;
     private final long maxBytes;
 
+    @Autowired
     public FileArtifactMaterializer(
             @Value("${kompile.process.artifact-dir:${user.home}/.kompile/processes/artifacts}") String root,
             @Value("${kompile.process.max-executable-artifact-bytes:1048576}") long maxBytes) {

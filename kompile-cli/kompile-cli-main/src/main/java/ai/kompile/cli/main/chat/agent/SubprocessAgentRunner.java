@@ -131,6 +131,9 @@ public class SubprocessAgentRunner {
     // Injected settings file path (for cleanup)
     private Path injectedSettingsFile;
 
+    // Invocation-local options such as Codex MCP config overrides.
+    private List<String> managedCommandPrefixArguments = List.of();
+
     // Skills injection (loaded lazily on first injectSkills() call)
     private SkillsInjection skillsInjection;
 
@@ -271,6 +274,19 @@ public class SubprocessAgentRunner {
     public void injectMcpTools() {
         if (!injectTools) return;
         try {
+            if (agent != null && agent.toLowerCase(Locale.ROOT).contains("codex")) {
+                managedCommandPrefixArguments =
+                        McpToolInjection.codexCommandLineOverrides(Path.of(workingDir));
+                if (managedCommandPrefixArguments.isEmpty()) {
+                    System.err.println(YELLOW
+                            + "Warning: Could not resolve kompile CLI launcher for MCP injection"
+                            + RESET);
+                } else {
+                    emitLine(GREEN + "  Kompile tools injected (stdio, per-process)" + RESET);
+                }
+                return;
+            }
+
             String sseUrl = mcpUrlResolver.resolveMcpUrl(kompileUrl, mcpPort);
             injectedSettingsFile = McpToolInjection.injectTools(
                     Path.of(workingDir), agent, sseUrl);
@@ -332,6 +348,7 @@ public class SubprocessAgentRunner {
             tuiProcess = null;
         }
         McpToolInjection.removeTools(injectedSettingsFile);
+        managedCommandPrefixArguments = List.of();
         if (skillsInjection != null) {
             skillsInjection.cleanup();
         }
@@ -1354,8 +1371,25 @@ public class SubprocessAgentRunner {
     // ========================================================================
 
     private List<String> buildCommand(String binary, String message) {
-        return buildManagedCommand(agent, binary, message, firstMessageSent, agentSessionId,
-                skipPermissions, Path.of(workingDir), systemPromptManager);
+        List<String> command = buildManagedCommand(agent, binary, message, firstMessageSent,
+                agentSessionId, skipPermissions, Path.of(workingDir), systemPromptManager);
+        return prependGlobalOptions(command, managedCommandPrefixArguments);
+    }
+
+    /**
+     * Insert provider-global options immediately after the executable and before its subcommand.
+     * Codex requires invocation-level {@code -c} overrides in this position for both
+     * {@code exec} and {@code exec resume}.
+     */
+    public static List<String> prependGlobalOptions(List<String> command, List<String> globalOptions) {
+        if (command == null || command.isEmpty() || globalOptions == null || globalOptions.isEmpty()) {
+            return command;
+        }
+        List<String> result = new ArrayList<>(command.size() + globalOptions.size());
+        result.add(command.get(0));
+        result.addAll(globalOptions);
+        result.addAll(command.subList(1, command.size()));
+        return result;
     }
 
     /**

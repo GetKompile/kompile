@@ -23,6 +23,8 @@ import ai.kompile.core.crawler.pipeline.RoutedCrawlItem;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -64,14 +66,38 @@ public class CrawlerService {
     private final Path stateDir;
 
     public CrawlerService(CrawlerRegistry registry, ObjectMapper objectMapper) {
+        this(registry, objectMapper, "");
+    }
+
+    @Autowired
+    public CrawlerService(CrawlerRegistry registry, ObjectMapper objectMapper,
+                          @Value("${kompile.project.root:}") String configuredProjectRoot) {
         this.registry = registry;
         this.objectMapper = objectMapper;
-        this.stateDir = Path.of(System.getProperty("user.home"), ".kompile", "crawl-state");
+        this.stateDir = resolveStateDirectory(configuredProjectRoot);
         try {
             Files.createDirectories(stateDir);
         } catch (IOException e) {
             log.warn("Could not create crawl state directory: {}", e.getMessage());
         }
+    }
+
+    static Path resolveStateDirectory(String configuredProjectRoot) {
+        String projectRoot = configuredProjectRoot;
+        if (projectRoot == null || projectRoot.isBlank()) {
+            projectRoot = System.getenv("KOMPILE_PROJECT_ROOT");
+        }
+        if (projectRoot == null || projectRoot.isBlank()) {
+            Path workingDirectory = Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
+            if (Files.isRegularFile(workingDirectory.resolve("kompile.project.json"))) {
+                projectRoot = workingDirectory.toString();
+            }
+        }
+        if (projectRoot != null && !projectRoot.isBlank()) {
+            return Path.of(projectRoot).toAbsolutePath().normalize()
+                    .resolve(".kompile").resolve("state").resolve("crawl-state");
+        }
+        return Path.of(System.getProperty("user.home"), ".kompile", "crawl-state");
     }
 
     /**

@@ -370,6 +370,70 @@
             </resource>
         </resources>
         <plugins>
+            <!-- Registry gate: the packaged cli-agents.json comes from the kompile-app-core
+                 jar RESOLVED at build time (reactor or ~/.m2), so a stale or gutted jar
+                 silently ships an agent-locked CLI even when the source tree is correct
+                 (this happened 2026-07-11: a codex-only registry was installed to ~/.m2).
+                 Extract the resolved registry and fail unless the full roster is present.
+                 Bound to validate so it fires in both jar and native lanes, -DskipTests
+                 included. Roster changes must also update kompile-app-core's gate and
+                 CliAgentRegistryTest. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <version>3.8.1</version>
+                <executions>
+                    <execution>
+                        <id>extract-resolved-cli-agent-registry</id>
+                        <phase>validate</phase>
+                        <goals>
+                            <goal>unpack</goal>
+                        </goals>
+                        <configuration>
+                            <artifactItems>
+                                <artifactItem>
+                                    <groupId>ai.kompile</groupId>
+                                    <artifactId>kompile-app-core</artifactId>
+                                    <version>${project.version}</version>
+                                    <includes>cli-agents.json</includes>
+                                    <outputDirectory>${project.build.directory}/cli-agents-gate</outputDirectory>
+                                </artifactItem>
+                            </artifactItems>
+                            <overWriteSnapshots>true</overWriteSnapshots>
+                            <overWriteReleases>true</overWriteReleases>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-antrun-plugin</artifactId>
+                <version>3.1.0</version>
+                <executions>
+                    <execution>
+                        <id>verify-resolved-cli-agent-roster</id>
+                        <phase>validate</phase>
+                        <goals>
+                            <goal>run</goal>
+                        </goals>
+                        <configuration>
+                            <target>
+                                <condition property="cliAgentsRosterComplete">
+                                    <and>
+                                        <resourcecontains resource="${project.build.directory}/cli-agents-gate/cli-agents.json" substring="&quot;claude-cli&quot;"/>
+                                        <resourcecontains resource="${project.build.directory}/cli-agents-gate/cli-agents.json" substring="&quot;codex-cli&quot;"/>
+                                        <resourcecontains resource="${project.build.directory}/cli-agents-gate/cli-agents.json" substring="&quot;gemini-cli&quot;"/>
+                                        <resourcecontains resource="${project.build.directory}/cli-agents-gate/cli-agents.json" substring="&quot;opencode-cli&quot;"/>
+                                        <resourcecontains resource="${project.build.directory}/cli-agents-gate/cli-agents.json" substring="&quot;qwen-cli&quot;"/>
+                                        <resourcecontains resource="${project.build.directory}/cli-agents-gate/cli-agents.json" substring="&quot;pi-cli&quot;"/>
+                                    </and>
+                                </condition>
+                                <fail unless="cliAgentsRosterComplete">The cli-agents.json resolved from the kompile-app-core jar is missing part of the required agent roster (claude-cli, codex-cli, gemini-cli, opencode-cli, qwen-cli, pi-cli). The kompile-app-core artifact in the reactor/~/.m2 is stale or was built from a gutted registry. Rebuild it from a correct tree first: mvn -f kompile-app/kompile-app-parent/kompile-app-core/pom.xml install -DskipTests. If the roster is genuinely changing, update this gate, kompile-app-core's gate, and CliAgentRegistryTest in the same commit.</fail>
+                            </target>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>
                 <artifactId>exec-maven-plugin</artifactId>

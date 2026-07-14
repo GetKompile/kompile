@@ -26,12 +26,13 @@ import java.util.Map;
 /**
  * MCP tool: {@code graph_export}
  *
- * <p>Download the live knowledge graph from the running kompile-app as a portable
+ * <p>Download the live knowledge graph from the standalone graph service (or the compatible
+ * kompile-app route) as a portable
  * {@code .kgraph} file and write it to the local filesystem. The exported file captures
  * every aspect of the graph — entities, edges, all embedding-vector layers (sentence + KGE),
  * subjective-logic opinions, learned weight maps, and provenance — in a single compact archive.
- * The file can later be reloaded with {@code graph_import} to restore the full graph state
- * so the {@code ask_graph_*} and {@code graph_reason} tools can reason over it immediately.</p>
+ * The file can later be reloaded with {@code graph_import} to restore the full graph state for
+ * {@code graph_reasoning_query}; the compatibility app route may expose additional graph tools.</p>
  */
 public class GraphExportTool implements CliTool {
 
@@ -56,7 +57,7 @@ public class GraphExportTool implements CliTool {
     public String description() {
         return "Saves the whole graph to one .kgraph file — structure, confidence, and learned state — "
                 + "for backup or moving between instances. The file can later be reloaded with graph_import "
-                + "so the ask_graph_* tools and graph_reason can reason over it immediately. "
+                + "so graph_reasoning_query can reason over it immediately. "
                 + "Optionally scope the export to a specific fact sheet; omit factSheetId for the global graph.";
     }
 
@@ -97,7 +98,7 @@ public class GraphExportTool implements CliTool {
             return ToolResult.error("path is required");
         }
         if (!client.isAvailable()) {
-            return ToolResult.error("graph_export requires a running kompile-app.");
+            return ToolResult.error("graph_export requires kompile-graph-service or a compatible kompile-app.");
         }
 
         JsonNode fsNode = params.path("factSheetId");

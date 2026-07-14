@@ -41,6 +41,9 @@ public class ModelCatalog {
     /** LLM models (type llm_ggml); auto-loaded by StagingServingBridge at serve time. */
     @Builder.Default
     private List<CatalogModel> llm = new ArrayList<>();
+    /** End-to-end SameDiff text-to-waveform models. */
+    @Builder.Default
+    private List<CatalogModel> audioSynthesis = new ArrayList<>();
 
     @Data
     @Builder

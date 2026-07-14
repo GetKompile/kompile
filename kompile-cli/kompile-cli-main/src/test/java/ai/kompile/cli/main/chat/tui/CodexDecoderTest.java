@@ -276,7 +276,7 @@ class CodexDecoderTest {
     @Test
     void detectsCodexRealUsageLimitWording() {
         CodexDecoder decoder = new CodexDecoder();
-        // Codex's actual out-of-quota line, captured live (curly apostrophe in "You've").
+        // Codex’s actual out-of-quota line, captured live (curly apostrophe in "You’ve").
         // Match must survive the apostrophe via the "hit your usage limit" substring.
         VirtualTerminal curly = new VirtualTerminal(40, 120);
         curly.feed("\033[10;1H■ You’ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage "
@@ -287,7 +287,107 @@ class CodexDecoderTest {
 
         // Straight-apostrophe variant too.
         VirtualTerminal straight = new VirtualTerminal(40, 120);
-        straight.feed("\033[10;1H■ You've hit your usage limit. Purchase more credits.");
+        straight.feed("\033[10;1H■ You’ve hit your usage limit. Purchase more credits.");
         assertNotNull(decoder.detectBlockingNotice(straight));
+    }
+
+    // ------------------------------------------------------------------
+    // altScreenIsDialog — Prompt rendering correctness tests
+    // ------------------------------------------------------------------
+
+    /**
+     * Codex’s entire TUI lives in the alternate screen (it enters ESC[?1049h at startup and never
+     * exits it). altScreenIsDialog() must return false so that alternate-screen presence alone does
+     * NOT trigger full-screen mirror mode on every turn — mirrors are only activated by
+     * isAwaitingUserInput when a real decision prompt is actually on screen.
+     */
+    @Test
+    void altScreenIsDialogReturnsFalseForCodex() {
+        CodexDecoder decoder = new CodexDecoder();
+        assertFalse(decoder.altScreenIsDialog(),
+                "Codex is a ratatui full-screen TUI (always in alt-screen); " +
+                "altScreenIsDialog must be false so it does not mirror every turn");
+    }
+
+    /**
+     * A stale answered prompt ABOVE a completed assistant bullet must not re-fire
+     * isAwaitingUserInput after the response is committed. This verifies liveRegionStartRow
+     * scopes detection to at/below the last ‘•’ bullet so the previous question is outside
+     * the live region.
+     *
+     * Layout (codex viewport after turn completes):
+     *   row 3:  Apply this change?          ← stale answered question
+     *   row 5:  ❯ 1. Yes, apply             ← stale selection (already answered)
+     *   row 6:    2. No, skip
+     *   row 10: • Here is what I changed.   ← completed response (last bullet)
+     *   row 12: › Next question              ← composer (idle)
+     *   row 14:   gpt-5.5 xhigh · ~/proj   ← status bar
+     */
+    @Test
+    void stalePromptAboveCompletedResponseDoesNotReassertAwaitingInput() {
+        CodexDecoder d = new CodexDecoder();
+        VirtualTerminal vt = new VirtualTerminal(20, 90);
+
+        // Stale question + menu from a PREVIOUSLY answered turn (rows 3-6).
+        vt.feed("\033[3;1HApply this change?");
+        vt.feed("\033[5;1H❯ 1. Yes, apply");
+        vt.feed("\033[6;1H  2. No, skip");
+        // The completed response bullet pins below the stale prompt (row 10).
+        vt.feed("\033[10;1H• Here is what I changed.");
+        // Idle composer and status bar below the response.
+        vt.feed("\033[12;1H› Next question");
+        vt.feed("\033[14;1H  gpt-5.5 xhigh · ~/proj");
+
+        assertFalse(d.isAwaitingUserInput(vt),
+                "Stale prompt above the last ‘•’ bullet must not re-assert awaiting-input " +
+                "after the response is committed");
+    }
+
+    /**
+     * A live prompt appearing AFTER the last assistant bullet IS detected correctly —
+     * verifying that scoping to the bullet row doesn’t break legitimate mid-turn prompts.
+     *
+     * Layout (codex viewport mid-turn, agent blocked on input):
+     *   row 5:  • I’ve analysed the code.  ← previous response bullet
+     *   row 8:  Apply the patch?            ← NEW prompt below the bullet
+     *   row 9:  ❯ 1. Yes
+     *   row 10:   2. No
+     *   row 12: Enter to confirm
+     */
+    @Test
+    void livePromptBelowLastBulletIsStillDetected() {
+        CodexDecoder d = new CodexDecoder();
+        VirtualTerminal vt = new VirtualTerminal(20, 90);
+
+        vt.feed("\033[5;1H• I’ve analysed the code.");
+        vt.feed("\033[8;1HApply the patch?");
+        vt.feed("\033[9;1H❯ 1. Yes");
+        vt.feed("\033[10;1H  2. No");
+        vt.feed("\033[12;1HEnter to confirm");
+
+        assertTrue(d.isAwaitingUserInput(vt),
+                "A prompt appearing AFTER the last bullet must still be detected");
+    }
+
+    /**
+     * A prompt screen that includes "Esc to cancel" (e.g. "Enter to confirm · Esc to cancel")
+     * must NOT cause isResponding() to return true, which would block isAwaitingUserInput
+     * from detecting the prompt via the trailingQuestion path.
+     */
+    @Test
+    void escToCancelInPromptFooterDoesNotTriggerIsResponding() {
+        CodexDecoder d = new CodexDecoder();
+        VirtualTerminal vt = new VirtualTerminal(20, 90);
+
+        vt.feed("\033[5;1HApply this change?");
+        vt.feed("\033[7;1H❯ 1. Yes, apply");
+        vt.feed("\033[8;1H  2. No, skip");
+        vt.feed("\033[10;1HEnter to confirm · Esc to cancel");
+
+        assertFalse(d.isResponding(vt),
+                "’Esc to cancel’ in a prompt footer must NOT trigger isResponding — " +
+                "it would incorrectly block prompt detection via trailingQuestion");
+        assertTrue(d.isAwaitingUserInput(vt),
+                "Confirm prompt with ‘Esc to cancel’ footer must be detected as awaiting input");
     }
 }

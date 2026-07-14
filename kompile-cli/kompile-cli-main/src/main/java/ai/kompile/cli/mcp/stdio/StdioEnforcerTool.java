@@ -23,6 +23,8 @@ import java.util.Map;
  */
 public class StdioEnforcerTool {
 
+    private static final String CODEX_AGENT = "codex";
+
     private final DirectSubagentRunnerStdio subagentRunner;
     private final ObjectMapper objectMapper;
     private final Path workDir;
@@ -67,13 +69,9 @@ public class StdioEnforcerTool {
 
         var agent = props.putObject("agent");
         agent.put("type", "string");
-        agent.put("description", "Designated agent to launch. Default: opencode.");
+        agent.put("description", "Designated agent to launch. Codex is the only available agent and the default.");
         ArrayNode enumValues = agent.putArray("enum");
-        enumValues.add("qwen");
-        enumValues.add("claude");
-        enumValues.add("codex");
-        enumValues.add("gemini");
-        enumValues.add("opencode");
+        enumValues.add(CODEX_AGENT);
 
         props.putObject("rules")
                 .put("type", "string")
@@ -129,7 +127,11 @@ public class StdioEnforcerTool {
             return ToolResult.error("rules or rules_file is required");
         }
 
-        String agentName = stringArg(arguments, "agent", "opencode");
+        String agentName = stringArg(arguments, "agent", CODEX_AGENT);
+        if (!CODEX_AGENT.equals(agentName)) {
+            return ToolResult.error("Agent '" + agentName
+                    + "' is not available. Available agent: codex.");
+        }
         String roleName = stringArg(arguments, "role", null);
         int maxCorrections = intArg(arguments, "max_corrections", EnforcerPolicy.DEFAULT_MAX_CORRECTIONS);
         boolean returnAttempts = boolArg(arguments, "return_attempts", false);

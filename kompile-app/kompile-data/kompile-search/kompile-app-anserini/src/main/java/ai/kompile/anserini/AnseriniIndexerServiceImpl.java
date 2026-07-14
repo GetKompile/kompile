@@ -60,6 +60,7 @@ import org.apache.lucene.store.NoLockFactory;
 import org.apache.lucene.util.Bits;
 import org.springframework.ai.document.Document;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
@@ -101,6 +102,9 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
     private final List<DocumentLoader> documentLoaders;
     private VectorStore vectorStore;
     private EmbeddingModel embeddingModel;
+
+    @Value("${kompile.anserini.index-on-startup:false}")
+    private boolean indexOnStartup;
 
     // PERFORMANCE OPTIMIZATION: Increased batch size for better throughput.
     // With parallel processing enabled in DocumentIngestService, larger batches
@@ -246,6 +250,11 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
 
     @PostConstruct
     public void initialIndexOnStartup() {
+        if (!indexOnStartup) {
+            logger.info("Automatic Anserini startup indexing is disabled; use an explicit crawl or rebuild to populate the index.");
+            return;
+        }
+
         String indexPath = anseriniConfig.getIndexPath();
         if (indexPath == null || indexPath.isBlank()) {
             logger.info("AnseriniIndexerService: No initial index path configured. Startup checks skipped.");

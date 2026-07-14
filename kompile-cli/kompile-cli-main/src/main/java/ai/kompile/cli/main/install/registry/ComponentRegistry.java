@@ -41,6 +41,7 @@ public class ComponentRegistry {
     // Component identifiers
     public static final String KOMPILE_APP_MAIN = "kompile-app-main";
     public static final String KOMPILE_MODEL_STAGING = "kompile-model-staging";
+    public static final String KOMPILE_GRAPH_SERVICE = "kompile-graph-service";
     public static final String KOMPILE_CLI = "kompile-cli";
     public static final String KOMPILE_AGENT = "kompile-agent";
     public static final String KOMPILE_LITE = "kompile-lite";
@@ -56,6 +57,7 @@ public class ComponentRegistry {
     private static final Map<String, List<String>> BINARY_ALIASES = Map.of(
             KOMPILE_APP_MAIN, List.of("kompile-app-main", "kompile-server"),
             KOMPILE_MODEL_STAGING, List.of("kompile-model-staging"),
+            KOMPILE_GRAPH_SERVICE, List.of("kompile-graph-service"),
             KOMPILE_CLI, List.of("kompile-cli", "kompile"));
 
     private static List<String> aliasesFor(String componentId) {
@@ -84,6 +86,19 @@ public class ComponentRegistry {
                 .defaultPort(8090)
                 .mainClass("ai.kompile.modelstaging.MainApplication")
                 .artifactId("kompile-model-staging")
+                .groupId("ai.kompile")
+                .build());
+
+        // Register the standalone graph persistence and reasoning service
+        COMPONENTS.put(KOMPILE_GRAPH_SERVICE, ComponentDescriptor.builder()
+                .id(KOMPILE_GRAPH_SERVICE)
+                .name("Kompile Graph Service")
+                .description("Knowledge-graph persistence, interchange, and reasoning service")
+                .type("graph")
+                .defaultPort(8095)
+                .mainClass("ai.kompile.graph.service.GraphServiceApplication")
+                .artifactId("kompile-graph-service")
+                .artifactClassifier("exec")
                 .groupId("ai.kompile")
                 .build());
 
@@ -190,10 +205,13 @@ public class ComponentRegistry {
      * Build Maven repository URL for a component
      */
     private String buildMavenUrl(ComponentDescriptor descriptor) {
+        String classifier = descriptor.getArtifactClassifier()
+                .map(value -> "-" + value)
+                .orElse("");
         String artifactPath = descriptor.getGroupId().replace('.', '/') + "/" +
                 descriptor.getArtifactId() + "/" +
                 version + "/" +
-                descriptor.getArtifactId() + "-" + version + ".jar";
+                descriptor.getArtifactId() + "-" + version + classifier + ".jar";
         return mavenRepoUrl + artifactPath;
     }
 
@@ -368,6 +386,7 @@ public class ComponentRegistry {
         private Integer defaultPort;
         private String mainClass;
         private String artifactId;
+        private String artifactClassifier;
         private String groupId;
 
         private ComponentDescriptor(Builder builder) {
@@ -378,6 +397,7 @@ public class ComponentRegistry {
             this.defaultPort = builder.defaultPort;
             this.mainClass = builder.mainClass;
             this.artifactId = builder.artifactId;
+            this.artifactClassifier = builder.artifactClassifier;
             this.groupId = builder.groupId;
         }
 
@@ -392,6 +412,7 @@ public class ComponentRegistry {
         public Optional<Integer> getDefaultPort() { return Optional.ofNullable(defaultPort); }
         public Optional<String> getMainClass() { return Optional.ofNullable(mainClass); }
         public String getArtifactId() { return artifactId; }
+        public Optional<String> getArtifactClassifier() { return Optional.ofNullable(artifactClassifier); }
         public String getGroupId() { return groupId; }
 
         public static class Builder {
@@ -402,6 +423,7 @@ public class ComponentRegistry {
             private Integer defaultPort;
             private String mainClass;
             private String artifactId;
+            private String artifactClassifier;
             private String groupId;
 
             public Builder id(String id) { this.id = id; return this; }
@@ -411,6 +433,7 @@ public class ComponentRegistry {
             public Builder defaultPort(Integer defaultPort) { this.defaultPort = defaultPort; return this; }
             public Builder mainClass(String mainClass) { this.mainClass = mainClass; return this; }
             public Builder artifactId(String artifactId) { this.artifactId = artifactId; return this; }
+            public Builder artifactClassifier(String artifactClassifier) { this.artifactClassifier = artifactClassifier; return this; }
             public Builder groupId(String groupId) { this.groupId = groupId; return this; }
 
             public ComponentDescriptor build() {

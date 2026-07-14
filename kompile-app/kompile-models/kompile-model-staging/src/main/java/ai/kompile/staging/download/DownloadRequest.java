@@ -16,6 +16,7 @@
 
 package ai.kompile.staging.download;
 
+import ai.kompile.modelmanager.registry.AudioSynthesisConfig;
 import ai.kompile.modelmanager.registry.ModelType;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -57,6 +58,11 @@ public class DownloadRequest {
      * Model type: encoder, cross_encoder, reranker.
      */
     private ModelType modelType;
+
+    /**
+     * Typed serving ABI copied into the registry when an audio model is promoted.
+     */
+    private AudioSynthesisConfig audioSynthesis;
 
     /**
      * Model ID to use in the registry.

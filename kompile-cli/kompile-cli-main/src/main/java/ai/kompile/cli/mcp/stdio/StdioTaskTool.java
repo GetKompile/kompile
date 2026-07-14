@@ -4,16 +4,15 @@ import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.agent.AgentRegistry;
 import ai.kompile.cli.main.chat.roles.RoleManager;
 import ai.kompile.cli.main.chat.tools.ToolResult;
-import ai.kompile.core.agent.CliAgentRegistry;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Map;
 
 public class StdioTaskTool {
+
+    private static final String CODEX_AGENT = "codex";
 
     private final AgentRegistry agentRegistry;
     private final DirectSubagentRunnerStdio subagentRunner;
@@ -49,7 +48,7 @@ public class StdioTaskTool {
         return "Spawn a subagent to handle a delegated task. " +
             "The subagent runs through the same managed terminal launcher used by interactive passthrough " +
             "with its own context window, then returns a summary.\n\n" +
-            "Available agents: opencode (default), claude, codex, gemini, qwen.\n" +
+            "Available agent: codex (default).\n" +
             "Returns a concise summary. Full output is written to a file under .kompile/task-results/ " +
             "which can be read with the `read` tool if more detail is needed.\n" +
             "The subagent runs once and returns — it cannot send follow-up messages.";
@@ -67,9 +66,9 @@ public class StdioTaskTool {
         prompt.put("description", "Detailed task description for the subagent. Include all necessary context.");
         var agent = props.putObject("agent");
         agent.put("type", "string");
-        agent.put("description", "Which agent to spawn. Options: opencode (default), claude, codex, gemini, qwen.");
+        agent.put("description", "Which agent to spawn. Codex is the only available agent and the default.");
         ArrayNode enumValues = agent.putArray("enum");
-        for (String name : CliAgentRegistry.commandNames()) enumValues.add(name);
+        enumValues.add(CODEX_AGENT);
         var role = props.putObject("role");
         role.put("type", "string");
         role.put("description", "Optional role to assign to the subagent (e.g., 'developer', 'architect', 'reviewer')");
@@ -80,64 +79,40 @@ public class StdioTaskTool {
     public ToolResult execute(Map<String, Object> arguments) {
         String desc = (String) arguments.getOrDefault("description", "");
         String prompt = (String) arguments.getOrDefault("prompt", "");
-        // Default agent is opencode: qwen's OAuth free tier was discontinued (2026-04-15), and the
-        // managed runner supplies the provider-specific one-shot flags used by passthrough sessions.
-        String requestedAgent = (String) arguments.getOrDefault("agent", "opencode");
+        String requestedAgent = (String) arguments.getOrDefault("agent", "codex");
         String roleName = (String) arguments.get("role"); // optional
 
         if (prompt == null || prompt.isEmpty()) {
             return ToolResult.error("prompt is required");
         }
-
-        // Build ordered list: requested agent first, then role-based fallbacks
-        List<String> roleFallbacks = roleManager.getAgentFallbackOrder(roleName);
-        List<String> agentsToTry = new ArrayList<>();
-        agentsToTry.add(requestedAgent);
-        for (String fallback : roleFallbacks) {
-            if (!fallback.equals(requestedAgent)) {
-                agentsToTry.add(fallback);
-            }
+        if (!CODEX_AGENT.equals(requestedAgent)) {
+            return ToolResult.error("Agent '" + requestedAgent
+                + "' is not available. Available agent: codex.");
         }
 
-        List<String> rateLimitedAgents = new ArrayList<>();
+        AgentConfig agentConfig = AgentConfig.builder(CODEX_AGENT)
+            .displayName("Codex")
+            .description("External Codex agent")
+            .systemPrompt(prompt).maxSteps(50).isSubagent(true).canSpawnSubagents(false)
+            .roleName(roleName)
+            .build();
 
-        for (String agentName : agentsToTry) {
-            AgentConfig agentConfig = AgentConfig.builder(agentName)
-                .displayName(agentName.substring(0, 1).toUpperCase() + agentName.substring(1))
-                .description("External " + agentName + " agent")
-                .systemPrompt(prompt).maxSteps(50).isSubagent(true).canSpawnSubagents(false)
-                .roleName(roleName)
-                .build();
+        System.err.println("\u001B[32m  ⟳ Spawning Codex subagent: " + desc + "\u001B[0m");
 
-            if (rateLimitedAgents.isEmpty()) {
-                System.err.println("\u001B[32m  ⟳ Spawning " + agentName + " subagent: " + desc + "\u001B[0m");
-            } else {
-                System.err.println("\u001B[33m  ⟳ Falling back to " + agentName + " (rate limited: "
-                    + String.join(", ", rateLimitedAgents) + ")\u001B[0m");
+        try {
+            String result = subagentRunner.runSubagent(agentConfig, prompt);
+            if (isAgentMissing(result)) {
+                return ToolResult.error("Codex is not available on PATH.");
             }
-
-            try {
-                String result = subagentRunner.runSubagent(agentConfig, prompt);
-                if (isAgentMissing(result)) {
-                    System.err.println("\u001B[2m  " + agentName + " not found, trying next agent...\u001B[0m");
-                    continue;
-                }
-                return ToolResult.success("task:" + agentName, result,
-                    Map.of("agent", agentName, "description", desc, "mode", "managed-terminal",
-                           "fallbacksUsed", String.valueOf(rateLimitedAgents.size())));
-            } catch (RateLimitException e) {
-                rateLimitedAgents.add(agentName);
-                System.err.println("\u001B[33m  \u26a0 " + agentName + " rate limited, trying fallback...\u001B[0m");
-                // Continue to next agent
-            } catch (Exception e) {
-                return ToolResult.error("Subagent execution failed: " + e.getMessage());
-            }
+            return ToolResult.success("task:" + CODEX_AGENT, result,
+                Map.of("agent", CODEX_AGENT, "description", desc, "mode", "managed-terminal",
+                       "fallbacksUsed", "0"));
+        } catch (RateLimitException e) {
+            System.err.println("\u001B[33m  \u26a0 Codex rate limited; provider fallback is disabled.\u001B[0m");
+            return ToolResult.error("Codex is rate limited. No provider fallback was attempted.");
+        } catch (Exception e) {
+            return ToolResult.error("Subagent execution failed: " + e.getMessage());
         }
-
-        // All agents exhausted
-        return ToolResult.error("All agents were rate limited or unavailable: "
-            + String.join(", ", rateLimitedAgents)
-            + ". Please try again later.");
     }
 
     static boolean isAgentMissing(String result) {

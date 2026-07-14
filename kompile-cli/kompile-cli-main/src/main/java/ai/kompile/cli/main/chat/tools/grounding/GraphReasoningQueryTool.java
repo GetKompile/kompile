@@ -80,7 +80,7 @@ public class GraphReasoningQueryTool implements CliTool {
                 "explain, find paths, rank, or list assets. Start with operation=CAPABILITIES to " +
                 "see the full list. Entity names and ids are resolved automatically. Results include " +
                 "ranked answers, matching entities/relations, and a reasoning trace showing how the " +
-                "answer was derived. Requires a running kompile-app.";
+                "answer was derived. Requires kompile-graph-service or a compatible kompile-app.";
     }
 
     @Override
@@ -156,8 +156,8 @@ public class GraphReasoningQueryTool implements CliTool {
         context.checkPermission(permissionKey(), "Query knowledge graph");
 
         if (!groundingClient.isAvailable()) {
-            return ToolResult.error("graph_reasoning_query requires a running kompile-app. " +
-                    "Start kompile-app or use --url to connect.");
+            return ToolResult.error("graph_reasoning_query requires kompile-graph-service or a compatible " +
+                    "kompile-app. Start one and use --graph-url or --url to connect.");
         }
 
         try {

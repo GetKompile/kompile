@@ -898,8 +898,10 @@ public abstract class AbstractTuiDecoder implements AgentTuiDecoder {
 
     /**
      * Pull the on-screen decision prompt (question line + numbered options) out of the VT so the
-     * REPL can display the choices explicitly. Finds the run of numbered-option rows and the
-     * nearest non-blank line above them (the question).
+     * REPL can display the choices explicitly. Finds the run of numbered-option rows (stripping
+     * box borders so claude's bordered dialog "│ ❯ 1. Yes │" is parsed correctly), and the
+     * nearest non-blank line above them (the question). Falls back to returning the nearest
+     * non-chrome content line ending with '?' when no numbered options are present.
      */
     @Override
     public String extractPromptText(VirtualTerminal vt) {
@@ -912,15 +914,28 @@ public abstract class AbstractTuiDecoder implements AgentTuiDecoder {
                 lastOption = r;
             }
         }
-        if (firstOption < 0) return "";
+        if (firstOption < 0) {
+            // Fallback: scan for a line ending with '?' (question without a numbered menu).
+            for (int r = rows - 1; r >= 0; r--) {
+                String q = stripBoxBorders(vt.getRow(r)).strip();
+                if (q.endsWith("?") && !q.isEmpty() && !isSeparatorOrBorder(q)
+                        && !isChrome(q) && containsContentCharacter(q)) {
+                    return q;
+                }
+            }
+            return "";
+        }
         StringBuilder sb = new StringBuilder();
-        // Nearest non-blank, non-separator line above the options is the question.
+        // Nearest non-blank, non-separator, non-chrome line above the options is the question.
         for (int r = firstOption - 1; r >= 0 && r >= firstOption - 4; r--) {
-            String q = vt.getRow(r).strip();
-            if (!q.isEmpty() && !isSeparatorOrBorder(q)) { sb.append(q).append('\n'); break; }
+            String q = stripBoxBorders(vt.getRow(r)).strip();
+            if (!q.isEmpty() && !isSeparatorOrBorder(q) && !isChrome(q)) {
+                sb.append(q).append('\n');
+                break;
+            }
         }
         for (int r = firstOption; r <= lastOption; r++) {
-            String opt = vt.getRow(r).strip();
+            String opt = stripBoxBorders(vt.getRow(r)).strip();
             if (!opt.isEmpty()) sb.append("  ").append(opt).append('\n');
         }
         return sb.toString().stripTrailing();
@@ -930,7 +945,8 @@ public abstract class AbstractTuiDecoder implements AgentTuiDecoder {
     public String selectedOptionDigit(VirtualTerminal vt) {
         if (vt == null) return null;
         for (int r = 0; r < vt.getRows(); r++) {
-            String row = vt.getRow(r).strip();
+            // Strip box borders first so "│ ❯ 1. Yes │" → "❯ 1. Yes" before parsing.
+            String row = stripBoxBorders(vt.getRow(r)).strip();
             if (row.isEmpty()) continue;
             char c0 = row.charAt(0);
             // The selection cursor sits on the highlighted numbered option.
@@ -946,10 +962,11 @@ public abstract class AbstractTuiDecoder implements AgentTuiDecoder {
         return null;
     }
 
-    /** A row that is (optionally cursor/bullet-prefixed) "&lt;n&gt;. text" — a menu option. */
+    /** A row that is (optionally cursor/bullet-prefixed) "&lt;n&gt;. text" — a menu option.
+     *  Box-bordered rows (e.g. claude's "│ ❯ 1. Yes │") are stripped before matching. */
     private boolean isNumberedOptionRow(String row) {
         if (row == null) return false;
-        String t = row.strip();
+        String t = stripBoxBorders(row).strip();
         int i = 0;
         // Skip a leading selection cursor / bullet glyph.
         while (i < t.length() && (t.charAt(i) == '❯' || t.charAt(i) == '>' || t.charAt(i) == '●'
@@ -964,6 +981,10 @@ public abstract class AbstractTuiDecoder implements AgentTuiDecoder {
      * Conservative detection of a mid-turn decision prompt (confirmation, selection menu, yes/no,
      * or a direct question) that the agent is blocked on. Requires the agent to NOT be actively
      * generating and requires a strong, unambiguous affordance so a normal response can't trip it.
+     * <p>
+     * Scans only the "live region" — rows at or below {@link #liveRegionStartRow} — so that old
+     * question text above a done-marker (e.g. claude's "✻ Cooked for Ns") is not mistaken for a
+     * new prompt.
      */
     @Override
     public boolean isAwaitingUserInput(VirtualTerminal vt) {
@@ -984,43 +1005,88 @@ public abstract class AbstractTuiDecoder implements AgentTuiDecoder {
                 || (s.contains("working") && s.contains("("))) {
             return false;
         }
+
+        // Collect the live-region rows (below any done-marker line).
+        List<String> allRows = new ArrayList<>();
+        for (int r = 0; r < vt.getRows(); r++) allRows.add(vt.getRow(r));
+        int liveStart = liveRegionStartRow(allRows);
+        StringBuilder liveSb = new StringBuilder();
+        for (int r = liveStart; r < allRows.size(); r++) {
+            liveSb.append(allRows.get(r).toLowerCase(Locale.ROOT)).append('\n');
+        }
+        String live = liveSb.toString();
+
         // A prompt shows at least one strong, unambiguous affordance.
-        boolean confirmAffordance = s.contains("enter to confirm")
-                || s.contains("press enter to continue")
-                || s.contains("(y/n)") || s.contains("[y/n]") || s.contains("(yes/no)");
+        boolean confirmAffordance = live.contains("enter to confirm")
+                || live.contains("press enter to continue")
+                || live.contains("(y/n)") || live.contains("[y/n]") || live.contains("(yes/no)");
         // A selection menu: the ❯/›/▶ cursor sits on SOME numbered option and there is more than
         // one. Match the cursor on ANY option number, not just "1" — pickers pre-highlight the
         // current choice (claude's /model highlights the active model, e.g. "❯ 5. Haiku"), and the
         // user arrows the cursor around, so gating on "❯ 1." both misses the initial state and drops
         // detection mid-navigation (which would wedge the turn). Goes false the moment the menu is
         // gone, so it cannot get stuck the way the alternate-screen flag does.
-        boolean selectionMenu = hasHighlightedNumberedOption(s) && (s.contains("2.") || s.contains("2)"));
-        boolean decisionQuestion = s.contains("do you want to")
-                || (s.contains("allow") && s.contains("deny"))
-                || (s.contains("approve") && s.contains("reject"));
-        return confirmAffordance || selectionMenu || decisionQuestion;
+        boolean selectionMenu = hasHighlightedNumberedOption(live) && (live.contains("2.") || live.contains("2)"));
+        boolean decisionQuestion = live.contains("do you want to")
+                || live.contains("would you like")
+                || (live.contains("allow") && live.contains("deny"))
+                || (live.contains("approve") && live.contains("reject"));
+        // Trailing '?' on the SOLE non-chrome content row in the live region (no generation in progress).
+        // Conservative: only fires when the live region has at most 2 content rows so a lone question
+        // screen (e.g. "Would you like to explore?") is detected, but a prose response whose last
+        // sentence happens to end with '?' (e.g. "How can I help you today?") is not.
+        // Additionally, the question must not start with a list-bullet (●, *, •, -) which indicates
+        // it is embedded prose, not a blocking prompt.
+        boolean trailingQuestion = false;
+        if (!isResponding(vt)) {
+            int contentRowCount = 0;
+            String lastContentRow = null;
+            for (int r = liveStart; r < allRows.size(); r++) {
+                String q = stripBoxBorders(allRows.get(r)).strip();
+                if (q.isEmpty()) continue;
+                if (isSeparatorOrBorder(q) || !containsContentCharacter(q)) continue;
+                if (isChrome(q)) continue;
+                contentRowCount++;
+                lastContentRow = q;
+            }
+            if (lastContentRow != null && lastContentRow.endsWith("?") && contentRowCount <= 2) {
+                // Exclude list-item bullets (prose embedded in a response body).
+                char first = lastContentRow.charAt(0);
+                boolean isBulletLine = first == '*' || first == '-' || first == '●'
+                        || first == '•' || first == '◦' || first == '⏺';
+                if (!isBulletLine) {
+                    trailingQuestion = true;
+                }
+            }
+        }
+        return confirmAffordance || selectionMenu || decisionQuestion || trailingQuestion;
     }
 
     /**
      * True if any line is a selection-cursor (❯/›/▶) sitting on a numbered option, e.g. "❯ 5. Haiku"
      * or "› 2) Foo". Only the strong selection arrows count (not "●"/">", which are also content
      * bullets/quote markers) so a normal numbered-list answer doesn't read as a live menu.
+     * Box-bordered rows (e.g. claude's "│ ❯ 1. Yes │") are stripped before matching.
      */
-    private static boolean hasHighlightedNumberedOption(String s) {
+    private boolean hasHighlightedNumberedOption(String s) {
         int i = 0, n = s.length();
         while (i < n) {
             int eol = s.indexOf('\n', i);
             if (eol < 0) eol = n;
-            int a = i;
-            while (a < eol && s.charAt(a) == ' ') a++;              // skip leading spaces
-            if (a < eol) {
-                char c = s.charAt(a);
+            // Strip box borders from the raw line before looking for the cursor.
+            String rawLine = s.substring(i, eol);
+            String line = stripBoxBorders(rawLine);
+            int lineLen = line.length();
+            int a = 0;
+            while (a < lineLen && line.charAt(a) == ' ') a++;              // skip leading spaces
+            if (a < lineLen) {
+                char c = line.charAt(a);
                 if (c == '❯' || c == '›' || c == '▶' || c == '❭') {
                     int b = a + 1;
-                    while (b < eol && s.charAt(b) == ' ') b++;      // skip spaces after the cursor
+                    while (b < lineLen && line.charAt(b) == ' ') b++;      // skip spaces after the cursor
                     int d = b;
-                    while (d < eol && Character.isDigit(s.charAt(d))) d++;
-                    if (d > b && d < eol && (s.charAt(d) == '.' || s.charAt(d) == ')')) return true;
+                    while (d < lineLen && Character.isDigit(line.charAt(d))) d++;
+                    if (d > b && d < lineLen && (line.charAt(d) == '.' || line.charAt(d) == ')')) return true;
                 }
             }
             i = eol + 1;
@@ -1094,6 +1160,30 @@ public abstract class AbstractTuiDecoder implements AgentTuiDecoder {
     // ------------------------------------------------------------------
     // Terminal query responses
     // ------------------------------------------------------------------
+
+    /**
+     * Whether the alternate screen being active implies a full-screen dialog that must be mirrored
+     * rather than decoded. Most agents use the alternate screen ONLY for transient pickers, so a
+     * switch into it means a dialog is up. Claude Code is the exception: its entire TUI lives in
+     * the alternate screen, so alternate-screen alone carries no dialog signal. Decoders for agents
+     * like claude override this to return {@code false}.
+     */
+    public boolean altScreenIsDialog() {
+        return true;
+    }
+
+    /**
+     * The first row index (0-based) of the "live region" to scan when detecting input prompts and
+     * question lines. By default, scanning starts from row 0 (the full screen). Overridden by
+     * decoders that print done-markers on screen (e.g. claude's "✻ Cooked for Ns") so that old
+     * question text above the done-marker is not mistaken for a new prompt.
+     *
+     * @param rows the current list of visible rows (raw, with box borders)
+     * @return the first row index to include in prompt/question scans
+     */
+    protected int liveRegionStartRow(List<String> rows) {
+        return 0;
+    }
 
     /**
      * Whether to answer the Kitty keyboard protocol query (ESC[?u). Most TUIs are

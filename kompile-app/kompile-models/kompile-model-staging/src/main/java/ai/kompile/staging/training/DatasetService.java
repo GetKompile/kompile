@@ -89,20 +89,33 @@ public class DatasetService {
         datasetDir.mkdirs();
 
         try {
+            String nativeFormat = TranscriptJsonlDatasetSupport.canonicalFormat(format);
+            String storedFormat = nativeFormat != null
+                    ? nativeFormat
+                    : (format != null && !format.isBlank() ? format : "csv");
+
             // Save the uploaded file
             String originalFilename = file.getOriginalFilename();
             if (originalFilename == null || originalFilename.isEmpty()) {
-                originalFilename = "data." + (format != null ? format : "csv");
+                String extension = nativeFormat != null ? "jsonl" : storedFormat.toLowerCase(Locale.ROOT);
+                originalFilename = "data." + extension;
             }
             File dataFile = new File(datasetDir, originalFilename);
             file.transferTo(dataFile);
 
-            // Compute basic stats
-            long totalLines = countLines(dataFile);
-            // Subtract header line for CSV/TSV
-            long totalSamples = totalLines;
-            if ("csv".equalsIgnoreCase(format) || "tsv".equalsIgnoreCase(format)) {
-                totalSamples = Math.max(0, totalLines - 1);
+            // Compute basic stats. Native transcript JSONL has one source event per line,
+            // but one training sample per assistant response.
+            long totalSamples;
+            if (nativeFormat != null) {
+                totalSamples = TranscriptJsonlDatasetSupport
+                        .scan(dataFile.toPath(), nativeFormat, 0)
+                        .totalSamples();
+            } else {
+                long totalLines = countLines(dataFile);
+                totalSamples = totalLines;
+                if ("csv".equalsIgnoreCase(storedFormat) || "tsv".equalsIgnoreCase(storedFormat)) {
+                    totalSamples = Math.max(0, totalLines - 1);
+                }
             }
 
             long trainSamples = (long) (totalSamples * trainSplit);
@@ -121,7 +134,7 @@ public class DatasetService {
             DatasetInfo info = DatasetInfo.builder()
                     .id(id)
                     .name(name != null ? name : originalFilename)
-                    .format(format != null ? format : "csv")
+                    .format(storedFormat)
                     .task(task != null ? task : "sft")
                     .sizeBytes(dataFile.length())
                     .totalSamples(totalSamples)
@@ -140,8 +153,8 @@ public class DatasetService {
             meta.put("totalSamples", info.getTotalSamples());
             meta.put("createdAt", info.getCreatedAt());
             meta.put("filePath", info.getFilePath());
-            meta.put("inputColumn", inputColumn);
-            meta.put("outputColumn", outputColumn);
+            meta.put("inputColumn", nativeFormat != null ? null : inputColumn);
+            meta.put("outputColumn", nativeFormat != null ? null : outputColumn);
             meta.put("chosenColumn", chosenColumn);
             meta.put("rejectedColumn", rejectedColumn);
             meta.put("trainSplit", trainSplit);
@@ -255,7 +268,9 @@ public class DatasetService {
 
         try {
             String format = info.getFormat();
-            if ("jsonl".equalsIgnoreCase(format) || "json".equalsIgnoreCase(format)) {
+            if (TranscriptJsonlDatasetSupport.supports(format)) {
+                result = TranscriptJsonlDatasetSupport.scan(dataFile.toPath(), format, rows).rows();
+            } else if ("jsonl".equalsIgnoreCase(format) || "json".equalsIgnoreCase(format)) {
                 result = previewJsonl(dataFile, rows);
             } else if ("csv".equalsIgnoreCase(format)) {
                 result = previewDelimited(dataFile, rows, ",");
@@ -290,49 +305,60 @@ public class DatasetService {
         }
 
         try {
-            long totalLines = countLines(dataFile);
             String format = info.getFormat();
-            long totalSamples = totalLines;
-            if ("csv".equalsIgnoreCase(format) || "tsv".equalsIgnoreCase(format)) {
-                totalSamples = Math.max(0, totalLines - 1);
-            }
-
-            // Compute token length statistics by reading lines
+            long totalSamples;
             int maxTokenLen = 0;
             int minTokenLen = Integer.MAX_VALUE;
             long totalTokenLen = 0;
             long sampleCount = 0;
             Map<String, Long> labelDistribution = new LinkedHashMap<>();
 
-            try (BufferedReader reader = new BufferedReader(new FileReader(dataFile))) {
-                String line;
-                boolean firstLine = true;
-                while ((line = reader.readLine()) != null) {
-                    // Skip header for CSV/TSV
-                    if (firstLine && ("csv".equalsIgnoreCase(format) || "tsv".equalsIgnoreCase(format))) {
+            if (TranscriptJsonlDatasetSupport.supports(format)) {
+                TranscriptJsonlDatasetSupport.ScanResult scan =
+                        TranscriptJsonlDatasetSupport.scan(dataFile.toPath(), format, 0);
+                totalSamples = scan.totalSamples();
+                sampleCount = scan.totalSamples();
+                totalTokenLen = scan.totalTokenCount();
+                minTokenLen = scan.minTokenCount();
+                maxTokenLen = scan.maxTokenCount();
+            } else {
+                long totalLines = countLines(dataFile);
+                totalSamples = totalLines;
+                if ("csv".equalsIgnoreCase(format) || "tsv".equalsIgnoreCase(format)) {
+                    totalSamples = Math.max(0, totalLines - 1);
+                }
+
+                // Compute token length statistics by reading lines.
+                try (BufferedReader reader = new BufferedReader(new FileReader(dataFile))) {
+                    String line;
+                    boolean firstLine = true;
+                    while ((line = reader.readLine()) != null) {
+                        // Skip header for CSV/TSV
+                        if (firstLine && ("csv".equalsIgnoreCase(format) || "tsv".equalsIgnoreCase(format))) {
+                            firstLine = false;
+                            continue;
+                        }
                         firstLine = false;
-                        continue;
-                    }
-                    firstLine = false;
 
-                    // Approximate token count by splitting on whitespace
-                    int tokenCount = line.split("\\s+").length;
-                    totalTokenLen += tokenCount;
-                    maxTokenLen = Math.max(maxTokenLen, tokenCount);
-                    minTokenLen = Math.min(minTokenLen, tokenCount);
-                    sampleCount++;
+                        // Approximate token count by splitting on whitespace
+                        int tokenCount = line.split("\\s+").length;
+                        totalTokenLen += tokenCount;
+                        maxTokenLen = Math.max(maxTokenLen, tokenCount);
+                        minTokenLen = Math.min(minTokenLen, tokenCount);
+                        sampleCount++;
 
-                    // For JSONL, try to extract a label field
-                    if ("jsonl".equalsIgnoreCase(format) || "json".equalsIgnoreCase(format)) {
-                        try {
-                            @SuppressWarnings("unchecked")
-                            Map<String, Object> row = objectMapper.readValue(line, Map.class);
-                            Object label = row.get("label");
-                            if (label != null) {
-                                labelDistribution.merge(label.toString(), 1L, Long::sum);
+                        // For JSONL, try to extract a label field
+                        if ("jsonl".equalsIgnoreCase(format) || "json".equalsIgnoreCase(format)) {
+                            try {
+                                @SuppressWarnings("unchecked")
+                                Map<String, Object> row = objectMapper.readValue(line, Map.class);
+                                Object label = row.get("label");
+                                if (label != null) {
+                                    labelDistribution.merge(label.toString(), 1L, Long::sum);
+                                }
+                            } catch (Exception ignored) {
+                                // Not valid JSON, skip label extraction
                             }
-                        } catch (Exception ignored) {
-                            // Not valid JSON, skip label extraction
                         }
                     }
                 }

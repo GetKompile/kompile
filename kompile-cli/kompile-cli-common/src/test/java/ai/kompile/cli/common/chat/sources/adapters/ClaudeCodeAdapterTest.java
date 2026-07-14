@@ -189,6 +189,278 @@ class ClaudeCodeAdapterTest {
         assertTrue(adapter.list(0).isEmpty());
     }
 
+    @Test
+    void deduplicatesRootTranscriptsWithTheSameCanonicalSessionId() throws Exception {
+        Path projects = tempDir.resolve("projects");
+        Path firstProject = projects.resolve("-work-first");
+        Path secondProject = projects.resolve("-work-second");
+        Files.createDirectories(firstProject);
+        Files.createDirectories(secondProject);
+
+        String sessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        Path first = firstProject.resolve("first-copy.jsonl");
+        Path second = secondProject.resolve("second-copy.jsonl");
+        Files.writeString(first, """
+                {"type":"user","message":{"role":"user","content":"First copy"},"sessionId":"%s"}
+                """.formatted(sessionId), StandardCharsets.UTF_8);
+        Files.writeString(second, """
+                {"type":"user","message":{"role":"user","content":"Second copy"},"sessionId":"%s"}
+                """.formatted(sessionId), StandardCharsets.UTF_8);
+        Files.setLastModifiedTime(first, FileTime.fromMillis(1_000L));
+        Files.setLastModifiedTime(second, FileTime.fromMillis(2_000L));
+
+        ClaudeCodeAdapter adapter = new TestClaudeCodeAdapter(projects);
+        List<ChatSessionSummary> summaries = adapter.list();
+
+        assertEquals(1, summaries.size());
+        assertEquals(sessionId, summaries.get(0).sessionId());
+        assertEquals(1, adapter.discover().sessionCount());
+    }
+
+    @Test
+    void usesNativeIndexTitleAndExcludesSidechainsAndNestedSubagents() throws Exception {
+        Path projects = tempDir.resolve("projects");
+        Path project = projects.resolve("-tmp-project");
+        Path subagents = project.resolve("subagents");
+        Files.createDirectories(subagents);
+
+        String rootId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        String sidechainId = "11111111-2222-3333-4444-555555555555";
+        String unindexedSidechainId = "66666666-7777-8888-9999-000000000000";
+        Path rootFile = project.resolve(rootId + ".jsonl");
+        Path sidechainFile = project.resolve(sidechainId + ".jsonl");
+        Path unindexedSidechainFile = project.resolve(unindexedSidechainId + ".jsonl");
+
+        Files.writeString(rootFile, """
+                {"type":"user","message":{"role":"user","content":"Raw JSONL prompt"},"cwd":"/work/project","sessionId":"%s"}
+                """.formatted(rootId), StandardCharsets.UTF_8);
+        Files.writeString(sidechainFile, """
+                {"type":"user","message":{"role":"user","content":"Sidechain prompt"},"cwd":"/work/project","sessionId":"%s"}
+                """.formatted(sidechainId), StandardCharsets.UTF_8);
+        Files.writeString(unindexedSidechainFile, """
+                {"type":"user","message":{"role":"user","content":"Unindexed sidechain prompt"},"cwd":"/work/project","sessionId":"%s","isSidechain":true}
+                """.formatted(unindexedSidechainId), StandardCharsets.UTF_8);
+        Files.writeString(subagents.resolve("agent-child.jsonl"), """
+                {"type":"user","message":{"role":"user","content":"Nested subagent prompt"},"sessionId":"agent-child"}
+                """, StandardCharsets.UTF_8);
+
+        Files.writeString(project.resolve("sessions-index.json"), """
+                {
+                  "version": 1,
+                  "entries": [
+                    {
+                      "sessionId": "%s",
+                      "fullPath": "%s",
+                      "firstPrompt": "Native Claude picker title",
+                      "summary": "Generated summary",
+                      "messageCount": 9,
+                      "modified": "2026-07-14T01:02:03Z",
+                      "projectPath": "/work/project",
+                      "isSidechain": false
+                    },
+                    {
+                      "sessionId": "%s",
+                      "fullPath": "%s",
+                      "firstPrompt": "Sidechain picker title",
+                      "messageCount": 2,
+                      "projectPath": "/work/project",
+                      "isSidechain": true
+                    }
+                  ]
+                }
+                """.formatted(
+                        rootId,
+                        rootFile.toAbsolutePath(),
+                        sidechainId,
+                        sidechainFile.toAbsolutePath()),
+                StandardCharsets.UTF_8);
+
+        ClaudeCodeAdapter adapter = new TestClaudeCodeAdapter(projects);
+
+        List<ChatSessionSummary> summaries = adapter.list();
+        assertEquals(1, summaries.size());
+        assertEquals(rootId, summaries.get(0).sessionId());
+        assertEquals("Generated summary", summaries.get(0).title());
+        assertEquals(9, summaries.get(0).messageCount());
+        assertEquals("/work/project", summaries.get(0).workingDirectory());
+        assertEquals(1, adapter.discover().sessionCount());
+        assertTrue(adapter.readTurns("agent-child").isEmpty());
+        assertTrue(adapter.readTurns(unindexedSidechainId).isEmpty());
+    }
+
+    @Test
+    void matchesNativePickerTitlesAndExcludesPrintModeTaskSessions() throws Exception {
+        Path projects = tempDir.resolve("projects");
+        Path project = projects.resolve("-work-project");
+        Files.createDirectories(project);
+
+        String aiTitleId = "aaaaaaaa-1111-2222-3333-444444444444";
+        String lastPromptId = "bbbbbbbb-1111-2222-3333-444444444444";
+        String taskId = "cccccccc-1111-2222-3333-444444444444";
+        String standaloneId = "dddddddd-1111-2222-3333-444444444444";
+
+        StringBuilder aiTitleTranscript = new StringBuilder()
+                .append("{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"Raw injected prompt\"},")
+                .append("\"cwd\":\"/work/project\",\"sessionId\":\"").append(aiTitleId).append("\"}\n");
+        for (int i = 0; i < 40; i++) {
+            aiTitleTranscript.append("{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",")
+                    .append("\"content\":\"progress ").append(i).append("\"},\"sessionId\":\"")
+                    .append(aiTitleId).append("\"}\n");
+        }
+        aiTitleTranscript.append("{\"type\":\"ai-title\",\"aiTitle\":\"Native generated title\",")
+                .append("\"sessionId\":\"").append(aiTitleId).append("\"}\n");
+        Files.writeString(project.resolve(aiTitleId + ".jsonl"),
+                aiTitleTranscript, StandardCharsets.UTF_8);
+
+        StringBuilder lastPromptTranscript = new StringBuilder()
+                .append("{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"# AGENTS.md injected prompt\"},")
+                .append("\"cwd\":\"/work/project\",\"sessionId\":\"").append(lastPromptId).append("\"}\n");
+        for (int i = 0; i < 40; i++) {
+            lastPromptTranscript.append("{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",")
+                    .append("\"content\":\"progress ").append(i).append("\"},\"sessionId\":\"")
+                    .append(lastPromptId).append("\"}\n");
+        }
+        lastPromptTranscript.append("{\"type\":\"last-prompt\",\"lastPrompt\":\"Continue\",")
+                .append("\"sessionId\":\"").append(lastPromptId).append("\"}\n");
+        Files.writeString(project.resolve(lastPromptId + ".jsonl"),
+                lastPromptTranscript, StandardCharsets.UTF_8);
+
+        Files.writeString(project.resolve(taskId + ".jsonl"), """
+                {"type":"ai-title","aiTitle":"Delegated task title","sessionId":"%s"}
+                {"type":"queue-operation","operation":"enqueue","sessionId":"%s","content":"READ-ONLY investigation"}
+                {"type":"user","message":{"role":"user","content":"READ-ONLY investigation"},"cwd":"/work/project","sessionId":"%s"}
+                """.formatted(taskId, taskId, taskId), StandardCharsets.UTF_8);
+        Files.writeString(project.resolve(standaloneId + ".jsonl"), """
+                {"type":"user","message":{"role":"user","content":"Standalone visual smoke"},"cwd":"/work/project","sessionId":"%s"}
+                {"type":"assistant","message":{"role":"assistant","content":"VISUAL-OK"},"cwd":"/work/project","sessionId":"%s"}
+                """.formatted(standaloneId, standaloneId), StandardCharsets.UTF_8);
+
+        Files.writeString(project.resolve("sessions-index.json"), """
+                {
+                  "version": 1,
+                  "entries": [{
+                    "sessionId": "%s",
+                    "fullPath": "%s",
+                    "firstPrompt": "Raw injected prompt",
+                    "summary": "Stale indexed summary",
+                    "projectPath": "/work/project",
+                    "isSidechain": false
+                  }],
+                  "%s": {
+                    "id": "%s",
+                    "summary": "# AGENTS.md injected prompt",
+                    "projectPath": "/work/project"
+                  }
+                }
+                """.formatted(
+                        aiTitleId,
+                        project.resolve(aiTitleId + ".jsonl").toAbsolutePath(),
+                        lastPromptId,
+                        lastPromptId),
+                StandardCharsets.UTF_8);
+
+        Files.writeString(tempDir.resolve("history.jsonl"), """
+                {"display":"Later interactive prompt","project":"/work/project","sessionId":"%s"}
+                {"display":"Continue","project":"/work/project","sessionId":"%s"}
+                """.formatted(aiTitleId, lastPromptId), StandardCharsets.UTF_8);
+
+        ClaudeCodeAdapter adapter = new TestClaudeCodeAdapter(projects);
+        List<ChatSessionSummary> summaries = adapter.list(Path.of("/work/project"));
+
+        assertEquals(3, summaries.size());
+        assertEquals("Native generated title", summaries.stream()
+                .filter(summary -> aiTitleId.equals(summary.sessionId()))
+                .findFirst().orElseThrow().title());
+        assertEquals("Continue", summaries.stream()
+                .filter(summary -> lastPromptId.equals(summary.sessionId()))
+                .findFirst().orElseThrow().title());
+        assertEquals("Standalone visual smoke", summaries.stream()
+                .filter(summary -> standaloneId.equals(summary.sessionId()))
+                .findFirst().orElseThrow().title());
+        assertTrue(summaries.stream().noneMatch(summary -> taskId.equals(summary.sessionId())));
+    }
+
+    @Test
+    void projectScopedListEnumeratesOnlyMatchingClaudeProjectDirectories() throws Exception {
+        Path projects = tempDir.resolve("projects");
+        Path matching = projects.resolve("-work-project");
+        Path nestedProject = projects.resolve("-work-project-child");
+        Path unrelated = projects.resolve("-other-project");
+        Files.createDirectories(matching);
+        Files.createDirectories(nestedProject);
+        Files.createDirectories(unrelated);
+
+        Files.writeString(matching.resolve("matching.jsonl"), """
+                {"type":"user","message":{"role":"user","content":"Matching project"},"cwd":"/work/project","sessionId":"matching"}
+                """, StandardCharsets.UTF_8);
+        Files.writeString(nestedProject.resolve("nested.jsonl"), """
+                {"type":"user","message":{"role":"user","content":"Nested project"},"cwd":"/work/project/child","sessionId":"nested"}
+                """, StandardCharsets.UTF_8);
+        Files.writeString(unrelated.resolve("unrelated.jsonl"), """
+                {"type":"user","message":{"role":"user","content":"Unrelated project"},"cwd":"/other/project","sessionId":"unrelated"}
+                """, StandardCharsets.UTF_8);
+
+        ClaudeCodeAdapter adapter = new TestClaudeCodeAdapter(projects);
+
+        List<ChatSessionSummary> summaries = adapter.list(Path.of("/work/project"));
+        assertEquals(1, summaries.size());
+        assertEquals("matching", summaries.get(0).sessionId());
+        assertEquals("Matching project", summaries.get(0).title());
+        assertEquals(-1, summaries.get(0).messageCount());
+    }
+
+    @Test
+    void encodesWindowsDriveSeparatorLikeClaudeProjectDirectories() {
+        assertEquals("C--work-project",
+                ClaudeCodeAdapter.encodeProjectDirectory("C:\\work\\project"));
+    }
+
+    @Test
+    void directUuidLookupDoesNotEnumerateOrParseUnrelatedTranscripts() throws Exception {
+        Path projects = tempDir.resolve("projects");
+        Path project = projects.resolve("-work-project");
+        Files.createDirectories(project);
+        String sessionId = "aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb";
+        Files.writeString(project.resolve(sessionId + ".jsonl"), """
+                {"type":"user","message":{"role":"user","content":"Direct session"},"cwd":"/work/project","sessionId":"%s"}
+                """.formatted(sessionId), StandardCharsets.UTF_8);
+
+        ClaudeCodeAdapter adapter = new TestClaudeCodeAdapter(projects) {
+            @Override
+            protected List<Path> listRootSessionFiles(Path root) {
+                throw new AssertionError("direct UUID lookup must not enumerate every transcript");
+            }
+        };
+
+        assertEquals("Direct session", adapter.readTurns(sessionId).get(0).content());
+    }
+
+    @Test
+    void indexWithoutSidechainFieldStillChecksBoundedTranscriptHeader() throws Exception {
+        Path projects = tempDir.resolve("projects");
+        Path project = projects.resolve("-work-project");
+        Files.createDirectories(project);
+
+        String sessionId = "aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb";
+        Path session = project.resolve(sessionId + ".jsonl");
+        Files.writeString(session, """
+                {"type":"user","message":{"role":"user","content":"Sidechain"},"cwd":"/work/project","sessionId":"%s","isSidechain":true}
+                """.formatted(sessionId), StandardCharsets.UTF_8);
+        Files.writeString(project.resolve("sessions-index.json"), """
+                {"version":1,"entries":[{
+                  "sessionId":"%s",
+                  "fullPath":"%s",
+                  "firstPrompt":"Indexed title",
+                  "messageCount":1,
+                  "projectPath":"/work/project"
+                }]}
+                """.formatted(sessionId, session.toAbsolutePath()), StandardCharsets.UTF_8);
+
+        ClaudeCodeAdapter adapter = new TestClaudeCodeAdapter(projects);
+
+        assertTrue(adapter.list().isEmpty());
+    }
+
     private static class TestClaudeCodeAdapter extends ClaudeCodeAdapter {
         private final Path root;
 

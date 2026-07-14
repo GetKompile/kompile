@@ -1121,7 +1121,7 @@ export function isRerankingType(type: ModelType): boolean {
 
 // ==================== Dataset Types ====================
 
-export type DatasetFormat = 'JSONL' | 'CSV' | 'PARQUET' | 'TXT' | 'TEXT' | 'ARROW';
+export type DatasetFormat = 'JSONL' | 'CLAUDE_CODE_JSONL' | 'OPENCODE_JSONL' | 'CSV' | 'PARQUET' | 'TXT' | 'TEXT' | 'ARROW';
 
 export type DatasetTask = 'CAUSAL_LM' | 'SEQ2SEQ' | 'CLASSIFICATION' | 'TEXT_CLASSIFICATION' | 'QUESTION_ANSWERING' | 'SUMMARIZATION' | 'TRANSLATION' | 'PREFERENCE' | 'INSTRUCTION' | 'OTHER';
 

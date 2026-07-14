@@ -374,7 +374,10 @@ public class RoleManager {
             return DEFAULT_FALLBACK_ORDER;
         }
         // Role-defined priority first, then any remaining default agents
-        List<String> order = new ArrayList<>(role.getAgentFallbackPriority());
+        List<String> order = role.getAgentFallbackPriority().stream()
+                .filter(DEFAULT_FALLBACK_ORDER::contains)
+                .distinct()
+                .collect(Collectors.toCollection(ArrayList::new));
         for (String agent : DEFAULT_FALLBACK_ORDER) {
             if (!order.contains(agent)) {
                 order.add(agent);

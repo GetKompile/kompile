@@ -16,6 +16,7 @@
 
 package ai.kompile.staging.catalog;
 
+import ai.kompile.modelmanager.registry.AudioSynthesisConfig;
 import ai.kompile.modelmanager.registry.ModelEntry;
 import ai.kompile.modelmanager.registry.ModelMetadata;
 import ai.kompile.modelmanager.registry.ModelType;
@@ -76,6 +77,7 @@ public class CatalogService {
                         .crossEncoders(new ArrayList<>())
                         .vlm(new ArrayList<>())
                         .llm(new ArrayList<>())
+                        .audioSynthesis(new ArrayList<>())
                         .build();
                 return;
             }
@@ -103,6 +105,7 @@ public class CatalogService {
                 List<CatalogModel> vlm = new ArrayList<>();
 
                 List<CatalogModel> llm = new ArrayList<>();
+                List<CatalogModel> audioSynthesis = new ArrayList<>();
 
                 if (modelCatalogMap != null) {
                     // Parse encoders
@@ -136,6 +139,15 @@ public class CatalogService {
                             llm.add(parseModel(modelData));
                         }
                     }
+
+                    // Parse end-to-end audio synthesis models.
+                    List<Map<String, Object>> audioList =
+                            (List<Map<String, Object>>) modelCatalogMap.get("audio_synthesis");
+                    if (audioList != null) {
+                        for (Map<String, Object> modelData : audioList) {
+                            audioSynthesis.add(parseModel(modelData));
+                        }
+                    }
                 }
 
                 staticCatalog = ModelCatalog.builder()
@@ -144,10 +156,12 @@ public class CatalogService {
                         .crossEncoders(crossEncoders)
                         .vlm(vlm)
                         .llm(llm)
+                        .audioSynthesis(audioSynthesis)
                         .build();
 
-                log.info("Loaded static catalog: {} encoders, {} cross-encoders, {} vlm, {} llm",
-                        encoders.size(), crossEncoders.size(), vlm.size(), llm.size());
+                log.info("Loaded static catalog: {} encoders, {} cross-encoders, {} vlm, {} llm, {} audio synthesis",
+                        encoders.size(), crossEncoders.size(), vlm.size(), llm.size(),
+                        audioSynthesis.size());
             }
         } catch (IOException e) {
             log.error("Failed to load catalog", e);
@@ -157,6 +171,7 @@ public class CatalogService {
                     .crossEncoders(new ArrayList<>())
                     .vlm(new ArrayList<>())
                     .llm(new ArrayList<>())
+                    .audioSynthesis(new ArrayList<>())
                     .build();
         }
     }
@@ -187,6 +202,12 @@ public class CatalogService {
             }
         }
 
+        AudioSynthesisConfig audioSynthesis = null;
+        Object audioConfig = modelData.get("audio_synthesis");
+        if (audioConfig != null) {
+            audioSynthesis = yamlMapper.convertValue(audioConfig, AudioSynthesisConfig.class);
+        }
+
         return CatalogModel.builder()
                 .id((String) modelData.get("id"))
                 .source((String) modelData.get("source"))
@@ -194,6 +215,8 @@ public class CatalogService {
                 .format((String) modelData.get("format"))
                 .files(files)
                 .metadata(metadata)
+                .modelType((String) modelData.get("model_type"))
+                .audioSynthesis(audioSynthesis)
                 .build();
     }
 
@@ -207,6 +230,7 @@ public class CatalogService {
                 .crossEncoders(getCrossEncoders())
                 .vlm(getVlm())
                 .llm(getLlm())
+                .audioSynthesis(getAudioSynthesis())
                 .build();
         return merged;
     }
@@ -290,6 +314,27 @@ public class CatalogService {
     }
 
     /**
+     * Get all audio synthesis models (static catalog + registry entries).
+     */
+    public List<CatalogModel> getAudioSynthesis() {
+        List<CatalogModel> result = new ArrayList<>(
+                staticCatalog.getAudioSynthesis() != null
+                        ? staticCatalog.getAudioSynthesis() : List.of());
+        Set<String> staticIds = new HashSet<>();
+        for (CatalogModel model : result) {
+            staticIds.add(model.getId());
+        }
+        for (ModelEntry entry : getRegistryModels()) {
+            if (entry.getType() == ModelType.AUDIO_SYNTHESIS
+                    && !staticIds.contains(entry.getModelId())) {
+                result.add(registryEntryToCatalogModel(entry));
+            }
+        }
+        markInstalled(result);
+        return result;
+    }
+
+    /**
      * Get a model by ID.
      */
     public Optional<CatalogModel> getModel(String modelId) {
@@ -309,6 +354,11 @@ public class CatalogService {
             }
         }
         for (CatalogModel model : getLlm()) {
+            if (model.getId().equals(modelId)) {
+                return Optional.of(model);
+            }
+        }
+        for (CatalogModel model : getAudioSynthesis()) {
             if (model.getId().equals(modelId)) {
                 return Optional.of(model);
             }
@@ -406,6 +456,7 @@ public class CatalogService {
                 .files(files)
                 .metadata(metadata)
                 .modelType(entry.getType() != null ? entry.getType().getValue() : null)
+                .audioSynthesis(entry.getAudioSynthesis())
                 .installed(fileExists)
                 .optimizable(canOptimize)
                 .status(entry.getStatus() != null ? entry.getStatus().getValue() : "active")

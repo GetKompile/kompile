@@ -22,8 +22,11 @@
           <mat-form-field appearance="outline">
             <mat-label>Format</mat-label>
             <mat-select [(ngModel)]="uploadFormat">
-              <mat-option *ngFor="let f of formats" [value]="f">{{ f }}</mat-option>
+              <mat-option *ngFor="let f of formats" [value]="f">{{ formatLabel(f) }}</mat-option>
             </mat-select>
+            <mat-hint *ngIf="isTranscriptFormat(uploadFormat)">
+              Each assistant response becomes a training sample.
+            </mat-hint>
           </mat-form-field>
           <mat-form-field appearance="outline">
             <mat-label>Task</mat-label>
@@ -33,11 +36,11 @@
           </mat-form-field>
         </div>
         <div class="form-row">
-          <mat-form-field appearance="outline">
+          <mat-form-field appearance="outline" *ngIf="!isTranscriptFormat(uploadFormat)">
             <mat-label>Input Column</mat-label>
             <input matInput [(ngModel)]="uploadInputColumn">
           </mat-form-field>
-          <mat-form-field appearance="outline">
+          <mat-form-field appearance="outline" *ngIf="!isTranscriptFormat(uploadFormat)">
             <mat-label>Output Column</mat-label>
             <input matInput [(ngModel)]="uploadOutputColumn">
           </mat-form-field>
@@ -57,7 +60,8 @@
           </mat-form-field>
         </div>
         <div class="file-upload-row">
-          <input type="file" #fileInput (change)="onFileSelected($event)" style="display:none">
+          <input type="file" #fileInput (change)="onFileSelected($event)"
+                 accept=".jsonl,.json,.csv,.tsv,.txt,.parquet" style="display:none">
           <button mat-stroked-button (click)="fileInput.click()">
             <mat-icon>attach_file</mat-icon>
             {{ selectedFile ? selectedFile.name : 'Choose File' }}

@@ -139,6 +139,16 @@ class ResumeCommandTest {
             history.logUserMessage("hello resume list");
             history.close();
 
+            ChatHistory subagent = new ChatHistory("subagent-opencode-hidden");
+            subagent.open("(local)", "opencode", false);
+            subagent.logUserMessage("internal delegated work");
+            subagent.close();
+
+            ChatHistory legacySubagent = new ChatHistory("test-logsubagent-opencode-hidden");
+            legacySubagent.open("(local)", "opencode", false);
+            legacySubagent.logUserMessage("legacy delegated work");
+            legacySubagent.close();
+
             int exitCode = new CommandLine(new ResumeCommand()).execute(
                     "--list", "--filter-source", "kompile", "--filter-agent", "opencode");
 
@@ -148,6 +158,10 @@ class ResumeCommandTest {
             assertTrue(output.contains("resume-list-session"));
             assertTrue(output.contains("agent=opencode"));
             assertTrue(output.contains("hello resume list"));
+            assertFalse(output.contains("subagent-opencode-hidden"));
+            assertFalse(output.contains("internal delegated work"));
+            assertFalse(output.contains("test-logsubagent-opencode-hidden"));
+            assertFalse(output.contains("legacy delegated work"));
         } finally {
             System.setOut(originalOut);
             System.setProperty("user.home", originalHome);

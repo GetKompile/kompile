@@ -44,7 +44,7 @@ export class DatasetManagerComponent implements OnInit {
   uploadTrainSplit = 0.9;
   selectedFile: File | null = null;
 
-  formats: DatasetFormat[] = ['JSONL', 'CSV', 'PARQUET', 'TEXT'];
+  formats: DatasetFormat[] = ['JSONL', 'CLAUDE_CODE_JSONL', 'OPENCODE_JSONL', 'CSV', 'PARQUET', 'TEXT'];
   tasks: DatasetTask[] = ['CAUSAL_LM', 'SEQ2SEQ', 'CLASSIFICATION', 'PREFERENCE'];
 
   displayedColumns = ['name', 'format', 'task', 'totalSamples', 'size', 'createdAt', 'actions'];
@@ -136,6 +136,16 @@ export class DatasetManagerComponent implements OnInit {
       },
       error: (err) => this.snackBar.open('Stats computation failed: ' + err.message, 'Close', { duration: 5000 })
     });
+  }
+
+  isTranscriptFormat(format: DatasetFormat): boolean {
+    return format === 'CLAUDE_CODE_JSONL' || format === 'OPENCODE_JSONL';
+  }
+
+  formatLabel(format: DatasetFormat): string {
+    if (format === 'CLAUDE_CODE_JSONL') return 'Claude Code JSONL';
+    if (format === 'OPENCODE_JSONL') return 'OpenCode JSONL';
+    return format;
   }
 
   formatBytes(bytes: number): string {

@@ -249,13 +249,26 @@ public class AppIndexConfigService implements FactSheetIndexConfigurer {
     }
 
     /**
-     * Expand ~ to user home directory.
+     * Resolve an index path against this project's data root.
+     *
+     * <p>Index paths persisted by project init are intentionally relative. Resolving them against
+     * the JVM working directory makes every project launched from the same repository share one
+     * index. Always anchor relative paths to {@code kompile.data.dir}; explicit absolute paths are
+     * retained for backwards compatibility with deliberately external stores.</p>
      */
     private String expandPath(String path) {
-        // Path expansion for ~ is removed to avoid system property dependence.
-        // Paths should be correctly configured as absolute or relative to execution
-        // context.
-        return path;
+        return resolveProjectPath(dataDir, path);
+    }
+
+    static String resolveProjectPath(String dataDir, String path) {
+        if (path == null || path.isBlank()) {
+            return path;
+        }
+        Path configured = Paths.get(path);
+        if (!configured.isAbsolute()) {
+            configured = Paths.get(dataDir).resolve(configured);
+        }
+        return configured.toAbsolutePath().normalize().toString();
     }
 
     /**

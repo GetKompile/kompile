@@ -34,6 +34,8 @@ public enum ModelType {
     DOCUMENT_CLASSIFIER("document_classifier"),
     VLM_PIPELINE("vlm_pipeline"),
     LLM_GGML("llm_ggml"),
+    /** Text-to-speech model that materializes a completed audio file. */
+    AUDIO_SYNTHESIS("audio_synthesis"),
     /** Knowledge-Graph Embedding model (RotatE, TransE, SGNS, etc.) */
     KGE("kge"),
     /** Probabilistic Soft Logic weight set */
@@ -83,6 +85,8 @@ public enum ModelType {
                 return "sparse-encoders";
             case CROSS_ENCODER:
                 return "cross-encoders";
+            case AUDIO_SYNTHESIS:
+                return "audio-synthesis";
             default:
                 return value.replace("_", "-") + "s";
         }
@@ -109,6 +113,10 @@ public enum ModelType {
         return this == LLM_GGML;
     }
 
+    public boolean isAudioSynthesis() {
+        return this == AUDIO_SYNTHESIS;
+    }
+
     public String getDisplayName() {
         switch (this) {
             case DENSE_ENCODER:
@@ -133,6 +141,8 @@ public enum ModelType {
                 return "VLM Pipeline";
             case LLM_GGML:
                 return "LLM (GGML)";
+            case AUDIO_SYNTHESIS:
+                return "Audio Synthesis";
             case KGE:
                 return "Knowledge-Graph Embedding";
             case PSL:

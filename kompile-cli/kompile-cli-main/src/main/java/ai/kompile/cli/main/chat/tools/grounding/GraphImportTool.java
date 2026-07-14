@@ -28,10 +28,9 @@ import java.util.Map;
  *
  * <p>Load a kompile {@code .kgraph} file into the live knowledge graph so the agent can reason over
  * it, via {@code POST /api/graph/unified/import} (multipart upload). The server-side import projects
- * the graph into the fact sheet's fact store, so once this returns the grounding tools
- * ({@code ask_graph_verify} / {@code ask_graph_query} / {@code ask_graph_explain}) and
- * {@code graph_reason} can immediately reason over the imported facts — not only the graph-backed
- * engines (hybrid / MEBN).</p>
+ * the graph into its reasoning representation, so {@code graph_reasoning_query} can immediately
+ * reason over the imported state. When routed through the compatibility app, its additional
+ * {@code ask_graph_*} tools can consume the same import.</p>
  */
 public class GraphImportTool implements CliTool {
 
@@ -55,8 +54,7 @@ public class GraphImportTool implements CliTool {
     @Override
     public String description() {
         return "Load a kompile .kgraph file into the live knowledge graph so you can reason over it. "
-                + "The imported graph is projected into the fact store, so the ask_graph_* tools "
-                + "(verify/query/explain) and graph_reason can reason over its facts immediately. "
+                + "The imported graph is available to graph_reasoning_query immediately. "
                 + "Provide the path to a .kgraph file (produced by graph export) and, optionally, the "
                 + "fact sheet to import into (defaults to the graph's own recorded fact sheet).";
     }
@@ -92,7 +90,7 @@ public class GraphImportTool implements CliTool {
             return ToolResult.error("path is required");
         }
         if (!client.isAvailable()) {
-            return ToolResult.error("graph_import requires a running kompile-app.");
+            return ToolResult.error("graph_import requires kompile-graph-service or a compatible kompile-app.");
         }
 
         Path file = Path.of(path);
@@ -121,7 +119,7 @@ public class GraphImportTool implements CliTool {
                     .append(embeddings).append(" embeddings from ").append(file.getFileName());
             if (atoms > 0) {
                 sb.append(".\n").append(atoms).append(" facts projected — the graph is reasoning-ready: ")
-                        .append("use ask_graph_verify / ask_graph_query / graph_reason to reason over it.");
+                        .append("use graph_reasoning_query to reason over it.");
             } else {
                 sb.append(".\nGraph search and traversal work now; supply factSheetId to enable claim verification.");
             }

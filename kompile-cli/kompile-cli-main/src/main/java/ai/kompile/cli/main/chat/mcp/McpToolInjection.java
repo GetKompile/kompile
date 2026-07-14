@@ -430,6 +430,38 @@ public class McpToolInjection {
 
     // ── Codex ──────────────────────────────────────────────────────────────
 
+    /**
+     * Build invocation-local Codex config overrides for the Kompile stdio MCP server.
+     *
+     * <p>Managed Codex subprocesses must not rewrite {@code ~/.codex/config.toml}: separate
+     * Kompile processes otherwise race through the shared backup/restore path and can remove
+     * the MCP entry between the injection banner and Codex startup. Codex accepts repeatable
+     * {@code -c key=value} options, so these arguments keep each delegated run isolated.</p>
+     */
+    public static List<String> codexCommandLineOverrides(Path workingDir) throws IOException {
+        McpToolInjectionSupport.CliLauncher launcher = McpToolInjectionSupport.findCliLauncher();
+        if (launcher == null) {
+            return List.of();
+        }
+
+        Path normalizedWorkingDir = workingDir.toAbsolutePath().normalize();
+        List<String> launcherArgs = launcher.buildArgs(normalizedWorkingDir);
+        StringBuilder argsValue = new StringBuilder("[");
+        for (int i = 0; i < launcherArgs.size(); i++) {
+            if (i > 0) {
+                argsValue.append(", ");
+            }
+            argsValue.append('"').append(escapeToml(launcherArgs.get(i))).append('"');
+        }
+        argsValue.append(']');
+
+        return List.of(
+                "-c",
+                "mcp_servers.kompile.command=\"" + escapeToml(launcher.command()) + "\"",
+                "-c",
+                "mcp_servers.kompile.args=" + argsValue);
+    }
+
     private static Path injectForCodex(Path workingDir, McpToolInjectionSupport.CliLauncher launcher,
                                         String sseUrl) throws IOException {
         Path codexDir = Path.of(System.getProperty("user.home"), ".codex");

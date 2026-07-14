@@ -16,6 +16,7 @@
 
 package ai.kompile.staging.archive;
 
+import ai.kompile.modelmanager.registry.AudioSynthesisConfig;
 import ai.kompile.modelmanager.registry.ModelEntry;
 import ai.kompile.modelmanager.registry.ModelMetadata;
 import ai.kompile.modelmanager.registry.ModelStatus;
@@ -102,6 +103,12 @@ public class ArchiveModelEntry {
     private TokenizerConfig tokenizer;
 
     /**
+     * Typed serving ABI for an audio synthesis model.
+     */
+    @JsonProperty("audio_synthesis")
+    private AudioSynthesisConfig audioSynthesis;
+
+    /**
      * Brief description of the model.
      */
     @JsonProperty("description")
@@ -132,6 +139,7 @@ public class ArchiveModelEntry {
                 .checksum(entry.getChecksum())
                 .metadata(entry.getMetadata())
                 .tokenizer(entry.getTokenizer())
+                .audioSynthesis(entry.getAudioSynthesis())
                 .build();
     }
 
@@ -158,6 +166,7 @@ public class ArchiveModelEntry {
                 .status(ModelStatus.ACTIVE)
                 .metadata(metadata)
                 .tokenizer(tokenizer)
+                .audioSynthesis(audioSynthesis)
                 .build();
     }
 

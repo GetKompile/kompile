@@ -1,0 +1,190 @@
+# kompile-chat-local
+
+A **local-first chat application**: load a `.kgraph` knowledge graph and an SDX model,
+chat with the model, and let it **tool-call the local graph-reasoning dispatcher** —
+falling back to a configured remote kompile chat endpoint when local inference is
+unavailable. Companion design: `docs/architecture/graph-reasoning-mobile-aot.md`;
+dl4j-side dependencies: `~/Documents/GitHub/deeplearning4j/SDX_MOBILE_LLM_C_API_HANDOFF.md`.
+
+**Deliberately NOT part of the normal Maven build.** The root reactor does not
+reference this directory. Build it standalone:
+
+```bash
+# prereq (once): install the reasoning modules to the local repo
+mvn -pl kompile-app/kompile-data/kompile-graphs/kompile-graph-reasoning,kompile-app/kompile-data/kompile-graphs/kompile-graph-reasoning-local install
+# build + test this parent (29 tests: 16 ChatTemplate + 10 ChatEngine + 3 ChatCli)
+mvn -f kompile-chat-local/pom.xml test
+# build the runnable CLI jar
+mvn -f kompile-chat-local/pom.xml package -DskipTests
+```
+
+## Modules
+
+| Module | What it is |
+|---|---|
+| `kompile-chat-local-core` | Pure-JVM engine: `ChatEngine` tool loop (max 4 rounds, corrective retry), `ToolCallParser`, `GraphToolBridge` (LocalReasoningSession + LocalToolDispatcher), `SdxChatModel` (JNA → `libsdx_llm`, text-level `sdxLlm*` ABI v1), `SdxSubprocessChatModel` (subprocess via `sdx-llm` binary — avoids GraalVM isolate conflict when running inside JVM), `RemoteChatModel` (OpenAI-compatible `/v1/chat/completions`), `InferenceRouter` (local-first, remote fallback), `ChatConfig` (properties + `KOMPILE_CHAT_*` env) |
+| `kompile-chat-local-cli` | Interactive terminal REPL: route badge, live tool-round rendering, `/tools`, `/save <path>` |
+| `mobile/android` | Compose app (minSdk 26). Runs the JVM core **directly on ART** (mavenLocal deps); `AndroidRemoteChatModel` replaces core's remote client (ART has no `java.net.http`); SDX via JNA behind availability guards |
+| `mobile/ios` | SwiftUI app (iOS 16+, XcodeGen `project.yml`). Swift **port** of the ChatEngine loop (verbatim prompts/conventions); binds `kgr_*` (`kompile_reasoning.h`) and `sdxLlm*` behind `#if canImport` guards; URLSession remote fallback |
+
+## Conventions (identical across JVM/Android/iOS)
+
+- Tool call: model replies with bare or ```json-fenced `{"tool":"<name>","args":{...}}`
+- Tool result: appended as role `user`, content `TOOL_RESULT <tool>: <json>` (OpenAI-compat safe)
+- System prompt: compact instructions + primary tool example (full catalog excluded to fit small model context)
+- Local prompt template: CHATML_IM (`<|im_start|>/<|im_end|>`) for Qwen2.x/Phi-3; GENERIC_PIPE for others
+- SDX text ABI: `sdxLlmCreateRuntime/LoadModel/Generate(promptJson opts)/Free/GetLastError` (ABI version 1)
+
+## Running the CLI (Linux, built lib)
+
+### Prerequisites
+
+| Artifact | Path | Notes |
+|---|---|---|
+| `sdx-llm` binary | `deeplearning4j/nd4j/sdx-aot/target/aot-sdk/cpu/bin/sdx-llm` | AOT-compiled, no JVM needed |
+| companion native libs | `…/aot-sdk/cpu/lib/` (libjnind4jcpu.so, libmkl_*, etc.) | Side-loaded by `sdx-llm` binary |
+| `libsdx_llm.so` | `kompile-local-sdk/lib/libsdx_llm.so` (or `aot-sdk/cpu/lib/`) | JNA in-process: requires aot-sdk/cpu companion libs (libjnind4jcpu, libmkl, etc.) |
+| fp16 or q4_k_m model | `~/.kompile/models/chat/qwen2.5-0.5b-instruct-*.gguf` | Q5_0/Q5_1 dequant fixed 2026-07-12; q4_k_m works sidecar-free (R8 item 4 fixed 2026-07-12: CONTROL tokens now in `added_tokens`) |
+| tokenizer | auto-resolved from GGUF metadata (FIX 2, 2026-07-12) | `--tokenizer` is optional; sidecar or GGUF-embedded both work |
+| fixture graph | `kompile-local-sdk/examples/data/fixture.kgraph` | alice→WORKS_AT→acme |
+
+### Quickstart — in-process JNA mode (FIX 1 applied 2026-07-12)
+
+```bash
+# Requires: aot-sdk/cpu unpacked alongside libsdx_llm.so
+# SDX_LLM_AOT_HOME must point to the aot-sdk/cpu directory
+# so the companion JNI libs (libjnind4jcpu.so, libmkl, etc.) are found.
+SDX_LIB=~/Documents/GitHub/deeplearning4j/nd4j/sdx-aot/target/aot-sdk/cpu/lib/libsdx_llm.so
+SDX_LLM_AOT_HOME=~/Documents/GitHub/deeplearning4j/nd4j/sdx-aot/target/aot-sdk/cpu
+MODEL=~/.kompile/models/chat/qwen2.5-1.5b-instruct-fp16.gguf
+KGRAPH=~/Documents/GitHub/kompile/kompile-local-sdk/examples/data/fixture.kgraph
+JAR=kompile-chat-local/kompile-chat-local-cli/target/kompile-chat-local-cli-0.1.0-SNAPSHOT-exec.jar
+
+SDX_LLM_AOT_HOME="$SDX_LLM_AOT_HOME" java -jar "$JAR" \
+  --sdx-lib "$SDX_LIB" \
+  --sdx-mode inprocess \
+  --model "$MODEL" \
+  --kgraph "$KGRAPH"
+```
+
+Startup output with FIX 1 applied:
+```
+[sdx] mode=in-process (JNA), lib: .../libsdx_llm.so
+[inference] Active route: LOCAL_SDX
+[inference] Local model: sdx:qwen2.5-1.5b-instruct-fp16.gguf (template=CHATML_IM, mode=in-process)
+```
+
+Note: `--tokenizer` is now optional — the 3-path resolver tries explicit → sidecar `tokenizer.json` → GGUF-embedded metadata (FIX 2). For `qwen2.5-1.5b-instruct-fp16.gguf` the GGUF-embedded path resolves vocab 151936 automatically.
+
+### Quickstart (subprocess mode — original working path)
+
+```bash
+SDX_BIN=~/Documents/GitHub/deeplearning4j/nd4j/sdx-aot/target/aot-sdk/cpu/bin/sdx-llm
+MODEL=~/.kompile/models/chat/qwen2.5-0.5b-instruct-fp16.gguf
+TOKENIZER=~/.kompile/models/tokenizers/qwen2.5-0.5b
+KGRAPH=~/Documents/GitHub/kompile/kompile-local-sdk/examples/data/fixture.kgraph
+JAR=kompile-chat-local/kompile-chat-local-cli/target/kompile-chat-local-cli-0.1.0-SNAPSHOT-exec.jar
+
+java -jar "$JAR" \
+  --sdx-bin "$SDX_BIN" \
+  --model "$MODEL" \
+  --tokenizer "$TOKENIZER" \
+  --kgraph "$KGRAPH"
+```
+
+Startup output:
+```
+[sdx] subprocess mode, bin: .../sdx-llm
+[inference] Active route: LOCAL_SDX
+[inference] Local model: sdx-subprocess:qwen2.5-0.5b-instruct-fp16.gguf (template=CHATML_IM, mode=subprocess)
+```
+
+CLI flags:
+
+| Flag | Env var | Purpose |
+|---|---|---|
+| `--sdx-bin <path>` | `KOMPILE_CHAT_SDX_BIN` | Path to `sdx-llm` binary (subprocess mode; preferred) |
+| `--model <path>` | `KOMPILE_CHAT_MODEL_PATH` | Model file (.gguf fp16 or .sdz) |
+| `--tokenizer <path>` | `KOMPILE_CHAT_TOKENIZER_PATH` | tokenizer.json or directory |
+| `--kgraph <path>` | `KOMPILE_CHAT_KGRAPH_PATH` | `.kgraph` session file |
+| `--sdx-lib <path>` | `KOMPILE_CHAT_SDX_LIB` | Path to `libsdx_llm.so` for JNA in-process mode (requires SDX_LLM_AOT_HOME with companion libs) |
+| `--sdx-mode <mode>` | `KOMPILE_CHAT_SDX_MODE` | `auto` (default), `inprocess` (JNA), `subprocess` (fork sdx-llm binary) |
+| `--remote-url <url>` | `KOMPILE_CHAT_REMOTE_URL` | Remote OpenAI-compatible endpoint |
+| `--max-tool-rounds <n>` | `KOMPILE_CHAT_MAX_TOOL_ROUNDS` | Max tool calls per turn (default 4) |
+| `--temperature <f>` | `KOMPILE_CHAT_TEMPERATURE` | Sampling temperature (default 0.7) |
+
+## What runs today vs. what it's waiting on
+
+| Path | Status | Notes |
+|---|---|---|
+| CLI/JVM: graph tools fully local (load/verify/explain/assert/…) | **Works** | `[inference] Active route: LOCAL_SDX` on startup |
+| CLI/JVM: subprocess SDX generate (linux) | **Works** | 5–8 tok/s, fp16 GGUF; load 4.3–8.9s |
+| CLI/JVM + Android: remote chat via configured endpoint | **Works** | `--remote-url` + any OpenAI-compat URL |
+| Android: local reasoning on ART | **Works** | Pure-Java modules |
+| 0.5B tool-call JSON (graph queries) | **Flaky** | 0.5B too small for structured JSON completion; use 1.5B+ model |
+| q4_k_m quantized GGUF | **Working sidecar-free** (FIX 3 + FIX 4, 2026-07-12) | Q5_0/Q5_1 dequant fixed; q4_k_m identical to fp16 (6.7 tok/s). Embedded tokenizer now includes all 22 Qwen2.5 special tokens (R8 item 4 fixed): no sidecar needed |
+| JNA in-process (libsdx_llm.so from JVM) | **Works** (FIX 1, 2026-07-12) | Export-allowlist applied: `graal_*/JNI_*/__svm_*` hidden (0 leaked of 23); `--sdx-mode inprocess` with `SDX_LLM_AOT_HOME` pointing to aot-sdk/cpu |
+| iOS: local reasoning | Wired + guarded | Waiting on `kompile-reasoning-ios-arm64.xcframework` |
+
+## Confirmed timings (linux x86_64, CPU, Qwen2.5-0.5B fp16)
+
+| Metric | Value |
+|---|---|
+| Runtime creation | ~5ms |
+| Model load time | ~4–9s (SameDiff graph compilation) |
+| Generation speed | 5–8 tok/s |
+| EOS (short responses, e.g. "Hello,") | ~640ms |
+| Max-token cap | 256 (tool-call mode), configurable otherwise |
+
+## Known caveats
+
+### JNA in-process — `SDX_LLM_AOT_HOME` must point to aot-sdk/cpu
+
+`libsdx_llm.so` side-loads ND4J JNI backends (`libjnind4jcpu.so`, `libmkl_*.so`,
+`libjnitokenizers.so`) via `SDX_NATIVE_LIB_DIR` or `SDX_LLM_AOT_HOME/lib/`.
+The `kompile-local-sdk/lib/` directory only ships `libsdx_llm.so` itself (not the JNI
+backends). Set `SDX_LLM_AOT_HOME` to the full `aot-sdk/cpu` path where all 54 companion
+libs are present.
+
+The GraalVM isolate conflict (`ExceptionInInitializerError`) that previously prevented
+in-process loading is **fixed** by the export-allowlist version script (`SDX_LLM_1`):
+`graal_*/JNI_*/__svm_*` symbols are now hidden (`0` leaked of the previous 23).
+Verified: both `libkompile_reasoning.so` (KGR_1) and `libsdx_llm.so` (SDX_LLM_1)
+coexist in one Python process and one JVM process without conflict.
+
+### Companion libs must be in `../lib` relative to `sdx-llm`
+
+The `sdx-llm` binary side-loads `libjnind4jcpu.so`, `libmkl_*.so`, `libjnitokenizers.so`
+etc. from `../lib`. Keep the binary and its sibling `lib/` together as shipped in
+`aot-sdk/cpu/`. Do NOT copy just the binary — it will fail to load ND4J.
+
+### q4_k_m quantized weights — fully working sidecar-free (FIX 3 + FIX 4, 2026-07-12)
+
+Q5_0/Q5_1 dequantization is fixed (FIX 3). `q4_k_m` GGUF models generate coherent output
+identical to fp16 at the same speed (6.7 tok/s on CPU).
+
+**No sidecar `tokenizer.json` is required** (FIX 4, R8 item 4, 2026-07-12). The GGUF-embedded
+tokenizer path now reads `tokenizer.ggml.token_type` and adds every non-NORMAL token (type != 1)
+to `added_tokens` with `"special": true`. All 22 Qwen2.5 special tokens (IDs 151643–151664)
+including the ChatML delimiters `<|im_start|>` (151644) and `<|im_end|>` (151645) are now
+correctly promoted. Verified: both markers tokenize to exactly 1 token id; generation is coherent
+without any sidecar file present.
+
+### 0.5B model and tool-call reliability
+
+Qwen2.5-0.5B fp16 generates real tokens and follows simple instructions (single-word
+answers, short text) but cannot reliably complete tool-call JSON structures (`{"tool":...}`)
+required for graph queries. Recommend 1.5B+ (e.g. Qwen2.5-1.5B-Instruct) for production
+tool-calling. The 0.5B can be used for demo generation proof and no-tools chat.
+
+### tokenizer resolution (FIX 2, 2026-07-12)
+
+`--tokenizer` is now **optional** for GGUF models. The 3-path resolver tries:
+1. Explicit `--tokenizer` path (if provided)
+2. Sidecar `tokenizer.json` in the model directory
+3. **GGUF-embedded**: reads `tokenizer.ggml.tokens` + `tokenizer.ggml.merges` from
+   GGUF metadata → builds HuggingFace tokenizer.json in memory
+
+`qwen2.5-1.5b-instruct-fp16.gguf` (no sidecar) resolves vocab 151936 automatically.
+For `qwen2.5-0.5b-instruct-fp16.gguf` a sidecar at
+`~/.kompile/models/tokenizers/qwen2.5-0.5b/tokenizer.json` still works if preferred.

@@ -3,7 +3,6 @@ package ai.kompile.cli.mcp.stdio;
 import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.agent.AgentRegistry;
 import ai.kompile.cli.main.chat.tools.ToolResult;
-import ai.kompile.core.agent.CliAgentRegistry;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -23,6 +22,8 @@ import java.util.concurrent.*;
  */
 public class StdioQuorumTaskTool {
 
+    private static final String CODEX_AGENT = "codex";
+
     private final AgentRegistry agentRegistry;
     private final DirectSubagentRunnerStdio subagentRunner;
     private final ObjectMapper objectMapper;
@@ -41,12 +42,12 @@ public class StdioQuorumTaskTool {
     public String id() { return "quorum_task"; }
 
     public String description() {
-        return "Spawn the same prompt to multiple agents in parallel and collect all responses. " +
-            "Use this for tasks where you want independent opinions from different agents " +
+        return "Spawn the same prompt to multiple independent Codex instances in parallel and collect all responses. " +
+            "Use this for tasks where you want independent opinions " +
             "to compare, vote on, or synthesize into a consensus.\n\n" +
             "Each agent runs independently with the same prompt. Results are returned together " +
             "so you can identify agreement/disagreement across agents.\n\n" +
-            "Available agents: opencode, claude, codex, gemini, qwen.";
+            "Available agent: codex.";
     }
 
     public JsonNode parameterSchema() {
@@ -68,7 +69,7 @@ public class StdioQuorumTaskTool {
         var items = agents.putObject("items");
         items.put("type", "string");
         ArrayNode enumValues = items.putArray("enum");
-        for (String name : CliAgentRegistry.commandNames()) enumValues.add(name);
+        enumValues.add(CODEX_AGENT);
         agents.put("minItems", 2);
 
         var role = props.putObject("role");
@@ -100,16 +101,30 @@ public class StdioQuorumTaskTool {
         if (agentNames.size() < 2) {
             return ToolResult.error("At least 2 agents are required for a quorum. Use 'task' for single-agent delegation.");
         }
+        for (String agentName : agentNames) {
+            if (!CODEX_AGENT.equals(agentName)) {
+                return ToolResult.error("Agent '" + agentName
+                    + "' is not available. Available agent: codex.");
+            }
+        }
 
         System.err.println("\u001B[32m  ⟳ Quorum task: " + desc + " (" + agentNames.size() + " agents)\u001B[0m");
         System.err.flush();
 
         // Run all agents in parallel
         ExecutorService executor = Executors.newFixedThreadPool(agentNames.size());
-        Map<String, Future<AgentResult>> futures = new LinkedHashMap<>();
+        List<AgentFuture> futures = new ArrayList<>();
+        Map<String, Integer> totalByAgent = new HashMap<>();
+        for (String agentName : agentNames) {
+            totalByAgent.merge(agentName, 1, Integer::sum);
+        }
+        Map<String, Integer> seenByAgent = new HashMap<>();
 
         for (String agentName : agentNames) {
-            futures.put(agentName, executor.submit(() -> runAgent(agentName, prompt, roleName, desc)));
+            int instance = seenByAgent.merge(agentName, 1, Integer::sum);
+            String label = totalByAgent.get(agentName) > 1 ? agentName + "#" + instance : agentName;
+            futures.add(new AgentFuture(label,
+                executor.submit(() -> runAgent(agentName, prompt, roleName, desc))));
         }
 
         // Collect results — full output goes to file, summary to tool result
@@ -123,13 +138,13 @@ public class StdioQuorumTaskTool {
         // Per-agent summaries for the inline result
         StringBuilder summaryOutput = new StringBuilder();
 
-        for (Map.Entry<String, Future<AgentResult>> entry : futures.entrySet()) {
-            String agentName = entry.getKey();
+        for (AgentFuture entry : futures) {
+            String agentName = entry.label;
             fullOutput.append("---\n\n");
             fullOutput.append("## Agent: ").append(agentName).append("\n\n");
 
             try {
-                AgentResult result = entry.getValue().get(10, TimeUnit.MINUTES);
+                AgentResult result = entry.future.get(10, TimeUnit.MINUTES);
                 if (result.success) {
                     succeeded++;
                     successfulAgents.add(agentName);
@@ -245,6 +260,16 @@ public class StdioQuorumTaskTool {
         AgentResult(boolean success, String output) {
             this.success = success;
             this.output = output;
+        }
+    }
+
+    private static class AgentFuture {
+        final String label;
+        final Future<AgentResult> future;
+
+        AgentFuture(String label, Future<AgentResult> future) {
+            this.label = label;
+            this.future = future;
         }
     }
 }

@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat.tui;
 
+import java.util.List;
 import java.util.Locale;
 
 /**
@@ -47,6 +48,52 @@ public class ClaudeCodeDecoder extends AbstractTuiDecoder {
         // Claude Code backgrounds a running command itself; Kompile forwards the
         // backgrounding key (Ctrl+B) rather than running its own backgrounding.
         return true;
+    }
+
+    /**
+     * Claude Code's entire TUI lives in the alternate screen — it enters it at startup and stays
+     * there. So "is in alternate screen" carries no dialog signal for claude; return false to
+     * prevent every detected prompt from triggering full-screen mirror mode.
+     */
+    @Override
+    public boolean altScreenIsDialog() {
+        return false;
+    }
+
+    /**
+     * Find the first row BELOW claude's last done-marker ("✻ &lt;Word&gt; for Ns", e.g.
+     * "✻ Cooked for 1s") so that old question text from before the done-marker is not
+     * mistaken for a new input prompt. When no done-marker is found, returns 0 (full screen).
+     */
+    @Override
+    protected int liveRegionStartRow(List<String> rows) {
+        // Claude's done-marker: a row whose first visible char is a star/asterisk dingbat
+        // and that contains a "(Ns" or "(Nm" elapsed timer — matches "✻ Cooked for 1s" etc.
+        // We do a simple two-signal test: star-dingbat lead AND "for" followed by a digit.
+        int lastMarker = -1;
+        for (int r = 0; r < rows.size(); r++) {
+            String raw = rows.get(r);
+            if (raw == null) continue;
+            String stripped = raw.strip();
+            if (stripped.isEmpty()) continue;
+            char lead = '\0';
+            for (int i = 0; i < stripped.length(); i++) {
+                char c = stripped.charAt(i);
+                if (!Character.isWhitespace(c)) { lead = c; break; }
+            }
+            // Star/asterisk dingbat lead (U+2720–U+274F) — the "✻" family.
+            boolean starLead = (lead >= '✠' && lead <= '❏');
+            if (starLead) {
+                String lower = stripped.toLowerCase(Locale.ROOT);
+                // "for Ns" or "for Nm" elapsed timer suffix.
+                int forIdx = lower.indexOf(" for ");
+                if (forIdx >= 0 && forIdx + 5 < lower.length()
+                        && Character.isDigit(lower.charAt(forIdx + 5))) {
+                    lastMarker = r;
+                }
+            }
+        }
+        return lastMarker >= 0 ? lastMarker + 1 : 0;
     }
 
     @Override
@@ -100,8 +147,13 @@ public class ClaudeCodeDecoder extends AbstractTuiDecoder {
     public boolean isIdle(VirtualTerminal vt) {
         String lower = screen(vt);
         if (lower.isBlank() || isResponding(vt)) return false;
+        // Standard idle footer ("? for shortcuts", "/effort") OR
+        // bypass-permissions footer ("⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents").
         return lower.contains("for shortcuts") || lower.contains("/effort")
-                || lower.contains("? for shortcuts");
+                || lower.contains("? for shortcuts")
+                || lower.contains("bypass permissions on")
+                || lower.contains("shift+tab to cycle")
+                || lower.contains("← for agents");
     }
 
     @Override

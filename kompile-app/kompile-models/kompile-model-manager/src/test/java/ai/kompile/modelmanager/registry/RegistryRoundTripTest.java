@@ -66,6 +66,47 @@ class RegistryRoundTripTest {
     }
 
     @Test
+    void audioSynthesisServingAbiRoundTrips() {
+        ModelEntry audioEntry = ModelEntry.builder()
+                .modelId("single-voice-tts")
+                .type(ModelType.AUDIO_SYNTHESIS)
+                .path("audio-synthesis/single-voice-tts")
+                .modelFile("model.sdz")
+                .checksum("sha256:0123456789abcdef")
+                .status(ModelStatus.ACTIVE)
+                .audioSynthesis(AudioSynthesisConfig.builder()
+                        .tokenizerType(AudioSynthesisConfig.UTF8_BYTES_TOKENIZER)
+                        .tokenIdsInput("tokens")
+                        .waveformOutput("samples")
+                        .tokenDataType("int32")
+                        .sampleRateHz(24_000)
+                        .maxInputTokens(512)
+                        .maxOutputSamples(1_440_000)
+                        .voice("standard")
+                        .language("en")
+                        .defaultConfidence(0.9d)
+                        .build())
+                .build();
+
+        registryService.addModel(audioEntry);
+
+        ModelEntry result = registryService.loadRegistry().getModel("single-voice-tts");
+        assertNotNull(result);
+        assertEquals(ModelType.AUDIO_SYNTHESIS, result.getType());
+        assertEquals("audio-synthesis", result.getType().getDirectoryName());
+        assertNotNull(result.getAudioSynthesis());
+        assertEquals(AudioSynthesisConfig.SAMEDIFF_WAVEFORM_BACKEND,
+                result.getAudioSynthesis().getBackend());
+        assertEquals(AudioSynthesisConfig.UTF8_BYTES_TOKENIZER,
+                result.getAudioSynthesis().getTokenizerType());
+        assertEquals("tokens", result.getAudioSynthesis().getTokenIdsInput());
+        assertEquals("samples", result.getAudioSynthesis().getWaveformOutput());
+        assertEquals(24_000, result.getAudioSynthesis().getSampleRateHz());
+        assertEquals("standard", result.getAudioSynthesis().getVoice());
+        assertEquals("en", result.getAudioSynthesis().getLanguage());
+    }
+
+    @Test
     void encoderModelEntryRoundTrips() {
         ModelEntry encoderEntry = ModelEntry.builder()
                 .modelId("bge-base-en-v1.5")

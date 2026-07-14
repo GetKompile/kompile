@@ -1,0 +1,24 @@
+[package]
+name = "kompile-local-sdk"
+version = "0.1.0"
+edition = "2021"
+description = "Rust FFI bindings for the Kompile Local SDK (libkompile_reasoning + libsdx_llm)"
+license = "Apache-2.0"
+repository = "https://github.com/deeplearning4j/kompile"
+keywords = ["kompile", "reasoning", "graph", "llm", "ffi"]
+categories = ["api-bindings", "science"]
+
+[lib]
+name = "kompile_local_sdk"
+path = "kompile_reasoning.rs"
+
+[dependencies]
+# No runtime deps — pure FFI via Rust's link attribute.
+# The native libraries must be available at link time or via LD_LIBRARY_PATH.
+
+[build-dependencies]
+# No build deps — extern "C" linking only.
+
+[package.metadata.docs.rs]
+# Tell docs.rs this crate requires native libraries (skip doc build without them)
+features = []

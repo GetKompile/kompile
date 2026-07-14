@@ -1669,4 +1669,179 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
         method.setAccessible(true);
         return (String) method.invoke(target, rendered, current, finalChunk);
     }
+
+    // ── Slash-completion mid-buffer corruption fix ────────────────────────────
+    // Regression: typing "/" at a non-zero buffer position (e.g. "a/") used to
+    // corrupt the input line.  Root cause: refreshManagedSlashCompletion called
+    // impl.callWidget(REDISPLAY) re-entrantly from inside SELF_INSERT dispatch.
+
+    /**
+     * When the buffer does NOT start with "/" the completion panel must stay
+     * empty — the guard in buildSlashCompletionLines checks upToCursor.startsWith("/").
+     * This is the first half of the "a/" bug: the panel guard is correct, but the
+     * re-entrant REDISPLAY call after the guard is what caused corruption.
+     */
+    @Test
+    void midBufferSlashLeavesCompletionPanelEmpty() throws Exception {
+        EmulatedPassthroughCommand command = configuredIdleCommand();
+        setField(command, "scrollBottom", 18);
+        setField(command, "activityRows", 3);
+
+        // Simulate: user typed "a" then "/"; buffer = "a/", cursor at 2.
+        // updateSlashCompletionPanel must detect that "a/" does not start with "/"
+        // and leave slashCompletionLines empty.
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        PrintStream originalOut = System.out;
+        try (PrintStream capture = new PrintStream(output, true, StandardCharsets.UTF_8)) {
+            System.setOut(capture);
+            invokeStringIntArg(command, "updateSlashCompletionPanel", "a/", 2);
+        } finally {
+            System.setOut(originalOut);
+        }
+
+        @SuppressWarnings("unchecked")
+        List<String> lines = (List<String>) getField(command, "slashCompletionLines");
+        assertTrue(lines == null || lines.isEmpty(),
+                "slashCompletionLines must be empty when buffer does not start with '/'");
+        // No slash command suggestions should have been rendered.
+        assertFalse(output.toString(StandardCharsets.UTF_8).contains("/help"),
+                "Slash suggestions must not appear when '/' is not the first buffer character");
+    }
+
+    /**
+     * A slash-only buffer "/" correctly opens the completion panel (sanity check
+     * that the guard above doesn't over-suppress legitimate "/" completions).
+     */
+    @Test
+    void leadingSlashOpensCompletionPanel() throws Exception {
+        EmulatedPassthroughCommand command = configuredIdleCommand();
+        setField(command, "scrollBottom", 18);
+        setField(command, "activityRows", 3);
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        PrintStream originalOut = System.out;
+        try (PrintStream capture = new PrintStream(output, true, StandardCharsets.UTF_8)) {
+            System.setOut(capture);
+            invokeStringIntArg(command, "updateSlashCompletionPanel", "/", 1);
+        } finally {
+            System.setOut(originalOut);
+        }
+
+        @SuppressWarnings("unchecked")
+        List<String> lines = (List<String>) getField(command, "slashCompletionLines");
+        assertNotNull(lines);
+        assertFalse(lines.isEmpty(), "slashCompletionLines must be non-empty for a leading '/' buffer");
+        assertTrue(output.toString(StandardCharsets.UTF_8).contains("/help"),
+                "Leading '/' must show slash command suggestions");
+    }
+
+    /**
+     * The wrapped SELF_INSERT widget must NOT call callWidget(REDISPLAY) re-entrantly.
+     * <p>
+     * Before the fix, refreshManagedSlashCompletion() called
+     * impl.callWidget(LineReader.REDISPLAY) after updating the panel. That call
+     * happened INSIDE the SELF_INSERT dispatch, corrupting JLine's display state
+     * mid-dispatch. The fix removes the re-entrant REDISPLAY call; JLine's own
+     * post-dispatch redisplay handles input-line refresh.
+     * <p>
+     * We verify the fix by replacing the REDISPLAY widget with a counting stub,
+     * invoking the wrapped SELF_INSERT, and asserting that the REDISPLAY count
+     * remains zero (the panel update via redrawActivityPanelOnly goes to System.out
+     * directly, not through callWidget).
+     */
+    @Test
+    void selfInsertWrappedWidgetDoesNotIssueReentrantRedisplay() throws Exception {
+        EmulatedPassthroughCommand command = configuredIdleCommand();
+        setField(command, "scrollBottom", 18);
+        setField(command, "activityRows", 3);
+
+        LineReader reader = LineReaderBuilder.builder()
+                .terminal(terminal)
+                .build();
+        invokeLineReaderArg(command, "enableManagedSlashCompletion", reader);
+
+        LineReaderImpl impl = (LineReaderImpl) reader;
+
+        // Replace REDISPLAY with a counting stub so we can detect re-entrant calls.
+        AtomicInteger redisplayCount = new AtomicInteger(0);
+        impl.getWidgets().put(LineReader.REDISPLAY, () -> {
+            redisplayCount.incrementAndGet();
+            return true;
+        });
+
+        // Invoke the wrapped SELF_INSERT widget (the one wrapSlashRefreshWidget installed).
+        Widget selfInsert = impl.getWidgets().get(LineReader.SELF_INSERT);
+        assertNotNull(selfInsert, "SELF_INSERT widget must exist after enableManagedSlashCompletion");
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        PrintStream originalOut = System.out;
+        try (PrintStream capture = new PrintStream(output, true, StandardCharsets.UTF_8)) {
+            System.setOut(capture);
+            // Simulate typing "/" into an otherwise empty buffer.
+            // The wrapped widget calls original.apply() then refreshManagedSlashCompletion.
+            // After the fix refreshManagedSlashCompletion must NOT call callWidget(REDISPLAY).
+            selfInsert.apply();
+        } finally {
+            System.setOut(originalOut);
+        }
+
+        assertEquals(0, redisplayCount.get(),
+                "wrapSlashRefreshWidget must not call callWidget(REDISPLAY) re-entrantly from inside widget dispatch");
+    }
+
+    /**
+     * Typing a letter AFTER a "/" (mid-buffer slash) must not leave a stale
+     * completion panel open, and must not trigger a re-entrant REDISPLAY.
+     * Simulates: type "/", panel opens; type "a" to make buffer "/a"; type
+     * another "/" to produce "/a/" — each step: panel empty and no REDISPLAY.
+     */
+    @Test
+    void midBufferSlashAfterLetterNeverTriggersReentrantRedisplay() throws Exception {
+        EmulatedPassthroughCommand command = configuredIdleCommand();
+        setField(command, "scrollBottom", 18);
+        setField(command, "activityRows", 3);
+
+        LineReader reader = LineReaderBuilder.builder()
+                .terminal(terminal)
+                .build();
+        invokeLineReaderArg(command, "enableManagedSlashCompletion", reader);
+
+        LineReaderImpl impl = (LineReaderImpl) reader;
+
+        AtomicInteger redisplayCount = new AtomicInteger(0);
+        impl.getWidgets().put(LineReader.REDISPLAY, () -> {
+            redisplayCount.incrementAndGet();
+            return true;
+        });
+
+        Widget selfInsert = impl.getWidgets().get(LineReader.SELF_INSERT);
+        assertNotNull(selfInsert);
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        PrintStream originalOut = System.out;
+        try (PrintStream capture = new PrintStream(output, true, StandardCharsets.UTF_8)) {
+            System.setOut(capture);
+
+            // Step 1: type "a" — buffer = "a", no completions, no re-entrant REDISPLAY.
+            redisplayCount.set(0);
+            selfInsert.apply();
+            assertEquals(0, redisplayCount.get(),
+                    "Typing a plain letter must not trigger re-entrant REDISPLAY");
+
+            // Step 2: type "/" — buffer = "a/", upToCursor = "a/", no completions
+            //   (because upToCursor does not start with "/").
+            redisplayCount.set(0);
+            selfInsert.apply();
+            assertEquals(0, redisplayCount.get(),
+                    "Typing '/' after a letter (mid-buffer slash) must not trigger re-entrant REDISPLAY");
+
+            @SuppressWarnings("unchecked")
+            List<String> lines = (List<String>) getField(command, "slashCompletionLines");
+            assertTrue(lines == null || lines.isEmpty(),
+                    "Panel must remain empty when '/' is not the first character");
+
+        } finally {
+            System.setOut(originalOut);
+        }
+    }
 }

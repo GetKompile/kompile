@@ -16,6 +16,7 @@
 
 package ai.kompile.staging.subprocess;
 
+import ai.kompile.staging.training.TranscriptJsonlDatasetSupport;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -193,6 +194,111 @@ class TrainingSubprocessDatasetLoaderTest {
     }
 
     @Test
+    void detectsDirectClaudeCodeUuidJsonlDataset() throws Exception {
+        Path data = tempDir.resolve("3e1c340d-4d42-4871-bc0c.jsonl");
+        writeJsonLines(data, List.of(
+                Map.of(
+                        "uuid", "u1",
+                        "type", "user",
+                        "sessionId", "direct-session",
+                        "message", Map.of("role", "user", "content", "Direct prompt")),
+                Map.of(
+                        "uuid", "a1",
+                        "parentUuid", "u1",
+                        "type", "assistant",
+                        "sessionId", "direct-session",
+                        "message", Map.of("role", "assistant", "content", "Direct response"))));
+
+        Object dataset = resolveAndLoadDataset(data.toString());
+        List<?> loadedSamples = samples(dataset);
+
+        assertEquals(1, loadedSamples.size());
+        assertEquals("User: Direct prompt\nAssistant:",
+                sampleValue(loadedSamples.get(0), "inputValue"));
+        assertEquals("Direct response", sampleValue(loadedSamples.get(0), "labelValue"));
+    }
+
+    @Test
+    void loadsManagedClaudeCodeAndOpenCodeJsonlFormats() throws Exception {
+        String oldHome = System.getProperty("user.home");
+        try {
+            System.setProperty("user.home", tempDir.toString());
+
+            Path claudeDir = tempDir.resolve(".kompile/datasets/claude-training");
+            Files.createDirectories(claudeDir);
+            Path claudeData = claudeDir.resolve("history.jsonl");
+            writeJsonLines(claudeData, List.of(
+                    Map.of(
+                            "type", "user",
+                            "sessionId", "claude-session",
+                            "message", Map.of("role", "user", "content", "Inspect the loader")),
+                    Map.of(
+                            "type", "assistant",
+                            "sessionId", "claude-session",
+                            "message", Map.of("role", "assistant", "content", "I will inspect it.")),
+                    Map.of(
+                            "type", "user",
+                            "sessionId", "claude-session",
+                            "message", Map.of(
+                                    "role", "user",
+                                    "content", List.of(Map.of(
+                                            "type", "tool_result",
+                                            "content", "loader source")))),
+                    Map.of(
+                            "type", "assistant",
+                            "sessionId", "claude-session",
+                            "message", Map.of("role", "assistant", "content", "The loader is fixed."))));
+            writeManagedMeta(
+                    claudeDir,
+                    "claude-training",
+                    TranscriptJsonlDatasetSupport.CLAUDE_CODE_JSONL,
+                    claudeData);
+
+            Object claudeDataset = resolveAndLoadDataset("claude-training");
+            List<?> claudeSamples = samples(claudeDataset);
+            assertEquals(2, claudeSamples.size());
+            assertEquals("User: Inspect the loader\nAssistant:",
+                    sampleValue(claudeSamples.get(0), "inputValue"));
+            assertEquals("I will inspect it.", sampleValue(claudeSamples.get(0), "labelValue"));
+            assertTrue(String.valueOf(sampleValue(claudeSamples.get(1), "inputValue"))
+                    .contains("Tool: [tool-result] loader source"));
+            assertEquals("The loader is fixed.", sampleValue(claudeSamples.get(1), "labelValue"));
+
+            Path openCodeDir = tempDir.resolve(".kompile/datasets/opencode-training");
+            Files.createDirectories(openCodeDir);
+            Path openCodeData = openCodeDir.resolve("history.jsonl");
+            writeJsonLines(openCodeData, List.of(
+                    Map.of(
+                            "id", "m1",
+                            "session_id", "open-session",
+                            "type", "user",
+                            "data", Map.of("text", "Run the focused tests")),
+                    Map.of(
+                            "id", "m2",
+                            "session_id", "open-session",
+                            "type", "assistant",
+                            "data", Map.of("content", List.of(
+                                    Map.of("type", "reasoning", "text", "Use Maven."),
+                                    Map.of("type", "text", "text", "All tests pass."))))));
+            writeManagedMeta(
+                    openCodeDir,
+                    "opencode-training",
+                    TranscriptJsonlDatasetSupport.OPENCODE_JSONL,
+                    openCodeData);
+
+            Object openCodeDataset = resolveAndLoadDataset("opencode-training");
+            List<?> openCodeSamples = samples(openCodeDataset);
+            assertEquals(1, openCodeSamples.size());
+            assertEquals("User: Run the focused tests\nAssistant:",
+                    sampleValue(openCodeSamples.get(0), "inputValue"));
+            assertEquals("[thinking] Use Maven.\nAll tests pass.",
+                    sampleValue(openCodeSamples.get(0), "labelValue"));
+        } finally {
+            System.setProperty("user.home", oldHome);
+        }
+    }
+
+    @Test
     void loadsManagedDatasetMetadataAndCsvColumnMappings() throws Exception {
         String oldHome = System.getProperty("user.home");
         try {
@@ -276,6 +382,28 @@ class TrainingSubprocessDatasetLoaderTest {
         } finally {
             System.setProperty("user.home", oldHome);
         }
+    }
+
+    private static void writeJsonLines(Path path, List<? extends Map<String, ?>> rows) throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        StringBuilder content = new StringBuilder();
+        for (Map<String, ?> row : rows) {
+            content.append(mapper.writeValueAsString(row)).append(System.lineSeparator());
+        }
+        Files.writeString(path, content);
+    }
+
+    private static void writeManagedMeta(
+            Path datasetDir, String id, String format, Path dataFile) throws Exception {
+        Map<String, Object> meta = Map.of(
+                "id", id,
+                "format", format,
+                "task", "sft",
+                "filePath", dataFile.toString(),
+                "inputColumn", "text",
+                "outputColumn", "");
+        new ObjectMapper().writerWithDefaultPrettyPrinter()
+                .writeValue(datasetDir.resolve("meta.json").toFile(), meta);
     }
 
     private static LoraConfig buildLoraConfig(Map<String, Object> config) throws Exception {

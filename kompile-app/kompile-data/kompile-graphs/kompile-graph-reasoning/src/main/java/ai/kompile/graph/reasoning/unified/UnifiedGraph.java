@@ -141,6 +141,34 @@ public final class UnifiedGraph implements ReasoningGraph {
     }
 
     /**
+     * Remove all relations running from {@code sourceId} to {@code targetId} whose type matches
+     * {@code type} (exact case). Orphaned endpoint entities are left in place — stub entities
+     * created by a prior {@code ask_graph_assert} write-through may remain; this is by design
+     * (no entity is synthesized solely to hold the removed relation). After removal,
+     * {@link #facts()} will no longer emit the corresponding atom.
+     *
+     * <p>Save/load round-trips the removal: the relation is removed from the topology before save
+     * so the serialized ZIP contains no trace of it.</p>
+     *
+     * @return {@code this} for chaining
+     */
+    public UnifiedGraph removeRelation(String sourceId, String type, String targetId) {
+        graph.removeRelation(sourceId, type, targetId);
+        return this;
+    }
+
+    /**
+     * Remove the relation with the given id. No-ops if absent. Orphaned endpoint entities are
+     * left in place.
+     *
+     * @return {@code this} for chaining
+     */
+    public UnifiedGraph removeRelationById(String id) {
+        graph.removeRelationById(id);
+        return this;
+    }
+
+    /**
      * Return an induced unified subgraph while preserving analysis assets that still apply to the
      * retained topology. This is a convenience wrapper around {@link SubgraphMaterializer}.
      */

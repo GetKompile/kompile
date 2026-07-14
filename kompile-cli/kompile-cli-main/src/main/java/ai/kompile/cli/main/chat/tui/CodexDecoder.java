@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat.tui;
 
+import java.util.List;
 import java.util.Locale;
 
 /**
@@ -23,12 +24,21 @@ import java.util.Locale;
  * <p>
  * From PTY dump analysis (v0.137.0, 2026-06-18) — a ratatui/crossterm TUI:
  * <ul>
+ *   <li>Enters the alternate screen at startup (ESC[?1049h) and keeps it for the
+ *       entire session — its whole TUI lives in the alternate screen, so
+ *       {@link #altScreenIsDialog()} returns {@code false} (same as claude).</li>
  *   <li>Box-drawing frames ({@code ╭─╮ │ │ ╰─╯}) for the update notice and the
  *       welcome card (">_ OpenAI Codex (vX.Y.Z)", "model: ...", "directory: ...")</li>
  *   <li>Assistant responses are prefixed with a bullet: {@code • &lt;text&gt;}</li>
  *   <li>User messages and the composer placeholder are prefixed with {@code › }
  *       (U+203A), e.g. {@code › Improve documentation in @filename}</li>
  *   <li>Status bar: {@code &lt;model&gt; &lt;effort&gt; · &lt;cwd&gt;}</li>
+ *   <li>Done signal: when a turn completes, codex repaints its idle composer (the
+ *       {@code ›} row) in the fixed viewport.  There is no ephemeral "Worked for Ns"
+ *       line on-screen (unlike claude), but the repaint itself acts as the boundary:
+ *       {@link #liveRegionStartRow} scopes prompt detection to below the last
+ *       assistant-bullet ({@code •}) row so a question that appeared ABOVE the
+ *       completed response does not re-assert "awaiting input".</li>
  *   <li>Sends DSR / DA1 / DA2 / Kitty(?u) / XTVERSION / OSC 10-11 queries and
  *       waits for replies before rendering — all answered by the base decoder.</li>
  * </ul>
@@ -67,6 +77,52 @@ public class CodexDecoder extends AbstractTuiDecoder {
             return "\033[A\033[A\r"; // Up, Up (clamp to topmost "Yes" option), Enter
         }
         return "";
+    }
+
+    /**
+     * Codex's entire TUI lives in the alternate screen (it enters ESC[?1049h at startup and never
+     * leaves it). Returning {@code false} prevents every turn from triggering full-screen mirror
+     * mode — the alternate-screen flag carries no "dialog is up" signal for codex, exactly as for
+     * claude. Full-screen mirror is still activated by {@link #isAwaitingUserInput} when a real
+     * decision prompt is on screen.
+     */
+    @Override
+    public boolean altScreenIsDialog() {
+        return false;
+    }
+
+    /**
+     * Scope prompt detection to below the last assistant-bullet ({@code •}) row visible on screen.
+     * <p>
+     * Codex repaints its entire viewport when a turn completes (it issues ESC[2J and redraws from
+     * scratch). There is no on-screen "Worked for Ns" done-marker (unlike claude), but once the
+     * turn is committed the response body ({@code •} bullets) stays pinned above the composer
+     * ({@code ›}) in the fixed viewport. A question that appeared BEFORE the latest response
+     * lives in rows ABOVE the first visible {@code •} bullet; scoping detection to AT OR BELOW the
+     * last {@code •} bullet means the stale question is outside the live region and cannot
+     * re-assert "awaiting input" after the turn completes.
+     * <p>
+     * When no {@code •} bullet is visible (idle / just started), returns 0 (full-screen scan).
+     */
+    @Override
+    protected int liveRegionStartRow(List<String> rows) {
+        int lastBullet = -1;
+        for (int r = 0; r < rows.size(); r++) {
+            String raw = rows.get(r);
+            if (raw == null) continue;
+            String stripped = raw.strip();
+            if (stripped.isEmpty()) continue;
+            // An assistant-response bullet: the first visible non-space char is '•'.
+            char lead = '\0';
+            for (int i = 0; i < stripped.length(); i++) {
+                char c = stripped.charAt(i);
+                if (!Character.isWhitespace(c)) { lead = c; break; }
+            }
+            if (lead == '•') lastBullet = r;
+        }
+        // Scan from the last bullet row itself so any prompt appearing inline AFTER the bullet
+        // (same content area, same turn) is still detected.
+        return lastBullet >= 0 ? lastBullet : 0;
     }
 
     @Override
@@ -134,9 +190,13 @@ public class CodexDecoder extends AbstractTuiDecoder {
     @Override
     public boolean isResponding(VirtualTerminal vt) {
         String lower = screen(vt);
+        // "Esc to interrupt" is the unambiguous codex generation indicator.
+        // "Esc to cancel" is NOT used here: it also appears in decision prompts
+        // ("Enter to confirm · Esc to cancel"), so including it would cause
+        // isResponding=true on a blocking input prompt, wedging isAwaitingUserInput.
+        // The "Working (Ns · esc to interrupt)" footer covers the generation case.
         return lower.contains("esc to interrupt")
-                || lower.contains("esc to cancel")
-                || lower.contains("working") && lower.contains("esc")
+                || (lower.contains("working") && lower.contains("esc to interrupt"))
                 || lower.contains("thinking");
     }
 

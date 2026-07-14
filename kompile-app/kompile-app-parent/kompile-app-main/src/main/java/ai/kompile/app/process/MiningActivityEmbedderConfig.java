@@ -19,6 +19,7 @@ package ai.kompile.app.process;
 import ai.kompile.process.discovery.mining.ActivityEmbedder;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
 
 import java.util.Map;
 
@@ -35,6 +36,7 @@ import java.util.Map;
 public class MiningActivityEmbedderConfig {
 
     @Bean
+    @Primary
     public ActivityEmbedder miningActivityEmbedder() {
         return labels -> {
             if (labels == null || labels.isEmpty()) {

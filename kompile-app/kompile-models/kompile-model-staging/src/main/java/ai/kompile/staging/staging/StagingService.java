@@ -52,6 +52,7 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
 
     private static final Logger log = LoggerFactory.getLogger(StagingService.class);
     private static final String TRAINING_ARTIFACT_MANIFEST_FILE = "training-artifact.json";
+    private static final String AUDIO_SYNTHESIS_CONFIG_FILE = ".audio-synthesis.json";
 
     private final RegistryService registryService;
     private final ConversionService conversionService;
@@ -125,6 +126,11 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
         String source = request.getSource() + ":" + request.getRepository();
 
         StagingModelInfo info = StagingModelInfo.create(modelId, source, request.getModelType());
+        if (request.getModelType() == ModelType.AUDIO_SYNTHESIS
+                && request.getAudioSynthesis() == null) {
+            return info.failed(
+                    "audio_synthesis configuration is required for an audio synthesis model");
+        }
         stagingModels.put(modelId, info);
         progressCallback.accept(info);
         emitStagingStatus(modelId, info);
@@ -213,6 +219,14 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
                 log.info("Skipping SameDiff validation for non-SameDiff model artifact: {}", outputPath);
             }
 
+            // Persist the trusted serving ABI with the staged artifact so promotion
+            // remains correct across service restarts.
+            if (request.getModelType() == ModelType.AUDIO_SYNTHESIS) {
+                objectMapper.writerWithDefaultPrettyPrinter().writeValue(
+                        pendingDir.resolve(AUDIO_SYNTHESIS_CONFIG_FILE).toFile(),
+                        request.getAudioSynthesis());
+            }
+
             // 4. Move to verified staging
             info.withStatus(StagingStatus.READY, 90, "Model ready for promotion");
             progressCallback.accept(info);
@@ -262,6 +276,17 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
 
             // Create production directory
             ModelType type = info.getType() instanceof ModelType ? (ModelType) info.getType() : ModelType.DENSE_ENCODER;
+            AudioSynthesisConfig audioSynthesis = null;
+            if (type == ModelType.AUDIO_SYNTHESIS) {
+                Path audioConfigPath = verifiedDir.resolve(AUDIO_SYNTHESIS_CONFIG_FILE);
+                if (!Files.isRegularFile(audioConfigPath, LinkOption.NOFOLLOW_LINKS)
+                        || Files.isSymbolicLink(audioConfigPath)) {
+                    log.error("Verified audio synthesis configuration is missing for {}", modelId);
+                    return false;
+                }
+                audioSynthesis = objectMapper.readValue(
+                        audioConfigPath.toFile(), AudioSynthesisConfig.class);
+            }
             Path productionDir = modelsDir.resolve(type.getDirectoryName()).resolve(modelId);
             Files.createDirectories(productionDir);
 
@@ -345,6 +370,7 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
                     .promotedAt(Instant.now().toString())
                     .metadata(metadata)
                     .tokenizer(tokenizerConfig)
+                    .audioSynthesis(audioSynthesis)
                     .build();
 
             registryService.addModel(entry);

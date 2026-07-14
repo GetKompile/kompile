@@ -17,6 +17,7 @@
 package ai.kompile.staging.subprocess;
 
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.staging.training.TranscriptJsonlDatasetSupport;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.eclipse.deeplearning4j.llm.tokenizer.Encoding;
 import org.eclipse.deeplearning4j.llm.tokenizer.HuggingFaceTokenizer;
@@ -1447,7 +1448,16 @@ public class TrainingSubprocessMain {
     }
 
     private static List<TrainingSample> readTrainingSamples(Path dataFile, String format, Map<String, Object> meta) throws Exception {
-        String normalized = format != null ? format.toLowerCase(Locale.ROOT) : inferFormat(dataFile);
+        String inferred = inferFormat(dataFile);
+        String transcriptFormat = TranscriptJsonlDatasetSupport.canonicalFormat(format);
+        if (transcriptFormat == null) {
+            transcriptFormat = TranscriptJsonlDatasetSupport.canonicalFormat(inferred);
+        }
+        if (transcriptFormat != null) {
+            return readTranscriptJsonlSamples(dataFile, transcriptFormat, meta);
+        }
+
+        String normalized = format != null ? format.toLowerCase(Locale.ROOT) : inferred;
         if ("jsonl".equals(normalized) || dataFile.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".jsonl")) {
             return readJsonlSamples(dataFile, meta);
         }
@@ -1493,6 +1503,21 @@ public class TrainingSubprocessMain {
             }
         } else if (parsed != null) {
             samples.add(sampleFromScalar(parsed));
+        }
+        return samples;
+    }
+
+    private static List<TrainingSample> readTranscriptJsonlSamples(
+            Path dataFile, String format, Map<String, Object> meta) throws Exception {
+        TranscriptJsonlDatasetSupport.ScanResult normalized =
+                TranscriptJsonlDatasetSupport.scan(dataFile, format, MAX_DATASET_ROWS_IN_MEMORY);
+        List<TrainingSample> samples = new ArrayList<>(normalized.rows().size());
+        for (Map<String, Object> row : normalized.rows()) {
+            samples.add(sampleFromMap(row, meta));
+        }
+        if (normalized.totalSamples() > samples.size()) {
+            logger.warn("Native transcript dataset {} contains {} examples; retaining the first {} in memory",
+                    dataFile, normalized.totalSamples(), samples.size());
         }
         return samples;
     }
@@ -1591,7 +1616,7 @@ public class TrainingSubprocessMain {
 
         // OpenAI/ShareGPT-style SFT records carry the prompt and target in a
         // messages/conversations array instead of top-level columns.
-        if (input == null && output == null && configuredInput == null && configuredOutput == null) {
+        if (input == null && output == null) {
             Object conversation = row.containsKey("messages") ? row.get("messages") : row.get("conversations");
             TrainingSample chatSample = sampleFromConversation(
                     conversation, chosen, rejected, score, row);
@@ -2043,6 +2068,10 @@ public class TrainingSubprocessMain {
     }
 
     private static String inferFormat(Path dataFile) {
+        String transcriptFormat = TranscriptJsonlDatasetSupport.detectFormat(dataFile);
+        if (transcriptFormat != null) {
+            return transcriptFormat;
+        }
         String name = dataFile.getFileName().toString().toLowerCase(Locale.ROOT);
         int dot = name.lastIndexOf('.');
         return dot >= 0 ? name.substring(dot + 1) : "txt";

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Base application theme. Compose overrides almost everything via KompileChatTheme;
+         this theme exists so the activity XML attribute is satisfied. -->
+    <style name="Theme.KompileChatLocal" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+    </style>
+</resources>

@@ -71,6 +71,7 @@ public class ManageComponents implements Callable<Integer> {
         System.out.println("Examples:");
         System.out.println("  kompile manage start kompile-app-main");
         System.out.println("  kompile manage start kompile-model-staging --port 9090");
+        System.out.println("  kompile manage start kompile-graph-service");
         System.out.println("  kompile manage list");
         System.out.println("  kompile manage stop kompile-app-main");
         System.out.println("  kompile manage status kompile-app-main");
@@ -84,7 +85,7 @@ public class ManageComponents implements Callable<Integer> {
     @CommandLine.Command(name = "start", description = "Start a Kompile component")
     public static class StartCommand implements Callable<Integer> {
 
-        @CommandLine.Parameters(index = "0", description = "Component to start (e.g., kompile-app-main, kompile-model-staging)")
+        @CommandLine.Parameters(index = "0", description = "Component to start (e.g., kompile-app-main, kompile-model-staging, kompile-graph-service)")
         private String componentId;
 
         @CommandLine.Option(names = {"--port"}, description = "Port to run the service on")

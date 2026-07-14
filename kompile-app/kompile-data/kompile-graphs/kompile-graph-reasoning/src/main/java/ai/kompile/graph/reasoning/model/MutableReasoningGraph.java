@@ -75,6 +75,53 @@ public final class MutableReasoningGraph implements ReasoningGraph {
         return addRelation(SimpleGraphRelation.directed(id, sourceId, targetId, type, weight));
     }
 
+    /**
+     * Remove all relations whose predicate type matches {@code type} (exact case), running from
+     * {@code sourceId} to {@code targetId}. Orphaned endpoint entities are left in place.
+     * Returns {@code this}.
+     */
+    public MutableReasoningGraph removeRelation(String sourceId, String type, String targetId) {
+        Objects.requireNonNull(sourceId, "sourceId");
+        Objects.requireNonNull(type,     "type");
+        Objects.requireNonNull(targetId, "targetId");
+        List<GraphRelation> toRemove = new ArrayList<>();
+        for (GraphRelation r : relations) {
+            if (sourceId.equals(r.sourceId()) && type.equals(r.type()) && targetId.equals(r.targetId())) {
+                toRemove.add(r);
+            }
+        }
+        for (GraphRelation r : toRemove) {
+            relations.remove(r);
+            List<GraphRelation> out = outgoing.get(r.sourceId());
+            if (out != null) out.remove(r);
+            List<GraphRelation> in = incoming.get(r.targetId());
+            if (in != null) in.remove(r);
+        }
+        return this;
+    }
+
+    /**
+     * Remove the relation with the given {@code id}. No-ops if no such relation exists.
+     * Returns {@code this}.
+     */
+    public MutableReasoningGraph removeRelationById(String id) {
+        Objects.requireNonNull(id, "id");
+        List<GraphRelation> toRemove = new ArrayList<>();
+        for (GraphRelation r : relations) {
+            if (id.equals(r.id())) {
+                toRemove.add(r);
+            }
+        }
+        for (GraphRelation r : toRemove) {
+            relations.remove(r);
+            List<GraphRelation> out = outgoing.get(r.sourceId());
+            if (out != null) out.remove(r);
+            List<GraphRelation> in = incoming.get(r.targetId());
+            if (in != null) in.remove(r);
+        }
+        return this;
+    }
+
     @Override
     public Collection<GraphEntity> entities() {
         return Collections.unmodifiableCollection(entities.values());

@@ -20,12 +20,14 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class CliAgentRegistryTest {
@@ -55,6 +57,25 @@ class CliAgentRegistryTest {
     }
 
     @Test
+    void fullAgentRosterIsPinned() {
+        // The registry feeds every agent lane; a partial roster ships agent-lockout.
+        // Roster changes are allowed but must be deliberate: update this test AND the
+        // antrun gates in this module's pom and kompile-cli-main's pom together.
+        List<AgentProvider> providers = CliAgentRegistry.loadAll();
+
+        Set<String> commands = providers.stream()
+                .map(AgentProvider::getCommand)
+                .collect(Collectors.toSet());
+        assertEquals(Set.of("claude", "codex", "gemini", "opencode", "qwen", "pi"), commands);
+
+        List<AgentProvider> defaults = providers.stream()
+                .filter(AgentProvider::isDefault)
+                .toList();
+        assertEquals(1, defaults.size(), "exactly one agent must be the default");
+        assertEquals("claude", defaults.get(0).getCommand(), "claude is the default agent");
+    }
+
+    @Test
     void loadsMcpMetadataForAgentsThatDeclareIt() {
         AgentProvider claude = CliAgentRegistry.loadAll().stream()
                 .filter(agent -> "claude".equals(agent.getCommand()))
@@ -62,7 +83,9 @@ class CliAgentRegistryTest {
                 .orElseThrow();
 
         assertTrue(claude.isMcpSupported());
-        assertEquals("--mcp-server", claude.getMcpServerFlag());
+        // --mcp-server was a bogus flag that killed claude spawns; MCP injection goes
+        // through --mcp-config. It must stay absent from the registry.
+        assertNull(claude.getMcpServerFlag());
         assertEquals("--mcp-config", claude.getMcpConfigFlag());
         assertEquals("--allowedTools", claude.getMcpAllowToolsFlag());
     }

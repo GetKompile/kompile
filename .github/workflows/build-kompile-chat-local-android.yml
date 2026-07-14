@@ -1,0 +1,278 @@
+name: Build kompile-chat-local Android
+
+# Modeled on dl4j android workflows:
+#   .github/workflows/build-deploy-android-arm64.yml
+#   .github/workflows/build-deploy-android-x86_64.yml
+#
+# Key choices versus dl4j:
+#   - Uses ubuntu-22.04 (LTS, emulator-stable)
+#   - JDK 17 Temurin (NOT GraalVM — GraalVM jlink breaks AGP 8.5 transforms)
+#   - AGP 8.5.2, compileSdk=35, Gradle 8.9
+#   - Emulator: android-35 google_apis x86_64, gpu=host, KVM required
+#   - Maven prereqs installed from kompile parent chain before Gradle build
+
+on:
+  push:
+    branches: ["main", "feat/**"]
+    paths:
+      - "kompile-chat-local/**"
+      - ".github/workflows/build-kompile-chat-local-android.yml"
+  pull_request:
+    paths:
+      - "kompile-chat-local/**"
+  workflow_dispatch:
+    inputs:
+      runEmulatorTests:
+        description: "Run emulator APK install + smoke test (requires KVM)"
+        required: false
+        default: "true"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-apk:
+    name: Build debug APK
+    runs-on: ubuntu-22.04
+
+    steps:
+      # ── Checkout ──────────────────────────────────────────────────────────────
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # ── JDK 17 Temurin (NOT GraalVM — GraalVM jlink breaks AGP 8.5) ─────────
+      - name: Set up JDK 17 Temurin
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: "temurin"
+          cache: "maven"
+
+      # ── Maven: install kompile parent chain ──────────────────────────────────
+      # We need kompile-chat-local-core and its transitive parents in mavenLocal.
+      # Install in dependency order, stopping short of the full app build.
+      - name: Install Maven parent POMs to mavenLocal
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          MVN="mvn -B -q -DskipTests -Dkompile.skip.native=true"
+
+          # Layer 1: root BOM + parent
+          $MVN -f pom.xml install -pl kompile-bom,kompile-parent --also-make
+
+          # Layer 2: kompile-utils (depended on by graph-reasoning)
+          $MVN -f pom.xml install -pl kompile-utils --also-make
+
+          # Layer 3: graph reasoning library (no Spring, no infra)
+          $MVN -f pom.xml install \
+            -pl kompile-app/kompile-data/kompile-graphs/kompile-graph-reasoning \
+            --also-make
+
+          # Layer 4: graph reasoning local (LocalReasoningSession etc.)
+          $MVN -f pom.xml install \
+            -pl kompile-app/kompile-data/kompile-graphs/kompile-graph-reasoning-local \
+            --also-make
+
+          # Layer 5: chat-local-core (ChatEngine, GraphToolBridge, etc.)
+          $MVN -f pom.xml install \
+            -pl kompile-chat-local/kompile-chat-local-core \
+            --also-make
+
+      # ── Gradle wrapper permissions ────────────────────────────────────────────
+      - name: Make gradlew executable
+        run: chmod +x kompile-chat-local/mobile/android/gradlew
+
+      # ── Gradle: build debug APK ───────────────────────────────────────────────
+      - name: Build debug APK
+        working-directory: kompile-chat-local/mobile/android
+        run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
+        env:
+          JAVA_HOME: ${{ env.JAVA_HOME }}
+          ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
+
+      # ── Upload APK artifact ───────────────────────────────────────────────────
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: kompile-chat-local-debug-apk
+          path: kompile-chat-local/mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 7
+
+  emulator-smoke-test:
+    name: Emulator smoke test
+    needs: build-apk
+    # Only run on push to main or explicit dispatch; skip PRs from forks (no KVM).
+    if: |
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.runEmulatorTests == 'true')
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up JDK 17 Temurin
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: "temurin"
+
+      # ── Enable KVM (required for x86_64 emulator at usable speed) ────────────
+      - name: Enable KVM
+        run: |
+          echo "KERNEL==\"kvm\", GROUP=\"kvm\", MODE=\"0666\", OPTIONS+=\"static_node=kvm\"" \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      # ── Download built APK from previous job ─────────────────────────────────
+      - name: Download debug APK
+        uses: actions/download-artifact@v4
+        with:
+          name: kompile-chat-local-debug-apk
+          path: apk/
+
+      # ── Android SDK: install emulator + system image ──────────────────────────
+      - name: Set up Android SDK packages
+        uses: android-actions/setup-android@v3
+
+      - name: Install emulator + system image
+        run: |
+          sdkmanager --install \
+            "emulator" \
+            "platform-tools" \
+            "system-images;android-35;google_apis;x86_64"
+          echo "y" | sdkmanager --licenses
+
+      # ── Create AVD ────────────────────────────────────────────────────────────
+      - name: Create AVD kompile_test_35
+        run: |
+          echo "no" | avdmanager create avd \
+            -n kompile_test_35 \
+            -k "system-images;android-35;google_apis;x86_64" \
+            --device "pixel_4" \
+            --force
+
+      # ── Start OpenAI stub (runs in background on :8971) ───────────────────────
+      - name: Start OpenAI stub server
+        run: |
+          python3 kompile-chat-local/mobile/android/tools/openai_stub.py --port 8971 &
+          echo "STUB_PID=$!" >> "$GITHUB_ENV"
+          # Wait for stub to be ready
+          for i in $(seq 1 10); do
+            curl -sf http://localhost:8971/health && break || sleep 1
+          done
+
+      # ── Boot emulator headless ────────────────────────────────────────────────
+      - name: Boot emulator
+        timeout-minutes: 10
+        run: |
+          $ANDROID_SDK_ROOT/emulator/emulator \
+            -avd kompile_test_35 \
+            -no-window -no-audio -no-boot-anim \
+            -no-snapshot \
+            -gpu swiftshader_indirect \
+            -memory 2048 \
+            -cores 2 \
+            > /tmp/emulator.log 2>&1 &
+          echo "EMULATOR_PID=$!" >> "$GITHUB_ENV"
+
+          # Wait for adb device + full boot
+          adb wait-for-device
+          until adb shell getprop sys.boot_completed 2>/dev/null | grep -q "^1$"; do
+            sleep 5
+          done
+          echo "Emulator booted"
+
+      # ── Install APK ──────────────────────────────────────────────────────────
+      - name: Install APK
+        run: adb install -r apk/app-debug.apk
+
+      # ── Seed SharedPreferences via run-as ─────────────────────────────────────
+      # Tells the app to use the OpenAI stub on 10.0.2.2:8971 (host alias).
+      - name: Seed app preferences
+        run: |
+          PKG="ai.kompile.chat.local.android.debug"
+          PREFS_DIR="/data/data/$PKG/shared_prefs"
+          PREFS_FILE="$PREFS_DIR/kompile_chat_prefs.xml"
+
+          adb shell "run-as $PKG mkdir -p $PREFS_DIR"
+          adb shell "run-as $PKG sh -c 'cat > $PREFS_FILE'" << 'XML'
+          <?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+          <map>
+              <string name="remote_base_url">http://10.0.2.2:8971</string>
+              <string name="remote_model">stub-model</string>
+              <string name="remote_api_key"></string>
+              <string name="kgraph_path"></string>
+              <string name="model_path"></string>
+              <int name="max_tool_rounds" value="3" />
+              <float name="temperature" value="0.7" />
+              <int name="max_tokens" value="512" />
+              <boolean name="bootstrap_done" value="true" />
+          </map>
+          XML
+
+      # ── Launch app + send message via UIAutomator ─────────────────────────────
+      - name: Launch app and send test message
+        run: |
+          PKG="ai.kompile.chat.local.android.debug"
+          ACTIVITY="ai.kompile.chat.local.android.MainActivity"
+
+          # Launch
+          adb shell am start -n "$PKG/$ACTIVITY"
+          sleep 3
+
+          # Type message via uiautomator input
+          adb shell input text "Who_does_Alice_work_for?"
+          sleep 1
+          # Send (tap Enter / send button)
+          adb shell input keyevent 66
+          # Wait for response (up to 30s)
+          sleep 30
+
+      # ── Screenshot ───────────────────────────────────────────────────────────
+      - name: Capture screenshot
+        run: |
+          adb shell screencap -p /sdcard/chat_result.png
+          adb pull /sdcard/chat_result.png chat_result.png
+
+      # ── Capture logcat ────────────────────────────────────────────────────────
+      - name: Capture logcat
+        if: always()
+        run: |
+          adb logcat -d -t 200 > logcat.txt 2>&1
+
+      # ── Verify tool-call round appeared in logcat ─────────────────────────────
+      - name: Verify tool-call round trip
+        run: |
+          if grep -q "ask_graph_query\|tool_call\|ToolRound" logcat.txt; then
+            echo "Tool-call round-trip confirmed in logcat"
+          else
+            echo "WARNING: tool-call not found in logcat — check screenshot"
+          fi
+
+      # ── Upload evidence ───────────────────────────────────────────────────────
+      - name: Upload test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: emulator-test-evidence
+          path: |
+            chat_result.png
+            logcat.txt
+            /tmp/emulator.log
+          retention-days: 7
+
+      # ── Stop emulator (exact PID only — never broad pkill) ────────────────────
+      - name: Stop emulator
+        if: always()
+        run: |
+          if [ -n "${EMULATOR_PID:-}" ]; then
+            adb -s emulator-5554 emu kill 2>/dev/null || kill "$EMULATOR_PID" 2>/dev/null || true
+          fi
+          if [ -n "${STUB_PID:-}" ]; then
+            kill "$STUB_PID" 2>/dev/null || true
+          fi

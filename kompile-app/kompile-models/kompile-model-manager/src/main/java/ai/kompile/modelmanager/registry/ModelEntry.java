@@ -106,6 +106,12 @@ public class ModelEntry {
     private ImagePreprocessorConfig preprocessor;
 
     /**
+     * Typed text-to-waveform serving ABI for audio synthesis models.
+     */
+    @JsonProperty("audio_synthesis")
+    private AudioSynthesisConfig audioSynthesis;
+
+    /**
      * Project this model belongs to (null = global / not project-scoped).
      * When set, the active-model selection is scoped to this project+graph pair
      * rather than the global type-wide active.

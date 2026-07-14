@@ -96,6 +96,42 @@ Custom model mirror: set `KOMPILE_MODEL_MIRROR_URL` and `KOMPILE_MODEL_MIRROR_EN
 
 Models transition through statuses: `PENDING` → `DOWNLOADING` → `CONVERTING` → `VALIDATING` → `READY` → `ACTIVE`. Progress is streamed via SSE at `GET /api/staging/models/{id}/stream`.
 
+## Generated audio synthesis
+
+`audio_synthesis` is a registered model type with a typed serving ABI. The initial production backend, `samediff_waveform`, deliberately accepts only an end-to-end SameDiff graph whose text-token inputs produce a finite normalized mono waveform in `[-1, 1]`. The reusable `samediff-audio` module owns tokenization, graph execution, completed-file results, and streaming PCM WAV writing. This service owns model staging and activation, registry/catalog persistence, SHA-256 verification before load, path containment, generator lifecycle, run idempotency, artifact manifests, and bearer-authenticated transfer.
+
+A registry or catalog entry carries the ABI under `audio_synthesis`:
+
+```json
+{
+  "type": "audio_synthesis",
+  "model_file": "model.sdz",
+  "checksum": "sha256:<64 lowercase hex characters>",
+  "audio_synthesis": {
+    "backend": "samediff_waveform",
+    "tokenizer_type": "hugging_face",
+    "tokenizer_file": "tokenizer.json",
+    "token_ids_input": "input_ids",
+    "attention_mask_input": "attention_mask",
+    "waveform_output": "waveform",
+    "token_data_type": "int64",
+    "sample_rate_hz": 22050,
+    "channels": 1,
+    "sample_format": "pcm_s16le",
+    "media_type": "audio/wav",
+    "file_extension": ".wav",
+    "max_input_tokens": 2048,
+    "max_output_samples": 6615000,
+    "voice": "standard",
+    "language": "en"
+  }
+}
+```
+
+`token_lengths_input` and a scalar `confidence_output` are optional. `utf8_bytes` is available for graphs explicitly trained/exported with byte-token inputs; it does not use a tokenizer file. Voice and language are fixed registry labels for this single-voice backend, not request-selected model parameters. Unknown backend behavior, arbitrary inference configuration, multi-speaker selection, implicit vocoders, normalization, transcoding, and codec conversion are rejected or left to future typed backends.
+
+`POST /api/audio/synthesize` returns metadata only: run ID, opaque UUID `artifactReference`, media type, SHA-256, byte length, registry-authoritative model/version, configuration hash/evidence, and confidence. `GET /api/audio/artifacts/{uuid}/content` streams the completed file. Both endpoints fail closed unless `KOMPILE_STAGING_ARTIFACT_TOKEN` is configured and supplied as a bearer token. Callers cannot supply a staging filesystem path, artifact URL, callback destination, or arbitrary remote URL. Identical retries reuse the first result; conflicting run reuse is rejected.
+
 ## REST API
 
 ### Model Registry & Staging (`/api/staging`)
