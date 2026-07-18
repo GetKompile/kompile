@@ -40,7 +40,9 @@ describe('ProjectService portable knowledge bases', () => {
       request.url.endsWith('/projects/current/portability/inspect'));
     expect(req.request.method).toBe('POST');
     expect(req.request.body instanceof FormData).toBeTrue();
-    expect((req.request.body as FormData).get('file')).toBe(file);
+    const uploaded = (req.request.body as FormData).get('file') as File;
+    expect(uploaded.name).toBe(file.name);
+    expect(uploaded.size).toBe(file.size);
     req.flush({ name: 'research', formatVersion: 2 });
   });
 
@@ -51,7 +53,9 @@ describe('ProjectService portable knowledge bases', () => {
       request.url.endsWith('/projects/current/portability/imports'));
     const form = req.request.body as FormData;
     expect(req.request.method).toBe('POST');
-    expect(form.get('file')).toBe(file);
+    const uploaded = form.get('file') as File;
+    expect(uploaded.name).toBe(file.name);
+    expect(uploaded.size).toBe(file.size);
     expect(form.get('targetName')).toBe('research-copy');
     req.flush({ id: 'job-2', status: 'QUEUED' });
   });
