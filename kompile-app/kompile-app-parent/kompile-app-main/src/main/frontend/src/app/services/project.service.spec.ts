@@ -1,0 +1,68 @@
+import { TestBed } from '@angular/core/testing';
+import { HttpClientTestingModule, HttpTestingController } from '@angular/common/http/testing';
+
+import { ProjectService } from './project.service';
+
+describe('ProjectService portable knowledge bases', () => {
+  let service: ProjectService;
+  let httpMock: HttpTestingController;
+  const file = new File(['archive'], 'research.kproject', { type: 'application/octet-stream' });
+
+  beforeEach(() => {
+    TestBed.configureTestingModule({
+      imports: [HttpClientTestingModule],
+      providers: [ProjectService]
+    });
+    service = TestBed.inject(ProjectService);
+    httpMock = TestBed.inject(HttpTestingController);
+  });
+
+  afterEach(() => httpMock.verify());
+
+  it('starts and polls a portable export maintenance job', () => {
+    service.startPortableKnowledgeBaseExport().subscribe();
+    const start = httpMock.expectOne(request =>
+      request.url.endsWith('/projects/current/portability/exports'));
+    expect(start.request.method).toBe('POST');
+    start.flush({ id: 'job-1', status: 'QUEUED' });
+
+    service.getPortableKnowledgeBaseJob('job-1').subscribe();
+    const poll = httpMock.expectOne(request =>
+      request.url.endsWith('/projects/current/portability/jobs/job-1'));
+    expect(poll.request.method).toBe('GET');
+    poll.flush({ id: 'job-1', status: 'RUNNING' });
+  });
+
+  it('inspects an uploaded archive using multipart form data', () => {
+    service.inspectPortableKnowledgeBase(file).subscribe();
+
+    const req = httpMock.expectOne(request =>
+      request.url.endsWith('/projects/current/portability/inspect'));
+    expect(req.request.method).toBe('POST');
+    expect(req.request.body instanceof FormData).toBeTrue();
+    expect((req.request.body as FormData).get('file')).toBe(file);
+    req.flush({ name: 'research', formatVersion: 2 });
+  });
+
+  it('starts a staged import with an optional target name', () => {
+    service.startPortableKnowledgeBaseImport(file, 'research-copy').subscribe();
+
+    const req = httpMock.expectOne(request =>
+      request.url.endsWith('/projects/current/portability/imports'));
+    const form = req.request.body as FormData;
+    expect(req.request.method).toBe('POST');
+    expect(form.get('file')).toBe(file);
+    expect(form.get('targetName')).toBe('research-copy');
+    req.flush({ id: 'job-2', status: 'QUEUED' });
+  });
+
+  it('downloads a completed export as a blob', () => {
+    service.downloadPortableKnowledgeBase('job-3').subscribe(value =>
+      expect(value.size).toBe(3));
+
+    const req = httpMock.expectOne(request =>
+      request.url.endsWith('/projects/current/portability/jobs/job-3/download'));
+    expect(req.request.responseType).toBe('blob');
+    req.flush(new Blob(['zip']));
+  });
+});

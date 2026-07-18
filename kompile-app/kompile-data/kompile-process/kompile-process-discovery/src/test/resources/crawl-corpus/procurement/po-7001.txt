@@ -1,0 +1,6 @@
+Procurement summary — purchase order PO-7001 (engineering laptop refresh)
+
+Dana Reyes requested purchase order PO-7001 for the engineering laptop refresh
+on 2026-03-02. Erin Wu, the procurement lead, approved PO-7001 on 2026-03-04
+after checking the quarterly hardware budget. Initech Finance paid the supplier
+invoice for PO-7001 on 2026-03-09 and closed the order.

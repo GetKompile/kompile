@@ -1,0 +1,12 @@
+diff --git a/src/java.base/unix/native/libnet/net_util_md.h b/src/java.base/unix/native/libnet/net_util_md.h
+index 902cf9673..5e58ef1e9 100644
+--- a/src/java.base/unix/native/libnet/net_util_md.h
++++ b/src/java.base/unix/native/libnet/net_util_md.h
+@@ -27,6 +27,7 @@
+ #define NET_UTILS_MD_H
+ 
+ #include <netdb.h>
++#include <netinet/in.h>
+ #include <poll.h>
+ #include <sys/socket.h>
+ 

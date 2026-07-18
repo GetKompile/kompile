@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <!--
+            Qualcomm FastRPC is supplied by a compatible device's vendor image.
+            Declaring it admits the system library into this flavor's linker
+            namespace; the project-owned DSP skeleton remains bundled in the APK.
+        -->
+        <uses-native-library
+            android:name="libcdsprpc.so"
+            android:required="true" />
+    </application>
+
+</manifest>

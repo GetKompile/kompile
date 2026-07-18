@@ -1,0 +1,5 @@
+Procurement summary — purchase order PO-7003 (GPU server expansion)
+
+Hana Kim requested purchase order PO-7003 for the GPU server expansion
+on 2026-05-05. Erin Wu approved PO-7003 on 2026-05-06 with an expedite note.
+Initech Finance paid the supplier invoice for PO-7003 on 2026-05-11.

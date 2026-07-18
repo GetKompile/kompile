@@ -386,6 +386,50 @@ export interface ProjectPipeline {
   updatedAt: string | null;
 }
 
+export interface PortableKnowledgeBaseSemantic {
+  schemaVersion: number;
+  description: string | null;
+  lifecycle: string | null;
+  tags: string[];
+  componentTypes: string[];
+  portableAssets: string[];
+  rebuildableAssets: string[];
+  externalRequirements: string[];
+}
+
+export interface PortableKnowledgeBaseArchive {
+  formatVersion: number;
+  projectId: string;
+  name: string;
+  createdAt: string;
+  defaultGraph: string | null;
+  semantic: PortableKnowledgeBaseSemantic;
+  entryCount: number;
+  totalBytes: number;
+  warnings: string[];
+}
+
+export type PortableKnowledgeBaseOperation = 'EXPORT' | 'IMPORT';
+export type PortableKnowledgeBaseJobStatus = 'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED';
+
+export interface PortableKnowledgeBaseJob {
+  id: string;
+  operation: PortableKnowledgeBaseOperation;
+  status: PortableKnowledgeBaseJobStatus;
+  stage: string;
+  progress: number;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  archive: PortableKnowledgeBaseArchive | null;
+  artifactName: string | null;
+  artifactSize: number | null;
+  downloadReady: boolean;
+  importedPath: string | null;
+  warnings: string[];
+  error: string | null;
+}
+
 @Injectable({ providedIn: 'root' })
 export class ProjectService extends BaseService {
   constructor(private http: HttpClient) {
@@ -524,5 +568,50 @@ export class ProjectService extends BaseService {
 
   listCrawlProfiles(): Observable<CrawlProfile[]> {
     return this.http.get<CrawlProfile[]>(`${backendUrl}/projects/current/crawl-profiles`);
+  }
+
+  startPortableKnowledgeBaseExport(): Observable<PortableKnowledgeBaseJob> {
+    return this.http.post<PortableKnowledgeBaseJob>(
+      `${backendUrl}/projects/current/portability/exports`, {}
+    );
+  }
+
+  inspectPortableKnowledgeBase(file: File): Observable<PortableKnowledgeBaseArchive> {
+    const form = new FormData();
+    form.append('file', file, file.name);
+    return this.http.post<PortableKnowledgeBaseArchive>(
+      `${backendUrl}/projects/current/portability/inspect`, form
+    );
+  }
+
+  startPortableKnowledgeBaseImport(
+    file: File,
+    targetName?: string | null
+  ): Observable<PortableKnowledgeBaseJob> {
+    const form = new FormData();
+    form.append('file', file, file.name);
+    if (targetName?.trim()) form.append('targetName', targetName.trim());
+    return this.http.post<PortableKnowledgeBaseJob>(
+      `${backendUrl}/projects/current/portability/imports`, form
+    );
+  }
+
+  listPortableKnowledgeBaseJobs(): Observable<PortableKnowledgeBaseJob[]> {
+    return this.http.get<PortableKnowledgeBaseJob[]>(
+      `${backendUrl}/projects/current/portability/jobs`
+    );
+  }
+
+  getPortableKnowledgeBaseJob(id: string): Observable<PortableKnowledgeBaseJob> {
+    return this.http.get<PortableKnowledgeBaseJob>(
+      `${backendUrl}/projects/current/portability/jobs/${encodeURIComponent(id)}`
+    );
+  }
+
+  downloadPortableKnowledgeBase(id: string): Observable<Blob> {
+    return this.http.get(
+      `${backendUrl}/projects/current/portability/jobs/${encodeURIComponent(id)}/download`,
+      { responseType: 'blob' }
+    );
   }
 }

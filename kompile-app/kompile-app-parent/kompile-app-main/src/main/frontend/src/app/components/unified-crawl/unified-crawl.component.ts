@@ -64,6 +64,11 @@ import { GraphExtractionService, ModelProvider, GraphExtractionConfig } from '..
 import { WebSocketService } from '../../services/websocket.service';
 import { DistributedCrawlService } from '../../services/distributed-crawl.service';
 import { NoteSyncService } from '../../services/note-sync.service';
+import {
+  ProjectService,
+  PortableKnowledgeBaseArchive,
+  PortableKnowledgeBaseJob
+} from '../../services/project.service';
 import { SyncConnectionResponse, SyncProvider, SyncStatusUpdate } from '../../models/sync-models';
 import { CrawlLauncherDialogComponent, CrawlLauncherDialogData, CrawlLauncherResult } from './crawl-launcher-dialog/crawl-launcher-dialog.component';
 
@@ -118,6 +123,13 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
   autoSyncUpdating = new Set<number>();
   readonly defaultAutoSyncCron = '0 */15 * * * *';
 
+  // Portable knowledge-base lifecycle, surfaced beside source and graph maintenance.
+  portableJobs: PortableKnowledgeBaseJob[] = [];
+  portableArchive: PortableKnowledgeBaseArchive | null = null;
+  portableArchiveFile: File | null = null;
+  portabilityActionInProgress = false;
+  portabilityError: string | null = null;
+
   // Subprocess events for the selected job
   subprocessEvents: SubprocessEvent[] = [];
   subprocessStats: SubprocessStatistics | null = null;
@@ -165,6 +177,7 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
     private wsService: WebSocketService,
     private distributedCrawlService: DistributedCrawlService,
     private noteSyncService: NoteSyncService,
+    private projectService: ProjectService,
     private dialog: MatDialog,
     private snackBar: MatSnackBar,
     private cdr: ChangeDetectorRef,
@@ -191,6 +204,7 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
     this.loadStepCatalog();
     this.refreshJobs();
     this.refreshResumableJobs();
+    this.refreshPortableJobs();
     this.loadClusterWorkers();
     // Subscribe to scheduler events for real-time notifications
     this.wsService.connect();
@@ -212,6 +226,7 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
     this.pollInterval = setInterval(() => {
       this.refreshJobs();
       this.refreshResumableJobs();
+      this.refreshPortableJobs();
       if (this.selectedJob && (this.selectedJob.status === 'RUNNING' || this.selectedJob.status === 'PENDING')) {
         this.refreshSelectedJob();
         this.refreshLiveGraphStats();
@@ -1164,6 +1179,118 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
   refreshSyncConnections(): void {
     const factSheetId = this.activeFactSheet?.id;
     if (factSheetId) this.loadSyncConnections(factSheetId);
+    this.refreshPortableJobs();
+  }
+
+  refreshPortableJobs(): void {
+    this.subscriptions.add(this.projectService.listPortableKnowledgeBaseJobs().subscribe({
+      next: jobs => {
+        this.portableJobs = jobs;
+        this.cdr.markForCheck();
+      },
+      error: err => console.error('Failed to load portability jobs:', err.message)
+    }));
+  }
+
+  startPortableExport(): void {
+    this.portabilityActionInProgress = true;
+    this.portabilityError = null;
+    this.cdr.markForCheck();
+    this.subscriptions.add(this.projectService.startPortableKnowledgeBaseExport().subscribe({
+      next: job => {
+        this.portableJobs = [job, ...this.portableJobs.filter(item => item.id !== job.id)];
+        this.portabilityActionInProgress = false;
+        this.snackBar.open('Portable knowledge-base snapshot started', 'OK', { duration: 3000 });
+        this.cdr.markForCheck();
+      },
+      error: err => {
+        this.portabilityActionInProgress = false;
+        this.portabilityError = err.error?.error || 'Failed to start portable snapshot';
+        this.cdr.markForCheck();
+      }
+    }));
+  }
+
+  selectPortableArchive(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    const file = input.files?.[0] || null;
+    this.portableArchiveFile = file;
+    this.portableArchive = null;
+    this.portabilityError = null;
+    if (!file) return;
+
+    this.portabilityActionInProgress = true;
+    this.subscriptions.add(this.projectService.inspectPortableKnowledgeBase(file).subscribe({
+      next: archive => {
+        this.portableArchive = archive;
+        this.portabilityActionInProgress = false;
+        this.cdr.markForCheck();
+      },
+      error: err => {
+        this.portabilityActionInProgress = false;
+        this.portabilityError = err.error?.error || 'Archive preflight failed';
+        this.cdr.markForCheck();
+      }
+    }));
+  }
+
+  importPortableArchive(): void {
+    if (!this.portableArchiveFile || !this.portableArchive) return;
+    this.portabilityActionInProgress = true;
+    this.portabilityError = null;
+    this.subscriptions.add(this.projectService
+      .startPortableKnowledgeBaseImport(this.portableArchiveFile)
+      .subscribe({
+        next: job => {
+          this.portableJobs = [job, ...this.portableJobs.filter(item => item.id !== job.id)];
+          this.portableArchiveFile = null;
+          this.portableArchive = null;
+          this.portabilityActionInProgress = false;
+          this.snackBar.open('Portable project import started', 'OK', { duration: 3000 });
+          this.cdr.markForCheck();
+        },
+        error: err => {
+          this.portabilityActionInProgress = false;
+          this.portabilityError = err.error?.error || 'Failed to start portable import';
+          this.cdr.markForCheck();
+        }
+      }));
+  }
+
+  downloadPortableArchive(job: PortableKnowledgeBaseJob): void {
+    if (!job.downloadReady) return;
+    this.subscriptions.add(this.projectService.downloadPortableKnowledgeBase(job.id).subscribe({
+      next: blob => {
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = job.artifactName || 'kompile-project.kproject';
+        anchor.click();
+        URL.revokeObjectURL(url);
+      },
+      error: err => this.snackBar.open(
+        err.error?.error || 'Failed to download portable archive',
+        'Dismiss',
+        { duration: 4000 })
+    }));
+  }
+
+  isPortabilityRunning(): boolean {
+    return this.portabilityActionInProgress
+      || this.portableJobs.some(job => job.status === 'QUEUED' || job.status === 'RUNNING');
+  }
+
+  portabilityStage(stage: string): string {
+    return (stage || '').replaceAll('_', ' ').toLowerCase()
+      .replace(/(^|\s)\S/g, value => value.toUpperCase());
+  }
+
+  formatBytes(bytes: number | null | undefined): string {
+    if (bytes == null) return '—';
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
   }
 
   loadSyncConnections(factSheetId: number): void {

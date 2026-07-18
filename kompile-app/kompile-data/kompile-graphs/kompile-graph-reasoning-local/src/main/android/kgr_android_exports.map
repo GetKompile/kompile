@@ -1,0 +1,16 @@
+{
+  global:
+    kgr_abi_version;
+    kgr_attach_thread;
+    kgr_close;
+    kgr_create_isolate;
+    kgr_detach_thread;
+    kgr_dispatch;
+    kgr_free;
+    kgr_open;
+    kgr_save;
+    kgr_tear_down_isolate;
+    kgr_tools;
+  local:
+    *;
+};
