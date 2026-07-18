@@ -154,7 +154,9 @@ class SpreadsheetGraphToGraphTest {
             sg.addCell(namedRangeCell("Sheet1!D1", "Sheet1", "D", 1, "50000", "TotalRevenue"));
             Graph g = sg.toGraph();
 
-            Entity cell = findEntity(g, "NAMED_RANGE", "D1");
+            // P5: production sets Entity.title to the named range name ("TotalRevenue"), not the
+            // cell reference ("D1"). Search by the named range name.
+            Entity cell = findEntity(g, "NAMED_RANGE", "TotalRevenue");
             assertNotNull(cell, "Named range cell should map to NAMED_RANGE type");
             assertTrue(cell.getDescription().contains("TotalRevenue"));
             assertTrue(cell.getDescription().contains("50000"));
@@ -177,7 +179,8 @@ class SpreadsheetGraphToGraphTest {
             sg.addCell(stringCell("Sheet1!B1", "Sheet1", "B", 1, "Total"));
             Graph g = sg.toGraph();
 
-            Entity cell = findEntity(g, "CELL", "B1");
+            // P5: production uses displayValue ("Total") as title for STRING cells, not cell reference.
+            Entity cell = findEntity(g, "CELL", "Total");
             assertNotNull(cell, "String cell should also map to CELL type");
         }
 
@@ -244,7 +247,8 @@ class SpreadsheetGraphToGraphTest {
             sg.addCell(namedRangeCell("Sheet1!D1", "Sheet1", "D", 1, "99", "Budget"));
             Graph g = sg.toGraph();
 
-            Entity cell = findEntity(g, "NAMED_RANGE", "D1");
+            // P5: production uses namedRangeName ("Budget") as title, not cell reference ("D1").
+            Entity cell = findEntity(g, "NAMED_RANGE", "Budget");
             assertNotNull(cell);
             assertEquals("Budget", cell.getMetadata().get("namedRangeName"));
         }
@@ -262,15 +266,19 @@ class SpreadsheetGraphToGraphTest {
 
         @Test
         void nullDisplayValueOmittedFromMetadata() {
+            // P5: cells with null displayValue, no formula, and no named range are skipped by
+            // production (empty-noise filter). Add a formula so the cell survives the filter
+            // while still having a null displayValue — the metadata omission behavior is preserved.
             CellNode cell = CellNode.builder()
                     .cellReference("Sheet1!A1").sheetName("Sheet1")
-                    .column("A").row(1).cellType("NUMERIC")
+                    .column("A").row(1).cellType("FORMULA")
+                    .formula("SUM(B1:C1)")
                     .displayValue(null)
                     .build();
             sg.addCell(cell);
             Graph g = sg.toGraph();
 
-            Entity entity = findEntity(g, "CELL", "A1");
+            Entity entity = findEntity(g, "FORMULA_CELL", "A1");
             assertNotNull(entity);
             assertFalse(entity.getMetadata().containsKey("displayValue"));
         }

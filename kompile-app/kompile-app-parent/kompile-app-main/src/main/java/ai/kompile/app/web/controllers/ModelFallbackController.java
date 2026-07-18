@@ -22,8 +22,12 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
 
 /**
  * REST endpoints for the model-fallback configuration.
@@ -84,5 +88,49 @@ public class ModelFallbackController {
     public ResponseEntity<List<AgentModelInfo>> getAvailableModels() {
         List<AgentModelInfo> models = modelService.getAllAgentModels(false);
         return ResponseEntity.ok(models);
+    }
+
+    /**
+     * Per-model calibration observed during extraction: correctness EWMA [0,1], output throughput
+     * EWMA (chars/second), latency EWMA (ms), and any active bench (epoch millis until retry).
+     * This is the data selection precedence actually ranks on — a decode speedup (e.g. multi-token
+     * prediction landing in a local model) shows up here first, then in the ordering.
+     */
+    @GetMapping("/calibration")
+    public ResponseEntity<List<Map<String, Object>>> getCalibration() {
+        Map<String, Double> correctness = modelService.getModelCorrectnessSnapshot();
+        Map<String, Double> throughput = modelService.getModelThroughputSnapshot();
+        Map<String, Double> latency = modelService.getModelLatencySnapshot();
+        // Health snapshot carries raw benched-until timestamps; keep only ACTIVE benches.
+        long now = System.currentTimeMillis();
+        Map<String, Long> benched = new LinkedHashMap<>();
+        modelService.getModelHealthSnapshot().forEach((model, until) -> {
+            if (until != null && until > now) {
+                benched.put(model, until);
+            }
+        });
+
+        Set<String> modelIds = new TreeSet<>();
+        modelIds.addAll(correctness.keySet());
+        modelIds.addAll(throughput.keySet());
+        modelIds.addAll(latency.keySet());
+        modelIds.addAll(benched.keySet());
+
+        List<Map<String, Object>> rows = new ArrayList<>(modelIds.size());
+        for (String modelId : modelIds) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("modelId", modelId);
+            if (correctness.containsKey(modelId)) row.put("correctnessEwma", round2(correctness.get(modelId)));
+            if (throughput.containsKey(modelId)) row.put("throughputCharsPerSec", round2(throughput.get(modelId)));
+            if (latency.containsKey(modelId)) row.put("latencyEwmaMs", Math.round(latency.get(modelId)));
+            Long benchedUntil = benched.get(modelId);
+            if (benchedUntil != null) row.put("benchedUntilEpochMs", benchedUntil);
+            rows.add(row);
+        }
+        return ResponseEntity.ok(rows);
+    }
+
+    private static double round2(double v) {
+        return Math.round(v * 100.0) / 100.0;
     }
 }

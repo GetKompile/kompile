@@ -144,10 +144,13 @@ public class SpathResolver {
      */
     private List<SpathMatch> executeQuery(IndexDatabase db, SpathQuery query,
                                            int maxResults) throws SQLException {
-        // Build SQL based on query characteristics
+        // Build SQL based on query characteristics. The appended predicates use
+        // unqualified entity columns — unambiguous because paths only carries
+        // (id, path); the interned file path surfaces under the rel_path alias.
         StringBuilder sql = new StringBuilder(
-                "SELECT entity_type, name, fqn, rel_path, language, start_line, end_line, " +
-                "signature, doc_comment, visibility, inherited_from, implements_list FROM entities_meta WHERE 1=1");
+                "SELECT entity_type, name, fqn, p.path AS rel_path, language, start_line, end_line, " +
+                "signature, doc_comment, visibility, inherited_from, implements_list " +
+                "FROM entities_meta m JOIN paths p ON p.id = m.path_id WHERE 1=1");
         List<Object> params = new ArrayList<>();
 
         // Apply property filter (maps to entity type)
@@ -161,7 +164,7 @@ public class SpathResolver {
 
         // Apply selector (file scoping)
         if (query.selector() != null) {
-            sql.append(" AND rel_path LIKE ?");
+            sql.append(" AND p.path LIKE ?");
             params.add("%" + query.selector());
         }
 
@@ -342,8 +345,9 @@ public class SpathResolver {
             // Property queries with a path target specific entity's children
             if (query.property() != null) {
                 // e.g., pkg.Class/imports → imports in the file containing pkg.Class
-                // First find the file for the target entity, then get imports from that file
-                sql.append(" AND rel_path IN (SELECT rel_path FROM entities_meta WHERE fqn = ?)");
+                // First find the file for the target entity, then get imports from
+                // that file — compared in interned-id space, no path strings.
+                sql.append(" AND m.path_id IN (SELECT path_id FROM entities_meta WHERE fqn = ?)");
                 params.add(fqn);
             } else {
                 // Try exact FQN match, or name match as fallback

@@ -18,7 +18,9 @@ import java.util.*;
  *
  * Usage: java -jar kompile-chat-local-cli.jar [options]
  * Options:
- *   --kgraph <path>        Path to .kgraph file
+ *   --kgraph <path>        Path to standalone .kgraph file
+ *   --project <path>       Project directory or .kproject archive
+ *   --fact-sheet-id <id>  Select data/graph/factsheet-<id>.kgraph from a project
  *   --model <path>         Path to SDX model file (.gguf/.sdz)
  *   --tokenizer <path>     Path to tokenizer.json or directory containing it
  *   --sdx-bin <path>       Absolute path to sdx-llm binary (subprocess mode)
@@ -46,6 +48,10 @@ public class ChatCli {
     public static void main(String[] args) throws Exception {
         // Parse args
         Path kgraphPath = null;
+        Path projectPath = null;
+        String factSheetId = null;
+        boolean kgraphSpecified = false;
+        boolean projectSpecified = false;
         String modelPath = null;
         String tokenizerPath = null;
         String sdxLib = null;
@@ -60,7 +66,15 @@ public class ChatCli {
 
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
-                case "--kgraph" -> kgraphPath = Path.of(args[++i]);
+                case "--kgraph" -> {
+                    kgraphPath = Path.of(args[++i]);
+                    kgraphSpecified = true;
+                }
+                case "--project" -> {
+                    projectPath = Path.of(args[++i]);
+                    projectSpecified = true;
+                }
+                case "--fact-sheet-id" -> factSheetId = args[++i];
                 case "--model" -> modelPath = args[++i];
                 case "--tokenizer" -> tokenizerPath = args[++i];
                 case "--sdx-bin" -> sdxBin = args[++i];
@@ -83,8 +97,12 @@ public class ChatCli {
         // Load config file if specified (args override config)
         ChatConfig config = (configPath != null) ? ChatConfig.fromFile(configPath) : ChatConfig.defaults();
 
-        // Args override config
-        if (kgraphPath == null && config.kgraphPath().isPresent()) kgraphPath = config.kgraphPath().get();
+        // Args override config. An explicit graph-source flag suppresses both configured sources.
+        AssetSelection assets = resolveAssetSelection(projectPath, projectSpecified, kgraphPath,
+                kgraphSpecified, factSheetId, config);
+        projectPath = assets.projectPath();
+        kgraphPath = assets.kgraphPath();
+        factSheetId = assets.factSheetId();
         if (modelPath == null && config.modelPath().isPresent()) modelPath = config.modelPath().get();
         if (tokenizerPath == null) tokenizerPath = config.tokenizerPath().orElse(null);
         if (sdxLib == null) sdxLib = config.sdxLibPath().orElse(null);
@@ -101,19 +119,25 @@ public class ChatCli {
             System.out.println("[sdx] lib path: " + sdxLib);
         }
 
-        // Build graph bridge
-        GraphToolBridge bridge;
-        if (kgraphPath != null && Files.exists(kgraphPath)) {
-            bridge = GraphToolBridge.open(kgraphPath);
-            System.out.println("[graph] Loaded: " + kgraphPath);
-        } else {
-            bridge = GraphToolBridge.empty();
-            if (kgraphPath != null) {
-                System.out.println("[graph] File not found, starting empty: " + kgraphPath);
+        // Build graph bridge. Keep an archive resolver alive until the bridge is closed.
+        ProjectBundleResolver.ResolvedProject resolvedProject = null;
+        GraphToolBridge bridge = null;
+        try {
+            if (projectPath != null) {
+                resolvedProject = ProjectBundleResolver.resolve(projectPath, factSheetId);
+                bridge = GraphToolBridge.open(resolvedProject.graphPath());
+                System.out.println("[graph] Loaded project " + resolvedProject.projectName()
+                        + " (" + resolvedProject.projectId() + "): " + resolvedProject.graphPath());
+            } else if (kgraphPath != null) {
+                if (!Files.isRegularFile(kgraphPath)) {
+                    throw new IOException("Requested .kgraph file does not exist: " + kgraphPath);
+                }
+                bridge = GraphToolBridge.open(kgraphPath);
+                System.out.println("[graph] Loaded: " + kgraphPath);
             } else {
-                System.out.println("[graph] No .kgraph specified, starting empty.");
+                bridge = GraphToolBridge.empty();
+                System.out.println("[graph] No project or .kgraph specified, starting empty.");
             }
-        }
 
         // Print graph stats (use graph_reasoning_query for an overview)
         try {
@@ -239,8 +263,40 @@ public class ChatCli {
             }
         }
 
-        bridge.close();
+        } finally {
+            if (bridge != null) {
+                bridge.close();
+            }
+            if (resolvedProject != null) {
+                resolvedProject.close();
+            }
+        }
     }
+
+    static AssetSelection resolveAssetSelection(Path cliProject, boolean projectSpecified,
+                                                 Path cliKgraph, boolean kgraphSpecified,
+                                                 String cliFactSheetId, ChatConfig config) {
+        if (projectSpecified && kgraphSpecified) {
+            throw new IllegalArgumentException("--project and --kgraph cannot be used together");
+        }
+        Path project = cliProject;
+        Path kgraph = cliKgraph;
+        if (!projectSpecified && !kgraphSpecified) {
+            project = config.projectPath().orElse(null);
+            kgraph = config.kgraphPath().orElse(null);
+        }
+        if (project != null && kgraph != null) {
+            throw new IllegalArgumentException("Project and kgraph paths cannot both be configured");
+        }
+        String factSheet = cliFactSheetId != null
+                ? cliFactSheetId : config.factSheetId().orElse(null);
+        if (factSheet != null && project == null) {
+            throw new IllegalArgumentException("--fact-sheet-id requires --project (or project.path)");
+        }
+        return new AssetSelection(project, kgraph, factSheet);
+    }
+
+    record AssetSelection(Path projectPath, Path kgraphPath, String factSheetId) {}
 
     /**
      * Probe whether the native {@code libsdx_llm} can be loaded in-process without crashing.

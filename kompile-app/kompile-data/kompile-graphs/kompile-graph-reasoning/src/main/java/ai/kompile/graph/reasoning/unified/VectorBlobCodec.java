@@ -49,6 +49,11 @@ public final class VectorBlobCodec {
 
     private static final byte[] MAGIC = {'K', 'V', 'E', 'C'};
     private static final int VERSION = 1;
+    private static final int MAX_STRING_BYTES = 16 * 1024 * 1024;
+    private static final int MAX_ROWS = 1_000_000;
+    private static final int MAX_DIMENSION = 1_000_000;
+    private static final long MAX_DECODED_VALUES = Math.max(
+            1L, Long.getLong("kompile.graph.maxDecodedVectorValues", 64_000_000L));
 
     private VectorBlobCodec() { }
 
@@ -61,8 +66,9 @@ public final class VectorBlobCodec {
         Dtype dtype = layer.dtype();
         int dim = layer.dim();
         Map<String, double[]> rows = layer.rows();
+        validateLayerForWrite(layer, rows, dim);
 
-        double scale = dtype == Dtype.I8 ? computeI8Scale(rows) : 0.0;
+        double scale = dtype == Dtype.I8 ? computeI8Scale(rows, dim) : 0.0;
 
         out.write(MAGIC);
         out.writeInt(VERSION);
@@ -103,16 +109,41 @@ public final class VectorBlobCodec {
         if (version != VERSION) {
             throw new IOException("Unsupported KVEC version: " + version);
         }
-        Dtype dtype = Dtype.fromCode(in.readInt());
-        VectorLayer.Target target = VectorLayer.Target.fromCode(in.readInt());
+        Dtype dtype;
+        VectorLayer.Target target;
+        try {
+            dtype = Dtype.fromCode(in.readInt());
+            target = VectorLayer.Target.fromCode(in.readInt());
+        } catch (IllegalArgumentException e) {
+            throw new IOException("Unsupported KVEC type code", e);
+        }
         String name = readString(in);
         int count = in.readInt();
         int dim = in.readInt();
         double scale = Double.longBitsToDouble(in.readLong());
+        if (count < 0 || count > MAX_ROWS) {
+            throw new IOException("Invalid KVEC row count: " + count);
+        }
+        if (dim < 0 || dim > MAX_DIMENSION) {
+            throw new IOException("Invalid KVEC dimension: " + dim);
+        }
+        if (dtype == Dtype.I8 && (!Double.isFinite(scale) || scale <= 0.0)) {
+            throw new IOException("Invalid KVEC int8 scale: " + scale);
+        }
+        verifyDecodedValueBudget(count, dim);
+        verifyMinimumPayloadFits(in, dtype, count, dim);
 
-        VectorLayer layer = new VectorLayer(name, target, dim, dtype);
+        VectorLayer layer;
+        try {
+            layer = new VectorLayer(name, target, dim, dtype);
+        } catch (IllegalArgumentException e) {
+            throw new IOException("Invalid KVEC layer metadata", e);
+        }
         for (int r = 0; r < count; r++) {
             String id = readString(in);
+            if (layer.rows().containsKey(id)) {
+                throw new IOException("Duplicate KVEC row id: " + id);
+            }
             double[] v = new double[dim];
             for (int i = 0; i < dim; i++) {
                 v[i] = switch (dtype) {
@@ -131,10 +162,11 @@ public final class VectorBlobCodec {
     // Helpers
     // ─────────────────────────────────────────────────────────────────────────
 
-    private static double computeI8Scale(Map<String, double[]> rows) {
+    private static double computeI8Scale(Map<String, double[]> rows, int dim) {
         double maxAbs = 0.0;
         for (double[] v : rows.values()) {
-            for (double x : v) {
+            for (int i = 0; i < dim; i++) {
+                double x = i < v.length ? v[i] : 0.0;
                 double a = Math.abs(x);
                 if (a > maxAbs) maxAbs = a;
             }
@@ -150,16 +182,93 @@ public final class VectorBlobCodec {
     }
 
     private static void writeString(DataOutputStream out, String s) throws IOException {
+        if (s == null) {
+            throw new IOException("KVEC strings must not be null");
+        }
         byte[] bytes = s.getBytes(StandardCharsets.UTF_8);
+        if (bytes.length > MAX_STRING_BYTES) {
+            throw new IOException("KVEC string exceeds size limit: " + bytes.length);
+        }
         out.writeInt(bytes.length);
         out.write(bytes);
     }
 
     private static String readString(DataInputStream in) throws IOException {
         int len = in.readInt();
-        if (len < 0) throw new IOException("Negative string length: " + len);
+        if (len < 0 || len > MAX_STRING_BYTES) {
+            throw new IOException("Invalid string length: " + len);
+        }
+        int available = in.available();
+        if (available > 0 && len > available) {
+            throw new IOException("Truncated KVEC string payload");
+        }
         byte[] bytes = new byte[len];
         in.readFully(bytes);
         return new String(bytes, StandardCharsets.UTF_8);
+    }
+
+    private static void verifyMinimumPayloadFits(DataInputStream in, Dtype dtype, int count, int dim)
+            throws IOException {
+        int bytesPerValue = switch (dtype) {
+            case F16 -> 2;
+            case F32 -> 4;
+            case F64 -> 8;
+            case I8 -> 1;
+        };
+        long values;
+        long minimum;
+        try {
+            values = Math.multiplyExact(Math.multiplyExact((long) count, dim), bytesPerValue);
+            minimum = Math.addExact(values, Math.multiplyExact((long) count, Integer.BYTES));
+        } catch (ArithmeticException e) {
+            throw new IOException("KVEC payload size overflows", e);
+        }
+        int available = in.available();
+        if (available > 0 && minimum > available) {
+            throw new IOException("Truncated KVEC payload");
+        }
+    }
+
+    private static void validateLayerForWrite(
+            VectorLayer layer, Map<String, double[]> rows, int dim) throws IOException {
+        int count = rows.size();
+        if (count > MAX_ROWS) {
+            throw new IOException("KVEC row count exceeds limit: " + count);
+        }
+        if (dim < 0 || dim > MAX_DIMENSION) {
+            throw new IOException("KVEC dimension exceeds limit: " + dim);
+        }
+        verifyDecodedValueBudget(count, dim);
+        validateString(layer.name());
+        for (Map.Entry<String, double[]> row : rows.entrySet()) {
+            validateString(row.getKey());
+            if (layer.dtype() == Dtype.I8) {
+                double[] values = row.getValue();
+                for (int i = 0; i < dim; i++) {
+                    double value = i < values.length ? values[i] : 0.0;
+                    if (!Double.isFinite(value)) {
+                        throw new IOException("I8 vector values must be finite");
+                    }
+                }
+            }
+        }
+    }
+
+    private static void validateString(String value) throws IOException {
+        if (value == null || value.getBytes(StandardCharsets.UTF_8).length > MAX_STRING_BYTES) {
+            throw new IOException("KVEC string is null or exceeds size limit");
+        }
+    }
+
+    private static void verifyDecodedValueBudget(int count, int dim) throws IOException {
+        long values;
+        try {
+            values = Math.multiplyExact((long) count, dim);
+        } catch (ArithmeticException e) {
+            throw new IOException("KVEC decoded value count overflows", e);
+        }
+        if (values > MAX_DECODED_VALUES) {
+            throw new IOException("KVEC decoded value count exceeds limit of " + MAX_DECODED_VALUES);
+        }
     }
 }

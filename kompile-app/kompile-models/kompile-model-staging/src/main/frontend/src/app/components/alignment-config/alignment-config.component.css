@@ -10,3 +10,10 @@
 .config-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px; }
 .peft-toggle { margin-top: 16px; }
 .actions { margin-top: 24px; }
+
+@media (max-width: 600px) {
+  .alignment-config { padding: 12px; }
+  .alg-grid,
+  .config-grid { grid-template-columns: minmax(0, 1fr); }
+  .actions button { width: 100%; min-height: 44px; }
+}

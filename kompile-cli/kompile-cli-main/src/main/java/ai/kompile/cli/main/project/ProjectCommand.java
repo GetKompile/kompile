@@ -63,6 +63,9 @@ import ai.kompile.project.KompileProjectStorageBackend;
 import ai.kompile.project.KompileProjectStore;
 import ai.kompile.project.KompileProjectWorkflow;
 import ai.kompile.project.KompileProjectWorkflowStep;
+import ai.kompile.project.archive.ProjectArchiveExportOptions;
+import ai.kompile.project.archive.ProjectArchiveResult;
+import ai.kompile.project.archive.ProjectArchiveService;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
@@ -95,6 +98,8 @@ import java.util.stream.Stream;
         description = "Manage a unified Kompile project repository.",
         subcommands = {
                 ProjectCommand.Init.class,
+                ProjectCommand.ExportArchive.class,
+                ProjectCommand.ImportArchive.class,
                 ProjectServiceCommand.class,
                 // Convenience aliases: `kompile project open`, `kompile project start`,
                 // `kompile project stop`, `kompile project status`, and `kompile project logs`
@@ -3122,6 +3127,82 @@ public class ProjectCommand implements Callable<Integer> {
             }
         }
         return values;
+    }
+
+    @Command(name = "export", mixinStandardHelpOptions = true,
+            description = "Export a complete project to a portable .kproject archive.")
+    public static class ExportArchive implements Callable<Integer> {
+        @Option(names = {"--root", "-r"}, defaultValue = ".",
+                description = "Project root. Defaults to current directory.")
+        private File root;
+
+        @Option(names = {"--output", "-o"}, description = "Output .kproject path.")
+        private File output;
+
+        @Option(names = "--allow-running",
+                description = "Permit export while data/pids contains running-state files.")
+        private boolean allowRunning;
+
+        @Option(names = "--include-sensitive-files",
+                description = "Include credential/key files excluded by default.")
+        private boolean includeSensitiveFiles;
+
+        @Override
+        public Integer call() throws Exception {
+            Path projectRoot = root.toPath().toAbsolutePath().normalize();
+            KompileProjectManifest project = new KompileProjectStore().load(projectRoot);
+            Path archive = output == null
+                    ? Path.of(defaultArchiveFileName(project.getName())).toAbsolutePath().normalize()
+                    : output.toPath().toAbsolutePath().normalize();
+            ProjectArchiveResult result = new ProjectArchiveService().exportProject(projectRoot, archive,
+                    new ProjectArchiveExportOptions(allowRunning, includeSensitiveFiles));
+            System.out.println("Exported project '" + result.manifest().name() + "' to " + result.path()
+                    + " (" + result.manifest().entries().size() + " files, " + result.totalBytes() + " bytes)");
+            return 0;
+        }
+
+        static String defaultArchiveFileName(String projectName) {
+            String candidate = projectName == null ? "" : projectName.trim();
+            candidate = candidate.replaceAll("[^A-Za-z0-9._-]+", "-")
+                    .replaceAll("^[^A-Za-z0-9]+", "")
+                    .replaceAll("[^A-Za-z0-9]+$", "");
+            if (candidate.isBlank() || candidate.equals(".") || candidate.equals("..")) {
+                candidate = "kompile-project";
+            }
+            if (candidate.length() > 120) {
+                candidate = candidate.substring(0, 120);
+            }
+            return candidate + ".kproject";
+        }
+    }
+
+    @Command(name = "import", mixinStandardHelpOptions = true,
+            description = "Import a .kproject archive into a new target directory.")
+    public static class ImportArchive implements Callable<Integer> {
+        @Parameters(index = "0", arity = "0..1", paramLabel = "ARCHIVE",
+                description = "Archive to import.")
+        private File archiveArgument;
+
+        @Option(names = {"--archive", "-a"}, description = "Archive to import.")
+        private File archiveOption;
+
+        @Option(names = {"--target", "-t"}, required = true,
+                description = "New project directory; it must not already exist.")
+        private File target;
+
+        @Override
+        public Integer call() throws Exception {
+            if ((archiveArgument == null) == (archiveOption == null)) {
+                throw new IllegalArgumentException("Specify exactly one archive, positionally or with --archive");
+            }
+            Path archive = (archiveArgument != null ? archiveArgument : archiveOption)
+                    .toPath().toAbsolutePath().normalize();
+            Path destination = target.toPath().toAbsolutePath().normalize();
+            ProjectArchiveResult result = new ProjectArchiveService().importProject(archive, destination);
+            System.out.println("Imported project '" + result.manifest().name() + "' to " + result.path()
+                    + " (" + result.manifest().entries().size() + " files, " + result.totalBytes() + " bytes)");
+            return 0;
+        }
     }
 
     private static List<String> currentTags(KompileProjectManifest manifest, String componentId) {

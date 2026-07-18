@@ -17,6 +17,7 @@
 package ai.kompile.staging.web.dto;
 
 import ai.kompile.modelmanager.registry.AudioSynthesisConfig;
+import com.fasterxml.jackson.annotation.JsonAlias;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -35,12 +36,20 @@ public class StageModelRequest {
     private String source;
     private String repository;
     private String modelId;
+    @JsonAlias("modelType")
     private String type;
     @Builder.Default
     private String format = "onnx";
     private String revision;
+    @JsonAlias("token")
     private String authToken;
     private String tokenizerUrl;
     private AudioSynthesisConfig audioSynthesis;
     private Map<String, String> files;
+    @Builder.Default
+    private String outputFormat = "model";
+    private String targetProfile;
+    @Builder.Default
+    private String quantizationProfile = "none";
+    private String targetSoc;
 }

@@ -164,11 +164,13 @@ class SetupStatusServiceTest {
 
     @Test
     void testModelSourceStep_noConfig() {
+        // P5: production marks ModelSource complete when the staging server is running — a running
+        // staging server IS a valid model source even without an explicit StagingServiceConfig.
         SetupStatusService.SetupStatus status = service.getStatus();
         assertNotNull(status.getModelSource());
         assertEquals(2, status.getModelSource().getStepNumber());
         assertEquals("Model Source", status.getModelSource().getName());
-        assertFalse(status.getModelSource().isComplete());
+        assertTrue(status.getModelSource().isComplete());
     }
 
     @Test
@@ -337,9 +339,10 @@ class SetupStatusServiceTest {
 
     @Test
     void testCurrentStep_progression() {
-        // Nothing complete except staging server -> current step should be 2
+        // P5: staging server running + model source complete (running server counts as model source)
+        // → currentStep advances to 3 (embedding step).
         SetupStatusService.SetupStatus status = service.getStatus();
-        assertEquals(2, status.getCurrentStep());
+        assertEquals(3, status.getCurrentStep());
     }
 
     @Test

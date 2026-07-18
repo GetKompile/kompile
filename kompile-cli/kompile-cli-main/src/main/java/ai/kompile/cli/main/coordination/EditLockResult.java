@@ -23,7 +23,9 @@ public class EditLockResult {
 
     public enum Status {
         ACQUIRED,
-        CONFLICT
+        CONFLICT,
+        /** Batch acquire only: no conflict on this file, but the all-or-nothing batch aborted. */
+        SKIPPED
     }
 
     private final String lockId;
@@ -45,6 +47,10 @@ public class EditLockResult {
 
     public static EditLockResult conflict(EditLockEntry conflictEntry, String message) {
         return new EditLockResult(null, Status.CONFLICT, conflictEntry, message);
+    }
+
+    public static EditLockResult skipped(String message) {
+        return new EditLockResult(null, Status.SKIPPED, null, message);
     }
 
     public String getLockId() { return lockId; }

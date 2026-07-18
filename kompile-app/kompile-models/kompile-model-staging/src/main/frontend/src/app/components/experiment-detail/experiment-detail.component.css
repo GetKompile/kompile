@@ -15,3 +15,20 @@
 .status-error { color: #c62828; background: #ffebee; }
 .status-pending { color: #e65100; background: #fff3e0; }
 .status-info { color: #1565c0; background: #e3f2fd; }
+
+@media (max-width: 600px) {
+  .experiment-detail { padding: 12px; }
+  .header { flex-wrap: wrap; }
+  .header-info { min-width: 0; }
+  .meta,
+  .actions-bar,
+  .form-actions { flex-wrap: wrap; }
+  .actions-bar button,
+  .form-actions button { flex: 1 1 auto; min-height: 44px; }
+  .runs-table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+}

@@ -8,3 +8,13 @@
 .status-error { color: #c62828; background: #ffebee; }
 .status-pending { color: #e65100; background: #fff3e0; }
 .status-info { color: #1565c0; background: #e3f2fd; }
+
+@media (max-width: 600px) {
+  .model-eval-history { padding: 12px; }
+  .history-table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+}

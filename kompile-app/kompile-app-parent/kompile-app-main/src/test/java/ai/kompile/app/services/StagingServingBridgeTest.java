@@ -175,6 +175,30 @@ class StagingServingBridgeTest {
         assertNotNull(testBridge.fetchActiveLlmModelId() == null ? "ok" : "ok");
     }
 
+    @Test
+    void findCompleteShardedEntry_returnsCanonicalBaseWithoutManifest() throws Exception {
+        Path shard0 = tempDir.resolve("model.shard0-of-2.sdnb");
+        Path shard1 = tempDir.resolve("model.shard1-of-2.sdnb");
+        java.nio.file.Files.writeString(shard0, "graph-metadata");
+        java.nio.file.Files.writeString(shard1, "parameter-data");
+
+        Path entry = StagingServingBridge.findCompleteShardedEntry(tempDir);
+
+        Path canonicalBase = tempDir.resolve("model.sdnb");
+        assertEquals(canonicalBase, entry);
+        assertFalse(java.nio.file.Files.exists(canonicalBase));
+        assertNotEquals(shard0, entry);
+    }
+
+    @Test
+    void findCompleteShardedEntry_rejectsIncompleteSet() throws Exception {
+        java.nio.file.Files.writeString(
+                tempDir.resolve("model.shard0-of-2.sdnb"),
+                "graph-metadata");
+
+        assertNull(StagingServingBridge.findCompleteShardedEntry(tempDir));
+    }
+
     // ── Utilities ─────────────────────────────────────────────────────────────
 
     /**

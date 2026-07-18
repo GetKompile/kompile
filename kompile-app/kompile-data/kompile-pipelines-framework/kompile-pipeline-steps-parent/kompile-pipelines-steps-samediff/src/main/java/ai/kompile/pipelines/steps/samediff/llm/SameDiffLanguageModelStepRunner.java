@@ -56,6 +56,7 @@ public class SameDiffLanguageModelStepRunner implements PipelineStepRunner {
     private LLMStepConfig config;
     private SameDiff sameDiffModel;
     private SameDiffLLMTokenizer tokenizer;
+    private String logitsOutputName = DEFAULT_LOGITS_OUTPUT_NAME;
     private final ObjectMapper objectMapper = JsonUtils.standardMapper();
     private final Random random = new Random();
     private volatile boolean initialized = false;
@@ -88,6 +89,14 @@ public class SameDiffLanguageModelStepRunner implements PipelineStepRunner {
             }
             this.sameDiffModel = SameDiff.load(modelFile, true);
             log.info("Loaded SameDiff model for step '{}' from: {}", config.getName(), this.config.getModelUri());
+
+            String configuredLogitsOutputName = (String) this.config.getGenerationParameters()
+                    .getOrDefault("logitsOutputName", DEFAULT_LOGITS_OUTPUT_NAME);
+            this.logitsOutputName = resolveLogitsOutputName(configuredLogitsOutputName, this.sameDiffModel.outputs());
+            if (!Objects.equals(configuredLogitsOutputName, this.logitsOutputName)) {
+                log.info("SameDiff model for step '{}' does not export the default logits output '{}'; using discovered output '{}'.",
+                        config.getName(), DEFAULT_LOGITS_OUTPUT_NAME, this.logitsOutputName);
+            }
 
             if (this.config.getTokenizerUri() == null || this.config.getTokenizerUri().isEmpty()) {
                 throw new IllegalArgumentException("Tokenizer URI must be specified in LLMStepConfig for step '" + config.getName() + "'.");
@@ -196,7 +205,7 @@ public class SameDiffLanguageModelStepRunner implements PipelineStepRunner {
 
         String inputIdsName = (String) config.getGenerationParameters().getOrDefault("inputIdsPlaceholderName", DEFAULT_INPUT_IDS_PLACEHOLDER);
         String attentionMaskName = (String) config.getGenerationParameters().getOrDefault("attentionMaskPlaceholderName", DEFAULT_ATTENTION_MASK_PLACEHOLDER);
-        String logitsName = (String) config.getGenerationParameters().getOrDefault("logitsOutputName", DEFAULT_LOGITS_OUTPUT_NAME);
+        String logitsName = logitsOutputName;
 
         Data resultData = Data.empty(); // Corrected: Use Data.empty()
 
@@ -325,6 +334,53 @@ public class SameDiffLanguageModelStepRunner implements PipelineStepRunner {
             context.profiler().stopEvent(); // Corrected: context.profiler()
         }
         return resultData;
+    }
+
+    static String resolveLogitsOutputName(String configuredOutputName, Collection<String> graphOutputs) {
+        String requestedOutputName = configuredOutputName == null || configuredOutputName.isBlank()
+                ? DEFAULT_LOGITS_OUTPUT_NAME
+                : configuredOutputName.trim();
+        List<String> availableOutputs = graphOutputs == null
+                ? Collections.emptyList()
+                : graphOutputs.stream()
+                .filter(Objects::nonNull)
+                .collect(Collectors.toList());
+
+        if (availableOutputs.contains(requestedOutputName)) {
+            return requestedOutputName;
+        }
+
+        if (!DEFAULT_LOGITS_OUTPUT_NAME.equals(requestedOutputName)) {
+            throw new IllegalArgumentException("Configured SameDiff logits output '" + requestedOutputName
+                    + "' is not present in graph outputs " + availableOutputs + ".");
+        }
+
+        if (availableOutputs.contains("lm_logits")) {
+            return "lm_logits";
+        }
+
+        List<String> conventionalCandidates = availableOutputs.stream()
+                .filter(SameDiffLanguageModelStepRunner::isConventionalLogitsOutput)
+                .collect(Collectors.toList());
+        if (conventionalCandidates.size() == 1) {
+            return conventionalCandidates.get(0);
+        }
+        if (conventionalCandidates.size() > 1) {
+            throw new IllegalArgumentException("SameDiff graph does not export the default logits output '"
+                    + DEFAULT_LOGITS_OUTPUT_NAME + "' and has ambiguous conventional logits outputs "
+                    + conventionalCandidates + ". Configure generationParameters.logitsOutputName explicitly.");
+        }
+        throw new IllegalArgumentException("SameDiff graph does not export the default logits output '"
+                + DEFAULT_LOGITS_OUTPUT_NAME + "' and no conventional logits output was found in "
+                + availableOutputs + ". Configure generationParameters.logitsOutputName explicitly.");
+    }
+
+    private static boolean isConventionalLogitsOutput(String outputName) {
+        String normalized = outputName.toLowerCase(Locale.ROOT);
+        return normalized.equals("lm_logits")
+                || normalized.endsWith("_logits")
+                || normalized.endsWith("/logits")
+                || normalized.endsWith(".logits");
     }
 
     private boolean lastMessageWasUserPrompt(List<String> history, String currentPromptText) {

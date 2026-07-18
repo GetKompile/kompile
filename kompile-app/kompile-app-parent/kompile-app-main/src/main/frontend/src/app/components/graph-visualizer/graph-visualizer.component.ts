@@ -37,7 +37,7 @@ import { MatDividerModule } from '@angular/material/divider';
 import { MatDialog, MatDialogModule } from '@angular/material/dialog';
 import { MatRadioModule } from '@angular/material/radio';
 import { HttpClient } from '@angular/common/http';
-import { Subject, Subscription, takeUntil, debounceTime, interval, filter, of } from 'rxjs';
+import { Observable, Subject, Subscription, takeUntil, debounceTime, interval, filter, of } from 'rxjs';
 import { catchError, switchMap } from 'rxjs/operators';
 import { pauseWhenHidden } from '../../services/visibility.util';
 import { ConfirmDialogComponent, ConfirmDialogData } from '../confirm-dialog/confirm-dialog.component';
@@ -176,7 +176,7 @@ const DEFAULT_EDGE_TYPES: EdgeType[] = [
           <span class="fact-sheet-name">{{factSheetName || 'ID: ' + factSheetId}}</span>
         </div>
         <div class="fact-sheet-actions">
-          <button mat-raised-button color="primary" (click)="buildGraph()" [disabled]="building">
+          <button class="build-graph-button" mat-raised-button color="primary" (click)="buildGraph()" [disabled]="building">
             <mat-icon>build</mat-icon>
             {{building ? 'Building...' : 'Build Graph from Index'}}
           </button>
@@ -1634,6 +1634,13 @@ const DEFAULT_EDGE_TYPES: EdgeType[] = [
     .fact-sheet-actions button[mat-raised-button] {
       background: rgba(255, 255, 255, 0.15);
       color: #ffffff;
+    }
+
+    .fact-sheet-actions .build-graph-button {
+      height: 48px;
+      min-height: 48px;
+      overflow: hidden;
+      white-space: nowrap;
     }
 
     .fact-sheet-actions button[mat-raised-button]:hover {
@@ -3248,6 +3255,28 @@ const DEFAULT_EDGE_TYPES: EdgeType[] = [
     .process-trace-step strong { color: #00838f; font-size: 9px; }
 
     @media (max-width: 720px) {
+      .fact-sheet-bar {
+        align-items: stretch;
+        flex-direction: column;
+        gap: 10px;
+        padding: 12px;
+      }
+      .fact-sheet-info { min-width: 0; }
+      .fact-sheet-name {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .fact-sheet-actions {
+        align-items: stretch;
+        width: 100%;
+      }
+      .fact-sheet-actions .build-graph-button {
+        flex: 1 1 auto;
+        min-width: 0;
+        padding-inline: 12px;
+      }
+      .fact-sheet-actions button[mat-icon-button] { flex: 0 0 48px; }
       .toolbar { align-items: flex-start; padding: 10px 12px; }
       .toolbar-left, .toolbar-center, .toolbar-right {
         width: 100%; max-width: none; margin: 0;
@@ -3570,7 +3599,9 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
       // use the cheap top-K endpoint rather than the full visualization payload.
       const refreshObs = (this.totalAvailableNodes !== null && this.totalAvailableNodes > 2000)
         ? this.graphService.getTopKVisualization(300, 'pagerank', this.factSheetId ?? undefined)
-        : this.graphService.getVisualizationData(undefined, this.maxDepth, this.maxNodes, from, to);
+        : this.factSheetId != null
+          ? this.graphService.getFactSheetVisualizationData(this.factSheetId, this.maxNodes)
+          : this.graphService.getVisualizationData(undefined, this.maxDepth, this.maxNodes, from, to);
 
       refreshObs
         .pipe(takeUntil(this.destroy$))
@@ -3624,15 +3655,22 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
     // LOD-first: ping /statistics to learn full graph size. If totalNodes > 2000, seed with
     // top-300 by PageRank instead of loading the entire graph. Falls back to flat load on
     // statistics error so normal operation is never interrupted.
-    const loadObservable = this.graphService.getStatistics().pipe(
+    const statisticsObservable: Observable<any> = this.factSheetId != null
+      ? this.graphService.getFactSheetStatistics(this.factSheetId)
+      : this.graphService.getStatistics();
+    const flatVisualization: () => Observable<D3VisualizationData> = () => this.factSheetId != null
+      ? this.graphService.getFactSheetVisualizationData(this.factSheetId, this.maxNodes)
+      : this.graphService.getVisualizationData(undefined, this.maxDepth, this.maxNodes, from, to);
+
+    const loadObservable = statisticsObservable.pipe(
       switchMap((stats: any) => {
         const totalNodes: number = stats?.totalNodes ?? stats?.nodeCount ?? 0;
         if (totalNodes > 2000) {
           return this.graphService.getTopKVisualization(300, 'pagerank', this.factSheetId ?? undefined);
         }
-        return this.graphService.getVisualizationData(undefined, this.maxDepth, this.maxNodes, from, to);
+        return flatVisualization();
       }),
-      catchError(() => this.graphService.getVisualizationData(undefined, this.maxDepth, this.maxNodes, from, to))
+      catchError(() => flatVisualization())
     );
 
     loadObservable
@@ -4834,6 +4872,30 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
       this.clearReasoningLayers();
       return;
     }
+    if (!this.hasGraphContent(this.fullGraphData)) {
+      this.reasoningLayers = {
+        factSheetId: this.factSheetId,
+        nodes: [],
+        edges: [],
+        statistics: {
+          nodeCount: 0,
+          edgeCount: 0,
+          ontologyCount: 0,
+          pslCount: 0,
+          mebnCount: 0,
+          provenanceCount: 0,
+          opinionCount: 0,
+          neuralScoreCount: 0,
+          typeCandidateCount: 0,
+          typeHierarchyCount: 0,
+          inferredRelationCount: 0
+        }
+      };
+      this.reasoningLayersLoading = false;
+      this.reasoningLayersError = null;
+      this.rebuildReasoningLayerMaps();
+      return;
+    }
     if (this.reasoningLayersLoading) return;
     if (this.reasoningLayers && !force && !this.reasoningLayerOverlayEnabled) {
       this.rebuildReasoningLayerMaps();
@@ -4859,6 +4921,10 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
           this.reasoningEdgeLayerMap = new Map();
         }
       });
+  }
+
+  private hasGraphContent(data: D3VisualizationData | null | undefined): boolean {
+    return !!data && ((data.nodes?.length ?? 0) > 0 || (data.links?.length ?? 0) > 0);
   }
 
   setReasoningLayer(kind: ReasoningLayerKind, enabled: boolean): void {

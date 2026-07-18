@@ -27,6 +27,13 @@ import ai.kompile.pipelines.steps.samediff.llm.SameDiffLanguageModelStepRunner;
 import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.eclipse.deeplearning4j.llm.generation.GenerationPipeline;
+import org.eclipse.deeplearning4j.llm.generation.GenerationPipelineConfig;
+import org.eclipse.deeplearning4j.llm.generation.GenerationResult;
+import org.eclipse.deeplearning4j.llm.generation.kvcache.KvCacheStrategy;
+import org.eclipse.deeplearning4j.llm.generation.sampling.SamplingConfig;
+import org.eclipse.deeplearning4j.llm.tokenizer.HuggingFaceTokenizer;
+import org.eclipse.deeplearning4j.llm.tokenizer.Tokenizer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -60,9 +67,12 @@ import java.util.concurrent.TimeUnit;
 /**
  * In-process SameDiff-backed {@link LanguageModel} and {@link ChatModel} implementation.
  *
- * <p>Runs inference directly using {@link SameDiffLanguageModelStepRunner}. This class
- * is used <b>only in the serving subprocess</b> (port 8091) where the actual model
- * is loaded. It is never used in app-main or model-staging.</p>
+ * <p>Runs Hugging Face-tokenized models through DL4J's lifecycle-aware
+ * {@link GenerationPipeline}. The pipeline owns the SameDiff model, KV cache,
+ * recurrent state, and DSP plan. Legacy WordPiece configurations retain the
+ * pipeline-step runner for compatibility. This class is used <b>only in the
+ * serving subprocess</b> (port 8091) where the actual model is loaded. It is
+ * never used in app-main or model-staging.</p>
  *
  * <p>Model lifecycle (load/unload) and observability (DSP phase, Triton stats) are
  * exposed as public methods consumed by {@link LlmObservabilityService} and
@@ -77,6 +87,18 @@ public class SameDiffLanguageModelImpl implements LanguageModel, ChatModel {
 
     private static final Logger logger = LoggerFactory.getLogger(SameDiffLanguageModelImpl.class);
     private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
+    /**
+     * Minimal ChatML marker template understood by DL4J's ChatTemplate adapter.
+     *
+     * <p>Some staged model bundles contain only tokenizer.json even though the
+     * source Hugging Face repository publishes chat_template.jinja separately.
+     * When that tokenizer exposes the ChatML marker tokens, this template
+     * preserves instruction formatting without coupling serving to a model ID.</p>
+     */
+    static final String CHATML_TEMPLATE =
+            "{% for message in messages %}<|im_start|>{{ message.role }}\n"
+                    + "{{ message.content }}<|im_end|>\n{% endfor %}"
+                    + "{% if add_generation_prompt %}<|im_start|>assistant\n{% endif %}";
 
     private final Object loadLock = new Object();
     private volatile LoadedModel loaded; // null until first successful load
@@ -123,7 +145,26 @@ public class SameDiffLanguageModelImpl implements LanguageModel, ChatModel {
 
     @Override
     public String generateResponse(String userQuery, List<String> context) {
-        ChatResponse response = generateResponseWithPotentialToolCalls(userQuery, context);
+        return textualResponse(generateResponseWithPotentialToolCalls(userQuery, context));
+    }
+
+    /**
+     * Generate with a request-scoped output-token budget without reloading or replacing the model.
+     */
+    public String generateResponse(String userQuery, List<String> context, int maxNewTokens) {
+        if (maxNewTokens <= 0) {
+            throw new IllegalArgumentException("maxNewTokens must be positive");
+        }
+        LoadedModel current = this.loaded;
+        if (current == null) {
+            throw new IllegalStateException(
+                    "No SameDiff language model loaded. POST /api/llm/load first.");
+        }
+        String prompt = composePrompt(userQuery, context);
+        return textualResponse(execDirect(current, prompt, maxNewTokens));
+    }
+
+    private static String textualResponse(ChatResponse response) {
         if (response != null && response.getResult() != null
                 && response.getResult().getOutput() != null) {
             String text = response.getResult().getOutput().getText();
@@ -148,20 +189,16 @@ public class SameDiffLanguageModelImpl implements LanguageModel, ChatModel {
     // ==================== Direct inference ====================
 
     private ChatResponse execDirect(LoadedModel current, String prompt) {
-        String executionId = UUID.randomUUID().toString();
-        Data input = Data.empty();
-        input.put(current.config.getPromptInputName(), prompt);
+        return execDirect(current, prompt, null);
+    }
 
-        Context ctx = new DefaultContext(
-                Data.empty(), executionId, "ctx-llm-" + executionId,
-                null, this.metrics, this.profiler);
-
+    private ChatResponse execDirect(LoadedModel current, String prompt, Integer maxNewTokens) {
         try {
-            Data output = current.runner.exec(input, ctx);
-            String text = output.getString(current.config.getResponseOutputName(), "");
+            String text = maxNewTokens != null
+                    ? current.backend.generate(prompt, maxNewTokens)
+                    : current.backend.generate(prompt);
             if (text == null || text.isBlank()) {
-                throw new IllegalStateException("SameDiff LLM output did not contain required response field '"
-                        + current.config.getResponseOutputName() + "'");
+                throw new IllegalStateException("SameDiff LLM did not produce textual output");
             }
             AssistantMessage assistant = new AssistantMessage(text);
             return new ChatResponse(List.of(
@@ -204,43 +241,6 @@ public class SameDiffLanguageModelImpl implements LanguageModel, ChatModel {
         String attentionMaskName = stringOpt(opts, "attentionMaskPlaceholderName", "attention_mask");
         String logitsName = stringOpt(opts, "logitsOutputName", "logits");
 
-        LLMStepConfig.LLMStepConfigBuilder builder = LLMStepConfig.builder()
-                .name("samediff-llm-" + modelId)
-                .type("SAMEDIFF_LANGUAGE_MODEL")
-                .runnerClassName(SameDiffLanguageModelStepRunner.class.getName())
-                .modelUri(modelFile.toUri().toString())
-                .tokenizerUri(tokenizerFile.toUri().toString())
-                .tokenizerType(tokenizerType)
-                .promptInputName("prompt")
-                .responseOutputName("llm_response")
-                .conversationContextName("llm_conversation_context")
-                .toolChoice(LLMStepConfig.ToolChoiceMode.NONE)
-                .generationParameterEntry("maxNewTokens", maxNewTokens)
-                .generationParameterEntry("temperature", (float) temperature)
-                .generationParameterEntry("topK", topK)
-                .generationParameterEntry("maxPrefillLength", maxPrefillLength)
-                .generationParameterEntry("inputIdsPlaceholderName", inputIdsName)
-                .generationParameterEntry("attentionMaskPlaceholderName", attentionMaskName)
-                .generationParameterEntry("logitsOutputName", logitsName);
-
-        if (chatTemplate != null) {
-            builder.generationParameterEntry("chatTemplate", chatTemplate);
-        }
-
-        for (String tkKey : new String[]{
-                "padTokenId", "eosTokenId", "bosTokenId", "unkTokenId",
-                "clsTokenId", "sepTokenId", "maskTokenId"}) {
-            if (opts.containsKey(tkKey) && opts.get(tkKey) != null) {
-                builder.tokenizerConfigEntry(tkKey, String.valueOf(opts.get(tkKey)));
-            }
-        }
-
-        LLMStepConfig config = builder.build();
-        SameDiffLanguageModelStepRunner runner = new SameDiffLanguageModelStepRunner();
-        Context initCtx = new DefaultContext(
-                Data.empty(), "init-" + modelId, "ctx-llm-init-" + modelId,
-                null, this.metrics, this.profiler);
-
         long start = System.currentTimeMillis();
         this.loadingModelId = modelId;
         this.loadStartedAtMs = start;
@@ -257,10 +257,14 @@ public class SameDiffLanguageModelImpl implements LanguageModel, ChatModel {
         });
         dspPoller.scheduleAtFixedRate(this::pollDspPhase, 3, 5, TimeUnit.SECONDS);
 
+        InferenceBackend backend = null;
         try {
-            this.loadingPhase = "Loading SameDiff model, tokenizer, and running DSP warmup";
-            runner.init(config, initCtx);
-            this.loadingPhase = "Model loaded and DSP warmup complete";
+            this.loadingPhase = "Loading tokenizer and lifecycle-managed SameDiff generation pipeline";
+            backend = createInferenceBackend(
+                    modelId, modelFile, tokenizerFile, opts, tokenizerType,
+                    maxNewTokens, temperature, topK, maxPrefillLength, chatTemplate,
+                    inputIdsName, attentionMaskName, logitsName);
+            this.loadingPhase = "Model and generation pipeline loaded";
         } catch (Exception e) {
             this.loading = false;
             this.loadingModelId = null;
@@ -270,7 +274,7 @@ public class SameDiffLanguageModelImpl implements LanguageModel, ChatModel {
             this.dspFrozenCount = -1;
             this.dspPlanReport = null;
             this.dspCompilationStats = null;
-            try { runner.close(); } catch (Exception closeEx) { logger.warn("Failed to close runner after load failure: {}", closeEx.getMessage()); }
+            closeBackendQuietly(backend, "partially loaded model '" + modelId + "'");
             throw e;
         } finally {
             dspPoller.shutdownNow();
@@ -279,7 +283,7 @@ public class SameDiffLanguageModelImpl implements LanguageModel, ChatModel {
         long durationMs = System.currentTimeMillis() - start;
         synchronized (loadLock) {
             LoadedModel previous = this.loaded;
-            this.loaded = new LoadedModel(modelId, runner, config, durationMs);
+            this.loaded = new LoadedModel(modelId, backend, durationMs);
             this.loading = false;
             this.loadingModelId = null;
             this.loadStartedAtMs = -1;
@@ -291,10 +295,7 @@ public class SameDiffLanguageModelImpl implements LanguageModel, ChatModel {
             if (previous != null) {
                 logger.info("Replaced previously loaded model '{}' with '{}'",
                         previous.modelId, modelId);
-                try { previous.runner.close(); } catch (Exception e) {
-                    logger.warn("Failed to close previous runner '{}': {}",
-                            previous.modelId, e.getMessage());
-                }
+                closeBackendQuietly(previous.backend, "previous model '" + previous.modelId + "'");
             } else {
                 logger.info("Loaded model '{}' in {} ms", modelId, durationMs);
             }
@@ -306,12 +307,8 @@ public class SameDiffLanguageModelImpl implements LanguageModel, ChatModel {
             LoadedModel current = this.loaded;
             this.loaded = null;
             if (current != null) {
-                try {
-                    current.runner.close();
-                    logger.info("Unloaded model '{}'", current.modelId);
-                } catch (Exception e) {
-                    logger.warn("Failed to close runner '{}': {}", current.modelId, e.getMessage());
-                }
+                closeBackendQuietly(current.backend, "model '" + current.modelId + "'");
+                logger.info("Unloaded model '{}'", current.modelId);
             }
         }
     }
@@ -579,17 +576,387 @@ public class SameDiffLanguageModelImpl implements LanguageModel, ChatModel {
         }
     }
 
-    private static final class LoadedModel {
-        final String modelId;
-        final SameDiffLanguageModelStepRunner runner;
-        final LLMStepConfig config;
-        final long loadDurationMs;
+    private InferenceBackend createInferenceBackend(
+            String modelId,
+            Path modelFile,
+            Path tokenizerFile,
+            Map<String, Object> opts,
+            String tokenizerType,
+            int maxNewTokens,
+            double temperature,
+            int topK,
+            int maxPrefillLength,
+            String chatTemplate,
+            String inputIdsName,
+            String attentionMaskName,
+            String logitsName) throws Exception {
+        if (usesGenerationPipeline(tokenizerType)) {
+            Tokenizer tokenizer = Files.isDirectory(tokenizerFile)
+                    ? HuggingFaceTokenizer.fromDirectory(tokenizerFile.toFile())
+                    : HuggingFaceTokenizer.fromFile(tokenizerFile.toFile());
+            try {
+                String effectiveChatTemplate = resolveChatTemplate(tokenizer, chatTemplate);
+                boolean doSample = booleanOpt(
+                        opts, "doSample", temperature > 0.0d && topK != 1);
+                double topP = doubleOpt(opts, "topP", 1.0d);
+                SamplingConfig sampling = doSample
+                        ? SamplingConfig.sample(temperature, topK, topP)
+                        : SamplingConfig.greedy();
+                SamplingConfig.SamplingConfigBuilder samplingBuilder = sampling.toBuilder()
+                        .maxNewTokens(maxNewTokens);
+                int eosTokenId = resolveEosTokenId(tokenizer, effectiveChatTemplate, opts);
+                String eosTokenText = resolveEosTokenText(tokenizer, eosTokenId);
+                if (eosTokenId >= 0) {
+                    samplingBuilder.eosTokenId(eosTokenId);
+                }
+                int padTokenId = resolvePadTokenId(tokenizer, opts);
+                if (padTokenId >= 0) {
+                    samplingBuilder.padTokenId(padTokenId);
+                }
 
-        LoadedModel(String modelId, SameDiffLanguageModelStepRunner runner,
-                    LLMStepConfig config, long loadDurationMs) {
-            this.modelId = modelId;
+                GenerationPipelineConfig pipelineConfig = GenerationPipelineConfig.builder()
+                        .decoderPath(modelFile.toString())
+                        .tokenizer(tokenizer)
+                        .samplingConfig(samplingBuilder.build())
+                        .maxNewTokens(maxNewTokens)
+                        .maxPrefillLength(maxPrefillLength)
+                        .maxKvCacheLength(intOpt(opts, "maxKvCacheLength", 0))
+                        .kvCacheStrategy(kvCacheStrategyOpt(opts))
+                        .graphOptimizerEnabled(booleanOpt(opts, "graphOptimizerEnabled", true))
+                        .dspEnabled(booleanOpt(opts, "dspEnabled", true))
+                        .chatTemplate(effectiveChatTemplate)
+                        .build();
+                GenerationPipeline pipeline = GenerationPipeline.create(pipelineConfig);
+                logger.info(
+                        "Loaded model '{}' with GenerationPipeline "
+                                + "(KV={}, DSP={}, maxNewTokens={}, chatTemplate={}, eosTokenId={})",
+                        modelId, pipelineConfig.getKvCacheStrategy(),
+                        pipelineConfig.isDspEnabled(), maxNewTokens,
+                        effectiveChatTemplate == null ? "none" : "configured",
+                        eosTokenId);
+                return new GenerationPipelineBackend(
+                        pipeline, tokenizer, maxNewTokens, eosTokenText);
+            } catch (Exception e) {
+                try {
+                    tokenizer.close();
+                } catch (Exception closeException) {
+                    e.addSuppressed(closeException);
+                }
+                throw e;
+            }
+        }
+
+        logger.warn(
+                "Tokenizer type '{}' is not supported by GenerationPipeline; "
+                        + "using the legacy SameDiff runner for model '{}'",
+                tokenizerType, modelId);
+        LLMStepConfig.LLMStepConfigBuilder builder = LLMStepConfig.builder()
+                .name("samediff-llm-" + modelId)
+                .type("SAMEDIFF_LANGUAGE_MODEL")
+                .runnerClassName(SameDiffLanguageModelStepRunner.class.getName())
+                .modelUri(modelFile.toUri().toString())
+                .tokenizerUri(tokenizerFile.toUri().toString())
+                .tokenizerType(tokenizerType)
+                .promptInputName("prompt")
+                .responseOutputName("llm_response")
+                .conversationContextName("llm_conversation_context")
+                .toolChoice(LLMStepConfig.ToolChoiceMode.NONE)
+                .generationParameterEntry("maxNewTokens", maxNewTokens)
+                .generationParameterEntry("temperature", (float) temperature)
+                .generationParameterEntry("topK", topK)
+                .generationParameterEntry("maxPrefillLength", maxPrefillLength)
+                .generationParameterEntry("inputIdsPlaceholderName", inputIdsName)
+                .generationParameterEntry("attentionMaskPlaceholderName", attentionMaskName)
+                .generationParameterEntry("logitsOutputName", logitsName);
+        if (chatTemplate != null) {
+            builder.generationParameterEntry("chatTemplate", chatTemplate);
+        }
+        for (String tokenKey : new String[]{
+                "padTokenId", "eosTokenId", "bosTokenId", "unkTokenId",
+                "clsTokenId", "sepTokenId", "maskTokenId"}) {
+            if (opts.containsKey(tokenKey) && opts.get(tokenKey) != null) {
+                builder.tokenizerConfigEntry(tokenKey, String.valueOf(opts.get(tokenKey)));
+            }
+        }
+
+        LLMStepConfig config = builder.build();
+        SameDiffLanguageModelStepRunner runner = new SameDiffLanguageModelStepRunner();
+        Context initContext = new DefaultContext(
+                Data.empty(), "init-" + modelId, "ctx-llm-init-" + modelId,
+                null, this.metrics, this.profiler);
+        try {
+            runner.init(config, initContext);
+            return new LegacyRunnerBackend(runner, config, this.metrics, this.profiler);
+        } catch (Exception e) {
+            try {
+                runner.close();
+            } catch (Exception closeException) {
+                e.addSuppressed(closeException);
+            }
+            throw e;
+        }
+    }
+
+    static boolean usesGenerationPipeline(String tokenizerType) {
+        String normalized = tokenizerType == null
+                ? "huggingface"
+                : tokenizerType.trim().toLowerCase(java.util.Locale.ROOT);
+        return normalized.equals("huggingface")
+                || normalized.equals("hf")
+                || normalized.equals("bpe");
+    }
+
+    static String resolveChatTemplate(Tokenizer tokenizer, String configuredTemplate) {
+        if (configuredTemplate != null && !configuredTemplate.isBlank()) {
+            return configuredTemplate;
+        }
+
+        try {
+            String tokenizerTemplate = tokenizer.getChatTemplate();
+            if (tokenizerTemplate != null && !tokenizerTemplate.isBlank()) {
+                return tokenizerTemplate;
+            }
+        } catch (RuntimeException e) {
+            logger.debug("Tokenizer chat-template metadata was unavailable: {}", e.getMessage());
+        }
+
+        Integer chatStart = tokenId(tokenizer, "<|im_start|>");
+        Integer chatEnd = tokenId(tokenizer, "<|im_end|>");
+        if (chatStart != null && chatStart >= 0 && chatEnd != null && chatEnd >= 0) {
+            logger.info(
+                    "Tokenizer metadata omits a chat template but exposes ChatML markers; "
+                            + "using the built-in ChatML template");
+            return CHATML_TEMPLATE;
+        }
+        return null;
+    }
+
+    static int resolveEosTokenId(
+            Tokenizer tokenizer,
+            String effectiveChatTemplate,
+            Map<String, Object> opts) {
+        if (opts.containsKey("eosTokenId")) {
+            return intOpt(opts, "eosTokenId", -1);
+        }
+
+        if (CHATML_TEMPLATE.equals(effectiveChatTemplate)) {
+            Integer chatEnd = tokenId(tokenizer, "<|im_end|>");
+            if (chatEnd != null && chatEnd >= 0) {
+                return chatEnd;
+            }
+        }
+
+        try {
+            return tokenizer.getEosTokenId();
+        } catch (RuntimeException e) {
+            logger.debug("Tokenizer EOS metadata was unavailable: {}", e.getMessage());
+            return -1;
+        }
+    }
+
+    static int resolvePadTokenId(Tokenizer tokenizer, Map<String, Object> opts) {
+        if (opts.containsKey("padTokenId")) {
+            return intOpt(opts, "padTokenId", -1);
+        }
+        try {
+            return tokenizer.getPadTokenId();
+        } catch (RuntimeException e) {
+            logger.debug("Tokenizer PAD metadata was unavailable: {}", e.getMessage());
+            return -1;
+        }
+    }
+
+    static String resolveEosTokenText(Tokenizer tokenizer, int eosTokenId) {
+        if (eosTokenId < 0) {
+            return null;
+        }
+        try {
+            String tokenText = tokenizer.decode(new int[]{eosTokenId}, false);
+            return tokenText == null || tokenText.isEmpty() ? null : tokenText;
+        } catch (RuntimeException e) {
+            logger.debug("Tokenizer EOS text was unavailable: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    static String stripTrailingEosToken(String text, String eosTokenText) {
+        if (text == null || text.isEmpty()
+                || eosTokenText == null || eosTokenText.isEmpty()) {
+            return text;
+        }
+
+        int markerEnd = text.length();
+        while (markerEnd > 0 && Character.isWhitespace(text.charAt(markerEnd - 1))) {
+            markerEnd--;
+        }
+        int markerStart = markerEnd - eosTokenText.length();
+        if (markerStart >= 0
+                && text.regionMatches(markerStart, eosTokenText, 0, eosTokenText.length())) {
+            return text.substring(0, markerStart) + text.substring(markerEnd);
+        }
+        return text;
+    }
+
+    private static Integer tokenId(Tokenizer tokenizer, String token) {
+        try {
+            return tokenizer.getTokenId(token);
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
+    private static KvCacheStrategy kvCacheStrategyOpt(Map<String, Object> opts) {
+        String configured = stringOpt(opts, "kvCacheType", "STATIC");
+        try {
+            return KvCacheStrategy.valueOf(configured.trim().toUpperCase(java.util.Locale.ROOT));
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException(
+                    "Unsupported kvCacheType '" + configured + "'. Expected one of "
+                            + java.util.Arrays.toString(KvCacheStrategy.values()),
+                    e);
+        }
+    }
+
+    private static boolean booleanOpt(Map<String, Object> opts, String key, boolean defaultValue) {
+        Object value = opts.get(key);
+        if (value instanceof Boolean booleanValue) return booleanValue;
+        if (value instanceof String stringValue) {
+            if ("true".equalsIgnoreCase(stringValue)) return true;
+            if ("false".equalsIgnoreCase(stringValue)) return false;
+        }
+        return defaultValue;
+    }
+
+    private static void closeBackendQuietly(InferenceBackend backend, String description) {
+        if (backend == null) return;
+        try {
+            backend.close();
+        } catch (Exception e) {
+            logger.warn("Failed to close {}: {}", description, e.getMessage());
+        }
+    }
+
+    interface InferenceBackend {
+        String generate(String prompt) throws Exception;
+
+        default String generate(String prompt, int maxNewTokens) throws Exception {
+            return generate(prompt);
+        }
+
+        void close() throws Exception;
+    }
+
+    private static final class GenerationPipelineBackend implements InferenceBackend {
+        private final GenerationPipeline pipeline;
+        private final Tokenizer tokenizer;
+        private final int maxNewTokens;
+        private final String eosTokenText;
+        private boolean closed;
+
+        private GenerationPipelineBackend(
+                GenerationPipeline pipeline,
+                Tokenizer tokenizer,
+                int maxNewTokens,
+                String eosTokenText) {
+            this.pipeline = pipeline;
+            this.tokenizer = tokenizer;
+            this.maxNewTokens = maxNewTokens;
+            this.eosTokenText = eosTokenText;
+        }
+
+        @Override
+        public synchronized String generate(String prompt) {
+            return generate(prompt, maxNewTokens);
+        }
+
+        @Override
+        public synchronized String generate(String prompt, int requestedMaxNewTokens) {
+            requireOpen();
+            GenerationResult result = pipeline.generate(prompt, requestedMaxNewTokens);
+            if (result == null) {
+                throw new IllegalStateException("GenerationPipeline returned no result");
+            }
+            if (result.getFinishReason() == GenerationResult.FinishReason.ERROR) {
+                throw new IllegalStateException("GenerationPipeline reported an error");
+            }
+            return stripTrailingEosToken(result.getText(), eosTokenText);
+        }
+
+        @Override
+        public synchronized void close() throws Exception {
+            if (closed) return;
+            closed = true;
+            Exception failure = null;
+            try {
+                pipeline.close();
+            } catch (Exception e) {
+                failure = e;
+            }
+            try {
+                tokenizer.close();
+            } catch (Exception e) {
+                if (failure == null) failure = e;
+                else failure.addSuppressed(e);
+            }
+            if (failure != null) throw failure;
+        }
+
+        private void requireOpen() {
+            if (closed) {
+                throw new IllegalStateException("GenerationPipeline backend is closed");
+            }
+        }
+    }
+
+    private static final class LegacyRunnerBackend implements InferenceBackend {
+        private final SameDiffLanguageModelStepRunner runner;
+        private final LLMStepConfig config;
+        private final Metrics metrics;
+        private final Profiler profiler;
+        private boolean closed;
+
+        private LegacyRunnerBackend(
+                SameDiffLanguageModelStepRunner runner,
+                LLMStepConfig config,
+                Metrics metrics,
+                Profiler profiler) {
             this.runner = runner;
             this.config = config;
+            this.metrics = metrics;
+            this.profiler = profiler;
+        }
+
+        @Override
+        public synchronized String generate(String prompt) throws Exception {
+            if (closed) {
+                throw new IllegalStateException("Legacy SameDiff runner is closed");
+            }
+            String executionId = UUID.randomUUID().toString();
+            Data input = Data.empty();
+            input.put(config.getPromptInputName(), prompt);
+            Context context = new DefaultContext(
+                    Data.empty(), executionId, "ctx-llm-" + executionId,
+                    null, metrics, profiler);
+            Data output = runner.exec(input, context);
+            return output.getString(config.getResponseOutputName(), "");
+        }
+
+        @Override
+        public synchronized void close() throws Exception {
+            if (closed) return;
+            closed = true;
+            runner.close();
+        }
+    }
+
+    private static final class LoadedModel {
+        final String modelId;
+        final InferenceBackend backend;
+        final long loadDurationMs;
+
+        LoadedModel(String modelId, InferenceBackend backend, long loadDurationMs) {
+            this.modelId = modelId;
+            this.backend = backend;
             this.loadDurationMs = loadDurationMs;
         }
     }

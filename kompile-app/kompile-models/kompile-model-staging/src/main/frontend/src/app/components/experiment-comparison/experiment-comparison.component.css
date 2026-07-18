@@ -7,3 +7,15 @@
 .metric-cell { min-width: 120px; }
 .best-value { font-weight: bold; color: #2e7d32; background: #e8f5e9; }
 .empty-state { text-align: center; padding: 40px; color: #888; }
+
+@media (max-width: 600px) {
+  .experiment-comparison { padding: 12px; }
+  .header { align-items: flex-start; }
+  .summary { align-items: flex-start; padding: 10px 12px; }
+  .comparison-table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+}

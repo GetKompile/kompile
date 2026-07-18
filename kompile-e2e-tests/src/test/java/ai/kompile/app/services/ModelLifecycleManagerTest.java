@@ -28,6 +28,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.context.ApplicationEventPublisher;
 
 import java.util.Map;
+import java.time.Instant;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
@@ -353,6 +354,18 @@ class ModelLifecycleManagerTest {
             assertEquals("VLM test: doc.pdf", hold.description());
             assertNotNull(hold.acquiredAt());
             assertNotNull(hold.device());
+            assertEquals(ModelLifecycleManager.HoldLifetime.BOUNDED, hold.lifetime());
+        }
+
+        @Test
+        @DisplayName("should keep explicitly long-lived holds visible to monitoring")
+        void longLivedHoldRemainsVisible() {
+            manager.acquireGpuForJob("serving-job", "llm", "Serving",
+                    ModelLifecycleManager.HoldLifetime.LONG_LIVED);
+
+            var hold = manager.getActiveJobHolds().get("serving-job");
+            assertNotNull(hold);
+            assertEquals(ModelLifecycleManager.HoldLifetime.LONG_LIVED, hold.lifetime());
         }
 
         @Test
@@ -370,6 +383,40 @@ class ModelLifecycleManagerTest {
             var holds = manager.getActiveJobHolds();
             assertThrows(UnsupportedOperationException.class, () ->
                     holds.put("test", null));
+        }
+    }
+
+    @Nested
+    @DisplayName("Stale hold classification")
+    class StaleHoldClassification {
+
+        private final Instant now = Instant.parse("2026-07-19T00:00:00Z");
+
+        @Test
+        void agedBoundedHoldIsStale() {
+            var hold = new ModelLifecycleManager.JobGpuHold(
+                    "ordinary", "llm", GPU_4090, now.minusSeconds(3601), "ordinary job",
+                    ModelLifecycleManager.HoldLifetime.BOUNDED);
+
+            assertTrue(ModelLifecycleManager.isStale(hold, now, 3600));
+        }
+
+        @Test
+        void agedLongLivedHoldIsNotStale() {
+            var hold = new ModelLifecycleManager.JobGpuHold(
+                    "serving", "llm", GPU_4090, now.minusSeconds(86400), "serving job",
+                    ModelLifecycleManager.HoldLifetime.LONG_LIVED);
+
+            assertFalse(ModelLifecycleManager.isStale(hold, now, 3600));
+        }
+
+        @Test
+        void recentBoundedHoldIsNotStale() {
+            var hold = new ModelLifecycleManager.JobGpuHold(
+                    "recent", "vlm", GPU_4090, now.minusSeconds(60), "recent job",
+                    ModelLifecycleManager.HoldLifetime.BOUNDED);
+
+            assertFalse(ModelLifecycleManager.isStale(hold, now, 3600));
         }
     }
 

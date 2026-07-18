@@ -25,7 +25,7 @@ import java.util.List;
  * <p>This is the read side of the same bridge that implements {@link GraphConformanceChecker}:
  * {@code kompile-knowledge-graph} and {@code kompile-crawl-graph} see this interface (via
  * {@code kompile-app-core}) but not the ontology model itself; only {@code kompile-app-main}
- * resolves {@code NamedGraph.ontologySchemaId} to a real schema and implements this.</p>
+ * resolves the fact-sheet graph's Lucene ontology descriptor to a real schema and implements this.</p>
  *
  * <p><b>Unbound is permissive, never restrictive.</b> When a fact sheet has no bound ontology —
  * or no implementation is wired (tests) — every list method returns empty and

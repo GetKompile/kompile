@@ -172,7 +172,9 @@ describe('GraphVisualizerComponent reasoning layers', () => {
   beforeEach(async () => {
     graphServiceSpy = jasmine.createSpyObj<GraphService>('GraphService', [
       'getStatistics',
+      'getFactSheetStatistics',
       'getVisualizationData',
+      'getFactSheetVisualizationData',
       'getTopKVisualization',
       'getTemporalBounds',
       'getReasoningLayers',
@@ -185,7 +187,9 @@ describe('GraphVisualizerComponent reasoning layers', () => {
       'removeSourceLink'
     ]);
     graphServiceSpy.getStatistics.and.returnValue(of({ totalNodes: 2 }));
+    graphServiceSpy.getFactSheetStatistics.and.returnValue(of({ totalNodes: 2 }));
     graphServiceSpy.getVisualizationData.and.returnValue(of(graphData));
+    graphServiceSpy.getFactSheetVisualizationData.and.returnValue(of(graphData));
     graphServiceSpy.getTopKVisualization.and.returnValue(of(graphData));
     graphServiceSpy.getTemporalBounds.and.returnValue(of(null as any));
     graphServiceSpy.getReasoningLayers.and.returnValue(of(reasoningLayers));
@@ -290,6 +294,25 @@ describe('GraphVisualizerComponent reasoning layers', () => {
 
     expect(graphServiceSpy.getReasoningLayers).toHaveBeenCalledWith(42);
     expect(component.reasoningLayers).toEqual(reasoningLayers);
+  }));
+
+  it('treats an empty fact-sheet graph as valid without loading optional overlays', fakeAsync(() => {
+    graphServiceSpy.getFactSheetStatistics.and.returnValue(of({ totalNodes: 0, totalEdges: 0 }));
+    graphServiceSpy.getFactSheetVisualizationData.and.returnValue(of({
+      nodes: [],
+      links: [],
+      statistics: { totalNodes: 0, totalEdges: 0 }
+    }));
+
+    create();
+    tick();
+
+    expect(graphServiceSpy.getFactSheetVisualizationData).toHaveBeenCalledWith(42, 500);
+    expect(graphServiceSpy.getReasoningLayers).not.toHaveBeenCalled();
+    expect(component.reasoningLayers?.factSheetId).toBe(42);
+    expect(component.reasoningLayers?.nodes).toEqual([]);
+    expect(component.reasoningLayers?.edges).toEqual([]);
+    expect(component.reasoningLayersError).toBeNull();
   }));
 
   it('maps node overlays for inspector and canvas rendering', fakeAsync(() => {

@@ -33,3 +33,21 @@
 .log-warn .log-level { color: #ff9800; }
 .log-error .log-level { color: #f44336; }
 .log-debug .log-level { color: rgba(0,0,0,0.4); }
+
+@media (max-width: 600px) {
+  .training-metrics { padding: 12px; }
+  .header { align-items: stretch; flex-direction: column; }
+  .header-actions { flex-wrap: wrap; }
+  .header-actions button { flex: 1 1 auto; min-height: 44px; }
+  .status-grid { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .chart-container { padding: 8px; }
+  .empty-chart { padding: 24px 12px; }
+  .log-entry {
+    display: grid;
+    grid-template-columns: auto auto;
+    gap: 4px 8px;
+  }
+  .log-time,
+  .log-level { min-width: 0; }
+  .log-msg { grid-column: 1 / -1; overflow-wrap: anywhere; }
+}

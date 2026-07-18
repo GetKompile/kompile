@@ -309,4 +309,71 @@ class ProcessManagerTest {
                     "HOME should be inherited");
         }
     }
+
+    // ===================================================================
+    // Detached pipe holders + verified kills (MCP bash-tool hang regression)
+    // ===================================================================
+
+    @Nested
+    class DetachedPipeHolders {
+
+        @Test
+        void detachedPipeHolder_shouldNotHangExecute() {
+            long start = System.currentTimeMillis();
+            // The backgrounded sleep inherits stdout and keeps the pipe open long
+            // after the shell exits — reading to EOF on the calling thread blocked
+            // here until the sleep finished, ignoring the timeout entirely.
+            ProcessManager.ProcessResult result = ProcessManager.execute(
+                    "echo hi; sleep 15 &", workDir, 60_000, null);
+            long took = System.currentTimeMillis() - start;
+
+            assertEquals(0, result.getExitCode(), "shell itself exits cleanly");
+            assertTrue(result.getOutput().contains("hi"),
+                    "output written before the shell exited must be captured");
+            assertTrue(took < 10_000,
+                    "must return after process exit + drain grace, not wait for the pipe holder (took "
+                            + took + "ms)");
+        }
+
+        @Test
+        void timedOutCommandTree_shouldActuallyDie() throws Exception {
+            ProcessManager.ProcessResult result = ProcessManager.execute(
+                    "echo start && sleep 27183 && echo never", workDir, 1_000, null);
+            assertTrue(result.isTimedOut());
+
+            // killTree previously signalled a process group that didn't exist
+            // (plain ProcessBuilder children are not group leaders) and never fell
+            // back to destroy() — the sleep survived the "kill".
+            Thread.sleep(500);
+            // Bracket trick: the regex matches the victim's cmdline but not the
+            // checking shell's own cmdline (which contains the bracketed literal).
+            ProcessManager.ProcessResult check = ProcessManager.execute(
+                    "pgrep -f 'sleep 2718[3]' | wc -l", workDir, 10_000, null);
+            assertEquals("0", check.getOutput().trim(),
+                    "timed-out command tree must be dead");
+        }
+
+        @Test
+        void abortMidRun_shouldReturnPromptly() {
+            AtomicBoolean abort = new AtomicBoolean(false);
+            Thread flipper = new Thread(() -> {
+                try {
+                    Thread.sleep(500);
+                } catch (InterruptedException ignored) {
+                }
+                abort.set(true);
+            });
+            flipper.setDaemon(true);
+            flipper.start();
+
+            long start = System.currentTimeMillis();
+            ProcessManager.ProcessResult result = ProcessManager.execute(
+                    "sleep 30", workDir, 60_000, abort);
+            long took = System.currentTimeMillis() - start;
+
+            assertTrue(result.isAborted(), "must report abort");
+            assertTrue(took < 8_000,
+                    "abort must interrupt the wait promptly (took " + took + "ms)");
+        }
+    }
 }

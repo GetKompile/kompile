@@ -78,6 +78,9 @@ import java.util.concurrent.atomic.AtomicReference;
  *   <li>{@code KOMPILE_CODE_INDEX_MAX_WATCHERS} — watcher cap (default 8).</li>
  *   <li>{@code KOMPILE_CODE_INDEX_READ_WAIT_MS} — freshness-join budget for
  *       read actions (default 2000).</li>
+ *   <li>{@code KOMPILE_CODE_INDEX_LOCAL_WRITE_JOIN_MS} — reads only pay the
+ *       freshness join within this window after a write from THIS process
+ *       (default 30000); outside it, busy projects just annotate.</li>
  *   <li>{@code KOMPILE_CODE_INDEX_BACKSTOP_SECONDS} — backstop sweep period
  *       (default 300; 0 disables).</li>
  * </ul>
@@ -168,6 +171,8 @@ public final class BackgroundIndexService {
         final AtomicBoolean watcherStartQueued = new AtomicBoolean();
         volatile long lastTouchedMs;
         volatile boolean refreshRunning;
+        /** Last time THIS process wrote into the project (read-your-writes window). */
+        volatile long lastLocalWriteMs;
         /** Bumped on every write notification; refresh passes snapshot it. */
         final AtomicLong writeSeq = new AtomicLong();
         /** writeSeq value covered by the last completed refresh. */
@@ -255,6 +260,7 @@ public final class BackgroundIndexService {
     private boolean watchEnabled() { return boolConfig("KOMPILE_CODE_INDEX_WATCH", true); }
     private int maxWatchers() { return (int) longConfig("KOMPILE_CODE_INDEX_MAX_WATCHERS", 8); }
     private long readWaitMs() { return longConfig("KOMPILE_CODE_INDEX_READ_WAIT_MS", 2000); }
+    private long localWriteJoinWindowMs() { return longConfig("KOMPILE_CODE_INDEX_LOCAL_WRITE_JOIN_MS", 30_000); }
 
     // ── Background index jobs ───────────────────────────────────────────────
 
@@ -402,8 +408,15 @@ public final class BackgroundIndexService {
                 }
             }
 
+            // Read-your-writes is a contract with THIS process's own writes.
+            // Refreshes triggered by other processes' edits (watcher events on a
+            // shared tree) used to make every read block up to readWaitMs while
+            // the project churned — join only inside the local-write window and
+            // otherwise just annotate that results may lag.
+            boolean recentLocalWrite = state.lastLocalWriteMs > 0
+                    && System.currentTimeMillis() - state.lastLocalWriteMs < localWriteJoinWindowMs();
             String inProgress = null;
-            if (state.busy() && !awaitQuiet(state, readWaitMs())) {
+            if (state.busy() && (!recentLocalWrite || !awaitQuiet(state, readWaitMs()))) {
                 IndexJob job = state.activeJob;
                 inProgress = job != null && !job.isDone()
                         ? "[background index job " + job.id() + " running — results may lag]"
@@ -460,6 +473,7 @@ public final class BackgroundIndexService {
             ProjectState state = stateFor(projectId);
             if (state.root == null) state.root = lookupRoot(projectId);
             state.lastTouchedMs = System.currentTimeMillis();
+            state.lastLocalWriteMs = state.lastTouchedMs;
             state.writeSeq.incrementAndGet();
             scheduleRefresh(state, 0);
         } catch (Exception e) {

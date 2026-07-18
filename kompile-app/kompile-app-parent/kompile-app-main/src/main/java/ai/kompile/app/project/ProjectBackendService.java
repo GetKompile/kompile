@@ -20,6 +20,7 @@ import ai.kompile.codeindexer.domain.CodeProjectRepository;
 import ai.kompile.codeindexer.service.CodebaseIndexer;
 import ai.kompile.chat.history.domain.ChatSession;
 import ai.kompile.chat.history.repository.ChatSessionRepository;
+import ai.kompile.chat.history.service.CliTranscriptSyncService;
 import ai.kompile.project.KompileCodingProject;
 import ai.kompile.project.KompileProjectChatSession;
 import ai.kompile.project.KompileProjectCrawlProfile;
@@ -79,13 +80,16 @@ public class ProjectBackendService {
     private ChatSessionRepository chatSessionRepository;
 
     @Autowired(required = false)
+    private CliTranscriptSyncService cliTranscriptSyncService;
+
+    @Autowired(required = false)
     private NoteSyncConnectionRepository noteSyncConnectionRepository;
 
     @Autowired(required = false)
     private IndexedDocumentRepository indexedDocumentRepository;
 
     @Autowired(required = false)
-    private ProjectGraphPortabilityService graphPortabilityService;
+    private ProjectGraphPortabilityService projectGraphPortabilityService;
 
     @Value("${kompile.project.root:}")
     private String configuredRoot;
@@ -118,12 +122,10 @@ public class ProjectBackendService {
 
     public ProjectResponse open() {
         Path root = requireProjectRoot();
-        exportProjectCatalogs(root);
+        // Never overwrite portable catalogs with the current runtime before the project is open.
         store.openProject(root);
-        // Rehydrate the knowledge graph baked into the project (no-op unless the
-        // runtime graph is empty, i.e. a fresh clone).
-        if (graphPortabilityService != null) {
-            graphPortabilityService.importAllGraphs(root);
+        if (projectGraphPortabilityService != null) {
+            projectGraphPortabilityService.importAllGraphs(root);
         }
         return new ProjectResponse(store.load(root), store.status(root));
     }
@@ -215,6 +217,7 @@ public class ProjectBackendService {
                 .findFirst()
                 .orElse(codingProject);
         registerWithCodeIndexer(registered);
+        registerTranscriptScope(root, registered);
         return new ProjectResponse(manifest, store.status(root));
     }
 
@@ -237,12 +240,26 @@ public class ProjectBackendService {
     }
 
     public KompileProjectGitResult commit(String message) {
-        Path root = requireProjectRoot();
-        // Bake the current graph into the versioned tree so the commit captures it.
-        if (graphPortabilityService != null) {
-            graphPortabilityService.exportAllGraphs(root);
-        }
+        Path root = preparePortableKnowledgeBase();
         return store.gitCommitAll(root, message);
+    }
+
+    /**
+     * Flushes backend-managed catalogs and graph state into the project tree at one coordinated
+     * maintenance boundary. The returned root is safe to hand to {@code ProjectArchiveService}.
+     */
+    public synchronized Path preparePortableKnowledgeBase() {
+        Path root = requireProjectRoot();
+        exportProjectCatalogs(root);
+        if (projectGraphPortabilityService != null) {
+            projectGraphPortabilityService.exportAllGraphs(root);
+        }
+        return root;
+    }
+
+    /** Returns the active project root after verifying that it contains a project manifest. */
+    public Path currentProjectRoot() {
+        return requireProjectRoot();
     }
 
     public KompileProjectGitResult pull() {
@@ -356,6 +373,18 @@ public class ProjectBackendService {
         codebaseIndexer.indexDirectoryAsync(codingProject.getCodeProjectId(), codingProject.getRootPath(), forceReindex);
     }
 
+    private void registerTranscriptScope(Path projectRoot, KompileCodingProject codingProject) {
+        if (cliTranscriptSyncService == null || codingProject.getRootPath() == null
+                || codingProject.getRootPath().isBlank()) {
+            return;
+        }
+        Path codeRoot = Path.of(codingProject.getRootPath());
+        if (!codeRoot.isAbsolute()) {
+            codeRoot = projectRoot.resolve(codeRoot);
+        }
+        cliTranscriptSyncService.registerCodeProject(codeRoot.normalize());
+    }
+
     private void registerWithCodeIndexer(KompileCodingProject codingProject) {
         CodeProject project = codeProjectRepository.findByProjectId(codingProject.getCodeProjectId())
                 .orElseGet(() -> CodeProject.builder()
@@ -460,10 +489,28 @@ public class ProjectBackendService {
                     pnc.setExternalScope(conn.getExternalScope());
                     pnc.setDirection(conn.getDirection() != null ? conn.getDirection().name() : null);
                     pnc.setEnabled(Boolean.TRUE.equals(conn.getEnabled()));
+                    pnc.setPollCron(conn.getPollCron());
+                    pnc.setWebhookId(conn.getWebhookId());
+                    pnc.setObsidianApiUrl(conn.getObsidianApiUrl());
                     pnc.setRepositoryUrl(conn.getRepositoryUrl());
                     pnc.setGitBranch(conn.getGitBranch());
+                    pnc.setGitUsername(conn.getGitUsername());
+                    pnc.setAuthMode(conn.getAuthMode() != null ? conn.getAuthMode().name() : null);
+                    pnc.setAuthStatus(conn.getAuthStatus());
+                    pnc.setAuthStatusMessage(conn.getAuthStatusMessage());
+                    pnc.setAuthLastCheckedAt(conn.getAuthLastCheckedAt() != null
+                            ? conn.getAuthLastCheckedAt().toString() : null);
+                    pnc.setAutoCommit(Boolean.TRUE.equals(conn.getAutoCommit()));
+                    pnc.setRemoteSyncEnabled(Boolean.TRUE.equals(conn.getRemoteSyncEnabled()));
                     pnc.setLastSyncAt(conn.getLastSyncAt() != null ? conn.getLastSyncAt().toString() : null);
                     pnc.setLastSyncStatus(conn.getLastSyncStatus());
+                    pnc.setLastSyncError(conn.getLastSyncError());
+                    pnc.setCredentialBinding(conn.getProvider() == null ? null : switch (conn.getProvider()) {
+                        case NOTION -> "NOTION_TOKEN";
+                        case OBSIDIAN -> "OBSIDIAN_TOKEN";
+                        case GIT_REPOSITORY -> "GIT_CREDENTIAL";
+                        case LOCAL_FOLDER -> null;
+                    });
                     pnc.setCreatedAt(conn.getCreatedAt() != null ? conn.getCreatedAt().toString() : null);
                     pnc.setUpdatedAt(conn.getUpdatedAt() != null ? conn.getUpdatedAt().toString() : null);
                     // Resolve fact sheet name

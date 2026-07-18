@@ -25,6 +25,8 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -55,6 +57,9 @@ public class EditCoordinatorTool implements CliTool {
                 + "3. register_edit — lock the file before editing (returns lock_id)\n"
                 + "4. (do your edits)\n"
                 + "5. release_edit — release the lock using the lock_id\n\n"
+                + "Editing SEVERAL files (e.g. before edit_batch/edit_patch)? Use register_edits with "
+                + "file_paths to lock them all in ONE call (all-or-nothing unless allow_partial=true), "
+                + "then release_edits with lock_ids when done.\n\n"
                 + "Other actions: awareness (one-call cross-agent snapshot with risks and next steps), "
                 + "query_processes (see running background processes), query_agents (see all active agents), "
                 + "publish_process/unpublish_process (track background work), status (combined dashboard).";
@@ -70,10 +75,12 @@ public class EditCoordinatorTool implements CliTool {
         ObjectNode action = props.putObject("action");
         action.put("type", "string");
         action.put("description",
-                "Action to perform: register_edit, release_edit, query_edits, query_processes, "
+                "Action to perform: register_edit, release_edit, register_edits, release_edits, "
+                        + "query_edits, query_processes, "
                         + "register_agent, query_agents, publish_process, unpublish_process, awareness, status");
         action.putArray("enum")
                 .add("register_edit").add("release_edit")
+                .add("register_edits").add("release_edits")
                 .add("query_edits").add("query_processes")
                 .add("register_agent").add("query_agents")
                 .add("publish_process").add("unpublish_process")
@@ -82,6 +89,22 @@ public class EditCoordinatorTool implements CliTool {
         ObjectNode filePath = props.putObject("file_path");
         filePath.put("type", "string");
         filePath.put("description", "File path for register_edit or query_edits filter");
+
+        ObjectNode filePaths = props.putObject("file_paths");
+        filePaths.put("type", "array");
+        filePaths.putObject("items").put("type", "string");
+        filePaths.put("description", "File paths for register_edits — locks them all in one call");
+
+        ObjectNode lockIds = props.putObject("lock_ids");
+        lockIds.put("type", "array");
+        lockIds.putObject("items").put("type", "string");
+        lockIds.put("description", "Lock IDs for release_edits — releases them all in one call");
+
+        ObjectNode allowPartial = props.putObject("allow_partial");
+        allowPartial.put("type", "boolean");
+        allowPartial.put("description",
+                "register_edits: lock the conflict-free files even when others conflict "
+                        + "(default false = all-or-nothing)");
 
         ObjectNode editType = props.putObject("edit_type");
         editType.put("type", "string");
@@ -146,6 +169,10 @@ public class EditCoordinatorTool implements CliTool {
                 return executeRegisterEdit(params, context);
             case "release_edit":
                 return executeReleaseEdit(params);
+            case "register_edits":
+                return executeRegisterEdits(params, context);
+            case "release_edits":
+                return executeReleaseEdits(params);
             case "query_edits":
                 return executeQueryEdits(params);
             case "query_processes":
@@ -164,7 +191,8 @@ public class EditCoordinatorTool implements CliTool {
                 return executeStatus();
             default:
                 return ToolResult.error("Unknown action: " + action
-                        + ". Valid: register_edit, release_edit, query_edits, query_processes, "
+                        + ". Valid: register_edit, release_edit, register_edits, release_edits, "
+                        + "query_edits, query_processes, "
                         + "register_agent, query_agents, publish_process, unpublish_process, awareness, status");
         }
     }
@@ -213,6 +241,78 @@ public class EditCoordinatorTool implements CliTool {
         } else {
             return ToolResult.success("not_found", "Lock " + lockId + " not found (may have already expired)");
         }
+    }
+
+    private ToolResult executeRegisterEdits(JsonNode params, ToolContext context) throws ToolExecutionException {
+        JsonNode filePaths = params.path("file_paths");
+        if (!filePaths.isArray() || filePaths.isEmpty()) {
+            return ToolResult.error("file_paths (non-empty array) is required for register_edits");
+        }
+        List<String> absolutePaths = new ArrayList<>();
+        for (JsonNode p : filePaths) {
+            String raw = p.asText("");
+            if (raw.isEmpty()) {
+                return ToolResult.error("file_paths entries must be non-empty strings");
+            }
+            absolutePaths.add(context.resolvePath(raw).toAbsolutePath().toString());
+        }
+        String editType = params.path("edit_type").asText("edit");
+        String agentName = params.path("agent_name").asText(null);
+        boolean allowPartial = params.path("allow_partial").asBoolean(false);
+
+        CoordinationStateManager.BatchAcquireResult batch =
+                coordinator.tryAcquireEditLocks(absolutePaths, editType, agentName, allowPartial);
+
+        StringBuilder sb = new StringBuilder();
+        Map<String, Object> lockIds = new LinkedHashMap<>();
+        for (Map.Entry<String, EditLockResult> e : batch.results().entrySet()) {
+            EditLockResult r = e.getValue();
+            if (r.isAcquired()) {
+                sb.append("acquired  ").append(e.getKey()).append(" — lock_id ").append(r.getLockId()).append('\n');
+                lockIds.put(e.getKey(), r.getLockId());
+            } else if (r.hasConflict()) {
+                EditLockEntry c = r.getConflictEntry();
+                sb.append("CONFLICT  ").append(e.getKey())
+                        .append(" — held by ").append(c != null ? c.getAgentName() : "unknown")
+                        .append(" (session ").append(c != null ? c.getSessionId() : "?").append(")")
+                        .append(c != null ? ", since " + formatAge(c.getAcquiredAt()) : "")
+                        .append('\n');
+            } else {
+                sb.append("skipped   ").append(e.getKey()).append(" — ").append(r.getConflictMessage()).append('\n');
+            }
+        }
+        if (batch.aborted()) {
+            sb.append("\nBatch aborted (all-or-nothing): no locks were taken. Resolve the conflicts, "
+                    + "retry, or pass allow_partial=true to lock the free files.");
+        }
+        String status = batch.aborted() ? "conflict"
+                : batch.conflictCount() > 0 ? "partial" : "acquired";
+        return ToolResult.success(status, sb.toString().stripTrailing(),
+                Map.of("status", status,
+                        "acquired", batch.acquiredCount(),
+                        "conflicts", batch.conflictCount(),
+                        "lockIds", lockIds));
+    }
+
+    private ToolResult executeReleaseEdits(JsonNode params) {
+        JsonNode lockIds = params.path("lock_ids");
+        if (!lockIds.isArray() || lockIds.isEmpty()) {
+            return ToolResult.error("lock_ids (non-empty array) is required for release_edits");
+        }
+        List<String> ids = new ArrayList<>();
+        for (JsonNode id : lockIds) {
+            if (!id.asText("").isEmpty()) ids.add(id.asText());
+        }
+        Map<String, Boolean> released = coordinator.releaseEditLocks(ids);
+        long releasedCount = released.values().stream().filter(Boolean::booleanValue).count();
+        StringBuilder sb = new StringBuilder();
+        for (Map.Entry<String, Boolean> e : released.entrySet()) {
+            sb.append(e.getValue() ? "released  " : "not_found ").append(e.getKey()).append('\n');
+        }
+        return ToolResult.success("released",
+                sb.toString().stripTrailing()
+                        + "\n" + releasedCount + "/" + released.size() + " locks released",
+                Map.of("released", releasedCount, "requested", released.size()));
     }
 
     private ToolResult executeQueryEdits(JsonNode params) {

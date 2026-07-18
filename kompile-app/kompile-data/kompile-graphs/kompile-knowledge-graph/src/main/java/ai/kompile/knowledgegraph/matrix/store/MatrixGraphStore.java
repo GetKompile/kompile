@@ -179,6 +179,29 @@ public interface MatrixGraphStore {
     List<MatrixGraphNode> getAllNodes(String graphId);
 
     /**
+     * Bounded Lucene-backed scan. The cursor is the underlying vector-document offset,
+     * not a result offset, so successive pages never rescan earlier index pages.
+     */
+    default ScanPage<MatrixGraphNode> scanNodes(String graphId, int cursor, int pageSize) {
+        throw new UnsupportedOperationException("MatrixGraphStore implementation must provide bounded node scans");
+    }
+
+    /** Bounded scan of canonical per-edge documents. */
+    default ScanPage<StoredEdge> scanEdges(String graphId, int cursor, int pageSize) {
+        throw new UnsupportedOperationException("MatrixGraphStore implementation must provide bounded edge scans");
+    }
+
+    record ScanPage<T>(List<T> items, int nextCursor, boolean hasMore) {
+        public ScanPage {
+            items = items == null ? List.of() : List.copyOf(items);
+        }
+    }
+
+    record StoredEdge(String sourceNodeId, String targetNodeId, String edgeType,
+                      double weight, boolean bidirectional, String relationType,
+                      Double confidence, String description, Map<String, Object> metadata) {}
+
+    /**
      * Searches nodes by text query.
      *
      * @param graphId The graph ID

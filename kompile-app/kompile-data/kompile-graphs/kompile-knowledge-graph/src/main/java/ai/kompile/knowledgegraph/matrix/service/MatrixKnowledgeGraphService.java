@@ -751,11 +751,27 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
 
     @Override
     public List<GraphNode> getNodesInFactSheet(Long factSheetId) {
-        return graphStore.getAllNodes(graphIdForFactSheet(factSheetId)).stream()
+        List<GraphNode> nodes = new ArrayList<>();
+        int cursor = 0;
+        GraphPage<GraphNode> page;
+        do {
+            page = getNodesInFactSheetPage(factSheetId, cursor, 1_000);
+            nodes.addAll(page.items());
+            cursor = page.nextCursor();
+        } while (page.hasMore());
+        return nodes;
+    }
+
+    @Override
+    public GraphPage<GraphNode> getNodesInFactSheetPage(Long factSheetId, int cursor, int pageSize) {
+        MatrixGraphStore.ScanPage<MatrixGraphNode> page =
+                graphStore.scanNodes(graphIdForFactSheet(factSheetId), cursor, pageSize);
+        List<GraphNode> nodes = page.items().stream()
                 .filter(n -> factSheetId != null && factSheetId.equals(n.getFactSheetId()))
                 .filter(n -> isUserNodeType(n.getNodeType()))
                 .map(n -> convertToGraphNode(n, extractExternalId(n.getNodeId())))
                 .collect(Collectors.toList());
+        return new GraphPage<>(nodes, page.nextCursor(), page.hasMore());
     }
 
     @Override
@@ -805,37 +821,25 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
 
     @Override
     public List<GraphEdge> getEdgesInFactSheet(Long factSheetId) {
-        Optional<AdjacencyMatrixGraph> graphOpt = graphStore.loadGraph(graphIdForFactSheet(factSheetId));
-        if (graphOpt.isEmpty()) {
-            return Collections.emptyList();
-        }
-        AdjacencyMatrixGraph graph = graphOpt.get();
-        List<GraphEdge> result = new ArrayList<>();
-        Set<String> seen = new HashSet<>();
-        for (MatrixGraphNode node : graph.getAllNodes()) {
-            if (node.getFactSheetId() == null || !node.getFactSheetId().equals(factSheetId)) {
-                continue;
-            }
-            // Skip internal pseudo-nodes (e.g. _KGE_EDGE_TYPE) — they have no real adjacency
-            // edges, but iterating them as source nodes would cause NodeLevel.valueOf() to throw
-            // inside convertToGraphNode if a neighbor were ever added.
-            if (!isUserNodeType(node.getNodeType())) {
-                continue;
-            }
-            // Iterate per stored edge type so the real EdgeType is preserved (not flattened to
-            // USER_DEFINED) and a node pair carrying multiple types yields one edge per type —
-            // both are required for type-based consumers such as the ContradictionDetector.
-            for (String edgeTypeStr : graph.getEdgeTypes()) {
-                for (Map.Entry<String, Double> neighbor : graph.getNeighbors(node.getNodeId(), edgeTypeStr)) {
-                    String key = node.getNodeId() + "::" + neighbor.getKey() + "::" + edgeTypeStr;
-                    if (seen.add(key)) {
-                        result.add(buildEdgeWithRelation(graph, node.getNodeId(), neighbor.getKey(),
-                                edgeTypeStr, neighbor.getValue()));
-                    }
-                }
-            }
-        }
-        return result;
+        List<GraphEdge> edges = new ArrayList<>();
+        int cursor = 0;
+        GraphPage<GraphEdge> page;
+        do {
+            page = getEdgesInFactSheetPage(factSheetId, cursor, 1_000);
+            edges.addAll(page.items());
+            cursor = page.nextCursor();
+        } while (page.hasMore());
+        return edges;
+    }
+
+    @Override
+    public GraphPage<GraphEdge> getEdgesInFactSheetPage(Long factSheetId, int cursor, int pageSize) {
+        MatrixGraphStore.ScanPage<MatrixGraphStore.StoredEdge> page =
+                graphStore.scanEdges(graphIdForFactSheet(factSheetId), cursor, pageSize);
+        List<GraphEdge> edges = page.items().stream()
+                .map(this::createEdgeObject)
+                .collect(Collectors.toList());
+        return new GraphPage<>(edges, page.nextCursor(), page.hasMore());
     }
 
     @Override
@@ -1837,6 +1841,27 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
             if (meta.metadata() != null && !meta.metadata().isEmpty()) {
                 edge.setMetadataJson(serializeMetadata(meta.metadata()));
             }
+        }
+        return edge;
+    }
+
+    private GraphEdge createEdgeObject(MatrixGraphStore.StoredEdge stored) {
+        EdgeType edgeType = edgeTypeFromString(stored.edgeType());
+        String identity = stored.relationType() != null && !stored.relationType().isBlank()
+                ? stored.relationType() : edgeType.name();
+        GraphEdge edge = GraphEdge.builder()
+                .edgeId(stored.sourceNodeId() + "::" + stored.targetNodeId() + "::" + identity)
+                .sourceNode(GraphNode.builder().nodeId(stored.sourceNodeId()).build())
+                .targetNode(GraphNode.builder().nodeId(stored.targetNodeId()).build())
+                .edgeType(edgeType)
+                .relationType(stored.relationType())
+                .weight(stored.weight())
+                .description(stored.description())
+                .confidence(stored.confidence())
+                .bidirectional(stored.bidirectional())
+                .build();
+        if (stored.metadata() != null && !stored.metadata().isEmpty()) {
+            edge.setMetadataJson(serializeMetadata(stored.metadata()));
         }
         return edge;
     }

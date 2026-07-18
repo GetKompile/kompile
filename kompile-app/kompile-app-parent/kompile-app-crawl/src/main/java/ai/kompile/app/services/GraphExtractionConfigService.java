@@ -315,7 +315,7 @@ public class GraphExtractionConfigService {
             config.extractionTemperature = 0.0;          // Low temperature for deterministic extraction
             config.extractionMaxTokens = 4096;           // Reasonable default for entity extraction
             config.customExtractionPrompt = null;        // Use built-in prompt
-            config.extractionModelProviderAllow = List.of("opencode", "local");
+            config.extractionModelProviderAllow = List.of("opencode", "opencode-go", "local");
             config.extractionModelExcludeMarkers = List.of("claude", "codex", "opus", "sonnet", "gpt", "gemini");
             config.extractionModelAllow = List.of();
             config.extractionModelPriority = CliAgentModelService.DEFAULT_EXTRACTION_MODEL_PRIORITY;

@@ -654,12 +654,34 @@ export interface StagingStatusResponse {
 /**
  * Request to stage a model.
  */
+export type StagingOutputFormat = 'model' | 'kproject';
+export type StagingTargetProfile =
+  | 'android-arm64-vulkan'
+  | 'android-arm64-hexagon-htp'
+  | 'android-arm64-nnapi-accelerator'
+  | 'android-arm64-google-tensor-g5';
+export type StagingQuantizationProfile = 'none' | 'int8-per-channel';
+
 export interface StageModelRequest {
   modelId: string;
   source?: string;
   repository?: string;
   format?: string;
+  type?: string;
+  authToken?: string;
+  revision?: string;
+  files?: string[];
+  tokenizerUrl?: string;
   autoPromote?: boolean;
+  outputFormat?: StagingOutputFormat;
+  targetProfile?: StagingTargetProfile;
+  quantizationProfile?: StagingQuantizationProfile;
+  targetSoc?: string;
+
+  /** @deprecated Use the canonical `type` field. */
+  modelType?: string;
+  /** @deprecated Use the canonical `authToken` field. */
+  token?: string;
 }
 
 /**

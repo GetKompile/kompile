@@ -27,3 +27,18 @@
 .metrics-row { display: flex; flex-wrap: wrap; gap: 16px; }
 .metric { font-size: 13px; }
 .connecting-msg { font-size: 12px; color: rgba(0,0,0,0.5); font-style: italic; }
+
+@media (max-width: 600px) {
+  .training-dashboard { padding: 12px; }
+  .header { align-items: stretch; flex-direction: column; gap: 12px; }
+  .header button { min-height: 44px; }
+  .jobs-table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+  .expanded-detail { padding: 10px; }
+  .log-entry { min-width: 520px; }
+  .log-feed { overflow-x: auto; }
+}

@@ -72,10 +72,10 @@ import { FactSheetService } from '../../services/fact-sheet.service';
           <mat-label>Anchor type (optional)</mat-label>
           <input matInput [(ngModel)]="anchorType" placeholder="e.g. ORDER">
         </mat-form-field>
-        <button mat-flat-button color="primary" (click)="analyze()" [disabled]="loading">
+        <button mat-flat-button color="primary" (click)="analyze()" [disabled]="loading || !factSheetId">
           <mat-icon>insights</mat-icon> Analyze
         </button>
-        <button mat-stroked-button (click)="discover()" [disabled]="loading"
+        <button mat-stroked-button (click)="discover()" [disabled]="loading || !factSheetId"
                 matTooltip="Mine and save as a process suggestion">
           <mat-icon>save</mat-icon> Discover &amp; save
         </button>
@@ -301,7 +301,7 @@ import { FactSheetService } from '../../services/fact-sheet.service';
 })
 export class ProcessMiningComponent implements OnInit {
 
-  factSheetId = 1;
+  factSheetId: number | null = null;
   noise = 0;
   anchorType = '';
   loading = false;
@@ -326,7 +326,7 @@ export class ProcessMiningComponent implements OnInit {
     this.factSheets.loadSheets().subscribe({
       next: (s) => {
         this.sheets = (s as any[]) || [];
-        if (this.sheets.length && !this.factSheetId) {
+        if (this.sheets.length && this.factSheetId == null) {
           this.factSheetId = this.sheets[0].id;
         }
       },
@@ -336,6 +336,10 @@ export class ProcessMiningComponent implements OnInit {
 
   analyze(): void {
     const id = this.factSheetId;
+    if (id == null || id < 1) {
+      this.promptForFactSheet();
+      return;
+    }
     const anchor = this.anchorType || undefined;
     this.loading = true;
     this.psl = undefined;
@@ -357,6 +361,10 @@ export class ProcessMiningComponent implements OnInit {
 
   runInference(): void {
     const id = this.factSheetId;
+    if (id == null || id < 1) {
+      this.promptForFactSheet();
+      return;
+    }
     const anchor = this.anchorType || undefined;
     const ev = this.evidence.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
     this.loading = true;
@@ -365,8 +373,13 @@ export class ProcessMiningComponent implements OnInit {
   }
 
   discover(): void {
+    const id = this.factSheetId;
+    if (id == null || id < 1) {
+      this.promptForFactSheet();
+      return;
+    }
     this.loading = true;
-    this.mining.discover(this.factSheetId, this.noise, this.anchorType || undefined).subscribe({
+    this.mining.discover(id, this.noise, this.anchorType || undefined).subscribe({
       next: (s) => {
         this.loading = false;
         this.discovered = s;
@@ -423,5 +436,9 @@ export class ProcessMiningComponent implements OnInit {
     this.loading = false;
     this.snack.open('Process mining failed: ' + (err?.error?.message || err?.message || 'error'), 'Dismiss',
       { duration: 5000 });
+  }
+
+  private promptForFactSheet(): void {
+    this.snack.open('Select or create a fact sheet first', 'Dismiss', { duration: 3000 });
   }
 }

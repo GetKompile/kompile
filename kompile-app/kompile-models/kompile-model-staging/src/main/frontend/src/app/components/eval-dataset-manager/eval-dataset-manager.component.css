@@ -14,3 +14,19 @@
 .preview-section { margin-top: 16px; }
 .preview-table { width: 100%; }
 .truncate { max-width: 300px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+@media (max-width: 600px) {
+  .eval-dataset-manager { padding: 12px; }
+  .header { align-items: stretch; flex-direction: column; gap: 12px; }
+  .header button { min-height: 44px; }
+  .file-input { align-items: stretch; flex-direction: column; }
+  .form-actions { flex-wrap: wrap; }
+  .form-actions button { flex: 1 1 auto; min-height: 44px; }
+  .meta { flex-wrap: wrap; gap: 8px 12px; }
+  .preview-table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+}

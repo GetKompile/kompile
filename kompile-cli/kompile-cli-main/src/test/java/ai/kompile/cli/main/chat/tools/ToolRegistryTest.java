@@ -26,6 +26,10 @@ class ToolRegistryTest {
     @Test
     void baseToolsExposeAccurateMcpAnnotations() {
         assertEquals(McpToolAnnotations.READ_ONLY, new ReadTool().mcpAnnotations());
+        assertEquals(McpToolAnnotations.READ_ONLY, new ReadBatchTool().mcpAnnotations());
+        assertEquals(McpToolAnnotations.READ_ONLY, new GrepBatchTool().mcpAnnotations());
+        assertEquals(McpToolAnnotations.READ_ONLY,
+                new FetchResultBatchTool(new ToolResultReferenceCache()).mcpAnnotations());
         assertEquals(McpToolAnnotations.READ_ONLY, new GrepTool().mcpAnnotations());
         assertEquals(McpToolAnnotations.READ_ONLY, new GlobTool().mcpAnnotations());
         assertEquals(McpToolAnnotations.READ_ONLY, new ListTool().mcpAnnotations());
@@ -34,6 +38,8 @@ class ToolRegistryTest {
         assertEquals(McpToolAnnotations.DESTRUCTIVE, new BashTool().mcpAnnotations());
         assertEquals(McpToolAnnotations.WRITE, new WriteTool().mcpAnnotations());
         assertEquals(McpToolAnnotations.WRITE, new EditTool().mcpAnnotations());
+        assertEquals(McpToolAnnotations.WRITE, new EditBatchTool().mcpAnnotations());
+        assertEquals(McpToolAnnotations.WRITE, new EditPatchTool().mcpAnnotations());
         assertEquals(McpToolAnnotations.WRITE, new PatchTool().mcpAnnotations());
     }
 

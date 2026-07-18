@@ -16,6 +16,8 @@
 
 package ai.kompile.app.services;
 
+import ai.kompile.app.facts.domain.FactSheet;
+import ai.kompile.app.facts.service.FactSheetService;
 import ai.kompile.core.crawl.graph.GraphExtractionConfig;
 import ai.kompile.core.crawl.graph.UnifiedCrawlJob;
 import ai.kompile.core.crawl.graph.UnifiedCrawlRequest;
@@ -27,6 +29,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 import java.util.List;
+import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -294,6 +297,46 @@ class SingleSourceCrawlStarterTest {
                         .build());
 
         assertEquals(42L, result.factSheetId());
+    }
+
+    @Test
+    void factSheetNameOption_resolvesExactSheetBeforeStarting() {
+        UnifiedCrawlService crawlService = mock(UnifiedCrawlService.class);
+        FactSheetService factSheetService = mock(FactSheetService.class);
+        when(factSheetService.getSheetByName("FP&A")).thenReturn(Optional.of(
+                FactSheet.builder().id(73L).name("FP&A").build()));
+        when(crawlService.startJob(any())).thenReturn(
+                UnifiedCrawlJob.builder().jobId("job-name").build());
+        SingleSourceCrawlStarter starter = new SingleSourceCrawlStarter(
+                crawlService, factSheetService, null, null, null, null);
+
+        starter.start("Named sheet", fileSource(),
+                SingleSourceCrawlStarter.SingleSourceCrawlOptions.builder()
+                        .factSheetName("FP&A")
+                        .build());
+
+        ArgumentCaptor<UnifiedCrawlRequest> captor = ArgumentCaptor.forClass(UnifiedCrawlRequest.class);
+        verify(crawlService).startJob(captor.capture());
+        assertEquals(73L, captor.getValue().getFactSheetId());
+    }
+
+    @Test
+    void unknownFactSheetName_failsWithoutStartingOrUsingActiveSheet() {
+        UnifiedCrawlService crawlService = mock(UnifiedCrawlService.class);
+        FactSheetService factSheetService = mock(FactSheetService.class);
+        when(factSheetService.getSheetByName("FP&A typo")).thenReturn(Optional.empty());
+        SingleSourceCrawlStarter starter = new SingleSourceCrawlStarter(
+                crawlService, factSheetService, null, null, null, null);
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> starter.start("Bad sheet", fileSource(),
+                        SingleSourceCrawlStarter.SingleSourceCrawlOptions.builder()
+                                .factSheetName("FP&A typo")
+                                .build()));
+
+        assertTrue(error.getMessage().contains("does not exist"));
+        verify(crawlService, never()).startJob(any());
+        verify(factSheetService, never()).getActiveSheet();
     }
 
     @Test

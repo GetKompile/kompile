@@ -46,8 +46,6 @@ import static org.mockito.Mockito.*;
 @org.mockito.junit.jupiter.MockitoSettings(strictness = org.mockito.quality.Strictness.LENIENT)
 class FactSheetGraphServiceImplTest {
 
-    @Mock private GraphNodeRepository nodeRepository;
-    @Mock private GraphEdgeRepository edgeRepository;
     @Mock private EntityMentionRepository entityMentionRepository;
     @Mock private KnowledgeGraphService knowledgeGraphService;
     @Mock private ConceptExtractor conceptExtractor;
@@ -205,22 +203,13 @@ class FactSheetGraphServiceImplTest {
         GraphNode src = stubNode("s1", "Source1", NodeLevel.SOURCE);
         GraphNode doc = stubNode("d1", "Doc1", NodeLevel.DOCUMENT);
 
-        Page<GraphNode> sourcePage = new PageImpl<>(List.of(src));
-        Page<GraphNode> docPage = new PageImpl<>(List.of(doc));
-        Page<GraphNode> entityPage = new PageImpl<>(List.of());
-
-        when(nodeRepository.findByFactSheetIdAndNodeType(eq(1L), eq(NodeLevel.SOURCE), any(PageRequest.class)))
-                .thenReturn(sourcePage);
-        when(nodeRepository.findByFactSheetIdAndNodeType(eq(1L), eq(NodeLevel.DOCUMENT), any(PageRequest.class)))
-                .thenReturn(docPage);
-        when(nodeRepository.findByFactSheetIdAndNodeType(eq(1L), eq(NodeLevel.ENTITY), any(PageRequest.class)))
-                .thenReturn(entityPage);
-
         GraphEdge edge = stubEdge("e1", src, doc, EdgeType.HIERARCHICAL, 1.0);
 
         // Vector store is the source of truth: getVisualizationData now reads via knowledgeGraphService.
-        when(knowledgeGraphService.getNodesInFactSheet(1L)).thenReturn(List.of(src, doc));
-        when(knowledgeGraphService.getEdgesInFactSheet(1L)).thenReturn(List.of(edge));
+        when(knowledgeGraphService.getNodesInFactSheetPage(1L, 0, 1_000))
+                .thenReturn(new KnowledgeGraphService.GraphPage<>(List.of(src, doc), 2, false));
+        when(knowledgeGraphService.getEdgesInFactSheetPage(1L, 0, 1_000))
+                .thenReturn(new KnowledgeGraphService.GraphPage<>(List.of(edge), 1, false));
 
         GraphVisualizationData viz = service.getVisualizationData(1L, 50, 50);
 
@@ -232,8 +221,10 @@ class FactSheetGraphServiceImplTest {
     @Test
     void getVisualizationData_unlimitedNodes_returnsAll() {
         GraphNode n1 = stubNode("n1", "N1", NodeLevel.SOURCE);
-        when(knowledgeGraphService.getNodesInFactSheet(1L)).thenReturn(List.of(n1));
-        when(knowledgeGraphService.getEdgesInFactSheet(1L)).thenReturn(List.of());
+        when(knowledgeGraphService.getNodesInFactSheetPage(1L, 0, 1_000))
+                .thenReturn(new KnowledgeGraphService.GraphPage<>(List.of(n1), 1, false));
+        when(knowledgeGraphService.getEdgesInFactSheetPage(1L, 0, 1_000))
+                .thenReturn(new KnowledgeGraphService.GraphPage<>(List.of(), 0, false));
 
         GraphVisualizationData viz = service.getVisualizationData(1L, 0, 0);
 
@@ -246,10 +237,12 @@ class FactSheetGraphServiceImplTest {
         GraphNode n2 = stubNode("n2", "N2", NodeLevel.DOCUMENT);
 
         // impl reads via knowledgeGraphService — with maxNodes=1 only n1 (SOURCE priority) is in the set
-        when(knowledgeGraphService.getNodesInFactSheet(1L)).thenReturn(List.of(n1, n2));
+        when(knowledgeGraphService.getNodesInFactSheetPage(1L, 0, 1_000))
+                .thenReturn(new KnowledgeGraphService.GraphPage<>(List.of(n1, n2), 2, false));
 
         GraphEdge edge = stubEdge("e1", n1, n2, EdgeType.HIERARCHICAL, 1.0);
-        when(knowledgeGraphService.getEdgesInFactSheet(1L)).thenReturn(List.of(edge));
+        when(knowledgeGraphService.getEdgesInFactSheetPage(1L, 0, 1_000))
+                .thenReturn(new KnowledgeGraphService.GraphPage<>(List.of(edge), 1, false));
 
         // maxNodes=1 → only n1 (SOURCE has highest priority) is retained;
         // edge references n2 which is dropped, so 0 edges after filtering

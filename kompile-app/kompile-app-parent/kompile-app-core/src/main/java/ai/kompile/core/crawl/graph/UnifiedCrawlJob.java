@@ -45,7 +45,8 @@ import java.util.concurrent.atomic.AtomicReference;
 public class UnifiedCrawlJob {
 
     public enum Status {
-        PENDING, RUNNING, PAUSED, COMPLETED, COMPLETED_PENDING_EMBEDDING, COMPLETED_PENDING_GRAPH, FAILED, CANCELLED
+        PENDING, RUNNING, PAUSED, COMPLETED, COMPLETED_PENDING_EMBEDDING, COMPLETED_PENDING_GRAPH,
+        FAILED, CANCELLING, CANCELLED
     }
 
     public enum PipelineStepStatus {
@@ -71,6 +72,15 @@ public class UnifiedCrawlJob {
 
     /** When the job completed/failed/was cancelled */
     private Instant completedAt;
+
+    /**
+     * Returns whether cancellation has been requested or fully acknowledged.
+     * {@link Status#CANCELLED} is reserved for the point at which the worker has quiesced.
+     */
+    public boolean isCancellationRequested() {
+        Status current = status.get();
+        return current == Status.CANCELLING || current == Status.CANCELLED;
+    }
 
     // ---- Progress counters ----
 

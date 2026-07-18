@@ -155,7 +155,6 @@ class McpToolRegistryParityTest {
             "GraphCommunityTool",
             "GraphAlgorithmsTool",
             "GraphLabelTool",
-            "NamedGraphTool",
             // Previously missing tools — now wired in
             "GraphHybridReasoningTool",
             "GraphReasoningQueryTool",

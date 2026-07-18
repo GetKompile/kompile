@@ -284,6 +284,8 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
     private volatile String lastModelId;
     /** Model path of the most recently loaded model. */
     private volatile String lastModelPath;
+    /** Model identity confirmed by the live serving status endpoint; null unless ready. */
+    private volatile String activeModelId;
 
     // ── Runtime state ─────────────────────────────────────────────────────────
 
@@ -304,6 +306,15 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
 
     /** Central log writer: {@code ~/.kompile/logs/subprocesses/serving/<runId>.log}. */
     private volatile SubprocessLogWriter subprocessLogWriter;
+
+    /**
+     * Bounded tail of the subprocess's most recent output lines (stdout + stderr interleaved).
+     * Kept so a premature exit can surface the subprocess's actual failure (e.g. an
+     * UnsatisfiedLinkError from a missing native library) in the thrown exception immediately,
+     * instead of burying it in the per-run log file.
+     */
+    private final Deque<String> recentOutputTail = new ArrayDeque<>();
+    private static final int RECENT_OUTPUT_MAX_LINES = 80;
 
     /** Background reader for subprocess stdout (logs subprocess output at DEBUG). */
     private volatile Thread stdoutReaderThread;
@@ -442,6 +453,9 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
         }
 
         // 6. Init log writer (non-fatal)
+        synchronized (recentOutputTail) {
+            recentOutputTail.clear();
+        }
         String runId = UUID.randomUUID().toString();
         try {
             String workingDir = pb.directory() != null
@@ -464,8 +478,23 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
         stderrReaderThread.setDaemon(true);
         stderrReaderThread.start();
 
-        // 8. Poll until the subprocess HTTP server is ready (model will be loaded by then)
-        waitForReady();
+        // 8. Poll until the subprocess HTTP server is ready, then verify that the live process
+        //    actually loaded the exact requested model before publishing it as active.
+        try {
+            waitForReady();
+            String statusJson = getJson("/api/llm/status");
+            JsonNode status = resolvedMapper().readTree(statusJson);
+            boolean loaded = status.path("loaded").asBoolean(false);
+            String servedModelId = status.path("modelId").asText(null);
+            if (!loaded || !modelId.equals(servedModelId)) {
+                throw new IOException("Serving subprocess reported model '" + servedModelId
+                        + "' (loaded=" + loaded + ") after requesting '" + modelId + "'");
+            }
+            activeModelId = modelId;
+        } catch (IOException | InterruptedException | TimeoutException | RuntimeException e) {
+            stop();
+            throw e;
+        }
 
         logger.info("LLM serving subprocess is ready on port {} (PID {}) with model '{}'",
                 servingPort, process.pid(), modelId);
@@ -484,18 +513,9 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
                                 .description("LLM Serving: " + modelId)
                                 .resourceProfile(ai.kompile.app.services.scheduler.JobResourceProfiles.LLM_SERVING)
                                 .executor(ctx -> {
-                                    // Block until the serving process exits (24h safety timeout)
-                                    try {
-                                        if (trackedProcess != null) {
-                                            boolean exited = trackedProcess.waitFor(24, java.util.concurrent.TimeUnit.HOURS);
-                                            if (!exited) {
-                                                logger.warn("Serving process for model {} did not exit within 24h timeout", modelId);
-                                            }
-                                        }
-                                    } catch (InterruptedException e) {
-                                        Thread.currentThread().interrupt();
-                                    }
+                                    awaitServingProcess(trackedProcess, ctx);
                                 })
+                                .longLivedGpuHold(true)
                                 .priority(70)
                                 .build();
                 resourceScheduler.submit(job);
@@ -503,6 +523,19 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
             } catch (Exception e) {
                 logger.warn("Failed to submit serving job to scheduler: {}", e.getMessage());
             }
+        }
+    }
+
+    static void awaitServingProcess(
+            Process trackedProcess,
+            ai.kompile.app.services.scheduler.ScheduledJob.JobExecutionContext context)
+            throws InterruptedException {
+        if (trackedProcess == null) {
+            return;
+        }
+        while (trackedProcess.isAlive()) {
+            context.throwIfCancellationRequested();
+            trackedProcess.waitFor(1, java.util.concurrent.TimeUnit.SECONDS);
         }
     }
 
@@ -520,7 +553,7 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
      * @throws IOException          on launch or I/O failure
      * @throws InterruptedException if interrupted
      */
-    public String loadModel(String modelId, String modelPath, Map<String, Object> options)
+    public synchronized String loadModel(String modelId, String modelPath, Map<String, Object> options)
             throws IOException, InterruptedException {
         // If already running, stop the old subprocess first
         if (running.get()) {
@@ -531,7 +564,12 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
         try {
             start(modelId, modelPath, null);
             // Return the status from the now-running subprocess (model is already loaded)
-            return getJson("/api/llm/status");
+            String status = getJson("/api/llm/status");
+            if (!modelId.equals(activeModelId)) {
+                throw new IOException("Serving model transition completed without activating requested model '"
+                        + modelId + "'");
+            }
+            return status;
         } catch (TimeoutException e) {
             throw new IOException("Serving subprocess timed out starting with model " + modelId, e);
         }
@@ -557,10 +595,53 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
      * @throws IOException          on HTTP or I/O failure
      * @throws InterruptedException if the request is interrupted
      */
-    public String generate(String prompt) throws IOException, InterruptedException {
+    public synchronized String generate(String prompt) throws IOException, InterruptedException {
         requireRunning("generate");
-        Map<String, Object> body = Map.of("prompt", prompt);
-        return postJson("/api/llm/generate", body);
+        return postJson("/api/llm/generate", Map.of("prompt", prompt));
+    }
+
+    /**
+     * Run text generation with a request-scoped output-token budget.
+     */
+    public synchronized String generate(String prompt, int maxNewTokens)
+            throws IOException, InterruptedException {
+        if (maxNewTokens <= 0) {
+            throw new IllegalArgumentException("maxNewTokens must be positive");
+        }
+        requireRunning("generate");
+        return postJson("/api/llm/generate",
+                Map.of("prompt", prompt, "maxTokens", maxNewTokens));
+    }
+
+    /**
+     * Atomically verify the active model and generate while holding the lifecycle monitor, so a
+     * concurrent operator load or watchdog restart cannot substitute a model between check and use.
+     */
+    public synchronized String generateForModel(String modelId, String prompt)
+            throws IOException, InterruptedException {
+        if (modelId == null || !modelId.equals(activeModelId)) {
+            throw new IllegalStateException("Requested serving model '" + modelId
+                    + "' is not active (active=" + activeModelId + ")");
+        }
+        requireRunning("generateForModel");
+        return postJson("/api/llm/generate", Map.of("prompt", prompt));
+    }
+
+    /**
+     * Atomically verify the active model and generate with a request-scoped output-token budget.
+     */
+    public synchronized String generateForModel(String modelId, String prompt, int maxNewTokens)
+            throws IOException, InterruptedException {
+        if (modelId == null || !modelId.equals(activeModelId)) {
+            throw new IllegalStateException("Requested serving model '" + modelId
+                    + "' is not active (active=" + activeModelId + ")");
+        }
+        if (maxNewTokens <= 0) {
+            throw new IllegalArgumentException("maxNewTokens must be positive");
+        }
+        requireRunning("generateForModel");
+        return postJson("/api/llm/generate",
+                Map.of("prompt", prompt, "maxTokens", maxNewTokens));
     }
 
     /**
@@ -568,6 +649,7 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
      */
     @PreDestroy
     public synchronized void stop() {
+        activeModelId = null;
         if (!running.compareAndSet(true, false)) {
             logger.debug("Serving subprocess is not running — stop() is a no-op");
             return;
@@ -654,6 +736,21 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
     }
 
     /**
+     * Return the model identifier configured for this serving subprocess lifecycle.
+     *
+     * <p>The value is retained across stop/start because the watchdog uses the same configuration
+     * for restarts. Callers must still use {@link #isModelLoaded()} before generation.</p>
+     */
+    public String getConfiguredModelId() {
+        return lastModelId;
+    }
+
+    /** Return the model identity confirmed by the live status endpoint, or null when not ready. */
+    public String getActiveModelId() {
+        return activeModelId;
+    }
+
+    /**
      * Check whether the serving subprocess is running AND has a model fully loaded
      * (ready to serve generation requests).
      *
@@ -675,7 +772,10 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
             String statusJson = getJson("/api/llm/status");
             com.fasterxml.jackson.databind.JsonNode node =
                     resolvedMapper().readTree(statusJson);
-            boolean loaded = node.path("loaded").asBoolean(false);
+            String servedModelId = node.path("modelId").asText(null);
+            boolean loaded = node.path("loaded").asBoolean(false)
+                    && activeModelId != null
+                    && activeModelId.equals(servedModelId);
             cachedModelLoaded = loaded;
             modelLoadedCacheTimeNs = System.nanoTime();
             return loaded;
@@ -736,10 +836,15 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
         logger.warn("Watchdog-triggered restart requested for serving subprocess: {} (model={})", reason, mid);
         Thread t = new Thread(() -> {
             try {
-                stop();
-                shuttingDown.set(false); // reset so start() is permitted
-                loadModel(mid, mpath, null);
-                logger.info("Serving subprocess successfully restarted by watchdog with model '{}'", mid);
+                synchronized (ServingSubprocessLauncher.this) {
+                    if (!Objects.equals(mid, lastModelId) || !Objects.equals(mpath, lastModelPath)) {
+                        logger.info("Skipping stale watchdog restart for model '{}'; lifecycle moved to '{}'",
+                                mid, lastModelId);
+                        return;
+                    }
+                    loadModel(mid, mpath, null);
+                    logger.info("Serving subprocess successfully restarted by watchdog with model '{}'", mid);
+                }
             } catch (Exception e) {
                 logger.error("Watchdog restart of serving subprocess failed: {}", e.getMessage(), e);
             }
@@ -1158,7 +1263,8 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
             Process p = this.process;
             if (p != null && !p.isAlive()) {
                 running.set(false);
-                throw new IOException("Serving subprocess exited prematurely with code " + p.exitValue());
+                throw new IOException("Serving subprocess exited prematurely with code " + p.exitValue()
+                        + prematureExitDetail());
             }
 
             // Attempt a single GET request
@@ -1274,6 +1380,7 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
                 } else {
                     logger.debug("[serving-subprocess] {}", line);
                 }
+                recordRecentOutput(line);
                 SubprocessLogWriter slw = subprocessLogWriter;
                 if (slw != null) {
                     try {
@@ -1306,6 +1413,7 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
                 } else {
                     logger.debug("[serving-subprocess] {}", line);
                 }
+                recordRecentOutput(line);
                 SubprocessLogWriter slw = subprocessLogWriter;
                 if (slw != null) {
                     try {
@@ -1320,6 +1428,56 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
                 logger.warn("Error reading serving subprocess stderr: {}", e.getMessage());
             }
         }
+    }
+
+    private void recordRecentOutput(String line) {
+        if (line == null || line.isBlank()) {
+            return;
+        }
+        synchronized (recentOutputTail) {
+            recentOutputTail.addLast(line);
+            while (recentOutputTail.size() > RECENT_OUTPUT_MAX_LINES) {
+                recentOutputTail.removeFirst();
+            }
+        }
+    }
+
+    /**
+     * Failure context appended to the premature-exit exception: the error-bearing lines from the
+     * subprocess's recent output (falling back to the plain tail when nothing matches), plus the
+     * per-run log path. The reader threads may still be draining the pipes when the exit is
+     * observed, so give them a brief moment to flush the crash stack first.
+     */
+    private String prematureExitDetail() {
+        try {
+            Thread.sleep(300);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+        }
+        List<String> snapshot;
+        synchronized (recentOutputTail) {
+            snapshot = new ArrayList<>(recentOutputTail);
+        }
+        StringBuilder sb = new StringBuilder();
+        if (!snapshot.isEmpty()) {
+            List<String> errorLines = snapshot.stream()
+                    .filter(l -> l.contains("Caused by")
+                            || l.contains("Exception")
+                            || l.contains("Error")
+                            || l.contains(" ERROR ")
+                            || l.contains("cannot open")
+                            || l.contains("FATAL"))
+                    .toList();
+            List<String> pick = errorLines.isEmpty() ? snapshot : errorLines;
+            int from = Math.max(0, pick.size() - 10);
+            sb.append(" — last subprocess output:\n    ")
+              .append(String.join("\n    ", pick.subList(from, pick.size())));
+        }
+        SubprocessLogWriter slw = subprocessLogWriter;
+        if (slw != null && slw.getLogFile() != null) {
+            sb.append("\n    (full log: ").append(slw.getLogFile().getAbsolutePath()).append(')');
+        }
+        return sb.toString();
     }
 
     /**

@@ -46,4 +46,17 @@ public interface ModelCapabilityResolver {
      */
     Optional<ModelCapability> resolve(ProcessingRouteConfig.ProcessingBackendType backendType,
                                       String provider, String modelName, String agentName);
+
+    /**
+     * Effective concurrent-request capacity of the LOCAL model serving lane. One loaded model on
+     * one accelerator stream serves generation serially, so the default is 1. Implementations may
+     * report a higher value when the serving process actually accepts parallel generation (e.g. a
+     * batched server advertising {@code maxConcurrentRequests} on its status endpoint). Extraction
+     * clamps local wave width to this so queued calls don't masquerade as high-latency models —
+     * queue wait would otherwise poison the latency/throughput EWMAs and the adaptive timeouts
+     * derived from them.
+     */
+    default int localGenerationConcurrency() {
+        return 1;
+    }
 }

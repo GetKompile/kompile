@@ -332,28 +332,40 @@ public class SingleSourceCrawlStarter {
     }
 
     private void resolveFactSheetScope(UnifiedCrawlRequest request) {
-        if (request == null || request.getFactSheetId() != null || factSheetService == null) {
+        if (request == null || request.getFactSheetId() != null) {
+            return;
+        }
+        String requestedName = request.getFactSheetName() != null
+                && !request.getFactSheetName().isBlank()
+                ? request.getFactSheetName().trim() : null;
+        if (factSheetService == null) {
+            if (requestedName != null) {
+                throw new IllegalStateException(
+                        "Fact-sheet service is unavailable; cannot resolve '" + requestedName + "'");
+            }
             return;
         }
         try {
-            if (request.getFactSheetName() != null && !request.getFactSheetName().isBlank()) {
-                factSheetService.getSheetByName(request.getFactSheetName()).ifPresent(sheet -> {
-                    request.setFactSheetId(sheet.getId());
-                    log.info("Scoped single-source crawl '{}' to fact sheet '{}' (id={})",
-                            request.getName(), sheet.getName(), sheet.getId());
-                });
-                if (request.getFactSheetId() != null) {
-                    return;
-                }
+            if (requestedName != null) {
+                FactSheet sheet = factSheetService.getSheetByName(requestedName)
+                        .orElseThrow(() -> new IllegalArgumentException(
+                                "Fact sheet '" + requestedName + "' does not exist"));
+                request.setFactSheetId(sheet.getId());
+                log.info("Scoped single-source crawl '{}' to fact sheet '{}' (id={})",
+                        request.getName(), sheet.getName(), sheet.getId());
+                return;
             }
             FactSheet activeSheet = factSheetService.getActiveSheet();
-            if (activeSheet != null) {
-                request.setFactSheetId(activeSheet.getId());
-                log.info("Scoped single-source crawl '{}' to active fact sheet {}",
-                        request.getName(), activeSheet.getId());
+            if (activeSheet == null || activeSheet.getId() == null) {
+                throw new IllegalStateException("No active fact sheet is available for the crawl");
             }
-        } catch (Exception e) {
-            log.warn("Could not resolve active fact sheet for single-source crawl: {}", e.getMessage());
+            request.setFactSheetId(activeSheet.getId());
+            log.info("Scoped single-source crawl '{}' to active fact sheet {}",
+                    request.getName(), activeSheet.getId());
+        } catch (IllegalArgumentException | IllegalStateException scopeFailure) {
+            throw scopeFailure;
+        } catch (RuntimeException lookupFailure) {
+            throw new IllegalStateException("Could not resolve fact sheet for single-source crawl", lookupFailure);
         }
     }
 

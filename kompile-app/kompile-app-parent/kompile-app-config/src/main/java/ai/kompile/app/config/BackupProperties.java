@@ -16,6 +16,7 @@
 
 package ai.kompile.app.config;
 
+import ai.kompile.cli.common.KompileHome;
 import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
@@ -68,9 +69,9 @@ public class BackupProperties {
 
     /**
      * Base path for backup storage.
-     * Default: ~/.kompile/backups
+     * Default: <active-project>/backups
      */
-    private String backupPath = System.getProperty("user.home") + "/.kompile/backups";
+    private String backupPath;
 
     /**
      * Fixed rate interval for scheduled backups in milliseconds.
@@ -114,7 +115,7 @@ public class BackupProperties {
     /**
      * Path to the Anserini vector index directory.
      */
-    private String vectorIndexPath = System.getProperty("user.home") + "/.kompile/anserini-vector-index";
+    private String vectorIndexPath;
 
     /**
      * Path to the text/keyword index directory.
@@ -124,10 +125,13 @@ public class BackupProperties {
     public BackupProperties(@Value("${kompile.data.dir:#{null}}") String dataDir) {
         String effectiveDataDir = dataDir;
         if (effectiveDataDir == null || effectiveDataDir.isBlank()) {
-            effectiveDataDir = System.getProperty("user.home") + "/.kompile";
+            effectiveDataDir = KompileHome.resolvedProjectDirectory().getAbsolutePath();
         }
+        Path projectRoot = Paths.get(effectiveDataDir).toAbsolutePath().normalize();
+        this.backupPath = projectRoot.resolve("backups").toString();
+        this.vectorIndexPath = projectRoot.resolve("data/index/vector").toString();
         this.objectMapper = JsonUtils.newStandardMapper();
-        this.configFilePath = Paths.get(effectiveDataDir, "config", CONFIG_FILENAME);
+        this.configFilePath = projectRoot.resolve("config").resolve(CONFIG_FILENAME);
         log.info("BackupProperties initialized, config path: {}", configFilePath);
     }
 

@@ -73,6 +73,10 @@ public class DistributedCrawlCoordinator {
     @Autowired(required = false)
     private UnifiedCrawlService unifiedCrawlService;
 
+    /** Optional full-application fact-sheet resolver; workers must receive a concrete scope. */
+    @Autowired(required = false)
+    private CrawlFactSheetScopeResolver factSheetScopeResolver;
+
     /** Optional: live cluster view, so partitioning spreads across the actual workers (capability-aware). */
     @Autowired(required = false)
     private CrawlWorkerRegistry workerRegistry;
@@ -119,6 +123,18 @@ public class DistributedCrawlCoordinator {
      * @return the distributed session with tracking info
      */
     public DistributedCrawlSession startDistributed(UnifiedCrawlRequest request) {
+        if (request == null) {
+            throw new IllegalArgumentException("Crawl request is required");
+        }
+        if (factSheetScopeResolver != null) {
+            factSheetScopeResolver.resolveScope(request);
+        } else if (request.getFactSheetId() == null
+                && request.getFactSheetName() != null
+                && !request.getFactSheetName().isBlank()) {
+            throw new IllegalArgumentException("Fact sheet '" + request.getFactSheetName().trim()
+                    + "' must resolve to a concrete ID before distributed dispatch");
+        }
+
         DistributionConfig distConfig = request.getDistribution();
         if (distConfig == null) {
             throw new IllegalArgumentException("Distribution config is required for distributed crawl");

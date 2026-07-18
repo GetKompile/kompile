@@ -160,3 +160,40 @@ mat-dialog-actions button mat-icon {
   height: 18px;
   margin-right: 4px;
 }
+
+@media (max-width: 600px) {
+  h2[mat-dialog-title] {
+    align-items: flex-start;
+    font-size: 18px;
+  }
+
+  .model-id {
+    overflow-wrap: anywhere;
+  }
+
+  .group-header {
+    flex-wrap: wrap;
+    padding-inline: 8px;
+  }
+
+  .sub-pass-row {
+    padding: 8px 10px 8px 24px;
+  }
+
+  .iterations-field {
+    width: 100%;
+  }
+
+  .selection-summary {
+    align-items: flex-start;
+  }
+
+  mat-dialog-actions {
+    flex-wrap: wrap;
+  }
+
+  mat-dialog-actions button {
+    flex: 1 1 auto;
+    min-height: 44px;
+  }
+}

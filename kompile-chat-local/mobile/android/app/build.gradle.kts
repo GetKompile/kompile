@@ -4,16 +4,52 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val defaultHexagonAar = layout.projectDirectory.file(
+    "libs/hexagon/sdx-runtime-android-arm64-hexagon.aar"
+).asFile.absolutePath
+val defaultVulkanAar = layout.projectDirectory.file(
+    "libs/vulkan/sdx-runtime-android-arm64-vulkan.aar"
+).asFile.absolutePath
+val defaultTensorG5Aar = layout.projectDirectory.file(
+    "libs/tensor-g5/sdx-chat-runtime-android-arm64-google-tensor-g5.aar"
+).asFile.absolutePath
+val defaultTensorG3Aar = layout.projectDirectory.file(
+    "libs/tensor-g3/sdx-runtime-android-arm64-tensor-g3.aar"
+).asFile.absolutePath
+val hexagonAar = providers.gradleProperty("sdxHexagonAar")
+    .orElse(providers.environmentVariable("SDX_HEXAGON_AAR"))
+    .orElse(defaultHexagonAar)
+val vulkanAar = providers.gradleProperty("sdxVulkanAar")
+    .orElse(providers.environmentVariable("SDX_VULKAN_AAR"))
+    .orElse(defaultVulkanAar)
+val tensorG5Aar = providers.gradleProperty("sdxTensorG5Aar")
+    .orElse(providers.environmentVariable("SDX_TENSOR_G5_AAR"))
+    .orElse(defaultTensorG5Aar)
+val tensorG3Aar = providers.gradleProperty("sdxTensorG3Aar")
+    .orElse(providers.environmentVariable("SDX_TENSOR_G3_AAR"))
+    .orElse(defaultTensorG3Aar)
+// Optional connected-mode handoff. The APK itself stays offline; ACTION_VIEW opens the
+// configured Kompile staging UI in the user's browser. Override reproducibly with
+// -PkompileModelStagingUrl=https://host/staging or KOMPILE_MODEL_STAGING_URL.
+val modelStagingUrl = providers.gradleProperty("kompileModelStagingUrl")
+    .orElse(providers.environmentVariable("KOMPILE_MODEL_STAGING_URL"))
+    .orElse("")
+val modelStagingUrlLiteral = modelStagingUrl.map { value ->
+    "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+}
+
 android {
     namespace = "ai.kompile.chat.local.android"
     compileSdk = 35
 
     defaultConfig {
         applicationId = "ai.kompile.chat.local.android"
-        minSdk = 26
+        // Stock-Graal graph JNI support is built against Android API 28 bionic.
+        minSdk = 28
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0-SNAPSHOT"
+        buildConfigField("String", "MODEL_STAGING_URL", modelStagingUrlLiteral.get())
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -22,9 +58,54 @@ android {
         }
 
         ndk {
-            // libsdx_llm.so is arm64-v8a on physical devices, x86_64 on the emulator.
-            abiFilters += listOf("arm64-v8a", "x86_64")
+            // Accelerator releases are physical-device-only and never carry an x86 CPU path.
+            abiFilters += "arm64-v8a"
         }
+    }
+
+    flavorDimensions += "accelerator"
+    productFlavors {
+        create("vulkan") {
+            dimension = "accelerator"
+            applicationIdSuffix = ".vulkan"
+            versionNameSuffix = "-vulkan"
+            buildConfigField("String", "ACCELERATOR_PROVIDER", "\"vulkan-gpu\"")
+            buildConfigField("String", "SDX_TARGET_PROFILE", "\"android-arm64-vulkan\"")
+            buildConfigField("boolean", "DEVICE_ONLY", "true")
+        }
+        create("hexagon") {
+            dimension = "accelerator"
+            applicationIdSuffix = ".hexagon"
+            versionNameSuffix = "-hexagon"
+            buildConfigField("String", "ACCELERATOR_PROVIDER", "\"hexagon-htp\"")
+            buildConfigField("String", "SDX_TARGET_PROFILE", "\"android-arm64-hexagon-htp\"")
+            buildConfigField("boolean", "DEVICE_ONLY", "true")
+        }
+        create("tensorG5") {
+            dimension = "accelerator"
+            applicationIdSuffix = ".tensorg5"
+            versionNameSuffix = "-tensor-g5"
+            buildConfigField("String", "ACCELERATOR_PROVIDER", "\"google-tensor-g5\"")
+            buildConfigField("String", "SDX_TARGET_PROFILE", "\"android-arm64-google-tensor-g5\"")
+            buildConfigField("boolean", "DEVICE_ONLY", "true")
+        }
+        create("tensorG3") {
+            dimension = "accelerator"
+            // The accelerator-only NNAPI AAR uses Android 12 NNAPI compilation APIs.
+            // Keep API 28 for Vulkan/Graal; raise only the Tensor G3 flavor.
+            minSdk = 31
+            applicationIdSuffix = ".tensorg3"
+            versionNameSuffix = "-tensor-g3-nnapi"
+            buildConfigField("String", "ACCELERATOR_PROVIDER", "\"google-tensor-g3-nnapi\"")
+            buildConfigField("String", "SDX_TARGET_PROFILE", "\"android-arm64-nnapi-accelerator\"")
+            buildConfigField("boolean", "DEVICE_ONLY", "true")
+        }
+    }
+
+    sourceSets {
+        getByName("vulkan").java.srcDir("src/sdx/java")
+        getByName("hexagon").java.srcDir("src/sdx/java")
+        getByName("tensorG3").java.srcDir("src/sdx/java")
     }
 
     buildTypes {
@@ -43,7 +124,7 @@ android {
     }
 
     compileOptions {
-        // Core JARs are Java 17; ART on API 26+ handles Java 8 bytecode;
+        // Core JARs are Java 17; ART on API 28+ handles Java 8 bytecode;
         // desugar fills the gap for the handful of Java 11 APIs we use.
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -80,13 +161,21 @@ android {
         // For any META-INF duplicates not covered by excludes, pick the first occurrence.
         resources.pickFirsts += "META-INF/**"
         jniLibs {
-            // Required for JNA to unpack libsdx_llm.so from the AAR at runtime.
+            // Native pipelines already emit release-ready provider, JavaCPP, and Graal AOT
+            // libraries. Preserve those audited bytes; AGP's strip transform can corrupt
+            // vendor/stock-Graal binaries that intentionally omit GNU debug sections.
+            // FastRPC also discovers the bundled Hexagon DSP skeleton by filesystem path,
+            // so native libraries must be extracted beside the host runtime at install time.
             useLegacyPackaging = true
+            keepDebugSymbols += setOf("**/*.so")
         }
     }
 
-    // Place mavenLocal JARs (kompile-chat-local-core etc.) on the compile path.
-    // Android Gradle Plugin resolves these from the standard maven local cache.
+}
+
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+    // The retained legacy JNA source is not part of accelerator builds; JavaCPP owns transport.
+    exclude("**/SdxChatModelAndroid.kt")
 }
 
 dependencies {
@@ -116,18 +205,13 @@ dependencies {
     // ── Coroutines ────────────────────────────────────────────────────────────
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 
-    // ── JNA for libsdx_llm.so binding ────────────────────────────────────────
-    // The @aar classifier forces AGP to unpack the native libs into jniLibs.
-    // We use the AAR form for the app itself; the plain JNA JAR that comes in
-    // transitively through kompile-chat-local-core must be excluded to avoid
-    // "Duplicate class" errors from D8.
-    implementation("net.java.dev.jna:jna:5.14.0@aar")
-
-    // ── SDX Runtime AAR (optional — place in app/libs/ when available) ────────
-    // The fileTree picks up any .aar dropped in app/libs/. The code guards
-    // all JNA load calls with try/catch UnsatisfiedLinkError so the app
-    // runs without this artifact (remote-only mode).
-    implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.aar", "*.jar"))))
+    // ── Separate device-only JavaCPP provider AARs ────────────────────────────
+    // Each APK resolves exactly one provider. The build script stages these paths
+    // and both runtime verifiers reject BLAS, host, and alternate-backend leakage.
+    add("vulkanImplementation", files(vulkanAar))
+    add("hexagonImplementation", files(hexagonAar))
+    add("tensorG3Implementation", files(tensorG3Aar))
+    add("tensorG5Implementation", files(tensorG5Aar))
 
     // ── Kompile core libraries (installed to mavenLocal via `mvn install`) ────
     // kompile-chat-local-core: ChatEngine, ChatModel, Message, GenOptions, …

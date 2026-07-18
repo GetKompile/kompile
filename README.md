@@ -224,8 +224,20 @@ kompile project add-crawl-profile              # Add an ingestion profile
 kompile project add-code-project --dir=./src   # Register code for semantic search
 kompile project index-code-project <id>        # Index code for search
 kompile project lifecycle --state=ACTIVE       # Transition project state
+kompile project export --root . -o myproject.kproject
+kompile project import myproject.kproject --target ../restored-project
 kompile project commit / pull / push           # Git operations on the project
 ```
+
+A `.kproject` is a versioned, checksummed archive of the complete durable project: its manifest
+and metadata, databases, documents, indexes, models, chats, and portable `.kgraph` files. Git
+internals, process state, build output, and known secret files are excluded. Export refuses a
+running project unless `--allow-running` is explicit. Credential/key files can only be included
+with the explicit `--include-sensitive-files` option. Export reads every included file through
+no-follow secure directory handles, verifies the complete snapshot twice, and fails if the project
+changes while it is being archived. Import verifies the exact entry inventory, sizes, paths, and
+SHA-256 hashes before using an atomic no-replace publication primitive, so a destination created
+concurrently is never overwritten; platforms without that guarantee are rejected.
 
 Projects move through lifecycle states: `DRAFT → ACTIVE → PAUSED → ARCHIVED | DEPRECATED`.
 They can be backed by Git or Git-XET for version control with optional auto-commit.

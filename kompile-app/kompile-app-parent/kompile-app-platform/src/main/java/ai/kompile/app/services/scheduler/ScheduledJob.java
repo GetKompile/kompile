@@ -25,6 +25,7 @@ import lombok.Setter;
 import java.time.Instant;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -62,8 +63,23 @@ public class ScheduledJob implements Comparable<ScheduledJob> {
             String jobId,
             JobResourceProfile resourceProfile,
             PhaseCallback phaseCallback,
-            SubprocessPlacement placement
+            SubprocessPlacement placement,
+            AtomicBoolean cancellationRequested
     ) {
+        public boolean isCancellationRequested() {
+            return cancellationRequested != null && cancellationRequested.get();
+        }
+
+        public void throwIfCancellationRequested() throws InterruptedException {
+            if (isCancellationRequested() || Thread.currentThread().isInterrupted()) {
+                throw new InterruptedException("Job " + jobId + " was cancelled");
+            }
+        }
+
+        public JobExecutionContext(String jobId, JobResourceProfile resourceProfile,
+                                   PhaseCallback phaseCallback, SubprocessPlacement placement) {
+            this(jobId, resourceProfile, phaseCallback, placement, new AtomicBoolean(false));
+        }
         /**
          * Backward-compatible constructor with no scheduler-assigned placement. A subprocess-spawning
          * executor should prefer the 4-arg form and deliver {@link #placement()} to its launcher via
@@ -96,6 +112,8 @@ public class ScheduledJob implements Comparable<ScheduledJob> {
     private final JobResourceProfile resourceProfile;
     private final JobExecutor executor;
     private final Map<String, Object> metadata;
+    /** Explicitly marks GPU accounting that is expected to live until cancellation or owner exit. */
+    private final boolean longLivedGpuHold;
     private final Instant queuedAt;
     private volatile int priority;
 
@@ -111,6 +129,7 @@ public class ScheduledJob implements Comparable<ScheduledJob> {
     /** Device-agnostic placement the scheduler assigned for this run (device + backend + memory bound). */
     private volatile SubprocessPlacement assignedPlacement;
     private final CompletableFuture<JobResult> resultFuture = new CompletableFuture<>();
+    private final AtomicBoolean cancellationRequested = new AtomicBoolean(false);
     private volatile Instant startedAt;
     private volatile Instant completedAt;
     private volatile boolean gpuHeld;
@@ -122,7 +141,8 @@ public class ScheduledJob implements Comparable<ScheduledJob> {
 
     @Builder
     private ScheduledJob(String jobId, String jobType, String description, JobResourceProfile resourceProfile,
-                         JobExecutor executor, Map<String, Object> metadata, Integer priority) {
+                         JobExecutor executor, Map<String, Object> metadata, Integer priority,
+                         boolean longLivedGpuHold) {
         if (jobId == null) throw new IllegalArgumentException("jobId is required");
         if (jobType == null) throw new IllegalArgumentException("jobType is required");
         if (resourceProfile == null) throw new IllegalArgumentException("resourceProfile is required");
@@ -133,6 +153,7 @@ public class ScheduledJob implements Comparable<ScheduledJob> {
         this.resourceProfile = resourceProfile;
         this.executor = executor;
         this.metadata = metadata != null ? Map.copyOf(metadata) : Map.of();
+        this.longLivedGpuHold = longLivedGpuHold;
         this.queuedAt = Instant.now();
         this.priority = priority != null ? priority : 50;
     }

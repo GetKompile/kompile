@@ -18,12 +18,14 @@ package ai.kompile.app.services;
 
 import ai.kompile.app.config.BackupProperties;
 import ai.kompile.app.config.BackupProperties.BackupFormat;
+import ai.kompile.app.services.scheduler.ResourceAwareJobScheduler;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
 import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -75,6 +77,9 @@ public class BackupService {
 
     private final BackupProperties properties;
 
+    @Autowired(required = false)
+    private ResourceAwareJobScheduler jobScheduler;
+
     // Track if backup is in progress to prevent concurrent runs
     private final AtomicBoolean backupInProgress = new AtomicBoolean(false);
 
@@ -103,10 +108,25 @@ public class BackupService {
     /**
      * Scheduled backup task running at configured interval.
      */
-    @Scheduled(fixedRateString = "${kompile.backup.fixedRateMs:21600000}", initialDelayString = "${kompile.backup.initialDelayMs:60000}")
+    @Scheduled(fixedRateString = "${kompile.backup.fixedRateMs:21600000}", initialDelayString = "${kompile.backup.initialDelayMs:21600000}")
     public void scheduledBackup() {
+        if (hasGraphMutatingJob()) {
+            log.info("Deferring scheduled backup while crawl/graph work is active");
+            return;
+        }
         log.info("Starting scheduled backup...");
         performBackup();
+    }
+
+    private boolean hasGraphMutatingJob() {
+        if (jobScheduler == null) {
+            return false;
+        }
+        return jobScheduler.getRunningSnapshot().stream()
+                .map(view -> view.jobType())
+                .map(String::toLowerCase)
+                .anyMatch(type -> type.contains("crawl") || type.contains("graph")
+                        || type.contains("ingest"));
     }
 
     /**

@@ -277,7 +277,7 @@ class CrawlMemoryMonitor {
         int iteration = 0;
         while (System.currentTimeMillis() < deadline) {
             // Check for job cancellation inline
-            if (job.getStatus().get() == UnifiedCrawlJob.Status.CANCELLED) {
+            if (job.isCancellationRequested()) {
                 return false;
             }
             try {

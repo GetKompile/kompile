@@ -49,6 +49,15 @@
       <groupId>ai.kompile</groupId>
       <artifactId>kompile-app-main</artifactId>
       <scope>test</scope>
+      <exclusions>
+        <!-- tabula (via kompile-loader-pdf-tables) drags in the slf4j-simple provider;
+             a second SLF4J provider next to logback breaks Spring Boot's logging init
+             for every @SpringBootTest in this module. -->
+        <exclusion>
+          <groupId>org.slf4j</groupId>
+          <artifactId>slf4j-simple</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
     <dependency>
       <groupId>ai.kompile</groupId>
@@ -302,28 +311,30 @@
     </dependency>
 
     <!-- ═══════════════════════════════════════════════════════════════ -->
-    <!-- ND4J runtime                                                   -->
+    <!-- ND4J runtime — resolved from ${nd4j.backend} (CPU by default)   -->
+    <!-- like every other module; GPU lanes opt in via                   -->
+    <!-- -Dkompile.backend=cuda-12.9 (root-pom backend profiles).        -->
     <!-- ═══════════════════════════════════════════════════════════════ -->
     <dependency>
       <groupId>org.eclipse.deeplearning4j</groupId>
-      <artifactId>nd4j-cuda-12.9</artifactId>
+      <artifactId>${nd4j.backend}</artifactId>
       <version>${nd4j.version}</version>
-      <exclusions>
-        <exclusion>
-          <groupId>org.eclipse.deeplearning4j</groupId>
-          <artifactId>nd4j-native</artifactId>
-        </exclusion>
-        <exclusion>
-          <groupId>org.eclipse.deeplearning4j</groupId>
-          <artifactId>nd4j-native-preset</artifactId>
-        </exclusion>
-      </exclusions>
     </dependency>
     <dependency>
       <groupId>org.eclipse.deeplearning4j</groupId>
-      <artifactId>nd4j-cuda-12.9</artifactId>
+      <artifactId>${nd4j.backend}</artifactId>
       <version>${nd4j.version}</version>
-      <classifier>linux-x86_64</classifier>
+      <classifier>${javacpp.platform}</classifier>
+    </dependency>
+
+    <!-- Maven invoker: used by the kompile-cli build-generation classes under test
+         (BuildNd4jBackend / GenerateDl4jBuild); declared directly so a stale
+         kompile-cli-main pom vintage in ~/.m2 cannot drop it from the test classpath. -->
+    <dependency>
+      <groupId>org.apache.maven.shared</groupId>
+      <artifactId>maven-invoker</artifactId>
+      <version>3.3.0</version>
+      <scope>test</scope>
     </dependency>
 
     <!-- ═══════════════════════════════════════════════════════════════ -->

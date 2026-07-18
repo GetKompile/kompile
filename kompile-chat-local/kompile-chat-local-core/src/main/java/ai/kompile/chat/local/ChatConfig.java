@@ -17,6 +17,8 @@ import java.util.Properties;
  * <pre>
  * Property key              Env var                          Default
  * kgraph.path               KOMPILE_CHAT_KGRAPH_PATH         (none)
+ * project.path              KOMPILE_CHAT_PROJECT_PATH        (none)
+ * fact.sheet.id             KOMPILE_CHAT_FACT_SHEET_ID       (none)
  * model.path                KOMPILE_CHAT_MODEL_PATH          (none)
  * tokenizer.path            KOMPILE_CHAT_TOKENIZER_PATH      (none)
  * sdx.libPath               KOMPILE_CHAT_SDX_LIB             (none)
@@ -42,6 +44,8 @@ import java.util.Properties;
 public final class ChatConfig {
 
     private Path kgraphPath;
+    private Path projectPath;
+    private String factSheetId;
     private String modelPath;
     private String tokenizerPath;
     private String sdxLibPath;
@@ -75,6 +79,10 @@ public final class ChatConfig {
         String v;
         if ((v = props.getProperty("kgraph.path")) != null && !v.isBlank())
             cfg.kgraphPath = Path.of(v.trim());
+        if ((v = props.getProperty("project.path")) != null && !v.isBlank())
+            cfg.projectPath = Path.of(v.trim());
+        if ((v = props.getProperty("fact.sheet.id")) != null && !v.isBlank())
+            cfg.factSheetId = v.trim();
         if ((v = props.getProperty("model.path")) != null && !v.isBlank())
             cfg.modelPath = v.trim();
         if ((v = props.getProperty("tokenizer.path")) != null && !v.isBlank())
@@ -119,6 +127,10 @@ public final class ChatConfig {
         String v;
         if ((v = env("KOMPILE_CHAT_KGRAPH_PATH")) != null)
             kgraphPath = Path.of(v);
+        if ((v = env("KOMPILE_CHAT_PROJECT_PATH")) != null)
+            projectPath = Path.of(v);
+        if ((v = env("KOMPILE_CHAT_FACT_SHEET_ID")) != null)
+            factSheetId = v;
         if ((v = env("KOMPILE_CHAT_MODEL_PATH")) != null)
             modelPath = v;
         if ((v = env("KOMPILE_CHAT_TOKENIZER_PATH")) != null)
@@ -153,6 +165,16 @@ public final class ChatConfig {
     /** Path to the {@code .kgraph} file, if configured. */
     public Optional<Path> kgraphPath() {
         return Optional.ofNullable(kgraphPath);
+    }
+
+    /** Path to a Kompile project directory or .kproject archive, if configured. */
+    public Optional<Path> projectPath() {
+        return Optional.ofNullable(projectPath);
+    }
+
+    /** Fact-sheet identifier used to select a project graph, if configured. */
+    public Optional<String> factSheetId() {
+        return Optional.ofNullable(factSheetId);
     }
 
     /** Path to the local SDX model file, if configured. */

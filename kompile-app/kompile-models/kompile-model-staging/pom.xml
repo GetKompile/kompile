@@ -50,7 +50,24 @@
         </dependency>
         <dependency>
             <groupId>ai.kompile</groupId>
+            <artifactId>kompile-project-store</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-graph-reasoning</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-utils</artifactId>
+        </dependency>
+
+        <!-- Canonical SDZ identity, target compiler/cache, embedded target packaging. -->
+        <dependency>
+            <groupId>org.eclipse.deeplearning4j</groupId>
+            <artifactId>nd4j-sdx-model</artifactId>
+            <version>${nd4j.version}</version>
         </dependency>
 
         <!-- GGML model import used by ConversionService (org.nd4j.ggml.*); was only ever

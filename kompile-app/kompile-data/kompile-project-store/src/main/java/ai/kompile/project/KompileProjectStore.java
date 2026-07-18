@@ -1115,6 +1115,9 @@ public class KompileProjectStore {
                 config/secrets/
                 config/*.secret.json
                 config/oauth-settings.json
+                config/oauth-encryption.key
+                .env*
+                !.env.example
 
                 # Crash dumps
                 hs_err_pid*.log

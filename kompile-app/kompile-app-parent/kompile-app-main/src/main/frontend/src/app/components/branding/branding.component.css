@@ -46,3 +46,18 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+@media (max-width: 480px) {
+  .brand {
+    gap: 6px;
+  }
+
+  .brand-logo {
+    height: 28px;
+  }
+
+  .brand-title {
+    max-width: 96px;
+    font-size: 0.875rem;
+  }
+}

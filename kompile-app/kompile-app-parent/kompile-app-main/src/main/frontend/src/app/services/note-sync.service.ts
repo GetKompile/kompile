@@ -81,6 +81,19 @@ export class NoteSyncService extends BaseService {
     );
   }
 
+  pullUpdates(connectionId: number): Observable<{ sessionId: string; status: string; mode: string }> {
+    return this.http.post<{ sessionId: string; status: string; mode: string }>(
+      `${backendUrl}/sync/connections/${connectionId}/pull`, {}
+    );
+  }
+
+  updateAutoSync(id: number, enabled: boolean, pollCron?: string): Observable<SyncConnectionResponse> {
+    return this.http.patch<SyncConnectionResponse>(`${backendUrl}/sync/connections/${id}/auto-sync`, {
+      enabled,
+      pollCron: enabled ? pollCron : null
+    });
+  }
+
   enableConnection(id: number): Observable<SyncConnectionResponse> {
     return this.http.post<SyncConnectionResponse>(`${backendUrl}/sync/connections/${id}/enable`, {});
   }

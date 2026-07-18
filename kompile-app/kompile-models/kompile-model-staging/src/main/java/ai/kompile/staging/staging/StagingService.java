@@ -21,6 +21,7 @@ import ai.kompile.staging.conversion.ConversionService;
 import ai.kompile.staging.download.*;
 import ai.kompile.staging.download.DownloadProgress;
 import ai.kompile.staging.optimization.OptimizationService;
+import ai.kompile.staging.sdx.SdxProjectOutputService;
 import ai.kompile.staging.web.dto.StageWithOptimizationRequest;
 import ai.kompile.staging.web.dto.TrainingArtifactStageRequest;
 import ai.kompile.modelmanager.registry.*;
@@ -43,6 +44,8 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
+import java.util.regex.Pattern;
+import java.util.stream.Stream;
 
 /**
  * Service for staging models through the download-convert-validate-promote pipeline.
@@ -53,11 +56,14 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
     private static final Logger log = LoggerFactory.getLogger(StagingService.class);
     private static final String TRAINING_ARTIFACT_MANIFEST_FILE = "training-artifact.json";
     private static final String AUDIO_SYNTHESIS_CONFIG_FILE = ".audio-synthesis.json";
+    private static final Pattern SAFE_MODEL_ID =
+            Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{0,127}");
 
     private final RegistryService registryService;
     private final ConversionService conversionService;
     private final List<DownloadService> downloadServices;
     private final OptimizationService optimizationService;
+    private final SdxProjectOutputService sdxProjectOutputService;
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final Path stagingDir;
     private final Path modelsDir;
@@ -74,14 +80,27 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
     public StagingService(RegistryService registryService,
                           ConversionService conversionService,
                           List<DownloadService> downloadServices,
-                          OptimizationService optimizationService) {
+                          OptimizationService optimizationService,
+                          SdxProjectOutputService sdxProjectOutputService) {
         this.registryService = registryService;
         this.conversionService = conversionService;
         this.downloadServices = downloadServices;
         this.optimizationService = optimizationService;
+        this.sdxProjectOutputService = sdxProjectOutputService;
         this.modelsDir = registryService.getModelDir();
         this.stagingDir = modelsDir.resolve(".staging");
         ensureDirectories();
+    }
+
+    /**
+     * Compatibility constructor for focused unit tests and non-Spring embedders that
+     * do not request mobile project output.
+     */
+    public StagingService(RegistryService registryService,
+                          ConversionService conversionService,
+                          List<DownloadService> downloadServices,
+                          OptimizationService optimizationService) {
+        this(registryService, conversionService, downloadServices, optimizationService, null);
     }
 
     public StageWithOptimizationRequest.OptimizationConfigDto getAutoOptimizationConfig() {
@@ -227,8 +246,34 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
                         request.getAudioSynthesis());
             }
 
+            // 3b. Target compilation is host-only and content-addressed. The generated
+            // .kproject contains the enriched canonical SDZ, project.kgraph, and Markdown
+            // provenance. No provider format or CPU fallback becomes an application input.
+            if (SdxProjectOutputService.isProjectOutputRequested(request)) {
+                if (sdxProjectOutputService == null) {
+                    throw new IllegalStateException(
+                            "SDX project output is unavailable in this staging service");
+                }
+                info.withStatus(
+                        StagingStatus.VALIDATING,
+                        82,
+                        "Compiling the exact mobile target and packaging the offline project");
+                progressCallback.accept(info);
+                emitStagingStatus(modelId, info);
+                Path projectOutput =
+                        sdxProjectOutputService.createProject(pendingDir, outputPath, request);
+                info.setCurrentFile(
+                        pendingDir.relativize(projectOutput).toString()
+                                .replace(File.separatorChar, '/'));
+            }
+
             // 4. Move to verified staging
-            info.withStatus(StagingStatus.READY, 90, "Model ready for promotion");
+            info.withStatus(
+                    StagingStatus.READY,
+                    90,
+                    SdxProjectOutputService.isProjectOutputRequested(request)
+                            ? "Offline mobile project ready for download"
+                            : "Model ready for promotion");
             progressCallback.accept(info);
 
             Path verifiedDir = stagingDir.resolve("verified").resolve(modelId);
@@ -345,6 +390,10 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
             if (type.isVlm()) {
                 probeVisionEncoderIOConfig(productionDir, modelFile, metadata);
             }
+            if (type.isLlm()
+                    && (metadata.getMaxSequenceLength() == null || metadata.getMaxSequenceLength() <= 0)) {
+                enrichLlmContextFromGguf(productionDir, modelFile, metadata);
+            }
 
             // Use LLM-style tokenizer config for LLM models (no BERT lowercasing)
             TokenizerConfig tokenizerConfig = type.isLlm()
@@ -393,6 +442,41 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
      */
     public void probeVisionEncoderIOConfigPublic(Path productionDir, Path modelFile, ModelMetadata metadata) {
         probeVisionEncoderIOConfig(productionDir, modelFile, metadata);
+    }
+
+    /**
+     * Persist the GGUF-declared context window ({@code <arch>.context_length}) into the registry
+     * entry's metadata at promotion time, so every registry consumer budgets from the model's real
+     * window instead of a small default (LFM2.5 declares 128k; the old default budgeted 2k).
+     * Prefers the promoted model file; falls back to the first {@code .gguf} in the production dir
+     * (sharded promotions register a marker as the model file).
+     */
+    private void enrichLlmContextFromGguf(Path productionDir, Path modelFile, ModelMetadata metadata) {
+        try {
+            Path gguf = null;
+            if (modelFile != null
+                    && modelFile.getFileName().toString().toLowerCase(java.util.Locale.ROOT).endsWith(".gguf")) {
+                gguf = modelFile;
+            } else if (productionDir != null && Files.isDirectory(productionDir)) {
+                try (DirectoryStream<Path> ds = Files.newDirectoryStream(productionDir, "*.gguf")) {
+                    for (Path p : ds) {
+                        gguf = p;
+                        break;
+                    }
+                }
+            }
+            if (gguf == null) {
+                return;
+            }
+            Integer context = ai.kompile.utils.GgufMetadataReader.readContextLength(gguf).orElse(null);
+            if (context != null && context > 0) {
+                metadata.setMaxSequenceLength(context);
+                log.info("Registry metadata: context window {} read from GGUF header {} at promotion",
+                        context, gguf.getFileName());
+            }
+        } catch (Exception e) {
+            log.debug("GGUF context enrichment skipped: {}", e.getMessage());
+        }
     }
 
     /**
@@ -895,6 +979,42 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
      */
     public StagingModelInfo getStagingModel(String modelId) {
         return stagingModels.get(modelId);
+    }
+
+    /**
+     * Resolve the single completed .kproject for a staged model. Pending, failed,
+     * ambiguous, symbolic-link, and path-traversal cases are deliberately invisible.
+     */
+    public Optional<Path> getStagedOutput(String modelId) {
+        if (modelId == null || !SAFE_MODEL_ID.matcher(modelId).matches()) {
+            return Optional.empty();
+        }
+        Path verifiedRoot = stagingDir.resolve("verified").toAbsolutePath().normalize();
+        Path outputDir = verifiedRoot.resolve(modelId).resolve("outputs").normalize();
+        if (!outputDir.startsWith(verifiedRoot)
+                || !Files.isDirectory(outputDir, LinkOption.NOFOLLOW_LINKS)
+                || Files.isSymbolicLink(outputDir)) {
+            return Optional.empty();
+        }
+        try (Stream<Path> files = Files.list(outputDir)) {
+            List<Path> outputs = files
+                    .filter(path -> Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS))
+                    .filter(path -> !Files.isSymbolicLink(path))
+                    .filter(path -> path.getFileName().toString()
+                            .toLowerCase(Locale.ROOT).endsWith(".kproject"))
+                    .sorted()
+                    .toList();
+            if (outputs.size() != 1) {
+                if (outputs.size() > 1) {
+                    log.error("Staged model {} has ambiguous mobile project outputs", modelId);
+                }
+                return Optional.empty();
+            }
+            return Optional.of(outputs.get(0));
+        } catch (IOException e) {
+            log.warn("Could not resolve staged mobile project for {}", modelId, e);
+            return Optional.empty();
+        }
     }
 
     /**

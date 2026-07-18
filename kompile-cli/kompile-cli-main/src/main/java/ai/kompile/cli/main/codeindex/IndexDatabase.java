@@ -40,8 +40,30 @@ public class IndexDatabase implements AutoCloseable {
      * entirely — the DDL churn plus two full-table COUNT checks used to run
      * on every open, which dominated read-action latency on large indexes.
      * Bump this when the schema changes so existing DBs re-run the migration.
+     *
+     * <p>v3: relations.file_path (avg ~118 chars, ~120x repeated per distinct
+     * path) interned into the {@code paths} table as {@code file_id}, the
+     * per-row {@code project_id} column dropped (the DB is per-project), the
+     * low-cardinality {@code idx_rel_type} dropped, and entities_fts switched
+     * to external-content ({@code content='entities_meta'}) so name/fqn/
+     * signature/doc are no longer stored twice. Together these were ~35% of
+     * the measured on-disk size (relations + its text indices alone were 62%).</p>
+     *
+     * <p>v4: entities_meta.rel_path interned the same way ({@code path_id} into
+     * the shared {@code paths} table — the text column plus its 57MB index were
+     * the next-largest block) and the low-cardinality {@code idx_entities_type}
+     * dropped. Entity ids and FTS-indexed column values are preserved by the
+     * copy, so the external-content FTS index stays valid without a rebuild.</p>
+     *
+     * <p>v5: relations' symbol strings interned into the {@code fqns} table
+     * ({@code source_id}/{@code target_id}/{@code target_name_id}) — after v4,
+     * the three text indices over those columns plus the in-row strings were
+     * over half the remaining file. Also sweeps stray indices that servers
+     * still running PRE-migration binaries recreate against migrated DBs
+     * (their unconditional CREATE INDEX succeeds for surviving columns —
+     * observed as idx_rel_type reappearing at 12MB).</p>
      */
-    private static final int SCHEMA_VERSION = 2;
+    private static final int SCHEMA_VERSION = 5;
 
     private final Connection conn;
 
@@ -61,13 +83,61 @@ public class IndexDatabase implements AutoCloseable {
             stmt.execute("PRAGMA cache_size=-8000"); // 8MB cache
             stmt.execute("PRAGMA busy_timeout=5000"); // wait instead of SQLITE_BUSY across processes
             stmt.execute("PRAGMA temp_store=MEMORY");
+            // Index DBs run to multiple GB; mmap shares pages via the OS page
+            // cache ACROSS the open-per-operation connections in this package,
+            // where the 8MB private page cache starts cold on every open.
+            stmt.execute("PRAGMA mmap_size=1073741824"); // 1GB
         }
         IndexDatabase db = new IndexDatabase(conn);
         if (db.schemaVersion() != SCHEMA_VERSION) {
-            db.ensureSchema();
-            db.setSchemaVersion(SCHEMA_VERSION);
+            // One transaction so a crash mid-migration can't leave a half-moved
+            // relations table; SQLite's write lock also serializes concurrent
+            // migrators (the loser re-checks the version and no-ops).
+            db.beginTransaction();
+            try {
+                if (db.schemaVersion() != SCHEMA_VERSION) {
+                    db.ensureSchema();
+                    db.setSchemaVersion(SCHEMA_VERSION);
+                }
+                db.commit();
+            } catch (SQLException e) {
+                db.rollback();
+                try { conn.close(); } catch (SQLException ignored) {}
+                throw e;
+            }
+            db.vacuumIfWorthwhile();
         }
         return db;
+    }
+
+    /**
+     * Reclaim file space after a migration dropped large tables (the freed
+     * pages otherwise sit on the freelist forever — reused, but the file never
+     * shrinks). Only worth a full rewrite when a meaningful share of the file
+     * is free; fresh DBs and already-vacuumed ones skip instantly.
+     */
+    private void vacuumIfWorthwhile() {
+        try (Statement stmt = conn.createStatement()) {
+            long freelist;
+            long pageCount;
+            try (ResultSet rs = stmt.executeQuery("PRAGMA freelist_count")) {
+                freelist = rs.next() ? rs.getLong(1) : 0;
+            }
+            try (ResultSet rs = stmt.executeQuery("PRAGMA page_count")) {
+                pageCount = rs.next() ? rs.getLong(1) : 0;
+            }
+            if (pageCount > 0 && freelist > 2500 && freelist * 100 / pageCount >= 15) {
+                System.err.println("[code-index] vacuuming index db ("
+                        + (freelist * 4096 / 1024 / 1024) + "MB reclaimable)...");
+                long start = System.currentTimeMillis();
+                stmt.execute("VACUUM");
+                System.err.println("[code-index] vacuum done in "
+                        + (System.currentTimeMillis() - start) + "ms");
+            }
+        } catch (SQLException e) {
+            // Space reclamation is best-effort; the DB stays fully usable.
+            System.err.println("[code-index] vacuum skipped: " + e.getMessage());
+        }
     }
 
     private int schemaVersion() throws SQLException {
@@ -95,10 +165,18 @@ public class IndexDatabase implements AutoCloseable {
                     indexed_at TEXT NOT NULL
                 )""");
 
+            // Interning table for file paths, shared by entities_meta.path_id
+            // and relations.file_id — must exist before either migration runs.
+            stmt.execute("""
+                CREATE TABLE IF NOT EXISTS paths (
+                    id   INTEGER PRIMARY KEY AUTOINCREMENT,
+                    path TEXT NOT NULL UNIQUE
+                )""");
+
             stmt.execute("""
                 CREATE TABLE IF NOT EXISTS entities_meta (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    rel_path TEXT NOT NULL,
+                    path_id INTEGER NOT NULL,
                     entity_type TEXT NOT NULL,
                     name TEXT NOT NULL,
                     fqn TEXT NOT NULL,
@@ -119,61 +197,227 @@ public class IndexDatabase implements AutoCloseable {
             addColumnIfMissing(stmt, "entities_meta", "implements_list", "TEXT");
             addColumnIfMissing(stmt, "entities_meta", "annotations", "TEXT");
 
-            stmt.execute("""
-                CREATE INDEX IF NOT EXISTS idx_entities_rel_path
-                ON entities_meta(rel_path)""");
+            migrateEntitiesToInternedPaths(stmt);
 
+            // Entity indices AFTER the migration — indices on a pre-v4 table
+            // die with its DROP, so creation must target the rebuilt table.
+            stmt.execute("""
+                CREATE INDEX IF NOT EXISTS idx_entities_path
+                ON entities_meta(path_id)""");
             stmt.execute("""
                 CREATE INDEX IF NOT EXISTS idx_entities_name
                 ON entities_meta(name)""");
+            // No entity_type index: a handful of values over ~10^5 rows — the
+            // planner never picks it and it taxes every insert.
+            stmt.execute("DROP INDEX IF EXISTS idx_entities_type");
 
-            stmt.execute("""
-                CREATE INDEX IF NOT EXISTS idx_entities_type
-                ON entities_meta(entity_type)""");
-
-            // Migrate from old contentless FTS5 table if it exists.
-            // Contentless (content='') doesn't support DELETE, which breaks
-            // incremental updates. Replace with a regular FTS5 table.
-            if (isContentlessFts(stmt)) {
+            // External-content FTS5 over entities_meta — the FTS table stores
+            // only the inverted index; name/fqn/signature/doc live once in
+            // entities_meta instead of twice. Any earlier FTS shape (contentless
+            // or regular) is dropped and rebuilt from entities_meta below.
+            // NOTE: COUNT(*) on an external-content FTS reads the CONTENT table,
+            // so "is the index empty" cannot be queried — track creation instead
+            // (a skipped rebuild leaves an empty index whose delete-commands
+            // then fail with SQLITE_CORRUPT_VTAB).
+            if (tableExists(stmt, "entities_fts") && !isExternalContentFts(stmt)) {
                 stmt.execute("DROP TABLE IF EXISTS entities_fts");
             }
-
-            // Regular FTS5 table — supports INSERT, DELETE, UPDATE.
+            boolean ftsCreated = !tableExists(stmt, "entities_fts");
             stmt.execute("""
                 CREATE VIRTUAL TABLE IF NOT EXISTS entities_fts USING fts5(
                     name,
                     fqn,
                     signature,
                     doc_comment,
+                    content='entities_meta',
+                    content_rowid='id',
                     tokenize='unicode61'
+                )""");
+            ftsNeedsRebuild = ftsCreated;
+
+            // Interning table for relations' symbol strings (source/target fqns
+            // and bare target names). Entities keep their fqn as readable text —
+            // this vocabulary is relations-only.
+            stmt.execute("""
+                CREATE TABLE IF NOT EXISTS fqns (
+                    id  INTEGER PRIMARY KEY AUTOINCREMENT,
+                    fqn TEXT NOT NULL UNIQUE
                 )""");
 
             // --- Relations table for local graph ---
-            stmt.execute("""
-                CREATE TABLE IF NOT EXISTS relations (
-                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-                    project_id    TEXT NOT NULL,
-                    source_fqn    TEXT NOT NULL,
-                    target_name   TEXT NOT NULL,
-                    target_fqn    TEXT,
-                    relation_type TEXT NOT NULL,
-                    file_path     TEXT NOT NULL,
-                    line          INTEGER
-                )""");
+            // file paths AND symbol strings are interned: the repeated text plus
+            // the text indices over it were the bulk of the on-disk index.
+            // project_id is gone — the DB is per-project.
+            migrateRelationsToInternedPaths(stmt);
+            migrateRelationsToInternedFqns(stmt);
 
-            stmt.execute("CREATE INDEX IF NOT EXISTS idx_rel_source ON relations(source_fqn)");
-            stmt.execute("CREATE INDEX IF NOT EXISTS idx_rel_target ON relations(target_fqn)");
-            stmt.execute("CREATE INDEX IF NOT EXISTS idx_rel_target_name ON relations(target_name)");
-            stmt.execute("CREATE INDEX IF NOT EXISTS idx_rel_file ON relations(file_path)");
-            stmt.execute("CREATE INDEX IF NOT EXISTS idx_rel_type ON relations(relation_type)");
+            stmt.execute("CREATE INDEX IF NOT EXISTS idx_rel_source ON relations(source_id)");
+            stmt.execute("CREATE INDEX IF NOT EXISTS idx_rel_target ON relations(target_id)");
+            stmt.execute("CREATE INDEX IF NOT EXISTS idx_rel_target_name ON relations(target_name_id)");
+            stmt.execute("CREATE INDEX IF NOT EXISTS idx_rel_file ON relations(file_id)");
+            // No relation_type index: 9 values over ~10^6 rows — never the best
+            // index, and it taxed every insert and carried 15MB on real DBs.
+
+            // Servers still running pre-migration binaries re-run their own
+            // unconditional ensureSchema against this DB and recreate any index
+            // whose column survived. Sweep the known strays on every migration.
+            stmt.execute("DROP INDEX IF EXISTS idx_rel_type");
+            stmt.execute("DROP INDEX IF EXISTS idx_entities_type");
+            stmt.execute("DROP INDEX IF EXISTS idx_entities_rel_path");
 
             // FQN index on entities — speeds up symbol lookup and connectivity resolution
             stmt.execute("CREATE INDEX IF NOT EXISTS idx_entities_fqn ON entities_meta(fqn)");
         }
 
-        // If we just recreated the FTS table, rebuild it from entities_meta
-        if (isFtsEmpty() && hasEntities()) {
+        // If we just (re)created the FTS table, rebuild it from entities_meta
+        if (ftsNeedsRebuild && hasEntities()) {
             rebuildFtsFromMeta();
+        }
+        ftsNeedsRebuild = false;
+    }
+
+    /** Set while ensureSchema (re)creates the FTS table; consumed by the rebuild step. */
+    private boolean ftsNeedsRebuild;
+
+    /**
+     * v3 → v4: rebuild entities_meta with {@code path_id} referencing
+     * {@code paths} instead of the repeated rel_path text. Entity ids and the
+     * four FTS-indexed column values are preserved, so the external-content
+     * FTS index remains valid without a rebuild. Runs inside the caller's
+     * migration transaction; idempotent (column presence decides).
+     */
+    private void migrateEntitiesToInternedPaths(Statement stmt) throws SQLException {
+        if (!tableExists(stmt, "entities_meta") || columnExists(stmt, "entities_meta", "path_id")) {
+            return;
+        }
+        stmt.execute("DROP TABLE IF EXISTS entities_meta_v4");
+        stmt.execute("INSERT OR IGNORE INTO paths(path) SELECT DISTINCT rel_path FROM entities_meta");
+        stmt.execute("""
+            CREATE TABLE entities_meta_v4 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                path_id INTEGER NOT NULL,
+                entity_type TEXT NOT NULL,
+                name TEXT NOT NULL,
+                fqn TEXT NOT NULL,
+                language TEXT NOT NULL,
+                start_line INTEGER,
+                end_line INTEGER,
+                signature TEXT,
+                doc_comment TEXT,
+                visibility TEXT,
+                indexed_at TEXT,
+                inherited_from TEXT,
+                implements_list TEXT,
+                annotations TEXT
+            )""");
+        stmt.execute("""
+            INSERT INTO entities_meta_v4(id, path_id, entity_type, name, fqn, language,
+                                         start_line, end_line, signature, doc_comment,
+                                         visibility, indexed_at, inherited_from,
+                                         implements_list, annotations)
+            SELECT m.id, p.id, m.entity_type, m.name, m.fqn, m.language,
+                   m.start_line, m.end_line, m.signature, m.doc_comment,
+                   m.visibility, m.indexed_at, m.inherited_from,
+                   m.implements_list, m.annotations
+            FROM entities_meta m JOIN paths p ON p.path = m.rel_path""");
+        stmt.execute("DROP TABLE entities_meta");
+        stmt.execute("ALTER TABLE entities_meta_v4 RENAME TO entities_meta");
+    }
+
+    /**
+     * v2 → v3: rebuild the relations table with {@code file_id} referencing
+     * {@code paths} and without {@code project_id}. Runs inside the caller's
+     * migration transaction; idempotent (column presence decides).
+     */
+    private void migrateRelationsToInternedPaths(Statement stmt) throws SQLException {
+        // Fresh DBs get the final shape from migrateRelationsToInternedFqns;
+        // this step only lifts v2 tables (file_path text) to the interned-paths
+        // intermediate so the fqn transform has one input shape to handle.
+        if (!tableExists(stmt, "relations") || columnExists(stmt, "relations", "file_id")) {
+            return;
+        }
+        stmt.execute("DROP TABLE IF EXISTS relations_v3");
+        stmt.execute("INSERT OR IGNORE INTO paths(path) SELECT DISTINCT file_path FROM relations");
+        stmt.execute("""
+            CREATE TABLE relations_v3 (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_fqn    TEXT NOT NULL,
+                target_name   TEXT NOT NULL,
+                target_fqn    TEXT,
+                relation_type TEXT NOT NULL,
+                file_id       INTEGER NOT NULL,
+                line          INTEGER
+            )""");
+        stmt.execute("""
+            INSERT INTO relations_v3(id, source_fqn, target_name, target_fqn,
+                                     relation_type, file_id, line)
+            SELECT r.id, r.source_fqn, r.target_name, r.target_fqn,
+                   r.relation_type, p.id, r.line
+            FROM relations r JOIN paths p ON p.path = r.file_path""");
+        stmt.execute("DROP TABLE relations");
+        stmt.execute("ALTER TABLE relations_v3 RENAME TO relations");
+    }
+
+    /**
+     * v4 → v5: intern relations' symbol strings into {@code fqns}. Handles the
+     * fresh-create case too (new DBs get this shape directly). Idempotent —
+     * gated on the source_id column.
+     */
+    private void migrateRelationsToInternedFqns(Statement stmt) throws SQLException {
+        String v5Ddl = """
+            CREATE TABLE %s (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_id      INTEGER NOT NULL,
+                target_name_id INTEGER NOT NULL,
+                target_id      INTEGER,
+                relation_type  TEXT NOT NULL,
+                file_id        INTEGER NOT NULL,
+                line           INTEGER
+            )""";
+        if (!tableExists(stmt, "relations")) {
+            stmt.execute(v5Ddl.formatted("relations"));
+            return;
+        }
+        if (columnExists(stmt, "relations", "source_id")) {
+            return;
+        }
+        stmt.execute("DROP TABLE IF EXISTS relations_v5");
+        stmt.execute("INSERT OR IGNORE INTO fqns(fqn) SELECT DISTINCT source_fqn FROM relations WHERE source_fqn IS NOT NULL");
+        stmt.execute("INSERT OR IGNORE INTO fqns(fqn) SELECT DISTINCT target_name FROM relations WHERE target_name IS NOT NULL");
+        stmt.execute("INSERT OR IGNORE INTO fqns(fqn) SELECT DISTINCT target_fqn FROM relations WHERE target_fqn IS NOT NULL");
+        stmt.execute(v5Ddl.formatted("relations_v5"));
+        stmt.execute("""
+            INSERT INTO relations_v5(id, source_id, target_name_id, target_id,
+                                     relation_type, file_id, line)
+            SELECT r.id, sf.id, tn.id, tf.id, r.relation_type, r.file_id, r.line
+            FROM relations r
+            JOIN fqns sf ON sf.fqn = r.source_fqn
+            JOIN fqns tn ON tn.fqn = r.target_name
+            LEFT JOIN fqns tf ON tf.fqn = r.target_fqn""");
+        stmt.execute("DROP TABLE relations");
+        stmt.execute("ALTER TABLE relations_v5 RENAME TO relations");
+    }
+
+    private boolean tableExists(Statement stmt, String table) throws SQLException {
+        try (ResultSet rs = stmt.executeQuery(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type IN ('table','view') AND name='"
+                        + table + "'")) {
+            return rs.next() && rs.getInt(1) > 0;
+        }
+    }
+
+    private boolean columnExists(Statement stmt, String table, String col) throws SQLException {
+        try (ResultSet rs = stmt.executeQuery(
+                "SELECT COUNT(*) FROM pragma_table_info('" + table + "') WHERE name='" + col + "'")) {
+            return rs.next() && rs.getInt(1) > 0;
+        }
+    }
+
+    private boolean isExternalContentFts(Statement stmt) throws SQLException {
+        try (ResultSet rs = stmt.executeQuery(
+                "SELECT sql FROM sqlite_master WHERE name='entities_fts'")) {
+            return rs.next() && rs.getString(1) != null
+                    && rs.getString(1).contains("content='entities_meta'");
         }
     }
 
@@ -191,27 +435,6 @@ public class IndexDatabase implements AutoCloseable {
         }
     }
 
-    /**
-     * Check if the existing FTS table is contentless (old schema).
-     */
-    private boolean isContentlessFts(Statement stmt) {
-        try (ResultSet rs = stmt.executeQuery(
-                "SELECT sql FROM sqlite_master WHERE name='entities_fts' AND type='table'")) {
-            if (rs.next()) {
-                String sql = rs.getString(1);
-                return sql != null && sql.contains("content=''");
-            }
-        } catch (SQLException ignored) {}
-        return false;
-    }
-
-    private boolean isFtsEmpty() throws SQLException {
-        try (Statement stmt = conn.createStatement();
-             ResultSet rs = stmt.executeQuery("SELECT COUNT(*) FROM entities_fts")) {
-            return !rs.next() || rs.getInt(1) == 0;
-        }
-    }
-
     private boolean hasEntities() throws SQLException {
         try (Statement stmt = conn.createStatement();
              ResultSet rs = stmt.executeQuery("SELECT COUNT(*) FROM entities_meta")) {
@@ -221,30 +444,104 @@ public class IndexDatabase implements AutoCloseable {
 
     /**
      * Rebuild the FTS index from entities_meta. Used after schema migration.
+     * The FTS5 'rebuild' command repopulates the whole index from the external
+     * content table in one statement and is transaction-neutral, so it is safe
+     * inside the migration transaction (the old per-row loop toggled autocommit,
+     * which would have committed a surrounding migration halfway through).
      */
     private void rebuildFtsFromMeta() throws SQLException {
-        conn.setAutoCommit(false);
-        try (Statement stmt = conn.createStatement();
-             ResultSet rs = stmt.executeQuery(
-                     "SELECT id, name, fqn, signature, doc_comment FROM entities_meta");
-             PreparedStatement ftsPs = conn.prepareStatement(
-                     "INSERT INTO entities_fts(rowid, name, fqn, signature, doc_comment) VALUES (?, ?, ?, ?, ?)")) {
-            while (rs.next()) {
-                ftsPs.setLong(1, rs.getLong("id"));
-                ftsPs.setString(2, rs.getString("name") != null ? rs.getString("name") : "");
-                ftsPs.setString(3, rs.getString("fqn") != null ? rs.getString("fqn") : "");
-                ftsPs.setString(4, rs.getString("signature") != null ? rs.getString("signature") : "");
-                ftsPs.setString(5, rs.getString("doc_comment") != null ? rs.getString("doc_comment") : "");
-                ftsPs.executeUpdate();
-            }
-            conn.commit();
-        } catch (SQLException e) {
-            conn.rollback();
-            throw e;
-        } finally {
-            conn.setAutoCommit(true);
+        try (Statement stmt = conn.createStatement()) {
+            stmt.execute("INSERT INTO entities_fts(entities_fts) VALUES('rebuild')");
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Path interning
+    // -----------------------------------------------------------------------
+
+    /** path → paths.id resolved this connection; connections are per-operation, so this stays small. */
+    private final Map<String, Long> pathIdCache = new HashMap<>();
+
+    /**
+     * Intern a file path into the {@code paths} table and return its id.
+     * Rows are never deleted (a stale path row is a few dozen bytes; the
+     * relations pointing at it are what get removed on re-index).
+     */
+    private long pathId(String path) throws SQLException {
+        Long cached = pathIdCache.get(path);
+        if (cached != null) return cached;
+        try (PreparedStatement ins = conn.prepareStatement(
+                "INSERT OR IGNORE INTO paths(path) VALUES (?)")) {
+            ins.setString(1, path);
+            ins.executeUpdate();
+        }
+        try (PreparedStatement sel = conn.prepareStatement(
+                "SELECT id FROM paths WHERE path = ?")) {
+            sel.setString(1, path);
+            try (ResultSet rs = sel.executeQuery()) {
+                if (!rs.next()) {
+                    throw new SQLException("paths row vanished for: " + path);
+                }
+                long id = rs.getLong(1);
+                pathIdCache.put(path, id);
+                return id;
+            }
+        }
+    }
+
+    /**
+     * Shared SELECT prefix for relation queries: exposes the interned path and
+     * symbol strings under their legacy column aliases so every row reader is
+     * unchanged. target_id is nullable (unresolved calls), hence the LEFT JOIN.
+     */
+    private static final String RELATIONS_SELECT = """
+            SELECT r.*, p.path AS file_path, sf.fqn AS source_fqn,
+                   tn.fqn AS target_name, tf.fqn AS target_fqn
+            FROM relations r
+            JOIN paths p ON p.id = r.file_id
+            JOIN fqns sf ON sf.id = r.source_id
+            JOIN fqns tn ON tn.id = r.target_name_id
+            LEFT JOIN fqns tf ON tf.id = r.target_id
+            """;
+
+    /** Indexed probe turning a symbol string into its interned id (or NULL when absent). */
+    private static final String FQN_ID = "(SELECT id FROM fqns WHERE fqn = ?)";
+
+    /** fqn → fqns.id resolved this connection; connections are per-operation, so this stays small. */
+    private final Map<String, Long> fqnIdCache = new HashMap<>();
+
+    /**
+     * Intern a symbol string into the {@code fqns} table and return its id.
+     * Rows are never deleted — a stale vocabulary row is a few dozen bytes.
+     */
+    private long fqnId(String fqn) throws SQLException {
+        Long cached = fqnIdCache.get(fqn);
+        if (cached != null) return cached;
+        try (PreparedStatement ins = conn.prepareStatement(
+                "INSERT OR IGNORE INTO fqns(fqn) VALUES (?)")) {
+            ins.setString(1, fqn);
+            ins.executeUpdate();
+        }
+        try (PreparedStatement sel = conn.prepareStatement(
+                "SELECT id FROM fqns WHERE fqn = ?")) {
+            sel.setString(1, fqn);
+            try (ResultSet rs = sel.executeQuery()) {
+                if (!rs.next()) {
+                    throw new SQLException("fqns row vanished for: " + fqn);
+                }
+                long id = rs.getLong(1);
+                fqnIdCache.put(fqn, id);
+                return id;
+            }
+        }
+    }
+
+    /**
+     * Shared SELECT prefix for entity queries: exposes {@code ep.path} under
+     * the legacy {@code rel_path} alias so {@link #rowToEntity} is unchanged.
+     */
+    private static final String ENTITIES_SELECT =
+            "SELECT m.*, ep.path AS rel_path FROM entities_meta m JOIN paths ep ON ep.id = m.path_id ";
 
     // -----------------------------------------------------------------------
     // Transaction management
@@ -306,12 +603,17 @@ public class IndexDatabase implements AutoCloseable {
             List<String> batch = paths.subList(start, Math.min(start + batchSize, paths.size()));
             String placeholders = String.join(",", Collections.nCopies(batch.size(), "?"));
 
-            // FTS rows first — the subquery needs entities_meta still populated
+            // FTS rows first — the external-content 'delete' command needs the
+            // original column values, so entities_meta must still be populated
+            // (values must byte-match what insertEntities wrote: sig/doc were
+            // stored as '' when null, hence the COALESCEs).
+            String pathIdsIn = "(SELECT id FROM paths WHERE path IN (" + placeholders + "))";
             String[] statements = {
-                    "DELETE FROM entities_fts WHERE rowid IN " +
-                            "(SELECT id FROM entities_meta WHERE rel_path IN (" + placeholders + "))",
-                    "DELETE FROM entities_meta WHERE rel_path IN (" + placeholders + ")",
-                    "DELETE FROM relations WHERE file_path IN (" + placeholders + ")",
+                    "INSERT INTO entities_fts(entities_fts, rowid, name, fqn, signature, doc_comment) " +
+                            "SELECT 'delete', id, name, fqn, COALESCE(signature,''), COALESCE(doc_comment,'') " +
+                            "FROM entities_meta WHERE path_id IN " + pathIdsIn,
+                    "DELETE FROM entities_meta WHERE path_id IN " + pathIdsIn,
+                    "DELETE FROM relations WHERE file_id IN " + pathIdsIn,
                     "DELETE FROM file_status WHERE rel_path IN (" + placeholders + ")"
             };
             for (String sql : statements) {
@@ -353,9 +655,10 @@ public class IndexDatabase implements AutoCloseable {
             throws SQLException {
         if (entities == null || entities.isEmpty()) return;
         long nextId = nextEntityId();
+        long pathId = pathId(relPath);
         try (PreparedStatement metaPs = conn.prepareStatement("""
                 INSERT INTO entities_meta
-                (id, rel_path, entity_type, name, fqn, language, start_line, end_line,
+                (id, path_id, entity_type, name, fqn, language, start_line, end_line,
                  signature, doc_comment, visibility, indexed_at, inherited_from, implements_list,
                  annotations)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""");
@@ -371,7 +674,7 @@ public class IndexDatabase implements AutoCloseable {
 
                 long rowId = nextId++;
                 metaPs.setLong(1, rowId);
-                metaPs.setString(2, relPath);
+                metaPs.setLong(2, pathId);
                 metaPs.setString(3, str(e, "entityType"));
                 metaPs.setString(4, name);
                 metaPs.setString(5, fqn);
@@ -436,16 +739,23 @@ public class IndexDatabase implements AutoCloseable {
         if (relations == null || relations.isEmpty()) return;
         try (PreparedStatement ps = conn.prepareStatement("""
                 INSERT INTO relations
-                (project_id, source_fqn, target_name, target_fqn, relation_type, file_path, line)
-                VALUES (?, ?, ?, ?, ?, ?, ?)""")) {
+                (source_id, target_name_id, target_id, relation_type, file_id, line)
+                VALUES (?, ?, ?, ?, ?, ?)""")) {
             for (Map<String, Object> r : relations) {
-                ps.setString(1, str(r, "projectId"));
-                ps.setString(2, str(r, "sourceFqn"));
-                ps.setString(3, str(r, "targetName"));
-                ps.setString(4, str(r, "targetFqn"));
-                ps.setString(5, str(r, "relationType"));
-                ps.setString(6, str(r, "filePath"));
-                ps.setObject(7, r.get("line"));
+                String sourceFqn = str(r, "sourceFqn");
+                String targetName = str(r, "targetName");
+                String targetFqn = str(r, "targetFqn");
+                ps.setLong(1, fqnId(sourceFqn != null ? sourceFqn : ""));
+                ps.setLong(2, fqnId(targetName != null ? targetName : ""));
+                if (targetFqn != null) {
+                    ps.setLong(3, fqnId(targetFqn));
+                } else {
+                    ps.setNull(3, Types.INTEGER);
+                }
+                ps.setString(4, str(r, "relationType"));
+                String relPath = str(r, "filePath");
+                ps.setLong(5, pathId(relPath != null ? relPath : filePath));
+                ps.setObject(6, r.get("line"));
                 ps.addBatch();
             }
             ps.executeBatch();
@@ -479,14 +789,16 @@ public class IndexDatabase implements AutoCloseable {
         String sql;
         if (entityType != null && !entityType.isEmpty()) {
             sql = """
-                SELECT m.* FROM entities_meta m
+                SELECT m.*, ep.path AS rel_path FROM entities_meta m
                 JOIN entities_fts f ON f.rowid = m.id
+                JOIN paths ep ON ep.id = m.path_id
                 WHERE entities_fts MATCH ? AND m.entity_type = ?
                 ORDER BY rank LIMIT ?""";
         } else {
             sql = """
-                SELECT m.* FROM entities_meta m
+                SELECT m.*, ep.path AS rel_path FROM entities_meta m
                 JOIN entities_fts f ON f.rowid = m.id
+                JOIN paths ep ON ep.id = m.path_id
                 WHERE entities_fts MATCH ?
                 ORDER BY rank LIMIT ?""";
         }
@@ -515,17 +827,15 @@ public class IndexDatabase implements AutoCloseable {
         String pattern = "%" + query.toLowerCase() + "%";
         String sql;
         if (entityType != null && !entityType.isEmpty()) {
-            sql = """
-                SELECT * FROM entities_meta
-                WHERE (LOWER(name) LIKE ? OR LOWER(fqn) LIKE ?
-                       OR LOWER(signature) LIKE ? OR LOWER(doc_comment) LIKE ?)
-                  AND entity_type = ?
+            sql = ENTITIES_SELECT + """
+                WHERE (LOWER(m.name) LIKE ? OR LOWER(m.fqn) LIKE ?
+                       OR LOWER(m.signature) LIKE ? OR LOWER(m.doc_comment) LIKE ?)
+                  AND m.entity_type = ?
                 LIMIT ?""";
         } else {
-            sql = """
-                SELECT * FROM entities_meta
-                WHERE LOWER(name) LIKE ? OR LOWER(fqn) LIKE ?
-                       OR LOWER(signature) LIKE ? OR LOWER(doc_comment) LIKE ?
+            sql = ENTITIES_SELECT + """
+                WHERE LOWER(m.name) LIKE ? OR LOWER(m.fqn) LIKE ?
+                       OR LOWER(m.signature) LIKE ? OR LOWER(m.doc_comment) LIKE ?
                 LIMIT ?""";
         }
 
@@ -580,7 +890,7 @@ public class IndexDatabase implements AutoCloseable {
         Map<String, Integer> counts = new LinkedHashMap<>();
         try (Statement stmt = conn.createStatement();
              ResultSet rs = stmt.executeQuery(
-                     "SELECT language, COUNT(DISTINCT rel_path) FROM entities_meta GROUP BY language ORDER BY COUNT(*) DESC")) {
+                     "SELECT language, COUNT(DISTINCT path_id) FROM entities_meta GROUP BY language ORDER BY COUNT(*) DESC")) {
             while (rs.next()) counts.put(rs.getString(1), rs.getInt(2));
         }
         return counts;
@@ -664,7 +974,7 @@ public class IndexDatabase implements AutoCloseable {
         // All outgoing relations from this file
         List<Map<String, Object>> outgoing;
         try (PreparedStatement ps = conn.prepareStatement(
-                "SELECT * FROM relations WHERE file_path = ? LIMIT 1000")) {
+                RELATIONS_SELECT + "WHERE p.path = ? LIMIT 1000")) {
             ps.setString(1, relPath);
             outgoing = collectRelations(ps);
         }
@@ -715,9 +1025,14 @@ public class IndexDatabase implements AutoCloseable {
         return stats;
     }
 
-    /** Rows still lacking a resolved cross-file target. */
+    /**
+     * Rows still lacking a resolved cross-file target, in interned-id space.
+     * The '' case: the scalar subquery yields NULL when '' was never interned,
+     * and {@code target_id = NULL} is never true — same semantics as before.
+     */
     private static final String UNRESOLVED_PRED =
-            "(target_fqn IS NULL OR target_fqn = '' OR target_fqn = target_name)";
+            "(target_id IS NULL OR target_id = target_name_id"
+                    + " OR target_id = (SELECT id FROM fqns WHERE fqn = ''))";
 
     /** Above this many distinct names, one streamed entities scan beats per-name probes. */
     private static final int CONNECTIVITY_PROBE_THRESHOLD = 200;
@@ -761,12 +1076,14 @@ public class IndexDatabase implements AutoCloseable {
 
         int updated = 0;
         try (PreparedStatement ps = conn.prepareStatement(
-                "UPDATE relations SET target_fqn = ? WHERE target_name = ? AND "
-                        + UNRESOLVED_PRED + " AND target_fqn IS NOT ?")) {
+                "UPDATE relations SET target_id = ? WHERE target_name_id = " + FQN_ID
+                        + " AND " + UNRESOLVED_PRED + " AND target_id IS NOT ?")) {
             for (Map.Entry<String, String> e : resolution.entrySet()) {
-                ps.setString(1, e.getValue());
+                // Newly resolved fqns may not be in the vocabulary yet.
+                long resolvedId = fqnId(e.getValue());
+                ps.setLong(1, resolvedId);
                 ps.setString(2, e.getKey());
-                ps.setString(3, e.getValue());
+                ps.setLong(3, resolvedId);
                 ps.addBatch();
             }
             for (int c : ps.executeBatch()) {
@@ -786,7 +1103,8 @@ public class IndexDatabase implements AutoCloseable {
         if (changedFiles == null || changedFiles.isEmpty()) {
             try (Statement stmt = conn.createStatement();
                  ResultSet rs = stmt.executeQuery(
-                         "SELECT DISTINCT target_name FROM relations WHERE " + UNRESOLVED_PRED)) {
+                         "SELECT DISTINCT tn.fqn FROM relations r "
+                                 + "JOIN fqns tn ON tn.id = r.target_name_id WHERE " + UNRESOLVED_PRED)) {
                 while (rs.next()) {
                     String t = rs.getString(1);
                     if (t != null && !t.isEmpty()) targets.add(t);
@@ -796,20 +1114,28 @@ public class IndexDatabase implements AutoCloseable {
         }
 
         List<String> paths = List.copyOf(changedFiles);
-        String unresolvedR = "(r.target_fqn IS NULL OR r.target_fqn = '' OR r.target_fqn = r.target_name)";
+        // Same shape as UNRESOLVED_PRED but r.-qualified for the joined queries.
+        String unresolvedR = "(r.target_id IS NULL OR r.target_id = r.target_name_id"
+                + " OR r.target_id = (SELECT id FROM fqns WHERE fqn = ''))";
         int batchSize = 500;
         for (int start = 0; start < paths.size(); start += batchSize) {
             List<String> batch = paths.subList(start, Math.min(start + batchSize, paths.size()));
             String placeholders = String.join(",", Collections.nCopies(batch.size(), "?"));
             String[] queries = {
-                    "SELECT DISTINCT target_name FROM relations WHERE file_path IN ("
-                            + placeholders + ") AND " + UNRESOLVED_PRED,
-                    "SELECT DISTINCT r.target_name FROM relations r JOIN entities_meta e "
-                            + "ON e.name = r.target_name WHERE e.rel_path IN ("
-                            + placeholders + ") AND " + unresolvedR,
-                    "SELECT DISTINCT r.target_name FROM relations r JOIN entities_meta e "
-                            + "ON e.fqn = r.target_name WHERE e.rel_path IN ("
-                            + placeholders + ") AND " + unresolvedR
+                    "SELECT DISTINCT tn.fqn FROM relations r "
+                            + "JOIN fqns tn ON tn.id = r.target_name_id WHERE r.file_id IN "
+                            + "(SELECT id FROM paths WHERE path IN (" + placeholders + ")) AND "
+                            + unresolvedR,
+                    "SELECT DISTINCT tn.fqn FROM relations r "
+                            + "JOIN fqns tn ON tn.id = r.target_name_id "
+                            + "JOIN entities_meta e ON e.name = tn.fqn WHERE e.path_id IN "
+                            + "(SELECT id FROM paths WHERE path IN (" + placeholders + ")) AND "
+                            + unresolvedR,
+                    "SELECT DISTINCT tn.fqn FROM relations r "
+                            + "JOIN fqns tn ON tn.id = r.target_name_id "
+                            + "JOIN entities_meta e ON e.fqn = tn.fqn WHERE e.path_id IN "
+                            + "(SELECT id FROM paths WHERE path IN (" + placeholders + ")) AND "
+                            + unresolvedR
             };
             for (String sql : queries) {
                 try (PreparedStatement ps = conn.prepareStatement(sql)) {
@@ -937,7 +1263,7 @@ public class IndexDatabase implements AutoCloseable {
 
     public Map<String, Object> findEntityByFqn(String fqn) throws SQLException {
         try (PreparedStatement ps = conn.prepareStatement(
-                "SELECT * FROM entities_meta WHERE fqn = ? LIMIT 1")) {
+                ENTITIES_SELECT + "WHERE m.fqn = ? LIMIT 1")) {
             ps.setString(1, fqn);
             try (ResultSet rs = ps.executeQuery()) {
                 return rs.next() ? rowToEntity(rs) : null;
@@ -946,8 +1272,35 @@ public class IndexDatabase implements AutoCloseable {
     }
 
     public Map<String, Object> findEntityBySuffix(String name) throws SQLException {
+        // A leading-wildcard LIKE cannot use any index, so the old
+        // 'fqn LIKE %.name' form full-scanned entities_meta (multi-GB on big
+        // projects) on EVERY name-based lookup — trace/callers/impact all
+        // funnel through here. Entity names are the last FQN segment, so an
+        // equality probe on the indexed name column narrows to a handful of
+        // rows and the suffix check only runs against those.
+        String simple = simpleName(name);
         try (PreparedStatement ps = conn.prepareStatement(
-                "SELECT * FROM entities_meta WHERE fqn LIKE ? LIMIT 1")) {
+                ENTITIES_SELECT + "WHERE m.name = ? AND (m.fqn = ? OR m.fqn LIKE ?) LIMIT 1")) {
+            ps.setString(1, simple);
+            ps.setString(2, name);
+            ps.setString(3, "%." + name);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) return rowToEntity(rs);
+            }
+        }
+        // Nothing under that simple name at all → a suffix scan cannot match
+        // either (names are last segments); return fast instead of scanning.
+        try (PreparedStatement probe = conn.prepareStatement(
+                "SELECT 1 FROM entities_meta WHERE name = ? LIMIT 1")) {
+            probe.setString(1, simple);
+            try (ResultSet rs = probe.executeQuery()) {
+                if (!rs.next()) return null;
+            }
+        }
+        // Rows with the name exist but the dotted suffix didn't match through
+        // the indexed probe — legacy scan as a last resort (rare).
+        try (PreparedStatement ps = conn.prepareStatement(
+                ENTITIES_SELECT + "WHERE m.fqn LIKE ? LIMIT 1")) {
             ps.setString(1, "%." + name);
             try (ResultSet rs = ps.executeQuery()) {
                 return rs.next() ? rowToEntity(rs) : null;
@@ -957,7 +1310,7 @@ public class IndexDatabase implements AutoCloseable {
 
     List<Map<String, Object>> getOutgoingRelations(String fqn, int limit) throws SQLException {
         try (PreparedStatement ps = conn.prepareStatement(
-                "SELECT * FROM relations WHERE source_fqn = ? LIMIT ?")) {
+                RELATIONS_SELECT + "WHERE r.source_id = " + FQN_ID + " LIMIT ?")) {
             ps.setString(1, fqn);
             ps.setInt(2, limit);
             return collectRelations(ps);
@@ -966,7 +1319,7 @@ public class IndexDatabase implements AutoCloseable {
 
     List<Map<String, Object>> getIncomingRelations(String fqn, int limit) throws SQLException {
         try (PreparedStatement ps = conn.prepareStatement(
-                "SELECT * FROM relations WHERE target_fqn = ? LIMIT ?")) {
+                RELATIONS_SELECT + "WHERE r.target_id = " + FQN_ID + " LIMIT ?")) {
             ps.setString(1, fqn);
             ps.setInt(2, limit);
             return collectRelations(ps);
@@ -976,7 +1329,7 @@ public class IndexDatabase implements AutoCloseable {
     List<Map<String, Object>> getEntitiesForFile(String relPath) throws SQLException {
         List<Map<String, Object>> entities = new ArrayList<>();
         try (PreparedStatement ps = conn.prepareStatement(
-                "SELECT * FROM entities_meta WHERE rel_path = ?")) {
+                ENTITIES_SELECT + "WHERE ep.path = ?")) {
             ps.setString(1, relPath);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) entities.add(rowToEntity(rs));
@@ -994,7 +1347,7 @@ public class IndexDatabase implements AutoCloseable {
         for (int start = 0; start < fqns.size(); start += batchSize) {
             List<String> batch = fqns.subList(start, Math.min(start + batchSize, fqns.size()));
             String placeholders = String.join(",", batch.stream().map(f -> "?").toArray(String[]::new));
-            String sql = "SELECT * FROM entities_meta WHERE fqn IN (" + placeholders + ")";
+            String sql = ENTITIES_SELECT + "WHERE m.fqn IN (" + placeholders + ")";
 
             try (PreparedStatement ps = conn.prepareStatement(sql)) {
                 for (int i = 0; i < batch.size(); i++) {
@@ -1017,7 +1370,8 @@ public class IndexDatabase implements AutoCloseable {
         for (int start = 0; start < fqnList.size(); start += batchSize) {
             List<String> batch = fqnList.subList(start, Math.min(start + batchSize, fqnList.size()));
             String placeholders = String.join(",", batch.stream().map(f -> "?").toArray(String[]::new));
-            String sql = "SELECT * FROM relations WHERE target_fqn IN (" + placeholders + ") LIMIT 1000";
+            String sql = RELATIONS_SELECT + "WHERE r.target_id IN "
+                    + "(SELECT id FROM fqns WHERE fqn IN (" + placeholders + ")) LIMIT 1000";
 
             try (PreparedStatement ps = conn.prepareStatement(sql)) {
                 for (int i = 0; i < batch.size(); i++) {
@@ -1070,18 +1424,22 @@ public class IndexDatabase implements AutoCloseable {
 
         // Query: find entities whose source_fqn points to this type via IMPLEMENTS or EXTENDS
         List<Map<String, Object>> results = new ArrayList<>();
+        // Indexed equality arms only — see getIncomingCallRelations for why the
+        // 'LIKE %.name' arm is redundant and scan-inducing.
         String sql = """
-            SELECT DISTINCT m.* FROM entities_meta m
-            JOIN relations r ON m.fqn = r.source_fqn
-            WHERE (r.target_fqn = ? OR r.target_name = ? OR r.target_fqn LIKE ?)
+            SELECT DISTINCT m.*, ep.path AS rel_path FROM entities_meta m
+            JOIN paths ep ON ep.id = m.path_id
+            JOIN fqns sf ON sf.fqn = m.fqn
+            JOIN relations r ON r.source_id = sf.id
+            WHERE (r.target_id = (SELECT id FROM fqns WHERE fqn = ?)
+                   OR r.target_name_id = (SELECT id FROM fqns WHERE fqn = ?))
               AND r.relation_type IN ('IMPLEMENTS', 'EXTENDS')
               AND m.entity_type IN ('CLASS', 'INTERFACE', 'ENUM', 'RECORD')
             LIMIT ?""";
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, resolvedFqn);
             ps.setString(2, simpleName(resolvedFqn));
-            ps.setString(3, "%." + simpleName(resolvedFqn));
-            ps.setInt(4, maxResults);
+            ps.setInt(3, maxResults);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) results.add(rowToEntity(rs));
             }
@@ -1105,23 +1463,32 @@ public class IndexDatabase implements AutoCloseable {
         }
 
         // Find all CALLS relations pointing to this target
+        // Indexed equality arms only — target_name always carries the bare
+        // callee name, so the old 'target_fqn LIKE %.name' arm added nothing
+        // except an un-indexable predicate that scanned every CALLS row.
         String sql = """
-            SELECT r.source_fqn, r.file_path, r.line, r.target_name, r.target_fqn,
-                   m.entity_type, m.name, m.fqn, m.signature, m.rel_path, m.start_line
+            SELECT sf.fqn AS source_fqn, p.path AS file_path, r.line,
+                   tn.fqn AS target_name, tf.fqn AS target_fqn,
+                   m.entity_type, m.name, m.fqn, m.signature, mp.path AS rel_path, m.start_line
             FROM relations r
-            LEFT JOIN entities_meta m ON m.fqn = r.source_fqn
+            JOIN paths p ON p.id = r.file_id
+            JOIN fqns sf ON sf.id = r.source_id
+            JOIN fqns tn ON tn.id = r.target_name_id
+            LEFT JOIN fqns tf ON tf.id = r.target_id
+            LEFT JOIN entities_meta m ON m.fqn = sf.fqn
+            LEFT JOIN paths mp ON mp.id = m.path_id
             WHERE r.relation_type = 'CALLS'
-              AND (r.target_fqn = ? OR r.target_name = ? OR r.target_fqn LIKE ?)
-            GROUP BY r.source_fqn, r.file_path, r.line
-            ORDER BY r.file_path, r.line
+              AND (r.target_id = (SELECT id FROM fqns WHERE fqn = ?)
+                   OR r.target_name_id = (SELECT id FROM fqns WHERE fqn = ?))
+            GROUP BY r.source_id, r.file_id, r.line
+            ORDER BY file_path, r.line
             LIMIT ?""";
 
         List<Map<String, Object>> results = new ArrayList<>();
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, resolvedFqn);
             ps.setString(2, simpleName(resolvedFqn));
-            ps.setString(3, "%." + simpleName(resolvedFqn));
-            ps.setInt(4, maxResults);
+            ps.setInt(3, maxResults);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     Map<String, Object> caller = new LinkedHashMap<>();
@@ -1234,22 +1601,27 @@ public class IndexDatabase implements AutoCloseable {
             if (target != null) resolvedFqn = (String) target.get("fullyQualifiedName");
         }
 
+        // Indexed equality arms only — see getIncomingCallRelations for why the
+        // 'LIKE %.name' arm is redundant and scan-inducing.
         String sql = """
-            SELECT DISTINCT r.source_fqn, r.file_path, r.line,
-                   m.entity_type, m.name, m.fqn, m.rel_path, m.start_line, m.signature
+            SELECT DISTINCT sf.fqn AS source_fqn, p.path AS file_path, r.line,
+                   m.entity_type, m.name, m.fqn, mp.path AS rel_path, m.start_line, m.signature
             FROM relations r
-            LEFT JOIN entities_meta m ON m.fqn = r.source_fqn
+            JOIN paths p ON p.id = r.file_id
+            JOIN fqns sf ON sf.id = r.source_id
+            LEFT JOIN entities_meta m ON m.fqn = sf.fqn
+            LEFT JOIN paths mp ON mp.id = m.path_id
             WHERE r.relation_type = 'SPRING_INJECTS'
-              AND (r.target_fqn = ? OR r.target_name = ? OR r.target_fqn LIKE ?)
-            ORDER BY r.file_path
+              AND (r.target_id = (SELECT id FROM fqns WHERE fqn = ?)
+                   OR r.target_name_id = (SELECT id FROM fqns WHERE fqn = ?))
+            ORDER BY file_path
             LIMIT ?""";
 
         List<Map<String, Object>> results = new ArrayList<>();
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, resolvedFqn);
             ps.setString(2, simpleName(resolvedFqn));
-            ps.setString(3, "%." + simpleName(resolvedFqn));
-            ps.setInt(4, maxResults);
+            ps.setInt(3, maxResults);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     Map<String, Object> injector = new LinkedHashMap<>();
@@ -1342,7 +1714,9 @@ public class IndexDatabase implements AutoCloseable {
      */
     public void rebuildFromShards(IndexFileStore store) throws SQLException, IOException {
         try (Statement stmt = conn.createStatement()) {
-            stmt.execute("DELETE FROM entities_fts");
+            // External-content FTS forbids plain DELETE — 'delete-all' is the
+            // supported wipe for content= tables.
+            stmt.execute("INSERT INTO entities_fts(entities_fts) VALUES('delete-all')");
             stmt.execute("DELETE FROM entities_meta");
             stmt.execute("DELETE FROM file_status");
         }
@@ -1381,7 +1755,8 @@ public class IndexDatabase implements AutoCloseable {
 
     private List<Map<String, Object>> getOutgoingCallRelations(String fqn, int limit) throws SQLException {
         try (PreparedStatement ps = conn.prepareStatement(
-                "SELECT * FROM relations WHERE source_fqn = ? AND relation_type = 'CALLS' LIMIT ?")) {
+                RELATIONS_SELECT + "WHERE r.source_id = " + FQN_ID
+                        + " AND r.relation_type = 'CALLS' LIMIT ?")) {
             ps.setString(1, fqn);
             ps.setInt(2, limit);
             return collectRelations(ps);
@@ -1389,20 +1764,23 @@ public class IndexDatabase implements AutoCloseable {
     }
 
     private List<Map<String, Object>> getIncomingCallRelations(String fqn, int limit) throws SQLException {
+        // No 'target_fqn LIKE %.name' arm: extractors always store target_name
+        // as the bare callee name, so the indexed equality is a superset of the
+        // suffix match — and one non-indexable OR arm forced a full scan of the
+        // CALLS rows PER BFS NODE (getCallChain visits up to 200).
         try (PreparedStatement ps = conn.prepareStatement(
-                "SELECT * FROM relations WHERE relation_type = 'CALLS'" +
-                " AND (target_fqn = ? OR target_name = ? OR target_fqn LIKE ?) LIMIT ?")) {
+                RELATIONS_SELECT + "WHERE r.relation_type = 'CALLS'" +
+                " AND (r.target_id = " + FQN_ID + " OR r.target_name_id = " + FQN_ID + ") LIMIT ?")) {
             ps.setString(1, fqn);
             ps.setString(2, simpleName(fqn));
-            ps.setString(3, "%." + simpleName(fqn));
-            ps.setInt(4, limit);
+            ps.setInt(3, limit);
             return collectRelations(ps);
         }
     }
 
     private List<Map<String, Object>> getRelationsOfType(String fqn, String relType) throws SQLException {
         try (PreparedStatement ps = conn.prepareStatement(
-                "SELECT * FROM relations WHERE source_fqn = ? AND relation_type = ? LIMIT 20")) {
+                RELATIONS_SELECT + "WHERE r.source_id = " + FQN_ID + " AND r.relation_type = ? LIMIT 20")) {
             ps.setString(1, fqn);
             ps.setString(2, relType);
             return collectRelations(ps);
@@ -1553,7 +1931,8 @@ public class IndexDatabase implements AutoCloseable {
         for (int start = 0; start < pathList.size(); start += batchSize) {
             List<String> batch = pathList.subList(start, Math.min(start + batchSize, pathList.size()));
             String placeholders = String.join(",", batch.stream().map(f -> "?").toArray(String[]::new));
-            String sql = "SELECT * FROM entities_meta WHERE rel_path IN (" + placeholders + ") ORDER BY rel_path, start_line";
+            String sql = ENTITIES_SELECT + "WHERE ep.path IN (" + placeholders
+                    + ") ORDER BY rel_path, m.start_line";
 
             try (PreparedStatement ps = conn.prepareStatement(sql)) {
                 for (int i = 0; i < batch.size(); i++) {

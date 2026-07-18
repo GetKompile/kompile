@@ -92,6 +92,47 @@ class CliAgentModelServiceTest {
                 service.selectExtractionModels(CliAgentModelService.LOCAL_STAGING_AGENT_NAME));
     }
 
+    @Test
+    void throughputBreaksCorrectnessTiesForProvenModels() throws Exception {
+        AgentRegistryService registry = mock(AgentRegistryService.class);
+        AgentSubprocessExecutor executor = mock(AgentSubprocessExecutor.class);
+        CliAgentModelService service = new CliAgentModelService(registry, executor);
+        AgentProvider opencodeProvider = AgentProvider.builder()
+                .name("opencode-cli")
+                .displayName("OpenCode")
+                .modelListCommand(List.of())
+                .build();
+        when(registry.getAgent("opencode-cli")).thenReturn(Optional.of(opencodeProvider));
+        when(registry.checkAgentAvailability("opencode-cli")).thenReturn(true);
+
+        seedModelCache(service, "opencode-cli", List.of("opencode/slow-model", "opencode/fast-model"));
+        // slow-model is FIRST in the manual priority list — throughput must out-rank it.
+        service.setActiveExtractionPolicy(
+                List.of("opencode"),
+                List.of(),
+                List.of(),
+                List.of("opencode/slow-model", "opencode/fast-model"));
+
+        // Both proven (latency recorded) with correctness in the same tie band; fast-model has
+        // 5x the observed output throughput (e.g. an MTP-accelerated decode path).
+        service.recordModelLatency("opencode/slow-model", 1_000);
+        service.recordModelLatency("opencode/fast-model", 1_000);
+        service.recordModelCorrectness("opencode/slow-model", 0.90);
+        service.recordModelCorrectness("opencode/fast-model", 0.90);
+        service.recordModelThroughput("opencode/slow-model", 1_000, 10_000);  // 100 chars/s
+        service.recordModelThroughput("opencode/fast-model", 5_000, 10_000);  // 500 chars/s
+
+        assertEquals(List.of("opencode/fast-model", "opencode/slow-model"),
+                service.selectExtractionModels("opencode-cli"),
+                "within the correctness tie band, observed throughput must decide precedence");
+
+        // Correctness beyond the band still dominates raw speed.
+        service.recordModelCorrectness("opencode/slow-model", 1.0);  // EWMA → 0.93, out of the band
+        assertEquals(List.of("opencode/slow-model", "opencode/fast-model"),
+                service.selectExtractionModels("opencode-cli"),
+                "a clearly more-correct model must out-rank a faster but worse one");
+    }
+
     @SuppressWarnings("unchecked")
     private static void seedModelCache(CliAgentModelService service, String agentName, List<String> models)
             throws Exception {

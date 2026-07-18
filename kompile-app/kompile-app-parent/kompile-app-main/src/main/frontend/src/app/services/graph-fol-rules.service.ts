@@ -48,6 +48,6 @@ export class GraphFolRulesService extends BaseService {
 
   /** Fetch all active rules for the given fact sheet (PSL + ONTOLOGY + FILE_PSL). */
   getRules(factSheetId: number): Observable<RuleDto[]> {
-    return this.http.get<RuleDto[]>(`${this.backendUrl}/api/graph/${factSheetId}/rules`);
+    return this.http.get<RuleDto[]>(`${this.backendUrl}/graph/${factSheetId}/rules`);
   }
 }

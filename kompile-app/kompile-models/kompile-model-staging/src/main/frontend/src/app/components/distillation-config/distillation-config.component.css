@@ -15,3 +15,13 @@
 .params-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px; }
 .peft-toggle { margin-top: 16px; }
 .actions { margin-top: 24px; }
+
+@media (max-width: 600px) {
+  .distillation-config { padding: 12px; }
+  .model-select-grid { align-items: stretch; flex-direction: column; }
+  .arrow-col { justify-content: center; }
+  .arrow-icon { transform: rotate(90deg); }
+  .type-grid,
+  .params-grid { grid-template-columns: minmax(0, 1fr); }
+  .actions button { width: 100%; min-height: 44px; }
+}

@@ -24,8 +24,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.nd4j.common.config.ND4JSystemProperties;
 import org.nd4j.imports.converters.DifferentialFunctionClassHolder;
 import org.nd4j.linalg.factory.Nd4j;
-import org.nd4j.linalg.factory.Nd4jBackend;
-import org.nd4j.nativeblas.NativeOps;
 import org.nd4j.nativeblas.NativeOpsHolder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -204,17 +202,17 @@ public class ServingSubprocessMain {
             config = Nd4jEnvironmentConfig.defaults();
         }
 
-        DifferentialFunctionClassHolder.initInstance();
-
-        Nd4jBackend backend = Nd4jBackend.load();
-        Nd4j.backend = backend;
-        logger.info("Loaded ND4J backend: {}", backend.getClass().getSimpleName());
-
-        NativeOps nativeOps = NativeOpsHolder.getInstance().getDeviceNativeOps();
-        nativeOps.initializeDevicesAndFunctions();
+        // Complete Nd4j/backend/native initialization before scanning and constructing
+        // DifferentialFunction implementations. Op constructors access Nd4j; initializing
+        // the registry first causes re-entrant, partial Nd4j initialization.
+        Nd4j.scalar(0.0f);
+        logger.info("Loaded ND4J backend: {}", Nd4j.getBackend().getClass().getSimpleName());
 
         // Apply full ND4J environment config (threads, memory, debug flags, etc.)
         applyNd4jEnvironmentConfig(config);
+
+        // Safe only after Nd4j and NativeOps have completed initialization.
+        DifferentialFunctionClassHolder.initInstance();
 
         // Apply Triton / LLM optimizations if available
         if (NativeOpsHolder.getInstance().getDeviceNativeOps().isTritonAvailable()) {

@@ -23,3 +23,14 @@
 .config-field input { padding: 6px 8px; border: 1px solid var(--border-color); border-radius: 4px; font-size: 13px; }
 .config-value { font-family: monospace; font-size: 13px; color: var(--text-primary); }
 .config-actions { display: flex; align-items: center; gap: 8px; }
+
+@media (max-width: 600px) {
+  .model-scheduler-panel { padding: 8px; }
+  .section-header { align-items: flex-start; flex-direction: column; gap: 8px; }
+  .status-section,
+  .config-grid { grid-template-columns: minmax(0, 1fr); }
+  .kv-row { align-items: flex-start; flex-direction: column; gap: 2px; }
+  .kv-value { max-width: 100%; overflow-wrap: anywhere; }
+  .config-actions { align-items: stretch; flex-direction: column; }
+  .config-actions button { min-height: 44px; }
+}

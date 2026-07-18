@@ -119,6 +119,9 @@ class ContentTypeRouter {
                 break;
             }
             int routedCountBefore = result.size();
+            // Preserve ordering between table promotion/cell graph/formula graph writes for one
+            // workbook document. The caller can still run these document groups concurrently.
+            List<Runnable> documentWrites = new ArrayList<>();
             Map<String, Object> meta = doc.getMetadata();
             String contentType = meta != null ? (String) meta.get(GraphConstants.META_CONTENT_TYPE) : null;
             if (docIdx % emitEvery == 0 || docIdx == 0) {
@@ -143,10 +146,10 @@ class ContentTypeRouter {
                 if (hasTableGraphJson) {
                     final String tgj = tableGraphJson;
                     final String sp = sourcePath;
-                    deferredDbWrites.add(() -> persistGraphJson(job, tgj, sp, GraphConstants.META_TABLE_GRAPH));
+                    documentWrites.add(() -> persistGraphJson(job, tgj, sp, GraphConstants.META_TABLE_GRAPH));
                 }
                 if (hasFormulaGraphJson) {
-                    deferredDbWrites.add(() -> persistFormulaGraph(job, doc));
+                    documentWrites.add(() -> persistFormulaGraph(job, doc));
                 }
             } else if ("table".equals(contentType)) {
                 // Use full table content for better embeddings when available
@@ -163,12 +166,12 @@ class ContentTypeRouter {
                 if (hasTableGraphJson) {
                     final String tgj = tableGraphJson;
                     final String sp = sourcePath;
-                    deferredDbWrites.add(() -> persistGraphJson(job, tgj, sp, GraphConstants.META_TABLE_GRAPH));
+                    documentWrites.add(() -> persistGraphJson(job, tgj, sp, GraphConstants.META_TABLE_GRAPH));
                 } else {
-                    deferredDbWrites.add(() -> promoteTableToGraphNode(doc, job, factSheetId, crawlSource));
+                    documentWrites.add(() -> promoteTableToGraphNode(doc, job, factSheetId, crawlSource));
                 }
                 if (hasFormulaGraphJson) {
-                    deferredDbWrites.add(() -> persistFormulaGraph(job, doc));
+                    documentWrites.add(() -> persistFormulaGraph(job, doc));
                 }
             } else if ("vlm_document".equals(contentType)) {
                 // VLM docs with tables — promote tables, pass through for text pipeline
@@ -178,40 +181,40 @@ class ContentTypeRouter {
                 if (hasTableGraphJson) {
                     final String tgj = tableGraphJson;
                     final String sp = sourcePath;
-                    deferredDbWrites.add(() -> persistGraphJson(job, tgj, sp, GraphConstants.META_TABLE_GRAPH));
+                    documentWrites.add(() -> persistGraphJson(job, tgj, sp, GraphConstants.META_TABLE_GRAPH));
                 } else if (tableCount > 0) {
-                    deferredDbWrites.add(() -> promoteTableToGraphNode(doc, job, factSheetId, crawlSource));
+                    documentWrites.add(() -> promoteTableToGraphNode(doc, job, factSheetId, crawlSource));
                 }
                 if (hasFormulaGraphJson) {
-                    deferredDbWrites.add(() -> persistFormulaGraph(job, doc));
+                    documentWrites.add(() -> persistFormulaGraph(job, doc));
                 }
                 result.add(doc);
             } else if ("formula_graph".equals(contentType)) {
-                deferredDbWrites.add(() -> promoteTableToGraphNode(doc, job, factSheetId, crawlSource));
-                deferredDbWrites.add(() -> persistFormulaGraph(job, doc));
+                documentWrites.add(() -> promoteTableToGraphNode(doc, job, factSheetId, crawlSource));
+                documentWrites.add(() -> persistFormulaGraph(job, doc));
                 result.add(doc);
             } else if ("slide".equals(contentType) || "presentation".equals(contentType)) {
                 if (hasTableGraphJson) {
                     final String tgj = tableGraphJson;
                     final String sp = sourcePath;
-                    deferredDbWrites.add(() -> persistGraphJson(job, tgj, sp, GraphConstants.META_TABLE_GRAPH));
+                    documentWrites.add(() -> persistGraphJson(job, tgj, sp, GraphConstants.META_TABLE_GRAPH));
                 } else {
-                    deferredDbWrites.add(() -> promoteTableToGraphNode(doc, job, factSheetId, crawlSource));
+                    documentWrites.add(() -> promoteTableToGraphNode(doc, job, factSheetId, crawlSource));
                 }
                 if (hasFormulaGraphJson) {
-                    deferredDbWrites.add(() -> persistFormulaGraph(job, doc));
+                    documentWrites.add(() -> persistFormulaGraph(job, doc));
                 }
                 result.add(doc);
             } else if ("spreadsheet".equals(contentType)) {
                 if (hasTableGraphJson) {
                     final String tgj = tableGraphJson;
                     final String sp = sourcePath;
-                    deferredDbWrites.add(() -> persistGraphJson(job, tgj, sp, GraphConstants.META_TABLE_GRAPH));
+                    documentWrites.add(() -> persistGraphJson(job, tgj, sp, GraphConstants.META_TABLE_GRAPH));
                 } else {
-                    deferredDbWrites.add(() -> promoteTableToGraphNode(doc, job, factSheetId, crawlSource));
+                    documentWrites.add(() -> promoteTableToGraphNode(doc, job, factSheetId, crawlSource));
                 }
                 if (hasFormulaGraphJson) {
-                    deferredDbWrites.add(() -> persistFormulaGraph(job, doc));
+                    documentWrites.add(() -> persistFormulaGraph(job, doc));
                 }
                 result.add(doc);
             } else if ("image".equals(contentType)) {
@@ -219,43 +222,46 @@ class ContentTypeRouter {
                 if (hasTableGraphJson) {
                     final String tgj = tableGraphJson;
                     final String sp = sourcePath;
-                    deferredDbWrites.add(() -> persistGraphJson(job, tgj, sp, GraphConstants.META_TABLE_GRAPH));
+                    documentWrites.add(() -> persistGraphJson(job, tgj, sp, GraphConstants.META_TABLE_GRAPH));
                 }
                 if (hasFormulaGraphJson) {
-                    deferredDbWrites.add(() -> persistFormulaGraph(job, doc));
+                    documentWrites.add(() -> persistFormulaGraph(job, doc));
                 }
             } else if ("audio".equals(contentType) || "video".equals(contentType)) {
                 log.debug("[Job {}] Routing {} document to graph-only extraction", jobId, contentType);
                 if (hasTableGraphJson) {
                     final String tgj = tableGraphJson;
                     final String sp = sourcePath;
-                    deferredDbWrites.add(() -> persistGraphJson(job, tgj, sp, GraphConstants.META_TABLE_GRAPH));
+                    documentWrites.add(() -> persistGraphJson(job, tgj, sp, GraphConstants.META_TABLE_GRAPH));
                 }
                 if (hasFormulaGraphJson) {
-                    deferredDbWrites.add(() -> persistFormulaGraph(job, doc));
+                    documentWrites.add(() -> persistFormulaGraph(job, doc));
                 }
             } else if ("chart".equals(contentType)) {
                 log.debug("[Job {}] Routing chart document to graph-only extraction with TABLE promotion", jobId);
                 if (hasTableGraphJson) {
                     final String tgj = tableGraphJson;
                     final String sp = sourcePath;
-                    deferredDbWrites.add(() -> persistGraphJson(job, tgj, sp, GraphConstants.META_TABLE_GRAPH));
+                    documentWrites.add(() -> persistGraphJson(job, tgj, sp, GraphConstants.META_TABLE_GRAPH));
                 } else {
-                    deferredDbWrites.add(() -> promoteTableToGraphNode(doc, job, factSheetId, crawlSource));
+                    documentWrites.add(() -> promoteTableToGraphNode(doc, job, factSheetId, crawlSource));
                 }
                 if (hasFormulaGraphJson) {
-                    deferredDbWrites.add(() -> persistFormulaGraph(job, doc));
+                    documentWrites.add(() -> persistFormulaGraph(job, doc));
                 }
             } else {
                 if (hasTableGraphJson) {
                     final String tgj = tableGraphJson;
                     final String sp = sourcePath;
-                    deferredDbWrites.add(() -> persistGraphJson(job, tgj, sp, GraphConstants.META_TABLE_GRAPH));
+                    documentWrites.add(() -> persistGraphJson(job, tgj, sp, GraphConstants.META_TABLE_GRAPH));
                 }
                 if (hasFormulaGraphJson) {
-                    deferredDbWrites.add(() -> persistFormulaGraph(job, doc));
+                    documentWrites.add(() -> persistFormulaGraph(job, doc));
                 }
                 result.add(doc);
+            }
+            if (!documentWrites.isEmpty()) {
+                deferredDbWrites.add(() -> documentWrites.forEach(Runnable::run));
             }
             boolean addedToText = result.size() > routedCountBefore;
             if (addedToText) { routedToText++; } else { routedToGraphOnly++; }
@@ -903,6 +909,8 @@ class ContentTypeRouter {
                 });
             }
 
+            List<KnowledgeGraphService.EdgeSpec> edgeSpecs = new ArrayList<>(
+                    (entities != null ? entities.size() : 0) + (relationships != null ? relationships.size() : 0));
             if (entities != null) {
                 // PASS 1 — assemble node specs (metadata assembly unchanged). Persistence is deferred
                 // so all cell/formula nodes for this graph are written in ONE batched store call below,
@@ -957,9 +965,9 @@ class ContentTypeRouter {
                 // Node IDs are deterministic, so this is semantically identical to looping createNode.
                 List<GraphNode> createdNodes = knowledgeGraphService.createNodesBatch(specs, factSheetId);
 
-                // PASS 2 — register IDs and link nodes. Edges are in-memory adjacency (cheap), so they
-                // stay per-edge. Iterating in the same (TABLE/SHEET-first) order means a CELL's parent
-                // TABLE is already registered in sheetNameToTableNodeId before the CELL references it.
+                // PASS 2 — register IDs and assemble containment edges. Graph storage may live behind
+                // the subprocess RPC boundary, so even cheap Lucene adjacency writes must be sent in
+                // bounded batches instead of one HTTP request per edge.
                 for (int i = 0; i < createdNodes.size(); i++) {
                     KnowledgeGraphService.NodeSpec spec = specs.get(i);
                     GraphNode created = createdNodes.get(i);
@@ -980,9 +988,9 @@ class ContentTypeRouter {
                         String metaJson = graphPersistenceHelper.semanticRelationMetadataJson(jobId, sourcePath, metadataKey,
                                 linkParent, externalId, containsLabel, containsDescription, null,
                                 Map.of("entityType", type, "metadataKey", metadataKey));
-                        knowledgeGraphService.createEdgeWithMetadata(
+                        edgeSpecs.add(new KnowledgeGraphService.EdgeSpec(
                                 linkParent, created.getNodeId(), EdgeType.CONTAINS, 1.0,
-                                containsLabel, containsDescription, metaJson, EdgeProvenance.EXTRACTED, factSheetId);
+                                containsDescription, containsLabel, metaJson, EdgeProvenance.EXTRACTED, factSheetId));
                     } else if (parentNodeId != null && nodeLevel == NodeLevel.TABLE) {
                         if (title != null) {
                             sheetNameToTableNodeId.put(title.toLowerCase(), created.getNodeId());
@@ -991,9 +999,9 @@ class ContentTypeRouter {
                         String metaJson = graphPersistenceHelper.semanticRelationMetadataJson(jobId, sourcePath, metadataKey,
                                 parentNodeId, externalId, containsLabel, containsDescription, null,
                                 Map.of("entityType", type, "metadataKey", metadataKey));
-                        knowledgeGraphService.createEdgeWithMetadata(
+                        edgeSpecs.add(new KnowledgeGraphService.EdgeSpec(
                                 parentNodeId, created.getNodeId(), EdgeType.CONTAINS, 1.0,
-                                containsLabel, containsDescription, metaJson, EdgeProvenance.EXTRACTED, factSheetId);
+                                containsDescription, containsLabel, metaJson, EdgeProvenance.EXTRACTED, factSheetId));
                     }
                 }
             }
@@ -1017,13 +1025,15 @@ class ContentTypeRouter {
                         String metaJson = graphPersistenceHelper.semanticRelationMetadataJson(jobId, sourcePath, metadataKey,
                                 sourceExtId, targetExtId, label, description,
                                 graphPersistenceHelper.numberAsDouble(rel.get("confidence")), relMeta);
-                        knowledgeGraphService.createEdgeWithMetadata(
+                        edgeSpecs.add(new KnowledgeGraphService.EdgeSpec(
                                 sourceNodeId, targetNodeId, EdgeType.USER_DEFINED, 1.0,
-                                label, description, metaJson, EdgeProvenance.EXTRACTED, factSheetId);
+                                description, label, metaJson, EdgeProvenance.EXTRACTED, factSheetId));
                         if (job != null) job.incrementRelationshipType(label);
                     }
                 }
             }
+
+            graphPersistenceHelper.createEdgesInBoundedBatches(edgeSpecs);
 
             int entityCount = entities != null ? entities.size() : 0;
             int relCount = relationships != null ? relationships.size() : 0;
@@ -1174,12 +1184,7 @@ class ContentTypeRouter {
     }
 
     private boolean isCancelled(UnifiedCrawlJob job) {
-        if (job == null) return false;
-        if (job.getStatus().get() == UnifiedCrawlJob.Status.CANCELLED) {
-            job.setCompletedAt(Instant.now());
-            return true;
-        }
-        return false;
+        return job != null && job.isCancellationRequested();
     }
 
     private Long jobFactSheetId(UnifiedCrawlJob job) {

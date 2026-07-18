@@ -164,3 +164,15 @@ Call `kgr_tools(thread)` to get the full catalog.  Key tools:
 | `graph_embeddings` | KGE similarity / nearest-neighbours |
 
 Full parameter schemas are in the catalog JSON returned by `kgr_tools`.
+
+## Android AArch64 shared library
+
+The Android build uses stock GraalVM Native Image as the AOT compiler driver
+and Android NDK clang/LLD as the target toolchain. It does not use Gluon or
+GluonFX. Run `build-android-ndk.sh`; the audited SDK is written under
+`target/android-aot`.
+
+The Android artifact targets bionic/API 28, uses 16 KiB load segments, exports
+the exact `kgr_*` ABI, and has no OpenBLAS or host fallback. See
+[`src/main/android/README.md`](src/main/android/README.md) for pinned source
+provenance, requirements, fast relink options, and the dependency audit.

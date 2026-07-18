@@ -387,6 +387,87 @@
           </div>
         </mat-tab>
 
+        <!-- Source Maintenance Tab -->
+        <mat-tab>
+          <ng-template mat-tab-label>
+            Source Maintenance
+            <span *ngIf="syncConnections.length > 0" class="tab-badge">{{ syncConnections.length }}</span>
+          </ng-template>
+          <div class="tab-content source-maintenance">
+            <div class="source-maintenance-header">
+              <div>
+                <h3>Connected source updates</h3>
+                <p>Pull changed content into the active Fact Sheet. Updated notes feed graph maintenance and remain observable alongside crawl jobs.</p>
+              </div>
+              <button mat-button (click)="refreshSyncConnections()">
+                <mat-icon>refresh</mat-icon> Refresh
+              </button>
+            </div>
+
+            <div *ngIf="!activeFactSheet" class="empty-state">
+              <mat-icon>dataset</mat-icon>
+              <p>Select an active Fact Sheet to maintain connected sources.</p>
+            </div>
+            <div *ngIf="activeFactSheet && syncConnections.length === 0" class="empty-state">
+              <mat-icon>sync_disabled</mat-icon>
+              <p>No Notion, Obsidian, folder, or Git sync connections are configured for {{ activeFactSheet.name }}.</p>
+            </div>
+
+            <mat-card *ngFor="let connection of syncConnections" class="source-maintenance-card">
+              <mat-card-content>
+                <div class="source-maintenance-row">
+                  <mat-icon class="source-maintenance-icon">{{ getSyncProviderIcon(connection.provider) }}</mat-icon>
+                  <div class="source-maintenance-details">
+                    <div class="source-maintenance-title">
+                      {{ connection.provider.replace('_', ' ') }}
+                      <span class="status-badge" [class]="'status-' + connection.lastSyncStatus.toLowerCase()">
+                        {{ connection.lastSyncStatus }}
+                      </span>
+                    </div>
+                    <div class="source-maintenance-scope">{{ connection.externalScope }}</div>
+                    <div class="source-maintenance-description">{{ getSyncProviderDescription(connection.provider) }}</div>
+                    <div class="source-maintenance-meta">
+                      <span>Direction: {{ connection.direction.replaceAll('_', ' ') }}</span>
+                      <span>Last sync: {{ connection.lastSyncAt ? formatTimestamp(connection.lastSyncAt) : 'Never' }}</span>
+                      <span *ngIf="connection.pollCron">Schedule: {{ connection.pollCron }}</span>
+                    </div>
+                  </div>
+                  <div class="source-maintenance-actions">
+                    <mat-slide-toggle
+                      [checked]="!!connection.pollCron"
+                      [disabled]="autoSyncUpdating.has(connection.id)"
+                      (change)="setAutoSync(connection, $event.checked)"
+                      matTooltip="Poll this source automatically; the default interval is every 15 minutes">
+                      Auto Sync
+                    </mat-slide-toggle>
+                    <button mat-raised-button color="primary"
+                            [disabled]="!connection.enabled || isPulling(connection.id)"
+                            (click)="pullSourceUpdates(connection)">
+                      <mat-icon>{{ isPulling(connection.id) ? 'sync' : 'cloud_download' }}</mat-icon>
+                      {{ isPulling(connection.id) ? 'Pulling…' : 'Pull Updates' }}
+                    </button>
+                  </div>
+                </div>
+
+                <div *ngIf="syncProgress.get(connection.id) as progress" class="source-sync-progress">
+                  <mat-progress-bar *ngIf="progress.status === 'RUNNING'" mode="indeterminate"></mat-progress-bar>
+                  <div class="source-sync-message">
+                    <mat-icon>{{ progress.status === 'ERROR' ? 'error' : progress.status === 'COMPLETED' ? 'check_circle' : 'sync' }}</mat-icon>
+                    <span>{{ progress.message || progress.status }}</span>
+                    <span *ngIf="progress.status === 'COMPLETED'">
+                      {{ progress.pulled || 0 }} pulled · {{ progress.skipped || 0 }} unchanged
+                      <ng-container *ngIf="progress.conflicts"> · {{ progress.conflicts }} conflicts</ng-container>
+                    </span>
+                  </div>
+                </div>
+                <div *ngIf="connection.lastSyncError" class="source-sync-error">
+                  <mat-icon>warning</mat-icon>{{ connection.lastSyncError }}
+                </div>
+              </mat-card-content>
+            </mat-card>
+          </div>
+        </mat-tab>
+
         <!-- Job Detail Tab -->
         <mat-tab label="Job Detail" [disabled]="!selectedJob">
           <div class="tab-content" *ngIf="selectedJob">

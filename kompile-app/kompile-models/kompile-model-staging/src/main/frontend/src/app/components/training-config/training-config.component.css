@@ -3,3 +3,11 @@
 .config-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px; }
 .toggle-row { display: flex; gap: 24px; margin-top: 16px; }
 .actions { display: flex; gap: 12px; margin-top: 24px; }
+
+@media (max-width: 600px) {
+  .training-config { padding: 12px; }
+  .config-grid { grid-template-columns: minmax(0, 1fr); }
+  .toggle-row { align-items: flex-start; flex-direction: column; gap: 12px; }
+  .actions { flex-wrap: wrap; }
+  .actions button { flex: 1 1 auto; min-height: 44px; }
+}

@@ -199,6 +199,20 @@ public class SubprocessMatrixGraphStore implements MatrixGraphStore {
     }
 
     @Override
+    public ScanPage<MatrixGraphNode> scanNodes(String graphId, int cursor, int pageSize) {
+        JsonNode result = invokeRaw("scanNodes", List.of(T_STRING, T_INT, T_INT), graphId, cursor, pageSize);
+        return objectMapper.convertValue(result, objectMapper.getTypeFactory()
+                .constructParametricType(ScanPage.class, MatrixGraphNode.class));
+    }
+
+    @Override
+    public ScanPage<StoredEdge> scanEdges(String graphId, int cursor, int pageSize) {
+        JsonNode result = invokeRaw("scanEdges", List.of(T_STRING, T_INT, T_INT), graphId, cursor, pageSize);
+        return objectMapper.convertValue(result, objectMapper.getTypeFactory()
+                .constructParametricType(ScanPage.class, StoredEdge.class));
+    }
+
+    @Override
     public List<MatrixGraphNode> searchNodes(String graphId, String query, int limit) {
         return parseNodeList(invokeRaw("searchNodes", List.of(T_STRING, T_STRING, T_INT), graphId, query, limit));
     }

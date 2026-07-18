@@ -53,6 +53,8 @@ class GraphPersistenceHelper {
     private static final Logger log = LoggerFactory.getLogger(GraphPersistenceHelper.class);
 
     static final ObjectMapper EDGE_METADATA_MAPPER = JsonUtils.standardMapper();
+    static final int DEFAULT_GRAPH_RPC_BATCH_ITEMS = 250;
+    static final long DEFAULT_GRAPH_RPC_BATCH_BYTES = 1024L * 1024L;
 
     final Map<String, String> labelCache = new ConcurrentHashMap<>();
 
@@ -169,7 +171,7 @@ class GraphPersistenceHelper {
             }
 
             if (!entitySpecs.isEmpty()) {
-                List<GraphNode> createdNodes = knowledgeGraphService.createNodesBatch(entitySpecs, factSheetId);
+                List<GraphNode> createdNodes = createNodesInBoundedBatches(entitySpecs, factSheetId);
                 int limit = Math.min(createdNodes.size(), pendingEntities.size());
                 for (int i = 0; i < limit; i++) {
                     if (isCancelled(job)) {
@@ -311,7 +313,7 @@ class GraphPersistenceHelper {
 
         if (!relationshipEdgeSpecs.isEmpty() && !isCancelled(job)) {
             try {
-                int created = knowledgeGraphService.createEdgesBatch(relationshipEdgeSpecs);
+                int created = createEdgesInBoundedBatches(relationshipEdgeSpecs);
                 relationshipsPersisted += created;
                 for (int i = 0; i < Math.min(created, relationshipEdgeLabels.size()); i++) {
                     job.incrementRelationshipType(relationshipEdgeLabels.get(i));
@@ -340,6 +342,80 @@ class GraphPersistenceHelper {
         }
 
         return new GraphPersistResult(entitiesPersisted, relationshipsPersisted);
+    }
+
+    List<GraphNode> createNodesInBoundedBatches(List<KnowledgeGraphService.NodeSpec> specs,
+                                                    Long factSheetId) {
+        List<GraphNode> created = new ArrayList<>(specs.size());
+        for (List<KnowledgeGraphService.NodeSpec> batch : boundedBatches(specs)) {
+            created.addAll(knowledgeGraphService.createNodesBatch(batch, factSheetId));
+        }
+        return created;
+    }
+
+    int createEdgesInBoundedBatches(List<KnowledgeGraphService.EdgeSpec> specs) {
+        int created = 0;
+        for (List<KnowledgeGraphService.EdgeSpec> batch : boundedBatches(specs)) {
+            created += knowledgeGraphService.createEdgesBatch(batch);
+        }
+        return created;
+    }
+
+    int updateNodesInBoundedBatches(List<KnowledgeGraphService.NodeUpdate> updates) {
+        int updated = 0;
+        for (List<KnowledgeGraphService.NodeUpdate> batch : boundedBatches(updates)) {
+            updated += knowledgeGraphService.updateNodesBatch(batch);
+        }
+        return updated;
+    }
+
+    <T> List<List<T>> boundedBatches(List<T> items) {
+        if (items == null || items.isEmpty()) return List.of();
+        int maxItems = positiveIntProperty("kompile.graph.rpc.batch-items", DEFAULT_GRAPH_RPC_BATCH_ITEMS);
+        long maxBytes = positiveLongProperty("kompile.graph.rpc.batch-bytes", DEFAULT_GRAPH_RPC_BATCH_BYTES);
+        List<List<T>> batches = new ArrayList<>();
+        List<T> current = new ArrayList<>(Math.min(maxItems, items.size()));
+        long currentBytes = 2L;
+        for (T item : items) {
+            long itemBytes = serializedSize(item);
+            if (itemBytes + 3L > maxBytes) {
+                throw new IllegalArgumentException("Single graph RPC item is " + itemBytes
+                        + " bytes, exceeding kompile.graph.rpc.batch-bytes=" + maxBytes);
+            }
+            if (!current.isEmpty() && (current.size() >= maxItems || currentBytes + itemBytes + 1L > maxBytes)) {
+                batches.add(List.copyOf(current));
+                current.clear();
+                currentBytes = 2L;
+            }
+            current.add(item);
+            currentBytes += itemBytes + 1L;
+        }
+        if (!current.isEmpty()) batches.add(List.copyOf(current));
+        return batches;
+    }
+
+    private static long serializedSize(Object value) {
+        try {
+            return EDGE_METADATA_MAPPER.writeValueAsBytes(value).length;
+        } catch (Exception e) {
+            throw new IllegalArgumentException("Cannot size graph RPC item", e);
+        }
+    }
+
+    private static int positiveIntProperty(String name, int defaultValue) {
+        long value = positiveLongProperty(name, defaultValue);
+        return value > Integer.MAX_VALUE ? defaultValue : (int) value;
+    }
+
+    private static long positiveLongProperty(String name, long defaultValue) {
+        String value = System.getProperty(name);
+        if (value == null || value.isBlank()) return defaultValue;
+        try {
+            long parsed = Long.parseLong(value);
+            return parsed > 0 ? parsed : defaultValue;
+        } catch (NumberFormatException ignored) {
+            return defaultValue;
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -644,15 +720,9 @@ class GraphPersistenceHelper {
     // Internal helpers (inlined from orchestrator private methods)
     // -------------------------------------------------------------------------
 
-    /**
-     * Returns true if the job has been cancelled, marking its completion timestamp.
-     */
+    /** Returns true once cancellation has been requested; the owning worker sets completion time. */
     private boolean isCancelled(UnifiedCrawlJob job) {
-        if (job.getStatus().get() == UnifiedCrawlJob.Status.CANCELLED) {
-            job.setCompletedAt(Instant.now());
-            return true;
-        }
-        return false;
+        return job != null && job.isCancellationRequested();
     }
 
     /**

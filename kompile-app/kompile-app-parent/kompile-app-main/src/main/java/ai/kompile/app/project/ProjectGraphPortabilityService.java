@@ -17,13 +17,14 @@ package ai.kompile.app.project;
 
 import ai.kompile.app.facts.domain.FactSheet;
 import ai.kompile.app.facts.service.FactSheetService;
-import ai.kompile.graphchangetracking.event.GraphChangesetCompletedEvent;
+import ai.kompile.core.graphbuilder.GraphBuildCompletedEvent;
+import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import ai.kompile.knowledgegraph.io.GraphEmbeddingSidecar;
 import ai.kompile.knowledgegraph.io.GraphIOService;
-import ai.kompile.knowledgegraph.io.NamedGraphPortability;
 import ai.kompile.knowledgegraph.io.model.ExportResult;
 import ai.kompile.knowledgegraph.io.model.ImportResult;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
+import ai.kompile.knowledgegraph.unified.UnifiedGraphBridge;
 import ai.kompile.project.KompileProjectStore;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -35,23 +36,27 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.io.IOException;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Bakes the runtime knowledge graph into the versioned project tree so it
  * survives a {@code git clone}, and rehydrates it when a project is opened.
  *
- * <p>Graphs are written as portable JSON under {@code data/graph/}: one file per
- * fact sheet ({@code factsheet-<id>.json}) plus {@code global.json} for nodes not
- * scoped to any fact sheet, so the dump covers the whole graph exactly once.
- * Export runs on {@code commit} and whenever a graph changeset completes; import
- * runs on {@code open}, guarded so it only rehydrates into an empty graph (a fresh
- * clone) and never duplicates an already-populated one.</p>
+ * <p>Graphs are written under {@code data/graph/} in two compatible forms. Legacy
+ * structure JSON and embedding sidecars remain available for older clones. Rich
+ * {@code .kgraph} files preserve reasoning assets per fact sheet, while
+ * {@code project.kgraph} provides a complete read-only view for local chat.
+ * Export runs on commit and graph-completion events; import runs on open and is
+ * guarded so it only rehydrates an empty graph.</p>
  */
 @Service
 public class ProjectGraphPortabilityService {
@@ -70,40 +75,107 @@ public class ProjectGraphPortabilityService {
     @Autowired(required = false)
     private GraphEmbeddingSidecar embeddingSidecar;
     @Autowired(required = false)
-    private NamedGraphPortability namedGraphPortability;
+    private UnifiedGraphBridge unifiedGraphBridge;
     @Autowired
     private ObjectMapper mapper;
+
+    private final AtomicBoolean rehydrating = new AtomicBoolean();
 
     @Value("${kompile.project.root:}")
     private String configuredRoot;
 
     /** Export every fact-sheet graph plus the global bucket into {@code <root>/data/graph}. */
     public void exportAllGraphs(Path root) {
-        if (graphIOService == null || root == null) {
+        if (root == null || (graphIOService == null && unifiedGraphBridge == null)) {
             return;
         }
         Path graphDir = root.resolve(GRAPH_DIR);
         try {
             Files.createDirectories(graphDir);
-        } catch (IOException e) {
-            log.warn("Could not create graph dir {}: {}", graphDir, e.getMessage());
+            List<Long> factSheetIds = factSheetService == null ? List.of()
+                    : factSheetService.getAllSheets().stream()
+                            .map(FactSheet::getId)
+                            .filter(id -> id != null)
+                            .toList();
+            if (graphIOService != null) {
+                for (Long factSheetId : factSheetIds) {
+                    exportFactSheetScope(graphDir, factSheetId);
+                }
+                exportScope(graphDir.resolve("global.json"), () -> graphIOService.exportGlobalGraph("json"));
+            }
+            exportUnifiedGraphs(graphDir, factSheetIds);
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to publish portable project graphs under " + graphDir, e);
+        }
+    }
+
+    /**
+     * Export the rich reasoning representation used by project archives and
+     * {@code kompile-chat-local}. Per-fact-sheet files preserve application
+     * scope during rehydrate; {@code project.kgraph} is the complete read-only
+     * view selected by local chat.
+     */
+    private void exportUnifiedGraphs(Path graphDir, List<Long> factSheetIds) throws Exception {
+        if (unifiedGraphBridge == null) {
             return;
         }
-        if (factSheetService != null) {
-            for (FactSheet sheet : factSheetService.getAllSheets()) {
-                if (sheet.getId() != null) {
-                    exportFactSheetScope(graphDir, sheet.getId());
+        for (Long factSheetId : factSheetIds) {
+            exportUnifiedScope(
+                    graphDir.resolve("factsheet-" + factSheetId + ".kgraph"), factSheetId);
+        }
+        exportUnifiedScope(graphDir.resolve("project.kgraph"), null);
+    }
+
+    private void exportUnifiedScope(Path file, Long factSheetId) throws Exception {
+        Path temporary = null;
+        try {
+            UnifiedGraph graph = unifiedGraphBridge.export(factSheetId);
+            if (graph == null || (graph.entities().isEmpty() && graph.relations().isEmpty())) {
+                Files.deleteIfExists(file);
+                return;
+            }
+            Files.createDirectories(file.getParent());
+            temporary = Files.createTempFile(file.getParent(), file.getFileName().toString(), ".tmp");
+            graph.save(temporary);
+            moveReplacing(temporary, file);
+            temporary = null;
+            log.debug("Exported unified graph {} ({} entities, {} relations)",
+                    file.getFileName(), graph.entities().size(), graph.relations().size());
+        } finally {
+            if (temporary != null) {
+                try {
+                    Files.deleteIfExists(temporary);
+                } catch (IOException cleanupFailure) {
+                    log.debug("Could not remove temporary graph {}: {}", temporary, cleanupFailure.getMessage());
                 }
             }
         }
-        exportScope(graphDir.resolve("global.json"), () -> graphIOService.exportGlobalGraph("json"));
-        // NamedGraph registry (identity / hierarchy / schemaJson) — diffable JSON alongside structure.
-        writeBinaryOrDelete(graphDir.resolve("named-graphs.json"),
-                namedGraphPortability != null ? namedGraphPortability.export() : null);
+    }
+
+    private static void writeAtomically(Path target, byte[] data) throws IOException {
+        Files.createDirectories(target.getParent());
+        Path temporary = Files.createTempFile(target.getParent(), target.getFileName().toString(), ".tmp");
+        try {
+            Files.write(temporary, data);
+            moveReplacing(temporary, target);
+            temporary = null;
+        } finally {
+            if (temporary != null) {
+                Files.deleteIfExists(temporary);
+            }
+        }
+    }
+
+    private static void moveReplacing(Path source, Path target) throws IOException {
+        try {
+            Files.move(source, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (AtomicMoveNotSupportedException e) {
+            Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
+        }
     }
 
     /** Export one fact sheet's structure JSON plus its KG-embedding sidecar. */
-    private void exportFactSheetScope(Path graphDir, Long factSheetId) {
+    private void exportFactSheetScope(Path graphDir, Long factSheetId) throws Exception {
         exportScope(graphDir.resolve("factsheet-" + factSheetId + ".json"),
                 () -> graphIOService.exportGraph("json", factSheetId));
         byte[] embeddings = (embeddingSidecar != null) ? embeddingSidecar.export(factSheetId) : null;
@@ -111,17 +183,12 @@ public class ProjectGraphPortabilityService {
     }
 
     /** Write a binary sidecar, or delete a stale file when there is nothing to write. */
-    private void writeBinaryOrDelete(Path file, byte[] data) {
-        try {
-            if (data == null || data.length == 0) {
-                Files.deleteIfExists(file);
-                return;
-            }
-            Files.createDirectories(file.getParent());
-            Files.write(file, data);
-        } catch (IOException e) {
-            log.warn("Failed to write embedding sidecar {}: {}", file, e.getMessage());
+    private void writeBinaryOrDelete(Path file, byte[] data) throws IOException {
+        if (data == null || data.length == 0) {
+            Files.deleteIfExists(file);
+            return;
         }
+        writeAtomically(file, data);
     }
 
     private interface ExportCall {
@@ -129,19 +196,15 @@ public class ProjectGraphPortabilityService {
     }
 
     /** Write the export to {@code file}, or delete a stale empty file when the scope has no nodes. */
-    private void exportScope(Path file, ExportCall call) {
-        try {
-            ExportResult result = call.call();
-            if (result.nodesExported() == 0 && result.edgesExported() == 0) {
-                Files.deleteIfExists(file);
-                return;
-            }
-            Files.write(file, result.data());
-            log.debug("Exported graph {} ({} nodes, {} edges)",
-                    file.getFileName(), result.nodesExported(), result.edgesExported());
-        } catch (Exception e) {
-            log.warn("Failed to export graph {}: {}", file, e.getMessage());
+    private void exportScope(Path file, ExportCall call) throws Exception {
+        ExportResult result = call.call();
+        if (result.nodesExported() == 0 && result.edgesExported() == 0) {
+            Files.deleteIfExists(file);
+            return;
         }
+        writeAtomically(file, result.data());
+        log.debug("Exported graph {} ({} nodes, {} edges)",
+                file.getFileName(), result.nodesExported(), result.edgesExported());
     }
 
     /**
@@ -149,8 +212,9 @@ public class ProjectGraphPortabilityService {
      * No-op unless the graph is currently empty, so opening an already-populated
      * project never duplicates data.
      */
+    @Transactional
     public void importAllGraphs(Path root) {
-        if (graphIOService == null || root == null) {
+        if (root == null || (graphIOService == null && unifiedGraphBridge == null)) {
             return;
         }
         Path graphDir = root.resolve(GRAPH_DIR);
@@ -161,46 +225,124 @@ public class ProjectGraphPortabilityService {
             log.debug("Graph already populated; skipping rehydrate from {}", graphDir);
             return;
         }
-        // NamedGraph registry first — the rows that nodes' namedGraphId values point at.
-        Path namedGraphs = graphDir.resolve("named-graphs.json");
-        if (namedGraphPortability != null && Files.isRegularFile(namedGraphs)) {
-            try {
-                int n = namedGraphPortability.importGraphs(Files.readAllBytes(namedGraphs));
-                if (n > 0) {
-                    log.info("Rehydrated {} named graph(s)", n);
-                }
-            } catch (Exception e) {
-                log.warn("Failed to import named graphs: {}", e.getMessage());
+        if (!rehydrating.compareAndSet(false, true)) {
+            return;
+        }
+        try {
+            if (importUnifiedGraphs(graphDir)) {
+                return;
             }
+            importLegacyGraphs(graphDir);
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to rehydrate portable project graphs from " + graphDir, e);
+        } finally {
+            rehydrating.set(false);
+        }
+    }
+
+    private boolean importUnifiedGraphs(Path graphDir) throws Exception {
+        if (unifiedGraphBridge == null) {
+            return false;
+        }
+        List<Path> scopedFiles;
+        try (var paths = Files.list(graphDir)) {
+            scopedFiles = paths.filter(Files::isRegularFile)
+                    .filter(path -> factSheetIdFromKgraphName(path.getFileName().toString()) != null)
+                    .sorted()
+                    .toList();
+        }
+        if (scopedFiles.isEmpty()) {
+            Path completeGraph = graphDir.resolve("project.kgraph");
+            if (!Files.isRegularFile(completeGraph)) {
+                return false;
+            }
+            UnifiedGraph graph = UnifiedGraph.load(completeGraph);
+            UnifiedGraphBridge.ImportSummary summary = unifiedGraphBridge.importGraph(graph, null);
+            log.info("Rehydrated fallback project graph: {} nodes, {} edges",
+                    summary.nodes(), summary.edges());
+            return true;
+        }
+
+        List<ScopedGraph> staged = new java.util.ArrayList<>(scopedFiles.size());
+        for (Path scopedFile : scopedFiles) {
+            Long factSheetId = factSheetIdFromKgraphName(scopedFile.getFileName().toString());
+            staged.add(new ScopedGraph(factSheetId, UnifiedGraph.load(scopedFile)));
+        }
+        Path globalJson = graphDir.resolve("global.json");
+        byte[] globalPayload = null;
+        if (Files.isRegularFile(globalJson)) {
+            if (graphIOService == null) {
+                throw new IOException("global.json is present but GraphIOService is unavailable");
+            }
+            globalPayload = Files.readAllBytes(globalJson);
+            mapper.readTree(globalPayload);
+        }
+        for (ScopedGraph scoped : staged) {
+            UnifiedGraphBridge.ImportSummary summary =
+                    unifiedGraphBridge.importGraph(scoped.graph(), scoped.factSheetId());
+            log.info("Rehydrated fact-sheet {} graph: {} nodes, {} edges",
+                    scoped.factSheetId(), summary.nodes(), summary.edges());
+        }
+        if (globalPayload != null) {
+            ImportResult global = graphIOService.importGraph("json", globalPayload, null);
+            requireCompleteImport(global, "global.json");
+            log.info("Rehydrated global graph: {} nodes created, {} updated, {} edges",
+                    global.nodesCreated(), global.nodesUpdated(), global.edgesCreated());
+        }
+        return true;
+    }
+
+    private static Long factSheetIdFromKgraphName(String name) {
+        if (!name.startsWith("factsheet-") || !name.endsWith(".kgraph")) {
+            return null;
+        }
+        String value = name.substring("factsheet-".length(), name.length() - ".kgraph".length());
+        try {
+            return Long.parseLong(value);
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private void importLegacyGraphs(Path graphDir) throws Exception {
+        if (graphIOService == null) {
+            return;
         }
         List<Path> files;
         try (var paths = Files.list(graphDir)) {
             files = paths.filter(Files::isRegularFile)
                     .filter(p -> p.getFileName().toString().endsWith(".json"))
-                    .filter(p -> !p.getFileName().toString().equals("named-graphs.json"))
                     .sorted()
                     .toList();
-        } catch (IOException e) {
-            log.warn("Could not list graph dir {}: {}", graphDir, e.getMessage());
-            return;
         }
         if (files.isEmpty()) {
             return;
         }
-        try {
-            byte[] merged = mergeGraphFiles(files);
-            ImportResult result = graphIOService.importGraph("json", merged, null);
-            log.info("Rehydrated graph from {} file(s): {} nodes created, {} updated, {} edges, {} errors",
-                    files.size(), result.nodesCreated(), result.nodesUpdated(),
-                    result.edgesCreated(), result.errors());
-            importEmbeddings(graphDir);
-        } catch (Exception e) {
-            log.warn("Failed to rehydrate graph from {}: {}", graphDir, e.getMessage(), e);
+        byte[] merged = mergeGraphFiles(files);
+        ImportResult result = graphIOService.importGraph("json", merged, null);
+        requireCompleteImport(result, "legacy graph set");
+        log.info("Rehydrated graph from {} file(s): {} nodes created, {} updated, {} edges, {} errors",
+                files.size(), result.nodesCreated(), result.nodesUpdated(),
+                result.edgesCreated(), result.errors());
+        importEmbeddings(graphDir);
+    }
+
+    @EventListener
+    public void onGraphBuildCompleted(GraphBuildCompletedEvent event) {
+        if (rehydrating.get()) {
+            return;
         }
+        resolveRoot().ifPresent(root -> {
+            try {
+                exportAllGraphs(root);
+            } catch (RuntimeException e) {
+                log.warn("Could not refresh portable project graphs after graph build: {}", e.getMessage(), e);
+            }
+        });
     }
 
     /** Reattach KG-embedding sidecars onto the rehydrated nodes (one file per fact sheet). */
-    private void importEmbeddings(Path graphDir) {
+    private void importEmbeddings(Path graphDir) throws Exception {
         if (embeddingSidecar == null) {
             return;
         }
@@ -217,17 +359,21 @@ public class ProjectGraphPortabilityService {
                 if (factSheetId == null) {
                     continue;
                 }
-                try {
-                    int applied = embeddingSidecar.importInto(factSheetId, Files.readAllBytes(bin));
-                    if (applied > 0) {
-                        log.info("Reattached {} KG embeddings for fact sheet {}", applied, factSheetId);
-                    }
-                } catch (Exception e) {
-                    log.warn("Failed to load embedding sidecar {}: {}", bin, e.getMessage());
+                int applied = embeddingSidecar.importInto(factSheetId, Files.readAllBytes(bin));
+                if (applied > 0) {
+                    log.info("Reattached {} KG embeddings for fact sheet {}", applied, factSheetId);
                 }
             }
-        } catch (IOException e) {
-            log.warn("Could not list embeddings dir {}: {}", embDir, e.getMessage());
+        }
+    }
+
+    private static void requireCompleteImport(ImportResult result, String source) throws IOException {
+        if (result == null) {
+            throw new IOException("Graph import returned no result for " + source);
+        }
+        if (result.errors() > 0) {
+            throw new IOException("Graph import reported " + result.errors() + " error(s) for "
+                    + source + ": " + result.errorMessages());
         }
     }
 
@@ -280,35 +426,12 @@ public class ProjectGraphPortabilityService {
         }
     }
 
-    /**
-     * Keep the on-disk graph current between commits: when a changeset finishes
-     * (e.g. a crawl), re-export the affected fact sheet so the next git commit
-     * captures it without an explicit export step.
-     */
-    @EventListener
-    public void onChangesetCompleted(GraphChangesetCompletedEvent event) {
-        if (graphIOService == null) {
-            return;
-        }
-        resolveRoot().ifPresent(root -> {
-            Path graphDir = root.resolve(GRAPH_DIR);
-            try {
-                Files.createDirectories(graphDir);
-                if (event.getFactSheetId() != null) {
-                    exportFactSheetScope(graphDir, event.getFactSheetId());
-                } else {
-                    exportScope(graphDir.resolve("global.json"), () -> graphIOService.exportGlobalGraph("json"));
-                }
-            } catch (IOException e) {
-                log.warn("Auto-export after changeset {} failed: {}", event.getChangesetId(), e.getMessage());
-            }
-        });
-    }
-
     private Optional<Path> resolveRoot() {
         Path start = (configuredRoot != null && !configuredRoot.isBlank())
                 ? Path.of(configuredRoot)
                 : Path.of(System.getProperty("user.dir"));
         return store.findProjectRoot(start);
     }
+
+    private record ScopedGraph(Long factSheetId, UnifiedGraph graph) {}
 }

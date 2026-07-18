@@ -3,6 +3,45 @@
   padding: 8px 0;
 }
 
+.calibration-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+
+.calibration-table th {
+  text-align: left;
+  padding: 6px 10px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.16);
+  font-weight: 500;
+  opacity: 0.75;
+}
+
+.calibration-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.calibration-model {
+  font-family: monospace;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.benched-tag {
+  color: #c62828;
+  font-weight: 500;
+}
+
+.healthy-tag {
+  color: #2e7d32;
+}
+
+.refresh-calibration-btn {
+  margin-bottom: 4px;
+}
+
 .loading-overlay {
   display: flex;
   justify-content: center;

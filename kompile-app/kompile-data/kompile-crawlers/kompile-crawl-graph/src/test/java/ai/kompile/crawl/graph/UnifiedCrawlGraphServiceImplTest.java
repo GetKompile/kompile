@@ -56,6 +56,7 @@ import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -926,12 +927,15 @@ class UnifiedCrawlGraphServiceImplTest {
     }
 
     @Test
-    @DisplayName("Cancel active job returns true, cancel finished job returns false")
+    @DisplayName("Cancellation is terminal only after the running worker quiesces")
     void cancelJob_lifecycle() throws Exception {
-        when(fileLoader.load(any(DocumentSourceDescriptor.class), any())).thenReturn(List.of(
-                new Document("Content", Map.of())
-        ));
-        when(callResponseSpec.content()).thenReturn("no json");
+        CountDownLatch loaderEntered = new CountDownLatch(1);
+        CountDownLatch releaseLoader = new CountDownLatch(1);
+        when(fileLoader.load(any(DocumentSourceDescriptor.class), any())).thenAnswer(invocation -> {
+            loaderEntered.countDown();
+            releaseLoader.await(5, TimeUnit.SECONDS);
+            return List.of();
+        });
 
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("cancel test")
@@ -940,12 +944,38 @@ class UnifiedCrawlGraphServiceImplTest {
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
+        assertTrue(loaderEntered.await(3, TimeUnit.SECONDS), "Job should be inside the loader");
+        assertTrue(service.cancelJob(job.getJobId()));
+        assertEquals(UnifiedCrawlJob.Status.CANCELLING, job.getStatus().get());
+        assertNull(job.getCompletedAt(), "Cancellation request is not worker completion");
+        assertTrue(service.getActiveJobs().stream()
+                .anyMatch(active -> active.getJobId().equals(job.getJobId())));
+        assertEquals(0, service.cleanupJobs(), "Cleanup must not evict an owned running worker");
+        assertTrue(service.getJob(job.getJobId()).isPresent());
+
+        releaseLoader.countDown();
         awaitCompletion(job);
 
-        // Already completed — cancel should fail
-        assertFalse(service.cancelJob(job.getJobId()));
-        // Non-existent job
+        assertEquals(UnifiedCrawlJob.Status.CANCELLED, job.getStatus().get());
+        assertNotNull(job.getCompletedAt());
+        assertFalse(service.cancelJob(job.getJobId()), "Terminal cancellation is idempotent");
         assertFalse(service.cancelJob("nonexistent-id"));
+    }
+
+    @Test
+    @DisplayName("Standalone service rejects an unresolved explicit fact-sheet name")
+    void startJob_rejectsUnresolvedFactSheetName() {
+        UnifiedCrawlRequest request = UnifiedCrawlRequest.builder()
+                .name("unresolved scope")
+                .factSheetName("FP&A typo")
+                .sources(List.of(fileSource("docs", "/data/docs")))
+                .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
+                .build();
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> service.startJob(request));
+
+        assertTrue(error.getMessage().contains("must resolve to a concrete ID"));
     }
 
     @Test
@@ -2345,29 +2375,38 @@ class UnifiedCrawlGraphServiceImplTest {
         verify(knowledgeGraphService).createNode(eq(NodeLevel.ENTITY), eq("cell:Sheet1!B1"),
                 eq("Sheet1!B1"), eq("100"), anyMap(), any());
 
-        // Verify CONTAINS edge: DOCUMENT → SHEET (via createEdgeWithMetadata)
-        verify(knowledgeGraphService).createEdgeWithMetadata(eq("doc-budget"), eq("sheet-node-1"),
-                eq(EdgeType.CONTAINS), eq(1.0), eq("CONTAINS"), contains("sheet"),
-                any(), eq(EdgeProvenance.EXTRACTED), any());
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<KnowledgeGraphService.EdgeSpec>> edgeBatchCaptor =
+                ArgumentCaptor.forClass((Class) List.class);
+        verify(knowledgeGraphService, atLeastOnce()).createEdgesBatch(edgeBatchCaptor.capture());
+        List<KnowledgeGraphService.EdgeSpec> formulaEdges = edgeBatchCaptor.getAllValues().stream()
+                .flatMap(Collection::stream)
+                .filter(edge -> edge.metaJson() != null && edge.metaJson().contains("\"extractionMethod\":\"formulaGraph\""))
+                .toList();
 
-        // Verify CONTAINS edges: SHEET → CELL (cells linked to their sheet)
-        verify(knowledgeGraphService).createEdgeWithMetadata(eq("sheet-node-1"), eq("cell-a1"),
-                eq(EdgeType.CONTAINS), eq(1.0), eq("CONTAINS"), anyString(),
-                any(), eq(EdgeProvenance.EXTRACTED), any());
+        assertTrue(formulaEdges.stream().anyMatch(edge ->
+                        edge.sourceNodeId().equals("doc-budget")
+                                && edge.targetNodeId().equals("sheet-node-1")
+                                && edge.edgeType() == EdgeType.CONTAINS),
+                "Formula batch should contain DOCUMENT → SHEET");
+        assertTrue(formulaEdges.stream().anyMatch(edge ->
+                        edge.sourceNodeId().equals("sheet-node-1")
+                                && edge.targetNodeId().equals("cell-a1")
+                                && edge.edgeType() == EdgeType.CONTAINS),
+                "Formula batch should contain SHEET → CELL");
+        assertTrue(formulaEdges.stream().anyMatch(edge ->
+                        edge.sourceNodeId().equals("cell-a1")
+                                && edge.targetNodeId().equals("cell-b1")
+                                && "DEPENDS_ON".equals(edge.label())),
+                "Formula batch should contain A1 → B1 dependency");
+        assertTrue(formulaEdges.stream().anyMatch(edge ->
+                        edge.sourceNodeId().equals("cell-a1")
+                                && edge.targetNodeId().equals("cell-c1")
+                                && "DEPENDS_ON".equals(edge.label())),
+                "Formula batch should contain A1 → C1 dependency");
 
-        // Verify DEPENDS_ON edges between cells (via createEdgeWithMetadata)
-        verify(knowledgeGraphService).createEdgeWithMetadata(eq("cell-a1"), eq("cell-b1"),
-                eq(EdgeType.USER_DEFINED), eq(1.0), eq("DEPENDS_ON"), anyString(),
-                any(), eq(EdgeProvenance.EXTRACTED), any());
-        verify(knowledgeGraphService).createEdgeWithMetadata(eq("cell-a1"), eq("cell-c1"),
-                eq(EdgeType.USER_DEFINED), eq(1.0), eq("DEPENDS_ON"), anyString(),
-                any(), eq(EdgeProvenance.EXTRACTED), any());
-
-        ArgumentCaptor<String> metadataCaptor = ArgumentCaptor.forClass(String.class);
-        verify(knowledgeGraphService, atLeast(4)).createEdgeWithMetadata(
-                anyString(), anyString(), any(EdgeType.class), anyDouble(), anyString(), anyString(),
-                metadataCaptor.capture(), eq(EdgeProvenance.EXTRACTED), any());
-        List<String> metadataJson = metadataCaptor.getAllValues().stream()
+        List<String> metadataJson = formulaEdges.stream()
+                .map(KnowledgeGraphService.EdgeSpec::metaJson)
                 .filter(Objects::nonNull)
                 .toList();
         assertFalse(metadataJson.isEmpty(), "Crawler graph edges should persist semantic metadata");
@@ -2465,10 +2504,15 @@ class UnifiedCrawlGraphServiceImplTest {
 
         awaitCompletion(job);
 
-        // Verify cross-sheet dependency edge created (via createEdgeWithMetadata)
-        verify(knowledgeGraphService).createEdgeWithMetadata(anyString(), anyString(),
-                eq(EdgeType.USER_DEFINED), eq(1.0), eq("CROSS_SHEET_DEPENDS_ON"), anyString(),
-                any(), eq(EdgeProvenance.EXTRACTED), any());
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<KnowledgeGraphService.EdgeSpec>> edgeBatchCaptor =
+                ArgumentCaptor.forClass((Class) List.class);
+        verify(knowledgeGraphService, atLeastOnce()).createEdgesBatch(edgeBatchCaptor.capture());
+        assertTrue(edgeBatchCaptor.getAllValues().stream()
+                        .flatMap(Collection::stream)
+                        .anyMatch(edge -> edge.edgeType() == EdgeType.USER_DEFINED
+                                && "CROSS_SHEET_DEPENDS_ON".equals(edge.label())),
+                "Formula batch should contain the cross-sheet dependency");
 
         // Verify formula graph created the expected SHEET and CELL nodes; mandatory
         // LLM graph extraction may add additional ENTITY nodes.
@@ -3109,6 +3153,42 @@ class UnifiedCrawlGraphServiceImplTest {
         assertEquals(UnifiedCrawlJob.Status.COMPLETED, job.getStatus().get());
         assertEquals(1, job.getEntitiesExtracted().get(),
             "Per-chunk retry should recover after first invalid JSON response");
+    }
+
+    @Test
+    @DisplayName("Truncated graph JSON is retried in phase and can recover")
+    void truncatedGraphJsonRecoversOnValidationRetry() throws Exception {
+        java.util.concurrent.atomic.AtomicInteger callCount = new java.util.concurrent.atomic.AtomicInteger(0);
+        when(fileLoader.load(any(DocumentSourceDescriptor.class), any())).thenReturn(List.of(
+            new Document("Doc about Alice at Google.", Map.of())
+        ));
+        String validJson = buildExtractionJson(
+            List.of(entity("e1", "Alice", "PERSON", "Person", 0.9)),
+            List.of()
+        );
+        when(llmChat.prompt(anyString())).thenAnswer(inv -> {
+            int call = callCount.incrementAndGet();
+            LLMChat.CallResponseSpec resp = mock(LLMChat.CallResponseSpec.class);
+            when(resp.content()).thenReturn(call == 1
+                    ? "{\"entities\":[{\"id\":\"e1\""
+                    : validJson);
+            LLMChat.ChatClientRequestSpec spec = mock(LLMChat.ChatClientRequestSpec.class);
+            when(spec.call()).thenReturn(resp);
+            return spec;
+        });
+
+        UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
+            .name("truncated-json-retry-test")
+            .sources(List.of(fileSource("docs", "/data/docs")))
+            .graphExtraction(GraphExtractionConfig.builder().build())
+            .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
+            .build());
+
+        awaitCompletion(job);
+
+        assertEquals(UnifiedCrawlJob.Status.COMPLETED, job.getStatus().get());
+        assertEquals(2, callCount.get(), "Malformed JSON should consume one validation retry");
+        assertEquals(1, job.getEntitiesExtracted().get());
     }
 
     @Test

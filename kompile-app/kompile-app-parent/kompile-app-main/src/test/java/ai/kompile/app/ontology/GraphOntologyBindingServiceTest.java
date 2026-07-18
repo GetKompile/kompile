@@ -20,10 +20,8 @@ import ai.kompile.core.graphrag.conformance.GraphConformanceSummary;
 import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
-import ai.kompile.knowledgegraph.domain.NamedGraph;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
-import ai.kompile.knowledgegraph.service.NamedGraphService;
 import ai.kompile.process.ontology.Cardinality;
 import ai.kompile.process.ontology.EntityTypeDefinition;
 import ai.kompile.process.ontology.FieldDefinition;
@@ -58,7 +56,6 @@ class GraphOntologyBindingServiceTest {
 
     @Mock private ProcessEngineService processEngineService;
     @Mock private KnowledgeGraphService knowledgeGraphService;
-    @Mock private NamedGraphService namedGraphService;
     @Mock private OntologyDerivationService ontologyDerivationService;
 
     private GraphOntologyBindingService service;
@@ -67,14 +64,15 @@ class GraphOntologyBindingServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new GraphOntologyBindingService(processEngineService, knowledgeGraphService, namedGraphService,
+        service = new GraphOntologyBindingService(processEngineService, knowledgeGraphService,
                 ontologyDerivationService);
     }
 
     @Test
     void autoProvision_whenAlreadyBound_returnsExistingWithoutDeriving() {
         OntologySchema bound = OntologySchema.builder().id("o1").version(2).name("bound").build();
-        when(namedGraphService.getGraphsByFactSheet(FS)).thenReturn(List.of(boundGraph("g1", "o1", 2)));
+        when(knowledgeGraphService.getNodeByExternalIdInFactSheet("__graph_ontology_binding__", NodeLevel.CUSTOM, FS))
+                .thenReturn(Optional.of(bindingNode("binding-1", "o1", 2)));
         when(processEngineService.getOntology("o1", 2)).thenReturn(bound);
 
         Optional<OntologySchema> result = service.autoProvisionStructuralOntology(FS);
@@ -87,7 +85,8 @@ class GraphOntologyBindingServiceTest {
 
     @Test
     void autoProvision_whenUnbound_derivesSavesAndBinds() {
-        when(namedGraphService.getGraphsByFactSheet(FS)).thenReturn(List.of());
+        when(knowledgeGraphService.getNodeByExternalIdInFactSheet("__graph_ontology_binding__", NodeLevel.CUSTOM, FS))
+                .thenReturn(Optional.empty());
         when(processEngineService.listProcessDefinitions()).thenReturn(List.of());
 
         OntologySchema draft = OntologySchema.builder().name("auto").build();
@@ -95,21 +94,25 @@ class GraphOntologyBindingServiceTest {
         OntologySchema saved = OntologySchema.builder().id("auto-1").version(1).name("auto").build();
         when(processEngineService.createOntology(draft)).thenReturn(saved);
         when(processEngineService.getOntology("auto-1", 1)).thenReturn(saved);
-        when(namedGraphService.createGraph(any(), any(), any(), eq(FS), any()))
-                .thenReturn(NamedGraph.builder().graphId("g1").name("g1").build());
-        when(namedGraphService.bindOntology("g1", "auto-1", 1)).thenReturn(boundGraph("g1", "auto-1", 1));
+        when(knowledgeGraphService.createNode(eq(NodeLevel.CUSTOM), eq("__graph_ontology_binding__"),
+                anyString(), anyString(), anyMap(), eq(FS)))
+                .thenReturn(bindingNode("binding-1", "auto-1", 1));
 
         Optional<OntologySchema> result = service.autoProvisionStructuralOntology(FS);
 
         assertTrue(result.isPresent());
         assertEquals("auto-1", result.get().getId());
         verify(processEngineService).createOntology(draft);
-        verify(namedGraphService).bindOntology("g1", "auto-1", 1);
+        verify(knowledgeGraphService).createNode(eq(NodeLevel.CUSTOM), eq("__graph_ontology_binding__"),
+                anyString(), anyString(), anyMap(), eq(FS));
     }
 
-    private NamedGraph boundGraph(String graphId, String ontologyId, Integer version) {
-        return NamedGraph.builder().graphId(graphId).name(graphId)
-                .ontologySchemaId(ontologyId).ontologyVersion(version).build();
+    private GraphNode bindingNode(String nodeId, String ontologyId, Integer version) {
+        return GraphNode.builder().nodeId(nodeId).externalId("__graph_ontology_binding__")
+                .nodeType(NodeLevel.CUSTOM).factSheetId(FS)
+                .title("Graph ontology binding")
+                .metadataJson("{\"ontologySchemaId\":\"" + ontologyId
+                        + "\",\"ontologyVersion\":" + version + "}").build();
     }
 
     private OntologySchema accountOntology() {
@@ -174,10 +177,13 @@ class GraphOntologyBindingServiceTest {
         when(processEngineService.listProcessDefinitions())
                 .thenReturn(List.of(def("p1", "ont-1", 2, FS, ProcessStatus.APPROVED)));
         when(processEngineService.getOntology("ont-1", 2)).thenReturn(accountOntology());
-        when(knowledgeGraphService.getNodesByTypeInFactSheet(FS, NodeLevel.ENTITY)).thenReturn(List.of(
-                entity("n1", "{\"entity_type\":\"Account\",\"code\":\"1234\"}"), // conformant
-                entity("n2", "{\"entity_type\":\"Vendor\"}"),                     // unknown type
-                entity("n3", "{\"entity_type\":\"Account\"}")));                  // missing required 'code'
+        when(knowledgeGraphService.getNodesInFactSheetPage(FS, 0, 1_000)).thenReturn(
+                new KnowledgeGraphService.GraphPage<>(List.of(
+                        entity("n1", "{\"entity_type\":\"Account\",\"code\":\"1234\"}"),
+                        entity("n2", "{\"entity_type\":\"Vendor\"}"),
+                        entity("n3", "{\"entity_type\":\"Account\"}")), 3, false));
+        when(knowledgeGraphService.getEdgesInFactSheetPage(FS, 0, 1_000)).thenReturn(
+                new KnowledgeGraphService.GraphPage<>(List.of(), 0, false));
 
         GraphConformanceReport report = service.checkConformance(FS);
 
@@ -202,14 +208,16 @@ class GraphOntologyBindingServiceTest {
         when(processEngineService.listProcessDefinitions())
                 .thenReturn(List.of(def("p1", "ont-1", 2, FS, ProcessStatus.APPROVED)));
         when(processEngineService.getOntology("ont-1", 2)).thenReturn(schema);
-        when(knowledgeGraphService.getNodesByTypeInFactSheet(FS, NodeLevel.ENTITY)).thenReturn(List.of());
-
         GraphNode a = entity("a", "{\"entity_type\":\"Account\"}");
         GraphNode b = entity("b", "{\"entity_type\":\"Account\"}");
-        when(knowledgeGraphService.getEdgesInFactSheet(FS)).thenReturn(List.of(
-                edge("e1", a, b, "FEEDS_INTO"),  // defined in ontology → conformant
-                edge("e2", a, b, "MENTORS"),     // not in ontology → violation
-                edge("e3", a, b, null)));         // structural edge → skipped
+        when(knowledgeGraphService.getNodesInFactSheetPage(FS, 0, 1_000)).thenReturn(
+                new KnowledgeGraphService.GraphPage<>(List.of(a, b), 2, false));
+        when(knowledgeGraphService.getNodesByIds(anyList())).thenReturn(List.of(a, b));
+        when(knowledgeGraphService.getEdgesInFactSheetPage(FS, 0, 1_000)).thenReturn(
+                new KnowledgeGraphService.GraphPage<>(List.of(
+                        edge("e1", a, b, "FEEDS_INTO"),
+                        edge("e2", a, b, "MENTORS"),
+                        edge("e3", a, b, null)), 3, false));
 
         GraphConformanceReport report = service.checkConformance(FS);
 
@@ -230,14 +238,16 @@ class GraphOntologyBindingServiceTest {
         when(processEngineService.listProcessDefinitions())
                 .thenReturn(List.of(def("p1", "ont-1", 2, FS, ProcessStatus.APPROVED)));
         when(processEngineService.getOntology("ont-1", 2)).thenReturn(schema);
-        when(knowledgeGraphService.getNodesByTypeInFactSheet(FS, NodeLevel.ENTITY)).thenReturn(List.of());
-
         GraphNode a = entity("a", "{\"entity_type\":\"Account\"}");
         GraphNode b = entity("b", "{\"entity_type\":\"Account\"}");
         GraphNode c = entity("c", "{\"entity_type\":\"Account\"}");
-        when(knowledgeGraphService.getEdgesInFactSheet(FS)).thenReturn(List.of(
-                edge("e1", a, b, "REPORTS_TO"),
-                edge("e2", a, c, "REPORTS_TO")));  // source 'a' has 2 outgoing → breaches MANY_TO_ONE
+        when(knowledgeGraphService.getNodesInFactSheetPage(FS, 0, 1_000)).thenReturn(
+                new KnowledgeGraphService.GraphPage<>(List.of(a, b, c), 3, false));
+        when(knowledgeGraphService.getNodesByIds(anyList())).thenReturn(List.of(a, b, c));
+        when(knowledgeGraphService.getEdgesInFactSheetPage(FS, 0, 1_000)).thenReturn(
+                new KnowledgeGraphService.GraphPage<>(List.of(
+                        edge("e1", a, b, "REPORTS_TO"),
+                        edge("e2", a, c, "REPORTS_TO")), 2, false));
 
         GraphConformanceReport report = service.checkConformance(FS);
 
@@ -262,8 +272,11 @@ class GraphOntologyBindingServiceTest {
         when(processEngineService.listProcessDefinitions())
                 .thenReturn(List.of(def("p1", "ont-1", 2, FS, ProcessStatus.APPROVED)));
         when(processEngineService.getOntology("ont-1", 2)).thenReturn(accountOntology());
-        when(knowledgeGraphService.getNodesByTypeInFactSheet(FS, NodeLevel.ENTITY))
-                .thenReturn(List.of(entity("n2", "{\"entity_type\":\"Vendor\"}")));
+        when(knowledgeGraphService.getNodesInFactSheetPage(FS, 0, 1_000)).thenReturn(
+                new KnowledgeGraphService.GraphPage<>(
+                        List.of(entity("n2", "{\"entity_type\":\"Vendor\"}")), 1, false));
+        when(knowledgeGraphService.getEdgesInFactSheetPage(FS, 0, 1_000)).thenReturn(
+                new KnowledgeGraphService.GraphPage<>(List.of(), 0, false));
 
         GraphConformanceSummary summary = service.checkFactSheet(FS);
 
@@ -279,8 +292,9 @@ class GraphOntologyBindingServiceTest {
 
     @Test
     void resolvesOntologyViaExplicitGraphBinding() {
-        when(namedGraphService.getGraphsByFactSheet(FS))
-                .thenReturn(List.of(boundGraph("g1", "ont-1", 2)));
+        when(knowledgeGraphService.getNodeByExternalIdInFactSheet(
+                "__graph_ontology_binding__", NodeLevel.CUSTOM, FS))
+                .thenReturn(Optional.of(bindingNode("binding-1", "ont-1", 2)));
         when(processEngineService.getOntology("ont-1", 2)).thenReturn(accountOntology());
 
         Optional<OntologySchema> resolved = service.resolveActiveOntology(FS);
@@ -293,8 +307,9 @@ class GraphOntologyBindingServiceTest {
 
     @Test
     void explicitGraphBindingTakesPriorityOverProcessLink() {
-        when(namedGraphService.getGraphsByFactSheet(FS))
-                .thenReturn(List.of(boundGraph("g1", "ont-explicit", 1)));
+        when(knowledgeGraphService.getNodeByExternalIdInFactSheet(
+                "__graph_ontology_binding__", NodeLevel.CUSTOM, FS))
+                .thenReturn(Optional.of(bindingNode("binding-1", "ont-explicit", 1)));
         when(processEngineService.getOntology("ont-explicit", 1)).thenReturn(
                 OntologySchema.builder().id("ont-explicit").name("Explicit").version(1).build());
 
@@ -306,9 +321,9 @@ class GraphOntologyBindingServiceTest {
     }
 
     @Test
-    void ignoresGraphsWithoutABindingAndFallsThroughToProcessLink() {
-        when(namedGraphService.getGraphsByFactSheet(FS))
-                .thenReturn(List.of(boundGraph("g1", null, null))); // graph exists but no ontology bound
+    void missingExplicitBindingFallsThroughToProcessLink() {
+        when(knowledgeGraphService.getNodeByExternalIdInFactSheet(
+                "__graph_ontology_binding__", NodeLevel.CUSTOM, FS)).thenReturn(Optional.empty());
         when(processEngineService.listProcessDefinitions())
                 .thenReturn(List.of(def("p1", "ont-1", 2, FS, ProcessStatus.APPROVED)));
         when(processEngineService.getOntology("ont-1", 2)).thenReturn(accountOntology());
@@ -322,51 +337,58 @@ class GraphOntologyBindingServiceTest {
     // ── bind / unbind management ───────────────────────────────────────────────────
 
     @Test
-    void bindOntologyBindsTheExistingGraphForTheFactSheet() {
+    void bindOntologyUpdatesExistingLuceneDescriptor() {
+        GraphNode existing = bindingNode("binding-1", "old", 1);
+        GraphNode updated = bindingNode("binding-1", "ont-1", 2);
         when(processEngineService.getOntology("ont-1", 2)).thenReturn(accountOntology());
-        when(namedGraphService.getGraphsByFactSheet(FS)).thenReturn(List.of(boundGraph("g1", null, null)));
-        when(namedGraphService.bindOntology("g1", "ont-1", 2)).thenReturn(boundGraph("g1", "ont-1", 2));
+        when(knowledgeGraphService.getNodeByExternalIdInFactSheet(
+                "__graph_ontology_binding__", NodeLevel.CUSTOM, FS)).thenReturn(Optional.of(existing));
+        when(knowledgeGraphService.updateNode(eq("binding-1"), anyString(), nullable(String.class), anyMap()))
+                .thenReturn(updated);
 
-        NamedGraph result = service.bindOntology(FS, "ont-1", 2);
+        GraphOntologyBindingService.OntologyBinding result = service.bindOntology(FS, "ont-1", 2);
 
-        assertEquals("ont-1", result.getOntologySchemaId());
-        verify(namedGraphService).bindOntology("g1", "ont-1", 2);
-        verify(namedGraphService, never()).createGraph(any(), any(), any(), any(), any());
+        assertEquals("ont-1", result.ontologySchemaId());
+        assertEquals(2, result.ontologyVersion());
+        verify(knowledgeGraphService).updateNode(eq("binding-1"), anyString(), nullable(String.class),
+                argThat(metadata -> "ont-1".equals(metadata.get("ontologySchemaId"))
+                        && Integer.valueOf(2).equals(metadata.get("ontologyVersion"))));
+        verify(knowledgeGraphService, never()).createNode(any(), any(), any(), any(), any(), any());
     }
 
     @Test
-    void bindOntologyCreatesAGraphWhenTheFactSheetHasNone() {
+    void bindOntologyCreatesLuceneDescriptorWhenMissing() {
         when(processEngineService.getOntology("ont-1", 2)).thenReturn(accountOntology());
-        when(namedGraphService.getGraphsByFactSheet(FS)).thenReturn(List.of());
-        when(namedGraphService.createGraph(anyString(), anyString(), isNull(), eq(FS), anyString()))
-                .thenReturn(boundGraph("g-new", null, null));
-        when(namedGraphService.bindOntology("g-new", "ont-1", 2)).thenReturn(boundGraph("g-new", "ont-1", 2));
+        when(knowledgeGraphService.getNodeByExternalIdInFactSheet(
+                "__graph_ontology_binding__", NodeLevel.CUSTOM, FS)).thenReturn(Optional.empty());
+        when(knowledgeGraphService.createNode(eq(NodeLevel.CUSTOM), eq("__graph_ontology_binding__"),
+                anyString(), anyString(), anyMap(), eq(FS)))
+                .thenReturn(bindingNode("binding-new", "ont-1", 2));
 
-        NamedGraph result = service.bindOntology(FS, "ont-1", 2);
+        GraphOntologyBindingService.OntologyBinding result = service.bindOntology(FS, "ont-1", 2);
 
-        assertEquals("g-new", result.getGraphId());
-        verify(namedGraphService).createGraph(anyString(), anyString(), isNull(), eq(FS), anyString());
-        verify(namedGraphService).bindOntology("g-new", "ont-1", 2);
+        assertEquals("binding-new", result.descriptorNodeId());
+        verify(knowledgeGraphService).createNode(eq(NodeLevel.CUSTOM), eq("__graph_ontology_binding__"),
+                anyString(), anyString(), anyMap(), eq(FS));
     }
 
     @Test
-    void bindOntologyRejectsAnUnknownOntology() {
+    void bindOntologyRejectsAnUnknownOntologyWithoutWritingGraph() {
         when(processEngineService.getOntology("ghost", 9)).thenReturn(null);
 
         assertThrows(IllegalArgumentException.class, () -> service.bindOntology(FS, "ghost", 9));
-        verify(namedGraphService, never()).bindOntology(anyString(), any(), any());
-        verify(namedGraphService, never()).createGraph(any(), any(), any(), any(), any());
+        verify(knowledgeGraphService, never()).updateNode(anyString(), any(), any(), any());
+        verify(knowledgeGraphService, never()).createNode(any(), any(), any(), any(), any(), any());
     }
 
     @Test
-    void unbindOntologyClearsBoundGraphsOnly() {
-        when(namedGraphService.getGraphsByFactSheet(FS)).thenReturn(List.of(
-                boundGraph("g1", "ont-1", 2),   // bound → cleared
-                boundGraph("g2", null, null))); // already unbound → left alone
+    void unbindOntologyDeletesLuceneDescriptor() {
+        when(knowledgeGraphService.getNodeByExternalIdInFactSheet(
+                "__graph_ontology_binding__", NodeLevel.CUSTOM, FS))
+                .thenReturn(Optional.of(bindingNode("binding-1", "ont-1", 2)));
 
         service.unbindOntology(FS);
 
-        verify(namedGraphService).bindOntology("g1", null, null);
-        verify(namedGraphService, never()).bindOntology(eq("g2"), any(), any());
+        verify(knowledgeGraphService).deleteNode("binding-1");
     }
 }

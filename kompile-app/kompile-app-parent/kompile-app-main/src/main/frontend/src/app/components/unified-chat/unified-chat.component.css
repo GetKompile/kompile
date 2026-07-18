@@ -3777,3 +3777,93 @@ details[open] > .tool-use-summary::before {
   cursor: pointer;
 }
 .show-more-btn:hover { text-decoration: underline; }
+
+/* Mobile overrides are kept at the end so newer chat controls remain reachable. */
+@media (max-width: 768px) {
+  .unified-chat-wrapper {
+    height: calc(100dvh - 112px);
+    margin: 4px;
+  }
+
+  .history-sidebar,
+  .history-sidebar.collapsed {
+    width: min(86vw, 280px);
+    min-width: 0;
+  }
+
+  .chat-header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    padding: 10px 12px;
+  }
+
+  .header-left {
+    min-width: 0;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .header-right {
+    align-self: flex-end;
+    flex-wrap: wrap;
+  }
+
+  .inline-agent-selector {
+    display: flex;
+    flex: 1 1 100%;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .agent-select {
+    flex: 1 1 auto;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .mode-toggle {
+    display: flex;
+    width: 100%;
+    overflow-x: auto;
+  }
+
+  .session-token-usage,
+  .context-usage {
+    display: inline-flex;
+    max-width: 100%;
+    padding: 3px 8px;
+  }
+
+  .mode-btn {
+    flex: 1 0 auto;
+    min-height: 44px;
+    padding: 8px 12px;
+  }
+
+  .message-bubble {
+    max-width: 100%;
+  }
+
+  .input-area {
+    padding: 10px 12px;
+  }
+}
+
+@media (max-width: 480px) {
+  .unified-chat-wrapper {
+    margin: 0;
+    border-radius: 0;
+  }
+
+  .inline-agent-selector {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .mode-btn {
+    font-size: 0.8em;
+    padding-inline: 8px;
+  }
+}

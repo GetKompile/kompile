@@ -19,6 +19,7 @@ package ai.kompile.crawl.graph;
 import ai.kompile.core.crawl.graph.GraphExtractionConfig;
 import ai.kompile.core.graphrag.GraphConstants;
 import ai.kompile.core.retrievers.RetrievedDoc;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -43,6 +44,11 @@ class GraphExtractionCheckpointStoreTest {
     void setUp() {
         System.setProperty("kompile.data.dir", tempDir.toString());
         store = new GraphExtractionCheckpointStore();
+    }
+
+    @AfterEach
+    void clearProjectProperty() {
+        System.clearProperty("kompile.data.dir");
     }
 
     @Test
@@ -78,6 +84,24 @@ class GraphExtractionCheckpointStoreTest {
 
         assertFalse(Files.exists(expected));
         assertTrue(store.completedChunkKeys(42L, config).isEmpty());
+    }
+
+    @Test
+    void checkpointsFromOneProjectAreInvisibleToAnotherProject() {
+        GraphExtractionConfig config = GraphExtractionConfig.builder()
+                .llmProvider("local")
+                .modelName("lfm2.5-1.2b-instruct")
+                .schemaPresetId("fpna")
+                .build();
+        RetrievedDoc doc = doc("doc-a", "/fpna/a.xlsx", 0, "same text");
+        store.recordCompletedBatch(42L, config, List.of(doc), "crawl-1", 1, 1);
+
+        Path secondProject = tempDir.resolve("second-project");
+        System.setProperty("kompile.data.dir", secondProject.toString());
+        GraphExtractionCheckpointStore secondStore = new GraphExtractionCheckpointStore();
+
+        assertTrue(secondStore.completedChunkKeys(42L, config).isEmpty());
+        assertFalse(Files.exists(secondProject.resolve("data/graph/42/graph-extraction-checkpoints.json")));
     }
 
     @Test

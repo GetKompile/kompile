@@ -14,6 +14,17 @@ kompile:
     settings-dir: ${user.home}/.kompile
     project-dir: ""
     callback-url: ""
+    # Host-only target compilation for downloadable Android .kproject artifacts.
+    # Supply compiler-command as a YAML argument vector or indexed command-line
+    # properties; it is executed directly and never through a shell.
+    sdx:
+      cache-dir: ${user.home}/.kompile/models/.staging/sdx-cache
+      compiler-command: []
+      compiler-id: ""
+      compiler-version: ""
+      compiler-fingerprint: ""
+      max-knowledge-files: 100000
+      max-knowledge-bytes: 2147483648
 
   # Archive configuration
   archive:

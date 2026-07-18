@@ -133,7 +133,8 @@ public class GitHttpController {
             p = p.substring(0, p.length() - 4);
         }
         String[] parts = p.split("/");
-        if (parts.length < 2 || parts[0].isEmpty() || parts[1].isEmpty()) {
+        if (parts.length != 2 || !HostedProjectNames.isValidIdentifier(parts[0])
+                || !HostedProjectNames.isValidIdentifier(parts[1])) {
             return null;
         }
         return new String[]{parts[0], parts[1]};

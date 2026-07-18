@@ -51,6 +51,94 @@ describe('GraphService', () => {
     expect(service).toBeTruthy();
   });
 
+  describe('visualization response safety', () => {
+    it('uses exactly one API prefix for reasoning layers', (done) => {
+      service.getReasoningLayers(42).subscribe(result => {
+        expect(result.factSheetId).toBe(42);
+        expect(result.nodes).toEqual([]);
+        expect(result.edges).toEqual([]);
+        done();
+      });
+
+      const req = httpMock.expectOne(r =>
+        r.url.endsWith('/api/graph/42/reasoning-layers')
+      );
+      expect(req.request.method).toBe('GET');
+      expect(req.request.url).not.toContain('/api/api/');
+      req.flush({ factSheetId: 42, nodes: [], edges: [], statistics: { nodeCount: 0, edgeCount: 0 } });
+    });
+
+    it('treats an empty fact-sheet visualization response as valid', (done) => {
+      service.getFactSheetVisualizationData(42).subscribe(result => {
+        expect(result.nodes).toEqual([]);
+        expect(result.links).toEqual([]);
+        expect(result.statistics?.totalNodes).toBe(0);
+        done();
+      });
+
+      const req = httpMock.expectOne(r =>
+        r.url.endsWith('/api/fact-sheets/42/graph/visualization')
+      );
+      expect(req.request.params.get('maxNodes')).toBe('0');
+      expect(req.request.params.get('maxEdges')).toBe('0');
+      req.flush({ nodes: [], edges: [], metadata: { totalNodes: 0, totalEdges: 0 } });
+    });
+
+    it('normalizes graph identifiers and drops invalid or dangling records', (done) => {
+      service.getVisualizationData().subscribe(result => {
+        expect(result.nodes.map(node => node.id)).toEqual(['7', 'node-b', 'node-c']);
+        expect(result.links.length).toBe(2);
+        expect(result.links[0].id).toBe('valid-edge');
+        expect(result.links[0].source).toBe('7');
+        expect(result.links[0].target).toBe('node-b');
+        expect(result.links[1].id).toBe('node-b→node-c:SHARED_ENTITY');
+        done();
+      });
+
+      const req = httpMock.expectOne(r =>
+        r.url.endsWith('/knowledge-graph/visualization')
+      );
+      req.flush({
+        nodes: [
+          { id: 7, type: 'ENTITY', label: 'Numeric ID' },
+          { id: ' node-b ', type: 'ENTITY', label: 'Trimmed ID' },
+          { id: 'node-b', type: 'ENTITY', label: 'Duplicate ID' },
+          { nodeId: 'node-c', type: 'ENTITY', label: 'Legacy ID field' },
+          { id: '   ', type: 'ENTITY', label: 'Blank ID' }
+        ],
+        links: [
+          {
+            id: 'valid-edge',
+            source: 7,
+            target: { nodeId: ' node-b ' },
+            type: 'USER_DEFINED',
+            weight: 1
+          },
+          {
+            id: 'dangling-edge',
+            source: 'node-b',
+            target: 'missing-node',
+            type: 'USER_DEFINED',
+            weight: 1
+          },
+          {
+            id: 'valid-edge',
+            source: 'node-b',
+            target: 'node-c',
+            type: 'USER_DEFINED',
+            weight: 1
+          },
+          {
+            source: 'node-b',
+            target: { id: 'node-c' },
+            type: 'SHARED_ENTITY',
+            weight: 0.5
+          }
+        ]
+      } as any);
+    });
+  });
+
   // ═══════════════════════════════════════════════════════════════════════════
   // HIERARCHY OPERATIONS
   // ═══════════════════════════════════════════════════════════════════════════

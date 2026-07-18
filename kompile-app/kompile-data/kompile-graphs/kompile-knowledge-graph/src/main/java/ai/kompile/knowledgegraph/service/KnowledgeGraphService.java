@@ -655,6 +655,20 @@ public interface KnowledgeGraphService {
      */
     List<GraphNode> getNodesInFactSheet(Long factSheetId);
 
+    /** A bounded page whose cursor is opaque to callers except for pass-through. */
+    record GraphPage<T>(List<T> items, int nextCursor, boolean hasMore) {
+        public GraphPage {
+            items = items == null ? List.of() : List.copyOf(items);
+        }
+    }
+
+    default GraphPage<GraphNode> getNodesInFactSheetPage(Long factSheetId, int cursor, int pageSize) {
+        List<GraphNode> all = getNodesInFactSheet(factSheetId);
+        int start = Math.min(cursor, all.size());
+        int end = Math.min(start + pageSize, all.size());
+        return new GraphPage<>(all.subList(start, end), end, end < all.size());
+    }
+
     /**
      * Get all source nodes belonging to a fact sheet.
      */
@@ -688,6 +702,13 @@ public interface KnowledgeGraphService {
      * Get all edges belonging to a fact sheet.
      */
     List<GraphEdge> getEdgesInFactSheet(Long factSheetId);
+
+    default GraphPage<GraphEdge> getEdgesInFactSheetPage(Long factSheetId, int cursor, int pageSize) {
+        List<GraphEdge> all = getEdgesInFactSheet(factSheetId);
+        int start = Math.min(cursor, all.size());
+        int end = Math.min(start + pageSize, all.size());
+        return new GraphPage<>(all.subList(start, end), end, end < all.size());
+    }
 
     /**
      * Get edges of a specific type within a fact sheet.

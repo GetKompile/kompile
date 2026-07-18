@@ -101,7 +101,17 @@ public class CliTranscriptService {
     // ═══════════════════════════════════════════════════════════════════════════════
 
     public List<CliSessionSummary> listSessions(String sourceFilter) {
+        return listSessions(sourceFilter, null);
+    }
+
+    /**
+     * Lists sessions scoped to a code project's working directory. The adapter's native
+     * project lookup is used first; adapters without an authoritative lookup must resolve
+     * every candidate's working directory and pass the containment check.
+     */
+    public List<CliSessionSummary> listSessions(String sourceFilter, Path workingDirectory) {
         List<CliSessionSummary> all = new ArrayList<>();
+        Path scope = workingDirectory == null ? null : workingDirectory.toAbsolutePath().normalize();
         Collection<ChatSourceAdapter> adapters;
         if (sourceFilter == null || sourceFilter.isEmpty() || sourceFilter.equals("all")) {
             adapters = ChatSourceRegistry.getInstance().all();
@@ -111,7 +121,15 @@ public class CliTranscriptService {
         }
         for (ChatSourceAdapter adapter : adapters) {
             try {
-                for (ChatSessionSummary s : adapter.list()) {
+                List<ChatSessionSummary> sessions = scope == null ? adapter.list() : adapter.list(scope);
+                for (ChatSessionSummary s : sessions) {
+                    if (scope != null && !adapter.isWorkingDirectoryScopeAuthoritative()) {
+                        Optional<Path> sessionDirectory = adapter.resolveWorkingDirectory(s.sessionId());
+                        if (sessionDirectory.isEmpty()
+                                || !sessionDirectory.get().toAbsolutePath().normalize().startsWith(scope)) {
+                            continue;
+                        }
+                    }
                     all.add(new CliSessionSummary(
                             s.sessionId(), s.source(),
                             s.title() != null ? s.title() : "(untitled)",
@@ -206,7 +224,11 @@ public class CliTranscriptService {
     // ═══════════════════════════════════════════════════════════════════════════════
 
     public List<CliSessionSummary> listNewSessions(String source) {
-        List<CliSessionSummary> all = listSessions(source);
+        return listNewSessions(source, null);
+    }
+
+    public List<CliSessionSummary> listNewSessions(String source, Path workingDirectory) {
+        List<CliSessionSummary> all = listSessions(source, workingDirectory);
         return all.stream()
                 .filter(s -> {
                     String importId = "imported-" + s.source() + "-" + sanitizeId(s.sessionId());

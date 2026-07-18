@@ -416,8 +416,9 @@ public class StagingServingBridge {
     /**
      * Detects a complete sharded SameDiff artifact in {@code modelDir}: shard files named
      * {@code <base>.shard<i>-of-<N>.sdnb} with all {@code N} shards present and non-empty.
-     * Returns the load entry path — the non-empty {@code <base>.sdnb} manifest when present,
-     * else shard 0 — or {@code null} when no complete set exists. Package-private for tests.
+     * Returns the canonical {@code <base>.sdnb} load path, which may intentionally not exist:
+     * {@code SameDiff.load} uses that base name to discover and merge all sibling shards.
+     * Returns {@code null} when no complete set exists. Package-private for tests.
      */
     static Path findCompleteShardedEntry(Path modelDir) {
         if (modelDir == null || !Files.isDirectory(modelDir)) {
@@ -450,15 +451,10 @@ public class StagingServingBridge {
             Map<Integer, Path> shards = shardsByBase.get(e.getKey());
             int total = e.getValue();
             if (shards != null && total > 0 && shards.size() == total) {
-                Path manifest = modelDir.resolve(e.getKey() + ".sdnb");
-                try {
-                    if (Files.exists(manifest) && Files.size(manifest) > 0) {
-                        return manifest;
-                    }
-                } catch (IOException ignored) {
-                    // fall through to shard 0
-                }
-                return shards.get(0);
+                // SameDiffSerializer derives sibling shard names from this canonical base.
+                // Passing shard 0 directly makes it look like a standalone SDNB and leaves
+                // constants/variables stored in later shards unmaterialized.
+                return modelDir.resolve(e.getKey() + ".sdnb");
             }
         }
         return null;

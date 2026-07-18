@@ -3,11 +3,11 @@
 -keep class ai.kompile.chat.local.** { *; }
 -keep class ai.kompile.graph.reasoning.** { *; }
 
-# ── JNA ──────────────────────────────────────────────────────────────────────
-# JNA discovers method names via reflection; keep all JNA Library subinterfaces.
--keep class com.sun.jna.** { *; }
--keepclassmembers class * extends com.sun.jna.Library { *; }
--keepclassmembers class * extends com.sun.jna.Structure { *; }
+# ── JavaCPP / SDX native bindings ─────────────────────────────────────────────
+# JavaCPP resolves generated JNI entry points and callback classes by exact name.
+-keep class org.bytedeco.javacpp.** { *; }
+-keep class org.nd4j.dsp.runtime.** { *; }
+-keep class org.eclipse.deeplearning4j.tokenizers.** { *; }
 
 # ── Android app classes ──────────────────────────────────────────────────────
 -keep class ai.kompile.chat.local.android.** { *; }

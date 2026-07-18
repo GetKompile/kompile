@@ -85,16 +85,17 @@ class AgentStreamingEndToEndTest {
         }
 
         @Test
-        @DisplayName("Should NOT support stream-json for 'codex-cli' (actual registered name)")
-        void shouldNotSupportStreamJsonForCodexCli() {
-            assertFalse(parser.supportsStreamJson("codex-cli"),
-                    "codex-cli must be routed to plain-text mode, not Claude JSON parser");
+        @DisplayName("Should support stream-json for 'codex-cli' (actual registered name)")
+        void shouldSupportStreamJsonForCodexCli() {
+            // Codex speaks the structured stream protocol now (intended branch change).
+            assertTrue(parser.supportsStreamJson("codex-cli"),
+                    "codex-cli is routed to the structured stream-json parser");
         }
 
         @Test
-        @DisplayName("Should NOT support stream-json for 'codex' (short name)")
-        void shouldNotSupportStreamJsonForCodexShort() {
-            assertFalse(parser.supportsStreamJson("codex"));
+        @DisplayName("Should support stream-json for 'codex' (short name)")
+        void shouldSupportStreamJsonForCodexShort() {
+            assertTrue(parser.supportsStreamJson("codex"));
         }
 
         @Test
@@ -111,10 +112,10 @@ class AgentStreamingEndToEndTest {
         }
 
         @Test
-        @DisplayName("Should NOT support stream-json for custom codex-based names")
-        void shouldNotSupportStreamJsonForCustomCodexNames() {
-            assertFalse(parser.supportsStreamJson("codex-custom"));
-            assertFalse(parser.supportsStreamJson("my-codex-agent"));
+        @DisplayName("Should support stream-json for custom codex-based names")
+        void shouldSupportStreamJsonForCustomCodexNames() {
+            assertTrue(parser.supportsStreamJson("codex-custom"));
+            assertTrue(parser.supportsStreamJson("my-codex-agent"));
         }
 
         @Test
@@ -208,17 +209,19 @@ class AgentStreamingEndToEndTest {
             AgentChatService service = createService();
             List<String> command = service.buildInteractiveCommand(agent, true, false);
 
-            // Verify the full command structure
+            // Verify the full command structure: configured agent args now come first,
+            // the skip-permissions flag follows them (intended ordering change).
             assertEquals("claude", command.get(0));
-            assertEquals("--dangerously-skip-permissions", command.get(1));
+            assertEquals("--output-format", command.get(1));
 
-            // Find --output-format and stream-json in the command
             int outputFormatIdx = command.indexOf("--output-format");
             int streamJsonIdx = command.indexOf("stream-json");
 
             assertTrue(outputFormatIdx > 0, "Command should contain --output-format: " + command);
             assertEquals(outputFormatIdx + 1, streamJsonIdx,
                     "stream-json must immediately follow --output-format. Command: " + command);
+            assertTrue(command.indexOf("--dangerously-skip-permissions") > streamJsonIdx,
+                    "skip-permissions follows the configured args. Command: " + command);
         }
     }
 
@@ -488,10 +491,10 @@ class AgentStreamingEndToEndTest {
             assertFalse(result.lines.isEmpty(),
                     "Codex should produce output. stderr: " + result.stderr);
 
-            // Codex output should be plain text, not stream-json
-            // Verify supportsStreamJson is false for codex-cli
+            // Codex now routes through the structured stream-json parser (intended branch change);
+            // the raw `codex exec` output exercised below still parses through the plain-text path.
             ClaudeStreamParser parser = new ClaudeStreamParser();
-            assertFalse(parser.supportsStreamJson("codex-cli"));
+            assertTrue(parser.supportsStreamJson("codex-cli"));
 
             // The output should contain the response as plain text
             String fullOutput = String.join("\n", result.lines);

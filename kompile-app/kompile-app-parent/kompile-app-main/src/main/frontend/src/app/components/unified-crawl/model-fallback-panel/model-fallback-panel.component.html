@@ -124,6 +124,55 @@
 
     <mat-divider class="section-divider"></mat-divider>
 
+    <!-- Observed model calibration -->
+    <div class="chain-header">
+      <h4>Observed Model Calibration</h4>
+      <p class="hint-text">
+        Live per-model measurements that selection precedence ranks on: extraction correctness
+        first, output throughput as the tiebreaker. A decode speedup (e.g. multi-token prediction
+        on a local model) shows up here first, then in the ordering. Benched models are skipped
+        until their bench expires.
+      </p>
+    </div>
+
+    <div *ngIf="calibration.length === 0" class="empty-chain">
+      <mat-icon>speed</mat-icon>
+      <span>No measurements yet — rows appear after the first extraction calls.</span>
+    </div>
+
+    <table *ngIf="calibration.length > 0" class="calibration-table">
+      <thead>
+        <tr>
+          <th>Model</th>
+          <th>Correctness</th>
+          <th>Chars/sec</th>
+          <th>Latency (ms)</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr *ngFor="let row of calibration">
+          <td class="calibration-model">{{ row.modelId }}</td>
+          <td>{{ row.correctnessEwma != null ? row.correctnessEwma : '—' }}</td>
+          <td>{{ row.throughputCharsPerSec != null ? row.throughputCharsPerSec : '—' }}</td>
+          <td>{{ row.latencyEwmaMs != null ? row.latencyEwmaMs : '—' }}</td>
+          <td>
+            <span *ngIf="benchRemainingSeconds(row) > 0" class="benched-tag"
+                  matTooltip="Benched after a failure symptom; skipped until the bench expires">
+              benched {{ benchRemainingSeconds(row) }}s
+            </span>
+            <span *ngIf="benchRemainingSeconds(row) === 0" class="healthy-tag">healthy</span>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+
+    <button mat-button class="refresh-calibration-btn" (click)="loadCalibration()">
+      <mat-icon>refresh</mat-icon> Refresh measurements
+    </button>
+
+    <mat-divider class="section-divider"></mat-divider>
+
     <!-- Save button -->
     <div class="panel-actions">
       <button mat-raised-button color="primary" [disabled]="saving" (click)="saveConfig()">

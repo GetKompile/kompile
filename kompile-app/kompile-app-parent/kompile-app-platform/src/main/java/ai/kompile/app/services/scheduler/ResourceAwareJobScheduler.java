@@ -90,6 +90,7 @@ public class ResourceAwareJobScheduler implements SmartLifecycle {
     // --- Internal state ---
     private final PriorityBlockingQueue<ScheduledJob> queue = new PriorityBlockingQueue<>();
     private final ConcurrentHashMap<String, ScheduledJob> runningJobs = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Future<?>> executionFutures = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, ScheduledJob> allJobs = new ConcurrentHashMap<>();
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicLong totalSubmitted = new AtomicLong(0);
@@ -724,7 +725,16 @@ public class ResourceAwareJobScheduler implements SmartLifecycle {
         if (delegate.isPresent()) {
             dispatchToExternal(job, delegate.get());
         } else {
-            jobExecutionPool.submit(() -> executeJob(job));
+            FutureTask<Void> future = new FutureTask<>(() -> {
+                executeJob(job);
+                return null;
+            });
+            executionFutures.put(job.getJobId(), future);
+            if (job.getCancellationRequested().get()) {
+                future.cancel(true);
+            } else {
+                jobExecutionPool.execute(future);
+            }
         }
     }
 
@@ -794,7 +804,10 @@ public class ResourceAwareJobScheduler implements SmartLifecycle {
                         job.getJobId(), job.getJobType(), profile.serviceType());
                 try {
                     acquiredDevice = modelLifecycleManager.acquireGpuForJob(
-                            job.getJobId(), profile.serviceType(), job.getDescription());
+                            job.getJobId(), profile.serviceType(), job.getDescription(),
+                            job.isLongLivedGpuHold()
+                                    ? ModelLifecycleManager.HoldLifetime.LONG_LIVED
+                                    : ModelLifecycleManager.HoldLifetime.BOUNDED);
                     job.setGpuHeld(true);
                 } catch (Exception e) {
                     log.error("Job '{}' failed to acquire GPU: {}", job.getJobId(), e.getMessage());
@@ -824,14 +837,22 @@ public class ResourceAwareJobScheduler implements SmartLifecycle {
                     reportPhaseTransition(jobId, phaseName, requiresGpu, gpuMem);
 
             ScheduledJob.JobExecutionContext context = new ScheduledJob.JobExecutionContext(
-                    job.getJobId(), profile, phaseCallback, placement);
+                    job.getJobId(), profile, phaseCallback, placement, job.getCancellationRequested());
 
             // Execute the actual work
             job.getExecutor().execute(context);
 
-            completeJob(job, true, null, start);
+            // Cancellation can race with a cooperative executor returning. Never overwrite the
+            // terminal CANCELLED state with COMPLETED after the executor unwinds.
+            if (job.getState() != ScheduledJob.JobState.CANCELLED) {
+                completeJob(job, true, null, start);
+            }
 
         } catch (Exception e) {
+            if (job.getState() == ScheduledJob.JobState.CANCELLED) {
+                log.debug("Cancelled job '{}' executor stopped with: {}", job.getJobId(), e.getMessage());
+                return;
+            }
             log.error("Job '{}' ({}) failed: {}", job.getJobId(), job.getJobType(), e.getMessage(), e);
             completeJob(job, false, e.getMessage(), start);
         }
@@ -866,6 +887,7 @@ public class ResourceAwareJobScheduler implements SmartLifecycle {
         }
 
         runningJobs.remove(job.getJobId());
+        executionFutures.remove(job.getJobId());
 
         // Store error on the job so recordFromJob can read it (future not yet complete)
         if (!success && error != null) {
@@ -902,6 +924,11 @@ public class ResourceAwareJobScheduler implements SmartLifecycle {
 
         queue.remove(job);
         runningJobs.remove(job.getJobId());
+        job.getCancellationRequested().set(true);
+        Future<?> execution = executionFutures.remove(job.getJobId());
+        if (execution != null) {
+            execution.cancel(true);
+        }
 
         if (job.isGpuHeld()) {
             try {

@@ -101,5 +101,13 @@
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
+
+        <!-- Extraction-quality scoring for the model bake-off harness (test-only). -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-evaluation</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 </project>

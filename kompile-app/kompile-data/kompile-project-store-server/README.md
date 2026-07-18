@@ -29,8 +29,17 @@ GET /api/projects                              # list
 GET /api/projects/{ns}/{slug}                  # detail + manifest
 GET /api/projects/{ns}/{slug}/tree/{ref}?path= # browse a directory
 GET /api/projects/{ns}/{slug}/blob/{ref}?path= # download one file
-GET /api/projects/{ns}/{slug}/archive/{ref}    # download the whole tree as a ZIP
+GET /api/projects/{ns}/{slug}/archive/{ref}    # Git-tree source snapshot ZIP (not .kproject)
 ```
+
+Hosted namespaces and slugs use a conservative portable identifier grammar: 1-64 ASCII letters,
+digits, dots, underscores, or hyphens, beginning with a letter or digit. Path separators, leading
+dots, and `..` sequences are rejected. HTTP/default refs are similarly restricted to simple
+1-128 character names (no slash-qualified ref paths, controls, Unicode, `..`, or `.lock`).
+
+The ZIP endpoint exports the files in a resolved Git commit tree. It is a source snapshot for
+browsing/download compatibility and is deliberately distinct from the versioned `.kproject`
+archive contract; this server does not import project archives.
 
 ## Build
 

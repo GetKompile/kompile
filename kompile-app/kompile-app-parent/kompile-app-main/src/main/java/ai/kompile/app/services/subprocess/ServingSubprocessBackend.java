@@ -64,12 +64,48 @@ public class ServingSubprocessBackend implements LocalServingBackend {
     }
 
     @Override
+    public boolean matchesModel(String modelId) {
+        if (launcher == null || modelId == null || modelId.isBlank()) {
+            return false;
+        }
+        String activeModelId = launcher.getActiveModelId();
+        return activeModelId != null && activeModelId.equals(modelId.trim());
+    }
+
+    @Override
     public String generate(String prompt) throws Exception {
         if (launcher == null) {
             throw new IllegalStateException("Serving subprocess launcher not available");
         }
+        return generatedText(launcher.generate(prompt));
+    }
+
+    @Override
+    public String generate(String prompt, int maxNewTokens) throws Exception {
+        if (launcher == null) {
+            throw new IllegalStateException("Serving subprocess launcher not available");
+        }
+        return generatedText(launcher.generate(prompt, maxNewTokens));
+    }
+
+    @Override
+    public String generateForModel(String modelId, String prompt) throws Exception {
+        if (launcher == null) {
+            throw new IllegalStateException("Serving subprocess launcher not available");
+        }
+        return generatedText(launcher.generateForModel(modelId, prompt));
+    }
+
+    @Override
+    public String generateForModel(String modelId, String prompt, int maxNewTokens) throws Exception {
+        if (launcher == null) {
+            throw new IllegalStateException("Serving subprocess launcher not available");
+        }
+        return generatedText(launcher.generateForModel(modelId, prompt, maxNewTokens));
+    }
+
+    private String generatedText(String raw) throws IOException {
         // Raw JSON body from POST /api/llm/generate — same contract LocalStagingLlmService parses.
-        String raw = launcher.generate(prompt);
         JsonNode response = MAPPER.readTree(raw);
         String finishReason = response.path("finishReason").asText("");
         if (finishReason.toLowerCase(Locale.ROOT).startsWith("error")) {

@@ -318,4 +318,9 @@ export class GraphsHubComponent implements OnInit, OnDestroy, OnChanges {
   openChat(): void {
     this.router.navigate(['/chat']);
   }
+
+  /** Send an unconfigured user to the fact-sheet workspace. */
+  openFactSheetCreation(): void {
+    this.router.navigate(['/fact-sheets']);
+  }
 }

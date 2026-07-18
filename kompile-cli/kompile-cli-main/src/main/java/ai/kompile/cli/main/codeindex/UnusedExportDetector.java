@@ -182,9 +182,10 @@ public class UnusedExportDetector {
         List<ExportedEntity> exports = new ArrayList<>();
         try (Statement stmt = conn.createStatement();
              ResultSet rs = stmt.executeQuery("""
-                     SELECT rel_path, name, fqn, entity_type, language, start_line, end_line, visibility
-                     FROM entities_meta
-                     WHERE entity_type IN ('CLASS', 'INTERFACE', 'FUNCTION', 'METHOD', 'ENUM', 'RECORD', 'CONSTANT')
+                     SELECT p.path AS rel_path, m.name, m.fqn, m.entity_type, m.language,
+                            m.start_line, m.end_line, m.visibility
+                     FROM entities_meta m JOIN paths p ON p.id = m.path_id
+                     WHERE m.entity_type IN ('CLASS', 'INTERFACE', 'FUNCTION', 'METHOD', 'ENUM', 'RECORD', 'CONSTANT')
                      AND (visibility IS NULL OR visibility IN ('public', 'export', 'pub', ''))
                      AND entity_type != 'IMPORT'
                      AND entity_type != 'PACKAGE'
@@ -218,8 +219,11 @@ public class UnusedExportDetector {
         // From relations: target_fqn referenced from file_path
         try (Statement stmt = conn.createStatement();
              ResultSet rs = stmt.executeQuery(
-                     "SELECT target_fqn, target_name, file_path FROM relations " +
-                             "WHERE relation_type IN ('IMPORTS', 'CALLS', 'EXTENDS', 'IMPLEMENTS')")) {
+                     "SELECT tf.fqn AS target_fqn, tn.fqn AS target_name, p.path AS file_path " +
+                             "FROM relations r JOIN paths p ON p.id = r.file_id " +
+                             "JOIN fqns tn ON tn.id = r.target_name_id " +
+                             "LEFT JOIN fqns tf ON tf.id = r.target_id " +
+                             "WHERE r.relation_type IN ('IMPORTS', 'CALLS', 'EXTENDS', 'IMPLEMENTS')")) {
             while (rs.next()) {
                 String targetFqn = rs.getString("target_fqn");
                 String targetName = rs.getString("target_name");
@@ -277,8 +281,11 @@ public class UnusedExportDetector {
         // Check if any relation targets entities in this file
         try (PreparedStatement ps = conn.prepareStatement("""
                 SELECT COUNT(*) FROM relations r
-                JOIN entities_meta e ON r.target_fqn = e.fqn
-                WHERE e.rel_path = ? AND r.file_path != ?
+                JOIN fqns tf ON tf.id = r.target_id
+                JOIN entities_meta e ON tf.fqn = e.fqn
+                JOIN paths ep ON ep.id = e.path_id
+                JOIN paths p ON p.id = r.file_id
+                WHERE ep.path = ? AND p.path != ?
                 LIMIT 1""")) {
             ps.setString(1, filePath);
             ps.setString(2, filePath);
@@ -294,16 +301,24 @@ public class UnusedExportDetector {
         // Find barrel files (index.ts, __init__.py, etc.)
         try (Statement stmt = conn.createStatement();
              ResultSet rs = stmt.executeQuery(
-                     "SELECT DISTINCT rel_path FROM entities_meta WHERE rel_path LIKE '%/index.ts' " +
-                             "OR rel_path LIKE '%/index.js' OR rel_path LIKE '%/index.tsx' " +
-                             "OR rel_path LIKE '%/__init__.py' OR rel_path LIKE '%/mod.rs'")) {
+                     // Scan the small paths table (thousands of rows) instead of
+                     // every entity; EXISTS keeps only paths that still have entities.
+                     "SELECT p.path AS rel_path FROM paths p WHERE (p.path LIKE '%/index.ts' " +
+                             "OR p.path LIKE '%/index.js' OR p.path LIKE '%/index.tsx' " +
+                             "OR p.path LIKE '%/__init__.py' OR p.path LIKE '%/mod.rs') " +
+                             "AND EXISTS (SELECT 1 FROM entities_meta m WHERE m.path_id = p.id)")) {
             while (rs.next()) {
                 String barrelPath = rs.getString("rel_path");
 
                 // Check if anything imports from this barrel
                 boolean hasImporters = false;
                 try (PreparedStatement ps = conn.prepareStatement(
-                        "SELECT COUNT(*) FROM relations WHERE target_fqn LIKE ? AND file_path != ?")) {
+                        // Trailing-wildcard LIKE runs over the fqns vocabulary
+                        // (its UNIQUE index prefix-scans), then joins back.
+                        "SELECT COUNT(*) FROM relations r "
+                                + "JOIN fqns tf ON tf.id = r.target_id "
+                                + "JOIN paths p ON p.id = r.file_id "
+                                + "WHERE tf.fqn LIKE ? AND p.path != ?")) {
                     ps.setString(1, barrelPath.replace(".ts", "").replace(".js", "")
                             .replace(".tsx", "").replace("/__init__.py", "")
                             .replace("/mod.rs", "") + "%");
@@ -317,7 +332,8 @@ public class UnusedExportDetector {
                     // Estimate line count
                     int lineCount = 0;
                     try (PreparedStatement ps = conn.prepareStatement(
-                            "SELECT MAX(end_line) FROM entities_meta WHERE rel_path = ?")) {
+                            "SELECT MAX(end_line) FROM entities_meta WHERE path_id = "
+                                    + "(SELECT id FROM paths WHERE path = ?)")) {
                         ps.setString(1, barrelPath);
                         try (ResultSet innerRs = ps.executeQuery()) {
                             if (innerRs.next()) lineCount = innerRs.getInt(1);

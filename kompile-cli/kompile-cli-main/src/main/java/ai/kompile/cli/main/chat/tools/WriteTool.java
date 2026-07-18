@@ -17,6 +17,8 @@
 package ai.kompile.cli.main.chat.tools;
 
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.cli.main.coordination.CoordinationStateManager;
+import ai.kompile.cli.main.coordination.EditLockEntry;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -34,16 +36,16 @@ public class WriteTool implements CliTool {
 
     /**
      * Optional coordination manager for multi-agent edit tracking. May be null.
-     * When provided, write operations are logged for conflict detection.
+     * When present, overwrites of files locked by ANOTHER session carry a
+     * conflict warning in the result (locks are advisory).
      */
-    @SuppressWarnings("unused")
-    private final Object coordinationManager;
+    private final CoordinationStateManager coordinationManager;
 
     public WriteTool() {
         this.coordinationManager = null;
     }
 
-    public WriteTool(Object coordinationManager) {
+    public WriteTool(CoordinationStateManager coordinationManager) {
         this.coordinationManager = coordinationManager;
     }
 
@@ -124,8 +126,17 @@ public class WriteTool implements CliTool {
             } catch (IllegalArgumentException ex) {
                 relativePath = path.toString();
             }
-            return ToolResult.success(relativePath,
-                    (exists ? "Overwrote" : "Created") + " file with " + lines + " lines",
+            String message = (exists ? "Overwrote" : "Created") + " file with " + lines + " lines";
+            if (coordinationManager != null) {
+                EditLockEntry conflict = coordinationManager.findConflictingLock(
+                        path.toAbsolutePath().toString());
+                if (conflict != null) {
+                    message += "\nWARNING: this file is locked by " + conflict.getAgentName()
+                            + " (session " + conflict.getSessionId() + ") via edit_coordinator — "
+                            + "coordinate before making further edits.";
+                }
+            }
+            return ToolResult.success(relativePath, message,
                     Map.of("path", relativePath, "lines", lines, "created", !exists));
         } catch (IOException e) {
             return ToolResult.error("Error writing file: " + e.getMessage());

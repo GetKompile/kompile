@@ -71,7 +71,15 @@ public class CliAgentModelService {
             "opencode/kimi-k2.6",
             "opencode/kimi-k2.5",
             "opencode/minimax-m2.7",
-            "opencode/glm-5.2");
+            "opencode/glm-5.2",
+            // opencode-go provider (direct API keys) — same model families as the zen gateway
+            // entries above. When zen is unavailable (e.g. insufficient balance benches every
+            // opencode/* model) the rotation reaches these instead of dead-ending at local-staging.
+            "opencode-go/deepseek-v4-pro",
+            "opencode-go/deepseek-v4-flash",
+            "opencode-go/kimi-k2.6",
+            "opencode-go/minimax-m2.7",
+            "opencode-go/glm-5.2");
 
     @Autowired(required = false)
     private ExtractionLlmServiceRegistry extractionRegistry;
@@ -109,6 +117,13 @@ public class CliAgentModelService {
     private final Map<String, Double> modelLatencyEwmaMs = new ConcurrentHashMap<>();
     /** Model id → EWMA of extraction-output correctness in [0,1] (quality, not just non-empty). */
     private final Map<String, Double> modelCorrectnessEwma = new ConcurrentHashMap<>();
+    /** Model id → EWMA of observed output throughput (chars/second) on successful calls. Feeds
+     *  precedence: when two models produce comparably correct extractions the faster one wins, so
+     *  decode-side speedups (e.g. multi-token prediction landing in a local model) self-calibrate
+     *  into selection from observed behavior — no manual priority edit required. */
+    private final Map<String, Double> modelCharsPerSecEwma = new ConcurrentHashMap<>();
+    /** Correctness EWMAs within this band are treated as equivalent so throughput breaks the tie. */
+    private static final double CORRECTNESS_TIE_BAND = 0.02;
     /** Leash for a model with no success history yet — long enough for a legitimate first extraction
      *  call to land, short enough to catch a silent-429 hang well before the dispatcher ceiling. Configurable. */
     private volatile int probeTimeoutSeconds = 60;
@@ -697,6 +712,30 @@ public class CliAgentModelService {
         return c == null ? 0.5 : c;
     }
 
+    /**
+     * Record the observed output throughput of a successful call (output chars ÷ wall latency),
+     * updating the model's chars/second EWMA. EWMA weights: 70% history, 30% latest — matching
+     * the latency/correctness convention. This is the observation channel through which decode
+     * optimizations (multi-token prediction, speculative decoding, quantization changes) show up
+     * in selection precedence automatically.
+     */
+    public void recordModelThroughput(String modelId, int outputChars, long latencyMs) {
+        if (modelId == null || modelId.isBlank() || outputChars <= 0 || latencyMs <= 0) return;
+        double charsPerSec = outputChars * 1000.0 / latencyMs;
+        modelCharsPerSecEwma.merge(modelId, charsPerSec, (prev, cur) -> prev * 0.7 + cur * 0.3);
+    }
+
+    /** Current throughput EWMA (chars/second) for a model, or 0.0 if it has no history yet. */
+    public double getModelThroughputCharsPerSec(String modelId) {
+        Double t = (modelId == null) ? null : modelCharsPerSecEwma.get(modelId);
+        return t == null ? 0.0 : t;
+    }
+
+    /** Snapshot of per-model throughput EWMA (chars/second) for visibility/UI. */
+    public Map<String, Double> getModelThroughputSnapshot() {
+        return new LinkedHashMap<>(modelCharsPerSecEwma);
+    }
+
     /** Snapshot of per-model correctness EWMA for visibility/UI. */
     public Map<String, Double> getModelCorrectnessSnapshot() {
         return new LinkedHashMap<>(modelCorrectnessEwma);
@@ -856,8 +895,17 @@ public class CliAgentModelService {
         // not just non-empty) so single-model selection and A/B's first picks lead with the best model.
         Map<String, Integer> discoveryOrder = indexByDiscoveryOrder(filtered);
         provenHealthy.sort((a, b) -> {
-            int byCorrectness = Double.compare(getModelCorrectness(b), getModelCorrectness(a));
-            if (byCorrectness != 0) return byCorrectness;
+            // Correctness first — quantized into CORRECTNESS_TIE_BAND buckets (a total order, so
+            // the comparator stays transitive for TimSort). Same-bucket models are indistinguishable
+            // on quality and observed throughput (chars/sec EWMA) decides instead. This is where a
+            // decode speedup (MTP/speculative on a local model) earns rank from measured behavior.
+            long bucketA = Math.round(getModelCorrectness(a) / CORRECTNESS_TIE_BAND);
+            long bucketB = Math.round(getModelCorrectness(b) / CORRECTNESS_TIE_BAND);
+            if (bucketA != bucketB) {
+                return Long.compare(bucketB, bucketA);
+            }
+            int byThroughput = Double.compare(getModelThroughputCharsPerSec(b), getModelThroughputCharsPerSec(a));
+            if (byThroughput != 0) return byThroughput;
             int byPriority = Integer.compare(priorityRank(a, modelPriority), priorityRank(b, modelPriority));
             if (byPriority != 0) return byPriority;
             return Integer.compare(discoveryOrder.getOrDefault(a, Integer.MAX_VALUE),

@@ -24,10 +24,8 @@ import ai.kompile.core.graphrag.conformance.OntologyProjectionProvider;
 import ai.kompile.core.graphrag.typing.GraphNodeTypes;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
-import ai.kompile.knowledgegraph.domain.NamedGraph;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
-import ai.kompile.knowledgegraph.service.NamedGraphService;
 import ai.kompile.process.ontology.EntityTypeDefinition;
 import ai.kompile.process.ontology.OntologyConformanceValidator;
 import ai.kompile.process.ontology.OntologySchema;
@@ -40,7 +38,9 @@ import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -53,9 +53,8 @@ import java.util.Optional;
  * adapts each {@link GraphNode}'s metadata into a property map, and runs the store-agnostic
  * {@link OntologyConformanceValidator} (the engine built in A-1).
  *
- * <p><strong>Binding resolution</strong> (priority order): (1) an explicit graph-level binding —
- * the planned home is a typed {@code NamedGraph.ontologySchemaId} column, a one-method change once
- * it exists; until then this falls through to (2) the process-level binding, an
+ * <p><strong>Binding resolution</strong> (priority order): (1) an explicit binding stored on a
+ * fact-sheet-scoped Lucene graph descriptor node; (2) the process-level binding, a
  * {@link ProcessDefinition} for the fact sheet that carries an {@code ontologySchemaId}
  * (APPROVED/LIVE preferred).
  *
@@ -70,19 +69,19 @@ public class GraphOntologyBindingService
 
     /** Cap on per-report violation detail so the response stays bounded on large graphs. */
     private static final int MAX_VIOLATIONS = 200;
+    private static final String BINDING_EXTERNAL_ID = "__graph_ontology_binding__";
+    private static final String ONTOLOGY_SCHEMA_ID = "ontologySchemaId";
+    private static final String ONTOLOGY_VERSION = "ontologyVersion";
 
     private final ProcessEngineService processEngineService;
     private final KnowledgeGraphService knowledgeGraphService;
-    private final NamedGraphService namedGraphService;
     private final OntologyDerivationService ontologyDerivationService;
 
     public GraphOntologyBindingService(ProcessEngineService processEngineService,
                                        KnowledgeGraphService knowledgeGraphService,
-                                       NamedGraphService namedGraphService,
                                        OntologyDerivationService ontologyDerivationService) {
         this.processEngineService = processEngineService;
         this.knowledgeGraphService = knowledgeGraphService;
-        this.namedGraphService = namedGraphService;
         this.ontologyDerivationService = ontologyDerivationService;
     }
 
@@ -165,100 +164,115 @@ public class GraphOntologyBindingService
         }
         OntologySchema schema = bound.get();
 
-        List<GraphNode> entities = knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY);
+        final int pageSize = 1_000;
+        int entitiesChecked = 0;
         int unknown = 0;
         int nonConformant = 0;
         List<GraphConformanceReport.NodeViolation> violations = new java.util.ArrayList<>();
 
-        for (GraphNode node : entities) {
-            String entityType = extractEntityType(node);
-            OntologyConformanceValidator.EntityConformance result =
-                    OntologyConformanceValidator.validateEntity(schema, entityType, node.getMetadata());
-            if (result.unknownType()) {
-                unknown++;
-            }
-            if (!result.conformant()) {
-                nonConformant++;
-                if (violations.size() < MAX_VIOLATIONS) {
-                    violations.add(new GraphConformanceReport.NodeViolation(
-                            node.getNodeId(), node.getTitle(), entityType,
-                            result.unknownType(), result.violations()));
+        int nodeCursor = 0;
+        KnowledgeGraphService.GraphPage<GraphNode> nodePage;
+        do {
+            nodePage = knowledgeGraphService.getNodesInFactSheetPage(factSheetId, nodeCursor, pageSize);
+            for (GraphNode node : nodePage.items()) {
+                if (node.getNodeType() != NodeLevel.ENTITY) {
+                    continue;
                 }
-            }
-        }
-
-        // Relationship/edge conformance: validate edges carrying a semantic relationType against the
-        // ontology's RelationshipTypeDefinitions (source/target entity types + the relation) plus
-        // source-side cardinality. Structural edges (null relationType) are skipped. When the ontology
-        // declares no relationship types, validateRelationship treats every edge as allowed.
-        List<GraphEdge> edges = knowledgeGraphService.getEdgesInFactSheet(factSheetId);
-        if (edges == null) {
-            edges = List.of();
-        }
-        // Endpoint types must come from the fact sheet's OWN nodes: GraphEdge.getSourceNode()
-        // synthesizes a hollow id-only node when the store didn't embed one (matrix edges never
-        // do), so typing off the embedded node made every edge validate as UNKNOWN→UNKNOWN.
-        java.util.Map<String, GraphNode> nodeById = new java.util.HashMap<>();
-        List<GraphNode> allNodes = knowledgeGraphService.getNodesInFactSheet(factSheetId);
-        if (allNodes != null) {
-            for (GraphNode n : allNodes) {
-                if (n != null && n.getNodeId() != null) {
-                    nodeById.put(n.getNodeId(), n);
+                entitiesChecked++;
+                String entityType = extractEntityType(node);
+                OntologyConformanceValidator.EntityConformance result =
+                        OntologyConformanceValidator.validateEntity(schema, entityType, node.getMetadata());
+                if (result.unknownType()) {
+                    unknown++;
                 }
-            }
-        }
-        int edgesChecked = 0;
-        int nonConformantEdges = 0;
-        List<GraphConformanceReport.EdgeViolation> edgeViolations = new java.util.ArrayList<>();
-        java.util.Map<String, java.util.Map<String, Long>> outgoing = new java.util.HashMap<>();
-        for (GraphEdge edge : edges) {
-            if (isSemanticEdge(edge)) {
-                outgoing.computeIfAbsent(edge.getSourceNode().getNodeId(), k -> new java.util.HashMap<>())
-                        .merge(edge.getRelationType(), 1L, Long::sum);
-            }
-        }
-        java.util.Set<String> cardinalityFlagged = new java.util.HashSet<>();
-        for (GraphEdge edge : edges) {
-            if (!isSemanticEdge(edge)) {
-                continue;
-            }
-            edgesChecked++;
-            String relType = edge.getRelationType();
-            String sourceType = extractEntityType(edge.resolvedSourceNode(nodeById));
-            String targetType = extractEntityType(edge.resolvedTargetNode(nodeById));
-            OntologyConformanceValidator.RelationshipConformance rc =
-                    OntologyConformanceValidator.validateRelationship(schema, sourceType, relType, targetType);
-            if (!rc.allowed()) {
-                nonConformantEdges++;
-                if (edgeViolations.size() < MAX_VIOLATIONS) {
-                    edgeViolations.add(new GraphConformanceReport.EdgeViolation(
-                            edge.getEdgeId(), relType, sourceType, targetType, rc.reason()));
-                }
-            } else if (rc.cardinality() != null) {
-                String srcId = edge.getSourceNode().getNodeId();
-                long count = outgoing.getOrDefault(srcId, java.util.Map.of()).getOrDefault(relType, 0L);
-                if (!OntologyConformanceValidator.withinSourceCardinality(rc.cardinality(), count)
-                        && cardinalityFlagged.add(srcId + "::" + relType)) {
-                    nonConformantEdges++;
-                    if (edgeViolations.size() < MAX_VIOLATIONS) {
-                        edgeViolations.add(new GraphConformanceReport.EdgeViolation(
-                                edge.getEdgeId(), relType, sourceType, targetType,
-                                "Cardinality " + rc.cardinality() + " violated: source has " + count
-                                        + " outgoing '" + relType + "' edges"));
+                if (!result.conformant()) {
+                    nonConformant++;
+                    if (violations.size() < MAX_VIOLATIONS) {
+                        violations.add(new GraphConformanceReport.NodeViolation(
+                                node.getNodeId(), node.getTitle(), entityType,
+                                result.unknownType(), result.violations()));
                     }
                 }
             }
+            nodeCursor = nodePage.nextCursor();
+        } while (nodePage.hasMore());
+
+        int edgesChecked = 0;
+        int nonConformantEdges = 0;
+        List<GraphConformanceReport.EdgeViolation> edgeViolations = new java.util.ArrayList<>();
+        java.util.Map<String, Long> outgoing = new java.util.HashMap<>();
+        java.util.Map<String, OntologyConformanceValidator.RelationshipConformance> cardinalities =
+                new java.util.HashMap<>();
+        java.util.Map<String, GraphConformanceReport.EdgeViolation> cardinalitySamples =
+                new java.util.HashMap<>();
+
+        int edgeCursor = 0;
+        KnowledgeGraphService.GraphPage<GraphEdge> edgePage;
+        do {
+            edgePage = knowledgeGraphService.getEdgesInFactSheetPage(factSheetId, edgeCursor, pageSize);
+            java.util.Set<String> endpointIds = new java.util.HashSet<>();
+            for (GraphEdge edge : edgePage.items()) {
+                if (isSemanticEdge(edge)) {
+                    endpointIds.add(edge.getSourceNode().getNodeId());
+                    endpointIds.add(edge.getTargetNode().getNodeId());
+                }
+            }
+            java.util.Map<String, GraphNode> nodeById = new java.util.HashMap<>();
+            for (GraphNode node : knowledgeGraphService.getNodesByIds(new java.util.ArrayList<>(endpointIds))) {
+                if (node != null && node.getNodeId() != null) {
+                    nodeById.put(node.getNodeId(), node);
+                }
+            }
+            for (GraphEdge edge : edgePage.items()) {
+                if (!isSemanticEdge(edge)) {
+                    continue;
+                }
+                edgesChecked++;
+                String relType = edge.getRelationType();
+                String sourceType = extractEntityType(edge.resolvedSourceNode(nodeById));
+                String targetType = extractEntityType(edge.resolvedTargetNode(nodeById));
+                OntologyConformanceValidator.RelationshipConformance rc =
+                        OntologyConformanceValidator.validateRelationship(schema, sourceType, relType, targetType);
+                if (!rc.allowed()) {
+                    nonConformantEdges++;
+                    if (edgeViolations.size() < MAX_VIOLATIONS) {
+                        edgeViolations.add(new GraphConformanceReport.EdgeViolation(
+                                edge.getEdgeId(), relType, sourceType, targetType, rc.reason()));
+                    }
+                } else if (rc.cardinality() != null) {
+                    String key = edge.getSourceNode().getNodeId() + "::" + relType;
+                    outgoing.merge(key, 1L, Long::sum);
+                    cardinalities.putIfAbsent(key, rc);
+                    cardinalitySamples.putIfAbsent(key, new GraphConformanceReport.EdgeViolation(
+                            edge.getEdgeId(), relType, sourceType, targetType, ""));
+                }
+            }
+            edgeCursor = edgePage.nextCursor();
+        } while (edgePage.hasMore());
+
+        for (java.util.Map.Entry<String, Long> entry : outgoing.entrySet()) {
+            OntologyConformanceValidator.RelationshipConformance rc = cardinalities.get(entry.getKey());
+            if (!OntologyConformanceValidator.withinSourceCardinality(rc.cardinality(), entry.getValue())) {
+                nonConformantEdges++;
+                if (edgeViolations.size() < MAX_VIOLATIONS) {
+                    GraphConformanceReport.EdgeViolation sample = cardinalitySamples.get(entry.getKey());
+                    edgeViolations.add(new GraphConformanceReport.EdgeViolation(
+                            sample.edgeId(), sample.relationshipType(), sample.sourceType(), sample.targetType(),
+                            "Cardinality " + rc.cardinality() + " violated: source has " + entry.getValue()
+                                    + " outgoing '" + sample.relationshipType() + "' edges"));
+                }
+            }
         }
 
-        Double score = conformanceScore(entities.size(), nonConformant);
+        Double score = conformanceScore(entitiesChecked, nonConformant);
         String message = String.format(
                 "Checked %d ENTITY node(s) against ontology '%s' v%d: %d non-conformant (%d unknown type); "
                         + "conformance %.1f%%. Checked %d relationship(s): %d non-conformant.",
-                entities.size(), schema.getName(), schema.getVersion(), nonConformant, unknown,
+                entitiesChecked, schema.getName(), schema.getVersion(), nonConformant, unknown,
                 (score == null ? 1.0 : score) * 100.0, edgesChecked, nonConformantEdges);
         log.info("Graph conformance factSheet={}: {}", factSheetId, message);
         return new GraphConformanceReport(factSheetId, true, schema.getId(), schema.getVersion(),
-                schema.getName(), entities.size(), unknown, nonConformant, score, violations,
+                schema.getName(), entitiesChecked, unknown, nonConformant, score, violations,
                 edgesChecked, nonConformantEdges, edgeViolations, message);
     }
 
@@ -296,36 +310,38 @@ public class GraphOntologyBindingService
     // ── binding management ───────────────────────────────────────────────────────
 
     /**
-     * Bind an ontology to a fact sheet's graph (the priority-1 explicit binding). Validates that the
-     * ontology exists, then stamps {@code ontologySchemaId}/{@code ontologyVersion} on the fact
-     * sheet's {@link NamedGraph} — find-or-create a registry row scoped to the fact sheet if none
-     * exists, so binding is reliable even when the fact sheet has no named graph yet.
-     *
-     * @return the bound {@link NamedGraph}
-     * @throws IllegalArgumentException if the fact sheet or ontology id is missing, or the ontology
-     *                                  cannot be found
+     * Bind an ontology to a fact sheet's graph. The binding is stored as a scoped CUSTOM descriptor
+     * node, so it lives in the same Lucene graph index as every other graph artifact and participates
+     * in the normal graph export/import path.
      */
-    public NamedGraph bindOntology(Long factSheetId, String ontologySchemaId, Integer ontologyVersion) {
+    public OntologyBinding bindOntology(Long factSheetId, String ontologySchemaId, Integer ontologyVersion) {
         if (factSheetId == null) {
             throw new IllegalArgumentException("factSheetId is required");
         }
         if (ontologySchemaId == null || ontologySchemaId.isBlank()) {
             throw new IllegalArgumentException("ontologySchemaId is required");
         }
-        if (loadOntology(ontologySchemaId, ontologyVersion).isEmpty()) {
-            throw new IllegalArgumentException("No ontology found for id=" + ontologySchemaId
-                    + (ontologyVersion != null ? " v" + ontologyVersion : " (latest)"));
-        }
-        NamedGraph target = namedGraphService.getGraphsByFactSheet(factSheetId).stream()
-                .findFirst()
-                .orElseGet(() -> namedGraphService.createGraph(
-                        "Fact sheet " + factSheetId + " graph",
-                        "Auto-created to bind a governing ontology", null, factSheetId, "bound_ontology"));
-        NamedGraph bound = namedGraphService.bindOntology(target.getGraphId(), ontologySchemaId, ontologyVersion);
-        log.info("Bound ontology {} v{} to factSheet={} (graph {})",
-                ontologySchemaId, ontologyVersion, factSheetId, bound.getGraphId());
-        return bound;
+        OntologySchema ontology = loadOntology(ontologySchemaId, ontologyVersion)
+                .orElseThrow(() -> new IllegalArgumentException("No ontology found for id=" + ontologySchemaId
+                        + (ontologyVersion != null ? " v" + ontologyVersion : " (latest)")));
+        int resolvedVersion = ontologyVersion != null ? ontologyVersion : ontology.getVersion();
+        Map<String, Object> metadata = new HashMap<>();
+        metadata.put(ONTOLOGY_SCHEMA_ID, ontologySchemaId);
+        metadata.put(ONTOLOGY_VERSION, resolvedVersion);
+        GraphNode descriptor = knowledgeGraphService
+                .getNodeByExternalIdInFactSheet(BINDING_EXTERNAL_ID, NodeLevel.CUSTOM, factSheetId)
+                .map(existing -> knowledgeGraphService.updateNode(existing.getNodeId(), existing.getTitle(),
+                        existing.getDescription(), metadata))
+                .orElseGet(() -> knowledgeGraphService.createNode(NodeLevel.CUSTOM, BINDING_EXTERNAL_ID,
+                        "Graph ontology binding", "Governing ontology for this fact-sheet graph",
+                        metadata, factSheetId));
+        log.info("Bound ontology {} v{} to factSheet={} in Lucene graph descriptor {}",
+                ontologySchemaId, resolvedVersion, factSheetId, descriptor.getNodeId());
+        return new OntologyBinding(factSheetId, descriptor.getNodeId(), ontologySchemaId, resolvedVersion);
     }
+
+    public record OntologyBinding(Long factSheetId, String descriptorNodeId,
+                                  String ontologySchemaId, Integer ontologyVersion) {}
 
     /**
      * Ensure the fact sheet's graph has a governing ontology so OWL/PSL enrichment is not inert.
@@ -363,43 +379,41 @@ public class GraphOntologyBindingService
         autoProvisionStructuralOntology(factSheetId);
     }
 
-    /** Clear any explicit ontology binding on the fact sheet's named graph(s). */
+    /** Remove the Lucene graph descriptor that carries the explicit ontology binding. */
     public void unbindOntology(Long factSheetId) {
         if (factSheetId == null) {
             return;
         }
-        for (NamedGraph g : namedGraphService.getGraphsByFactSheet(factSheetId)) {
-            if (g.getOntologySchemaId() != null) {
-                namedGraphService.bindOntology(g.getGraphId(), null, null);
-            }
-        }
+        knowledgeGraphService
+                .getNodeByExternalIdInFactSheet(BINDING_EXTERNAL_ID, NodeLevel.CUSTOM, factSheetId)
+                .ifPresent(node -> knowledgeGraphService.deleteNode(node.getNodeId()));
     }
 
     // ── binding resolution ─────────────────────────────────────────────────────
 
-    /**
-     * Priority 1: an explicit graph-level binding — a {@link NamedGraph} scoped to this fact sheet
-     * carrying an {@code ontologySchemaId}. Returns the first such bound ontology that loads; empty
-     * if none, so resolution falls through to the process-level binding.
-     */
+    /** Resolve the explicit binding from the fact-sheet-scoped Lucene graph descriptor. */
     private Optional<OntologySchema> resolveExplicitGraphBinding(Long factSheetId) {
-        List<NamedGraph> graphs;
         try {
-            graphs = namedGraphService.getGraphsByFactSheet(factSheetId);
+            return knowledgeGraphService
+                    .getNodeByExternalIdInFactSheet(BINDING_EXTERNAL_ID, NodeLevel.CUSTOM, factSheetId)
+                    .flatMap(node -> {
+                        Map<String, Object> metadata = node.getMetadata();
+                        if (metadata == null) {
+                            return Optional.empty();
+                        }
+                        Object id = metadata.get(ONTOLOGY_SCHEMA_ID);
+                        if (!(id instanceof String ontologyId) || ontologyId.isBlank()) {
+                            return Optional.empty();
+                        }
+                        Object rawVersion = metadata.get(ONTOLOGY_VERSION);
+                        Integer version = rawVersion instanceof Number number ? number.intValue() : null;
+                        return loadOntology(ontologyId, version);
+                    });
         } catch (Exception e) {
-            log.warn("Could not resolve named graphs while binding ontology for factSheet={}: {}",
+            log.warn("Could not resolve Lucene graph ontology binding for factSheet={}: {}",
                     factSheetId, e.getMessage());
             return Optional.empty();
         }
-        if (graphs == null) {
-            return Optional.empty();
-        }
-        return graphs.stream()
-                .filter(g -> g.getOntologySchemaId() != null && !g.getOntologySchemaId().isBlank())
-                .map(g -> loadOntology(g.getOntologySchemaId(), g.getOntologyVersion()))
-                .filter(Optional::isPresent)
-                .map(Optional::get)
-                .findFirst();
     }
 
     /**

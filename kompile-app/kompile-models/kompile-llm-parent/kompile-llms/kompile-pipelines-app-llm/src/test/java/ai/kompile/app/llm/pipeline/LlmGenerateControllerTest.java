@@ -119,11 +119,10 @@ class LlmGenerateControllerTest {
     }
 
     @Test
-    void extraRequestFieldsAreIgnored() {
+    void requestTokenBudgetIsHonoredWhileOtherExtraFieldsRemainCompatible() {
         when(languageModel.isLoaded()).thenReturn(true);
-        when(languageModel.generateResponse(eq("p"), eq(List.of()))).thenReturn("r");
+        when(languageModel.generateResponse(eq("p"), eq(List.of()), eq(512))).thenReturn("r");
 
-        // LocalStagingLlmService sends these extras; they must not break the endpoint
         Map<String, Object> req = new java.util.LinkedHashMap<>();
         req.put("prompt", "p");
         req.put("maxTokens", 512);
@@ -132,7 +131,51 @@ class LlmGenerateControllerTest {
         req.put("doSample", false);
 
         ResponseEntity<Map<String, Object>> resp = controller.generate(req);
+
         assertEquals("completed", resp.getBody().get("finishReason"));
+        verify(languageModel).generateResponse("p", List.of(), 512);
+        verify(languageModel, never()).generateResponse("p", List.of());
+    }
+
+    @Test
+    void requestTokenBudgetIsCappedAtServingSafetyLimit() {
+        when(languageModel.isLoaded()).thenReturn(true);
+        when(languageModel.generateResponse(
+                eq("p"), eq(List.of()), eq(LlmGenerateController.MAX_REQUEST_MAX_TOKENS)))
+                .thenReturn("r");
+
+        ResponseEntity<Map<String, Object>> resp =
+                controller.generate(Map.of("prompt", "p", "maxTokens", 50_000));
+
+        assertEquals("completed", resp.getBody().get("finishReason"));
+        verify(languageModel).generateResponse(
+                "p", List.of(), LlmGenerateController.MAX_REQUEST_MAX_TOKENS);
+    }
+
+    @Test
+    void oversizedBigIntegerTokenBudgetIsCappedWithoutNarrowingOverflow() {
+        when(languageModel.isLoaded()).thenReturn(true);
+        when(languageModel.generateResponse(
+                eq("p"), eq(List.of()), eq(LlmGenerateController.MAX_REQUEST_MAX_TOKENS)))
+                .thenReturn("r");
+
+        ResponseEntity<Map<String, Object>> resp = controller.generate(Map.of(
+                "prompt", "p",
+                "maxTokens", new java.math.BigInteger("18446744073709551617")));
+
+        assertEquals("completed", resp.getBody().get("finishReason"));
+        verify(languageModel).generateResponse(
+                "p", List.of(), LlmGenerateController.MAX_REQUEST_MAX_TOKENS);
+    }
+
+    @Test
+    void invalidRequestTokenBudgetReturnsGenerationErrorWithoutCallingModel() {
+        ResponseEntity<Map<String, Object>> resp =
+                controller.generate(Map.of("prompt", "p", "maxTokens", 0));
+
+        assertOkWithErrorFinishReason(resp);
+        verify(languageModel, never()).isLoaded();
+        verify(languageModel, never()).generateResponse(any(), any(), anyInt());
     }
 
     // ── Generation failure ────────────────────────────────────────────────────

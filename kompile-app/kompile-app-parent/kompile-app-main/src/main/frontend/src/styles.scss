@@ -382,3 +382,92 @@ body.dark-theme ::-webkit-scrollbar-thumb:hover {
   max-height: 90vh;
   overflow: hidden;
 }
+
+/* ==========================================================================
+   Responsive containment and overlay safety
+   ========================================================================== */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  max-width: 100%;
+}
+
+app-root {
+  display: block;
+  width: 100%;
+  min-width: 0;
+}
+
+router-outlet + * {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+}
+
+img,
+video,
+svg {
+  max-width: 100%;
+}
+
+pre,
+code {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 768px) {
+  .cdk-overlay-pane.mat-mdc-dialog-panel {
+    width: calc(100vw - 16px) !important;
+    min-width: 0 !important;
+    max-width: calc(100vw - 16px) !important;
+  }
+
+  .mat-mdc-dialog-container,
+  .mat-mdc-dialog-surface,
+  [class*='dialog-container'] {
+    min-width: 0 !important;
+    max-width: 100% !important;
+  }
+
+  .mat-mdc-dialog-surface {
+    max-height: calc(100dvh - 16px);
+  }
+
+  .mat-mdc-dialog-content,
+  mat-dialog-content,
+  [mat-dialog-content],
+  [class*='dialog-content'] {
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: 100% !important;
+    max-height: calc(100dvh - 144px);
+    overflow: auto;
+  }
+
+  .mat-mdc-form-field,
+  mat-form-field {
+    min-width: 0 !important;
+    max-width: 100%;
+  }
+
+  .mat-button-toggle-group {
+    max-width: 100%;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+  }
+
+  [class*='table-container'],
+  [class*='table-wrapper'] {
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+}

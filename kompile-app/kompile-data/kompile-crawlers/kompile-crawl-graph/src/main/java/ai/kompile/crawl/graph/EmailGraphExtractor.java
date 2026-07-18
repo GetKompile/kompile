@@ -603,11 +603,7 @@ class EmailGraphExtractor {
     // -------------------------------------------------------------------------
 
     private boolean isCancelled(UnifiedCrawlJob job) {
-        if (job.getStatus().get() == UnifiedCrawlJob.Status.CANCELLED) {
-            job.setCompletedAt(Instant.now());
-            return true;
-        }
-        return false;
+        return job != null && job.isCancellationRequested();
     }
 
     /**

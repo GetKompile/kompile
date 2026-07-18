@@ -99,13 +99,14 @@ class Nd4jEnvironmentConfigTest {
         }
 
         @Test void optimizerDefaults() {
+            // P5: tritonTf32 default changed false → true (TF32 enabled by default).
             var cfg = Nd4jEnvironmentConfig.defaults();
             assertTrue(cfg.optimizerEnabled());
             assertTrue(cfg.optimizerFp16());
             assertFalse(cfg.dspNoFreeze());
             assertFalse(cfg.dspNoNativeDecode());
             assertFalse(cfg.tritonSkipKernels());
-            assertFalse(cfg.tritonTf32());
+            assertTrue(cfg.tritonTf32());
             assertFalse(cfg.cublasDisableWorkspace());
             assertFalse(cfg.opTiming());
         }

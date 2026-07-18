@@ -176,3 +176,36 @@ body.dark-theme .developer-hub-header {
   width: 14px;
   height: 14px;
 }
+
+@media (max-width: 600px) {
+  .developer-hub-container {
+    padding: 8px;
+  }
+
+  .developer-hub-header {
+    padding: 12px;
+  }
+
+  .header-left {
+    align-items: flex-start;
+  }
+
+  .header-actions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .header-actions button {
+    flex: 1 1 auto;
+    min-height: 44px;
+  }
+
+  .inner-tab-content,
+  .debug-header {
+    padding: 10px;
+  }
+
+  .removed-tab-hints {
+    padding-inline: 8px;
+  }
+}

@@ -99,32 +99,34 @@ class StagedIngestPipelineTest {
     // ===== processFiles — empty list =====
 
     @Test
-    void processFiles_emptyList_returnsZeroResult() throws Exception {
-        StagedIngestPipeline.PipelineResult result = pipeline.processFiles(List.of(), "task-0");
-        assertThat(result.filesProcessed()).isEqualTo(0);
-        assertThat(result.chunksIndexed()).isEqualTo(0);
-        assertThat(result.totalTimeMs()).isEqualTo(0);
+    void processFiles_emptyList_returnsZeroResult() {
+        // P5: production now rejects empty/null input with IllegalArgumentException rather than
+        // returning a zero result — guard-fail-fast is the intended behavior.
+        assertThatThrownBy(() -> pipeline.processFiles(List.of(), "task-0"))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
-    void processFiles_nullList_returnsZeroResult() throws Exception {
-        StagedIngestPipeline.PipelineResult result = pipeline.processFiles(null, "task-null");
-        assertThat(result.filesProcessed()).isEqualTo(0);
+    void processFiles_nullList_returnsZeroResult() {
+        // P5: null list is also rejected eagerly.
+        assertThatThrownBy(() -> pipeline.processFiles(null, "task-null"))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     // ===== processDocuments — empty list =====
 
     @Test
-    void processDocuments_emptyList_returnsZeroResult() throws Exception {
-        StagedIngestPipeline.PipelineResult result = pipeline.processDocuments(List.of(), "task-0");
-        assertThat(result.filesProcessed()).isEqualTo(0);
-        assertThat(result.chunksIndexed()).isEqualTo(0);
+    void processDocuments_emptyList_returnsZeroResult() {
+        // P5: production now rejects empty/null input with IllegalArgumentException.
+        assertThatThrownBy(() -> pipeline.processDocuments(List.of(), "task-0"))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
-    void processDocuments_nullList_returnsZeroResult() throws Exception {
-        StagedIngestPipeline.PipelineResult result = pipeline.processDocuments(null, "task-null");
-        assertThat(result.filesProcessed()).isEqualTo(0);
+    void processDocuments_nullList_returnsZeroResult() {
+        // P5: null list is also rejected eagerly.
+        assertThatThrownBy(() -> pipeline.processDocuments(null, "task-null"))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     // ===== cancel() =====

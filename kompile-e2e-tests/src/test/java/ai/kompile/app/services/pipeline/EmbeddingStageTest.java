@@ -99,15 +99,18 @@ class EmbeddingStageTest {
     }
 
     @Test
-    void handlesNullEmbeddingFromModel() throws Exception {
+    void nullEmbeddingFromModelFailsFastAfterRetries() {
+        // No silent fallbacks: a null batch from the model is a hard error after retries,
+        // never a chunk quietly persisted without an embedding.
         when(embeddingModel.embed(anyList())).thenReturn(null);
 
         List<RetrievedDoc> chunks = List.of(chunk("text"));
-        EmbeddingOutput output = stage.process(chunkingOutput(chunks));
-
-        assertEquals(1, output.chunkCount());
-        assertEquals(0, output.chunksWithEmbeddings());
-        assertFalse(output.embeddedChunks().get(0).hasEmbedding());
+        IllegalStateException failure = assertThrows(IllegalStateException.class,
+                () -> stage.process(chunkingOutput(chunks)));
+        assertTrue(failure.getMessage().contains("null batch embeddings")
+                        || (failure.getCause() != null
+                        && failure.getCause().getMessage().contains("null batch embeddings")),
+                "failure names the null-batch cause: " + failure.getMessage());
     }
 
     @Test

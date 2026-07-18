@@ -59,3 +59,23 @@
 ::ng-deep .mat-mdc-tab-body-content {
   padding: 16px;
 }
+
+@media (max-width: 600px) {
+  .kclaw-hub {
+    padding: 8px;
+  }
+
+  .stats-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .stat-card {
+    min-width: 0;
+  }
+
+  ::ng-deep .mat-mdc-tab-body-content {
+    padding: 8px;
+  }
+}

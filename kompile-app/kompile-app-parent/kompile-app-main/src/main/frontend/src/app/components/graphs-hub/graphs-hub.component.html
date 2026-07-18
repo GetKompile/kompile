@@ -61,6 +61,20 @@
 
   <!-- ── Tab content ─────────────────────────────────────────────────────── -->
   <div class="tab-content-area">
+    <div *ngIf="!activeFactSheet" class="no-fact-sheet-state" role="status">
+      <mat-icon class="no-fact-sheet-icon">note_add</mat-icon>
+      <h3>Create a fact sheet to start building your graph</h3>
+      <p>
+        There is no active fact sheet. Create one first, then add sources or run a crawl
+        when you are ready. An empty fact sheet is a valid starting point.
+      </p>
+      <button mat-raised-button color="primary" (click)="openFactSheetCreation()">
+        <mat-icon>add</mat-icon>
+        Create fact sheet
+      </button>
+    </div>
+
+    <ng-container *ngIf="activeFactSheet">
 
     <!-- EXPLORE section -->
     <ng-container *ngIf="activeSection === 'explore'">
@@ -187,5 +201,6 @@
       </mat-tab-group>
     </ng-container>
 
+    </ng-container>
   </div>
 </div>

@@ -99,7 +99,18 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
     private static final AtomicInteger t_counter_extract = new AtomicInteger(0);
 
     private final ConcurrentHashMap<String, UnifiedCrawlJob> jobs = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, Future<?>> jobFutures = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, JobExecution> jobExecutions = new ConcurrentHashMap<>();
+
+    private enum JobExecutionState {
+        QUEUED, RUNNING, CANCELLED_BEFORE_START, FINISHED
+    }
+
+    private static final class JobExecution {
+        private final AtomicReference<JobExecutionState> state =
+                new AtomicReference<>(JobExecutionState.QUEUED);
+        private volatile FutureTask<Void> task;
+    }
+
     // Token trackers delegated to CrawlLlmDispatcher
     private final ConcurrentHashMap<String, Long> queuedSequences = new ConcurrentHashMap<>();
     private final Set<String> runningJobIds = ConcurrentHashMap.newKeySet();
@@ -130,6 +141,7 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
     volatile int nativeMemoryCriticalThresholdPercent = 90;
     volatile int graphExtractionBatchSize = 10;
     volatile int backgroundGraphThreads = 2;
+    volatile int structuredGraphPersistenceThreads = 4;
     volatile int sourceLoadParallelism = 2;
     volatile int chunkingParallelism = 2;
     volatile int graphExtractionParallelism = 4;
@@ -198,6 +210,10 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
 
     @Autowired(required = false)
     private GraphExtractionCheckpointStore graphExtractionCheckpointStore;
+
+    /** Optional full-application boundary that resolves every crawl to a concrete fact sheet. */
+    @Autowired(required = false)
+    private CrawlFactSheetScopeResolver factSheetScopeResolver;
 
     /** Optional app-main hook that derives/binds crawl schema and materializes type hierarchy metadata. */
     @Autowired(required = false)
@@ -475,9 +491,24 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
         return request;
     }
 
+    private UnifiedCrawlRequest resolveFactSheetScope(UnifiedCrawlRequest request) {
+        if (factSheetScopeResolver != null) {
+            factSheetScopeResolver.resolveScope(request);
+        }
+        String requestedName = request.getFactSheetName();
+        if (request.getFactSheetId() == null && requestedName != null && !requestedName.isBlank()) {
+            throw new IllegalArgumentException("Fact sheet '" + requestedName.trim()
+                    + "' must resolve to a concrete ID before the crawl starts");
+        }
+        if (factSheetScopeResolver != null && request.getFactSheetId() == null) {
+            throw new IllegalStateException("The crawl fact-sheet resolver did not provide a concrete ID");
+        }
+        return request;
+    }
+
     @Override
     public UnifiedCrawlJob startJob(UnifiedCrawlRequest request) {
-        request = normalizeMandatoryGraphExtraction(request);
+        request = resolveFactSheetScope(normalizeMandatoryGraphExtraction(request));
         CrawlRuntimeConfigManager.CrawlRuntimeConfig config = runtimeConfigManager.refreshRuntimeConfig();
         executorQueueCapacity = runtimeConfigManager.applyRuntimeConfig(
                 config, this, memoryMonitor, graphExtractionOrchestrator, vectorIndexingHelper,
@@ -576,11 +607,20 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
         queuedSequences.put(jobId, sequence);
         updateQueueSnapshots();
 
+        JobExecution execution = new JobExecution();
+        FutureTask<Void> task = new FutureTask<>(() -> {
+            runQueuedJob(job, execution);
+            return null;
+        });
+        execution.task = task;
+        jobExecutions.put(jobId, execution);
+
         try {
-            Future<?> future = executor().submit(() -> runQueuedJob(job));
-            jobFutures.put(jobId, future);
+            executor().execute(task);
             updateQueueSnapshots();
         } catch (RejectedExecutionException e) {
+            execution.state.set(JobExecutionState.FINISHED);
+            jobExecutions.remove(jobId, execution);
             queuedSequences.remove(jobId);
             job.getStatus().set(UnifiedCrawlJob.Status.FAILED);
             job.setErrorMessage("Unified crawl queue is full");
@@ -924,7 +964,11 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
         }
     }
 
-    private void runQueuedJob(UnifiedCrawlJob job) {
+    private void runQueuedJob(UnifiedCrawlJob job, JobExecution execution) {
+        if (!execution.state.compareAndSet(JobExecutionState.QUEUED, JobExecutionState.RUNNING)) {
+            return;
+        }
+
         String jobId = job.getJobId();
         queuedSequences.remove(jobId);
         runningJobIds.add(jobId);
@@ -935,11 +979,18 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
             }
             executeJob(job);
         } finally {
-            runningJobIds.remove(jobId);
-            jobFutures.remove(jobId);
-            llmDispatcher.removeTracker(jobId);
-            llmDispatcher.clearOpencodeModelIndex(jobId);
-            updateQueueSnapshots();
+            try {
+                runningJobIds.remove(jobId);
+                llmDispatcher.removeTracker(jobId);
+                llmDispatcher.clearOpencodeModelIndex(jobId);
+            } finally {
+                execution.state.set(JobExecutionState.FINISHED);
+                jobExecutions.remove(jobId, execution);
+                if (job.getStatus().get() == UnifiedCrawlJob.Status.CANCELLING) {
+                    completeCancelledJob(job);
+                }
+                updateQueueSnapshots();
+            }
         }
     }
 
@@ -957,46 +1008,84 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
     public List<UnifiedCrawlJob> getActiveJobs() {
         return jobs.values().stream()
                 .filter(j -> j.getStatus().get() == UnifiedCrawlJob.Status.PENDING
-                        || j.getStatus().get() == UnifiedCrawlJob.Status.RUNNING)
+                        || j.getStatus().get() == UnifiedCrawlJob.Status.RUNNING
+                        || j.getStatus().get() == UnifiedCrawlJob.Status.CANCELLING)
                 .collect(Collectors.toList());
     }
 
     @Override
     public boolean cancelJob(String jobId) {
         UnifiedCrawlJob job = jobs.get(jobId);
-        if (job == null) return false;
-        UnifiedCrawlJob.Status current = job.getStatus().get();
-        if (current == UnifiedCrawlJob.Status.COMPLETED
-                || current == UnifiedCrawlJob.Status.FAILED
-                || current == UnifiedCrawlJob.Status.CANCELLED) {
+        if (job == null) {
             return false;
         }
-        job.getStatus().set(UnifiedCrawlJob.Status.CANCELLED);
-        String cancelledPhase = job.getCurrentPhase().get();
-        UnifiedCrawlJob.PipelineStepProgress cancelledStep = ensurePipelineStep(job, cancelledPhase);
-        if (cancelledStep.getStatus().get() == UnifiedCrawlJob.PipelineStepStatus.RUNNING
-                || cancelledStep.getStatus().get() == UnifiedCrawlJob.PipelineStepStatus.BACKPRESSURE
-                || cancelledStep.getStatus().get() == UnifiedCrawlJob.PipelineStepStatus.PENDING) {
-            applyPipelineStepUpdate(cancelledStep, UnifiedCrawlJob.PipelineStepStatus.CANCELLED,
-                    cancelledStep.getCompletedItems().get(), cancelledStep.getTotalItems().get(),
-                    cancelledStep.getFailedItems().get(), cancelledStep.getCompletedBatches().get(),
-                    cancelledStep.getTotalBatches().get(), cancelledStep.getCurrentBatchSize().get(),
-                    cancelledStep.getCurrentItem().get(), "Job cancelled");
-        }
-        job.getCurrentPhase().set("CANCELLED");
-        job.getProgressPercent().set(Math.max(job.getProgressPercent().get(), 0));
-        job.setCompletedAt(Instant.now());
-        queuedSequences.remove(jobId);
-        Future<?> future = jobFutures.get(jobId);
-        if (future != null) {
-            future.cancel(false);
-            if (current == UnifiedCrawlJob.Status.PENDING) {
-                jobFutures.remove(jobId);
+
+        UnifiedCrawlJob.Status current;
+        do {
+            current = job.getStatus().get();
+            if (current == UnifiedCrawlJob.Status.COMPLETED
+                    || current == UnifiedCrawlJob.Status.COMPLETED_PENDING_EMBEDDING
+                    || current == UnifiedCrawlJob.Status.COMPLETED_PENDING_GRAPH
+                    || current == UnifiedCrawlJob.Status.FAILED
+                    || current == UnifiedCrawlJob.Status.CANCELLING
+                    || current == UnifiedCrawlJob.Status.CANCELLED) {
+                return false;
             }
+        } while (!job.getStatus().compareAndSet(current, UnifiedCrawlJob.Status.CANCELLING));
+
+        recordEvent(job, job.getCurrentPhase().get(), "WARN",
+                "Unified crawl cancellation requested",
+                "The job remains active until its worker and owned resources have quiesced");
+
+        JobExecution execution = jobExecutions.get(jobId);
+        if (execution != null
+                && execution.state.compareAndSet(
+                        JobExecutionState.QUEUED, JobExecutionState.CANCELLED_BEFORE_START)) {
+            queuedSequences.remove(jobId);
+            FutureTask<Void> task = execution.task;
+            if (task != null) {
+                task.cancel(false);
+                ThreadPoolExecutor currentExecutor = executor;
+                if (currentExecutor != null) {
+                    currentExecutor.remove(task);
+                }
+            }
+            execution.state.set(JobExecutionState.FINISHED);
+            jobExecutions.remove(jobId, execution);
+            completeCancelledJob(job);
         }
-        recordEvent(job, "CANCELLED", "WARN", "Unified crawl job cancelled", null);
+
         updateQueueSnapshots();
         return true;
+    }
+
+    private void completeCancelledJob(UnifiedCrawlJob job) {
+        if (job.getStatus().get() != UnifiedCrawlJob.Status.CANCELLING) {
+            return;
+        }
+
+        String cancelledPhase = job.getCurrentPhase().get();
+        try {
+            UnifiedCrawlJob.PipelineStepProgress cancelledStep = ensurePipelineStep(job, cancelledPhase);
+            UnifiedCrawlJob.PipelineStepStatus stepStatus = cancelledStep.getStatus().get();
+            if (stepStatus == UnifiedCrawlJob.PipelineStepStatus.RUNNING
+                    || stepStatus == UnifiedCrawlJob.PipelineStepStatus.BACKPRESSURE
+                    || stepStatus == UnifiedCrawlJob.PipelineStepStatus.PENDING) {
+                applyPipelineStepUpdate(cancelledStep, UnifiedCrawlJob.PipelineStepStatus.CANCELLED,
+                        cancelledStep.getCompletedItems().get(), cancelledStep.getTotalItems().get(),
+                        cancelledStep.getFailedItems().get(), cancelledStep.getCompletedBatches().get(),
+                        cancelledStep.getTotalBatches().get(), cancelledStep.getCurrentBatchSize().get(),
+                        cancelledStep.getCurrentItem().get(), "Job cancelled after worker quiescence");
+            }
+        } finally {
+            job.getCurrentPhase().set("CANCELLED");
+            job.getProgressPercent().set(Math.max(job.getProgressPercent().get(), 0));
+            job.setCompletedAt(Instant.now());
+            job.getStatus().compareAndSet(
+                    UnifiedCrawlJob.Status.CANCELLING, UnifiedCrawlJob.Status.CANCELLED);
+        }
+        recordEvent(job, "CANCELLED", "WARN", "Unified crawl job cancelled",
+                "Worker and job-scoped resources have quiesced");
     }
 
     @Override
@@ -1012,10 +1101,13 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                     || status == UnifiedCrawlJob.Status.FAILED
                     || status == UnifiedCrawlJob.Status.CANCELLED) {
                 String jobId = entry.getKey();
+                JobExecution execution = jobExecutions.get(jobId);
+                if (execution != null && execution.state.get() != JobExecutionState.FINISHED) {
+                    continue;
+                }
                 queuedSequences.remove(jobId);
-                Future<?> future = jobFutures.remove(jobId);
-                if (future != null) {
-                    future.cancel(false);
+                if (execution != null) {
+                    jobExecutions.remove(jobId, execution);
                 }
                 runningJobIds.remove(jobId);
                 it.remove();
@@ -1695,7 +1787,13 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                     config, this, memoryMonitor, graphExtractionOrchestrator, vectorIndexingHelper,
                     llmDispatcher, executor, executorQueueCapacity);
             runtimeConfigManager.applyRequestOverrides(job.getRequest().getRuntimeConfig(), this, graphExtractionOrchestrator);
-            job.getStatus().set(UnifiedCrawlJob.Status.RUNNING);
+            if (!job.getStatus().compareAndSet(
+                    UnifiedCrawlJob.Status.PENDING, UnifiedCrawlJob.Status.RUNNING)) {
+                if (isCancelled(job)) {
+                    return;
+                }
+                throw new IllegalStateException("Cannot start crawl job from status " + job.getStatus().get());
+            }
             job.setStartedAt(Instant.now());
             initializePipelineSteps(job);
             publishProgressEvent(job, CrawlProgressEvent.EventType.STARTED, "Crawl started");
@@ -1852,39 +1950,58 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                     "Content routing complete", allDocuments.size() + " text-pipeline document(s)");
             log.info("[Job {}] Content routing complete: {} documents for text pipeline", job.getJobId(), allDocuments.size());
 
-            // Structured-graph persistence (formula/table/cell/document nodes) is its OWN linear
-            // step, NOT part of routing — routing only decides each document's pipeline. Run the
-            // operations routing collected; timed + logged so the cost is visible per job.
+            // Structured-graph persistence (formula/table/cell/document nodes) is independent per
+            // routed document. Use bounded parallelism across documents; each task preserves its own
+            // workbook ordering and sends bounded node/edge batches to the graph subprocess.
             if (!graphPersistence.isEmpty()) {
                 long gpStart = System.currentTimeMillis();
-                job.getCurrentFile().set("(structured graph persistence: 0/" + graphPersistence.size() + " ops)");
-                int completedPersistenceOps = 0;
+                AtomicInteger completedPersistenceOps = new AtomicInteger();
+                int persistenceThreads = Math.max(1,
+                        Math.min(structuredGraphPersistenceThreads, graphPersistence.size()));
+                job.getCurrentFile().set("(structured graph persistence: 0/" + graphPersistence.size()
+                        + " ops, " + persistenceThreads + " workers)");
+                ExecutorService persistencePool = Executors.newFixedThreadPool(persistenceThreads, r -> {
+                    Thread t = new Thread(r, "structured-graph-" + job.getJobId().substring(0, 8));
+                    t.setDaemon(true);
+                    return t;
+                });
                 try {
-                    for (Runnable task : graphPersistence) {
-                        if (isCancelled(job)) {
-                            return;
-                        }
-                        task.run();
-                        completedPersistenceOps++;
-                        if (completedPersistenceOps == graphPersistence.size() || completedPersistenceOps % 10 == 0) {
-                            job.getCurrentFile().set("(structured graph persistence: "
-                                    + completedPersistenceOps + "/" + graphPersistence.size() + " ops)");
-                        }
+                    List<Callable<Void>> tasks = graphPersistence.stream()
+                            .<Callable<Void>>map(task -> () -> {
+                                if (!isCancelled(job)) {
+                                    task.run();
+                                    int completed = completedPersistenceOps.incrementAndGet();
+                                    if (completed == graphPersistence.size() || completed % 10 == 0) {
+                                        job.getCurrentFile().set("(structured graph persistence: "
+                                                + completed + "/" + graphPersistence.size() + " ops)");
+                                    }
+                                }
+                                return null;
+                            })
+                            .toList();
+                    for (Future<Void> future : persistencePool.invokeAll(tasks)) {
+                        future.get();
+                    }
+                    if (isCancelled(job)) {
+                        return;
                     }
                 } catch (Exception e) {
-                    String detail = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
-                    String message = "Structured graph persistence failed after " + completedPersistenceOps
+                    Throwable cause = e instanceof ExecutionException && e.getCause() != null ? e.getCause() : e;
+                    String detail = cause.getMessage() != null ? cause.getMessage() : cause.getClass().getSimpleName();
+                    String message = "Structured graph persistence failed after " + completedPersistenceOps.get()
                             + "/" + graphPersistence.size() + " ops: " + detail;
                     job.getErrorCount().incrementAndGet();
                     job.setErrorMessage(message);
                     failPipelineStep(job, "ROUTING", message);
                     recordEvent(job, "ROUTING", "ERROR", "Structured graph persistence failed", message);
-                    throw new IllegalStateException(message, e);
+                    throw new IllegalStateException(message, cause);
                 } finally {
+                    persistencePool.shutdownNow();
                     job.getCurrentFile().set(null);
                 }
-                log.info("[Job {}] Structured graph persistence complete: {} ops in {}ms",
-                        job.getJobId(), graphPersistence.size(), System.currentTimeMillis() - gpStart);
+                log.info("[Job {}] Structured graph persistence complete: {} ops, {} workers in {}ms",
+                        job.getJobId(), graphPersistence.size(), persistenceThreads,
+                        System.currentTimeMillis() - gpStart);
             }
 
             if (isCancelled(job)) return;
@@ -2767,11 +2884,18 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                     .toList();
             boolean hasDeferredEmbedding = !job.getDeferredEmbeddingChunks().isEmpty();
 
+            if (isCancelled(job)) {
+                return;
+            }
+
             if (!hardFailed.isEmpty()) {
                 String failedStepsStr = String.join(", ", hardFailed);
                 String errorMsg = "Crawl completed but pipeline step(s) FAILED: " + failedStepsStr;
+                if (!job.getStatus().compareAndSet(
+                        UnifiedCrawlJob.Status.RUNNING, UnifiedCrawlJob.Status.FAILED)) {
+                    return;
+                }
                 log.error("[Job {}] {}", job.getJobId(), errorMsg);
-                job.getStatus().set(UnifiedCrawlJob.Status.FAILED);
                 job.getCurrentPhase().set("FAILED");
                 job.setErrorMessage(errorMsg);
                 job.setCompletedAt(Instant.now());
@@ -2784,8 +2908,12 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                 recordDegradedSteps(job, failedNames);
                 String message = "Crawl graph completed; "
                         + job.getDeferredEmbeddingChunks().size() + " chunk(s) pending bge-m3/vector embedding";
+                if (!job.getStatus().compareAndSet(
+                        UnifiedCrawlJob.Status.RUNNING,
+                        UnifiedCrawlJob.Status.COMPLETED_PENDING_EMBEDDING)) {
+                    return;
+                }
                 log.warn("[Job {}] {}", job.getJobId(), message);
-                job.getStatus().set(UnifiedCrawlJob.Status.COMPLETED_PENDING_EMBEDDING);
                 job.getCurrentPhase().set("PENDING_EMBEDDING");
                 job.getProgressPercent().set(100);
                 job.setCompletedAt(Instant.now());
@@ -2795,7 +2923,10 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                 publishProgressEvent(job, CrawlProgressEvent.EventType.PROGRESS, message);
             } else {
                 recordDegradedSteps(job, failedNames);
-                job.getStatus().set(UnifiedCrawlJob.Status.COMPLETED);
+                if (!job.getStatus().compareAndSet(
+                        UnifiedCrawlJob.Status.RUNNING, UnifiedCrawlJob.Status.COMPLETED)) {
+                    return;
+                }
                 job.getCurrentPhase().set("COMPLETED");
                 job.getProgressPercent().set(100);
                 job.setCompletedAt(Instant.now());
@@ -2809,9 +2940,17 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                     job.getEntitiesExtracted().get(), job.getRelationshipsExtracted().get());
 
         } catch (Throwable e) {
+            if (isCancelled(job)) {
+                log.info("Unified crawl job {} acknowledged cancellation during phase {}",
+                        job.getJobId(), job.getCurrentPhase().get());
+                return;
+            }
+            if (!job.getStatus().compareAndSet(
+                    UnifiedCrawlJob.Status.RUNNING, UnifiedCrawlJob.Status.FAILED)) {
+                return;
+            }
             log.error("Unified crawl job {} failed: {}", job.getJobId(), e.getMessage(), e);
             failPipelineStep(job, job.getCurrentPhase().get(), e.getClass().getSimpleName() + ": " + e.getMessage());
-            job.getStatus().set(UnifiedCrawlJob.Status.FAILED);
             job.getCurrentPhase().set("FAILED");
             job.setErrorMessage(e.getClass().getSimpleName() + ": " + e.getMessage());
             job.setCompletedAt(Instant.now());
@@ -3428,11 +3567,7 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
     }
 
     private boolean isCancelled(UnifiedCrawlJob job) {
-        if (job.getStatus().get() == UnifiedCrawlJob.Status.CANCELLED) {
-            job.setCompletedAt(Instant.now());
-            return true;
-        }
-        return false;
+        return job != null && job.isCancellationRequested();
     }
 
     private String humanizePhase(String phase) {

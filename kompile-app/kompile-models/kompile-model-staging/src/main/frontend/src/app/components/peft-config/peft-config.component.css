@@ -9,3 +9,11 @@
 .full-width { width: 100%; }
 .step-actions { display: flex; gap: 8px; margin-top: 16px; }
 .review-summary p { margin: 8px 0; }
+
+@media (max-width: 600px) {
+  .peft-config { padding: 12px; }
+  .peft-type-grid,
+  .config-grid { grid-template-columns: minmax(0, 1fr); }
+  .step-actions { flex-wrap: wrap; }
+  .step-actions button { flex: 1 1 auto; min-height: 44px; }
+}

@@ -52,9 +52,10 @@ public class DynamicToolManager {
      * This core set covers the kompile-specific tools that are always active.
      */
     private static final Set<String> CORE_TOOLS = Set.of(
-            "read", "write", "edit", "grep", "glob", "bash", "list",
-            "fetch_result", "activate_tools",
-            "patch", "explore", "memory", "transcript_search",
+            "read", "read_batch", "write", "edit", "edit_batch",
+            "grep", "grep_batch", "glob", "bash", "list",
+            "fetch_result", "fetch_result_batch", "activate_tools",
+            "patch", "edit_patch", "explore", "memory", "transcript_search",
             "conversation_import", "code_search", "code_graph", "local_code_index", "lsp"
     );
 

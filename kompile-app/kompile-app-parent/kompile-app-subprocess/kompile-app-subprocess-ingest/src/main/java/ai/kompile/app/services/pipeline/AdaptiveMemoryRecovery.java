@@ -89,15 +89,16 @@ public class AdaptiveMemoryRecovery {
         this.originalBatchSize = initialBatchSize;
         this.currentBatchSize.set(initialBatchSize);
 
-        // Get current ND4J thread settings
+        // Get current ND4J thread settings. Go through the Nd4j facade only: touching
+        // NativeOpsHolder before the facade has loaded the backend throws
+        // ExceptionInInitializerError and permanently poisons ND4J class-init for the JVM.
         int ompThreads = 4; // default
         int maxThreads = 4; // default
         try {
-            NativeOps nativeOps = NativeOpsHolder.getInstance().getDeviceNativeOps();
-            // Note: omp_get_num_threads returns 1 outside parallel regions, use configured value
             maxThreads = (int) Nd4j.getEnvironment().maxThreads();
             ompThreads = maxThreads; // Use same as max threads for now
-        } catch (Exception e) {
+        } catch (Throwable t) {
+            // Backend unavailable (bare test JVM, subprocess without natives) — defaults are fine.
             logger.debug("Could not read ND4J thread settings, using defaults");
         }
 
@@ -211,8 +212,8 @@ public class AdaptiveMemoryRecovery {
             logger.info("Applied reduced ND4J settings: maxThreads={}, ompThreads={}",
                     newMaxThreads, newOmpThreads);
 
-        } catch (Exception e) {
-            logger.warn("Could not apply all ND4J thread reductions: {}", e.getMessage());
+        } catch (Throwable t) {
+            logger.warn("Could not apply all ND4J thread reductions: {}", t.getMessage());
         }
     }
 
@@ -367,8 +368,8 @@ public class AdaptiveMemoryRecovery {
             nativeOps.setOmpNumThreads(originalOmpThreads);
             logger.info("Reset ND4J settings to original: maxThreads={}, ompThreads={}",
                     originalMaxThreads, originalOmpThreads);
-        } catch (Exception e) {
-            logger.warn("Could not restore original ND4J settings: {}", e.getMessage());
+        } catch (Throwable t) {
+            logger.warn("Could not restore original ND4J settings: {}", t.getMessage());
         }
     }
 

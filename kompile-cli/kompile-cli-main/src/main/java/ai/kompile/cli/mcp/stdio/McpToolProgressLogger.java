@@ -46,6 +46,16 @@ public class McpToolProgressLogger {
     private final Object writeLock = new Object();
     private final ConcurrentHashMap<String, Long> activeTools = new ConcurrentHashMap<>();
 
+    /**
+     * Persistent appender. Opening/stat-ing/closing the file for EVERY line put
+     * 4+ syscalls on every tool call's hot path (twice per call: START + DONE),
+     * which is where per-call latency went on IO-saturated boxes. The writer
+     * stays open (O_APPEND, flushed per line so {@code tail -f} and crashes see
+     * every entry); rotation tracks bytes written instead of stat-ing per line.
+     */
+    private BufferedWriter out;
+    private long bytesWritten;
+
     public McpToolProgressLogger() {
         this(LogPaths.logsDirectory().toPath());
     }
@@ -106,21 +116,40 @@ public class McpToolProgressLogger {
         synchronized (writeLock) {
             try {
                 rotateIfNeeded();
-                try (BufferedWriter w = Files.newBufferedWriter(logFile,
-                        StandardOpenOption.CREATE, StandardOpenOption.APPEND)) {
-                    w.write(line);
+                if (out == null) {
+                    bytesWritten = Files.exists(logFile) ? Files.size(logFile) : 0;
+                    out = Files.newBufferedWriter(logFile,
+                            StandardOpenOption.CREATE, StandardOpenOption.APPEND);
                 }
+                out.write(line);
+                out.flush();
+                bytesWritten += line.length();
             } catch (IOException e) {
-                // Don't let logging failures disrupt tool execution
+                // Don't let logging failures disrupt tool execution; drop the
+                // writer so the next line reopens cleanly.
+                closeQuietly();
                 System.err.println("[McpToolProgressLogger] Write failed: " + e.getMessage());
             }
         }
     }
 
     private void rotateIfNeeded() throws IOException {
-        if (Files.exists(logFile) && Files.size(logFile) > MAX_LOG_SIZE) {
+        if (out != null && bytesWritten > MAX_LOG_SIZE) {
+            closeQuietly();
+        }
+        if (out == null && Files.exists(logFile) && Files.size(logFile) > MAX_LOG_SIZE) {
             Path rotated = logFile.resolveSibling("mcp-activity.log.1");
             Files.move(logFile, rotated, StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    private void closeQuietly() {
+        if (out != null) {
+            try {
+                out.close();
+            } catch (IOException ignored) {
+            }
+            out = null;
         }
     }
 

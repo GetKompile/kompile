@@ -50,7 +50,8 @@ public class ChatSession {
     @Column(nullable = false, unique = true)
     private String sessionId;
 
-    @Column(nullable = false)
+    @Lob
+    @Column(nullable = false, columnDefinition = "CLOB")
     private String title;
 
     @Column(columnDefinition = "TEXT")

@@ -17,6 +17,7 @@
 package ai.kompile.app.services.crawl;
 
 import ai.kompile.app.services.agent.AgentRegistryService;
+import ai.kompile.app.services.agent.LocalStagingLlmService;
 import ai.kompile.core.agent.AgentProvider;
 import ai.kompile.core.crawl.graph.ModelCapabilityResolver;
 import ai.kompile.core.crawl.graph.ProcessingRouteConfig;
@@ -59,15 +60,18 @@ public class ModelCapabilityResolverImpl implements ModelCapabilityResolver {
     private final AgentRegistryService agentRegistry;
     private final RegistryBasedModelManager modelManager;
     private final GraphExtractionConfigService graphExtractionConfigService;
+    private final LocalStagingLlmService localStagingLlmService;
 
     @Autowired
     public ModelCapabilityResolverImpl(
             @Autowired(required = false) AgentRegistryService agentRegistry,
             @Autowired(required = false) RegistryBasedModelManager modelManager,
-            @Autowired(required = false) GraphExtractionConfigService graphExtractionConfigService) {
+            @Autowired(required = false) GraphExtractionConfigService graphExtractionConfigService,
+            @Autowired(required = false) LocalStagingLlmService localStagingLlmService) {
         this.agentRegistry = agentRegistry;
         this.modelManager = modelManager;
         this.graphExtractionConfigService = graphExtractionConfigService;
+        this.localStagingLlmService = localStagingLlmService;
     }
 
     @Override
@@ -116,11 +120,63 @@ public class ModelCapabilityResolverImpl implements ModelCapabilityResolver {
     }
 
     private ModelCapability resolveLocal(String modelId) {
-        Integer maxSeq = (modelManager != null && modelId != null && !modelId.isBlank())
-                ? safeMaxSequenceLength(modelId) : null;
-        int contextTokens = (maxSeq != null && maxSeq > 0) ? maxSeq : LOCAL_DEFAULT_CONTEXT;
+        // Source order, most-authoritative first:
+        //   1. The live serving lane's maxContextLength when THIS model is the one loaded
+        //      (post KV-bucketing truth — can be smaller than the file's declared window).
+        //   2. The staged candidate's GGUF-derived contextWindow from local discovery.
+        //   3. The (embedding-oriented) model registry's max_sequence_length.
+        //   4. LOCAL_DEFAULT_CONTEXT as the last resort.
+        // Without 1-2, a staged GGUF LLM the registry doesn't know is budgeted at 2k tokens and
+        // the fallback chain's window guard would skip it for any real extraction batch.
+        Integer context = stagedLlmContext(modelId);
+        if (context == null || context <= 0) {
+            Integer maxSeq = (modelManager != null && modelId != null && !modelId.isBlank())
+                    ? safeMaxSequenceLength(modelId) : null;
+            if (maxSeq != null && maxSeq > 0) {
+                context = maxSeq;
+            }
+        }
+        int contextTokens = (context != null && context > 0) ? context : LOCAL_DEFAULT_CONTEXT;
         int outputTokens = Math.max(256, Math.min(LOCAL_MAX_OUTPUT_CAP, contextTokens / 2));
         return new ModelCapability(modelId, contextTokens, outputTokens, true);
+    }
+
+    /** Context window of a staged local LLM from the staging lane, or null when unknown there. */
+    private Integer stagedLlmContext(String modelId) {
+        if (localStagingLlmService == null) {
+            return null;
+        }
+        try {
+            LocalStagingLlmService.LocalModelCandidate candidate =
+                    localStagingLlmService.resolveCandidate(modelId).orElse(null);
+            if (candidate == null) {
+                return null;
+            }
+            String loaded = localStagingLlmService.currentModelId();
+            if (loaded != null
+                    && (loaded.equals(candidate.displayModelId()) || loaded.equals(candidate.modelId()))) {
+                Integer live = localStagingLlmService.liveMaxContextLength().orElse(null);
+                if (live != null && live > 0) {
+                    return live;
+                }
+            }
+            return candidate.contextWindow() > 0 ? candidate.contextWindow() : null;
+        } catch (Exception e) {
+            log.debug("Staged-LLM context lookup failed for '{}': {}", modelId, e.getMessage());
+            return null;
+        }
+    }
+
+    @Override
+    public int localGenerationConcurrency() {
+        if (localStagingLlmService == null) {
+            return 1;
+        }
+        try {
+            return Math.max(1, localStagingLlmService.reportedGenerationConcurrency());
+        } catch (Exception e) {
+            return 1;
+        }
     }
 
     private Integer safeMaxSequenceLength(String modelId) {

@@ -39,7 +39,6 @@ class KnowledgeGraphToolImplTest {
     @Mock private KnowledgeGraphService graphService;
     @Mock private SourceWeightingService weightingService;
     @Mock private EntityMentionRepository entityMentionRepository;
-    @Mock private GraphNodeRepository nodeRepository;
 
     private KnowledgeGraphToolImpl tool;
 
@@ -285,8 +284,6 @@ class KnowledgeGraphToolImplTest {
     @Test
     void getEntitiesInDocument_notFound_returnsError() {
         when(graphService.getNode("d1")).thenReturn(Optional.empty());
-        when(nodeRepository.findByExternalIdAndNodeType("d1", NodeLevel.DOCUMENT))
-                .thenReturn(Optional.empty());
 
         var result = tool.getEntitiesInDocument(
                 new KnowledgeGraphToolImpl.GetEntitiesInDocumentInput("d1"));

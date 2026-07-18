@@ -204,8 +204,20 @@ public class ModelLifecycleManager implements SmartLifecycle {
             /** When the GPU was acquired */
             Instant acquiredAt,
             /** Human-readable description of the job */
-            String description
-    ) {}
+            String description,
+            /** Whether this hold is expected to remain active indefinitely while its owner is alive */
+            HoldLifetime lifetime
+    ) {
+        public JobGpuHold(String jobId, String serviceType, GpuDevice device,
+                          Instant acquiredAt, String description) {
+            this(jobId, serviceType, device, acquiredAt, description, HoldLifetime.BOUNDED);
+        }
+    }
+
+    public enum HoldLifetime {
+        BOUNDED,
+        LONG_LIVED
+    }
 
     /** Active GPU holds keyed by jobId */
     private final Map<String, JobGpuHold> activeJobHolds = new ConcurrentHashMap<>();
@@ -540,6 +552,15 @@ public class ModelLifecycleManager implements SmartLifecycle {
      * @throws IllegalStateException if the service cannot be accommodated or manager is stopped
      */
     public GpuDevice acquireGpuForJob(String jobId, String serviceType, String description) {
+        return acquireGpuForJob(jobId, serviceType, description, HoldLifetime.BOUNDED);
+    }
+
+    /**
+     * Acquire GPU resources for a job with an explicit lifetime classification.
+     * Long-lived holds remain visible in monitoring but are excluded from age-only stale detection.
+     */
+    public GpuDevice acquireGpuForJob(String jobId, String serviceType, String description,
+                                      HoldLifetime lifetime) {
         if (!running.get()) {
             throw new IllegalStateException(
                     "ModelLifecycleManager is not running — cannot acquire GPU for job '" + jobId + "'");
@@ -601,7 +622,7 @@ public class ModelLifecycleManager implements SmartLifecycle {
 
             // Step 6: Record the job hold
             JobGpuHold hold = new JobGpuHold(jobId, serviceType, targetDevice,
-                    Instant.now(), description);
+                    Instant.now(), description, Objects.requireNonNull(lifetime, "lifetime"));
             activeJobHolds.put(jobId, hold);
 
             log.info("=== GPU JOB ACQUIRE COMPLETE: jobId='{}', service='{}', device='{}', " +
@@ -914,11 +935,11 @@ public class ModelLifecycleManager implements SmartLifecycle {
             return;
         }
 
-        Instant threshold = Instant.now().minusSeconds(staleJobThresholdSeconds);
+        Instant now = Instant.now();
 
         for (JobGpuHold hold : activeJobHolds.values()) {
-            if (hold.acquiredAt().isBefore(threshold)) {
-                long heldMs = Duration.between(hold.acquiredAt(), Instant.now()).toMillis();
+            if (isStale(hold, now, staleJobThresholdSeconds)) {
+                long heldMs = Duration.between(hold.acquiredAt(), now).toMillis();
                 log.warn("STALE GPU HOLD DETECTED: jobId='{}', service='{}', device='{}', " +
                                 "heldFor={}ms (threshold={}s), desc='{}'",
                         hold.jobId(), hold.serviceType(), hold.device().name(),
@@ -928,6 +949,11 @@ public class ModelLifecycleManager implements SmartLifecycle {
                         hold.serviceType(), hold.device(), heldMs));
             }
         }
+    }
+
+    static boolean isStale(JobGpuHold hold, Instant now, long thresholdSeconds) {
+        return hold.lifetime() != HoldLifetime.LONG_LIVED
+                && hold.acquiredAt().isBefore(now.minusSeconds(thresholdSeconds));
     }
 
     /**

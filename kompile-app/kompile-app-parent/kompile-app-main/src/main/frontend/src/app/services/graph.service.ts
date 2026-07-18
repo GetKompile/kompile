@@ -340,7 +340,7 @@ export class GraphService extends BaseService {
    * Backend: GET /api/graph/{factSheetId}/reasoning-layers
    */
   getReasoningLayers(factSheetId: number): Observable<ReasoningLayers> {
-    return this.http.get<ReasoningLayers>(`${this.backendUrl}/api/graph/${factSheetId}/reasoning-layers`)
+    return this.http.get<ReasoningLayers>(`${this.backendUrl}/graph/${factSheetId}/reasoning-layers`)
       .pipe(catchError(this.handleError));
   }
 
@@ -715,14 +715,57 @@ export class GraphService extends BaseService {
   }
 
   /**
-   * Transform backend response to D3VisualizationData format
+   * Normalize backend graph data before it reaches Graphology.
+   *
+   * Graph identifiers are external data. Coerce numeric identifiers to strings,
+   * discard blank/duplicate nodes, and drop edges with invalid or missing
+   * endpoints so one malformed crawl record cannot take down the visualizer.
    */
   private transformVisualizationData(response: RawVisualizationResponse): D3VisualizationData {
+    const nodes: D3VisualizationData['nodes'] = [];
+    const nodeIds = new Set<string>();
+
+    for (const rawNode of (response.nodes || []) as any[]) {
+      const id = this.normalizeGraphIdentifier(rawNode?.id ?? rawNode?.nodeId);
+      if (!id || nodeIds.has(id)) continue;
+
+      nodeIds.add(id);
+      nodes.push({ ...rawNode, id });
+    }
+
+    const links: D3VisualizationData['links'] = [];
+    const edgeIds = new Set<string>();
+    for (const rawLink of (response.links || response.edges || []) as any[]) {
+      const source = this.normalizeGraphIdentifier(rawLink?.source);
+      const target = this.normalizeGraphIdentifier(rawLink?.target);
+      if (!source || !target || !nodeIds.has(source) || !nodeIds.has(target)) continue;
+
+      const type = rawLink?.type || 'USER_DEFINED';
+      const explicitId = this.normalizeGraphIdentifier(rawLink?.id);
+      const id = explicitId || `${source}→${target}:${type}`;
+      if (edgeIds.has(id)) continue;
+
+      edgeIds.add(id);
+      links.push({ ...rawLink, id, source, target, type });
+    }
+
     return {
-      nodes: response.nodes || [],
-      links: response.links || response.edges || [],
+      nodes,
+      links,
       statistics: response.statistics || response.metadata
     };
+  }
+
+  private normalizeGraphIdentifier(value: unknown): string | null {
+    if (value === null || value === undefined) return null;
+    if (typeof value === 'object') {
+      const endpoint = value as { id?: unknown; nodeId?: unknown };
+      return this.normalizeGraphIdentifier(endpoint.id ?? endpoint.nodeId);
+    }
+    if (typeof value !== 'string' && typeof value !== 'number') return null;
+
+    const normalized = String(value).trim();
+    return normalized.length > 0 ? normalized : null;
   }
 
   private handleError(error: HttpErrorResponse) {

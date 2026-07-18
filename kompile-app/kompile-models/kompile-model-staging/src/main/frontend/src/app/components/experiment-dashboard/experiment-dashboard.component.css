@@ -17,3 +17,13 @@
 .date { margin-left: 8px; color: #999; font-size: 12px; }
 .meta { display: flex; gap: 16px; font-size: 13px; color: #666; margin-top: 8px; }
 .meta mat-icon { font-size: 16px; width: 16px; height: 16px; vertical-align: middle; }
+
+@media (max-width: 600px) {
+  .experiment-dashboard { padding: 12px; }
+  .header { align-items: stretch; flex-direction: column; gap: 12px; }
+  .header button { min-height: 44px; }
+  .form-actions { flex-wrap: wrap; }
+  .form-actions button { flex: 1 1 auto; min-height: 44px; }
+  .experiment-list { grid-template-columns: minmax(0, 1fr); }
+  .meta { flex-wrap: wrap; gap: 8px 12px; }
+}

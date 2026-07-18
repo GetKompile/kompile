@@ -16,31 +16,56 @@
 
 package ai.kompile.crawl.graph;
 
+import ai.kompile.app.core.chunking.TextChunker;
 import ai.kompile.core.crawl.graph.*;
+import ai.kompile.core.crawl.graph.archive.CrawlStepArchiveService;
+import ai.kompile.core.embeddings.EmbeddingModel;
+import ai.kompile.core.embeddings.VectorStore;
 import ai.kompile.core.loaders.DocumentLoader;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
 import ai.kompile.core.loaders.DocumentSourceDescriptor.SourceType;
+import ai.kompile.core.llm.chat.LLMChat;
+import ai.kompile.core.retrievers.RetrievedDoc;
 import ai.kompile.crawler.CrawlerService;
+import ai.kompile.knowledgegraph.domain.EdgeProvenance;
+import ai.kompile.knowledgegraph.domain.EdgeType;
+import ai.kompile.knowledgegraph.domain.GraphEdge;
+import ai.kompile.knowledgegraph.domain.GraphNode;
+import ai.kompile.knowledgegraph.domain.NodeLevel;
+import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
-import org.mockito.junit.jupiter.MockitoSettings;
-import org.mockito.quality.Strictness;
 import org.springframework.ai.document.Document;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.SpringBootConfiguration;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.boot.test.mock.mockito.SpyBean;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.ComponentScan;
+import org.springframework.context.annotation.FilterType;
 
 import java.lang.reflect.Field;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.anyDouble;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyMap;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doCallRealMethod;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.when;
 
 /**
@@ -49,25 +74,80 @@ import static org.mockito.Mockito.when;
  * cancelJob, cleanupJobs, getAvailableSourceTypes, progress tracking, and
  * the job state machine.
  *
- * <p>The module-local test covers the full async pipeline (entity extraction,
- * vector indexing, cross-document relations). This test covers the job lifecycle
- * management layer that wraps the pipeline.
+ * <p>Runs as the standard crawl-graph slice (the impl's collaborators — source loading,
+ * step tracking, extraction orchestration — are real; leaf infra is mocked). Loader/crawler
+ * availability toggles are applied to {@link CrawlSourceLoadingService}, which owns them.
  */
-@ExtendWith(MockitoExtension.class)
-@MockitoSettings(strictness = Strictness.LENIENT)
+@SpringBootTest(classes = {
+        UnifiedCrawlServiceJobManagementTest.TestConfig.class,
+        UnifiedCrawlServiceJobManagementTest.Mocks.class})
 class UnifiedCrawlServiceJobManagementTest {
 
-    @Mock private CrawlerService crawlerService;
-    @Mock private DocumentLoader fileLoader;
-    @Mock private DocumentLoader emailLoader;
+    /** Minimal context: scan the crawl-graph package; exclude sibling test configs. */
+    @SpringBootConfiguration
+    @ComponentScan(
+            basePackageClasses = UnifiedCrawlGraphServiceImpl.class,
+            excludeFilters = @ComponentScan.Filter(
+                    type = FilterType.ANNOTATION,
+                    classes = {SpringBootConfiguration.class, TestConfiguration.class}))
+    static class TestConfig {}
 
-    private UnifiedCrawlGraphServiceImpl service;
+    /** Named leaf mocks for duplicate-type beans. */
+    @TestConfiguration
+    static class Mocks {
+        @Bean DocumentLoader fileLoader() { return mock(DocumentLoader.class); }
+        @Bean DocumentLoader emailLoader() { return mock(DocumentLoader.class); }
+        @Bean TextChunker tableAwareChunker() { return mock(TextChunker.class); }
+        @Bean TextChunker htmlChunker() { return mock(TextChunker.class); }
+    }
+
+    @Autowired private UnifiedCrawlGraphServiceImpl service;
+    @Autowired private CrawlSourceLoadingService sourceLoadingService;
+    @Autowired private GraphExtractionOrchestrator orchestrator;
+    @SpyBean private CrawlRuntimeConfigManager runtimeConfigManager;
+    @MockBean private CrawlerService crawlerService;
+    @MockBean private VectorStore vectorStore;
+    @MockBean private EmbeddingModel embeddingModel;
+    @MockBean private LLMChat llmChat;
+    @MockBean private KnowledgeGraphService knowledgeGraphService;
+    @MockBean private CrossDocumentRelationCallback crossDocumentRelationCallback;
+    @MockBean private CrawlStepArchiveService crawlStepArchiveService;
+    @MockBean private GraphExtractionCheckpointStore graphExtractionCheckpointStore;
+    @Autowired private DocumentLoader fileLoader;
+    @Autowired private DocumentLoader emailLoader;
+    @Autowired private TextChunker tableAwareChunker;
+    @Autowired private TextChunker htmlChunker;
+
+    /** The config the spied manager hands to every startJob; tests tune it in place. */
+    private CrawlRuntimeConfigManager.CrawlRuntimeConfig cfg;
 
     @BeforeEach
     void setUp() throws Exception {
-        service = new UnifiedCrawlGraphServiceImpl();
-        setField(service, "crawlerService", crawlerService);
-        setField(service, "documentLoaders", List.of(fileLoader, emailLoader));
+        drainJobs();
+
+        if (orchestrator != null) orchestrator.graphConstructor = null;
+
+        cfg = CrawlRuntimeConfigManager.CrawlRuntimeConfig.defaults();
+        cfg.graphExtractionBatchSize = 10;
+        cfg.graphExtractionParallelism = 1;
+        cfg.backgroundGraphThreads = 1;
+        cfg.graphExtractionChunksPerPrompt = 1;
+        doReturn(cfg).when(runtimeConfigManager).refreshRuntimeConfig();
+
+        reset(crawlerService, vectorStore, embeddingModel, llmChat, knowledgeGraphService,
+                fileLoader, emailLoader, tableAwareChunker, htmlChunker,
+                crossDocumentRelationCallback, graphExtractionCheckpointStore);
+        when(graphExtractionCheckpointStore.completedChunkKeys(any(), any())).thenReturn(Set.of());
+
+        // LLM chain: minimal valid extraction so document-bearing jobs can complete.
+        LLMChat.ChatClientRequestSpec requestSpec = mock(LLMChat.ChatClientRequestSpec.class);
+        LLMChat.CallResponseSpec callResponseSpec = mock(LLMChat.CallResponseSpec.class);
+        when(llmChat.prompt(anyString())).thenReturn(requestSpec);
+        when(requestSpec.call()).thenReturn(callResponseSpec);
+        when(callResponseSpec.content()).thenReturn(
+                "{\"$schema\":\"kompile-graph-extraction/v1\",\"entities\":[{\"id\":\"e1\","
+                        + "\"name\":\"Default Entity\",\"type\":\"CONCEPT\",\"confidence\":0.9}],"
+                        + "\"relations\":[]}");
 
         when(fileLoader.supports(any(DocumentSourceDescriptor.class)))
                 .thenAnswer(inv -> {
@@ -85,6 +165,79 @@ class UnifiedCrawlServiceJobManagementTest {
 
         when(crawlerService.hasCrawlerForSourceType(any(DocumentSourceDescriptor.SourceType.class)))
                 .thenAnswer(inv -> inv.getArgument(0) == SourceType.WEB_CRAWL);
+
+        when(tableAwareChunker.getName()).thenReturn("table-aware");
+        when(htmlChunker.getName()).thenReturn("html");
+        when(tableAwareChunker.chunk(any(RetrievedDoc.class), anyMap()))
+                .thenAnswer(inv -> List.of((RetrievedDoc) inv.getArgument(0)));
+        when(htmlChunker.chunk(any(RetrievedDoc.class), anyMap()))
+                .thenAnswer(inv -> List.of((RetrievedDoc) inv.getArgument(0)));
+        when(tableAwareChunker.getDefaultOptions()).thenReturn(Map.of("chunkSize", 1000));
+        when(htmlChunker.getDefaultOptions()).thenReturn(Map.of("chunkSize", 1000));
+
+        when(embeddingModel.isInitialized()).thenReturn(true);
+        when(embeddingModel.getOptimalBatchSize()).thenReturn(32);
+        when(embeddingModel.getMaxBatchSize()).thenReturn(128);
+        when(embeddingModel.embedBatch(anyList())).thenAnswer(inv -> {
+            List<String> texts = inv.getArgument(0);
+            return texts.stream().map(t -> new float[]{0.1f, 0.2f, 0.3f}).toList();
+        });
+        when(vectorStore.addWithFloatArrayEmbeddings(anyList(), any(float[][].class)))
+                .thenAnswer(inv -> ((List<?>) inv.getArgument(0)).size());
+
+        doReturn(GraphNode.builder().nodeId("doc-1").nodeType(NodeLevel.DOCUMENT).build())
+                .when(knowledgeGraphService).addDocument(anyString(), anyString(), anyString(),
+                        anyString(), anyString(), anyString(), any(), any());
+        doReturn(Optional.empty())
+                .when(knowledgeGraphService).getNodeByExternalId(anyString(), any(NodeLevel.class));
+        doReturn(Optional.empty())
+                .when(knowledgeGraphService).getNodeByExternalId(anyString(), any(NodeLevel.class), any());
+        doReturn(false)
+                .when(knowledgeGraphService).edgeExists(anyString(), anyString());
+        doReturn(GraphNode.builder().nodeId("entity-1").nodeType(NodeLevel.ENTITY).build())
+                .when(knowledgeGraphService).createNode(any(NodeLevel.class), anyString(), anyString(),
+                        anyString(), anyMap());
+        doReturn(GraphNode.builder().nodeId("entity-1").nodeType(NodeLevel.ENTITY).build())
+                .when(knowledgeGraphService).createNode(any(NodeLevel.class), anyString(), anyString(),
+                        anyString(), anyMap(), any());
+        doReturn(GraphEdge.builder().edgeId("edge-1").build())
+                .when(knowledgeGraphService).createEdge(anyString(), anyString(), any(EdgeType.class),
+                        anyDouble(), anyString());
+        doReturn(GraphEdge.builder().edgeId("edge-1").build())
+                .when(knowledgeGraphService).createEdgeWithMetadata(anyString(), anyString(), any(EdgeType.class),
+                        anyDouble(), anyString(), any(), any(), any(EdgeProvenance.class), any());
+        doReturn(GraphNode.builder().nodeId("table-1").nodeType(NodeLevel.TABLE).build())
+                .when(knowledgeGraphService).createTableNode(anyString(), anyString(), anyString(),
+                        anyInt(), anyInt(), any(), any(), any());
+        doCallRealMethod().when(knowledgeGraphService).createNodesBatch(anyList(), any());
+        doCallRealMethod().when(knowledgeGraphService).createSnippetNodesBatch(anyList());
+
+        when(crossDocumentRelationCallback.extractRelationsFromGraphNodes(any())).thenReturn(0);
+
+        // Restore the default source-loading wiring (mutation tests null these out).
+        setField(sourceLoadingService, "crawlerService", crawlerService);
+        setField(sourceLoadingService, "documentLoaders", List.of(fileLoader, emailLoader));
+    }
+
+    /** Cancel and remove every job left over from the previous test (shared slice context). */
+    private void drainJobs() throws InterruptedException {
+        for (UnifiedCrawlJob job : service.getActiveJobs()) {
+            service.cancelJob(job.getJobId());
+        }
+        long deadline = System.currentTimeMillis() + 5_000;
+        while (System.currentTimeMillis() < deadline
+                && service.getAllJobs().stream().anyMatch(j -> !isTerminal(j.getStatus().get()))) {
+            Thread.sleep(25);
+        }
+        service.cleanupJobs();
+    }
+
+    private static boolean isTerminal(UnifiedCrawlJob.Status status) {
+        return status == UnifiedCrawlJob.Status.COMPLETED
+                || status == UnifiedCrawlJob.Status.COMPLETED_PENDING_GRAPH
+                || status == UnifiedCrawlJob.Status.COMPLETED_PENDING_EMBEDDING
+                || status == UnifiedCrawlJob.Status.FAILED
+                || status == UnifiedCrawlJob.Status.CANCELLED;
     }
 
     private static void setField(Object target, String fieldName, Object value) throws Exception {
@@ -95,20 +248,6 @@ class UnifiedCrawlServiceJobManagementTest {
                 field.setAccessible(true);
                 field.set(target, value);
                 return;
-            } catch (NoSuchFieldException e) {
-                clazz = clazz.getSuperclass();
-            }
-        }
-        throw new NoSuchFieldException(fieldName);
-    }
-
-    private static Object getField(Object target, String fieldName) throws Exception {
-        Class<?> clazz = target.getClass();
-        while (clazz != null) {
-            try {
-                Field field = clazz.getDeclaredField(fieldName);
-                field.setAccessible(true);
-                return field.get(target);
             } catch (NoSuchFieldException e) {
                 clazz = clazz.getSuperclass();
             }
@@ -293,10 +432,15 @@ class UnifiedCrawlServiceJobManagementTest {
 
             boolean cancelled = service.cancelJob(job.getJobId());
             assertTrue(cancelled);
-            assertEquals(UnifiedCrawlJob.Status.CANCELLED, job.getStatus().get());
-            assertNotNull(job.getCompletedAt());
+            assertEquals(UnifiedCrawlJob.Status.CANCELLING, job.getStatus().get());
+            assertNull(job.getCompletedAt(), "Cancellation is not complete while the loader owns the worker");
+            assertTrue(service.getActiveJobs().stream()
+                    .anyMatch(active -> active.getJobId().equals(job.getJobId())));
+            assertEquals(0, service.cleanupJobs());
 
             blockLatch.countDown();
+            awaitJobStatus(job, UnifiedCrawlJob.Status.CANCELLED, 5);
+            assertNotNull(job.getCompletedAt());
         }
 
         @Test
@@ -356,20 +500,25 @@ class UnifiedCrawlServiceJobManagementTest {
 
         @Test
         void cleanupRemovesCancelledJobs() throws Exception {
+            CountDownLatch startedLatch = new CountDownLatch(1);
             CountDownLatch blockLatch = new CountDownLatch(1);
             when(fileLoader.load(any(), any())).thenAnswer(inv -> {
+                startedLatch.countDown();
                 blockLatch.await(5, TimeUnit.SECONDS);
                 return List.of();
             });
 
             UnifiedCrawlJob job = service.startJob(simpleRequest("cancel-me", fileSource("f", "/data")));
-            service.cancelJob(job.getJobId());
+            assertTrue(startedLatch.await(3, TimeUnit.SECONDS));
+            assertTrue(service.cancelJob(job.getJobId()));
 
-            int removed = service.cleanupJobs();
-            assertEquals(1, removed);
-            assertTrue(service.getAllJobs().isEmpty());
+            assertEquals(0, service.cleanupJobs(), "A cancelling worker must remain tracked");
+            assertTrue(service.getJob(job.getJobId()).isPresent());
 
             blockLatch.countDown();
+            awaitJobStatus(job, UnifiedCrawlJob.Status.CANCELLED, 5);
+            assertEquals(1, service.cleanupJobs());
+            assertTrue(service.getAllJobs().isEmpty());
         }
 
         @Test
@@ -434,13 +583,15 @@ class UnifiedCrawlServiceJobManagementTest {
         }
 
         @Test
-        void webCrawlUnavailableWhenCrawlerServiceNull() throws Exception {
-            setField(service, "crawlerService", null);
+        void webCrawlStaysAvailableWithoutCrawlerService() throws Exception {
+            // WEB_CRAWL is a built-in type: without a crawler the load path falls back to
+            // document loaders, so availability no longer depends on the crawler bean.
+            setField(sourceLoadingService, "crawlerService", null);
 
             List<UnifiedCrawlService.AvailableSourceType> types = service.getAvailableSourceTypes();
 
-            assertTrue(types.stream().anyMatch(t -> "WEB_CRAWL".equals(t.type()) && !t.available()),
-                    "WEB_CRAWL should be unavailable when crawlerService is null");
+            assertTrue(types.stream().anyMatch(t -> "WEB_CRAWL".equals(t.type()) && t.available()),
+                    "WEB_CRAWL is built-in and stays available without a crawler");
         }
 
         @Test
@@ -452,7 +603,7 @@ class UnifiedCrawlServiceJobManagementTest {
 
         @Test
         void emailUnavailableWhenNoEmailLoader() throws Exception {
-            setField(service, "documentLoaders", List.of(fileLoader));
+            setField(sourceLoadingService, "documentLoaders", List.of(fileLoader));
 
             List<UnifiedCrawlService.AvailableSourceType> types = service.getAvailableSourceTypes();
 
@@ -481,15 +632,24 @@ class UnifiedCrawlServiceJobManagementTest {
         }
 
         @Test
-        void expectedSourceTypeCount() {
+        void catalogEntriesAreDistinctValidSourceTypes() {
+            // The catalog is a curated UI list, not enum parity — internal source types
+            // are deliberately absent. Every entry must be a real, unique SourceType.
             List<UnifiedCrawlService.AvailableSourceType> types = service.getAvailableSourceTypes();
-            assertEquals(DocumentSourceDescriptor.SourceType.values().length, types.size());
+
+            assertEquals(types.size(), types.stream().map(UnifiedCrawlService.AvailableSourceType::type)
+                    .distinct().count(), "no duplicate catalog entries");
+            for (UnifiedCrawlService.AvailableSourceType type : types) {
+                assertDoesNotThrow(() -> DocumentSourceDescriptor.SourceType.valueOf(type.type()),
+                        "catalog entry is not a real SourceType: " + type.type());
+            }
+            assertTrue(types.size() >= 20, "the curated catalog covers the supported sources");
         }
 
         @Test
         void noLoadersReturnsListWithBaseTypes() throws Exception {
-            setField(service, "documentLoaders", null);
-            setField(service, "crawlerService", null);
+            setField(sourceLoadingService, "documentLoaders", null);
+            setField(sourceLoadingService, "crawlerService", null);
 
             List<UnifiedCrawlService.AvailableSourceType> types = service.getAvailableSourceTypes();
 
@@ -513,7 +673,7 @@ class UnifiedCrawlServiceJobManagementTest {
                     new Document("text", Map.of())));
 
             UnifiedCrawlJob job = service.startJob(simpleRequest("snap", fileSource("f", "/data")));
-            awaitJobTerminal(job, 5);
+            awaitJobTerminal(job, 10);
 
             UnifiedCrawlJob.ProgressSnapshot snap = job.toProgressSnapshot();
             assertEquals(job.getJobId(), snap.getJobId());
@@ -529,7 +689,7 @@ class UnifiedCrawlServiceJobManagementTest {
                     new Document("doc2", Map.of())));
 
             UnifiedCrawlJob job = service.startJob(simpleRequest("cnt", fileSource("f", "/data")));
-            awaitJobTerminal(job, 5);
+            awaitJobTerminal(job, 10);
 
             UnifiedCrawlJob.ProgressSnapshot snap = job.toProgressSnapshot();
             assertTrue(snap.getDocumentsLoaded() >= 2,
@@ -556,7 +716,7 @@ class UnifiedCrawlServiceJobManagementTest {
 
         @Test
         void cancelOneJobDoesNotAffectOther() throws Exception {
-            setField(service, "maxConcurrentJobs", 2);
+            cfg.maxConcurrentJobs = 2;
             CountDownLatch started1 = new CountDownLatch(1);
             CountDownLatch started2 = new CountDownLatch(1);
             CountDownLatch blockLatch = new CountDownLatch(1);
@@ -575,17 +735,19 @@ class UnifiedCrawlServiceJobManagementTest {
             assertTrue(started1.await(3, TimeUnit.SECONDS), "Job1 should start loading");
             assertTrue(started2.await(3, TimeUnit.SECONDS), "Job2 should start loading");
 
-            service.cancelJob(job1.getJobId());
+            assertTrue(service.cancelJob(job1.getJobId()));
 
-            assertEquals(UnifiedCrawlJob.Status.CANCELLED, job1.getStatus().get());
-            assertNotEquals(UnifiedCrawlJob.Status.CANCELLED, job2.getStatus().get());
+            assertEquals(UnifiedCrawlJob.Status.CANCELLING, job1.getStatus().get());
+            assertNotEquals(UnifiedCrawlJob.Status.CANCELLING, job2.getStatus().get());
 
             blockLatch.countDown();
+            awaitJobStatus(job1, UnifiedCrawlJob.Status.CANCELLED, 5);
+            assertNotEquals(UnifiedCrawlJob.Status.CANCELLED, job2.getStatus().get());
         }
 
         @Test
         void cleanupOnlyRemovesTerminalJobs() throws Exception {
-            setField(service, "maxConcurrentJobs", 2);
+            cfg.maxConcurrentJobs = 2;
             CountDownLatch runningStarted = new CountDownLatch(1);
             CountDownLatch cancelledStarted = new CountDownLatch(1);
             CountDownLatch blockLatch = new CountDownLatch(1);
@@ -606,14 +768,18 @@ class UnifiedCrawlServiceJobManagementTest {
             // Create and wait for the second job to start, then cancel it
             UnifiedCrawlJob cancelled = service.startJob(simpleRequest("cancelled", fileSource("f2", "/b")));
             assertTrue(cancelledStarted.await(3, TimeUnit.SECONDS), "Second job should start loading");
-            service.cancelJob(cancelled.getJobId());
+            assertTrue(service.cancelJob(cancelled.getJobId()));
 
-            int removed = service.cleanupJobs();
-            assertEquals(1, removed);
-            assertEquals(1, service.getAllJobs().size());
-            assertEquals(running.getJobId(), service.getAllJobs().get(0).getJobId());
+            assertEquals(UnifiedCrawlJob.Status.CANCELLING, cancelled.getStatus().get());
+            assertEquals(0, service.cleanupJobs());
+            assertEquals(2, service.getAllJobs().size());
 
             blockLatch.countDown();
+            awaitJobStatus(cancelled, UnifiedCrawlJob.Status.CANCELLED, 5);
+
+            int removed = service.cleanupJobs();
+            assertTrue(removed >= 1);
+            assertTrue(service.getJob(cancelled.getJobId()).isEmpty());
         }
     }
 
@@ -634,14 +800,10 @@ class UnifiedCrawlServiceJobManagementTest {
         long deadline = System.currentTimeMillis() + timeoutSecs * 1000L;
         while (System.currentTimeMillis() < deadline) {
             UnifiedCrawlJob.Status s = job.getStatus().get();
-            if (s == UnifiedCrawlJob.Status.COMPLETED || s == UnifiedCrawlJob.Status.FAILED
-                    || s == UnifiedCrawlJob.Status.CANCELLED) return;
+            if (isTerminal(s)) return;
             Thread.sleep(50);
         }
-        UnifiedCrawlJob.Status s = job.getStatus().get();
-        assertTrue(s == UnifiedCrawlJob.Status.COMPLETED || s == UnifiedCrawlJob.Status.FAILED
-                || s == UnifiedCrawlJob.Status.CANCELLED,
-                "Job did not reach terminal state within timeout, was: " + s);
+        assertTrue(isTerminal(job.getStatus().get()),
+                "Job did not reach terminal state within timeout, was: " + job.getStatus().get());
     }
-
 }

@@ -92,6 +92,44 @@
             </mat-form-field>
           </div>
 
+          <!-- Output package and Android accelerator options -->
+          <div class="form-row">
+            <mat-form-field appearance="outline">
+              <mat-label>Output</mat-label>
+              <mat-select formControlName="outputFormat">
+                <mat-option *ngFor="let output of outputFormats" [value]="output.value">
+                  {{ output.label }}
+                </mat-option>
+              </mat-select>
+            </mat-form-field>
+
+            <mat-form-field appearance="outline">
+              <mat-label>Accelerator target</mat-label>
+              <mat-select formControlName="targetProfile">
+                <mat-option *ngFor="let target of targets" [value]="target.value">
+                  {{ target.label }}
+                </mat-option>
+              </mat-select>
+            </mat-form-field>
+          </div>
+
+          <div class="form-row" *ngIf="downloadForm.get('outputFormat')?.value === 'kproject'">
+            <mat-form-field appearance="outline">
+              <mat-label>Target SoC</mat-label>
+              <input matInput formControlName="targetSoc">
+              <mat-hint>Pixel 8a uses Tensor_G3</mat-hint>
+            </mat-form-field>
+
+            <mat-form-field appearance="outline">
+              <mat-label>Quantization</mat-label>
+              <mat-select formControlName="quantizationProfile">
+                <mat-option *ngFor="let profile of quantizationProfiles" [value]="profile.value">
+                  {{ profile.label }}
+                </mat-option>
+              </mat-select>
+            </mat-form-field>
+          </div>
+
           <!-- HuggingFace Options (conditionally shown) -->
           <mat-expansion-panel *ngIf="downloadForm.get('source')?.value === 'huggingface'" class="options-panel">
             <mat-expansion-panel-header>
@@ -204,6 +242,15 @@
           Cancel
         </button>
       </mat-card-actions>
+      <mat-card-actions align="end" *ngIf="currentStaging?.status === 'completed'">
+        <button mat-button (click)="clearCompleted()">Clear</button>
+        <button mat-raised-button color="primary"
+                *ngIf="completedOutputFormat === 'kproject'"
+                (click)="downloadOutput(currentStaging!.model_id)">
+          <mat-icon>download</mat-icon>
+          Download .kproject
+        </button>
+      </mat-card-actions>
     </mat-card>
 
     <!-- Recent Downloads -->
@@ -261,6 +308,7 @@
       <h4>Supported Formats</h4>
       <ul>
         <li><strong>ONNX</strong> - Most common format from HuggingFace</li>
+        <li><strong>GGUF</strong> - Quantized model container (.gguf)</li>
         <li><strong>TensorFlow</strong> - SavedModel (.pb) format</li>
         <li><strong>SameDiff</strong> - Native format (no conversion needed)</li>
       </ul>

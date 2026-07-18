@@ -715,7 +715,7 @@ class CrawlSourceLoadingService {
     }
 
     private boolean isCancelled(UnifiedCrawlJob job) {
-        return job.getStatus().get() == UnifiedCrawlJob.Status.CANCELLED;
+        return job != null && job.isCancellationRequested();
     }
 
     private static boolean boolProp(Map<String, Object> props, String key, boolean defaultValue) {

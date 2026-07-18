@@ -16,7 +16,6 @@
 
 package ai.kompile.chat.history.service;
 
-import ai.kompile.chat.history.config.ChatHistoryProperties;
 import ai.kompile.cli.common.chat.sources.ChatSourceAdapter;
 import ai.kompile.cli.common.chat.sources.ChatSourceRegistry;
 import lombok.AccessLevel;
@@ -26,15 +25,14 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.boot.context.event.ApplicationReadyEvent;
-import org.springframework.context.event.EventListener;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
-import org.springframework.scheduling.annotation.Async;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
+import java.nio.file.Path;
 import java.time.Instant;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -56,60 +54,68 @@ public class CliTranscriptSyncService {
 
     @Autowired
     private final CliTranscriptService cliTranscriptService;
-    @Autowired
-    private final ChatHistoryProperties properties;
     @Autowired(required = false)
     private final SimpMessagingTemplate messagingTemplate;
 
     private final AtomicBoolean syncInProgress = new AtomicBoolean(false);
+    private final Set<Path> codeProjectScopes = ConcurrentHashMap.newKeySet();
 
     // Visible sync state — read from the REST status endpoint
     private volatile SyncStatus lastStatus = new SyncStatus();
 
-    @Async
-    @EventListener(ApplicationReadyEvent.class)
-    void initialSync() {
-        log.info("CLI transcript sync: running initial sync (async, non-blocking)...");
-        syncAll();
+    /**
+     * Authorizes transcript reconciliation for one actual code-project aspect. Registering
+     * a directory is the only way background sync gains access to global CLI histories.
+     */
+    public boolean registerCodeProject(Path workingDirectory) {
+        if (workingDirectory == null) {
+            return false;
+        }
+        Path scope = workingDirectory.toAbsolutePath().normalize();
+        codeProjectScopes.add(scope);
+        return triggerSync();
     }
 
     @Scheduled(fixedRateString = "${kompile.chat.history.cli-sync-interval-ms:300000}")
     public void scheduledSync() {
-        log.debug("CLI transcript sync: running scheduled sync...");
-        syncAll();
+        triggerSync();
     }
 
     /**
-     * Manually trigger a full sync. Returns immediately if one is already running.
+     * Reconciles only explicitly registered code-project scopes.
      */
     public boolean triggerSync() {
-        if (syncInProgress.get()) {
-            return false; // already running
+        if (codeProjectScopes.isEmpty() || syncInProgress.get()) {
+            return false;
         }
-        new Thread(() -> syncAll(), "cli-sync-manual").start();
+        Thread worker = new Thread(this::syncRegisteredScopes, "cli-sync-scoped");
+        worker.setDaemon(true);
+        worker.start();
         return true;
     }
 
-    /**
-     * Return the current or most-recent sync status snapshot.
-     */
     public SyncStatus getStatus() {
         return lastStatus;
     }
 
-    private void syncAll() {
+    private void syncRegisteredScopes() {
         if (!syncInProgress.compareAndSet(false, true)) {
-            log.debug("CLI transcript sync: skipping, previous sync still in progress");
             return;
         }
         try {
-            doSyncAll();
+            for (Path scope : List.copyOf(codeProjectScopes)) {
+                doSyncAll(scope);
+            }
         } finally {
             syncInProgress.set(false);
         }
     }
 
-    private void doSyncAll() {
+    Set<Path> registeredCodeProjectScopes() {
+        return Set.copyOf(codeProjectScopes);
+    }
+
+    private void doSyncAll(Path workingDirectory) {
         SyncStatus status = new SyncStatus();
         status.running = true;
         status.startedAt = Instant.now().toString();
@@ -132,7 +138,7 @@ public class CliTranscriptSyncService {
             try {
                 // Discover how many new sessions this source has
                 List<CliTranscriptService.CliSessionSummary> newSessions =
-                        cliTranscriptService.listNewSessions(adapter.id());
+                        cliTranscriptService.listNewSessions(adapter.id(), workingDirectory);
 
                 int pending = newSessions.size();
                 totalPending += pending;

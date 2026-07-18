@@ -15,7 +15,7 @@
  */
 
 import { Injectable } from '@angular/core';
-import { HttpClient, HttpErrorResponse, HttpEvent, HttpEventType, HttpRequest } from '@angular/common/http';
+import { HttpClient, HttpErrorResponse, HttpEvent, HttpEventType, HttpRequest, HttpResponse } from '@angular/common/http';
 import { Observable, throwError, timer, Subject } from 'rxjs';
 import { catchError, switchMap, retry, map, tap } from 'rxjs/operators';
 import {
@@ -196,6 +196,16 @@ export class StagingService {
   }
 
   /**
+   * Download the generated output for a completed staging job.
+   */
+  downloadStagedOutput(modelId: string): Observable<HttpResponse<Blob>> {
+    return this.http.get(`${this.baseUrl}/models/${encodeURIComponent(modelId)}/output`, {
+      observe: 'response',
+      responseType: 'blob'
+    }).pipe(catchError(this.handleError));
+  }
+
+  /**
    * Stage a model from the catalog by ID.
    */
   stageFromCatalog(modelId: string, autoPromote: boolean = false): Observable<StagingModelInfo> {
@@ -223,6 +233,7 @@ export class StagingService {
       source: options.source,
       repository: options.repository || options.url,
       format: options.format,
+      type: options.modelType,
       autoPromote: options.autoPromote ?? false
     };
     return this.http.post<ApiResponse<StagingModelInfo>>(`${this.baseUrl}/stage`, request)

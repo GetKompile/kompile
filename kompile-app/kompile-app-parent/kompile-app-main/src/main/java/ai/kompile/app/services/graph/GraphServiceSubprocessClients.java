@@ -58,6 +58,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
 
+import java.io.InputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -163,6 +164,8 @@ public class GraphServiceSubprocessClients {
 
         private static final Logger log = LoggerFactory.getLogger(SubprocessRpcBase.class);
         private static final Duration INVOKE_TIMEOUT = Duration.ofSeconds(120);
+        private static final long DEFAULT_MAX_REQUEST_BYTES = 8L * 1024 * 1024;
+        private static final long DEFAULT_MAX_RESPONSE_BYTES = 16L * 1024 * 1024;
 
         protected final String serviceFqcn;
         protected final GraphMatrixSubprocessLauncher launcher;
@@ -194,15 +197,34 @@ public class GraphServiceSubprocessClients {
                 }
                 req.set("args", argsNode);
 
-                String reqBody = mapper.writeValueAsString(req);
+                byte[] reqBody = mapper.writeValueAsBytes(req);
+                long maxRequestBytes = positiveLongProperty(
+                        "kompile.graph.subprocess.max-request-bytes", DEFAULT_MAX_REQUEST_BYTES);
+                if (reqBody.length > maxRequestBytes) {
+                    throw new IllegalArgumentException("[subprocess-graph-rpc] request for "
+                            + serviceFqcn + "." + method + " is " + reqBody.length
+                            + " bytes; limit is " + maxRequestBytes + ". Split the batch.");
+                }
                 HttpRequest http = HttpRequest.newBuilder(URI.create(launcher.baseUrl() + "/invoke"))
-                        .POST(HttpRequest.BodyPublishers.ofString(reqBody, StandardCharsets.UTF_8))
+                        .POST(HttpRequest.BodyPublishers.ofByteArray(reqBody))
                         .header("Content-Type", "application/json")
                         .timeout(INVOKE_TIMEOUT)
                         .build();
 
-                HttpResponse<String> resp = client().send(http, HttpResponse.BodyHandlers.ofString());
-                JsonNode respNode = mapper.readTree(resp.body());
+                HttpResponse<InputStream> resp = client().send(http, HttpResponse.BodyHandlers.ofInputStream());
+                long maxResponseBytes = positiveLongProperty(
+                        "kompile.graph.subprocess.max-response-bytes", DEFAULT_MAX_RESPONSE_BYTES);
+                long responseLength = resp.headers().firstValueAsLong("Content-Length").orElse(-1L);
+                if (responseLength > maxResponseBytes) {
+                    resp.body().close();
+                    throw new IllegalStateException("[subprocess-graph-rpc] response for "
+                            + serviceFqcn + "." + method + " exceeds " + maxResponseBytes
+                            + " bytes; use a paged query");
+                }
+                JsonNode respNode;
+                try (InputStream body = new LimitedInputStream(resp.body(), maxResponseBytes)) {
+                    respNode = mapper.readTree(body);
+                }
 
                 if (!respNode.path("ok").asBoolean(true)) {
                     throw new RuntimeException("[subprocess-graph-rpc] " + serviceFqcn + "." + method
@@ -293,6 +315,52 @@ public class GraphServiceSubprocessClients {
             if (raw == boolean.class || raw == Boolean.class)  return false;
             if (raw == Optional.class) return Optional.empty();
             return null;
+        }
+
+        private static long positiveLongProperty(String name, long defaultValue) {
+            String value = System.getProperty(name);
+            if (value == null || value.isBlank()) return defaultValue;
+            try {
+                long parsed = Long.parseLong(value);
+                return parsed > 0 ? parsed : defaultValue;
+            } catch (NumberFormatException ignored) {
+                return defaultValue;
+            }
+        }
+
+        private static final class LimitedInputStream extends InputStream {
+            private final InputStream delegate;
+            private final long limit;
+            private long read;
+
+            private LimitedInputStream(InputStream delegate, long limit) {
+                this.delegate = delegate;
+                this.limit = limit;
+            }
+
+            @Override
+            public int read() throws java.io.IOException {
+                int value = delegate.read();
+                if (value >= 0 && ++read > limit) {
+                    throw new java.io.IOException("graph RPC response exceeds " + limit + " bytes");
+                }
+                return value;
+            }
+
+            @Override
+            public int read(byte[] bytes, int offset, int length) throws java.io.IOException {
+                int allowed = (int) Math.min(length, Math.max(1L, limit - read + 1L));
+                int count = delegate.read(bytes, offset, allowed);
+                if (count > 0 && (read += count) > limit) {
+                    throw new java.io.IOException("graph RPC response exceeds " + limit + " bytes");
+                }
+                return count;
+            }
+
+            @Override
+            public void close() throws java.io.IOException {
+                delegate.close();
+            }
         }
 
         // ── Shared HTTP client (one per instance, lazily created) ─────────────
@@ -494,10 +562,17 @@ public class GraphServiceSubprocessClients {
     static final class SubprocessKnowledgeGraphServiceClient extends SubprocessRpcBase
             implements KnowledgeGraphService {
 
+        /** Items per page for whole-fact-sheet reads assembled over the paged RPCs.
+         *  A single-response fetch is forbidden: one ~1GB getEdgesInFactSheet response
+         *  OOM'd the subprocess (Jackson TextBuffer dies past 1GB). */
+        private static final int WIRE_PAGE_SIZE = 1_000;
+
         // Cached JavaType instances (built once, reused on every call)
         private final JavaType typeGraphNode;
         private final JavaType typeListGraphNode;
         private final JavaType typeListGraphEdge;
+        private final JavaType typeGraphNodePage;
+        private final JavaType typeGraphEdgePage;
         private final JavaType typeListEntityMention;
         private final JavaType typeListString;
         private final JavaType typeListObjectArray;
@@ -528,6 +603,8 @@ public class GraphServiceSubprocessClients {
             typeGraphNode           = tf.constructType(GraphNode.class);
             typeListGraphNode       = tf.constructCollectionType(List.class, GraphNode.class);
             typeListGraphEdge       = tf.constructCollectionType(List.class, GraphEdge.class);
+            typeGraphNodePage        = tf.constructParametricType(KnowledgeGraphService.GraphPage.class, GraphNode.class);
+            typeGraphEdgePage        = tf.constructParametricType(KnowledgeGraphService.GraphPage.class, GraphEdge.class);
             typeListEntityMention   = tf.constructCollectionType(List.class, EntityMention.class);
             typeListString          = tf.constructCollectionType(List.class, String.class);
             typeListObjectArray     = tf.constructCollectionType(List.class, Object[].class);
@@ -840,7 +917,25 @@ public class GraphServiceSubprocessClients {
 
         @Override
         public List<GraphNode> getNodesInFactSheet(Long factSheetId) {
-            return rpc("getNodesInFactSheet", new Object[]{factSheetId}, typeListGraphNode);
+            // Assemble from bounded pages — never fetch a whole fact sheet in one response.
+            List<GraphNode> all = new java.util.ArrayList<>();
+            int cursor = 0;
+            KnowledgeGraphService.GraphPage<GraphNode> page;
+            do {
+                page = getNodesInFactSheetPage(factSheetId, cursor, WIRE_PAGE_SIZE);
+                all.addAll(page.items());
+                if (page.hasMore() && page.nextCursor() <= cursor) {
+                    throw new IllegalStateException("getNodesInFactSheetPage cursor did not advance: "
+                            + cursor + " -> " + page.nextCursor());
+                }
+                cursor = page.nextCursor();
+            } while (page.hasMore());
+            return all;
+        }
+
+        @Override
+        public KnowledgeGraphService.GraphPage<GraphNode> getNodesInFactSheetPage(Long factSheetId, int cursor, int pageSize) {
+            return rpc("getNodesInFactSheetPage", new Object[]{factSheetId, cursor, pageSize}, typeGraphNodePage);
         }
 
         @Override
@@ -887,7 +982,26 @@ public class GraphServiceSubprocessClients {
 
         @Override
         public List<GraphEdge> getEdgesInFactSheet(Long factSheetId) {
-            return rpc("getEdgesInFactSheet", new Object[]{factSheetId}, typeListGraphEdge);
+            // Assemble from bounded pages — the single-response variant of this exact
+            // call produced a ~1GB payload that OOM'd the graph subprocess.
+            List<GraphEdge> all = new java.util.ArrayList<>();
+            int cursor = 0;
+            KnowledgeGraphService.GraphPage<GraphEdge> page;
+            do {
+                page = getEdgesInFactSheetPage(factSheetId, cursor, WIRE_PAGE_SIZE);
+                all.addAll(page.items());
+                if (page.hasMore() && page.nextCursor() <= cursor) {
+                    throw new IllegalStateException("getEdgesInFactSheetPage cursor did not advance: "
+                            + cursor + " -> " + page.nextCursor());
+                }
+                cursor = page.nextCursor();
+            } while (page.hasMore());
+            return all;
+        }
+
+        @Override
+        public KnowledgeGraphService.GraphPage<GraphEdge> getEdgesInFactSheetPage(Long factSheetId, int cursor, int pageSize) {
+            return rpc("getEdgesInFactSheetPage", new Object[]{factSheetId, cursor, pageSize}, typeGraphEdgePage);
         }
 
         @Override

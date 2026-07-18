@@ -132,9 +132,48 @@ class ProjectStoreServerHttpTest {
         ResponseEntity<byte[]> zip = rest.getForEntity(
                 "/api/projects/alice/" + slug + "/archive/main", byte[].class);
         assertEquals(HttpStatus.OK, zip.getStatusCode());
+        assertEquals("attachment; filename=\"" + slug + "-main.zip\"",
+                zip.getHeaders().getFirst(HttpHeaders.CONTENT_DISPOSITION));
         Map<String, String> archived = unzip(zip.getBody());
         assertEquals("hello kompile", archived.get("README.md"));
         assertEquals("the guide", archived.get("docs/guide.md"));
+    }
+
+    @Test
+    void rejectsUnsafeProjectNamesAndDefaultBranches() {
+        String[] invalid = {"..", ".hidden", "../escape", "/absolute", "a/b", "a\\b",
+                "é", "name\nInjected", "a".repeat(65)};
+        for (String value : invalid) {
+            assertEquals(HttpStatus.BAD_REQUEST, createProject(value, "valid", "main").getStatusCode(), value);
+            assertEquals(HttpStatus.BAD_REQUEST, createProject("valid", value, "main").getStatusCode(), value);
+        }
+        for (String ref : new String[]{"../main", "refs/heads/main", "main\r\nX-Test: injected",
+                "é", "topic.lock", "a".repeat(129)}) {
+            assertEquals(HttpStatus.BAD_REQUEST,
+                    createProject("valid", "ref-" + Long.toHexString(System.nanoTime()), ref).getStatusCode(), ref);
+        }
+    }
+
+    @Test
+    void archiveReturnsNotFoundBeforeStreamingForEmptyOrUnresolvedRefs() {
+        String slug = "empty-" + Long.toHexString(System.nanoTime());
+        assertEquals(HttpStatus.CREATED, createProject("alice", slug, "main").getStatusCode());
+        assertEquals(HttpStatus.NOT_FOUND,
+                rest.getForEntity("/api/projects/alice/" + slug + "/archive/main", byte[].class).getStatusCode());
+        assertEquals(HttpStatus.NOT_FOUND,
+                rest.getForEntity("/api/projects/alice/" + slug + "/archive/deadbeef", byte[].class).getStatusCode());
+        assertEquals(HttpStatus.BAD_REQUEST,
+                rest.getForEntity("/api/projects/alice/" + slug + "/archive/bad..ref", byte[].class).getStatusCode());
+    }
+
+    private ResponseEntity<String> createProject(String namespace, String slug, String defaultBranch) {
+        HttpHeaders json = new HttpHeaders();
+        json.setContentType(MediaType.APPLICATION_JSON);
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("namespace", namespace);
+        body.put("slug", slug);
+        body.put("defaultBranch", defaultBranch);
+        return rest.postForEntity("/api/projects", new HttpEntity<>(body, json), String.class);
     }
 
     private static Map<String, String> unzip(byte[] data) throws Exception {

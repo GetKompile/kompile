@@ -104,7 +104,6 @@ import javax.sql.DataSource;
         @ComponentScan.Filter(type = FilterType.REGEX, pattern = "ai\\.kompile\\.knowledgegraph\\.persistence\\..*"),
         @ComponentScan.Filter(type = FilterType.REGEX, pattern = "ai\\.kompile\\.knowledgegraph\\.io\\..*"),
         @ComponentScan.Filter(type = FilterType.REGEX, pattern = "ai\\.kompile\\.knowledgegraph\\.tool\\..*"),
-        @ComponentScan.Filter(type = FilterType.REGEX, pattern = ".*NamedGraphServiceImpl"),
         @ComponentScan.Filter(type = FilterType.REGEX, pattern = ".*SourceWeightingServiceImpl"),
         // KGE (knowledge-graph embedding: RotatE/TransE training, job tracking, config persistence) is a
         // JPA/JDBC-backed subsystem and a SEPARATE concern from the matrix graph store. The three matrix

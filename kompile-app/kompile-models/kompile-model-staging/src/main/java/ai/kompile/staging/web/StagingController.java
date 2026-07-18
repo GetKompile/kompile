@@ -30,6 +30,8 @@ import ai.kompile.modelmanager.registry.*;
 import ai.kompile.core.staging.StagingModelInfo;
 import ai.kompile.core.staging.StagingStatus;
 import ai.kompile.staging.staging.StagingService;
+import ai.kompile.staging.sdx.SdxProjectOutputService;
+import org.nd4j.dsp.model.SdxTargetProfile;
 import ai.kompile.staging.web.dto.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -38,6 +40,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+import org.springframework.web.server.ResponseStatusException;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -636,6 +639,28 @@ public class StagingController {
      */
     @PostMapping("/stage")
     public ResponseEntity<StagingModelInfo> stageModel(@RequestBody StageModelRequest request) {
+        String outputFormat;
+        String targetProfile = request.getTargetProfile();
+        String quantizationProfile;
+        String targetSoc = request.getTargetSoc();
+        try {
+            outputFormat =
+                    SdxProjectOutputService.normalizeOutputFormat(request.getOutputFormat());
+            quantizationProfile =
+                    SdxProjectOutputService.normalizeQuantization(
+                            request.getQuantizationProfile());
+            if (SdxProjectOutputService.OUTPUT_KPROJECT.equals(outputFormat)) {
+                targetProfile =
+                        SdxProjectOutputService.normalizeTargetProfile(targetProfile);
+                targetSoc = SdxProjectOutputService.normalizeTargetSoc(
+                        SdxTargetProfile.fromId(targetProfile),
+                        targetSoc);
+            }
+        } catch (IllegalArgumentException invalid) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST, invalid.getMessage(), invalid);
+        }
+
         DownloadRequest.DownloadRequestBuilder builder = DownloadRequest.builder()
                 .source(request.getSource())
                 .repository(request.getRepository())
@@ -645,7 +670,11 @@ public class StagingController {
                 .revision(request.getRevision())
                 .authToken(request.getAuthToken())
                 .tokenizerUrl(request.getTokenizerUrl())
-                .audioSynthesis(request.getAudioSynthesis());
+                .audioSynthesis(request.getAudioSynthesis())
+                .outputFormat(outputFormat)
+                .targetProfile(targetProfile)
+                .quantizationProfile(quantizationProfile)
+                .targetSoc(targetSoc);
         if (request.getFiles() != null && !request.getFiles().isEmpty()) {
             builder.files(new HashMap<>(request.getFiles()));
         }
@@ -673,6 +702,33 @@ public class StagingController {
             return ResponseEntity.ok(info);
         }
         return ResponseEntity.notFound().build();
+    }
+
+    /**
+     * Download the completed canonical offline project for Android. Compilation remains
+     * asynchronous through /stage; incomplete, failed, or ambiguous outputs are not served.
+     */
+    @GetMapping("/models/{modelId}/output")
+    public ResponseEntity<Resource> downloadStagedOutput(@PathVariable String modelId) {
+        Optional<Path> output = stagingService.getStagedOutput(modelId);
+        if (output.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+        Path path = output.get();
+        try {
+            return ResponseEntity.ok()
+                    .contentType(MediaType.parseMediaType(
+                            "application/vnd.kompile.project+zip"))
+                    .contentLength(Files.size(path))
+                    .header(
+                            "Content-Disposition",
+                            "attachment; filename=\"" + path.getFileName() + "\"")
+                    .header("X-Content-Type-Options", "nosniff")
+                    .body(new FileSystemResource(path));
+        } catch (IOException e) {
+            log.error("Failed to serve mobile project for {}", modelId, e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
     }
 
     /**

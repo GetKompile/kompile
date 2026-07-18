@@ -19,6 +19,7 @@ package ai.kompile.crawl.graph;
 import ai.kompile.core.agent.CliAgentRunner;
 import ai.kompile.core.crawl.graph.AgentCallContext;
 import ai.kompile.core.crawl.graph.CliAgentAvailabilityAdapter;
+import ai.kompile.core.crawl.graph.GraphExtractionConfig;
 import ai.kompile.core.crawl.graph.LlmTranscriptLogger;
 import ai.kompile.core.crawl.graph.LocalServingBackend;
 import ai.kompile.core.crawl.graph.ProcessingCapacityTracker;
@@ -182,6 +183,46 @@ class CrawlLlmDispatcher {
 
     String promptWithCapacityFallback(String prompt, String taskType, UnifiedCrawlJob job) {
         ProcessingRouteConfig routeConfig = job.getRequest().getProcessingRoute();
+        String requestedModel = requestedGraphModel(job);
+        String requestedProvider = requestedGraphProvider(job);
+        boolean explicitServingProvider = "serving".equalsIgnoreCase(requestedProvider);
+
+        // An explicit serving-provider request is a routing constraint, not a response label.
+        // Honor it before capacity/default routing, including when the generic serving lane is
+        // disabled. A model name alone may come from merged defaults, so it must never implicitly
+        // override provider intent.
+        if (explicitServingProvider) {
+            String modelLabel = requestedModel != null ? requestedModel : "configured serving model";
+            String backendId = servingBackendId(requestedModel);
+            if (localServingBackend == null) {
+                String message = "Explicit local serving model '" + modelLabel
+                        + "' was requested, but no serving backend is installed";
+                log.warn("[Job {}] {}", job.getJobId(), message);
+                recordLlmCall(job, backendId, taskType, 0, prompt, null,
+                        false, false, false, false, "MODEL_UNAVAILABLE", message);
+                return null;
+            }
+            if (requestedModel != null && !localServingBackend.matchesModel(requestedModel)) {
+                String message = "Explicit local serving model '" + requestedModel
+                        + "' does not match the configured serving model";
+                log.warn("[Job {}] {}", job.getJobId(), message);
+                recordLlmCall(job, backendId, taskType, 0, prompt, null,
+                        false, false, false, false, "MODEL_MISMATCH", message);
+                return null;
+            }
+            if (!localServingBackend.isAvailable()) {
+                String message = "Explicit local serving model '" + modelLabel
+                        + "' is not loaded and ready";
+                log.warn("[Job {}] {}; refusing provider fallback", job.getJobId(), message);
+                recordLlmCall(job, backendId, taskType, 0, prompt, null,
+                        false, false, false, false, "MODEL_UNAVAILABLE", message);
+                return null;
+            }
+            log.info("[Job {}] Explicit graph model '{}': routing to exact local serving model",
+                    job.getJobId(), modelLabel);
+            return callLocalServingWithTimeout(
+                    prompt, taskType, job, modelLabel, requestedModel, false);
+        }
 
         // Fast path: no fallback configured, use default LLM directly.
         // Exception: try the local serving lane first when it is available — this is the
@@ -193,32 +234,12 @@ class CrawlLlmDispatcher {
                 || routeConfig.getBackends() == null || routeConfig.getBackends().isEmpty()) {
             boolean servingLaneAllowed = routeConfig == null || routeConfig.isServingLaneEnabled();
             if (servingLaneAllowed && localServingBackend != null && localServingBackend.isAvailable()) {
-                try {
-                    log.debug("[Job {}] Default-entry serving lane: routing to LOCAL_MODEL/serving subprocess",
-                            job.getJobId());
-                    long t0 = System.nanoTime();
-                    final String[] resultHolder = {null};
-                    CompletableFuture<String> servingFuture =
-                            CompletableFuture.supplyAsync(() -> {
-                                try {
-                                    return localServingBackend.generate(prompt);
-                                } catch (Exception e) {
-                                    throw new CompletionException(e);
-                                }
-                            }, llmTimeoutExecutor);
-                    String servingResult = servingFuture.get(llmCallTimeoutSeconds, TimeUnit.SECONDS);
-                    if (isUsableLlmResponse(servingResult)) {
-                        long latencyMs = (System.nanoTime() - t0) / 1_000_000L;
-                        recordLlmCall(job, "serving", taskType, latencyMs, prompt, servingResult,
-                                true, false, false, false, null, null);
-                        return servingResult;
-                    }
-                } catch (TimeoutException te) {
-                    log.warn("[Job {}] Default-entry serving lane timed out after {}s; falling back to default LLM",
-                            job.getJobId(), llmCallTimeoutSeconds);
-                } catch (Exception e) {
-                    log.debug("[Job {}] Default-entry serving lane failed ({}); falling back to default LLM",
-                            job.getJobId(), e.getMessage());
+                log.debug("[Job {}] Default-entry serving lane: routing to LOCAL_MODEL/serving subprocess",
+                        job.getJobId());
+                String servingResult = callLocalServingWithTimeout(
+                        prompt, taskType, job, "configured serving model", null, true);
+                if (servingResult != null) {
+                    return servingResult;
                 }
             }
             if (llmChat == null) {
@@ -357,6 +378,108 @@ class CrawlLlmDispatcher {
         recordLlmCall(job, "none", taskType, 0, prompt, null,
                 false, false, false, false, "FATAL", "All backends and fallbacks exhausted");
         return null;
+    }
+
+    private String requestedGraphModel(UnifiedCrawlJob job) {
+        GraphExtractionConfig config = graphExtractionConfig(job);
+        String model = config != null ? config.getModelName() : null;
+        return model != null && !model.isBlank() ? model.trim() : null;
+    }
+
+    private String requestedGraphProvider(UnifiedCrawlJob job) {
+        GraphExtractionConfig config = graphExtractionConfig(job);
+        String provider = config != null ? config.getLlmProvider() : null;
+        return provider != null && !provider.isBlank() ? provider.trim() : null;
+    }
+
+    private GraphExtractionConfig graphExtractionConfig(UnifiedCrawlJob job) {
+        return job != null && job.getRequest() != null
+                ? job.getRequest().getGraphExtraction()
+                : null;
+    }
+
+    private int requestedGraphMaxTokens(UnifiedCrawlJob job) {
+        GraphExtractionConfig config = graphExtractionConfig(job);
+        int requested = config != null ? config.getMaxTokens() : 0;
+        return requested > 0
+                ? requested
+                : GraphExtractionConfig.builder().build().getMaxTokens();
+    }
+
+    private String servingBackendId(String modelId) {
+        return modelId != null && !modelId.isBlank() ? "serving:" + modelId.trim() : "serving";
+    }
+
+    private String callLocalServingWithTimeout(
+            String prompt,
+            String taskType,
+            UnifiedCrawlJob job,
+            String modelLabel,
+            String requiredModelId,
+            boolean allowFallback) {
+        long startNanos = System.nanoTime();
+        String backendId = servingBackendId(requiredModelId);
+        int maxNewTokens = requestedGraphMaxTokens(job);
+        CompletableFuture<String> future = CompletableFuture.supplyAsync(() -> {
+            try {
+                return requiredModelId != null
+                        ? localServingBackend.generateForModel(requiredModelId, prompt, maxNewTokens)
+                        : localServingBackend.generate(prompt, maxNewTokens);
+            } catch (Exception e) {
+                throw new CompletionException(e);
+            }
+        }, llmTimeoutExecutor);
+
+        try {
+            String response = future.get(llmCallTimeoutSeconds, TimeUnit.SECONDS);
+            long latencyMs = (System.nanoTime() - startNanos) / 1_000_000L;
+            boolean success = isUsableLlmResponse(response);
+            recordTokenUsage(job, backendId, prompt, response);
+            recordLlmCall(job, backendId, taskType, latencyMs, prompt, response,
+                    success, false, false, false,
+                    success ? null : "BAD_RESPONSE",
+                    success ? null : badLlmResponseMessage("Serving model", response));
+            if (!success) {
+                log.warn("[Job {}] Local serving model '{}' returned an unusable response{}",
+                        job.getJobId(), modelLabel,
+                        allowFallback ? "; falling back to configured route" : "; refusing provider fallback");
+                return null;
+            }
+            return response;
+        } catch (TimeoutException te) {
+            future.cancel(true);
+            long latencyMs = (System.nanoTime() - startNanos) / 1_000_000L;
+            String message = "Local serving model '" + modelLabel + "' timed out after "
+                    + llmCallTimeoutSeconds + "s";
+            log.warn("[Job {}] {}{}", job.getJobId(), message,
+                    allowFallback ? "; falling back to configured route" : "; refusing provider fallback");
+            recordLlmCall(job, backendId, taskType, latencyMs, prompt, null,
+                    false, true, false, false, "TIMEOUT", message);
+            return null;
+        } catch (ExecutionException ee) {
+            long latencyMs = (System.nanoTime() - startNanos) / 1_000_000L;
+            Throwable cause = ee.getCause() != null ? ee.getCause() : ee;
+            if (cause instanceof CompletionException && cause.getCause() != null) {
+                cause = cause.getCause();
+            }
+            String message = cause.getMessage() != null
+                    ? cause.getMessage()
+                    : cause.getClass().getSimpleName();
+            String errorCategory = categorizeError(message);
+            log.warn("[Job {}] Local serving model '{}' failed ({}){}",
+                    job.getJobId(), modelLabel, message,
+                    allowFallback ? "; falling back to configured route" : "; refusing provider fallback");
+            recordLlmCall(job, backendId, taskType, latencyMs, prompt, null,
+                    false, false, "RATE_LIMITED".equals(errorCategory), false, errorCategory, message);
+            return null;
+        } catch (InterruptedException ie) {
+            future.cancel(true);
+            Thread.currentThread().interrupt();
+            long latencyMs = (System.nanoTime() - startNanos) / 1_000_000L;
+            recordLlmCall(job, backendId, taskType, latencyMs, prompt, null,
+                    false, false, false, false, "INTERRUPTED", "Local serving call interrupted");
+            return null;
+        }
     }
 
     // ---- Timeout-wrapped LLM call ----

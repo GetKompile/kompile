@@ -83,6 +83,8 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
     private static final String GRAPH_PREFIX = "graph:";
     private static final String META_SUFFIX = ":meta";
     private static final String NODE_PREFIX = ":node:";
+    private static final String EDGE_PREFIX = ":edge:";
+    /** Legacy read-only aggregate formats. Fresh writes use individual node and edge documents. */
     private static final String ADJ_PREFIX = ":adj:";
     private static final String EMBD_SUFFIX = ":embd";
 
@@ -112,7 +114,7 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
      * <p>Set {@code kompile.graph.eager-rehydration-enabled=false} to skip pre-loading
      * entirely and rely purely on lazy loading.</p>
      */
-    @Value("${kompile.graph.eager-rehydration-enabled:true}")
+    @Value("${kompile.graph.eager-rehydration-enabled:false}")
     private boolean eagerRehydrationEnabled = true;
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -238,11 +240,9 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
         // Save nodes with embeddings
         saveNodes(graph);
 
-        // Save adjacency matrices
-        saveAdjacencyMatrices(graph);
-
-        // Save node embedding matrix (if present)
-        saveNodeEmbeddings(graph);
+        // Persist each relationship as its own bounded Lucene document. Adjacency matrices
+        // remain derived in-memory state and are never a persistence format.
+        saveEdges(graph);
 
         // Update cache
         graphCache.put(graphId, graph);
@@ -453,6 +453,78 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
     }
 
     @Override
+    public ScanPage<MatrixGraphNode> scanNodes(String graphId, int cursor, int pageSize) {
+        return scanGraphDocuments(graphId, cursor, pageSize, "graph_node",
+                doc -> deserializeNodeFromMetadata(doc));
+    }
+
+    @Override
+    public ScanPage<StoredEdge> scanEdges(String graphId, int cursor, int pageSize) {
+        return scanGraphDocuments(graphId, cursor, pageSize, "graph_edge", this::deserializeStoredEdge);
+    }
+
+    private <T> ScanPage<T> scanGraphDocuments(String graphId, int cursor, int pageSize,
+                                                String expectedType,
+                                                java.util.function.Function<Map<String, Object>, T> decoder) {
+        if (cursor < 0 || pageSize <= 0) {
+            throw new IllegalArgumentException("cursor must be >= 0 and pageSize must be > 0");
+        }
+        String graphPrefix = GRAPH_PREFIX + graphId + ":";
+        List<T> items = new ArrayList<>(pageSize);
+        int scanCursor = cursor;
+        boolean moreDocuments = true;
+        while (items.size() < pageSize && moreDocuments) {
+            // Scan full bounded Lucene pages even when only one result slot remains. Graph documents
+            // can be sparse in the shared project index; shrinking this to the remaining result count
+            // degenerates into one Lucene request per unrelated document.
+            int fetchSize = Math.max(1, vectorScanPageSize);
+            List<Map<String, Object>> docs = vectorStore.listVectorDocuments(scanCursor, fetchSize);
+            if (docs.isEmpty()) {
+                moreDocuments = false;
+                break;
+            }
+            for (int i = 0; i < docs.size(); i++) {
+                scanCursor++;
+                Map<String, Object> raw = docs.get(i);
+                String id = raw.get("id") instanceof String value ? value : null;
+                if (id == null || !id.startsWith(graphPrefix)) {
+                    continue;
+                }
+                Map<String, Object> flat = flattenDoc(raw);
+                if (!expectedType.equals(flat.get("type"))) {
+                    continue;
+                }
+                T decoded = decoder.apply(flat);
+                if (decoded != null) {
+                    items.add(decoded);
+                    if (items.size() == pageSize) {
+                        return new ScanPage<>(items, scanCursor, true);
+                    }
+                }
+            }
+            moreDocuments = docs.size() == fetchSize;
+        }
+        return new ScanPage<>(items, scanCursor, moreDocuments);
+    }
+
+    @SuppressWarnings("unchecked")
+    private StoredEdge deserializeStoredEdge(Map<String, Object> doc) {
+        if (!(doc.get("sourceNodeId") instanceof String source)
+                || !(doc.get("targetNodeId") instanceof String target)
+                || !(doc.get("edgeType") instanceof String type)
+                || !(doc.get("weight") instanceof Number weight)) {
+            return null;
+        }
+        return new StoredEdge(source, target, type, weight.doubleValue(),
+                Boolean.TRUE.equals(doc.get("bidirectional")),
+                doc.get("relationType") instanceof String value ? value : null,
+                doc.get("confidence") instanceof Number value ? value.doubleValue() : null,
+                doc.get("description") instanceof String value ? value : null,
+                doc.get("edgeMetadata") instanceof Map<?, ?> value
+                        ? (Map<String, Object>) value : Map.of());
+    }
+
+    @Override
     public List<MatrixGraphNode> searchNodes(String graphId, String query, int limit) {
         // Use vector store similarity search
         List<Document> results = vectorStore.similaritySearch(query, limit);
@@ -473,15 +545,15 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
     @Override
     public boolean addEdge(String graphId, String sourceNodeId, String targetNodeId,
                           double weight, String edgeType, boolean bidirectional) {
-        AdjacencyMatrixGraph graph = getOrCreateGraph(graphId);
-        return graph.addEdge(sourceNodeId, targetNodeId, weight, edgeType, bidirectional);
+        return addEdge(graphId, sourceNodeId, targetNodeId, weight, edgeType,
+                bidirectional, null, null, null);
     }
 
     @Override
     public boolean addEdge(String graphId, String sourceNodeId, String targetNodeId,
                           double weight, String edgeType, boolean bidirectional, String relationType) {
-        AdjacencyMatrixGraph graph = getOrCreateGraph(graphId);
-        return graph.addEdge(sourceNodeId, targetNodeId, weight, edgeType, bidirectional, relationType);
+        return addEdge(graphId, sourceNodeId, targetNodeId, weight, edgeType,
+                bidirectional, relationType, null, null);
     }
 
     /** [M-7] Full-metadata override — persists confidence and description alongside weight/relationType. */
@@ -490,8 +562,13 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
                            double weight, String edgeType, boolean bidirectional,
                            String relationType, Double confidence, String description) {
         AdjacencyMatrixGraph graph = getOrCreateGraph(graphId);
-        return graph.addEdge(sourceNodeId, targetNodeId, weight, edgeType, bidirectional,
+        boolean added = graph.addEdge(sourceNodeId, targetNodeId, weight, edgeType, bidirectional,
                 relationType, confidence, description);
+        if (added) {
+            persistEdge(graphId, sourceNodeId, targetNodeId, weight, edgeType,
+                    bidirectional, relationType, confidence, description, null);
+        }
+        return added;
     }
 
     @Override
@@ -507,10 +584,11 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
     @Override
     public boolean removeEdge(String graphId, String sourceNodeId, String targetNodeId, String edgeType) {
         AdjacencyMatrixGraph graph = graphCache.get(graphId);
-        if (graph != null) {
-            return graph.removeEdge(sourceNodeId, targetNodeId, edgeType);
+        if (graph == null || !graph.removeEdge(sourceNodeId, targetNodeId, edgeType)) {
+            return false;
         }
-        return false;
+        vectorStore.delete(List.of(edgeDocumentId(graphId, edgeType, sourceNodeId, targetNodeId)));
+        return true;
     }
 
     @Override
@@ -626,13 +704,19 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
         AdjacencyMatrixGraph graph = getOrCreateGraph(graphId);
         int count = 0;
 
+        List<Document> documents = new ArrayList<>();
         for (EdgeDefinition edge : edges) {
             if (graph.addEdge(edge.sourceNodeId(), edge.targetNodeId(),
                     edge.weight(), edge.edgeType(), edge.bidirectional(), edge.relationType())) {
+                documents.add(createEdgeDocument(graphId, edge.sourceNodeId(), edge.targetNodeId(),
+                        edge.weight(), edge.edgeType(), edge.bidirectional(), edge.relationType(),
+                        null, null, null));
                 count++;
             }
         }
-
+        if (!documents.isEmpty()) {
+            vectorStore.add(documents);
+        }
         return count;
     }
 
@@ -789,6 +873,97 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
                 node.getDescription() != null ? node.getDescription() : "");
 
         return new Document(docId, content, metadata);
+    }
+
+    private void saveEdges(AdjacencyMatrixGraph graph) {
+        String graphId = graph.getGraphId();
+        List<String> oldEdgeIds = collectMatchingIds(GRAPH_PREFIX + graphId + EDGE_PREFIX);
+        if (!oldEdgeIds.isEmpty()) {
+            vectorStore.delete(oldEdgeIds);
+        }
+
+        Map<Integer, String> nodeIdsByIndex = new HashMap<>();
+        for (MatrixGraphNode node : graph.getAllNodes()) {
+            nodeIdsByIndex.put(node.getMatrixIndex(), node.getNodeId());
+        }
+
+        List<Document> batch = new ArrayList<>(1000);
+        for (String edgeType : graph.getEdgeTypes()) {
+            AdjacencyMatrixGraph.SparseEdgeData sparseData = graph.getSparseEdges(edgeType);
+            boolean hasRelationTypes = !sparseData.relationTypes.isEmpty();
+            boolean hasEdgeMetas = !sparseData.edgeMetas.isEmpty();
+            for (int i = 0; i < sparseData.size(); i++) {
+                int[] pair = sparseData.indices.get(i);
+                String sourceNodeId = nodeIdsByIndex.get(pair[0]);
+                String targetNodeId = nodeIdsByIndex.get(pair[1]);
+                if (sourceNodeId == null || targetNodeId == null) {
+                    continue;
+                }
+                String relationType = hasRelationTypes ? sparseData.relationTypes.get(i) : null;
+                AdjacencyMatrixGraph.EdgeMeta meta =
+                        hasEdgeMetas ? sparseData.edgeMetas.get(i) : null;
+                boolean bidirectional = meta != null && Boolean.TRUE.equals(meta.bidirectional());
+                if (bidirectional && sourceNodeId.compareTo(targetNodeId) > 0) {
+                    continue;
+                }
+                batch.add(createEdgeDocument(graphId, sourceNodeId, targetNodeId,
+                        sparseData.weights.get(i), edgeType, bidirectional, relationType,
+                        meta != null ? meta.confidence() : null,
+                        meta != null ? meta.description() : null,
+                        meta != null ? meta.metadata() : null));
+                if (batch.size() == 1000) {
+                    vectorStore.add(batch);
+                    batch = new ArrayList<>(1000);
+                }
+            }
+        }
+        if (!batch.isEmpty()) {
+            vectorStore.add(batch);
+        }
+
+        List<String> aggregates = collectMatchingIds(GRAPH_PREFIX + graphId + ADJ_PREFIX);
+        aggregates.add(GRAPH_PREFIX + graphId + EMBD_SUFFIX);
+        vectorStore.delete(aggregates);
+    }
+
+    private void persistEdge(String graphId, String sourceNodeId, String targetNodeId,
+                             double weight, String edgeType, boolean bidirectional,
+                             String relationType, Double confidence, String description,
+                             Map<String, Object> metadata) {
+        vectorStore.add(List.of(createEdgeDocument(graphId, sourceNodeId, targetNodeId,
+                weight, edgeType, bidirectional, relationType, confidence, description, metadata)));
+    }
+
+    private Document createEdgeDocument(String graphId, String sourceNodeId, String targetNodeId,
+                                        double weight, String edgeType, boolean bidirectional,
+                                        String relationType, Double confidence, String description,
+                                        Map<String, Object> edgeMetadata) {
+        Map<String, Object> metadata = new HashMap<>();
+        metadata.put("type", "graph_edge");
+        metadata.put("graphId", graphId);
+        metadata.put("sourceNodeId", sourceNodeId);
+        metadata.put("targetNodeId", targetNodeId);
+        metadata.put("edgeType", edgeType);
+        metadata.put("weight", weight);
+        metadata.put("bidirectional", bidirectional);
+        metadata.put("relationType", relationType);
+        metadata.put("confidence", confidence);
+        metadata.put("description", description);
+        if (edgeMetadata != null && !edgeMetadata.isEmpty()) {
+            metadata.put("edgeMetadata", edgeMetadata);
+        }
+        metadata.values().removeIf(Objects::isNull);
+        String content = relationType != null ? relationType : edgeType;
+        return new Document(edgeDocumentId(graphId, edgeType, sourceNodeId, targetNodeId),
+                content, metadata);
+    }
+
+    private String edgeDocumentId(String graphId, String edgeType,
+                                  String sourceNodeId, String targetNodeId) {
+        String key = edgeType + "\u0000" + sourceNodeId + "\u0000" + targetNodeId;
+        String encoded = Base64.getUrlEncoder().withoutPadding().encodeToString(
+                key.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        return GRAPH_PREFIX + graphId + EDGE_PREFIX + encoded;
     }
 
     private void saveAdjacencyMatrices(AdjacencyMatrixGraph graph) throws IOException {
@@ -972,6 +1147,7 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
         // Find metadata document
         Map<String, Object> metaDoc = null;
         List<Map<String, Object>> nodeDocs = new ArrayList<>();
+        List<Map<String, Object>> edgeDocs = new ArrayList<>();
         List<Map<String, Object>> adjDocs = new ArrayList<>();
         Map<String, Object> embdDoc = null; // single node-embeddings document per graph
 
@@ -995,6 +1171,8 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
                     metaDoc = doc;
                 } else if ("graph_node".equals(type)) {
                     nodeDocs.add(doc);
+                } else if ("graph_edge".equals(type)) {
+                    edgeDocs.add(doc);
                 } else if ("adjacency_matrix".equals(type)) {
                     adjDocs.add(doc);
                 } else if ("node_embeddings".equals(type)) {
@@ -1038,10 +1216,15 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
             }
         }
 
-        // Restore adjacency matrices using the persisted-index → nodeId map.
         int totalEdgesFailed = 0;
-        for (Map<String, Object> adjDoc : adjDocs) {
-            totalEdgesFailed += restoreAdjacencyMatrix(graph, adjDoc, storedIndexToNodeId);
+        for (Map<String, Object> edgeDoc : edgeDocs) {
+            totalEdgesFailed += restoreEdgeDocument(graph, edgeDoc);
+        }
+        // Legacy aggregate documents are accepted only when no canonical edge docs exist.
+        if (edgeDocs.isEmpty()) {
+            for (Map<String, Object> adjDoc : adjDocs) {
+                totalEdgesFailed += restoreAdjacencyMatrix(graph, adjDoc, storedIndexToNodeId);
+            }
         }
         if (totalEdgesFailed > 0) {
             log.warn("Graph '{}': {} edges could not be resolved and were dropped "
@@ -1053,8 +1236,8 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
             restoreNodeEmbeddings(graph, embdDoc, storedIndexToNodeId);
         }
 
-        log.info("Loaded graph '{}' from vector store: {} nodes, {} edge-type buckets, embeddings={}",
-                graphId, graph.getNodeCount(), adjDocs.size(), embdDoc != null);
+        log.info("Loaded graph '{}' from vector store: {} nodes, {} edge documents, embeddings={}",
+                graphId, graph.getNodeCount(), edgeDocs.size(), embdDoc != null);
         graphCache.put(graphId, graph);
         return Optional.of(graph);
     }
@@ -1126,6 +1309,37 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
      *
      * @return the count of edges that could NOT be resolved (for aggregate logging)
      */
+    @SuppressWarnings("unchecked")
+    private int restoreEdgeDocument(AdjacencyMatrixGraph graph, Map<String, Object> edgeDoc) {
+        try {
+            String sourceNodeId = (String) edgeDoc.get("sourceNodeId");
+            String targetNodeId = (String) edgeDoc.get("targetNodeId");
+            String edgeType = (String) edgeDoc.get("edgeType");
+            if (sourceNodeId == null || targetNodeId == null || edgeType == null
+                    || !(edgeDoc.get("weight") instanceof Number weight)) {
+                return 1;
+            }
+            String relationType = edgeDoc.get("relationType") instanceof String value ? value : null;
+            Double confidence = edgeDoc.get("confidence") instanceof Number value
+                    ? value.doubleValue() : null;
+            boolean bidirectional = Boolean.TRUE.equals(edgeDoc.get("bidirectional"));
+            String description = edgeDoc.get("description") instanceof String value ? value : null;
+            Map<String, Object> metadata = edgeDoc.get("edgeMetadata") instanceof Map<?, ?> value
+                    ? (Map<String, Object>) value : null;
+            if (!graph.addEdge(sourceNodeId, targetNodeId, weight.doubleValue(), edgeType,
+                    bidirectional, relationType, confidence, description)) {
+                return 1;
+            }
+            if (metadata != null && !metadata.isEmpty()) {
+                graph.mergeEdgeMetadata(edgeType, sourceNodeId, targetNodeId, metadata);
+            }
+            return 0;
+        } catch (RuntimeException e) {
+            log.warn("Skipping malformed graph_edge document", e);
+            return 1;
+        }
+    }
+
     @SuppressWarnings("unchecked")
     private int restoreAdjacencyMatrix(AdjacencyMatrixGraph graph, Map<String, Object> adjDoc,
                                        Map<Integer, String> storedIndexToNodeId) {

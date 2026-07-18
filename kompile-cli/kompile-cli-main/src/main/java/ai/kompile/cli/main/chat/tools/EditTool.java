@@ -17,6 +17,8 @@
 package ai.kompile.cli.main.chat.tools;
 
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.cli.main.coordination.CoordinationStateManager;
+import ai.kompile.cli.main.coordination.EditLockEntry;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -28,21 +30,23 @@ import java.util.Map;
 
 /**
  * Perform exact string replacement edits in a file.
- * Comparable to OpenCode's EditTool with multiple fallback matching strategies.
+ * Matching and failure diagnostics are shared with {@code edit_batch} via
+ * {@link EditEngine}.
  */
 public class EditTool implements CliTool {
 
     /**
      * Optional coordination manager for multi-agent edit tracking. May be null.
+     * When present, edits to files locked by ANOTHER session carry a conflict
+     * warning in the result (locks are advisory — the edit still applies).
      */
-    @SuppressWarnings("unused")
-    private final Object coordinationManager;
+    private final CoordinationStateManager coordinationManager;
 
     public EditTool() {
         this.coordinationManager = null;
     }
 
-    public EditTool(Object coordinationManager) {
+    public EditTool(CoordinationStateManager coordinationManager) {
         this.coordinationManager = coordinationManager;
     }
 
@@ -125,104 +129,54 @@ public class EditTool implements CliTool {
         try {
             String content = Files.readString(path);
 
-            // Try exact match first
-            int count = countOccurrences(content, oldString);
-
-            if (count == 0) {
-                // Fallback: try trimmed matching (handle whitespace differences)
-                String trimmedResult = tryTrimmedMatch(content, oldString, newString, replaceAll);
-                if (trimmedResult != null) {
-                    Files.writeString(path, trimmedResult);
-                    context.recordFileRead(path);
-                    ai.kompile.cli.main.codeindex.BackgroundIndexService.getInstance()
-                            .noteFileWritten(path);
-                    String relativePath;
-                    try {
-                        relativePath = context.getWorkingDirectory().toAbsolutePath().relativize(path.toAbsolutePath()).toString();
-                    } catch (IllegalArgumentException ex) {
-                        relativePath = path.toString();
-                    }
-                    return ToolResult.success(relativePath,
-                            "Applied edit (trimmed match)",
-                            Map.of("path", relativePath, "matchType", "trimmed"));
-                }
-                return ToolResult.error("old_string not found in file. Read the file first to see exact content.");
+            EditEngine.Applied applied;
+            try {
+                applied = EditEngine.apply(content, oldString, newString, replaceAll);
+            } catch (EditEngine.NoMatchException e) {
+                return ToolResult.error(e.getMessage());
             }
 
-            if (!replaceAll && count > 1) {
-                return ToolResult.error("old_string found " + count + " times. " +
-                        "Provide more surrounding context to make it unique, or set replace_all=true.");
-            }
-
-            String newContent;
-            if (replaceAll) {
-                newContent = content.replace(oldString, newString);
-            } else {
-                int idx = content.indexOf(oldString);
-                newContent = content.substring(0, idx) + newString + content.substring(idx + oldString.length());
-            }
-
-            Files.writeString(path, newContent);
+            Files.writeString(path, applied.newContent());
             context.recordFileRead(path);
             ai.kompile.cli.main.codeindex.BackgroundIndexService.getInstance()
                     .noteFileWritten(path);
 
-            String relativePath = context.getWorkingDirectory().relativize(path).toString();
-            return ToolResult.success(relativePath,
-                    "Applied edit" + (replaceAll ? " (" + count + " replacements)" : ""),
-                    Map.of("path", relativePath, "replacements", replaceAll ? count : 1));
+            String relativePath;
+            try {
+                relativePath = context.getWorkingDirectory().toAbsolutePath()
+                        .relativize(path.toAbsolutePath()).toString();
+            } catch (IllegalArgumentException ex) {
+                relativePath = path.toString();
+            }
+            String message = "Applied edit";
+            if (!"exact".equals(applied.matchType())) {
+                message += " (" + applied.matchType() + " match)";
+            }
+            if (applied.replacements() > 1) {
+                message += " (" + applied.replacements() + " replacements)";
+            }
+            String conflictWarning = conflictWarning(path);
+            if (conflictWarning != null) {
+                message += "\n" + conflictWarning;
+            }
+            return ToolResult.success(relativePath, message,
+                    Map.of("path", relativePath,
+                            "matchType", applied.matchType(),
+                            "replacements", applied.replacements()));
 
         } catch (IOException e) {
             return ToolResult.error("Error editing file: " + e.getMessage());
         }
     }
 
-    private int countOccurrences(String content, String search) {
-        int count = 0;
-        int idx = 0;
-        while ((idx = content.indexOf(search, idx)) != -1) {
-            count++;
-            idx += search.length();
-        }
-        return count;
-    }
-
-    /**
-     * Fallback matching: normalize whitespace on each line and try matching.
-     */
-    private String tryTrimmedMatch(String content, String oldString, String newString, boolean replaceAll) {
-        String[] contentLines = content.split("\n", -1);
-        String[] searchLines = oldString.split("\n", -1);
-        String[] replaceLines = newString.split("\n", -1);
-
-        if (searchLines.length == 0) return null;
-
-        // Try to find the search block by trimmed line matching
-        for (int i = 0; i <= contentLines.length - searchLines.length; i++) {
-            boolean match = true;
-            for (int j = 0; j < searchLines.length; j++) {
-                if (!contentLines[i + j].trim().equals(searchLines[j].trim())) {
-                    match = false;
-                    break;
-                }
-            }
-            if (match) {
-                // Found a trimmed match - replace preserving original indentation of first line
-                StringBuilder sb = new StringBuilder();
-                for (int k = 0; k < i; k++) {
-                    sb.append(contentLines[k]).append("\n");
-                }
-                sb.append(newString);
-                if (i + searchLines.length < contentLines.length) {
-                    sb.append("\n");
-                    for (int k = i + searchLines.length; k < contentLines.length; k++) {
-                        sb.append(contentLines[k]);
-                        if (k < contentLines.length - 1) sb.append("\n");
-                    }
-                }
-                return sb.toString();
-            }
-        }
-        return null;
+    /** Advisory multi-agent warning when another session holds an edit lock on this file. */
+    private String conflictWarning(Path path) {
+        if (coordinationManager == null) return null;
+        EditLockEntry conflict = coordinationManager.findConflictingLock(
+                path.toAbsolutePath().toString());
+        if (conflict == null) return null;
+        return "WARNING: this file is locked by " + conflict.getAgentName()
+                + " (session " + conflict.getSessionId() + ") via edit_coordinator — "
+                + "coordinate before making further edits.";
     }
 }

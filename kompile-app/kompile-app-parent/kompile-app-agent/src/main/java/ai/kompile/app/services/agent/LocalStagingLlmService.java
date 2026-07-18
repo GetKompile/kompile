@@ -126,6 +126,26 @@ public class LocalStagingLlmService {
         return Optional.empty();
     }
 
+    /**
+     * Concurrent-generate capacity the staging serving lane reports on {@code /api/llm/status}
+     * ({@code maxConcurrentRequests}), or 1 when staging is down, nothing is loaded, or the field
+     * is absent — a single loaded model instance serves generation serially.
+     */
+    public int reportedGenerationConcurrency() {
+        try {
+            JsonNode status = getStatus(Duration.ofSeconds(5));
+            if (status.path("loaded").asBoolean(false)) {
+                int concurrency = status.path("maxConcurrentRequests").asInt(0);
+                if (concurrency > 0) {
+                    return concurrency;
+                }
+            }
+        } catch (Exception e) {
+            log.debug("Could not read local staging LLM concurrency: {}", e.getMessage());
+        }
+        return 1;
+    }
+
     public Optional<LocalModelCandidate> resolveCandidate(String requestedModelId) {
         if (requestedModelId == null || requestedModelId.isBlank()) {
             return discoverCandidates(false).stream().findFirst();
@@ -225,6 +245,17 @@ public class LocalStagingLlmService {
         int context = readInt(node.path("metadata").path("max_sequence_length"));
         if (context <= 0) {
             context = readInt(node.path("tokenizer").path("max_length"));
+        }
+        if (context <= 0 && modelFile.toLowerCase(java.util.Locale.ROOT).endsWith(".gguf")) {
+            // Registry entries for staged GGUF LLMs routinely carry no sequence-length metadata;
+            // the model file itself declares it in the GGUF header (<arch>.context_length).
+            // Without this, capability budgeting falls to a 2k-token default and the extraction
+            // chain's window guard would skip the model for any real batch.
+            context = ai.kompile.utils.GgufMetadataReader.readContextLength(modelPath).orElse(0);
+            if (context > 0) {
+                log.debug("Local LLM '{}' context window {} read from GGUF header {}",
+                        modelId, context, modelPath.getFileName());
+            }
         }
         long estimatedMemory = readLong(node.path("metadata").path("estimated_memory_bytes"));
         return Optional.of(new LocalModelCandidate(

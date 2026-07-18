@@ -16,7 +16,7 @@ import java.nio.file.Path;
  *
  * <p>Always call {@link #close()} when done — it closes the underlying session.</p>
  */
-public final class GraphToolBridge implements Closeable {
+public final class GraphToolBridge implements Closeable, GraphToolBackend {
 
     private final LocalReasoningSession session;
     private final LocalToolDispatcher dispatcher;

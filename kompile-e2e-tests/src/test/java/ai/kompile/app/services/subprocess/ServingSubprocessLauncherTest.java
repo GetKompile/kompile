@@ -16,6 +16,7 @@
 
 package ai.kompile.app.services.subprocess;
 
+import ai.kompile.app.services.scheduler.ScheduledJob;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -23,7 +24,11 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
 
 /**
  * Unit tests for {@link ServingSubprocessLauncher}.
@@ -158,5 +163,30 @@ class ServingSubprocessLauncherTest {
     void isRunning_afterStop_remainsFalse() {
         launcher.stop(); // no-op since not running
         assertFalse(launcher.isRunning());
+    }
+
+    @Test
+    void awaitServingProcessKeepsWaitingUntilProcessExits() throws Exception {
+        Process process = mock(Process.class);
+        when(process.isAlive()).thenReturn(true, true, false);
+        when(process.waitFor(1, TimeUnit.SECONDS)).thenReturn(false);
+        var context = new ScheduledJob.JobExecutionContext(
+                "serving", null, null, null, new AtomicBoolean(false));
+
+        ServingSubprocessLauncher.awaitServingProcess(process, context);
+
+        verify(process, times(2)).waitFor(1, TimeUnit.SECONDS);
+    }
+
+    @Test
+    void awaitServingProcessStopsOnCancellation() throws Exception {
+        Process process = mock(Process.class);
+        when(process.isAlive()).thenReturn(true);
+        var context = new ScheduledJob.JobExecutionContext(
+                "serving", null, null, null, new AtomicBoolean(true));
+
+        assertThrows(InterruptedException.class,
+                () -> ServingSubprocessLauncher.awaitServingProcess(process, context));
+        verify(process, never()).waitFor(anyLong(), any(TimeUnit.class));
     }
 }

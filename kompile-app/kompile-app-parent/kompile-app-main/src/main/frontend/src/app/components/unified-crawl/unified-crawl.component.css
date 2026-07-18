@@ -1115,3 +1115,27 @@
       background: var(--status-info-bg); padding: 0 4px; border-radius: 3px;
       font-size: 10px; color: var(--status-info-text); flex-shrink: 0;
     }
+
+
+/* Source maintenance uses the crawl screen so syncs share its job-oriented observability. */
+.source-maintenance { display: flex; flex-direction: column; gap: 12px; }
+.source-maintenance-header { display: flex; justify-content: space-between; gap: 20px; align-items: flex-start; }
+.source-maintenance-header h3 { margin: 0 0 4px; }
+.source-maintenance-header p { margin: 0; color: var(--text-secondary); max-width: 760px; }
+.source-maintenance-card { border-left: 3px solid var(--color-primary); }
+.source-maintenance-row { display: flex; gap: 14px; align-items: center; }
+.source-maintenance-icon { color: var(--color-primary); flex: 0 0 auto; }
+.source-maintenance-details { flex: 1; min-width: 0; }
+.source-maintenance-title { display: flex; align-items: center; gap: 8px; font-weight: 700; }
+.source-maintenance-scope { font-family: monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.source-maintenance-description { color: var(--text-secondary); font-size: 12px; margin-top: 3px; }
+.source-maintenance-meta { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 6px; color: var(--text-tertiary); font-size: 11px; }
+.source-maintenance-actions { display: flex; align-items: center; gap: 14px; flex: 0 0 auto; }
+.source-sync-progress { margin-top: 12px; }
+.source-sync-message { display: flex; align-items: center; gap: 6px; margin-top: 7px; font-size: 12px; }
+.source-sync-message mat-icon, .source-sync-error mat-icon { font-size: 17px; width: 17px; height: 17px; }
+.source-sync-error { display: flex; gap: 6px; align-items: center; margin-top: 10px; color: var(--status-error-text); font-size: 12px; }
+@media (max-width: 800px) {
+  .source-maintenance-row { align-items: flex-start; flex-wrap: wrap; }
+  .source-maintenance-actions { width: 100%; justify-content: space-between; }
+}

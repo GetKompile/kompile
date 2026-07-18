@@ -17,7 +17,6 @@ package ai.kompile.app.web.controllers;
 
 import ai.kompile.app.ontology.GraphOntologyBindingService;
 import ai.kompile.app.web.dto.ontology.GraphConformanceReport;
-import ai.kompile.knowledgegraph.domain.NamedGraph;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -59,8 +58,7 @@ public class OntologyConformanceController {
 
     /**
      * Bind a governing ontology to a fact sheet's graph (the priority-1 explicit binding). The next
-     * {@code /conformance} call validates against it. Creates a named-graph registry row for the fact
-     * sheet if none exists.
+     * {@code /conformance} call validates against it. The binding is persisted in the Lucene graph.
      *
      * @param factSheetId      the fact sheet whose graph to bind
      * @param ontologySchemaId the ontology id to bind
@@ -70,12 +68,13 @@ public class OntologyConformanceController {
     public ResponseEntity<Map<String, Object>> bind(@RequestParam Long factSheetId,
                                                      @RequestParam String ontologySchemaId,
                                                      @RequestParam(required = false) Integer ontologyVersion) {
-        NamedGraph g = bindingService.bindOntology(factSheetId, ontologySchemaId, ontologyVersion);
+        GraphOntologyBindingService.OntologyBinding binding =
+                bindingService.bindOntology(factSheetId, ontologySchemaId, ontologyVersion);
         Map<String, Object> body = new LinkedHashMap<>();
-        body.put("factSheetId", factSheetId);
-        body.put("graphId", g.getGraphId());
-        body.put("ontologySchemaId", g.getOntologySchemaId());
-        body.put("ontologyVersion", g.getOntologyVersion()); // null = latest
+        body.put("factSheetId", binding.factSheetId());
+        body.put("descriptorNodeId", binding.descriptorNodeId());
+        body.put("ontologySchemaId", binding.ontologySchemaId());
+        body.put("ontologyVersion", binding.ontologyVersion());
         return ResponseEntity.ok(body);
     }
 

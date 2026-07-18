@@ -47,7 +47,6 @@ import java.util.stream.Collectors;
 class RuleBasedDocumentGraphExtractor {
 
     private static final Logger log = LoggerFactory.getLogger(RuleBasedDocumentGraphExtractor.class);
-    private static final int NODE_UPDATE_BATCH_SIZE = 500;
 
     @Autowired(required = false)
     private KnowledgeGraphService knowledgeGraphService;
@@ -92,7 +91,7 @@ class RuleBasedDocumentGraphExtractor {
         Map<String, Optional<GraphNode>> docNodeCache = new HashMap<>();
         // Cross-document cache: same entity ID → same ENTITY node (avoids N+1 DB lookups)
         Map<String, Optional<GraphNode>> entityNodeCache = new HashMap<>();
-        List<KnowledgeGraphService.NodeUpdate> entityMergeUpdates = new ArrayList<>(NODE_UPDATE_BATCH_SIZE);
+        List<KnowledgeGraphService.NodeUpdate> entityMergeUpdates = new ArrayList<>();
         // Pre-compute the CONTAINS label — constant for every document in this batch
         String containsLabel = graphPersistenceHelper.semanticRelationLabel(GraphConstants.REL_CONTAINS);
 
@@ -292,9 +291,6 @@ class RuleBasedDocumentGraphExtractor {
                             if (entity.properties() != null && !entity.properties().isEmpty()) {
                                 entityMergeUpdates.add(new KnowledgeGraphService.NodeUpdate(
                                         node.getNodeId(), null, null, entityMeta));
-                                if (entityMergeUpdates.size() >= NODE_UPDATE_BATCH_SIZE) {
-                                    flushEntityMergeUpdates(jobId, entityMergeUpdates);
-                                }
                             }
                         } else {
                             node = knowledgeGraphService.createNode(NodeLevel.ENTITY, entity.id(),
@@ -382,7 +378,7 @@ class RuleBasedDocumentGraphExtractor {
         }
         int batchSize = updates.size();
         try {
-            knowledgeGraphService.updateNodesBatch(updates);
+            graphPersistenceHelper.updateNodesInBoundedBatches(updates);
             updates.clear();
         } catch (Exception e) {
             String message = "Failed to flush " + batchSize + " entity metadata merge update(s): " + e.getMessage();
@@ -392,11 +388,7 @@ class RuleBasedDocumentGraphExtractor {
     }
 
     private boolean isCancelled(UnifiedCrawlJob job) {
-        if (job.getStatus().get() == UnifiedCrawlJob.Status.CANCELLED) {
-            job.setCompletedAt(Instant.now());
-            return true;
-        }
-        return false;
+        return job != null && job.isCancellationRequested();
     }
 
     private Long jobFactSheetId(UnifiedCrawlJob job) {

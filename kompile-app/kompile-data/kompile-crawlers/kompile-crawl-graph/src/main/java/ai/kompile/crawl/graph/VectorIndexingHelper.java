@@ -39,6 +39,7 @@ import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -82,6 +83,9 @@ class VectorIndexingHelper {
     @Autowired(required = false)
     private ResourceGovernorAdapter resourceGovernor;
 
+    /** Original store path captured before the first crawl-specific switch. Guarded by this instance. */
+    private String defaultVectorStorePath;
+
     // ------------------------------------------------------------------
     // Configurable fields — kept in sync with the orchestrator via package-private setter
     // ------------------------------------------------------------------
@@ -117,15 +121,18 @@ class VectorIndexingHelper {
     // Main entry point
     // ------------------------------------------------------------------
 
-    void indexDocuments(List<Document> documents,
-                        VectorIndexConfig config,
-                        UnifiedCrawlJob job) {
+    synchronized void indexDocuments(List<Document> documents,
+                                     VectorIndexConfig config,
+                                     UnifiedCrawlJob job) {
         try {
             updateProgress(job, "EMBEDDING", "Preparing vector indexing", documents.size() + " chunk(s)");
-            // Switch to target collection if specified
-            if (config.getCollectionName() != null && !config.getCollectionName().isBlank()) {
-                vectorStore.switchIndexPath(config.getCollectionName());
+
+            String currentIndexPath = currentVectorStorePath();
+            if (defaultVectorStorePath == null && currentIndexPath != null) {
+                defaultVectorStorePath = currentIndexPath;
             }
+            String effectiveCollection = resolveEffectiveCollectionName(config, job, defaultVectorStorePath);
+            switchToEffectiveCollection(effectiveCollection, currentIndexPath);
 
             EmbeddingModel embeddingModel = primaryEmbeddingModel();
             List<Document> indexableDocuments = filterDocumentsByEmbeddingLanguage(documents, embeddingModel, job);
@@ -218,6 +225,11 @@ class VectorIndexingHelper {
                     pendingBatchNumber = batchNumber;
                     pendingBatchStartNs = batchStartNs;
                 } catch (Exception e) {
+                    if (isCancelled(job)) {
+                        log.info("[Job {}] Vector indexing acknowledged cancellation before retry handling",
+                                job.getJobId());
+                        return;
+                    }
                     // Embedding failed — collect any pending store first
                     if (pendingStore != null) {
                         try {
@@ -326,7 +338,7 @@ class VectorIndexingHelper {
                         pendingBatchStartNs, embeddingSizer, vectorRetryPolicy, job);
             }
             } finally {
-                storeExec.shutdownNow();
+                shutdownStoreExecutor(storeExec, pendingStore, job);
             }
 
             job.getCurrentBatchStep().set("COMMITTING");
@@ -344,6 +356,10 @@ class VectorIndexingHelper {
                     job.getDocumentsIndexed().get() + " chunk(s) indexed");
             log.info("Indexed {} documents to vector store", job.getDocumentsIndexed().get());
         } catch (Exception e) {
+            if (isCancelled(job)) {
+                log.info("[Job {}] Vector indexing stopped after cancellation", job.getJobId());
+                return;
+            }
             String errorDetail = e.getMessage() != null ? e.getMessage()
                     : e.getClass().getSimpleName() + " at " + (e.getStackTrace().length > 0 ? e.getStackTrace()[0] : "unknown");
             log.error("Vector indexing failed: {}", errorDetail, e);
@@ -439,11 +455,24 @@ class VectorIndexingHelper {
                                    UnifiedCrawlJob job) {
         int indexed;
         try {
-            indexed = storeFuture.get(300, TimeUnit.SECONDS);
-        } catch (TimeoutException te) {
-            storeFuture.cancel(true);
-            throw new IllegalStateException("Vector store write timed out for batch " + batchNumber
-                    + "/" + totalBatches + " (" + batch.size() + " docs)", te);
+            long deadlineNanos = System.nanoTime() + TimeUnit.SECONDS.toNanos(300);
+            while (true) {
+                if (isCancelled(job)) {
+                    storeFuture.cancel(true);
+                    throw new CancellationException("Crawl cancelled while waiting for vector store batch "
+                            + batchNumber + "/" + totalBatches);
+                }
+                try {
+                    indexed = storeFuture.get(1, TimeUnit.SECONDS);
+                    break;
+                } catch (TimeoutException pollTimeout) {
+                    if (System.nanoTime() >= deadlineNanos) {
+                        storeFuture.cancel(true);
+                        throw new IllegalStateException("Vector store write timed out for batch " + batchNumber
+                                + "/" + totalBatches + " (" + batch.size() + " docs)", pollTimeout);
+                    }
+                }
+            }
         } catch (ExecutionException ee) {
             Throwable cause = ee.getCause() != null ? ee.getCause() : ee;
             throw new IllegalStateException("Vector store write failed for batch " + batchNumber
@@ -670,7 +699,13 @@ class VectorIndexingHelper {
         }
 
         try {
-            log.info("Embedding model is not initialized; running readiness probe before vector indexing");
+            log.info("Embedding model is not initialized; requesting startup/recovery before vector indexing");
+            if (!embeddingModel.initializeIfNeeded()) {
+                log.warn("Embedding model startup/recovery did not reach ready state: {}",
+                        embeddingModelNotReadyReason(embeddingModel));
+                return false;
+            }
+            log.info("Embedding model startup/recovery succeeded; running readiness probe");
             readinessProbe = embeddingModel.embedBatch(List.of("kompile embedding readiness probe"));
             boolean ready = readinessProbe != null
                     && readinessProbe.size() == 1
@@ -766,12 +801,75 @@ class VectorIndexingHelper {
     // Private helpers
     // ------------------------------------------------------------------
 
-    private boolean isCancelled(UnifiedCrawlJob job) {
-        if (job.getStatus().get() == UnifiedCrawlJob.Status.CANCELLED) {
-            job.setCompletedAt(Instant.now());
-            return true;
+    void shutdownStoreExecutor(ExecutorService storeExec,
+                               Future<?> pendingStore,
+                               UnifiedCrawlJob job) {
+        if (pendingStore != null && !pendingStore.isDone()) {
+            pendingStore.cancel(true);
         }
-        return false;
+        storeExec.shutdownNow();
+
+        boolean interrupted = false;
+        while (!storeExec.isTerminated()) {
+            try {
+                if (!storeExec.awaitTermination(1, TimeUnit.SECONDS)) {
+                    log.debug("[Job {}] Waiting for vector-store worker to quiesce",
+                            job != null ? job.getJobId() : "unknown");
+                    storeExec.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                interrupted = true;
+                storeExec.shutdownNow();
+            }
+        }
+        if (interrupted) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private boolean isCancelled(UnifiedCrawlJob job) {
+        return job != null && job.isCancellationRequested();
+    }
+
+    void switchToEffectiveCollection(String effectiveCollection, String currentIndexPath) {
+        if (effectiveCollection == null || effectiveCollection.equals(currentIndexPath)) {
+            return;
+        }
+        if (!vectorStore.switchIndexPath(effectiveCollection)) {
+            throw new IllegalStateException(
+                    "Vector store could not switch to crawl collection '" + effectiveCollection + "'");
+        }
+    }
+
+    private String currentVectorStorePath() {
+        try {
+            return normalizeIndexPath(vectorStore.getIndexPath());
+        } catch (RuntimeException pathFailure) {
+            log.warn("Could not read the current vector-store path: {}", pathFailure.getMessage());
+            return null;
+        }
+    }
+
+    static String resolveEffectiveCollectionName(VectorIndexConfig config,
+                                                  UnifiedCrawlJob job,
+                                                  String defaultPath) {
+        String configured = config != null ? normalizeIndexPath(config.getCollectionName()) : null;
+        if (configured != null) {
+            return configured;
+        }
+        Long factSheetId = job != null && job.getRequest() != null
+                ? job.getRequest().getFactSheetId() : null;
+        if (factSheetId != null) {
+            return "fact-sheet-" + factSheetId;
+        }
+        return normalizeIndexPath(defaultPath);
+    }
+
+    private static String normalizeIndexPath(String value) {
+        if (value == null || value.isBlank() || "N/A".equalsIgnoreCase(value.trim())) {
+            return null;
+        }
+        return value.trim();
     }
 
     private Long jobFactSheetId(UnifiedCrawlJob job) {

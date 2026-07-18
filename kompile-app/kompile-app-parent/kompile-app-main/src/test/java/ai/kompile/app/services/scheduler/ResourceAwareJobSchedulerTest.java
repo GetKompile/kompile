@@ -270,6 +270,31 @@ class ResourceAwareJobSchedulerTest {
         }
 
         @Test
+        void runningJobCannotOverwriteCancelledStateWhenItsExecutorReturns() throws Exception {
+            CountDownLatch started = new CountDownLatch(1);
+            CountDownLatch finish = new CountDownLatch(1);
+            ScheduledJob job = buildJob("running", "crawl", ctx -> {
+                started.countDown();
+                try {
+                    finish.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+
+            scheduler.submit(job);
+            assertTrue(started.await(5, TimeUnit.SECONDS));
+            assertTrue(scheduler.cancel("running"));
+            finish.countDown();
+
+            ScheduledJob.JobResult result = job.getResultFuture().get(5, TimeUnit.SECONDS);
+            Thread.sleep(100);
+            assertFalse(result.success());
+            assertEquals(ScheduledJob.JobState.CANCELLED, job.getState());
+            assertEquals("CANCELLED", job.getCurrentPhase());
+        }
+
+        @Test
         void cancelUnknownJobReturnsFalse() {
             assertFalse(scheduler.cancel("nonexistent"));
         }

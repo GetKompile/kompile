@@ -32,8 +32,7 @@ import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
-import ai.kompile.knowledgegraph.repository.GraphEdgeRepository;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
+import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.AccessLevel;
@@ -68,9 +67,7 @@ public class ExtractionJobService {
     @Autowired
     private final ExtractionLogRepository logRepository;
     @Autowired
-    private final GraphNodeRepository nodeRepository;
-    @Autowired
-    private final GraphEdgeRepository edgeRepository;
+    private final KnowledgeGraphService graphService;
     @Autowired
     private final GraphStorageRegistry storageRegistry;
     @Autowired
@@ -492,47 +489,21 @@ public class ExtractionJobService {
         // Generate external ID from name and type
         String externalId = "entity_" + name.toLowerCase().replaceAll("[^a-z0-9]", "_");
 
-        Optional<GraphNode> existing = nodeRepository.findByExternalIdAndNodeTypeAndFactSheetId(
+        Optional<GraphNode> existing = graphService.getNodeByExternalIdInFactSheet(
                 externalId, NodeLevel.ENTITY, factSheetId);
 
         if (existing.isPresent()) {
             return existing.get();
         }
 
-        // Create new entity node
-        GraphNode node = GraphNode.builder()
-                .nodeType(NodeLevel.ENTITY)
-                .externalId(externalId)
-                .title(name)
-                .description(description)
-                .factSheetId(factSheetId)
-                .metadataJson("{\"entityType\": \"" + (type != null ? type : "UNKNOWN") + "\"}")
-                .build();
-
-        return nodeRepository.save(node);
+        return graphService.createNode(NodeLevel.ENTITY, externalId, name, description,
+                Map.of("entityType", type != null ? type : "UNKNOWN"), factSheetId);
     }
 
     private GraphEdge createEdgeForProposal(GraphNode source, GraphNode target, TripleProposal proposal) {
-        GraphEdge edge = GraphEdge.builder()
-                .sourceNode(source)
-                .targetNode(target)
-                .edgeType(EdgeType.USER_DEFINED) // Or a new EXTRACTED type
-                .label(proposal.getPredicateName())
-                .description(proposal.getPredicateName() + " relationship")
-                .weight(proposal.getConfidence())
-                .factSheetId(proposal.getFactSheetId())
-                .bidirectional(false)
-                .build();
-
-        GraphEdge saved = edgeRepository.save(edge);
-
-        // Update edge counts
-        source.incrementEdgeCount();
-        target.incrementEdgeCount();
-        nodeRepository.save(source);
-        nodeRepository.save(target);
-
-        return saved;
+        return graphService.createEdge(source.getNodeId(), target.getNodeId(),
+                EdgeType.USER_DEFINED, proposal.getPredicateName(), proposal.getConfidence(),
+                proposal.getPredicateName() + " relationship");
     }
 
     /**

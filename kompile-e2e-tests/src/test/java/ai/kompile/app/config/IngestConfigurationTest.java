@@ -72,8 +72,9 @@ class IngestConfigurationTest {
 
     @Test
     void defaults_chunkSettings() {
-        assertEquals(1000, config.getDefaultChunkSize());
-        assertEquals(100, config.getDefaultChunkOverlap());
+        // P5: default chunk size 1000 → 2000, overlap 100 → 200.
+        assertEquals(2000, config.getDefaultChunkSize());
+        assertEquals(200, config.getDefaultChunkOverlap());
         assertEquals("table-aware", config.getDefaultChunker());
     }
 
@@ -342,9 +343,10 @@ class IngestConfigurationTest {
 
     @Test
     void getChunkingOptions_containsExpectedKeys() {
+        // P5: default chunk size 1000 → 2000, overlap 100 → 200.
         Map<String, Object> options = config.getChunkingOptions();
-        assertEquals(1000, options.get("chunkSize"));
-        assertEquals(100, options.get("overlap"));
+        assertEquals(2000, options.get("chunkSize"));
+        assertEquals(200, options.get("overlap"));
         assertEquals(true, options.get("preserveParagraphs"));
     }
 

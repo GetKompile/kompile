@@ -17,10 +17,18 @@
 import { Component, OnInit, OnDestroy } from '@angular/core';
 import { FormBuilder, FormGroup, Validators } from '@angular/forms';
 import { MatSnackBar } from '@angular/material/snack-bar';
+import { ActivatedRoute } from '@angular/router';
 import { Subject } from 'rxjs';
 import { takeUntil } from 'rxjs/operators';
 import { StagingService } from '../../services/staging.service';
-import { StagingModelInfo, ModelType } from '../../models/api-models';
+import {
+  ModelType,
+  StageModelRequest,
+  StagingModelInfo,
+  StagingOutputFormat,
+  StagingQuantizationProfile,
+  StagingTargetProfile
+} from '../../models/api-models';
 
 interface SourceOption {
   value: string;
@@ -28,6 +36,12 @@ interface SourceOption {
   icon: string;
   placeholder: string;
   hint: string;
+}
+
+interface TargetOption {
+  value: StagingTargetProfile;
+  label: string;
+  defaultSoc: string;
 }
 
 @Component({
@@ -43,6 +57,7 @@ export class DownloadModelComponent implements OnInit, OnDestroy {
   downloadForm: FormGroup;
   isDownloading = false;
   currentStaging: StagingModelInfo | null = null;
+  completedOutputFormat: StagingOutputFormat | null = null;
 
   sources: SourceOption[] = [
     {
@@ -83,8 +98,26 @@ export class DownloadModelComponent implements OnInit, OnDestroy {
 
   formats: { value: string; label: string }[] = [
     { value: 'onnx', label: 'ONNX (.onnx)' },
+    { value: 'gguf', label: 'GGUF (.gguf)' },
     { value: 'tensorflow', label: 'TensorFlow (.pb)' },
     { value: 'samediff', label: 'SameDiff (.fb) - No conversion needed' }
+  ];
+
+  outputFormats: { value: StagingOutputFormat; label: string }[] = [
+    { value: 'model', label: 'Staged model' },
+    { value: 'kproject', label: 'Offline Android package (.kproject)' }
+  ];
+
+  targets: TargetOption[] = [
+    { value: 'android-arm64-vulkan', label: 'Android ARM64 · Vulkan 1.1', defaultSoc: 'Android_Vulkan_1_1' },
+    { value: 'android-arm64-hexagon-htp', label: 'Android ARM64 · Qualcomm Hexagon HTP', defaultSoc: 'SM8650' },
+    { value: 'android-arm64-nnapi-accelerator', label: 'Pixel 8a / Tensor G3 · NNAPI accelerator', defaultSoc: 'Tensor_G3' },
+    { value: 'android-arm64-google-tensor-g5', label: 'Google Tensor G5 · Android ARM64', defaultSoc: 'Tensor_G5' }
+  ];
+
+  quantizationProfiles: { value: StagingQuantizationProfile; label: string }[] = [
+    { value: 'none', label: 'None' },
+    { value: 'int8-per-channel', label: 'INT8 per-channel' }
   ];
 
   // Recent downloads for quick access
@@ -93,7 +126,8 @@ export class DownloadModelComponent implements OnInit, OnDestroy {
   constructor(
     private fb: FormBuilder,
     private stagingService: StagingService,
-    private snackBar: MatSnackBar
+    private snackBar: MatSnackBar,
+    private route: ActivatedRoute
   ) {
     this.downloadForm = this.fb.group({
       source: ['huggingface', Validators.required],
@@ -101,6 +135,10 @@ export class DownloadModelComponent implements OnInit, OnDestroy {
       modelId: ['', Validators.required],
       modelType: ['dense_encoder', Validators.required],
       format: ['onnx', Validators.required],
+      outputFormat: ['model', Validators.required],
+      targetProfile: ['android-arm64-vulkan', Validators.required],
+      quantizationProfile: ['none', Validators.required],
+      targetSoc: ['Android_Vulkan_1_1', Validators.required],
       autoPromote: [false],
       hfToken: [''],
       revision: ['main']
@@ -108,7 +146,12 @@ export class DownloadModelComponent implements OnInit, OnDestroy {
   }
 
   ngOnInit(): void {
+    this.applyAndroidPreset();
     this.loadRecentDownloads();
+
+    this.downloadForm.get('targetProfile')?.valueChanges
+      .pipe(takeUntil(this.destroy$))
+      .subscribe(target => this.applyTargetSocDefault(target));
 
     // Update placeholder when source changes
     this.downloadForm.get('source')?.valueChanges
@@ -167,16 +210,21 @@ export class DownloadModelComponent implements OnInit, OnDestroy {
 
     const formValue = this.downloadForm.value;
     this.isDownloading = true;
+    this.completedOutputFormat = formValue.outputFormat;
 
-    const request = {
+    const request: StageModelRequest = {
       modelId: formValue.modelId,
       source: formValue.source,
       repository: formValue.repository,
       format: formValue.format,
-      modelType: formValue.modelType,
+      type: formValue.modelType,
       autoPromote: formValue.autoPromote,
       revision: formValue.revision,
-      token: formValue.hfToken || undefined
+      authToken: formValue.hfToken || undefined,
+      outputFormat: formValue.outputFormat,
+      targetProfile: formValue.targetProfile,
+      quantizationProfile: formValue.quantizationProfile,
+      targetSoc: formValue.targetSoc
     };
 
     this.stagingService.stageModel(request)
@@ -207,7 +255,7 @@ export class DownloadModelComponent implements OnInit, OnDestroy {
             if (status.status === 'completed') {
               this.showSuccess(`Model ${modelId} staged successfully!`);
               this.loadRecentDownloads();
-              this.resetForm();
+              this.resetInputFields();
             } else {
               this.showError(`Staging failed: ${status.error || 'Unknown error'}`);
             }
@@ -219,6 +267,24 @@ export class DownloadModelComponent implements OnInit, OnDestroy {
             console.error('Polling error:', error);
           }
         }
+      });
+  }
+
+  downloadOutput(modelId: string): void {
+    this.stagingService.downloadStagedOutput(modelId)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: response => {
+          const disposition = response.headers.get('Content-Disposition');
+          const filename = this.getOutputFilename(disposition, modelId);
+          const url = URL.createObjectURL(response.body as Blob);
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = filename;
+          link.click();
+          URL.revokeObjectURL(url);
+        },
+        error: error => this.showError(`Failed to download output: ${error.message}`)
       });
   }
 
@@ -253,14 +319,14 @@ export class DownloadModelComponent implements OnInit, OnDestroy {
   }
 
   resetForm(): void {
-    this.downloadForm.patchValue({
-      repository: '',
-      modelId: '',
-      autoPromote: false,
-      hfToken: '',
-      revision: 'main'
-    });
+    this.resetInputFields();
     this.currentStaging = null;
+    this.completedOutputFormat = null;
+  }
+
+  clearCompleted(): void {
+    this.currentStaging = null;
+    this.completedOutputFormat = null;
   }
 
   getProgressPercent(): number {
@@ -297,6 +363,44 @@ export class DownloadModelComponent implements OnInit, OnDestroy {
       case 'failed': return 'error';
       default: return 'hourglass_empty';
     }
+  }
+
+  private resetInputFields(): void {
+    this.downloadForm.patchValue({
+      repository: '',
+      modelId: '',
+      autoPromote: false,
+      hfToken: '',
+      revision: 'main'
+    });
+  }
+
+  private applyAndroidPreset(): void {
+    const artifact = this.route.snapshot.queryParamMap.get('artifact');
+    const target = this.route.snapshot.queryParamMap.get('target') as StagingTargetProfile | null;
+    if (artifact === 'kproject' && target && this.targets.some(option => option.value === target)) {
+      this.downloadForm.patchValue({
+        outputFormat: 'kproject',
+        targetProfile: target,
+        targetSoc: this.targets.find(option => option.value === target)?.defaultSoc
+      });
+    }
+  }
+
+  private applyTargetSocDefault(target: StagingTargetProfile): void {
+    const option = this.targets.find(candidate => candidate.value === target);
+    if (option) {
+      this.downloadForm.patchValue({ targetSoc: option.defaultSoc });
+    }
+  }
+
+  private getOutputFilename(contentDisposition: string | null, modelId: string): string {
+    const utf8Match = contentDisposition?.match(/filename\*=UTF-8''([^;]+)/i);
+    if (utf8Match) {
+      return decodeURIComponent(utf8Match[1]);
+    }
+    const filenameMatch = contentDisposition?.match(/filename="?([^";]+)"?/i);
+    return filenameMatch?.[1] || `${modelId}.kproject`;
   }
 
   private markFormTouched(): void {

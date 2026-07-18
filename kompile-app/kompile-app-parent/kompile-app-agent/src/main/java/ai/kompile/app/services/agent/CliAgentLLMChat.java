@@ -603,7 +603,9 @@ public class CliAgentLLMChat implements LLMChat {
             boolean blank = content == null || content.trim().isEmpty() || content.startsWith("Error:");
             outcome = cliAgentModelService.classifyOutcome(content, blank);
             if (outcome == CliAgentModelService.ModelOutcome.OK) {
-                cliAgentModelService.recordModelLatency(model, System.currentTimeMillis() - startMs);
+                long okLatencyMs = System.currentTimeMillis() - startMs;
+                cliAgentModelService.recordModelLatency(model, okLatencyMs);
+                cliAgentModelService.recordModelThroughput(model, content.length(), okLatencyMs);
                 ExtractionConsensusService.ScoredExtraction scored = consensusService.score(model, content);
                 cliAgentModelService.recordModelCorrectness(model, scored.correctness());
                 if (scored.correctness() <= 0.0) {
@@ -725,6 +727,8 @@ public class CliAgentLLMChat implements LLMChat {
             if (rotationModel != null) {
                 if (outcome == CliAgentModelService.ModelOutcome.OK) {
                     cliAgentModelService.recordModelLatency(rotationModel, latencyMs);
+                    cliAgentModelService.recordModelThroughput(rotationModel,
+                            rawContent == null ? 0 : rawContent.length(), latencyMs);
                     // Score the output's correctness (well-formed entities/relationships, not merely
                     // non-empty) and record it so selection prefers models that produce GOOD output;
                     // collect only correctness-positive outputs for the A/B weighted-consensus merge.

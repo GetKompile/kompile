@@ -2341,14 +2341,14 @@ public class ResumeTool implements CliTool {
                         agentCommand, agent, true, effectiveWorkDir);
             }
 
-            // Inject MCP tools before launching. Codex uses stdio config here;
-            // probing the HTTP app only slows the resume path and reports the wrong mode.
+            // Configure MCP tools before launching. Codex receives invocation-local
+            // overrides so concurrent resumes never race through ~/.codex/config.toml.
             String sseUrl = resolveResumeMcpSseUrl(agent);
             try {
-                injectedSettingsFile = ai.kompile.cli.main.chat.mcp.McpToolInjection.injectTools(
-                        effectiveWorkDir, agent, sseUrl);
+                injectedSettingsFile = configureNativeResumeMcp(
+                        agentCommand, effectiveWorkDir, agent, sseUrl);
             } catch (Exception e) {
-                terminal.writer().println(YELLOW + "Warning: Could not inject MCP tools: " + e.getMessage() + RESET);
+                terminal.writer().println(YELLOW + "Warning: Could not configure MCP tools: " + e.getMessage() + RESET);
             }
 
             String mcpMode = mcpModeForResume(agent, sseUrl);
@@ -3350,6 +3350,28 @@ public class ResumeTool implements CliTool {
 
     private boolean supportsNativeResumePermissionBypass(String agent) {
         return agent == null || !agent.toLowerCase(Locale.ROOT).contains("opencode");
+    }
+
+    /**
+     * Configure MCP access for a native resume. Codex's config is process-local because
+     * rewriting the shared global config races with concurrent Kompile processes.
+     *
+     * @return the settings file to restore after exit, or {@code null} for Codex
+     */
+    static Path configureNativeResumeMcp(List<String> agentCommand, Path workingDirectory,
+                                         String agent, String sseUrl) throws IOException {
+        String agentKey = agent != null ? agent.toLowerCase(Locale.ROOT) : "";
+        if (agentKey.contains("codex")) {
+            List<String> overrides =
+                    ai.kompile.cli.main.chat.mcp.McpToolInjection.codexCommandLineOverrides(workingDirectory);
+            if (overrides.isEmpty()) {
+                throw new IOException("Could not resolve kompile CLI launcher for MCP injection");
+            }
+            agentCommand.addAll(1, overrides);
+            return null;
+        }
+        return ai.kompile.cli.main.chat.mcp.McpToolInjection.injectTools(
+                workingDirectory, agent, sseUrl);
     }
 
     private String resolveResumeMcpSseUrl(String agent) {

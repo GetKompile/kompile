@@ -33,7 +33,12 @@
 }
 
 .app-sidenav mat-nav-list {
-  padding-top: 8px;
+  display: block;
+  height: calc(100% - 72px);
+  min-height: 0;
+  padding: 8px 0 80px;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
 }
 
 .app-sidenav mat-nav-list a {
@@ -55,6 +60,7 @@
   bottom: 0;
   width: 100%;
   padding: 16px;
+  background: #fafafa;
 }
 
 .version-info {
@@ -89,4 +95,51 @@
   flex: 1;
   overflow: auto;
   padding: 0;
+}
+
+@media (max-width: 768px) {
+  .app-container {
+    height: 100dvh;
+    min-height: 100vh;
+  }
+
+  .app-sidenav {
+    width: min(86vw, 320px);
+  }
+
+  .app-sidenav mat-nav-list a {
+    min-height: 48px;
+  }
+
+  .main-content,
+  .content-area {
+    min-width: 0;
+  }
+
+  .app-toolbar {
+    min-width: 0;
+    padding-inline: 8px;
+  }
+
+  .toolbar-title {
+    min-width: 0;
+    margin-left: 8px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+@media (max-width: 480px) {
+  .toolbar-title {
+    font-size: 1rem;
+  }
+
+  .sidenav-header {
+    padding: 16px;
+  }
+
+  .sidenav-footer {
+    padding: 12px;
+  }
 }

@@ -1,277 +1,223 @@
-# Kompile Chat Local — Android
+# Kompile Chat Local — Android accelerator builds
 
-Jetpack Compose chat app that wires directly into `kompile-chat-local-core` and
-`kompile-graph-reasoning-local`. Pure Java 17 / ART-safe; no Spring, no JPA, no Jackson.
+This is a mobile-first, fully offline Compose chat application. Graph search and
+reasoning run locally through the Kompile graph engine; local text generation is
+provided by one of four device-specific accelerator flavors.
 
-## Current State
+| Flavor | Model input | Execution route | CPU/BLAS fallback |
+| --- | --- | --- | --- |
+| `vulkan` | canonical `.sdz` | SDX Vulkan lowering, command capture, and replay on Android GPU | forbidden |
+| `hexagon` | canonical `.sdz` | SDX AOT replay on Qualcomm Hexagon/HTP | forbidden |
+| `tensorG3` | canonical `.sdz` | libnd4j NNAPI pinned to one complete-graph `DEVICE_ACCELERATOR` | forbidden |
+| `tensorG5` | canonical `.sdz` | Google LiteRT-LM dispatch on Tensor G5 TPU/NPU | forbidden |
 
-| Feature | Status | Notes |
-|---------|--------|-------|
-| Remote chat (OpenAI-compatible) | **Works** | `AndroidRemoteChatModel` — `HttpURLConnection`, zero deps |
-| Graph tool bridge | **Works** | `GraphToolBridge.open(kgraph)` on ART |
-| Local reasoning tools | **Works** | `kompile-graph-reasoning-local` is pure Java 17 |
-| Local SDX generation | **Blocked** | Needs `libsdx_llm.so` ARM64 AAR (not yet published) |
-| Streaming tokens | Not yet | `ChatModel.generateStreaming` collapses to one chunk; UI shows spinner |
+All four variants are ARM64-only, omit the Android `INTERNET` permission, and fail
+closed when their exact provider or model contract is unavailable. OpenBLAS,
+host runtimes, implicit NNAPI partitioning, and alternate providers are rejected by the
+packaging verifier.
 
----
+## Architecture
 
-## Build environment (proven)
+The application layer depends only on `ChatModel` and
+`AcceleratedChatModelAndroid`. Flavor source sets provide
+`PlatformLocalChatSession` implementations:
 
-| Tool | Version | Note |
-|------|---------|------|
-| JDK | 17 Temurin (Amazon Corretto also works) | GraalVM 17 **breaks** AGP 8.5 jlink transform |
-| Android SDK | API 35, Build Tools 35.0.0 | `ANDROID_HOME=~/dev-apps/android-sdk` |
-| AGP | 8.5.2 | warns on compileSdk=35; suppress with `android.suppressUnsupportedCompileSdk=35` |
-| Gradle | 8.9 | wrapper at `gradle/wrapper/gradle-wrapper.properties` |
-| Kotlin | 2.0.21 | K2 compiler (K1 flag removed; K2 works fine) |
+- Vulkan, Hexagon, and Tensor G3 share one SDX JavaCPP session lifecycle using `SdxRuntime`,
+  `NativeTokenizer`, and `SdxTextSession`. Only their strict model options and
+  route identity differ: `mobileVulkan()`, `mobileHexagon()`, and
+  `mobileNnapiAccelerator()`.
+- Tensor G5 uses the SDX JavaCPP LiteRT-LM session and Google's dispatch runtime.
 
-**Do NOT use GraalVM JDK** for the Android build. The `jlink --disable-plugin system-modules`
-step in AGP 8.5 crashes on GraalVM's jlink. Use Temurin 17 or Amazon Corretto 17.
+The retained legacy JNA source is excluded from every accelerator compiler task
+and is not packaged. There is no remote chat route. Streaming, stop-token
+handling, cancellation, session reset, and resource ownership are implemented
+at the provider seam.
 
----
+The bundled `fixture.kgraph` is checksum-verified on every launch. Imports run
+off the UI thread and are transactionally moved into app-owned storage. Graphs
+are opened once for format validation before activation. The application accepts
+only the canonical SameDiff `.sdz` identity. Provider formats are compiler-cache
+details embedded under `META-INF/sdx-cache`, extracted into a checksummed
+app-private cache, and selected by the APK target profile.
 
-## Prerequisites
+Graph reasoning runs in `libkompile_reasoning_android.so`, built by stock
+GraalVM `native-image` plus Android NDK r28b for arm64/bionic API 28. A small
+generated `libjnikompile_graph.so` JavaCPP transport exposes the stable
+`kgr_*` C ABI to the app. Gluon is not used, and graph lifecycle calls remain
+on one native thread because the Graal isolate thread handle is thread-affine.
 
-1. Install Android SDK (idempotent — skip if already present):
-   ```bash
-   bash kompile-chat-local/mobile/android/setup-android.sh
-   ```
-   This installs `cmdline-tools`, `platform-tools`, `platforms;android-35`,
-   `build-tools;35.0.0`, `emulator`, `system-images;android-35;google_apis;x86_64`,
-   and creates the `kompile_test_35` AVD.
+## Build all four APKs
 
-2. Install kompile JARs to mavenLocal (from repo root):
-   ```bash
-   JAVA_HOME=~/.sdkman/candidates/java/17.0.12-graal \
-   /home/agibsonccc/dev-apps/mvn/bin/mvn \
-     -pl kompile-chat-local/kompile-chat-local-core,\
-   kompile-app/kompile-data/kompile-graphs/kompile-graph-reasoning-local,\
-   kompile-app/kompile-data/kompile-graphs/kompile-graph-reasoning \
-     install -DskipTests
-   ```
+Required inputs:
 
----
+- Linux with Bash 4+, GNU coreutils/findutils, Info-ZIP, and CMake 3.20+
+- JDK 17 (Temurin or Amazon Corretto; do not use GraalVM for AGP)
+- Android SDK API 35 and NDK r28b
+- a prebuilt Android graph AOT library, or the pinned stock-Graal/LabsJDK inputs
+  consumed by `kompile-graph-reasoning-local/build-android-ndk.sh`
+- populated Gradle and Maven caches
+- the exact Vulkan, Hexagon, Tensor G3 NNAPI, and Tensor G5 SDX runtime AARs
+  produced by the corresponding libnd4j CMake/Maven profiles
 
-## Step 1 — Generate gradlew (first time only)
-
-The `gradlew` script is not committed. Generate it once using a local Gradle installation:
-
-```bash
-cd kompile-chat-local/mobile/android
-JAVA_HOME=~/.sdkman/candidates/java/17.0.17-amzn \
-~/.gradle/wrapper/dists/gradle-8.9-bin/*/gradle-8.9/bin/gradle wrapper
-```
-
----
-
-## Step 2 — Build APK
+The normal entry point is the opt-in Maven module. It is absent from the default
+reactor and is activated only by `-Dkompile.mobile`:
 
 ```bash
-cd kompile-chat-local/mobile/android
-JAVA_HOME=~/.sdkman/candidates/java/17.0.17-amzn \
-ANDROID_HOME=~/dev-apps/android-sdk \
-./gradlew :app:assembleDebug --no-daemon
-# APK: app/build/outputs/apk/debug/app-debug.apk  (~29 MB)
+./mvnw -o -f kompile-chat-local/pom.xml verify \
+  -Dkompile.mobile=all \
+  -Dmobile.android.sdk=/path/to/android-sdk \
+  -Dmobile.android.ndk=/path/to/android-sdk/ndk/28.1.13356709 \
+  -Dmobile.java.home=/path/to/jdk-17 \
+  -Dmobile.maven=/absolute/path/to/mvn
 ```
 
----
+Use `vulkan`, `hexagon`, `tensor-g3`, or `tensor-g5` instead of `all`
+to assemble one APK. Maven owns lifecycle and variant selection; libnd4j CMake
+owns accelerator-native builds, and the Android Gradle build remains the APK
+packaging boundary. The profile invokes Gradle and its nested Maven preparation
+offline.
 
-## Step 3 — Run on emulator
+The lower-level `android/tools/build-offline-accelerators.sh` remains directly
+usable for CI or diagnosis. Runtime AARs may be overridden with its
+`--vulkan-aar`, `--hexagon-aar`, `--tensor-g3-aar`, and
+`--tensor-g5-aar` options or with the matching Maven properties.
 
-### Boot the emulator
+Maven outputs:
+
+```text
+mobile/target/offline-dist/kompile-offline-graph-chat-vulkan.apk
+mobile/target/offline-dist/kompile-offline-graph-chat-vulkan.apk.sha256
+mobile/target/offline-dist/kompile-offline-graph-chat-hexagon.apk
+mobile/target/offline-dist/kompile-offline-graph-chat-hexagon.apk.sha256
+mobile/target/offline-dist/kompile-offline-graph-chat-tensor-g3-pixel-8a.apk
+mobile/target/offline-dist/kompile-offline-graph-chat-tensor-g3-pixel-8a.apk.sha256
+mobile/target/offline-dist/kompile-offline-graph-chat-tensor-g5.apk
+mobile/target/offline-dist/kompile-offline-graph-chat-tensor-g5.apk.sha256
+```
+
+Direct invocation of `build-offline-accelerators.sh` instead defaults to
+`mobile/android/build/offline-dist`.
+
+These are debug-signed research APKs. Production distribution must supply its
+own release signing configuration.
+
+## What the build verifies
+
+Before and after assembly the build:
+
+1. validates each provider AAR, ELF ABI, accelerator declaration, and forbidden
+   dependency set;
+2. assembles only `arm64-v8a`;
+3. verifies the APK signature;
+4. confirms that `INTERNET` is absent;
+5. verifies the graph fixture against `offline-assets.json`;
+6. requires and audits the stock-Graal graph AOT plus JavaCPP wrapper;
+7. requires the selected provider libraries;
+8. proves that every AArch64 `DT_NEEDED` dependency is bundled or an
+   explicitly allowed Android/vendor system library;
+9. compares every runtime library byte-for-byte with the selected AAR;
+10. verifies the JavaCPP loader hierarchy in the final APK DEX;
+11. requires extracted native packaging for filesystem-discovered DSP payloads;
+12. rejects OpenBLAS, host/CPU libraries, other accelerators, and undeclared ABIs.
+
+The machine-readable contract is `accelerators.json`. APK auditing is a
+fail-closed shell entry point with a CMake JSON validator. The final ZIP embeds
+that contract and re-runs the same verifier against every packaged APK and its
+exact packaged AAR before accepting the bundle. There is no host Java tools
+module and no Python in the supported build, audit, APK, or runtime path.
+On-device code is Kotlin/Java plus JavaCPP and the selected native provider.
+
+## Install and use
+
+Install only the flavor matching the physical device:
 
 ```bash
-ANDROID_HOME=~/dev-apps/android-sdk
-$ANDROID_HOME/emulator/emulator \
-  -avd kompile_test_35 \
-  -no-window -no-audio -no-boot-anim \
-  -no-snapshot \
-  -gpu swangle \
-  -memory 2048 \
-  -cores 2 &
-
-# Wait for boot
-until adb shell getprop sys.boot_completed 2>/dev/null | grep -q "^1$"; do sleep 5; done
+adb install -r ../target/offline-dist/kompile-offline-graph-chat-vulkan.apk
+adb install -r ../target/offline-dist/kompile-offline-graph-chat-hexagon.apk
+adb install -r ../target/offline-dist/kompile-offline-graph-chat-tensor-g3-pixel-8a.apk
+adb install -r ../target/offline-dist/kompile-offline-graph-chat-tensor-g5.apk
 ```
 
-### Install APK
+In Settings:
 
-```bash
-ANDROID_HOME=~/dev-apps/android-sdk
-export PATH=$ANDROID_HOME/platform-tools:$PATH
-adb install -r app/build/outputs/apk/debug/app-debug.apk
-```
+- import a `.kgraph` file or use the bundled fixture;
+- import one canonical `.sdz` containing checksummed cache objects for the APK
+  targets you intend to test;
+- set temperature and maximum output tokens.
 
-### Seed preferences (remote stub for testing)
+Models are not embedded in the APK. This avoids redistributing gated weights
+and lets research devices choose an appropriate memory tier. The research
+matrix and conversion/quantization requirements live in
+`deeplearning4j/libnd4j/tools/mobile/models.yaml` and
+`profiles/int8-per-channel-example.json`.
 
-The stub server at `tools/openai_stub.py` serves a toy OpenAI-compatible endpoint:
-- Odd call: returns a `tool_calls` response requesting `ask_graph_query`
-- Even call: returns a plain text final answer
+## Provider-specific limits
 
-Start the stub:
-```bash
-python3 kompile-chat-local/mobile/android/tools/openai_stub.py --port 8971
-```
+### Android Vulkan GPU
 
-Seed app SharedPreferences (from a separate terminal):
-```bash
-PKG="ai.kompile.chat.local.android.debug"
-adb shell "run-as $PKG sh -c 'mkdir -p /data/data/$PKG/shared_prefs && cat > /data/data/$PKG/shared_prefs/kompile_chat_prefs.xml'" << 'XML'
-<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
-<map>
-    <string name="remote_base_url">http://10.0.2.2:8971</string>
-    <string name="remote_model">stub-model</string>
-    <string name="remote_api_key"></string>
-    <string name="kgraph_path"></string>
-    <string name="model_path"></string>
-    <int name="max_tool_rounds" value="3" />
-    <float name="temperature" value="0.7" />
-    <int name="max_tokens" value="512" />
-    <boolean name="bootstrap_done" value="true" />
-</map>
-XML
-```
+The Vulkan AAR is built with the NDK, BLAS disabled, and Android's system Vulkan
+loader. `ModelOptions.mobileVulkan()` requires bundle-owned AOT SPIR-V. The
+native runtime performs full graph lowering, records the command sequence, and
+replays it for decode; an unsupported or unrecordable operation fails closed.
+Neither CPU nor generic NNAPI is included as a fallback.
 
-Launch and send a message:
-```bash
-PKG="ai.kompile.chat.local.android.debug"
-adb shell am start -n "$PKG/ai.kompile.chat.local.android.MainActivity"
-sleep 3
-adb shell input text "Who_does_Alice_work_for?"
-adb shell input keyevent 66
-sleep 30
-adb shell screencap -p /sdcard/chat_result.png
-adb pull /sdcard/chat_result.png .
-```
+### Qualcomm Hexagon/HTP
 
----
+The libnd4j CMake graph owns the pinned, checksum-verified Qualcomm Hexagon
+SDK, open-access toolchain, HexKL, and hexagon-mlir source downloads. Those are
+host compiler inputs for the C++ library and are cached outside the build tree;
+they are not manually copied into the APK. The build compiles the project-owned
+QAIC/FastRPC host adapter and v75 DSP service, then bundles both the AArch64 host
+runtime and `libsdx_hexagon_runtime_skel.so` in the Hexagon APK. A compatible
+Qualcomm device supplies only the vendor `libcdsprpc.so` transport; the
+Hexagon-only manifest admits it to the app linker namespace. Missing transport,
+DSP skeleton, search-path setup, or FastRPC service initialization is reported
+separately and fails closed; the app never redirects to CPU.
 
-## Step 4 — Configure (in-app settings)
+### Pixel 8a / Google Tensor G3
 
-1. Open the app and tap the Settings gear.
-2. Enter a remote base URL (e.g. `http://your-server:11434` for Ollama, or
-   `https://api.openai.com` for OpenAI).
-3. Set the Model ID and API Key if required.
-4. Optionally browse for a `.kgraph` file and/or model file.
-5. Tap **Save**. The route badge in the top bar updates immediately.
+The `tensorG3` APK uses libnd4j's NNAPI graph compiler, not the Tensor G5
+LiteRT dispatch library. At model load it enumerates only
+`ANEURALNETWORKS_DEVICE_ACCELERATOR` devices, requires one device to report
+support for every operation, and pins every graph segment to that same device
+with `ANeuralNetworksCompilation_createForDevices`. One-op, unsupported,
+non-contiguous, compilation-failure, and execution-failure paths stop; none
+demote to libnd4j CPU kernels. The NNAPI driver compilation is keyed beneath the
+content-addressed SDZ cache.
 
----
+On a Pixel 8a, test `tensorG3` and `vulkan`. The Hexagon APK is intentionally
+ineligible because Tensor G3 is not a Qualcomm SoC; the direct `tensorG5` APK is
+also intentionally gated to Tensor G5 hardware.
 
-## Known build quirks
+### Google Tensor G5
 
-### KDoc comments must not contain `/*` inside glob patterns
-Kotlin's block-comment lexer is nestable (`/* ... /* ... */ ... */` increments depth).
-Writing `assets/graphs/*.kgraph` inside a `/** ... */` KDoc opens a nested `/*` that
-is never closed. Always write `assets/graphs/ (*.kgraph files)` or escape the glob
-in the doc comment.
+The Tensor build uses pinned LiteRT-LM dispatch components. The app still accepts
+only `.sdz`; the compiler/cache extracts the checksummed
+`compiledArtifacts.tensorG5LiteRtLm` derivative internally.
+INT8 validation is fail-closed.
+The build is package-verified here; final acceptance requires a Tensor G5
+device run with dispatch/NPU tracing.
 
-### JNA duplicate class
-`kompile-chat-local-core` pulls `net.java.dev.jna:jna:5.14.0` as a plain JAR.
-`app/build.gradle.kts` also adds `net.java.dev.jna:jna:5.14.0@aar` for native lib
-unpacking. All three kompile deps must exclude the JAR form:
-```kotlin
-implementation("ai.kompile:kompile-chat-local-core:0.1.0-SNAPSHOT") {
-    exclude(group = "net.java.dev.jna", module = "jna")
-}
-```
+## Source map
 
-### Dorkbox / nd4j duplicate META-INF resources
-`com.dorkbox:Annotations` and `com.dorkbox:Updates` both ship `LICENSE.*` and `NOTICE.*`.
-nd4j sub-JARs each ship `META-INF/git.properties`. The `packaging.resources` block in
-`app/build.gradle.kts` excludes these and uses `pickFirsts += "META-INF/**"` for the rest.
-
-### GraalVM jlink crash (AGP 8.5 + compileSdk=35)
-AGP 8.5 runs `jlink --disable-plugin system-modules` to build a JDK image for D8.
-GraalVM's `jlink` does not support this flag and crashes with exit code 1.
-**Always use Temurin 17 (or Amazon Corretto 17) for the Android build.**
-
-### Emulator 36.6.x RenderThread SIGSEGV on Fedora 36 / kernel 6.2
-All headless GPU modes (`swiftshader_indirect`, `swiftshader`, `software`, `off`, `lavapipe`)
-crash in gfxstream's `RenderThread` with `SIGSEGV` on kernel 6.2.15 / Fedora 36.
-Use `gpu=swangle` (ANGLE + SwiftShader, different code path) or `gpu=host` with a
-visible X11 display. CI runs on `ubuntu-22.04` which does not have this issue.
-
----
-
-## Local SDX generation (future)
-
-When `libsdx_llm.so` is published as an AAR:
-
-1. Drop `sdx-llm-android-<version>.aar` into `app/libs/`.
-2. Browse to a `.gguf` or `.sdz` model file in Settings.
-3. The route badge will switch to **LOCAL** automatically.
-
-`SdxChatModelAndroid` guards `UnsatisfiedLinkError` at startup — it returns
-`isAvailable() = false` when the library is absent and the router falls through to
-remote transparently.
-
----
-
-## Architecture notes
-
-- **ChatModel seam**: `ai.kompile.chat.local.ChatModel` (Java interface) is the only
-  contact point between the Android app and the inference backend. Android injects
-  `SdxChatModelAndroid` (Kotlin/JNA) + `AndroidRemoteChatModel` (HttpURLConnection).
-
-- **No java.net.http**: `RemoteChatModel` (core) uses `java.net.http.HttpClient` which
-  is absent on ART. The Android port uses `AndroidRemoteChatModel` with `HttpURLConnection`.
-  Never instantiate `RemoteChatModel` on Android.
-
-- **`tool_result` role**: `ChatEngine` emits messages with `role = "tool_result"`.
-  OpenAI's `/v1/chat/completions` does not accept this role; `AndroidRemoteChatModel`
-  remaps it to `"user"` before sending.
-
-- **org.json**: Android ships `org.json` as a system library. Do NOT add
-  `org.json:json` to `dependencies {}` — it conflicts with the system version.
-
-- **SLF4J**: `kompile-graph-reasoning-local` pulls `slf4j-api`. The app's
-  `packaging.resources.excludes` drops the duplicate SLF4J service file.
-
-- **ABI filters**: only `arm64-v8a` and `x86_64` are included.
-
----
-
-## File tree
-
-```
-mobile/android/
-├── README.md                         (this file)
-├── build.gradle.kts                  (plugin version declarations)
-├── settings.gradle.kts               (includes :app, mavenLocal repo)
-├── gradle.properties
-├── gradlew / gradlew.bat             (generated once with `gradle wrapper`)
-├── gradle/wrapper/
-│   └── gradle-wrapper.properties     (Gradle 8.9)
-├── setup-android.sh                  (idempotent SDK + AVD bootstrap)
-├── tools/
-│   └── openai_stub.py                (stateful OpenAI stub for e2e tests)
-└── app/
-    ├── build.gradle.kts              (deps: compose BOM, JNA @aar, kompile JARs)
-    ├── proguard-rules.pro
-    └── src/main/
-        ├── AndroidManifest.xml       (usesCleartextTraffic=true for stub on 10.0.2.2)
-        ├── assets/
-        │   ├── graphs/               (drop .kgraph here — bootstrapped on first run)
-        │   └── models/               (drop model files here — bootstrapped on first run)
-        ├── res/
-        │   ├── drawable/ic_launcher_foreground.xml
-        │   ├── mipmap-anydpi-v26/{ic_launcher,ic_launcher_round}.xml
-        │   └── values/{colors,strings,themes}.xml
-        └── java/ai/kompile/chat/local/android/
-            ├── KompileChatApplication.kt
-            ├── MainActivity.kt
-            ├── model/
-            │   ├── AndroidRemoteChatModel.kt   -- HttpURLConnection remote model
-            │   └── SdxChatModelAndroid.kt      -- JNA local model (SDX C ABI)
-            ├── prefs/
-            │   └── AppPreferences.kt           -- SharedPreferences wrapper
-            ├── ui/
-            │   ├── navigation/AppNavigation.kt
-            │   ├── screens/
-            │   │   ├── ChatScreen.kt           -- messages + tool-round cards
-            │   │   └── SettingsScreen.kt       -- SAF pickers + sliders
-            │   └── theme/Theme.kt
-            └── viewmodel/
-                ├── UiModels.kt                 -- UiMessage / ToolRoundUi data classes
-                └── ChatViewModel.kt            -- ChatEngine wiring + lifecycle
+```text
+mobile/
+├── pom.xml                    opt-in Maven lifecycle adapter
+├── cmake/                     profile and final-bundle validators
+├── package-offline-graph-chat.sh
+├── verify-offline-graph-chat-bundle.sh
+└── android/
+    ├── accelerators.json
+    ├── tools/
+    │   ├── build-graph-javacpp.sh
+    │   ├── build-offline-accelerators.sh
+    │   ├── verify-offline-apk.sh
+    │   └── verify-offline-apk-json.cmake
+    └── app/src/
+        ├── main/              shared UI, graph JavaCPP backend, assets
+        ├── sdx/               shared Vulkan/Hexagon/NNAPI session lifecycle
+        ├── vulkan/            SDX/Vulkan JavaCPP provider
+        ├── hexagon/           SDX/Hexagon JavaCPP provider
+        ├── tensorG3/          SDX/NNAPI accelerator-only provider
+        └── tensorG5/          LiteRT-LM/Tensor JavaCPP provider
 ```

@@ -641,9 +641,25 @@ class GraphExtractionOrchestrator {
             // extraction parallelism drive wave width while still respecting any higher remote cap.
             remoteCap = Math.max(remoteCap, Math.max(1, graphExtractionParallelism));
         }
+        // Local lane: clamp wave width to the serving lane's actual concurrent-generate capacity
+        // (one loaded model instance = serial generation unless the server reports otherwise).
+        // Wider waves would only queue at the server, and the queue wait would be recorded as
+        // model latency — poisoning the latency/throughput EWMAs and the adaptive timeouts.
+        int localCap = resolvedParallelism;
+        if (!remoteBackend && modelCap.local() && modelCapabilityResolver != null) {
+            try {
+                localCap = Math.max(1, modelCapabilityResolver.localGenerationConcurrency());
+                if (localCap < resolvedParallelism) {
+                    log.info("[Job {}] Local serving lane reports concurrency {} — clamping extraction parallelism from {}",
+                            job.getJobId(), localCap, resolvedParallelism);
+                }
+            } catch (Exception e) {
+                localCap = resolvedParallelism;
+            }
+        }
         int parallelism = remoteBackend
                 ? Math.min(resolvedParallelism, remoteCap)
-                : resolvedParallelism;
+                : Math.min(resolvedParallelism, localCap);
         final int waveWidth = Math.max(1, parallelism);
         OuterParallelismAdvisor outerAdvisor = new OuterParallelismAdvisor(parallelism);
         DynamicBatchSizer graphBatchSizer = DynamicBatchSizer.forGraphExtraction(maxItems);
@@ -1404,7 +1420,25 @@ class GraphExtractionOrchestrator {
             if (responseOk) {
                 String json = extractJsonFromResponse(response);
                 if (json != null) {
-                    GraphExtractionSchema.ExtractionResult result = GraphExtractionValidator.fromJson(json);
+                    GraphExtractionSchema.ExtractionResult result;
+                    try {
+                        result = GraphExtractionValidator.fromJson(json);
+                    } catch (com.fasterxml.jackson.core.JsonProcessingException parseException) {
+                        String parseMessage = parseException.getOriginalMessage() != null
+                                ? parseException.getOriginalMessage()
+                                : parseException.getClass().getSimpleName();
+                        lastValidationErrors = "Malformed JSON: " + parseMessage;
+                        log.debug("[Job {}] Graph extraction JSON parse failed (attempt {}/{}): {}",
+                                jobId, valAttempt + 1, maxValRetries + 1, parseMessage);
+                        if (valAttempt >= maxValRetries) {
+                            documentTracker.recordDocumentProgress(job, doc, "GRAPH_EXTRACTION", "FAILED", 0, 0, 0,
+                                    "Graph extraction returned malformed JSON (after " + (valAttempt + 1) + " attempts)",
+                                    lastValidationErrors, EXTRACTORS_INLINE_LLM, true);
+                            recordedResult = true;
+                            failed = true;
+                        }
+                        continue;
+                    }
                     var validation = GraphExtractionValidator.validate(result);
                     if (validation.valid()) {
                         extractionSucceeded = true;
@@ -1773,7 +1807,18 @@ class GraphExtractionOrchestrator {
                 String json = extractJsonFromResponse(response);
                 if (json == null) continue;
 
-                GraphExtractionSchema.ExtractionResult result = GraphExtractionValidator.fromJson(json);
+                GraphExtractionSchema.ExtractionResult result;
+                try {
+                    result = GraphExtractionValidator.fromJson(json);
+                } catch (com.fasterxml.jackson.core.JsonProcessingException parseException) {
+                    String parseMessage = parseException.getOriginalMessage() != null
+                            ? parseException.getOriginalMessage()
+                            : parseException.getClass().getSimpleName();
+                    lastValidationErrors = "Malformed JSON: " + parseMessage;
+                    log.debug("[Job {}] Multi-chunk graph extraction JSON parse failed (attempt {}/{}): {}",
+                            jobId, valAttempt + 1, maxValRetries + 1, parseMessage);
+                    continue;
+                }
                 var validation = GraphExtractionValidator.validate(result);
                 if (!validation.valid()) {
                     lastValidationErrors = String.join("; ", validation.errors());
@@ -2941,11 +2986,7 @@ class GraphExtractionOrchestrator {
     }
 
     private boolean isCancelled(UnifiedCrawlJob job) {
-        if (job.getStatus().get() == UnifiedCrawlJob.Status.CANCELLED) {
-            job.setCompletedAt(Instant.now());
-            return true;
-        }
-        return false;
+        return job != null && job.isCancellationRequested();
     }
 
     private Long jobFactSheetId(UnifiedCrawlJob job) {

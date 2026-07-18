@@ -14,7 +14,9 @@
  * limitations under the License.
  */
 
-import { Component } from '@angular/core';
+import { Component, DestroyRef, inject } from '@angular/core';
+import { BreakpointObserver } from '@angular/cdk/layout';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 
 @Component({
   selector: 'app-root',
@@ -24,6 +26,20 @@ import { Component } from '@angular/core';
 })
 export class AppComponent {
   title = 'Kompile Model Staging';
+  isMobile = false;
+
+  private readonly destroyRef = inject(DestroyRef);
+
+  constructor(breakpointObserver: BreakpointObserver) {
+    const mobileQuery = '(max-width: 768px)';
+    this.isMobile = breakpointObserver.isMatched(mobileQuery);
+
+    breakpointObserver.observe(mobileQuery)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe(result => {
+        this.isMobile = result.matches;
+      });
+  }
 
   navItems = [
     { path: '/dashboard', icon: 'dashboard', label: 'Dashboard' },

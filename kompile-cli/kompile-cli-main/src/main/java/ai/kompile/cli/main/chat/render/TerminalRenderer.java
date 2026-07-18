@@ -63,8 +63,11 @@ public class TerminalRenderer {
     // Tool markers — bold white text, no emojis
     private static final Map<String, String> TOOL_ICONS = Map.ofEntries(
             Map.entry("read", "▸"),
+            Map.entry("read_batch", "▸"),
             Map.entry("write", "▸"),
             Map.entry("edit", "▸"),
+            Map.entry("edit_batch", "▸"),
+            Map.entry("edit_patch", "▸"),
             Map.entry("patch", "▸"),
             Map.entry("bash", "▸"),
             Map.entry("grep", "▸"),

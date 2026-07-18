@@ -137,12 +137,11 @@ class MatrixKnowledgeGraphServiceTest {
 
     @Test
     void getEdgesInFactSheetSurfacesSemanticRelationType() {
-        MatrixGraphNode node = MatrixGraphNode.builder().nodeId("n1").nodeType("ENTITY").factSheetId(1L).build();
-        when(matrixGraph.getAllNodes()).thenReturn(List.of(node));
-        when(matrixGraph.getEdgeTypes()).thenReturn(new LinkedHashSet<>(List.of("WORKS_AT", "RELATED_TO")));
-        when(matrixGraph.getNeighbors("n1", "WORKS_AT")).thenReturn(List.of(Map.entry("n2", 0.9)));
-        when(matrixGraph.getNeighbors("n1", "RELATED_TO")).thenReturn(List.of(Map.entry("n3", 0.5)));
-        when(graphStore.getNode(eq(DEFAULT_GRAPH_ID), anyString())).thenReturn(Optional.empty());
+        when(graphStore.scanEdges("factsheet_1", 0, 1_000)).thenReturn(new MatrixGraphStore.ScanPage<>(List.of(
+                new MatrixGraphStore.StoredEdge("n1", "n2", "USER_DEFINED", 0.9, false,
+                        "WORKS_AT", null, null, Map.of()),
+                new MatrixGraphStore.StoredEdge("n1", "n3", "RELATED_TO", 0.5, false,
+                        null, null, null, Map.of())), 2, false));
 
         List<GraphEdge> edges = service.getEdgesInFactSheet(1L);
 
@@ -163,12 +162,9 @@ class MatrixKnowledgeGraphServiceTest {
         // The edge is keyed by the structural type "USER_DEFINED" but carries an explicit relation
         // field "WORKS_AT". The key heuristic could never derive "WORKS_AT" from "USER_DEFINED", so a
         // correct result proves the first-class relationType field is read authoritatively.
-        MatrixGraphNode node = MatrixGraphNode.builder().nodeId("n1").nodeType("ENTITY").factSheetId(1L).build();
-        when(matrixGraph.getAllNodes()).thenReturn(List.of(node));
-        when(matrixGraph.getEdgeTypes()).thenReturn(new LinkedHashSet<>(List.of("USER_DEFINED")));
-        when(matrixGraph.getNeighbors("n1", "USER_DEFINED")).thenReturn(List.of(Map.entry("n2", 0.9)));
-        when(matrixGraph.getEdgeRelationType("USER_DEFINED", "n1", "n2")).thenReturn("WORKS_AT");
-        when(graphStore.getNode(eq(DEFAULT_GRAPH_ID), anyString())).thenReturn(Optional.empty());
+        when(graphStore.scanEdges("factsheet_1", 0, 1_000)).thenReturn(new MatrixGraphStore.ScanPage<>(List.of(
+                new MatrixGraphStore.StoredEdge("n1", "n2", "USER_DEFINED", 0.9, false,
+                        "WORKS_AT", null, null, Map.of())), 1, false));
 
         List<GraphEdge> edges = service.getEdgesInFactSheet(1L);
 

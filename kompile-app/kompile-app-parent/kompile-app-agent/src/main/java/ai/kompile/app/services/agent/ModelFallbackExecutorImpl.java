@@ -19,6 +19,9 @@ import ai.kompile.app.services.agent.ModelFallbackConfigManager.FallbackEntry;
 import ai.kompile.app.services.agent.ModelFallbackConfigManager.ModelFallbackConfig;
 import ai.kompile.core.agent.AgentProvider;
 import ai.kompile.core.crawl.graph.AgentCallContext;
+import ai.kompile.core.crawl.graph.ModelCapabilityResolver;
+import ai.kompile.core.crawl.graph.ProcessingRouteConfig;
+import ai.kompile.core.llm.ModelCapability;
 import ai.kompile.core.llm.chat.LLMChat;
 import ai.kompile.core.llm.fallback.LlmFallbackExecutor;
 import jakarta.annotation.PreDestroy;
@@ -68,6 +71,13 @@ public class ModelFallbackExecutorImpl implements LlmFallbackExecutor {
     @Autowired(required = false)
     private AgentRegistryService agentRegistry;
 
+    /** Resolves per-model context-window metadata for the chain guard; absent in library slices. */
+    @Autowired(required = false)
+    private ModelCapabilityResolver capabilityResolver;
+
+    /** entryKey → resolved max input chars. Capability is static per model, so cache for the JVM. */
+    private final ConcurrentHashMap<String, Integer> maxInputCharsCache = new ConcurrentHashMap<>();
+
     public ModelFallbackExecutorImpl() {
         this.executor = Executors.newCachedThreadPool(r -> {
             Thread t = new Thread(r, "model-fallback-exec-" + POOL_INDEX.incrementAndGet());
@@ -89,6 +99,64 @@ public class ModelFallbackExecutorImpl implements LlmFallbackExecutor {
     private boolean isPaid(ModelFallbackConfigManager.FallbackEntry entry,
                            ModelFallbackConfigManager.ModelFallbackConfig config) {
         return entry != null && config.paidAgents.contains(entry.agentName());
+    }
+
+    /**
+     * Resolved max input chars for a chain entry's model, from real model metadata
+     * ({@link ModelCapability}: context window minus output budget and prompt overhead).
+     * Unknown/unresolvable models return {@link Integer#MAX_VALUE} so they are never skipped —
+     * the guard only acts on affirmative metadata.
+     */
+    private int maxInputCharsFor(FallbackEntry entry) {
+        if (entry == null || capabilityResolver == null) {
+            return Integer.MAX_VALUE;
+        }
+        String key = (entry.agentName() == null ? "" : entry.agentName()) + "|"
+                + (entry.modelId() == null ? "" : entry.modelId());
+        return maxInputCharsCache.computeIfAbsent(key, k -> {
+            try {
+                boolean local = CliAgentModelService.LOCAL_STAGING_AGENT_NAME.equals(entry.agentName());
+                ProcessingRouteConfig.ProcessingBackendType type = local
+                        ? ProcessingRouteConfig.ProcessingBackendType.LOCAL_MODEL : null;
+                String modelName = entry.modelId();
+                if (local && modelName != null && modelName.startsWith("local/")) {
+                    modelName = modelName.substring("local/".length());
+                }
+                return capabilityResolver.resolve(type, null, modelName, entry.agentName())
+                        .map(ModelCapability::maxInputChars)
+                        .orElse(Integer.MAX_VALUE);
+            } catch (Exception e) {
+                log.debug("[ModelFallback] Capability resolve failed for {} — treating window as unbounded: {}",
+                        k, e.getMessage());
+                return Integer.MAX_VALUE;
+            }
+        });
+    }
+
+    private static String entryLabel(FallbackEntry entry) {
+        if (entry == null) return "?";
+        String m = entry.modelId();
+        return entry.agentName() + (m == null || m.isBlank() ? "" : "/" + m);
+    }
+
+    /**
+     * Per-call wait bounded by the config ceiling, derived from the model's observed-latency EWMA
+     * via {@link CliAgentModelService#adaptiveTimeoutSeconds}. Models with no success history get
+     * the short probe timeout so a silently hung provider (e.g. an exhausted gateway that never
+     * answers) is cut off quickly instead of consuming the whole per-call budget.
+     */
+    private int adaptiveWaitSeconds(FallbackEntry entry, int ceilingSeconds) {
+        int ceiling = Math.max(1, ceilingSeconds);
+        if (modelService == null || entry == null) {
+            return ceiling;
+        }
+        try {
+            String key = entry.modelId() != null && !entry.modelId().isBlank()
+                    ? entry.modelId() : entry.agentName();
+            return modelService.adaptiveTimeoutSeconds(key, ceiling);
+        } catch (Exception e) {
+            return ceiling;
+        }
     }
 
     private String invokeChainEntry(FallbackEntry entry, String prompt) {
@@ -133,11 +201,46 @@ public class ModelFallbackExecutorImpl implements LlmFallbackExecutor {
         // best-ranked free model the selector chose.
         if (!chain.isEmpty()) switchToChainEntry(chain.get(0));
 
+        // Context-window guard: the caller sized this prompt for its PRIMARY model, but fallback can
+        // land the call on any chain entry — a batch budgeted for a 1M-token window silently
+        // truncates (unparseable output) on a small-window model. Entries whose resolved window
+        // cannot fit the prompt are skipped instead of called. If NO entry fits, the guard disables
+        // itself (degrade to pre-guard behavior) rather than failing the call outright.
+        final int promptChars = prompt != null ? prompt.length() : 0;
+        boolean anyEntryFits = chain.isEmpty();
+        for (FallbackEntry e : chain) {
+            if (promptChars <= maxInputCharsFor(e)) {
+                anyEntryFits = true;
+                break;
+            }
+        }
+        final boolean windowGuardEnabled = anyEntryFits;
+        if (!anyEntryFits && !chain.isEmpty()) {
+            log.warn("[ModelFallback][{}] Prompt ({} chars) exceeds every chain model's input window — "
+                    + "window guard disabled for this call; upstream batch sizing should shrink",
+                    backendId, promptChars);
+        }
+
         while (totalAttempts < config.maxAttempts) {
             totalAttempts++;
+            FallbackEntry activeEntry = chain.get(currentChainIndex);
+
+            // Window guard fires BEFORE the paid check so a skipped entry never consumes paid quota.
+            if (windowGuardEnabled) {
+                int windowChars = maxInputCharsFor(activeEntry);
+                if (promptChars > windowChars) {
+                    log.info("[ModelFallback][{}] Prompt ({} chars) exceeds '{}' input window ({} chars) — "
+                            + "skipping to next chain entry", backendId, promptChars,
+                            entryLabel(activeEntry), windowChars);
+                    currentChainIndex = advanceChain(chain, currentChainIndex, config, backendId,
+                            totalAttempts, "context-window-exceeded");
+                    consecutiveTimeouts = 0;
+                    continue;
+                }
+            }
+
             // Paid-tier per-crawl budget cap: if the active model is paid, count this call and
             // degrade (throw) once the cap is hit, so a crawl can never run away with paid usage.
-            FallbackEntry activeEntry = chain.get(currentChainIndex);
             if (isPaid(activeEntry, config)) {
                 String jobKey = AgentCallContext.getJobId();
                 if (jobKey == null) jobKey = "__no_job__";
@@ -160,13 +263,17 @@ public class ModelFallbackExecutorImpl implements LlmFallbackExecutor {
                         executor
                 );
 
+                // Wait derives from the model's OBSERVED latency metadata (probe timeout for
+                // unproven models) rather than the flat config ceiling — a hung provider is
+                // detected in the probe window instead of burning the full per-call budget.
+                int waitSeconds = adaptiveWaitSeconds(activeEntry, config.perCallTimeoutSeconds);
                 String response;
                 try {
-                    response = future.get(config.perCallTimeoutSeconds, TimeUnit.SECONDS);
+                    response = future.get(waitSeconds, TimeUnit.SECONDS);
                 } catch (TimeoutException te) {
                     future.cancel(true);
                     log.warn("[ModelFallback][{}] Timeout after {}s on attempt {}/{}",
-                            backendId, config.perCallTimeoutSeconds, totalAttempts, config.maxAttempts);
+                            backendId, waitSeconds, totalAttempts, config.maxAttempts);
                     consecutiveTimeouts++;
                     if (consecutiveTimeouts >= config.consecutiveTimeoutsBeforeSwitch) {
                         currentChainIndex = advanceChain(chain, currentChainIndex, config, backendId,

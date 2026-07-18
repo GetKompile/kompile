@@ -66,6 +66,9 @@ class CrossDocumentRelationExtractorDocumentTest {
         extractor = new CrossDocumentRelationExtractor(knowledgeGraphService);
         // Default: no edges exist yet; createEdgeWithMetadata returns null (void mock is fine)
         when(knowledgeGraphService.edgeExists(anyString(), anyString())).thenReturn(false);
+        // The extractor emits all edges through the batch API; the interface default delegates
+        // to edgeExists + createEdgeWithMetadata, which is what these tests capture per edge.
+        when(knowledgeGraphService.createEdgesBatch(anyList())).thenCallRealMethod();
     }
 
     // =========================================================================

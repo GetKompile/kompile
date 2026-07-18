@@ -400,10 +400,11 @@ public class ClaudeStreamParserTokenMetricsTest {
         }
 
         @Test
-        @DisplayName("Should not support stream-json for Codex")
-        void shouldNotSupportStreamJsonForCodex() {
-            assertFalse(parser.supportsStreamJson("codex"));
-            assertFalse(parser.supportsStreamJson("Codex"));
+        @DisplayName("Should support stream-json for Codex")
+        void shouldSupportStreamJsonForCodex() {
+            // Codex speaks the structured stream protocol now (intended branch change).
+            assertTrue(parser.supportsStreamJson("codex"));
+            assertTrue(parser.supportsStreamJson("Codex"));
         }
 
         @Test

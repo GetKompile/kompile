@@ -21,3 +21,20 @@
 .stat-value { display: block; font-size: 1.25rem; font-weight: 500; }
 .preview-container { max-height: 400px; overflow: auto; }
 .preview-data { background: rgba(0,0,0,0.04); padding: 16px; border-radius: 4px; font-size: 0.8rem; white-space: pre-wrap; }
+
+@media (max-width: 600px) {
+  .dataset-manager { padding: 12px; }
+  .header { align-items: stretch; flex-direction: column; gap: 12px; }
+  .header button { min-height: 44px; }
+  .form-row { flex-direction: column; gap: 0; }
+  .form-row mat-form-field { width: 100%; min-width: 0; }
+  .file-upload-row { align-items: stretch; flex-direction: column; gap: 8px; }
+  .stats-grid { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .dataset-table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+  .preview-data { padding: 12px; overflow-wrap: anywhere; }
+}

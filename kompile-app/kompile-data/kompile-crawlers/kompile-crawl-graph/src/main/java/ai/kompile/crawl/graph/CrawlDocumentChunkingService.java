@@ -311,6 +311,6 @@ class CrawlDocumentChunkingService {
     }
 
     private boolean isCancelled(UnifiedCrawlJob job) {
-        return job.getStatus().get() == UnifiedCrawlJob.Status.CANCELLED;
+        return job != null && job.isCancellationRequested();
     }
 }

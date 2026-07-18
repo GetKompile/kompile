@@ -37,10 +37,22 @@ public class KompileProjectNoteSyncConnection {
     private String externalScope;
     private String direction;
     private boolean enabled;
+    private String pollCron;
+    private String webhookId;
+    private String obsidianApiUrl;
     private String repositoryUrl;
     private String gitBranch;
+    private String gitUsername;
+    private String authMode;
+    private String authStatus;
+    private String authStatusMessage;
+    private String authLastCheckedAt;
+    private boolean autoCommit;
+    private boolean remoteSyncEnabled;
     private String lastSyncAt;
     private String lastSyncStatus;
+    private String lastSyncError;
+    private String credentialBinding;
     private String createdAt;
     private String updatedAt;
 }

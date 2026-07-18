@@ -348,6 +348,14 @@ body.dark-theme .index-status-section.model-section {
   min-width: 180px;
 }
 
+.index-tabs ::ng-deep .mat-mdc-tab .mdc-tab__text-label {
+  color: var(--text-secondary);
+}
+
+.index-tabs ::ng-deep .mat-mdc-tab.mdc-tab--active .mdc-tab__text-label {
+  color: var(--text-primary);
+}
+
 .tab-icon {
   margin-right: 8px;
   font-size: 20px;

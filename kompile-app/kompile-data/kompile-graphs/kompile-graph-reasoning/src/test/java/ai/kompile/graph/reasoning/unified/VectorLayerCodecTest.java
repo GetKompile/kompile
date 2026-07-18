@@ -27,6 +27,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class VectorLayerCodecTest {
@@ -114,5 +115,74 @@ class VectorLayerCodecTest {
         assertTrue(back.isEmpty());
         assertEquals(5, back.dim());
         assertEquals("empty", back.name());
+    }
+
+    @Test
+    void rejectsImpossibleDimensionsBeforeAllocating() throws IOException {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        try (DataOutputStream out = new DataOutputStream(bytes)) {
+            out.write(new byte[] {'K', 'V', 'E', 'C'});
+            out.writeInt(1);
+            out.writeInt(Dtype.F64.code());
+            out.writeInt(VectorLayer.Target.ENTITY.code());
+            out.writeInt(1);
+            out.writeByte('x');
+            out.writeInt(1);
+            out.writeInt(Integer.MAX_VALUE);
+            out.writeLong(0L);
+        }
+
+        try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(bytes.toByteArray()))) {
+            assertThrows(IOException.class, () -> VectorBlobCodec.read(in));
+        }
+    }
+
+    @Test
+    void rejectsOversizedStringLengthBeforeAllocating() throws IOException {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        try (DataOutputStream out = new DataOutputStream(bytes)) {
+            out.write(new byte[] {'K', 'V', 'E', 'C'});
+            out.writeInt(1);
+            out.writeInt(Dtype.F32.code());
+            out.writeInt(VectorLayer.Target.ENTITY.code());
+            out.writeInt(Integer.MAX_VALUE);
+        }
+
+        try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(bytes.toByteArray()))) {
+            assertThrows(IOException.class, () -> VectorBlobCodec.read(in));
+        }
+    }
+
+    @Test
+    void rejectsDecodedValueExpansionBeforeAllocating() throws IOException {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        try (DataOutputStream out = new DataOutputStream(bytes)) {
+            out.write(new byte[] {'K', 'V', 'E', 'C'});
+            out.writeInt(1);
+            out.writeInt(Dtype.I8.code());
+            out.writeInt(VectorLayer.Target.ENTITY.code());
+            out.writeInt(1);
+            out.writeByte('x');
+            out.writeInt(1_000_000);
+            out.writeInt(1_000_000);
+            out.writeLong(Double.doubleToLongBits(1.0));
+        }
+
+        try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(bytes.toByteArray()))) {
+            IOException error = assertThrows(IOException.class, () -> VectorBlobCodec.read(in));
+            assertTrue(error.getMessage().contains("decoded value count"));
+        }
+    }
+
+    @Test
+    void writerRejectsNonFiniteI8Values() {
+        VectorLayer layer = new VectorLayer("bad-i8", VectorLayer.Target.ENTITY, 1, Dtype.I8);
+        layer.put("row", new double[] {Double.POSITIVE_INFINITY});
+
+        assertThrows(IOException.class, () -> {
+            try (DataOutputStream out = new DataOutputStream(new ByteArrayOutputStream())) {
+                VectorBlobCodec.write(out, layer);
+            }
+        });
     }
 }

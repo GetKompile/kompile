@@ -530,6 +530,19 @@ class GraphExtractionValidatorTest {
                 "Multi-chunk prompt must explicitly require confidence");
     }
 
+    @Test
+    void extractionPromptsDoNotContainSemanticExampleFacts() {
+        for (String instructions : List.of(
+                GraphExtractionValidator.getExtractionPromptInstructions(),
+                GraphExtractionValidator.getMultiChunkExtractionPromptInstructions())) {
+            assertTrue(instructions.contains("{\"entities\":[],\"relations\":[]}"));
+            assertTrue(instructions.contains("never invent facts"));
+            assertFalse(instructions.contains("Acme Corp"));
+            assertFalse(instructions.contains("CEO employment relationship"));
+            assertFalse(instructions.contains("\"founded\": \"2010\""));
+        }
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────
 
     private ExtractedEntity entity(String id, String name, String type) {

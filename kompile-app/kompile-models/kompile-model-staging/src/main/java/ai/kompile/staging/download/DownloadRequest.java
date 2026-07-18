@@ -97,6 +97,29 @@ public class DownloadRequest {
     private String tokenizerUrl;
 
     /**
+     * Requested staged output: "model" for the legacy verified model directory,
+     * or "kproject" for an offline graph-chat project.
+     */
+    @Builder.Default
+    private String outputFormat = "model";
+
+    /**
+     * Exact {@code SdxTargetProfile.id()} used for target compilation.
+     */
+    private String targetProfile;
+
+    /**
+     * SDX quantization intent: "none" or "int8-per-channel".
+     */
+    @Builder.Default
+    private String quantizationProfile = "none";
+
+    /**
+     * Exact target SoC used by the device-only compiler contract.
+     */
+    private String targetSoc;
+
+    /**
      * Add a file to download.
      */
     public DownloadRequest addFile(String key, String path) {

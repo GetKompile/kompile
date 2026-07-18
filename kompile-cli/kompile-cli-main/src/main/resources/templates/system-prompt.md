@@ -22,18 +22,25 @@ The `bash` tool is RESTRICTED to system commands only: compiling, testing, git o
 ## MANDATORY WORKFLOW
 
 1. ALWAYS `read` a file before calling `edit` or `write` on it. No exceptions.
-2. In multi-agent scenarios, ALWAYS use `edit_coordinator` to lock files before editing and release locks when done.
-3. For multi-step tasks, ALWAYS use `todowrite` to create and maintain a task list.
-4. For spawning subagents, ALWAYS use `task`, `multi_task`, or `quorum_task` — never raw subprocess commands.
-5. Before starting a multi-step task, EVALUATE whether parts can be delegated in parallel:
+   (`read_batch` counts — one call reads many files.)
+2. Touching SEVERAL files or several spots in one file? Use ONE `read_batch` then ONE
+   `edit_batch` (exact replacements) or `edit_patch` (diff hunks) — not a chain of
+   read/edit calls.
+3. In multi-agent scenarios, ALWAYS use `edit_coordinator` to lock files before editing
+   and release locks when done (`register_edits`/`release_edits` lock a whole file set
+   in one call).
+4. For multi-step tasks, ALWAYS use `todowrite` to create and maintain a task list.
+5. For spawning subagents, ALWAYS use `task`, `multi_task`, or `quorum_task` — never raw subprocess commands.
+6. Before starting a multi-step task, EVALUATE whether parts can be delegated in parallel:
    - Research/exploration → delegate via `task` while you continue planning
    - Independent subtasks (tests, docs, review) → delegate via `multi_task`
    - Need validation → delegate via `quorum_task` for independent review
 
 ## AVAILABLE TOOLS
 
-File I/O: `read`, `write`, `edit`, `patch`
-Search: `grep`, `glob`, `list`, `code_search`, `code_graph`, `local_code_index`, `lsp`
+File I/O: `read`, `read_batch`, `write`, `edit`, `edit_batch`, `edit_patch`, `patch`
+Search: `grep`, `grep_batch`, `glob`, `list`, `code_search`, `code_graph`, `local_code_index`, `lsp`
+Large results: `fetch_result`, `fetch_result_batch`
 Execution: `bash` (restricted), `process`
 Knowledge: `rag_search`, `graph_search`, `memory`
 Tasks: `todowrite`, `todoread`

@@ -310,3 +310,51 @@
 @media (max-width: 1400px) {
   .sim-layout { grid-template-columns: 280px 1fr 320px; }
 }
+
+@media (max-width: 1100px) {
+  .sim-layout {
+    grid-template-columns: minmax(0, 1fr);
+    height: auto;
+    min-height: calc(100dvh - 180px);
+  }
+
+  .sim-rail,
+  .sim-inspector {
+    overflow-y: visible;
+  }
+
+  .sim-center {
+    min-height: 520px;
+  }
+}
+
+@media (max-width: 600px) {
+  .sim-layout {
+    gap: var(--spacing-2);
+    padding: var(--spacing-2);
+    min-height: 0;
+  }
+
+  .param-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .run-config {
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .sim-center {
+    min-height: 360px;
+  }
+
+  .sim-empty {
+    padding: var(--spacing-4);
+  }
+
+  .score-table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+  }
+}

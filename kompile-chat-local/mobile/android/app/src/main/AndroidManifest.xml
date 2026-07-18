@@ -1,10 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Remote endpoint access -->
-    <uses-permission android:name="android.permission.INTERNET" />
-
-    <!-- SAF file picker (no broad storage permission needed on API 26+) -->
+    <!-- Deliberately no INTERNET permission. SAF needs no broad storage grant. -->
 
     <application
         android:name=".KompileChatApplication"
@@ -14,8 +11,7 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.KompileChatLocal"
-        android:extractNativeLibs="true"
-        android:usesCleartextTraffic="true">
+        android:usesCleartextTraffic="false">
 
         <activity
             android:name=".MainActivity"

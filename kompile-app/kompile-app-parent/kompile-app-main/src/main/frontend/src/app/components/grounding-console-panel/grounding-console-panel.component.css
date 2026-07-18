@@ -468,3 +468,47 @@ body.dark-theme .syntax-hint code,
 body.dark-theme .value-change code {
   background: rgba(255,255,255,0.1);
 }
+
+@media (max-width: 900px) {
+  .console-layout {
+    flex-direction: column;
+  }
+
+  .history-sidebar {
+    width: 100%;
+    max-height: 320px;
+    overflow-y: auto;
+  }
+}
+
+@media (max-width: 600px) {
+  .grounding-console {
+    padding: 8px;
+  }
+
+  .explainer-card {
+    padding: 10px 12px;
+  }
+
+  .factsheet-field,
+  .depth-field {
+    width: 100%;
+  }
+
+  .conjunct-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .conjunct-pred,
+  .conjunct-args {
+    flex-basis: auto;
+    width: 100%;
+  }
+
+  .bindings-table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+  }
+}

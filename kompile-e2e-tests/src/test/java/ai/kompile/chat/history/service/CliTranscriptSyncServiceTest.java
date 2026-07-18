@@ -15,146 +15,239 @@
  */
 package ai.kompile.chat.history.service;
 
-import ai.kompile.chat.history.config.ChatHistoryProperties;
-import ai.kompile.chat.history.domain.ChatSession;
+import ai.kompile.cli.common.chat.sources.ChatSourceAdapter;
+import ai.kompile.cli.common.chat.sources.ChatSourceRegistry;
+import ai.kompile.chat.history.service.CliTranscriptService.CliSessionSummary;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
+import org.junit.jupiter.api.io.TempDir;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.junit.jupiter.MockitoSettings;
+import org.mockito.quality.Strictness;
 
-import static org.mockito.Mockito.*;
+import java.nio.file.Path;
+import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.timeout;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
+
+/**
+ * Tests for the scope-registered background sync: sync only runs for explicitly registered
+ * code-project directories, iterates the {@link ChatSourceRegistry} adapters, imports each
+ * discovered session individually, and reports progress through {@code getStatus()}.
+ *
+ * <p>The sync worker is asynchronous (daemon thread), so tests await the status transition to
+ * completed rather than asserting immediately after the trigger.</p>
+ */
 @ExtendWith(MockitoExtension.class)
+@MockitoSettings(strictness = Strictness.LENIENT)
 @DisplayName("CliTranscriptSyncService Tests")
 class CliTranscriptSyncServiceTest {
 
     @Mock
     private CliTranscriptService cliTranscriptService;
 
-    @Mock
-    private ChatHistoryProperties properties;
-
-    @InjectMocks
     private CliTranscriptSyncService syncService;
+    private ChatSourceRegistry originalRegistry;
+
+    @TempDir
+    private Path projectDir;
 
     @BeforeEach
     void setUp() {
-        when(properties.getCliSyncBatchSize()).thenReturn(50);
+        originalRegistry = ChatSourceRegistry.getInstance();
+        ChatSourceRegistry.setInstance(ChatSourceRegistry.of(List.of(
+                adapter("claude-code"), adapter("opencode"))));
+        syncService = new CliTranscriptSyncService(cliTranscriptService, null);
+    }
+
+    @AfterEach
+    void tearDown() {
+        ChatSourceRegistry.setInstance(originalRegistry);
+    }
+
+    private static ChatSourceAdapter adapter(String id) {
+        ChatSourceAdapter adapter = mock(ChatSourceAdapter.class);
+        when(adapter.id()).thenReturn(id);
+        return adapter;
+    }
+
+    private static CliSessionSummary session(String sessionId, String source, long lastModified) {
+        return new CliSessionSummary(sessionId, source, sessionId, source, 3, lastModified);
+    }
+
+    /** Await the async worker: the status completes with {@code running=false}. */
+    private CliTranscriptSyncService.SyncStatus awaitSyncComplete() {
+        long deadline = System.currentTimeMillis() + 10_000;
+        while (System.currentTimeMillis() < deadline) {
+            CliTranscriptSyncService.SyncStatus status = syncService.getStatus();
+            if (status.getCompletedAt() != null && !status.isRunning()) {
+                return status;
+            }
+            try {
+                Thread.sleep(20);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                fail("interrupted while awaiting sync completion");
+            }
+        }
+        return fail("sync did not complete within 10s; status: " + syncService.getStatus());
     }
 
     @Nested
-    @DisplayName("Initial Sync (PostConstruct)")
-    class InitialSync {
+    @DisplayName("Scope gating")
+    class ScopeGating {
 
         @Test
-        @DisplayName("should sync all five sources on startup")
-        void shouldSyncAllSourcesOnStartup() {
-            when(cliTranscriptService.syncSource(anyString(), eq(50))).thenReturn(0);
-
-            syncService.initialSync();
-
-            verify(cliTranscriptService).syncSource(CliTranscriptService.SOURCE_KOMPILE, 50);
-            verify(cliTranscriptService).syncSource(CliTranscriptService.SOURCE_CLAUDE_CODE, 50);
-            verify(cliTranscriptService).syncSource(CliTranscriptService.SOURCE_OPENCODE, 50);
-            verify(cliTranscriptService).syncSource(CliTranscriptService.SOURCE_CODEX, 50);
-            verify(cliTranscriptService).syncSource(CliTranscriptService.SOURCE_QWEN, 50);
+        @DisplayName("trigger without a registered code project is a no-op")
+        void triggerWithoutRegisteredScopeIsNoOp() {
+            assertFalse(syncService.triggerSync());
+            verifyNoInteractions(cliTranscriptService);
         }
 
         @Test
-        @DisplayName("should import sessions from available sources")
-        void shouldImportFromAvailableSources() {
-            when(cliTranscriptService.syncSource(CliTranscriptService.SOURCE_KOMPILE, 50)).thenReturn(3);
-            when(cliTranscriptService.syncSource(CliTranscriptService.SOURCE_CLAUDE_CODE, 50)).thenReturn(5);
-            when(cliTranscriptService.syncSource(CliTranscriptService.SOURCE_OPENCODE, 50)).thenReturn(0);
-            when(cliTranscriptService.syncSource(CliTranscriptService.SOURCE_CODEX, 50)).thenReturn(0);
-            when(cliTranscriptService.syncSource(CliTranscriptService.SOURCE_QWEN, 50)).thenReturn(0);
+        @DisplayName("scheduled sync without a registered code project is a no-op")
+        void scheduledSyncWithoutRegisteredScopeIsNoOp() {
+            syncService.scheduledSync();
+            verifyNoInteractions(cliTranscriptService);
+        }
 
-            syncService.initialSync();
+        @Test
+        @DisplayName("registering a code project triggers a sync of every adapter, scoped to it")
+        void registerCodeProjectTriggersScopedSyncOfAllAdapters() {
+            when(cliTranscriptService.listNewSessions(anyString(), any(Path.class)))
+                    .thenReturn(List.of());
 
-            verify(cliTranscriptService, times(5)).syncSource(anyString(), eq(50));
+            assertTrue(syncService.registerCodeProject(projectDir));
+
+            verify(cliTranscriptService, timeout(10_000))
+                    .listNewSessions(eq("claude-code"), any(Path.class));
+            verify(cliTranscriptService, timeout(10_000))
+                    .listNewSessions(eq("opencode"), any(Path.class));
+            CliTranscriptSyncService.SyncStatus status = awaitSyncComplete();
+            assertEquals(2, status.getTotalSources());
+            assertEquals(0, status.getTotalImported());
+            assertNotNull(status.getStartedAt());
+        }
+
+        @Test
+        @DisplayName("registering null does not trigger anything")
+        void registeringNullDoesNotTrigger() {
+            assertFalse(syncService.registerCodeProject(null));
+            verifyNoInteractions(cliTranscriptService);
         }
     }
 
     @Nested
-    @DisplayName("Error Isolation")
+    @DisplayName("Session import")
+    class SessionImport {
+
+        @Test
+        @DisplayName("discovered sessions import individually with their original timestamps")
+        void discoveredSessionsAreImported() {
+            when(cliTranscriptService.listNewSessions(eq("claude-code"), any(Path.class)))
+                    .thenReturn(List.of(session("s1", "claude-code", 1111L),
+                            session("s2", "claude-code", 0L)));
+            when(cliTranscriptService.listNewSessions(eq("opencode"), any(Path.class)))
+                    .thenReturn(List.of());
+
+            syncService.registerCodeProject(projectDir);
+            CliTranscriptSyncService.SyncStatus status = awaitSyncComplete();
+
+            verify(cliTranscriptService).importTranscript("s1", "claude-code", 1111L);
+            // A missing lastModified falls back to the current time, never zero.
+            verify(cliTranscriptService).importTranscript(eq("s2"), eq("claude-code"), anyLong());
+            assertEquals(2, status.getTotalImported());
+            assertEquals(0, status.getTotalFailed());
+            assertEquals(2, status.getTotalPending());
+        }
+
+        @Test
+        @DisplayName("empty-session imports ('No messages found') are skips, not failures")
+        void emptySessionSkipIsNotAFailure() {
+            when(cliTranscriptService.listNewSessions(eq("claude-code"), any(Path.class)))
+                    .thenReturn(List.of(session("empty", "claude-code", 1L)));
+            when(cliTranscriptService.listNewSessions(eq("opencode"), any(Path.class)))
+                    .thenReturn(List.of());
+            when(cliTranscriptService.importTranscript(anyString(), anyString(), anyLong()))
+                    .thenThrow(new RuntimeException("No messages found for session"));
+
+            syncService.registerCodeProject(projectDir);
+            CliTranscriptSyncService.SyncStatus status = awaitSyncComplete();
+
+            assertEquals(0, status.getTotalImported());
+            assertEquals(0, status.getTotalFailed(), "placeholder sessions do not count as failures");
+        }
+
+        @Test
+        @DisplayName("a genuine import failure is counted and does not stop the sync")
+        void realImportFailureCountsAndSyncContinues() {
+            when(cliTranscriptService.listNewSessions(eq("claude-code"), any(Path.class)))
+                    .thenReturn(List.of(session("bad", "claude-code", 1L),
+                            session("good", "claude-code", 2L)));
+            when(cliTranscriptService.listNewSessions(eq("opencode"), any(Path.class)))
+                    .thenReturn(List.of());
+            when(cliTranscriptService.importTranscript(eq("bad"), anyString(), anyLong()))
+                    .thenThrow(new RuntimeException("corrupt transcript"));
+
+            syncService.registerCodeProject(projectDir);
+            CliTranscriptSyncService.SyncStatus status = awaitSyncComplete();
+
+            verify(cliTranscriptService).importTranscript(eq("good"), eq("claude-code"), anyLong());
+            assertEquals(1, status.getTotalImported());
+            assertEquals(1, status.getTotalFailed());
+        }
+    }
+
+    @Nested
+    @DisplayName("Error isolation")
     class ErrorIsolation {
 
         @Test
-        @DisplayName("should continue syncing other sources when one fails")
-        void shouldContinueWhenOneFails() {
-            when(cliTranscriptService.syncSource(CliTranscriptService.SOURCE_KOMPILE, 50))
+        @DisplayName("one adapter failing does not stop the others")
+        void adapterFailureDoesNotStopOtherAdapters() {
+            when(cliTranscriptService.listNewSessions(eq("claude-code"), any(Path.class)))
                     .thenThrow(new RuntimeException("disk error"));
-            when(cliTranscriptService.syncSource(CliTranscriptService.SOURCE_CLAUDE_CODE, 50)).thenReturn(2);
-            when(cliTranscriptService.syncSource(CliTranscriptService.SOURCE_OPENCODE, 50)).thenReturn(0);
-            when(cliTranscriptService.syncSource(CliTranscriptService.SOURCE_CODEX, 50)).thenReturn(0);
-            when(cliTranscriptService.syncSource(CliTranscriptService.SOURCE_QWEN, 50)).thenReturn(1);
+            when(cliTranscriptService.listNewSessions(eq("opencode"), any(Path.class)))
+                    .thenReturn(List.of(session("s1", "opencode", 5L)));
 
-            syncService.scheduledSync();
+            syncService.registerCodeProject(projectDir);
+            CliTranscriptSyncService.SyncStatus status = awaitSyncComplete();
 
-            // All sources still attempted despite kompile failing
-            verify(cliTranscriptService).syncSource(CliTranscriptService.SOURCE_KOMPILE, 50);
-            verify(cliTranscriptService).syncSource(CliTranscriptService.SOURCE_CLAUDE_CODE, 50);
-            verify(cliTranscriptService).syncSource(CliTranscriptService.SOURCE_OPENCODE, 50);
-            verify(cliTranscriptService).syncSource(CliTranscriptService.SOURCE_CODEX, 50);
-            verify(cliTranscriptService).syncSource(CliTranscriptService.SOURCE_QWEN, 50);
+            verify(cliTranscriptService).importTranscript(eq("s1"), eq("opencode"), anyLong());
+            assertEquals(1, status.getTotalImported());
+            assertTrue(status.getErrors().stream().anyMatch(error -> error.contains("claude-code")),
+                    "the failing adapter is recorded in the status errors: " + status.getErrors());
         }
 
         @Test
-        @DisplayName("should handle all sources failing without throwing")
-        void shouldHandleAllSourcesFailing() {
-            when(cliTranscriptService.syncSource(anyString(), eq(50)))
+        @DisplayName("all adapters failing completes without throwing")
+        void allAdaptersFailingCompletesCleanly() {
+            when(cliTranscriptService.listNewSessions(anyString(), any(Path.class)))
                     .thenThrow(new RuntimeException("error"));
 
-            // Should not throw
-            syncService.scheduledSync();
+            syncService.registerCodeProject(projectDir);
+            CliTranscriptSyncService.SyncStatus status = awaitSyncComplete();
 
-            verify(cliTranscriptService, times(5)).syncSource(anyString(), eq(50));
-        }
-    }
-
-    @Nested
-    @DisplayName("Batch Size Configuration")
-    class BatchSizeConfig {
-
-        @Test
-        @DisplayName("should use configured batch size")
-        void shouldUseConfiguredBatchSize() {
-            when(properties.getCliSyncBatchSize()).thenReturn(10);
-            when(cliTranscriptService.syncSource(anyString(), eq(10))).thenReturn(0);
-
-            syncService.scheduledSync();
-
-            verify(cliTranscriptService, times(5)).syncSource(anyString(), eq(10));
-        }
-    }
-
-    @Nested
-    @DisplayName("Scheduled Sync")
-    class ScheduledSync {
-
-        @Test
-        @DisplayName("should run same sync logic as initial")
-        void shouldRunSameSyncLogic() {
-            when(cliTranscriptService.syncSource(anyString(), eq(50))).thenReturn(0);
-
-            syncService.scheduledSync();
-
-            verify(cliTranscriptService, times(5)).syncSource(anyString(), eq(50));
-        }
-
-        @Test
-        @DisplayName("should be idempotent with no new sessions")
-        void shouldBeIdempotentWithNoNewSessions() {
-            when(cliTranscriptService.syncSource(anyString(), eq(50))).thenReturn(0);
-
-            syncService.scheduledSync();
-            syncService.scheduledSync();
-
-            verify(cliTranscriptService, times(10)).syncSource(anyString(), eq(50));
+            assertEquals(0, status.getTotalImported());
+            assertEquals(2, status.getErrors().size(), "each adapter records its failure");
         }
     }
 }

@@ -89,9 +89,8 @@ public class GraphIOService {
 
     /**
      * Export only the nodes/edges belonging to a specific named graph within a fact sheet.
-     * Nodes are included when their {@code namedGraphId} metadata field equals
-     * {@code namedGraphId} (checked via {@link GraphNode#getNamedGraphId()} on the JPA path,
-     * or via the {@code "namedGraphId"} metadata key on the matrix/vector-store path).
+     * Nodes are included when their indexed {@code namedGraphId} field or metadata value equals
+     * {@code namedGraphId}. Both representations are persisted by the Lucene graph store.
      *
      * @param format      the target export format (e.g. "json", "ntriples", "turtle")
      * @param factSheetId the owning fact sheet (may be null to scan all fact sheets)

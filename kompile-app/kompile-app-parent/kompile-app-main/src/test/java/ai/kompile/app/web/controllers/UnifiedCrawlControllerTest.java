@@ -15,18 +15,24 @@
  */
 package ai.kompile.app.web.controllers;
 
+import ai.kompile.app.facts.domain.FactSheet;
+import ai.kompile.app.facts.service.FactSheetService;
 import ai.kompile.app.ontology.OntologySchemaEnrichmentService;
 import ai.kompile.app.services.SingleSourceCrawlPreviewService;
 import ai.kompile.app.services.SingleSourceCrawlStarter;
 import ai.kompile.app.web.dto.ontology.OwlClassificationResponse;
+import ai.kompile.core.crawl.graph.UnifiedCrawlJob;
+import ai.kompile.core.crawl.graph.UnifiedCrawlRequest;
 import ai.kompile.core.crawl.graph.UnifiedCrawlService;
 import ai.kompile.core.crawl.graph.UnifiedCrawlSource;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
 import ai.kompile.crawl.graph.GraphExtractionPreviewService;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.mockito.ArgumentCaptor;
 import org.springframework.http.ResponseEntity;
+import org.springframework.mock.web.MockMultipartFile;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -34,6 +40,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -109,9 +117,20 @@ class UnifiedCrawlControllerTest {
 
     private static SingleSourceCrawlStarter.SingleSourceRunRequest runRequest(
             String pathOrUrl, String content, boolean dryRun, List<String> steps, Integer waitTimeoutSeconds) {
+        return runRequest(pathOrUrl, content, dryRun, steps, null, null, waitTimeoutSeconds);
+    }
+
+    private static SingleSourceCrawlStarter.SingleSourceRunRequest runRequest(
+            String pathOrUrl,
+            String content,
+            boolean dryRun,
+            List<String> steps,
+            String modelName,
+            String llmProvider,
+            Integer waitTimeoutSeconds) {
         return new SingleSourceCrawlStarter.SingleSourceRunRequest(
                 null, null, pathOrUrl, content, null, null, null, null, null, null,
-                dryRun, steps, null, null, null, null, null, waitTimeoutSeconds);
+                dryRun, steps, null, null, null, modelName, llmProvider, waitTimeoutSeconds);
     }
 
     private static void setField(UnifiedCrawlController controller, String name, Object value) throws Exception {
@@ -153,7 +172,8 @@ class UnifiedCrawlControllerTest {
         when(preview.preview(any())).thenReturn(previewResponse);
 
         ResponseEntity<?> response = controller.runSingleSource(
-                runRequest("/tmp/doc.md", null, true, List.of("GRAPH_EXTRACTION"), null));
+                runRequest("/tmp/doc.md", null, true, List.of("GRAPH_EXTRACTION"),
+                        "lfm2.5-1.2b-instruct", "serving", null));
 
         assertEquals(200, response.getStatusCode().value());
         SingleSourceCrawlStarter.SingleSourceRunResponse body =
@@ -182,6 +202,10 @@ class UnifiedCrawlControllerTest {
         assertEquals("file", captor.getValue().sourceType());
         assertEquals(1, captor.getValue().maxDocuments());
         assertEquals(Boolean.TRUE, captor.getValue().properties().get("graphPreviewEnabled"));
+        assertEquals("lfm2.5-1.2b-instruct",
+                captor.getValue().properties().get("graphPreviewModelName"));
+        assertEquals("serving",
+                captor.getValue().properties().get("graphPreviewLlmProvider"));
     }
 
     @Test
@@ -240,6 +264,41 @@ class UnifiedCrawlControllerTest {
                 runRequest("/tmp/doc.md", null, false, null, 5));
 
         assertEquals(503, response.getStatusCode().value());
+    }
+
+    @Test
+    void startWithFilesPreservesFactSheetNameFromMultipartConfig(@TempDir Path tempDir) throws Exception {
+        UnifiedCrawlService crawlService = mock(UnifiedCrawlService.class);
+        when(crawlService.startJob(any())).thenAnswer(invocation -> UnifiedCrawlJob.builder()
+                .jobId("job-upload")
+                .request(invocation.getArgument(0))
+                .status(new AtomicReference<>(UnifiedCrawlJob.Status.PENDING))
+                .build());
+
+        FactSheetService factSheetService = mock(FactSheetService.class);
+        when(factSheetService.getSheetByName("FP&A")).thenReturn(Optional.of(
+                FactSheet.builder().id(91L).name("FP&A").build()));
+
+        UnifiedCrawlController controller = new UnifiedCrawlController(crawlService);
+        setField(controller, "objectMapper", new ObjectMapper());
+        setField(controller, "factSheetService", factSheetService);
+        setField(controller, "uploadsPath", tempDir);
+
+        MockMultipartFile file = new MockMultipartFile(
+                "files", "budget.txt", "text/plain", "budget".getBytes());
+        String config = """
+                {"name":"FP&A upload","factSheetName":"FP&A","vectorIndex":{"enabled":false}}
+                """;
+
+        ResponseEntity<?> response = controller.startJobWithFiles(
+                new MockMultipartFile[]{file}, config);
+
+        assertEquals(200, response.getStatusCode().value());
+        ArgumentCaptor<UnifiedCrawlRequest> requestCaptor =
+                ArgumentCaptor.forClass(UnifiedCrawlRequest.class);
+        verify(crawlService).startJob(requestCaptor.capture());
+        assertEquals("FP&A", requestCaptor.getValue().getFactSheetName());
+        assertEquals(91L, requestCaptor.getValue().getFactSheetId());
     }
 
     @Test

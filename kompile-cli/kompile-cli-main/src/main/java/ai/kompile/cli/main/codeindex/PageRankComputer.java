@@ -156,7 +156,9 @@ public class PageRankComputer {
         // Get file for each entity FQN
         Map<String, String> fqnToFile = new HashMap<>();
         try (Statement stmt = conn.createStatement();
-             ResultSet rs = stmt.executeQuery("SELECT fqn, rel_path FROM entities_meta")) {
+             ResultSet rs = stmt.executeQuery(
+                     "SELECT m.fqn, p.path AS rel_path FROM entities_meta m "
+                             + "JOIN paths p ON p.id = m.path_id")) {
             while (rs.next()) {
                 fqnToFile.put(rs.getString("fqn"), rs.getString("rel_path"));
             }
@@ -165,7 +167,12 @@ public class PageRankComputer {
         // Build edges from relations
         try (Statement stmt = conn.createStatement();
              ResultSet rs = stmt.executeQuery(
-                     "SELECT source_fqn, target_fqn, relation_type, file_path FROM relations WHERE target_fqn IS NOT NULL")) {
+                     "SELECT sf.fqn AS source_fqn, tf.fqn AS target_fqn, r.relation_type, "
+                             + "p.path AS file_path "
+                             + "FROM relations r JOIN paths p ON p.id = r.file_id "
+                             + "JOIN fqns sf ON sf.id = r.source_id "
+                             + "JOIN fqns tf ON tf.id = r.target_id "
+                             + "WHERE r.target_id IS NOT NULL")) {
             while (rs.next()) {
                 String sourceFqn = rs.getString("source_fqn");
                 String targetFqn = rs.getString("target_fqn");

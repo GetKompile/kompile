@@ -35,7 +35,6 @@ import ai.kompile.tool.graph.GraphMutationTool;
 import ai.kompile.tool.graph.GraphReasoningQueryTool;
 import ai.kompile.tool.graph.GraphSearchTool;
 import ai.kompile.tool.graph.GraphTraversalTool;
-import ai.kompile.tool.graph.NamedGraphTool;
 import ai.kompile.tool.graphlocalization.GraphLocalizationToolImpl;
 import ai.kompile.tool.knowledge.UnifiedKnowledgeTool;
 import ai.kompile.tool.rag.RagToolImpl;
@@ -160,9 +159,6 @@ public class McpSseServerConfiguration {
     private GraphLabelTool graphLabelTool;
 
     @Autowired(required = false)
-    private NamedGraphTool namedGraphTool;
-
-    @Autowired(required = false)
     private GraphHybridReasoningTool graphHybridReasoningTool;
 
     @Autowired(required = false)
@@ -241,7 +237,6 @@ public class McpSseServerConfiguration {
         addToolIfAvailable(toolObjects, graphCommunityTool, "Graph Community");
         addToolIfAvailable(toolObjects, graphAlgorithmsTool, "Graph Algorithms");
         addToolIfAvailable(toolObjects, graphLabelTool, "Graph Label");
-        addToolIfAvailable(toolObjects, namedGraphTool, "Named Graph");
         addToolIfAvailable(toolObjects, graphHybridReasoningTool, "Graph Hybrid Reasoning");
         addToolIfAvailable(toolObjects, graphReasoningQueryTool, "Graph Reasoning Query");
         addToolIfAvailable(toolObjects, graphLocalizationTool, "Graph Localization");

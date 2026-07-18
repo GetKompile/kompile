@@ -51,7 +51,7 @@
   align-items: center;
   gap: 8px;
   padding: 12px 20px;
-  border: none;
+  border: 1px solid transparent;
   background: transparent;
   border-radius: 8px;
   cursor: pointer;
@@ -67,8 +67,9 @@
 }
 
 .sub-tab.active {
-  background: var(--bg-surface);
-  color: #4f46e5;
+  background: var(--color-primary-light);
+  border-color: var(--color-primary);
+  color: var(--text-primary);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
 }
 
@@ -105,16 +106,33 @@
 /* Responsive adjustments */
 @media (max-width: 768px) {
   .sub-tabs {
-    flex-direction: column;
+    flex-direction: row;
+    flex-wrap: nowrap;
     gap: 4px;
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-inline: contain;
   }
 
   .sub-tab {
+    flex: 0 0 auto;
     justify-content: flex-start;
+    min-height: 44px;
     padding: 10px 16px;
   }
 
   .hub-header h2 {
     font-size: 1.5rem;
+  }
+
+  .tools-hub {
+    padding: 12px;
+  }
+
+  .graph-container,
+  .prompts-container {
+    height: max(420px, calc(100dvh - 260px));
+    min-height: 420px;
   }
 }

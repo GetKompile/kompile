@@ -21,7 +21,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.lang.reflect.Method;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -74,6 +76,52 @@ class ResumeToolCommandTest {
     void codexResumeUsesStdioMcpEvenWhenSseUrlExists() throws Exception {
         assertNull(resolveResumeMcpSseUrl("codex"));
         assertEquals("stdio", mcpModeForResume("codex", "http://localhost:8080/mcp/sse"));
+    }
+
+    @Test
+    void nativeCodexResumeUsesPerInvocationMcpOverridesWithoutMutatingGlobalConfig() throws Exception {
+        String previousHome = System.getProperty("user.home");
+        String previousBinary = System.getProperty("kompile.cli.binary");
+        Path home = tempDir.resolve("codex-home");
+        Path workDir = tempDir.resolve("codex-work");
+        Path configFile = home.resolve(".codex").resolve("config.toml");
+        Path binary = Files.createFile(tempDir.resolve("kompile-cli")).toAbsolutePath();
+        String originalConfig = "model = \"gpt-5\"\n";
+        Files.createDirectories(configFile.getParent());
+        Files.createDirectories(workDir);
+        Files.writeString(configFile, originalConfig);
+        assertTrue(binary.toFile().setExecutable(true));
+
+        try {
+            System.setProperty("user.home", home.toString());
+            System.setProperty("kompile.cli.binary", binary.toString());
+            List<String> command = new ArrayList<>(List.of(
+                    "codex", "resume", "resume-session", "-C", workDir.toString()));
+
+            Path injectedSettingsFile =
+                    ResumeTool.configureNativeResumeMcp(command, workDir, "codex", null);
+
+            assertNull(injectedSettingsFile);
+            assertEquals("codex", command.get(0));
+            assertEquals("-c", command.get(1));
+            assertEquals("mcp_servers.kompile.command=\"" + binary + "\"", command.get(2));
+            assertEquals("-c", command.get(3));
+            assertTrue(command.get(4).contains("mcp_servers.kompile.args="));
+            assertTrue(command.get(4).contains("\"mcp-stdio\""));
+            assertEquals(5, command.indexOf("resume"));
+            assertEquals(originalConfig, Files.readString(configFile));
+        } finally {
+            if (previousHome == null) {
+                System.clearProperty("user.home");
+            } else {
+                System.setProperty("user.home", previousHome);
+            }
+            if (previousBinary == null) {
+                System.clearProperty("kompile.cli.binary");
+            } else {
+                System.setProperty("kompile.cli.binary", previousBinary);
+            }
+        }
     }
 
     @Test

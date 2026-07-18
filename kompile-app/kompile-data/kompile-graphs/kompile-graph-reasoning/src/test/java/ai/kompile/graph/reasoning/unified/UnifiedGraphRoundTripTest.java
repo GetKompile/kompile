@@ -28,12 +28,16 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -294,6 +298,67 @@ class UnifiedGraphRoundTripTest {
     }
 
     @Test
+    void rejectsNewerGraphFormat(@TempDir Path dir) throws IOException {
+        Path file = dir.resolve("future.kgraph");
+        writeRawGraph(file, Map.of(
+                "manifest.json", "{\"format\":\"kompile-graph\",\"formatVersion\":2}",
+                "entities.jsonl", "",
+                "relations.jsonl", ""));
+
+        IOException error = assertThrows(IOException.class, () -> UnifiedGraph.load(file));
+        assertTrue(error.getMessage().contains("formatVersion"));
+    }
+
+    @Test
+    void rejectsUnsafeAndCaseCollidingEntries(@TempDir Path dir) throws IOException {
+        Path unsafe = dir.resolve("unsafe.kgraph");
+        writeRawGraph(unsafe, Map.of(
+                "manifest.json", "{\"format\":\"kompile-graph\",\"formatVersion\":1}",
+                "../escape", ""));
+        assertThrows(IOException.class, () -> UnifiedGraph.load(unsafe));
+
+        Path collision = dir.resolve("collision.kgraph");
+        writeRawGraph(collision, Map.of(
+                "manifest.json", "{\"format\":\"kompile-graph\",\"formatVersion\":1}",
+                "MANIFEST.JSON", ""));
+        assertThrows(IOException.class, () -> UnifiedGraph.load(collision));
+    }
+
+    @Test
+    void rejectsTruncatedOrCountMismatchedManifestInventory(@TempDir Path dir) throws IOException {
+        String manifest = "{\"format\":\"kompile-graph\",\"formatVersion\":1,"
+                + "\"counts\":{\"entities\":0,\"relations\":0,\"vectorLayers\":0},"
+                + "\"embeddingDim\":0,"
+                + "\"sections\":[\"entities.jsonl\",\"relations.jsonl\"],"
+                + "\"vectorLayers\":[]}";
+        Path truncated = dir.resolve("truncated.kgraph");
+        writeRawGraph(truncated, Map.of("manifest.json", manifest, "entities.jsonl", ""));
+        IOException missing = assertThrows(IOException.class, () -> UnifiedGraph.load(truncated));
+        assertTrue(missing.getMessage().contains("inventory mismatch"));
+
+        Path wrongCount = dir.resolve("wrong-count.kgraph");
+        writeRawGraph(wrongCount, Map.of(
+                "manifest.json", manifest.replace("\"entities\":0", "\"entities\":1"),
+                "entities.jsonl", "", "relations.jsonl", ""));
+        IOException count = assertThrows(IOException.class, () -> UnifiedGraph.load(wrongCount));
+        assertTrue(count.getMessage().contains("entity count mismatch"));
+    }
+
+    @Test
+    void fileSaveSafelyReplacesAnExistingDestination(@TempDir Path dir) throws IOException {
+        Path file = dir.resolve("replace.kgraph");
+        Files.writeString(file, "not a graph", StandardCharsets.UTF_8);
+
+        new UnifiedGraph().graphId("replacement").save(file);
+
+        assertEquals("replacement", UnifiedGraph.load(file).graphId());
+        try (var files = Files.list(dir)) {
+            assertEquals(List.of("replace.kgraph"),
+                    files.map(path -> path.getFileName().toString()).sorted().toList());
+        }
+    }
+
+    @Test
     void reservedVectorLayerNamesAreRejected() {
         UnifiedGraph graph = new UnifiedGraph();
         assertThrows(IllegalArgumentException.class, () ->
@@ -320,5 +385,15 @@ class UnifiedGraphRoundTripTest {
                 .filter(r -> r.id().equals(id))
                 .findFirst()
                 .orElseThrow();
+    }
+
+    private static void writeRawGraph(Path file, Map<String, String> entries) throws IOException {
+        try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(file))) {
+            for (Map.Entry<String, String> entry : entries.entrySet()) {
+                zip.putNextEntry(new ZipEntry(entry.getKey()));
+                zip.write(entry.getValue().getBytes(StandardCharsets.UTF_8));
+                zip.closeEntry();
+            }
+        }
     }
 }

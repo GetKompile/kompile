@@ -198,6 +198,8 @@ class KompileProjectStoreTest {
         String body = Files.readString(gitignore);
         assertTrue(body.contains("data/pids/"));
         assertTrue(body.contains("config/secrets/"));
+        assertTrue(body.contains("config/oauth-encryption.key"));
+        assertTrue(body.contains(".env*"));
         assertTrue(body.contains("data/orchestrator-db*"));
     }
 

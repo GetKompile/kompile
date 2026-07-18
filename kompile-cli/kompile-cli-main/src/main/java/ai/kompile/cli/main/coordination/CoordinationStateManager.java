@@ -202,6 +202,114 @@ public class CoordinationStateManager {
     }
 
     /**
+     * Attempt to acquire advisory edit locks on several files in ONE coordinator
+     * pass (one file-lock round instead of N sequential tool calls).
+     *
+     * <p>All-or-nothing by default: when any file is locked by another live
+     * session, nothing is acquired — conflicting files report CONFLICT and the
+     * rest report SKIPPED. With {@code allowPartial=true} the non-conflicting
+     * files are locked anyway.
+     *
+     * @param filePaths absolute paths (duplicates collapse to one lock)
+     * @return per-path results in input order
+     */
+    public BatchAcquireResult tryAcquireEditLocks(List<String> filePaths, String editType,
+                                                  String agentName, boolean allowPartial) {
+        LinkedHashSet<String> paths = new LinkedHashSet<>(filePaths);
+        try {
+            return withCoordinatorLock(() -> {
+                List<EditLockEntry> existing = readEditLocks();
+                Map<String, EditLockResult> results = new LinkedHashMap<>();
+                Map<String, EditLockEntry> conflicts = new LinkedHashMap<>();
+                for (String path : paths) {
+                    for (EditLockEntry entry : existing) {
+                        if (entry.getAbsolutePath().equals(path)
+                                && !entry.getSessionId().equals(sessionId)
+                                && !entry.isStale()) {
+                            conflicts.put(path, entry);
+                            break;
+                        }
+                    }
+                }
+
+                boolean aborted = !conflicts.isEmpty() && !allowPartial;
+                for (String path : paths) {
+                    EditLockEntry conflict = conflicts.get(path);
+                    if (conflict != null) {
+                        results.put(path, EditLockResult.conflict(conflict,
+                                path + " is actively being edited by " + conflict.getAgentName()
+                                        + " (session " + conflict.getSessionId() + ")"));
+                    } else if (aborted) {
+                        results.put(path, EditLockResult.skipped(
+                                "not acquired — batch aborted because other files conflict "
+                                        + "(pass allow_partial=true to lock what is free)"));
+                    } else {
+                        String lockId = sessionId + "-" + Integer.toHexString(path.hashCode());
+                        EditLockEntry lock = new EditLockEntry(
+                                lockId, sessionId, agentName != null ? agentName : "unknown",
+                                path, path, editType,
+                                Instant.now(), DEFAULT_EDIT_TTL_SECONDS
+                        );
+                        mapper.writeValue(editsDir.resolve(lockId + ".lock.json").toFile(), lock);
+                        ownedLockIds.add(lockId);
+                        results.put(path, EditLockResult.acquired(lockId));
+                    }
+                }
+                return new BatchAcquireResult(results, aborted);
+            });
+        } catch (Exception e) {
+            // Coordination failure never blocks edits: report all paths acquired with
+            // deterministic lock ids, matching tryAcquireEditLock's failure-open behavior.
+            System.err.println("[Coordination] Warning: Could not batch-acquire edit locks: " + e.getMessage());
+            Map<String, EditLockResult> results = new LinkedHashMap<>();
+            for (String path : paths) {
+                results.put(path, EditLockResult.acquired(
+                        sessionId + "-" + Integer.toHexString(path.hashCode())));
+            }
+            return new BatchAcquireResult(results, false);
+        }
+    }
+
+    /** Per-path outcome of {@link #tryAcquireEditLocks}. */
+    public record BatchAcquireResult(Map<String, EditLockResult> results, boolean aborted) {
+        public long acquiredCount() {
+            return results.values().stream().filter(EditLockResult::isAcquired).count();
+        }
+        public long conflictCount() {
+            return results.values().stream().filter(EditLockResult::hasConflict).count();
+        }
+    }
+
+    /**
+     * Release several advisory edit locks in one call.
+     *
+     * @return per-lock-id released flag, in input order
+     */
+    public Map<String, Boolean> releaseEditLocks(List<String> lockIds) {
+        Map<String, Boolean> results = new LinkedHashMap<>();
+        for (String lockId : new LinkedHashSet<>(lockIds)) {
+            results.put(lockId, releaseEditLock(lockId));
+        }
+        return results;
+    }
+
+    /**
+     * Read-only conflict probe: the first non-stale edit lock on {@code absolutePath}
+     * held by ANOTHER session, or null. Skips the coordinator file lock — callers use
+     * this on the edit hot path where an advisory racy read is fine.
+     */
+    public EditLockEntry findConflictingLock(String absolutePath) {
+        for (EditLockEntry entry : readEditLocks()) {
+            if (entry.getAbsolutePath().equals(absolutePath)
+                    && !entry.getSessionId().equals(sessionId)
+                    && !entry.isStale()) {
+                return entry;
+            }
+        }
+        return null;
+    }
+
+    /**
      * Force-release all edit locks on a specific file path.
      *
      * @return true if any locks were released

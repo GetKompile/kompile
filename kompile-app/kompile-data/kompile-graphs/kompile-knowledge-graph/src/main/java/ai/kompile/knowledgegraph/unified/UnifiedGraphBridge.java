@@ -214,7 +214,8 @@ public class UnifiedGraphBridge {
                 try {
                     contributor.contribute(factSheetId, graph);
                 } catch (RuntimeException e) {
-                    log.warn("Unified graph artifact contribution failed: {}", e.getMessage());
+                    throw new IllegalStateException("Unified graph artifact contribution failed for "
+                            + contributor.getClass().getName(), e);
                 }
             }
         }
@@ -316,7 +317,8 @@ public class UnifiedGraphBridge {
                 try {
                     importer.importArtifacts(factSheetId, graph);
                 } catch (RuntimeException e) {
-                    log.warn("Unified graph artifact restore failed: {}", e.getMessage());
+                    throw new IllegalStateException("Unified graph artifact restore failed for "
+                            + importer.getClass().getName(), e);
                 }
             }
         }

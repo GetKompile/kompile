@@ -194,6 +194,35 @@ public class NoteSyncConnectionService {
         return CompletableFuture.completedFuture(result);
     }
 
+    @Async
+    public CompletableFuture<SyncRunResult> triggerPull(Long connectionId) {
+        SyncRunResult result = syncEngine.pullConnection(connectionId);
+        return CompletableFuture.completedFuture(result);
+    }
+
+    public SyncConnectionResponse updateAutoSync(Long id, boolean enabled, String pollCron) {
+        NoteSyncConnection conn = connectionRepository.findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("Connection not found: " + id));
+        conn.setPollCron(enabled ? requireCron(pollCron) : null);
+        if (enabled) {
+            conn.setEnabled(true);
+        }
+        return SyncConnectionResponse.from(connectionRepository.save(conn));
+    }
+
+    private String requireCron(String pollCron) {
+        String cron = trimToNull(pollCron);
+        if (cron == null) {
+            throw new IllegalArgumentException("pollCron is required when auto sync is enabled");
+        }
+        try {
+            org.springframework.scheduling.support.CronExpression.parse(cron);
+            return cron;
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("Invalid pollCron: " + e.getMessage(), e);
+        }
+    }
+
     private SyncAdapter resolveAdapter(SyncProvider provider) {
         if (adapters == null || adapters.isEmpty()) {
             throw new IllegalStateException("No sync adapters are configured");

@@ -339,7 +339,11 @@ class AgentChatServiceBuildCommandTest {
             assertTrue(command.contains("--full-auto"), "Should contain skip flag");
             assertTrue(command.contains("--model"), "Should contain agentArgs --model");
             assertTrue(command.contains("o4-mini"), "Should contain agentArgs value");
-            assertTrue(command.contains("-p"), "Should contain prompt flag");
+            // Codex runs headless via `exec --json <prompt>` (structured stream output),
+            // not the -p prompt flag the other CLI agents take.
+            assertTrue(command.contains("exec"), "Codex uses the exec subcommand");
+            assertTrue(command.contains("--json"), "Codex emits structured JSON output");
+            assertFalse(command.contains("-p"), "Codex does not take the -p prompt flag");
         }
 
         @Test

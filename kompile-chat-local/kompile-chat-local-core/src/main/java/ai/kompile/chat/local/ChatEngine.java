@@ -16,7 +16,7 @@ import java.util.Optional;
  *   <li>Builds the working message list (system prompt prepended if absent)</li>
  *   <li>Calls {@link InferenceRouter#generate} on the working history</li>
  *   <li>If the output parses as a tool call via {@link ToolCallParser}, dispatches it
- *       through {@link GraphToolBridge} and loops back to step 2 (up to {@code maxToolRounds})</li>
+     *       through {@link GraphToolBackend} and loops back to step 2 (up to {@code maxToolRounds})</li>
  *   <li>On malformed-JSON that <em>looks</em> tool-ish, requests one corrective retry</li>
  *   <li>When a plain text answer is detected (or max rounds hit), returns a {@link TurnResult}</li>
  * </ol>
@@ -30,7 +30,7 @@ public final class ChatEngine {
     private static final Logger log = LoggerFactory.getLogger(ChatEngine.class);
 
     private final InferenceRouter router;
-    private final GraphToolBridge bridge;
+    private final GraphToolBackend bridge;
     private final int maxToolRounds;
     private final String systemPrompt;
 
@@ -58,11 +58,11 @@ public final class ChatEngine {
      * @param bridge        graph tool dispatcher
      * @param maxToolRounds maximum tool calls per user turn before forcing synthesis
      */
-    public ChatEngine(InferenceRouter router, GraphToolBridge bridge, int maxToolRounds) {
+    public ChatEngine(InferenceRouter router, GraphToolBackend bridge, int maxToolRounds) {
         this.router = router;
         this.bridge = bridge;
         this.maxToolRounds = maxToolRounds;
-        this.systemPrompt = buildSystemPrompt(bridge);
+        this.systemPrompt = GraphChatPrompt.systemPrompt();
     }
 
     // ── Public API ────────────────────────────────────────────────────────────
@@ -166,14 +166,4 @@ public final class ChatEngine {
         return stripped.isEmpty() ? raw.trim() : stripped;
     }
 
-    private static String buildSystemPrompt(GraphToolBridge bridge) {
-        // Keep system prompt compact so small models (0.5B–1B) are not context-flooded.
-        // Full catalog (bridge.catalogJson()) is ~13KB (~3300 tokens) — far too large for
-        // a 0.5B model's context window; only the primary search tool is shown here.
-        return "You are a graph assistant. Call tools to answer questions about people and organizations.\n\n" +
-               "TOOL: graph_reasoning_query\n" +
-               "To search: {\"tool\":\"graph_reasoning_query\",\"args\":{\"operation\":\"SEARCH\",\"queryText\":\"name\"}}\n" +
-               "To describe: {\"tool\":\"graph_reasoning_query\",\"args\":{\"operation\":\"DESCRIBE\",\"entityId\":\"id\"}}\n\n" +
-               "RULES: Output ONLY the JSON when calling a tool. After TOOL_RESULT, give a short answer.";
-    }
 }

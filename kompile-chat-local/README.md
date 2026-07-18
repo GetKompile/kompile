@@ -6,16 +6,25 @@ falling back to a configured remote kompile chat endpoint when local inference i
 unavailable. Companion design: `docs/architecture/graph-reasoning-mobile-aot.md`;
 dl4j-side dependencies: `~/Documents/GitHub/deeplearning4j/SDX_MOBILE_LLM_C_API_HANDOFF.md`.
 
-**Deliberately NOT part of the normal Maven build.** The root reactor does not
-reference this directory. Build it standalone:
+The repository-wide root reactor deliberately does not reference this
+application. Its own parent is a normal Maven reactor, and the Android lifecycle
+is an ordinary profile-gated `kompile-chat-local-mobile` module. Build it
+standalone:
 
 ```bash
 # prereq (once): install the reasoning modules to the local repo
 mvn -pl kompile-app/kompile-data/kompile-graphs/kompile-graph-reasoning,kompile-app/kompile-data/kompile-graphs/kompile-graph-reasoning-local install
-# build + test this parent (29 tests: 16 ChatTemplate + 10 ChatEngine + 3 ChatCli)
+# build + test this parent
 mvn -f kompile-chat-local/pom.xml test
 # build the runnable CLI jar
 mvn -f kompile-chat-local/pom.xml package -DskipTests
+# build and verify the Pixel 8a accelerator APK (Android/NDK paths may also be
+# supplied through ANDROID_SDK_ROOT and ANDROID_NDK_ROOT)
+mvn -f kompile-chat-local/pom.xml -o \
+  -Dkompile.mobile=tensor-g3 \
+  -Dmobile.android.sdk=/path/to/android-sdk \
+  -Dmobile.android.ndk=/path/to/android-ndk-r28b \
+  -pl :kompile-chat-local-mobile -am verify
 ```
 
 ## Modules
@@ -24,7 +33,8 @@ mvn -f kompile-chat-local/pom.xml package -DskipTests
 |---|---|
 | `kompile-chat-local-core` | Pure-JVM engine: `ChatEngine` tool loop (max 4 rounds, corrective retry), `ToolCallParser`, `GraphToolBridge` (LocalReasoningSession + LocalToolDispatcher), `SdxChatModel` (JNA → `libsdx_llm`, text-level `sdxLlm*` ABI v1), `SdxSubprocessChatModel` (subprocess via `sdx-llm` binary — avoids GraalVM isolate conflict when running inside JVM), `RemoteChatModel` (OpenAI-compatible `/v1/chat/completions`), `InferenceRouter` (local-first, remote fallback), `ChatConfig` (properties + `KOMPILE_CHAT_*` env) |
 | `kompile-chat-local-cli` | Interactive terminal REPL: route badge, live tool-round rendering, `/tools`, `/save <path>` |
-| `mobile/android` | Compose app (minSdk 26). Runs the JVM core **directly on ART** (mavenLocal deps); `AndroidRemoteChatModel` replaces core's remote client (ART has no `java.net.http`); SDX via JNA behind availability guards |
+| `kompile-chat-local-mobile` | Profile-gated Maven lifecycle owner for CMake/NDK provider builds, Android APK assembly, final-APK verification, and the deterministic all-runtime ZIP; supported paths contain no Python |
+| `mobile/android` | Fully offline Compose app (minSdk 28): stock-GraalVM/NDK graph AOT through JavaCPP plus separate Vulkan GPU, Hexagon/HTP, and Tensor G5 TPU/NPU flavors; device-only and fail-closed with no CPU/OpenBLAS fallback |
 | `mobile/ios` | SwiftUI app (iOS 16+, XcodeGen `project.yml`). Swift **port** of the ChatEngine loop (verbatim prompts/conventions); binds `kgr_*` (`kompile_reasoning.h`) and `sdxLlm*` behind `#if canImport` guards; URLSession remote fallback |
 
 ## Conventions (identical across JVM/Android/iOS)
@@ -106,12 +116,30 @@ CLI flags:
 | `--sdx-bin <path>` | `KOMPILE_CHAT_SDX_BIN` | Path to `sdx-llm` binary (subprocess mode; preferred) |
 | `--model <path>` | `KOMPILE_CHAT_MODEL_PATH` | Model file (.gguf fp16 or .sdz) |
 | `--tokenizer <path>` | `KOMPILE_CHAT_TOKENIZER_PATH` | tokenizer.json or directory |
-| `--kgraph <path>` | `KOMPILE_CHAT_KGRAPH_PATH` | `.kgraph` session file |
+| `--kgraph <path>` | `KOMPILE_CHAT_KGRAPH_PATH` | Standalone `.kgraph` session file (mutually exclusive with `--project`) |
+| `--project <path>` | `KOMPILE_CHAT_PROJECT_PATH` | Project directory containing `kompile.project.json`, or a `.kproject` archive |
+| `--fact-sheet-id <id>` | `KOMPILE_CHAT_FACT_SHEET_ID` | Select `data/graph/factsheet-<id>.kgraph` from the project |
 | `--sdx-lib <path>` | `KOMPILE_CHAT_SDX_LIB` | Path to `libsdx_llm.so` for JNA in-process mode (requires SDX_LLM_AOT_HOME with companion libs) |
 | `--sdx-mode <mode>` | `KOMPILE_CHAT_SDX_MODE` | `auto` (default), `inprocess` (JNA), `subprocess` (fork sdx-llm binary) |
 | `--remote-url <url>` | `KOMPILE_CHAT_REMOTE_URL` | Remote OpenAI-compatible endpoint |
 | `--max-tool-rounds <n>` | `KOMPILE_CHAT_MAX_TOOL_ROUNDS` | Max tool calls per turn (default 4) |
 | `--temperature <f>` | `KOMPILE_CHAT_TEMPERATURE` | Sampling temperature (default 0.7) |
+
+The properties-file equivalents are `project.path` and `fact.sheet.id`. With a project directory,
+the CLI prefers the complete `data/graph/project.kgraph`, then `data/graph/global.kgraph`, then
+exactly one recursive `.kgraph`; use `--fact-sheet-id` to request a specific fact-sheet graph.
+Directory paths are traversed with no-follow secure directory handles, and the selected graph is
+copied to a temporary snapshot before the chat engine opens it. Archives require an exact
+manifest-to-ZIP inventory match. The checksummed `kompile.project.json` identity is verified against
+the outer archive manifest, and only the selected graph is streamed to a temporary file after its
+declared size and SHA-256 are verified.
+Explicit missing, corrupt, or ambiguous graph requests fail closed. Starting with an empty graph
+is allowed only when neither `--project` nor `--kgraph` (including config/env equivalents) is set.
+
+```bash
+java -jar "$JAR" --project /path/to/project --fact-sheet-id 17 --remote-url http://localhost:8091
+java -jar "$JAR" --project /path/to/export.kproject --model "$MODEL" --sdx-bin "$SDX_BIN"
+```
 
 ## What runs today vs. what it's waiting on
 
@@ -120,7 +148,7 @@ CLI flags:
 | CLI/JVM: graph tools fully local (load/verify/explain/assert/…) | **Works** | `[inference] Active route: LOCAL_SDX` on startup |
 | CLI/JVM: subprocess SDX generate (linux) | **Works** | 5–8 tok/s, fp16 GGUF; load 4.3–8.9s |
 | CLI/JVM + Android: remote chat via configured endpoint | **Works** | `--remote-url` + any OpenAI-compat URL |
-| Android: local reasoning on ART | **Works** | Pure-Java modules |
+| Android: native graph reasoning | **Built/package-verified** | Stock GraalVM AOT object + NDK r28b arm64/bionic link; JavaCPP `kgr_*` transport |
 | 0.5B tool-call JSON (graph queries) | **Flaky** | 0.5B too small for structured JSON completion; use 1.5B+ model |
 | q4_k_m quantized GGUF | **Working sidecar-free** (FIX 3 + FIX 4, 2026-07-12) | Q5_0/Q5_1 dequant fixed; q4_k_m identical to fp16 (6.7 tok/s). Embedded tokenizer now includes all 22 Qwen2.5 special tokens (R8 item 4 fixed): no sidecar needed |
 | JNA in-process (libsdx_llm.so from JVM) | **Works** (FIX 1, 2026-07-12) | Export-allowlist applied: `graal_*/JNI_*/__svm_*` hidden (0 leaked of 23); `--sdx-mode inprocess` with `SDX_LLM_AOT_HOME` pointing to aot-sdk/cpu |

@@ -27,4 +27,24 @@
     <maven.compiler.target>17</maven.compiler.target>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
   </properties>
+
+  <!--
+    The Android application is intentionally absent from the default reactor.
+    Supplying -Dkompile.mobile=<all|vulkan|hexagon|tensor-g3|tensor-g5>
+    activates this profile and makes Maven the lifecycle owner while the native
+    implementation remains in libnd4j CMake and the Android Gradle build.
+  -->
+  <profiles>
+    <profile>
+      <id>mobile</id>
+      <activation>
+        <property>
+          <name>kompile.mobile</name>
+        </property>
+      </activation>
+      <modules>
+        <module>mobile</module>
+      </modules>
+    </profile>
+  </profiles>
 </project>

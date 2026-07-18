@@ -235,45 +235,31 @@ public final class GraphExtractionValidator {
      */
     public static String getExtractionPromptInstructions() {
         return """
-                You MUST respond with a JSON object matching this exact schema:
-                {
-                  "entities": [
-                    {
-                      "id": "e1",
-                      "name": "Acme Corp",
-                      "type": "ORGANIZATION",
-                      "aliases": ["Acme", "ACME Corporation"],
-                      "description": "A technology company",
-                      "confidence": 0.95,
-                      "properties": {"founded": "2010", "industry": "software"}
-                    }
-                  ],
-                  "relations": [
-                    {
-                      "source": "e1",
-                      "target": "e2",
-                      "type": "EMPLOYS",
-                      "description": "CEO employment relationship",
-                      "confidence": 0.95,
-                      "properties": {"since": "2015", "role": "CEO"}
-                    }
-                  ]
-                }
+                Extract a knowledge graph ONLY from the SOURCE TEXT supplied after these instructions.
+                Never copy names, facts, types, or relationships from these instructions, and never invent facts.
+                If the source supports no graph facts, return {"entities":[],"relations":[]}.
+
+                Return exactly one valid JSON object with top-level arrays "entities" and "relations".
+                Start from this empty structure and populate it only with source-supported facts:
+                {"entities":[],"relations":[]}
 
                 Rules:
-                - Each entity MUST have: id (unique within this extraction), name, type, description
+                - Each entity MUST have string fields: id (unique within this extraction), name, type, description.
+                - Entity name and description MUST be grounded in the source text.
                 - Each entity MUST have: confidence — a float in [0.0, 1.0] calibrated to how certain the text supports this entity.
                   Use 0.9-1.0 for entities stated explicitly and unambiguously; 0.7-0.9 for entities strongly implied;
                   0.5-0.7 for uncertain or indirect mentions; below 0.5 for speculative references.
-                - Each entity SHOULD have: aliases (alternative names), properties
-                - Each relation MUST have: source (entity id), target (entity id), type, description
+                - Each entity MAY have: aliases (string array) and properties (object).
+                - Each relation MUST have string fields: source (entity id), target (entity id), type, description.
+                - Relation source and target MUST refer to ids in the entities array.
                 - Each relation MUST have: confidence — a float in [0.0, 1.0] calibrated to how certain the text supports this relation.
                   Use 0.85-1.0 for relations stated directly; 0.6-0.85 for inferred relations; 0.4-0.6 for possible but uncertain;
                   below 0.4 for speculative links.
-                - Each relation SHOULD have: properties
-                - Entity types should be UPPERCASE (PERSON, ORGANIZATION, LOCATION, CONCEPT, EVENT, PRODUCT, etc.)
-                - Relation types should be UPPERCASE with underscores (WORKS_AT, LOCATED_IN, FOUNDED_BY, etc.)
-                - Output ONLY valid JSON, no markdown fences, no explanations
+                - Each relation MAY have: properties (object).
+                - Entity types MUST be UPPERCASE category names.
+                - Relation types MUST be UPPERCASE_WITH_UNDERSCORES.
+                - Every non-structural value MUST be supported by the source text.
+                - Output ONLY valid JSON, with no markdown fences or explanations.
                 """;
     }
 
@@ -288,54 +274,37 @@ public final class GraphExtractionValidator {
      */
     public static String getMultiChunkExtractionPromptInstructions() {
         return """
-                You are extracting entities and relationships from MULTIPLE text chunks provided below.
+                Extract a knowledge graph ONLY from the MULTIPLE SOURCE TEXT chunks provided below.
                 Each chunk is preceded by a header line of the form:
                   ===== CHUNK <k> | source=<chunkId> =====
 
-                You MUST respond with a single JSON object matching this exact schema:
-                {
-                  "entities": [
-                    {
-                      "id": "e1",
-                      "name": "Acme Corp",
-                      "type": "ORGANIZATION",
-                      "aliases": ["Acme", "ACME Corporation"],
-                      "description": "A technology company",
-                      "confidence": 0.95,
-                      "chunkId": "<chunkId from the chunk header where this entity was found>",
-                      "properties": {"founded": "2010", "industry": "software"}
-                    }
-                  ],
-                  "relations": [
-                    {
-                      "source": "e1",
-                      "target": "e2",
-                      "type": "EMPLOYS",
-                      "description": "CEO employment relationship",
-                      "confidence": 0.95,
-                      "chunkId": "<chunkId from the chunk header where this relation was found>",
-                      "properties": {"since": "2015", "role": "CEO"}
-                    }
-                  ]
-                }
+                Never copy names, facts, types, or relationships from these instructions, and never invent facts.
+                If the chunks support no graph facts, return {"entities":[],"relations":[]}.
+
+                Return exactly one valid JSON object with top-level arrays "entities" and "relations".
+                Start from this empty structure and populate it only with chunk-supported facts:
+                {"entities":[],"relations":[]}
 
                 Rules:
-                - Each entity MUST have: id (unique within this extraction), name, type, description
-                - Each entity MUST have: chunkId set to the source value from the chunk header
+                - Each entity MUST have string fields: id (unique within this extraction), name, type, description, chunkId.
+                - Entity name and description MUST be grounded in a source chunk.
+                - Each entity chunkId MUST equal the source value from its nearest preceding chunk header.
                 - Each entity MUST have: confidence — a float in [0.0, 1.0] calibrated to how certain the text supports this entity.
                   Use 0.9-1.0 for entities stated explicitly and unambiguously; 0.7-0.9 for entities strongly implied;
                   0.5-0.7 for uncertain or indirect mentions; below 0.5 for speculative references.
-                - Each entity SHOULD have: aliases, properties
-                - Each relation MUST have: source (entity id), target (entity id), type, description
-                - Each relation MUST have: chunkId set to the source value from the chunk header
+                - Each entity MAY have: aliases (string array) and properties (object).
+                - Each relation MUST have string fields: source (entity id), target (entity id), type, description, chunkId.
+                - Relation source and target MUST refer to ids in the entities array.
+                - Each relation chunkId MUST equal the source value from its nearest preceding chunk header.
                 - Each relation MUST have: confidence — a float in [0.0, 1.0] calibrated to how certain the text supports this relation.
                   Use 0.85-1.0 for relations stated directly; 0.6-0.85 for inferred relations; 0.4-0.6 for possible but uncertain;
                   below 0.4 for speculative links.
-                - Each relation SHOULD have: properties
-                - Entity types should be UPPERCASE (PERSON, ORGANIZATION, LOCATION, CONCEPT, EVENT, PRODUCT, etc.)
-                - Relation types should be UPPERCASE with underscores (WORKS_AT, LOCATED_IN, FOUNDED_BY, etc.)
-                - Output ONLY valid JSON, no markdown fences, no explanations
-                - If an entity or relation spans multiple chunks, use the chunkId of the chunk where it was first mentioned
+                - Each relation MAY have: properties (object).
+                - Entity types MUST be UPPERCASE category names.
+                - Relation types MUST be UPPERCASE_WITH_UNDERSCORES.
+                - Every non-structural value MUST be supported by a source chunk.
+                - Output ONLY valid JSON, with no markdown fences or explanations.
+                - If an entity or relation spans multiple chunks, use the chunkId where it was first mentioned.
                 """;
     }
 }

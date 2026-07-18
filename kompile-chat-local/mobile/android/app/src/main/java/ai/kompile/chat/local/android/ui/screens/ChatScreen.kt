@@ -1,5 +1,8 @@
 package ai.kompile.chat.local.android.ui.screens
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
@@ -26,13 +29,15 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
-import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CenterAlignedTopAppBar
@@ -42,6 +47,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -55,6 +61,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -65,8 +72,12 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import ai.kompile.chat.local.android.viewmodel.ChatViewModel
+import ai.kompile.chat.local.android.viewmodel.GraphUiState
+import ai.kompile.chat.local.android.viewmodel.ModelUiState
+import ai.kompile.chat.local.android.viewmodel.ProjectImportOutcome
 import ai.kompile.chat.local.android.viewmodel.ToolRoundUi
 import ai.kompile.chat.local.android.viewmodel.UiMessage
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -76,11 +87,37 @@ fun ChatScreen(
 ) {
     val messages by vm.messages.collectAsState()
     val thinking  by vm.thinking.collectAsState()
-    val error     by vm.error.collectAsState()
-    val route     by vm.activeRoute.collectAsState()
+    val error      by vm.error.collectAsState()
+    val route      by vm.activeRoute.collectAsState()
+    val modelState by vm.modelState.collectAsState()
+    val graphState by vm.graphState.collectAsState()
 
     val listState = rememberLazyListState()
     val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+    var importingProject by remember { mutableStateOf(false) }
+    var importError by remember { mutableStateOf<String?>(null) }
+
+    val projectPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        uri?.let {
+            scope.launch {
+                importingProject = true
+                importError = null
+                try {
+                    when (val outcome = vm.importProjectAndActivate(it)) {
+                        is ProjectImportOutcome.Active -> Unit
+                        is ProjectImportOutcome.Failed -> importError = outcome.displayMessage
+                    }
+                } finally {
+                    importingProject = false
+                }
+            }
+        }
+    }
+
+    val engineReady = modelState is ModelUiState.Ready && graphState is GraphUiState.Ready
 
     // Auto-scroll to newest message.
     LaunchedEffect(messages.size, thinking) {
@@ -106,7 +143,7 @@ fun ChatScreen(
                             text = "Kompile Chat",
                             style = MaterialTheme.typography.titleMedium
                         )
-                        // Route badge: LOCAL / REMOTE / NONE
+                        // Route badge names the exact device provider.
                         RouteBadge(route = route)
                     }
                 },
@@ -138,7 +175,22 @@ fun ChatScreen(
 
             // Message list.
             if (messages.isEmpty() && !thinking) {
-                EmptyState(modifier = Modifier.weight(1f))
+                StartupStatePanel(
+                    modelState = modelState,
+                    graphState = graphState,
+                    importingProject = importingProject,
+                    importError = importError,
+                    onImportProject = { projectPicker.launch("*/*") },
+                    onPrepareProject = {
+                        val result = vm.openModelStaging()
+                        importError = result.exceptionOrNull()?.message
+                        if (result.isFailure && vm.prefs.modelStagingUrl.isBlank()) {
+                            onOpenSettings()
+                        }
+                    },
+                    onOpenSettings = onOpenSettings,
+                    modifier = Modifier.weight(1f)
+                )
             } else {
                 LazyColumn(
                     state = listState,
@@ -159,8 +211,10 @@ fun ChatScreen(
 
             // Input bar.
             ChatInputBar(
-                enabled = !thinking,
-                onSend = { text -> vm.sendMessage(text) }
+                enabled = !thinking && engineReady,
+                generating = thinking,
+                onSend = { text -> vm.sendMessage(text) },
+                onCancel = { vm.cancelGeneration() }
             )
         }
     }
@@ -171,9 +225,11 @@ fun ChatScreen(
 @Composable
 private fun RouteBadge(route: String) {
     val (label, color) = when (route) {
-        "LOCAL_SDX" -> "LOCAL" to MaterialTheme.colorScheme.tertiary
-        "REMOTE"    -> "REMOTE" to MaterialTheme.colorScheme.secondary
-        else        -> "NONE" to MaterialTheme.colorScheme.error
+        "LOCAL_VULKAN"    -> "VULKAN" to MaterialTheme.colorScheme.tertiary
+        "LOCAL_HEXAGON"          -> "HEXAGON" to MaterialTheme.colorScheme.tertiary
+        "LOCAL_TENSOR_G3_NNAPI"  -> "TENSOR G3" to MaterialTheme.colorScheme.tertiary
+        "LOCAL_TENSOR_G5"        -> "TENSOR G5" to MaterialTheme.colorScheme.tertiary
+        else              -> "NO MODEL" to MaterialTheme.colorScheme.error
     }
     Surface(
         shape = RoundedCornerShape(4.dp),
@@ -190,33 +246,136 @@ private fun RouteBadge(route: String) {
 }
 
 @Composable
-private fun EmptyState(modifier: Modifier = Modifier) {
+internal fun StartupStatePanel(
+    modelState: ModelUiState,
+    graphState: GraphUiState,
+    importingProject: Boolean,
+    importError: String?,
+    onImportProject: () -> Unit,
+    onPrepareProject: () -> Unit,
+    onOpenSettings: () -> Unit,
+    modifier: Modifier = Modifier
+) {
     Box(modifier = modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
+            verticalArrangement = Arrangement.Center,
+            modifier = Modifier.padding(horizontal = 24.dp)
         ) {
+            val icon = if (modelState is ModelUiState.Ready) {
+                Icons.Default.AutoAwesome
+            } else {
+                Icons.Default.FolderOpen
+            }
             Icon(
-                imageVector = Icons.Default.AutoAwesome,
+                imageVector = icon,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.primary,
                 modifier = Modifier
                     .size(48.dp)
                     .padding(bottom = 12.dp)
             )
-            Text(
-                text = "Start a conversation",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center
-            )
-            Text(
-                text = "Ask anything — graph tools activate automatically",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                textAlign = TextAlign.Center,
-                modifier = Modifier.padding(top = 4.dp, start = 24.dp, end = 24.dp)
-            )
+
+            when {
+                importingProject -> {
+                    Text("Installing offline project…", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(12.dp))
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    Text(
+                        "Verifying the target model, graph, sources, and native runtimes. Large projects may take a while.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                }
+
+                modelState is ModelUiState.Missing -> {
+                    Text("Import an offline project", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        importError ?: "Choose a .kproject prepared for this APK. It contains the target SameDiff model, AOT graph, Markdown sources, and one verified revision.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (importError == null) {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        } else {
+                            MaterialTheme.colorScheme.error
+                        },
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(top = 6.dp)
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    Button(onClick = onImportProject) {
+                        Icon(Icons.Default.FolderOpen, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Import .kproject")
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(onClick = onPrepareProject) {
+                        Text("Prepare from GGUF / Hugging Face")
+                    }
+                    Text(
+                        "Preparation opens a configured Kompile staging server in your browser; inference stays offline.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                }
+
+                modelState is ModelUiState.Failed -> {
+                    Text("Model could not be opened", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        modelState.message,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(top = 6.dp)
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    Button(onClick = onImportProject) { Text("Choose another .kproject") }
+                }
+
+                modelState is ModelUiState.Checking -> {
+                    Text("Checking local model…", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(12.dp))
+                    CircularProgressIndicator()
+                }
+
+                graphState is GraphUiState.Failed -> {
+                    Text("Knowledge graph could not be opened", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        graphState.message,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(top = 6.dp)
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    Button(onClick = onOpenSettings) { Text("Open settings") }
+                }
+
+                graphState is GraphUiState.Checking || graphState is GraphUiState.WaitingForModel -> {
+                    Text("Opening offline knowledge graph…", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(12.dp))
+                    CircularProgressIndicator()
+                }
+
+                else -> {
+                    Text(
+                        text = "Start a conversation",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
+                    )
+                    Text(
+                        text = "Ask anything — graph tools activate automatically",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                }
+            }
         }
     }
 }
@@ -393,7 +552,9 @@ private fun MonoBlock(text: String) {
 @Composable
 private fun ChatInputBar(
     enabled: Boolean,
-    onSend: (String) -> Unit
+    generating: Boolean,
+    onSend: (String) -> Unit,
+    onCancel: () -> Unit
 ) {
     var text by remember { mutableStateOf("") }
 
@@ -437,18 +598,28 @@ private fun ChatInputBar(
                 } else null
             )
             Spacer(Modifier.width(8.dp))
-            IconButton(
-                onClick = { doSend() },
-                enabled = enabled && text.isNotBlank()
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Send,
-                    contentDescription = "Send",
-                    tint = if (enabled && text.isNotBlank())
-                        MaterialTheme.colorScheme.primary
-                    else
-                        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
-                )
+            if (generating) {
+                IconButton(onClick = onCancel) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Cancel generation",
+                        tint = MaterialTheme.colorScheme.error
+                    )
+                }
+            } else {
+                IconButton(
+                    onClick = { doSend() },
+                    enabled = enabled && text.isNotBlank()
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.Send,
+                        contentDescription = "Send",
+                        tint = if (enabled && text.isNotBlank())
+                            MaterialTheme.colorScheme.primary
+                        else
+                            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                    )
+                }
             }
         }
     }

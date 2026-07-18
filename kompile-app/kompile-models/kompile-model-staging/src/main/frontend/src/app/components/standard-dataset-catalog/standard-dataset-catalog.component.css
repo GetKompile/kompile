@@ -42,3 +42,17 @@
 
 /* Loading */
 .loading-spinner { display: flex; justify-content: center; padding: 40px; }
+
+@media (max-width: 600px) {
+  .catalog-container { padding: 12px; }
+  .header { align-items: stretch; flex-direction: column; gap: 12px; }
+  .category-filter {
+    flex-wrap: nowrap;
+    max-width: 100%;
+    overflow-x: auto;
+    padding-bottom: 4px;
+  }
+  .category-filter button { flex: 0 0 auto; min-height: 44px; }
+  .dataset-grid { grid-template-columns: minmax(0, 1fr); }
+  .progress-detail { flex-wrap: wrap; gap: 6px; }
+}

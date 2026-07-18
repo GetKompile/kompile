@@ -130,68 +130,59 @@ public class FactSheetGraphServiceImpl implements FactSheetGraphService {
 
     @Override
     public GraphVisualizationData getVisualizationData(Long factSheetId, int maxNodes, int maxEdges) {
-        // Vector store is the SINGLE SOURCE OF TRUTH — read all nodes via the matrix service.
-        List<GraphNode> allNodes = new ArrayList<>(knowledgeGraphService.getNodesInFactSheet(factSheetId));
-        int totalAvailableNodes = allNodes.size();
-        List<GraphNode> nodes;
+        int nodeLimit = maxNodes > 0 ? maxNodes : 5_000;
+        int edgeLimit = maxEdges > 0 ? maxEdges : 10_000;
+        int pageSize = 1_000;
 
-        // maxNodes <= 0 means unlimited — apply limit only when explicitly requested
-        if (maxNodes > 0 && totalAvailableNodes > maxNodes) {
-            int[] typeOrder = new int[NodeLevel.values().length];
-            for (NodeLevel lvl : NodeLevel.values()) {
-                typeOrder[lvl.ordinal()] = switch (lvl) {
-                    case SOURCE -> 0;
-                    case DOCUMENT -> 1;
-                    case TABLE -> 2;
-                    case ENTITY -> 3;
-                    case CUSTOM -> 4;
-                    case SNIPPET -> 5;
-                    case ATTACHMENT -> 6;
-                    case IDENTIFIER -> 7;
-                    case ALIAS -> 8;
-                };
+        List<GraphNode> nodes = new ArrayList<>(Math.min(nodeLimit, pageSize));
+        long totalAvailableNodes = 0;
+        int nodeCursor = 0;
+        KnowledgeGraphService.GraphPage<GraphNode> nodePage;
+        do {
+            nodePage = knowledgeGraphService.getNodesInFactSheetPage(factSheetId, nodeCursor, pageSize);
+            totalAvailableNodes += nodePage.items().size();
+            int remaining = nodeLimit - nodes.size();
+            if (remaining > 0) {
+                nodes.addAll(nodePage.items().subList(0, Math.min(remaining, nodePage.items().size())));
             }
-            nodes = allNodes.stream()
-                    .sorted(Comparator.comparingInt(n -> typeOrder[n.getNodeType().ordinal()]))
-                    .limit(maxNodes)
-                    .collect(Collectors.toList());
-        } else {
-            nodes = allNodes;
-        }
+            nodeCursor = nodePage.nextCursor();
+        } while (nodePage.hasMore());
 
-        // Collect edges between visible nodes from the vector store.
-        List<GraphEdge> allEdges = knowledgeGraphService.getEdgesInFactSheet(factSheetId).stream()
-                .filter(e -> e.getSourceNode() != null && e.getTargetNode() != null)
-                .collect(Collectors.toList());
-        int totalAvailableEdges = allEdges.size();
         Set<String> nodeIds = nodes.stream().map(GraphNode::getNodeId).collect(Collectors.toSet());
-        List<GraphEdge> edges = allEdges.stream()
-                .filter(e -> nodeIds.contains(e.getSourceNode().getNodeId())
-                        && nodeIds.contains(e.getTargetNode().getNodeId()))
-                .collect(Collectors.toList());
-        // maxEdges <= 0 means unlimited
-        if (maxEdges > 0 && edges.size() > maxEdges) {
-            edges = edges.subList(0, maxEdges);
-        }
+        List<GraphEdge> edges = new ArrayList<>(Math.min(edgeLimit, pageSize));
+        long totalAvailableEdges = 0;
+        int edgeCursor = 0;
+        KnowledgeGraphService.GraphPage<GraphEdge> edgePage;
+        do {
+            edgePage = knowledgeGraphService.getEdgesInFactSheetPage(factSheetId, edgeCursor, pageSize);
+            totalAvailableEdges += edgePage.items().size();
+            for (GraphEdge edge : edgePage.items()) {
+                if (edges.size() >= edgeLimit) {
+                    break;
+                }
+                if (edge.getSourceNode() != null && edge.getTargetNode() != null
+                        && nodeIds.contains(edge.getSourceNode().getNodeId())
+                        && nodeIds.contains(edge.getTargetNode().getNodeId())) {
+                    edges.add(edge);
+                }
+            }
+            edgeCursor = edgePage.nextCursor();
+        } while (edgePage.hasMore());
 
-        // Convert to D3 format
         List<Map<String, Object>> nodeData = nodes.stream()
-            .map(this::nodeToD3Format)
-            .collect(Collectors.toList());
-
+                .map(this::nodeToD3Format)
+                .collect(Collectors.toList());
         List<Map<String, Object>> edgeData = edges.stream()
-            .map(this::edgeToD3Format)
-            .collect(Collectors.toList());
+                .map(this::edgeToD3Format)
+                .collect(Collectors.toList());
 
-        // Include totalAvailable so the UI can show "showing N of M" when bounded
         Map<String, Object> metadata = new LinkedHashMap<>();
         metadata.put("factSheetId", factSheetId);
         metadata.put("totalNodes", nodes.size());
         metadata.put("totalEdges", edgeData.size());
         metadata.put("totalAvailableNodes", totalAvailableNodes);
         metadata.put("totalAvailableEdges", totalAvailableEdges);
-        metadata.put("bounded", (maxNodes > 0 && nodes.size() < totalAvailableNodes)
-                || (maxEdges > 0 && edgeData.size() < totalAvailableEdges));
+        metadata.put("bounded", nodes.size() < totalAvailableNodes || edgeData.size() < totalAvailableEdges);
         metadata.put("nodeTypes", countByNodeType(nodes));
         metadata.put("edgeTypes", countByEdgeType(edges));
 

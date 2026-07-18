@@ -96,6 +96,98 @@ Custom model mirror: set `KOMPILE_MODEL_MIRROR_URL` and `KOMPILE_MODEL_MIRROR_EN
 
 Models transition through statuses: `PENDING` → `DOWNLOADING` → `CONVERTING` → `VALIDATING` → `READY` → `ACTIVE`. Progress is streamed via SSE at `GET /api/staging/models/{id}/stream`.
 
+## Offline Android graph-chat projects
+
+Model staging can turn a Hugging Face, HTTP, GGUF, or existing SameDiff input into
+one target-specific `.kproject` for the offline Android chat app. The public model
+inside the project remains `.sdz`: Vulkan SPIR-V, Hexagon kernels, NNAPI policy,
+and LiteRT-LM packages are immutable SDX cache entries embedded by
+`SdxModelCache.packageCompiledSdz`.
+
+The staging server must be project-scoped. Before staging, sync the fact sheet so
+the configured project contains:
+
+- `data/graph/project.kgraph`, exported by the existing project graph portability service
+- at least one Markdown source below `data/markdown/`
+- optional `data/fact-sheets/`, `data/sources/`, and `data/indexed-documents/` provenance
+
+Configure the project. Vulkan, Hexagon, Tensor G5, and every quantized request
+also require an actual target compiler. The compiler command is an argument
+vector and is executed directly; it is never passed through a shell. An
+unquantized `android-arm64-nnapi-accelerator` request instead uses
+`SdxModelCompiler.nnapiDeviceCompilationPolicy`: the Pixel NNAPI driver performs
+the device-specific compilation and the accelerator-only runtime persists its
+device cache.
+
+```yaml
+kompile:
+  staging:
+    project-dir: /absolute/path/to/kompile-project
+    sdx:
+      cache-dir: /absolute/path/to/sdx-cache
+      compiler-command:
+        - /absolute/path/to/sdx-target-compiler
+      compiler-id: libnd4j-mobile-aot
+      compiler-version: "1"
+      compiler-fingerprint: immutable-toolchain-and-config-digest
+```
+
+The configured executable is a real model compiler, not an APK/AAR builder or
+validator. This repository currently provides the target artifact contracts,
+cache/package layer, Vulkan compiler primitives, Hexagon plan/finalize support,
+the built-in unquantized NNAPI device policy, and LiteRT-LM package validation;
+it does not yet ship one host executable that performs every model conversion.
+Except for the unquantized NNAPI case, a target job therefore remains unavailable
+until its actual adapter is configured. Tensor G3 INT8 must rewrite SDZ weights,
+and Tensor G5 must use a supported LiteRT-LM exporter. Copying an input SDZ or
+emitting quantization metadata without a rewritten graph is rejected.
+
+On an SDX cache miss the executable receives `--input`, `--target`,
+`--output`, `--source-sha256`, and `--model-output`, plus any tokenizer,
+generation, quantization, model-id, and cache-key options. An absent compiler,
+unsupported graph, missing vendor output, or provider fallback fails the staging
+job; staging never labels a CPU artifact as an accelerator build.
+
+Supported Android targets:
+
+| Target profile | App/runtime | Default SoC |
+|---|---|---|
+| `android-arm64-vulkan` | Vulkan replay | `Android_Vulkan_1_1` |
+| `android-arm64-hexagon-htp` | Qualcomm Hexagon HTP | `SM8650` |
+| `android-arm64-nnapi-accelerator` | Pixel 8a / Tensor G3 NNAPI accelerator | `Tensor_G3` |
+| `android-arm64-google-tensor-g5` | Google Tensor G5 direct NPU | `Tensor_G5` |
+
+`int8-per-channel` means symmetric per-channel INT8 weights with FLOAT16
+activations, device-only vendor AOT, and no float/host fallback. The quantization
+contract is materialized by `nd4j-sdx-model` and participates in the content
+cache key. Tensor G3 additionally requires the target compiler to emit the
+derived quantized `.sdz`; metadata alone is rejected.
+
+Example:
+
+```http
+POST /api/staging/stage
+Content-Type: application/json
+
+{
+  "source": "huggingface",
+  "repository": "Qwen/Qwen2.5-0.5B-Instruct",
+  "modelId": "qwen-mobile",
+  "type": "llm_ggml",
+  "format": "gguf",
+  "outputFormat": "kproject",
+  "targetProfile": "android-arm64-nnapi-accelerator",
+  "quantizationProfile": "none",
+  "targetSoc": "Tensor_G3"
+}
+```
+
+Poll `GET /api/staging/status/qwen-mobile`. After it reaches `completed`,
+download `GET /api/staging/models/qwen-mobile/output`. The response is the
+checksummed canonical project archive containing the exact target `.sdz`,
+`project.kgraph`, and Markdown tree. The normal model-only staging and promotion
+flow remains unchanged when `outputFormat` is omitted.
+
 ## Generated audio synthesis
 
 `audio_synthesis` is a registered model type with a typed serving ABI. The initial production backend, `samediff_waveform`, deliberately accepts only an end-to-end SameDiff graph whose text-token inputs produce a finite normalized mono waveform in `[-1, 1]`. The reusable `samediff-audio` module owns tokenization, graph execution, completed-file results, and streaming PCM WAV writing. This service owns model staging and activation, registry/catalog persistence, SHA-256 verification before load, path containment, generator lifecycle, run idempotency, artifact manifests, and bearer-authenticated transfer.
@@ -138,6 +230,7 @@ A registry or catalog entry carries the ABI under `audio_synthesis`:
 
 - `GET /api/staging/catalog` — browse available models (static YAML + registered)
 - `POST /api/staging/stage` — start staging a model (async, returns immediately)
+- `GET /api/staging/models/{modelId}/output` — download a completed mobile `.kproject`
 - `POST /api/staging/stage/catalog/{modelId}` — stage from catalog by ID
 - `GET /api/staging/models/{id}/stream` — SSE progress stream
 - `POST /api/staging/promote/{modelId}` — promote to active

@@ -44,6 +44,47 @@ public interface LocalServingBackend {
     boolean isAvailable();
 
     /**
+     * Whether this backend is configured for the exact requested model identifier.
+     *
+     * <p>The default is deliberately conservative so older/test adapters cannot accidentally claim
+     * an explicit model request. Dispatchers may use a positive match to bypass generic provider
+     * fallback and must not substitute a different model if the matched backend is unavailable.</p>
+     *
+     * @param modelId exact model identifier requested by the crawl
+     * @return {@code true} only when this backend owns that exact model
+     */
+    default boolean matchesModel(String modelId) {
+        return false;
+    }
+
+    /**
+     * Generate only if the same exact model is still active when generation begins.
+     *
+     * <p>Production adapters should override this atomically with their model lifecycle lock. The
+     * conservative default preserves compatibility while re-checking the model immediately before
+     * generation.</p>
+     */
+    default String generateForModel(String modelId, String prompt) throws Exception {
+        if (!matchesModel(modelId)) {
+            throw new IllegalStateException("Requested serving model is no longer active: " + modelId);
+        }
+        return generate(prompt);
+    }
+
+    /**
+     * Generate for the exact requested model with a request-scoped output-token budget.
+     *
+     * <p>The default keeps older adapters source-compatible while preserving the identity check.
+     * Production adapters can override this to forward the budget without reloading the model.</p>
+     */
+    default String generateForModel(String modelId, String prompt, int maxNewTokens) throws Exception {
+        if (!matchesModel(modelId)) {
+            throw new IllegalStateException("Requested serving model is no longer active: " + modelId);
+        }
+        return generate(prompt, maxNewTokens);
+    }
+
+    /**
      * Run text generation on the loaded serving model.
      *
      * @param prompt the extraction prompt
@@ -51,4 +92,14 @@ public interface LocalServingBackend {
      * @throws Exception on HTTP/I/O failure or a model-reported error finish reason
      */
     String generate(String prompt) throws Exception;
+
+    /**
+     * Run generation with a request-scoped output-token budget.
+     *
+     * <p>The compatibility default delegates to {@link #generate(String)} so adapters that cannot
+     * vary generation length continue to work unchanged.</p>
+     */
+    default String generate(String prompt, int maxNewTokens) throws Exception {
+        return generate(prompt);
+    }
 }

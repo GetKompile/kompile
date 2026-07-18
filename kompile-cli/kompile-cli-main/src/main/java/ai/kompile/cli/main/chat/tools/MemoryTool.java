@@ -90,21 +90,34 @@ public class MemoryTool implements CliTool {
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
                     .withZone(ZoneId.systemDefault());
 
+    private final Path claudeHome;
+
+    public MemoryTool() {
+        this(Paths.get(System.getProperty("user.home"), ".claude"));
+    }
+
+    MemoryTool(Path claudeHome) {
+        this.claudeHome = claudeHome.toAbsolutePath().normalize();
+    }
+
     @Override
     public String id() { return "memory"; }
 
     @Override
     public String description() {
         return "Persistent memory across chat sessions. Four layers: "
-                + "(1) FLAT FILES — 'read', 'write', 'append', 'list', 'search' raw markdown "
-                + "files under .kompile/memory/ (project) or ~/.kompile/memory/ (global). "
+                + "(1) UNIFIED SEARCH + FLAT FILES — 'search' queries project/global Kompile "
+                + "memory and Claude/Codex/Gemini/Qwen/OpenCode project memory together; "
+                + "'read', 'write', 'append', and 'list' manage raw markdown files under "
+                + ".kompile/memory/ (project) or ~/.kompile/memory/ (global). "
                 + "(2) TYPED MEMORIES — 'save' with memoryType=user|feedback|project|reference, "
                 + "name, description, content; 'forget' by name; 'recall' with query and optional "
                 + "memoryType filter; 'types' to browse by type. Typed memories are individual "
                 + "files with YAML frontmatter and are auto-indexed in MEMORY.md. Use for user "
                 + "preferences, workflow feedback, project facts, and external references. "
-                + "(3) PROVIDER SCAN — 'scan_providers' reads project memory files from "
-                + "Claude/Codex/Gemini/Qwen/OpenCode locations so MCP clients can reuse them. "
+                + "(3) PROVIDER MEMORY — 'read_claude' directly reads this project's Claude Code "
+                + "auto-memory from ~/.claude/projects/<project>/memory/; 'scan_providers' reads "
+                + "project memory files from Claude/Codex/Gemini/Qwen/OpenCode locations. "
                 + "(4) KNOWLEDGE GRAPH — 'create_entity' with entities[{name,entityType,observations[]}], "
                 + "'create_relation' with relations[{from,to,relationType}], 'add_observation' with "
                 + "observations[{entityName,contents[]}], 'delete_entity' with names[], "
@@ -124,16 +137,19 @@ public class MemoryTool implements CliTool {
         addStringProp(props, "action",
                 "Action. Flat: read|write|append|list|search. "
                         + "Typed: save|forget|recall|types. "
-                        + "Provider scan: scan_providers. "
+                        + "Provider memory: read_claude|scan_providers. "
                         + "Graph: create_entity|create_relation|add_observation|"
                         + "delete_entity|delete_relation|delete_observation|"
                         + "read_graph|search_nodes|open_nodes");
         addStringProp(props, "scope", "Memory scope: 'project' (default) or 'global'");
         addStringProp(props, "file",
                 "File name for flat ops (default: MEMORY.md). Use topic files like "
-                        + "'debugging.md' for detailed notes.");
+                        + "'debugging.md' for detailed notes. Also selects a Claude Code auto-memory "
+                        + "file for read_claude (default: MEMORY.md).");
         addStringProp(props, "content", "Content to write/append/save");
-        addStringProp(props, "query", "Search query for search/recall/search_nodes/scan_providers");
+        addStringProp(props, "query",
+                "Search query. 'search' searches Kompile and all provider memory together; also "
+                        + "used by recall/search_nodes/scan_providers.");
         addStringProp(props, "source", "Provider filter for scan_providers: claude-code|codex|gemini|qwen|opencode");
         addStringProp(props, "memoryType",
                 "Memory type for save/recall/types: user|feedback|project|reference");
@@ -216,6 +232,9 @@ public class MemoryTool implements CliTool {
                 case "scan_providers":
                 case "scan_provider":
                     return scanProviderMemories(params, context.getWorkingDirectory());
+                case "read_claude":
+                case "read_claude_memory":
+                    return readClaudeMemory(params, context.getWorkingDirectory());
 
                 // Knowledge graph operations (MCP memory server API)
                 case "create_entity":
@@ -399,7 +418,7 @@ public class MemoryTool implements CliTool {
         }
     }
 
-    private ToolResult searchMemory(String query, Path workDir) {
+    ToolResult searchMemory(String query, Path workDir) {
         if (query.isEmpty()) {
             return ToolResult.error("query is required for 'search' action");
         }
@@ -413,6 +432,16 @@ public class MemoryTool implements CliTool {
 
         Path globalDir = KompileHome.homeDirectory().toPath().resolve(MEMORY_DIR);
         matchCount += searchDir(globalDir, queryLower, "global", sb);
+
+        for (ProviderSpec spec : providerMemorySpecs()) {
+            List<Path> providerFiles = collectProviderFiles(workDir, spec);
+            if ("claude-code".equals(spec.source)) {
+                providerFiles.addAll(collectClaudeMemoryFiles(workDir));
+            }
+            for (Path file : new LinkedHashSet<>(providerFiles)) {
+                matchCount += searchFile(file, queryLower, spec.source, sb);
+            }
+        }
 
         if (matchCount == 0) {
             return ToolResult.success("No memory matches for: " + query);
@@ -428,30 +457,8 @@ public class MemoryTool implements CliTool {
         int matches = 0;
         try (var files = Files.list(dir)) {
             for (Path f : files.filter(p -> !Files.isDirectory(p)).toList()) {
-                try {
-                    String content = Files.readString(f, StandardCharsets.UTF_8);
-                    String[] lines = content.split("\n");
-                    for (int i = 0; i < lines.length; i++) {
-                        if (lines[i].toLowerCase().contains(queryLower)) {
-                            if (matches == 0
-                                    || !sb.toString().endsWith(f.getFileName() + ":\n")) {
-                                sb.append("\n").append(scope).append("/")
-                                        .append(f.getFileName()).append(":\n");
-                            }
-                            int start = Math.max(0, i - 1);
-                            int end = Math.min(lines.length - 1, i + 1);
-                            for (int j = start; j <= end; j++) {
-                                sb.append(j == i ? ">>> " : "    ")
-                                        .append("L").append(j + 1).append(": ")
-                                        .append(lines[j]).append("\n");
-                            }
-                            matches++;
-                            if (matches >= 30) return matches;
-                        }
-                    }
-                } catch (IOException e) {
-                    // Skip unreadable files
-                }
+                matches += searchFile(f, queryLower, scope, sb);
+                if (matches >= 30) return matches;
             }
         } catch (IOException e) {
             // Skip
@@ -459,23 +466,62 @@ public class MemoryTool implements CliTool {
         return matches;
     }
 
+    private int searchFile(Path file, String queryLower, String source, StringBuilder sb) {
+        try {
+            if (!Files.isRegularFile(file) || Files.size(file) > MAX_MEMORY_FILE_SIZE * 4L) {
+                return 0;
+            }
+            String[] lines = Files.readString(file, StandardCharsets.UTF_8).split("\n");
+            int matches = 0;
+            boolean headerWritten = false;
+            for (int i = 0; i < lines.length; i++) {
+                if (!lines[i].toLowerCase().contains(queryLower)) continue;
+                if (!headerWritten) {
+                    sb.append("\n").append(source).append("/")
+                            .append(file.getFileName()).append(":\n");
+                    headerWritten = true;
+                }
+                int start = Math.max(0, i - 1);
+                int end = Math.min(lines.length - 1, i + 1);
+                for (int j = start; j <= end; j++) {
+                    sb.append(j == i ? ">>> " : "    ")
+                            .append("L").append(j + 1).append(": ")
+                            .append(lines[j]).append("\n");
+                }
+                matches++;
+                if (matches >= 30) break;
+            }
+            return matches;
+        } catch (IOException e) {
+            return 0;
+        }
+    }
+
     // ========================================================================
-    // Provider memory scanning (project-local external CLI files)
+    // Provider memory scanning (project-local files plus Claude Code auto-memory)
     // ========================================================================
 
-    private ToolResult scanProviderMemories(JsonNode params, Path workDir) {
+    ToolResult scanProviderMemories(JsonNode params, Path workDir) {
         String sourceFilter = params.path("source").asText("").trim().toLowerCase();
         String query = params.path("query").asText("").trim().toLowerCase();
 
         List<ProviderFile> matches = new ArrayList<>();
         for (ProviderSpec spec : providerMemorySpecs()) {
             if (!sourceFilter.isEmpty() && !spec.source.equals(sourceFilter)) continue;
-            for (Path file : collectProviderFiles(workDir, spec)) {
+            List<Path> providerFiles = collectProviderFiles(workDir, spec);
+            if ("claude-code".equals(spec.source)) {
+                providerFiles.addAll(collectClaudeMemoryFiles(workDir));
+            }
+            for (Path file : new LinkedHashSet<>(providerFiles)) {
                 String content = readProviderFile(file);
                 if (content == null || content.isBlank()) continue;
                 String haystack = (spec.source + " " + file + " " + content).toLowerCase();
                 if (!query.isEmpty() && !haystack.contains(query)) continue;
-                matches.add(new ProviderFile(spec.source, spec.label, workDir.relativize(file), content));
+                Path normalizedWorkDir = workDir.toAbsolutePath().normalize();
+                Path normalizedFile = file.toAbsolutePath().normalize();
+                Path displayPath = normalizedFile.startsWith(normalizedWorkDir)
+                        ? normalizedWorkDir.relativize(normalizedFile) : normalizedFile;
+                matches.add(new ProviderFile(spec.source, spec.label, displayPath, content));
             }
         }
 
@@ -531,6 +577,44 @@ public class MemoryTool implements CliTool {
             }
         }
         return new ArrayList<>(files);
+    }
+
+    ToolResult readClaudeMemory(JsonNode params, Path workDir) {
+        String fileName = sanitizeFileName(params.path("file").asText(DEFAULT_FILE));
+        Path memoryDir = resolveClaudeMemoryDir(workDir);
+        Path file = memoryDir.resolve(fileName).normalize();
+        if (!file.startsWith(memoryDir) || !isProviderMemoryFile(file)) {
+            return ToolResult.error("Invalid Claude Code memory file: " + fileName);
+        }
+
+        String content = readProviderFile(file);
+        if (content == null) {
+            return ToolResult.success("Claude Code memory file not found: " + fileName
+                    + " (project: " + workDir.toAbsolutePath().normalize() + ")");
+        }
+        return ToolResult.success("memory: Claude Code " + fileName,
+                trimForScan(content, MAX_MEMORY_FILE_SIZE),
+                Map.of("source", "claude-code", "file", fileName,
+                        "path", file.toString(), "project", workDir.toAbsolutePath().normalize().toString()));
+    }
+
+    Path resolveClaudeMemoryDir(Path workDir) {
+        String projectKey = workDir.toAbsolutePath().normalize().toString()
+                .replaceAll("[^A-Za-z0-9]", "-");
+        return claudeHome.resolve("projects").resolve(projectKey).resolve(MEMORY_DIR).normalize();
+    }
+
+    private List<Path> collectClaudeMemoryFiles(Path workDir) {
+        Path memoryDir = resolveClaudeMemoryDir(workDir);
+        if (!Files.isDirectory(memoryDir)) return new ArrayList<>();
+        try (Stream<Path> stream = Files.list(memoryDir)) {
+            return new ArrayList<>(stream.filter(Files::isRegularFile)
+                    .filter(this::isProviderMemoryFile)
+                    .sorted()
+                    .toList());
+        } catch (IOException ignored) {
+            return new ArrayList<>();
+        }
     }
 
     private boolean isProviderMemoryFile(Path file) {

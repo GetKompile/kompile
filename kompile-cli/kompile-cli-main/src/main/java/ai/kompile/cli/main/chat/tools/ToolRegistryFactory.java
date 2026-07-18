@@ -87,12 +87,16 @@ public class ToolRegistryFactory {
 
         // File I/O tools
         registry.register(new ReadTool());
+        registry.register(new ReadBatchTool());
         registry.register(new WriteTool());
         registry.register(new EditTool());
+        registry.register(new EditBatchTool());
         registry.register(new PatchTool());
+        registry.register(new EditPatchTool());
 
         // Search tools
         registry.register(new GrepTool());
+        registry.register(new GrepBatchTool());
         registry.register(new GlobTool());
         registry.register(new ListTool());
 

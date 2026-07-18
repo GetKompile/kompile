@@ -17,8 +17,11 @@
 package ai.kompile.cli.main.chat.render;
 
 import java.io.BufferedReader;
+import java.io.File;
 import java.io.InputStreamReader;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.*;
@@ -29,9 +32,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * timeout management, and output buffering. Comparable to OpenCode's Shell module.
  *
  * Features:
- * - Process group creation on Unix (detached processes)
- * - Kill tree: SIGTERM → 200ms wait → SIGKILL escalation
- * - Configurable timeout (default 120s)
+ * - Own process group/session on Linux via setsid(1), so group signals reach the whole tree
+ * - Kill tree: SIGTERM → 200ms wait → SIGKILL escalation, always followed by direct
+ *   destroy of the root and every descendant — a plain ProcessBuilder child is NOT a
+ *   process group leader, so a group signal alone can be a silent no-op
+ * - Timeout (default 120s) bounds the WHOLE call including output draining: a detached
+ *   child that inherited the output pipe must never hang the caller past its deadline
  * - Output buffering with 30KB truncation for metadata
  * - Abort signal integration
  */
@@ -40,7 +46,11 @@ public class ProcessManager {
     private static final int DEFAULT_TIMEOUT_MS = 120_000;
     private static final int SIGKILL_TIMEOUT_MS = 200;
     private static final int MAX_OUTPUT_CHARS = 30_000;
+    /** Grace period after process exit for the reader to drain straggler output. */
+    private static final int OUTPUT_DRAIN_TIMEOUT_MS = 5_000;
     private static final boolean IS_UNIX = !System.getProperty("os.name", "").toLowerCase().startsWith("win");
+    /** setsid(1) makes the shell its own session/group leader so {@code kill -- -pid} works; absent on macOS. */
+    private static final String SETSID = detectSetsid();
 
     /** Active processes tracked for cleanup on shutdown. */
     private static final Set<Process> ACTIVE_PROCESSES = ConcurrentHashMap.newKeySet();
@@ -60,17 +70,25 @@ public class ProcessManager {
      * @param command     the shell command to execute
      * @param workDir     working directory
      * @param timeoutMs   timeout in milliseconds (0 = default 120s)
-     * @param abortSignal abort flag (checked during output reading)
+     * @param abortSignal abort flag (checked while waiting for the process)
      * @return the process result
      */
     public static ProcessResult execute(String command, Path workDir, int timeoutMs, AtomicBoolean abortSignal) {
         if (timeoutMs <= 0) timeoutMs = DEFAULT_TIMEOUT_MS;
 
         long startTime = System.currentTimeMillis();
+        long deadline = startTime + timeoutMs;
         Process process = null;
 
         try {
-            ProcessBuilder pb = new ProcessBuilder("bash", "-c", command);
+            List<String> argv = new ArrayList<>();
+            if (SETSID != null) {
+                argv.add(SETSID);
+            }
+            argv.add("bash");
+            argv.add("-c");
+            argv.add(command);
+            ProcessBuilder pb = new ProcessBuilder(argv);
             pb.directory(workDir.toFile());
             pb.redirectErrorStream(true);
 
@@ -83,70 +101,72 @@ public class ProcessManager {
             ACTIVE_PROCESSES.add(process);
 
             final Process proc = process;
-            final AtomicBoolean timedOut = new AtomicBoolean(false);
 
-            // Timeout watchdog
-            ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-                Thread t = new Thread(r, "process-timeout-" + proc.pid());
-                t.setDaemon(true);
-                return t;
-            });
-            scheduler.schedule(() -> {
-                timedOut.set(true);
-                killTree(proc);
-            }, timeoutMs + 100, TimeUnit.MILLISECONDS);
-
-            // Abort watcher
-            Thread abortWatcher = null;
-            if (abortSignal != null) {
-                abortWatcher = new Thread(() -> {
-                    while (proc.isAlive() && !timedOut.get()) {
-                        if (abortSignal.get()) {
-                            killTree(proc);
-                            break;
+            // Output is read on its own thread: the pipe can outlive the process (a
+            // backgrounded child that inherited stdout keeps the write end open), and a
+            // read on the calling thread would block past any timeout.
+            final StringBuilder output = new StringBuilder();
+            final AtomicBoolean outputTruncated = new AtomicBoolean(false);
+            Thread reader = new Thread(() -> {
+                try (BufferedReader r = new BufferedReader(new InputStreamReader(proc.getInputStream()))) {
+                    String line;
+                    while ((line = r.readLine()) != null) {
+                        synchronized (output) {
+                            if (output.length() < MAX_OUTPUT_CHARS) {
+                                output.append(line).append('\n');
+                            } else {
+                                outputTruncated.set(true);
+                            }
                         }
-                        try { Thread.sleep(100); } catch (InterruptedException e) { break; }
                     }
-                }, "abort-watcher-" + proc.pid());
-                abortWatcher.setDaemon(true);
-                abortWatcher.start();
-            }
-
-            // Read output
-            StringBuilder output = new StringBuilder();
-            boolean outputTruncated = false;
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    if (output.length() < MAX_OUTPUT_CHARS) {
-                        output.append(line).append("\n");
-                    } else {
-                        outputTruncated = true;
-                    }
+                } catch (Exception ignored) {
+                    // Stream closed by a kill — nothing to report
                 }
+            }, "process-output-" + proc.pid());
+            reader.setDaemon(true);
+            reader.start();
+
+            // Wait for exit, abort, or the deadline — whichever comes first.
+            boolean timedOut = false;
+            boolean aborted = false;
+            while (proc.isAlive()) {
+                if (abortSignal != null && abortSignal.get()) {
+                    aborted = true;
+                    break;
+                }
+                long remaining = deadline - System.currentTimeMillis();
+                if (remaining <= 0) {
+                    timedOut = true;
+                    break;
+                }
+                proc.waitFor(Math.min(remaining, 100), TimeUnit.MILLISECONDS);
             }
 
-            boolean completed = process.waitFor(timeoutMs, TimeUnit.MILLISECONDS);
-            scheduler.shutdownNow();
+            if (timedOut || aborted) {
+                killTree(proc);
+            }
+
+            // Let the reader drain the tail, then abandon it (daemon thread) — a
+            // detached pipe holder must not stall the call.
+            reader.join((timedOut || aborted) ? 500 : OUTPUT_DRAIN_TIMEOUT_MS);
 
             long durationMs = System.currentTimeMillis() - startTime;
-
-            if (timedOut.get() || !completed) {
-                killTree(process);
-                return new ProcessResult(output.toString(), -1, durationMs, true, false, outputTruncated);
+            String outputStr;
+            synchronized (output) {
+                outputStr = output.toString();
             }
-
-            if (abortSignal != null && abortSignal.get()) {
-                return new ProcessResult(output.toString(), -1, durationMs, false, true, outputTruncated);
-            }
-
-            int exitCode = process.exitValue();
-            String outputStr = output.toString();
-            if (outputTruncated) {
+            boolean truncated = outputTruncated.get();
+            if (truncated) {
                 outputStr += "\n... (output truncated at " + MAX_OUTPUT_CHARS + " chars)";
             }
 
-            return new ProcessResult(outputStr, exitCode, durationMs, false, false, outputTruncated);
+            if (timedOut) {
+                return new ProcessResult(outputStr, -1, durationMs, true, false, truncated);
+            }
+            if (aborted) {
+                return new ProcessResult(outputStr, -1, durationMs, false, true, truncated);
+            }
+            return new ProcessResult(outputStr, process.exitValue(), durationMs, false, false, truncated);
 
         } catch (Exception e) {
             if (process != null) {
@@ -162,39 +182,25 @@ public class ProcessManager {
     }
 
     /**
-     * Kill process tree: SIGTERM → wait 200ms → SIGKILL.
-     * On Unix, targets the process group.
+     * Kill process tree: SIGTERM → wait 200ms → SIGKILL, verified.
+     * On Unix the process group is signalled first (effective when the process was
+     * spawned via setsid and leads its own group), then the root and every descendant
+     * are destroyed directly — the group signal alone reaches nothing when the child
+     * is not a group leader.
      */
     public static void killTree(Process process) {
         if (process == null || !process.isAlive()) return;
 
         long pid = process.pid();
+        // Snapshot before killing the root — descendants reparent once it dies.
+        List<ProcessHandle> descendants = process.descendants().toList();
 
         if (IS_UNIX) {
-            // Try killing the process group first (negative PID)
             try {
-                // SIGTERM to process group
-                new ProcessBuilder("kill", "-TERM", "-" + pid)
+                new ProcessBuilder("kill", "-TERM", "--", "-" + pid)
                         .redirectErrorStream(true).start().waitFor(1, TimeUnit.SECONDS);
-            } catch (Exception e) {
-                // Fall back to direct kill
-                process.destroy();
-            }
-
-            // Wait for graceful shutdown
-            try {
-                boolean exited = process.waitFor(SIGKILL_TIMEOUT_MS, TimeUnit.MILLISECONDS);
-                if (!exited) {
-                    // Escalate to SIGKILL
-                    try {
-                        new ProcessBuilder("kill", "-9", "-" + pid)
-                                .redirectErrorStream(true).start().waitFor(1, TimeUnit.SECONDS);
-                    } catch (Exception e) {
-                        process.destroyForcibly();
-                    }
-                }
-            } catch (InterruptedException e) {
-                process.destroyForcibly();
+            } catch (Exception ignored) {
+                // fall through to direct destroy below
             }
         } else {
             // Windows: use taskkill /f /t
@@ -205,6 +211,38 @@ public class ProcessManager {
                 process.destroyForcibly();
             }
         }
+
+        // The group kill is best-effort; always destroy the root and descendants directly.
+        process.destroy();
+        descendants.forEach(ProcessHandle::destroy);
+
+        try {
+            if (!process.waitFor(SIGKILL_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                if (IS_UNIX) {
+                    try {
+                        new ProcessBuilder("kill", "-9", "--", "-" + pid)
+                                .redirectErrorStream(true).start().waitFor(1, TimeUnit.SECONDS);
+                    } catch (Exception ignored) {
+                        // destroyForcibly below is the fallback
+                    }
+                }
+                process.destroyForcibly();
+                descendants.forEach(ProcessHandle::destroyForcibly);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            process.destroyForcibly();
+            descendants.forEach(ProcessHandle::destroyForcibly);
+        }
+    }
+
+    private static String detectSetsid() {
+        if (!IS_UNIX) return null;
+        for (String candidate : new String[]{"/usr/bin/setsid", "/bin/setsid"}) {
+            File f = new File(candidate);
+            if (f.canExecute()) return candidate;
+        }
+        return null;
     }
 
     private static void inheritEnv(Map<String, String> env, String... keys) {

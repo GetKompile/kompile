@@ -44,6 +44,12 @@
 
         <!-- Test -->
         <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-project-store</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
             <version>5.10.0</version>

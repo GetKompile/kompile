@@ -26,6 +26,8 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -47,9 +49,9 @@ import java.util.Map;
  * surface as a transport error rather than a clean generation-level error to the dispatcher.</p>
  *
  * <p>Wire-compat note: {@code ServingSubprocessLauncher.generate()} sends only
- * {@code {"prompt":"..."}}; generation parameters (maxTokens, temperature, etc.) are baked
- * into the model at load time via {@code POST /api/llm/load}.  This endpoint accepts but
- * ignores extra fields in the request body so it stays forward-compatible with callers that
+ * {@code {"prompt":"..."}}; requests without maxTokens use the generation budget baked
+ * into the model at load time. This endpoint honors an optional positive maxTokens (capped at 4096) and
+ * ignores other extra fields so it stays forward-compatible with callers that
  * send a richer payload (e.g. {@code LocalStagingLlmService}).</p>
  *
  * <p>This controller is gated by the same {@code @ConditionalOnProperty} as
@@ -63,6 +65,7 @@ import java.util.Map;
 public class LlmGenerateController {
 
     private static final Logger logger = LoggerFactory.getLogger(LlmGenerateController.class);
+    static final int MAX_REQUEST_MAX_TOKENS = 4096;
 
     private final SameDiffLanguageModelImpl languageModel;
 
@@ -95,6 +98,13 @@ public class LlmGenerateController {
             return ResponseEntity.ok(errorResponse("prompt must not be blank"));
         }
 
+        Integer maxTokens;
+        try {
+            maxTokens = requestedMaxTokens(request.get("maxTokens"));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.ok(errorResponse(e.getMessage()));
+        }
+
         if (!languageModel.isLoaded()) {
             logger.warn("POST /api/llm/generate called but no model is loaded; returning error response");
             return ResponseEntity.ok(errorResponse("no model loaded; POST /api/llm/load first"));
@@ -102,7 +112,9 @@ public class LlmGenerateController {
 
         long startMs = System.currentTimeMillis();
         try {
-            String generatedText = languageModel.generateResponse(prompt, List.of());
+            String generatedText = maxTokens != null
+                    ? languageModel.generateResponse(prompt, List.of(), maxTokens)
+                    : languageModel.generateResponse(prompt, List.of());
             long totalTimeMs = System.currentTimeMillis() - startMs;
             logger.debug("POST /api/llm/generate: generated {} chars in {} ms",
                     generatedText.length(), totalTimeMs);
@@ -115,6 +127,29 @@ public class LlmGenerateController {
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────
+
+    private static Integer requestedMaxTokens(Object rawMaxTokens) {
+        if (rawMaxTokens == null) {
+            return null;
+        }
+
+        BigInteger parsed;
+        try {
+            if (rawMaxTokens instanceof Number number) {
+                parsed = new BigDecimal(number.toString()).toBigIntegerExact();
+            } else {
+                parsed = BigInteger.valueOf(Long.parseLong(String.valueOf(rawMaxTokens).trim()));
+            }
+        } catch (ArithmeticException | NumberFormatException e) {
+            throw new IllegalArgumentException("maxTokens must be a positive integer");
+        }
+
+        if (parsed.signum() <= 0) {
+            throw new IllegalArgumentException("maxTokens must be a positive integer");
+        }
+        BigInteger safetyLimit = BigInteger.valueOf(MAX_REQUEST_MAX_TOKENS);
+        return parsed.compareTo(safetyLimit) > 0 ? MAX_REQUEST_MAX_TOKENS : parsed.intValueExact();
+    }
 
     private static Map<String, Object> successResponse(String text, long totalTimeMs) {
         Map<String, Object> resp = new LinkedHashMap<>();

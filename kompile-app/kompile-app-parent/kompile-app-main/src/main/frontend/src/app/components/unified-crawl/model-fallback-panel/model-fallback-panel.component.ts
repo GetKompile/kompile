@@ -54,6 +54,16 @@ export interface AvailableAgentModel {
   modelSource: string;
 }
 
+/** Observed per-model calibration from /api/model-fallback/calibration — the measurements
+ *  selection precedence actually ranks on (correctness first, throughput as the tiebreaker). */
+export interface ModelCalibrationRow {
+  modelId: string;
+  correctnessEwma?: number;
+  throughputCharsPerSec?: number;
+  latencyEwmaMs?: number;
+  benchedUntilEpochMs?: number;
+}
+
 @Component({
   selector: 'app-model-fallback-panel',
   standalone: true,
@@ -89,6 +99,7 @@ export class ModelFallbackPanelComponent implements OnInit {
   };
 
   availableAgents: AvailableAgentModel[] = [];
+  calibration: ModelCalibrationRow[] = [];
   loading = false;
   saving = false;
 
@@ -101,6 +112,25 @@ export class ModelFallbackPanelComponent implements OnInit {
   ngOnInit(): void {
     this.loadConfig();
     this.loadAvailableModels();
+    this.loadCalibration();
+  }
+
+  loadCalibration(): void {
+    this.http.get<ModelCalibrationRow[]>('/api/model-fallback/calibration').subscribe({
+      next: (rows) => {
+        this.calibration = rows || [];
+        this.cdr.markForCheck();
+      },
+      error: (err) => {
+        console.error('Failed to load model calibration:', err.message);
+        this.cdr.markForCheck();
+      }
+    });
+  }
+
+  benchRemainingSeconds(row: ModelCalibrationRow): number {
+    if (!row.benchedUntilEpochMs) return 0;
+    return Math.max(0, Math.round((row.benchedUntilEpochMs - Date.now()) / 1000));
   }
 
   loadConfig(): void {

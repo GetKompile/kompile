@@ -396,8 +396,9 @@ class ClaudeStreamParserTest {
     }
 
     @Test
-    void supportsStreamJson_codexAgent_returnsFalse() {
-        assertFalse(parser.supportsStreamJson("codex"));
+    void supportsStreamJson_codexAgent_returnsTrue() {
+        // Codex speaks the structured stream protocol now (intended branch change).
+        assertTrue(parser.supportsStreamJson("codex"));
     }
 
     @Test

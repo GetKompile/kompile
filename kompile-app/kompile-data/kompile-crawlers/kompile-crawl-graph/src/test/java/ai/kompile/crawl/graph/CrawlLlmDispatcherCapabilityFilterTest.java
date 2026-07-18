@@ -16,15 +16,24 @@
 
 package ai.kompile.crawl.graph;
 
+import ai.kompile.core.crawl.graph.GraphExtractionConfig;
+import ai.kompile.core.crawl.graph.LocalServingBackend;
 import ai.kompile.core.crawl.graph.ProcessingRouteConfig;
 import ai.kompile.core.crawl.graph.ProcessingRouteConfig.ProcessingBackend;
 import ai.kompile.core.crawl.graph.ProcessingRouteConfig.ProcessingBackendType;
+import ai.kompile.core.crawl.graph.UnifiedCrawlJob;
+import ai.kompile.core.crawl.graph.UnifiedCrawlRequest;
+import ai.kompile.core.llm.chat.LLMChat;
 import org.junit.jupiter.api.Test;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verifyNoInteractions;
 
 /**
  * Verifies that {@link CrawlLlmDispatcher#isCapableOf} correctly filters backends
@@ -38,6 +47,9 @@ import static org.junit.jupiter.api.Assertions.*;
  * </ul>
  */
 class CrawlLlmDispatcherCapabilityFilterTest {
+
+    private static final String LOCAL_MODEL = "lfm2.5-1.2b-instruct";
+    private static final String EXTRACTION_JSON = "{\"entities\":[],\"relationships\":[]}";
 
     // ── Backend fixtures ─────────────────────────────────────────────────────
 
@@ -224,5 +236,144 @@ class CrawlLlmDispatcherCapabilityFilterTest {
         assertTrue(firstLlm.isPresent(), "must find an LLM backend");
         assertEquals("opencode-extraction", firstLlm.get().getId(),
                 "first LLM-capable backend in priority order must be opencode-extraction");
+    }
+
+    @Test
+    void explicitServingProviderBypassesGenericRouteOptOut() {
+        CrawlLlmDispatcher dispatcher = new CrawlLlmDispatcher();
+        AtomicInteger generateCalls = new AtomicInteger();
+        LocalServingBackend serving = servingBackend(true, generateCalls);
+        LLMChat defaultLlm = mock(LLMChat.class);
+        ReflectionTestUtils.setField(dispatcher, "localServingBackend", serving);
+        ReflectionTestUtils.setField(dispatcher, "llmChat", defaultLlm);
+
+        String response = dispatcher.promptWithCapacityFallback(
+                "extract", "llm", jobForModel(LOCAL_MODEL, "serving"));
+
+        assertEquals(EXTRACTION_JSON, response);
+        assertEquals(1, generateCalls.get());
+        verifyNoInteractions(defaultLlm);
+    }
+
+    @Test
+    void explicitServingProviderForwardsGraphExtractionTokenBudget() {
+        CrawlLlmDispatcher dispatcher = new CrawlLlmDispatcher();
+        AtomicInteger generateCalls = new AtomicInteger();
+        AtomicInteger forwardedMaxTokens = new AtomicInteger();
+        LocalServingBackend serving = servingBackend(true, generateCalls, forwardedMaxTokens);
+        ReflectionTestUtils.setField(dispatcher, "localServingBackend", serving);
+
+        String response = dispatcher.promptWithCapacityFallback(
+                "extract", "llm", jobForModel(LOCAL_MODEL, "serving", 1536));
+
+        assertEquals(EXTRACTION_JSON, response);
+        assertEquals(1, generateCalls.get());
+        assertEquals(1536, forwardedMaxTokens.get());
+    }
+
+    @Test
+    void matchingModelWithDefaultProviderRespectsServingLaneOptOut() {
+        CrawlLlmDispatcher dispatcher = new CrawlLlmDispatcher();
+        AtomicInteger generateCalls = new AtomicInteger();
+        LocalServingBackend serving = servingBackend(true, generateCalls);
+        ReflectionTestUtils.setField(dispatcher, "localServingBackend", serving);
+
+        String response = dispatcher.promptWithCapacityFallback(
+                "extract", "llm", jobForModel(LOCAL_MODEL, "default"));
+
+        assertNull(response);
+        assertEquals(0, generateCalls.get());
+    }
+
+    @Test
+    void unavailableExactServingModelFailsClosedWithoutProviderFallback() {
+        CrawlLlmDispatcher dispatcher = new CrawlLlmDispatcher();
+        AtomicInteger generateCalls = new AtomicInteger();
+        LocalServingBackend serving = servingBackend(false, generateCalls);
+        LLMChat defaultLlm = mock(LLMChat.class);
+        ReflectionTestUtils.setField(dispatcher, "localServingBackend", serving);
+        ReflectionTestUtils.setField(dispatcher, "llmChat", defaultLlm);
+
+        String response = dispatcher.promptWithCapacityFallback(
+                "extract", "llm", jobForModel(LOCAL_MODEL, "serving"));
+
+        assertNull(response);
+        assertEquals(0, generateCalls.get());
+        verifyNoInteractions(defaultLlm);
+    }
+
+    @Test
+    void servingProviderRejectsMismatchedModelWithoutProviderFallback() {
+        CrawlLlmDispatcher dispatcher = new CrawlLlmDispatcher();
+        AtomicInteger generateCalls = new AtomicInteger();
+        LocalServingBackend serving = servingBackend(true, generateCalls);
+        LLMChat defaultLlm = mock(LLMChat.class);
+        ReflectionTestUtils.setField(dispatcher, "localServingBackend", serving);
+        ReflectionTestUtils.setField(dispatcher, "llmChat", defaultLlm);
+
+        String response = dispatcher.promptWithCapacityFallback(
+                "extract", "llm", jobForModel("different-model", "serving"));
+
+        assertNull(response);
+        assertEquals(0, generateCalls.get());
+        verifyNoInteractions(defaultLlm);
+    }
+
+    private static UnifiedCrawlJob jobForModel(String modelName, String provider) {
+        return jobForModel(modelName, provider, 4096);
+    }
+
+    private static UnifiedCrawlJob jobForModel(String modelName, String provider, int maxTokens) {
+        ProcessingRouteConfig route = ProcessingRouteConfig.builder()
+                .fallbackEnabled(false)
+                .servingLaneEnabled(false)
+                .build();
+        GraphExtractionConfig graph = GraphExtractionConfig.builder()
+                .modelName(modelName)
+                .llmProvider(provider)
+                .maxTokens(maxTokens)
+                .build();
+        return UnifiedCrawlJob.builder()
+                .jobId("explicit-model-test")
+                .request(UnifiedCrawlRequest.builder()
+                        .graphExtraction(graph)
+                        .processingRoute(route)
+                        .build())
+                .build();
+    }
+
+    private static LocalServingBackend servingBackend(boolean available, AtomicInteger generateCalls) {
+        return servingBackend(available, generateCalls, null);
+    }
+
+    private static LocalServingBackend servingBackend(
+            boolean available,
+            AtomicInteger generateCalls,
+            AtomicInteger forwardedMaxTokens) {
+        return new LocalServingBackend() {
+            @Override
+            public boolean isAvailable() {
+                return available;
+            }
+
+            @Override
+            public boolean matchesModel(String modelId) {
+                return LOCAL_MODEL.equals(modelId);
+            }
+
+            @Override
+            public String generate(String prompt) {
+                generateCalls.incrementAndGet();
+                return EXTRACTION_JSON;
+            }
+
+            @Override
+            public String generate(String prompt, int maxNewTokens) {
+                if (forwardedMaxTokens != null) {
+                    forwardedMaxTokens.set(maxNewTokens);
+                }
+                return generate(prompt);
+            }
+        };
     }
 }

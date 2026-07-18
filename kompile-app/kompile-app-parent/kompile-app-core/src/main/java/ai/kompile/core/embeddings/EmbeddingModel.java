@@ -330,6 +330,15 @@ public interface EmbeddingModel extends AutoCloseable, LanguageSupport {
     }
 
     /**
+     * Starts or recovers the model when it is not ready. Implementations backed by a subprocess
+     * should override this to launch/relaunch it; in-process implementations retain the readiness
+     * behavior supplied by {@link #isInitialized()}.
+     */
+    default boolean initializeIfNeeded() {
+        return isInitialized();
+    }
+
+    /**
      * Checks if the embedding model is currently loading/initializing.
      * This allows the UI to show a loading indicator.
      *

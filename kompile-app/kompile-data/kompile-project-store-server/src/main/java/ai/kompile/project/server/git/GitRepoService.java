@@ -20,6 +20,7 @@ import java.io.File;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.file.Paths;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.zip.ZipEntry;
@@ -48,7 +49,19 @@ public class GitRepoService {
     }
 
     public File repoDir(String namespace, String slug) {
-        return new File(new File(reposBase, namespace), slug + ".git");
+        HostedProjectNames.requireIdentifier("namespace", namespace);
+        HostedProjectNames.requireIdentifier("slug", slug);
+        try {
+            Path base = reposBase.getCanonicalFile().toPath();
+            Path candidate = base.resolve(namespace).resolve(slug + ".git").normalize().toFile()
+                    .getCanonicalFile().toPath();
+            if (candidate.equals(base) || !candidate.startsWith(base)) {
+                throw new IllegalArgumentException("repository path escapes the configured repository base");
+            }
+            return candidate.toFile();
+        } catch (IOException e) {
+            throw new IllegalStateException("Could not canonicalize repository path", e);
+        }
     }
 
     public boolean repoExists(String namespace, String slug) {
@@ -57,6 +70,7 @@ public class GitRepoService {
 
     /** Initialize a bare repo for a project if it does not already exist. */
     public File initBareRepo(String namespace, String slug, String defaultBranch) {
+        HostedProjectNames.requireRef("defaultBranch", defaultBranch != null ? defaultBranch : "main");
         File dir = repoDir(namespace, slug);
         if (dir.exists()) {
             return dir;
@@ -144,16 +158,22 @@ public class GitRepoService {
     }
 
     /**
-     * Stream every file of the tree at {@code ref} into a ZIP written to {@code out}. Walks the tree
-     * recursively and copies each blob entry without buffering the whole repo in memory. Returns false
-     * if the ref cannot be resolved (e.g. an empty repo). The underlying stream is finished but not
-     * closed, so the caller (servlet container) retains ownership.
+     * Resolve and parse a simple ref as a commit before an HTTP streaming response is committed.
+     * Returns {@code null} when the ref does not exist (including an empty repository).
      */
-    public boolean writeArchive(Repository repo, String ref, OutputStream out) throws IOException {
-        ObjectId commitId = repo.resolve(ref == null ? Constants.HEAD : ref);
+
+    public ObjectId resolveCommit(Repository repo, String ref) throws IOException {
+        HostedProjectNames.requireRef("ref", ref);
+        ObjectId commitId = repo.resolve(ref);
         if (commitId == null) {
-            return false;
+            return null;
         }
+        try (RevWalk rw = new RevWalk(repo)) {
+            return rw.parseCommit(commitId).getId();
+        }
+    }
+
+    public void writeArchive(Repository repo, ObjectId commitId, OutputStream out) throws IOException {
         ZipOutputStream zip = new ZipOutputStream(out);
         try (RevWalk rw = new RevWalk(repo); TreeWalk tw = new TreeWalk(repo)) {
             RevCommit commit = rw.parseCommit(commitId);
@@ -169,6 +189,5 @@ public class GitRepoService {
             }
         }
         zip.finish();
-        return true;
     }
 }

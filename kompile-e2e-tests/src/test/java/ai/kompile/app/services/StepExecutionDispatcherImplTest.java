@@ -265,6 +265,8 @@ class StepExecutionDispatcherImplTest {
 
     @Test
     void executeScriptPythonSuccess() throws Exception {
+        // P1: production now uses a dedicated pythonExecutor field (separate from scriptingExecutor)
+        // for Python script dispatch. Set that field so the null-guard passes.
         NodeExecutor mockExecutor = mock(NodeExecutor.class);
         ExecutionResult successResult = ExecutionResult.builder()
                 .status(ExecutionStatus.COMPLETED)
@@ -272,7 +274,7 @@ class StepExecutionDispatcherImplTest {
                 .build();
         when(mockExecutor.execute(any(ComputeNode.class), anyMap(), any(ExecutionContext.class)))
                 .thenReturn(successResult);
-        setPrivateField(dispatcher, "scriptingExecutor", mockExecutor);
+        setPrivateField(dispatcher, "pythonExecutor", mockExecutor);
 
         Map<String, Object> result = dispatcher.executeScript("python", "sum = 5 + 5", Map.of());
 

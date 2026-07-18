@@ -62,7 +62,7 @@ class GraphExtractionConfigServiceTest {
         assertEquals(0.0, config.extractionTemperature);
         assertEquals(4096, config.extractionMaxTokens);
         assertNull(config.customExtractionPrompt);
-        assertEquals(List.of("opencode", "local"), config.extractionModelProviderAllow);
+        assertEquals(List.of("opencode", "opencode-go", "local"), config.extractionModelProviderAllow);
         assertEquals(List.of("claude", "codex", "opus", "sonnet", "gpt", "gemini"),
                 config.extractionModelExcludeMarkers);
         assertEquals(List.of(), config.extractionModelAllow);

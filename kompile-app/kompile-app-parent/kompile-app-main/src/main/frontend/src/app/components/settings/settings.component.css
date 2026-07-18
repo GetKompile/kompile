@@ -262,3 +262,46 @@ button mat-spinner {
 .tab-padding {
     padding: 24px 0;
 }
+
+@media (max-width: 600px) {
+    .settings-container {
+        padding: 12px;
+    }
+
+    .settings-header {
+        margin-bottom: 20px;
+    }
+
+    .settings-section,
+    .store-config-panel {
+        padding: 14px;
+    }
+
+    .vector-store-option {
+        padding: 12px;
+    }
+
+    .option-content {
+        margin-left: 0;
+    }
+
+    .tab-padding {
+        padding: 12px 0;
+    }
+}
+
+@media (max-width: 480px) {
+    .form-actions {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .form-actions button {
+        width: 100%;
+        min-height: 44px;
+    }
+
+    .success-message {
+        width: 100%;
+    }
+}

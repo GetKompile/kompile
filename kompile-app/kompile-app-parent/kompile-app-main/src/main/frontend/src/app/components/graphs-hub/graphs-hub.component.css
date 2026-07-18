@@ -136,6 +136,37 @@
   overflow: auto;
 }
 
+.no-fact-sheet-state {
+  min-height: 360px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 40px 24px;
+  text-align: center;
+  color: var(--text-primary, #1a1f36);
+}
+
+.no-fact-sheet-state h3 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.no-fact-sheet-state p {
+  max-width: 560px;
+  margin: 0 0 8px;
+  color: var(--text-secondary, #697386);
+  line-height: 1.5;
+}
+
+.no-fact-sheet-icon {
+  width: 48px;
+  height: 48px;
+  font-size: 48px;
+  color: var(--primary-color, #3f51b5);
+}
+
 /* Ontology inner mat-tab-group */
 .ontology-subtabs {
   margin-top: 8px;
@@ -210,4 +241,40 @@
   font-size: 18px;
   width: 18px;
   height: 18px;
+}
+
+@media (max-width: 768px) {
+  .graphs-hub {
+    padding: 8px;
+  }
+
+  .hub-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .hub-header-actions,
+  .ask-graph-btn {
+    width: 100%;
+  }
+
+  .section-tabs,
+  .inner-tabs {
+    flex-wrap: nowrap;
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-inline: contain;
+  }
+
+  .section-tab,
+  .inner-tab {
+    flex: 0 0 auto;
+    min-height: 44px;
+  }
+
+  .graph-explore-panel {
+    height: max(420px, calc(100dvh - 300px));
+    min-height: 420px;
+  }
 }

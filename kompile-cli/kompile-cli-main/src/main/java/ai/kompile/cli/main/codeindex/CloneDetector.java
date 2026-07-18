@@ -395,9 +395,10 @@ public class CloneDetector {
         List<FunctionEntity> funcs = new ArrayList<>();
         try (Statement stmt = conn.createStatement();
              ResultSet rs = stmt.executeQuery(
-                     "SELECT rel_path, name, start_line, end_line FROM entities_meta " +
-                             "WHERE entity_type IN ('METHOD', 'FUNCTION', 'CONSTRUCTOR') " +
-                             "AND start_line IS NOT NULL AND end_line IS NOT NULL")) {
+                     "SELECT p.path AS rel_path, m.name, m.start_line, m.end_line " +
+                             "FROM entities_meta m JOIN paths p ON p.id = m.path_id " +
+                             "WHERE m.entity_type IN ('METHOD', 'FUNCTION', 'CONSTRUCTOR') " +
+                             "AND m.start_line IS NOT NULL AND m.end_line IS NOT NULL")) {
             while (rs.next()) {
                 funcs.add(new FunctionEntity(
                         rs.getString("rel_path"),

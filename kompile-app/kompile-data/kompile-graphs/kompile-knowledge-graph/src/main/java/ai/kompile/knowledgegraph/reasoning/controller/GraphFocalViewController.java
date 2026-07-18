@@ -60,7 +60,13 @@ import java.util.Set;
  */
 @Slf4j
 @RestController
-@RequestMapping("/api/graph/{factSheetId}")
+@RequestMapping({
+        "/api/graph/{factSheetId}",
+        // Compatibility for clients that cached the former double-/api frontend URL.
+        "/api/api/graph/{factSheetId}",
+        // Compatibility for graph clients whose configured base URL already includes /api/graph.
+        "/{factSheetId}"
+})
 public class GraphFocalViewController {
 
     /** Metadata key written by the ontology-conformance pipeline (boolean). */
@@ -68,6 +74,12 @@ public class GraphFocalViewController {
 
     /** Metadata key written by the ontology-conformance pipeline (violation string). */
     static final String META_VIOLATION  = "ontology.violation";
+
+    private static final List<String> REASONING_SECTIONS =
+            List.of("ontology", "psl", "mebn", "provenance", "opinion", "neuralScores");
+
+    private static final com.fasterxml.jackson.databind.ObjectMapper METADATA_MAPPER =
+            new com.fasterxml.jackson.databind.ObjectMapper();
 
     private final KnowledgeGraphService graphService;
 
@@ -130,6 +142,52 @@ public class GraphFocalViewController {
             log.error("Conformance overlay failed for factSheetId={}: {}", factSheetId, ex.getMessage(), ex);
             return ResponseEntity.status(503)
                     .body(Map.of("error", "Conformance overlay unavailable: " + ex.getMessage()));
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // TYPED REASONING LAYERS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Return typed reasoning overlays for every valid node and edge in a fact sheet.
+     *
+     * <p>An empty fact sheet is a normal state and returns {@code 200} with empty
+     * {@code nodes}/{@code edges} arrays and zero-valued statistics.</p>
+     */
+    @GetMapping("/reasoning-layers")
+    public ResponseEntity<?> getReasoningLayers(@PathVariable Long factSheetId) {
+        log.info("GET /api/graph/{}/reasoning-layers", factSheetId);
+        try {
+            List<GraphNode> graphNodes = graphService.getNodesInFactSheet(factSheetId);
+            List<GraphEdge> graphEdges = graphService.getEdgesInFactSheet(factSheetId);
+            if (graphNodes == null) graphNodes = List.of();
+            if (graphEdges == null) graphEdges = List.of();
+
+            List<Map<String, Object>> nodes = new ArrayList<>(graphNodes.size());
+            for (GraphNode node : graphNodes) {
+                if (node != null && normalizeIdentifier(node.getNodeId()) != null) {
+                    nodes.add(reasoningNodeToMap(node));
+                }
+            }
+
+            List<Map<String, Object>> edges = new ArrayList<>(graphEdges.size());
+            for (GraphEdge edge : graphEdges) {
+                if (edge != null && normalizeIdentifier(edge.getEdgeId()) != null) {
+                    edges.add(reasoningEdgeToMap(edge));
+                }
+            }
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("factSheetId", factSheetId);
+            result.put("nodes", nodes);
+            result.put("edges", edges);
+            result.put("statistics", reasoningStatistics(nodes, edges));
+            return ResponseEntity.ok(result);
+        } catch (Exception ex) {
+            log.error("Reasoning layers failed for factSheetId={}: {}", factSheetId, ex.getMessage(), ex);
+            return ResponseEntity.status(503)
+                    .body(Map.of("error", "Reasoning layers unavailable: " + ex.getMessage()));
         }
     }
 
@@ -326,5 +384,137 @@ public class GraphFocalViewController {
             map.put("occurredAt", edge.getOccurredAt().toString());
         }
         return map;
+    }
+
+    private Map<String, Object> reasoningNodeToMap(GraphNode node) {
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put("nodeId", normalizeIdentifier(node.getNodeId()));
+        map.put("nodeType", node.getNodeType() != null ? node.getNodeType().name() : null);
+        map.put("label", node.getTitle());
+        putReasoningSections(map, node.getMetadata());
+        return map;
+    }
+
+    private Map<String, Object> reasoningEdgeToMap(GraphEdge edge) {
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put("edgeId", normalizeIdentifier(edge.getEdgeId()));
+        map.put("sourceNodeId", normalizeIdentifier(edge.getSourceNodeId()));
+        map.put("targetNodeId", normalizeIdentifier(edge.getTargetNodeId()));
+        map.put("edgeType", edge.getEdgeType() != null ? edge.getEdgeType().name() : null);
+        map.put("relationType", edge.getRelationType());
+        map.put("weight", edge.getWeight());
+        putReasoningSections(map, parseMetadata(edge.getMetadataJson()));
+        return map;
+    }
+
+    private void putReasoningSections(Map<String, Object> target, Map<String, Object> metadata) {
+        if (metadata == null || metadata.isEmpty()) return;
+        for (String sectionName : REASONING_SECTIONS) {
+            Map<String, Object> section = reasoningSection(metadata, sectionName);
+            if (section != null && !section.isEmpty()) {
+                target.put(sectionName, section);
+            }
+        }
+    }
+
+    private Map<String, Object> reasoningSection(Map<String, Object> metadata, String sectionName) {
+        Map<String, Object> section = new LinkedHashMap<>();
+        Object nested = metadata.get(sectionName);
+        if (nested instanceof Map<?, ?> nestedMap) {
+            nestedMap.forEach((key, value) -> {
+                if (key != null) section.put(String.valueOf(key), value);
+            });
+        }
+
+        String prefix = sectionName + ".";
+        metadata.forEach((key, value) -> {
+            if (key != null && key.startsWith(prefix)) {
+                section.put(key.substring(prefix.length()), value);
+            }
+        });
+
+        if ("ontology".equals(sectionName)) {
+            Object violation = section.remove("violation");
+            if (violation != null && !section.containsKey("violations")) {
+                section.put("violations", List.of(String.valueOf(violation)));
+            }
+            Object conformant = section.get("conformant");
+            if (conformant != null && !(conformant instanceof Boolean)) {
+                section.put("conformant", Boolean.parseBoolean(String.valueOf(conformant)));
+            }
+        }
+        return section.isEmpty() ? null : section;
+    }
+
+    private Map<String, Object> parseMetadata(String metadataJson) {
+        if (metadataJson == null || metadataJson.isBlank()) return Map.of();
+        try {
+            return METADATA_MAPPER.readValue(
+                    metadataJson,
+                    new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() { });
+        } catch (Exception ex) {
+            log.debug("Ignoring malformed edge metadata while building reasoning layers: {}", ex.getMessage());
+            return Map.of();
+        }
+    }
+
+    private Map<String, Object> reasoningStatistics(
+            List<Map<String, Object>> nodes,
+            List<Map<String, Object>> edges) {
+        Map<String, Object> stats = new LinkedHashMap<>();
+        stats.put("nodeCount", nodes.size());
+        stats.put("edgeCount", edges.size());
+        stats.put("ontologyCount", countSection(nodes, edges, "ontology"));
+        stats.put("pslCount", countSection(nodes, edges, "psl"));
+        stats.put("mebnCount", countSection(nodes, edges, "mebn"));
+        stats.put("provenanceCount", countSection(nodes, edges, "provenance"));
+        stats.put("opinionCount", countSection(nodes, edges, "opinion"));
+        stats.put("neuralScoreCount", countSection(nodes, edges, "neuralScores"));
+        stats.put("typeCandidateCount", countNestedItems(nodes, edges, "ontology", "typeCandidates"));
+        stats.put("typeHierarchyCount", countNestedItems(nodes, edges, "ontology", "typeHierarchy"));
+        stats.put("inferredRelationCount", countNestedItems(nodes, edges, "ontology", "inferredRelations"));
+        return stats;
+    }
+
+    private int countSection(
+            List<Map<String, Object>> nodes,
+            List<Map<String, Object>> edges,
+            String sectionName) {
+        int count = 0;
+        for (Map<String, Object> node : nodes) {
+            if (node.get(sectionName) instanceof Map<?, ?>) count++;
+        }
+        for (Map<String, Object> edge : edges) {
+            if (edge.get(sectionName) instanceof Map<?, ?>) count++;
+        }
+        return count;
+    }
+
+    private int countNestedItems(
+            List<Map<String, Object>> nodes,
+            List<Map<String, Object>> edges,
+            String sectionName,
+            String fieldName) {
+        int count = 0;
+        for (Map<String, Object> overlay : nodes) {
+            count += nestedListSize(overlay, sectionName, fieldName);
+        }
+        for (Map<String, Object> overlay : edges) {
+            count += nestedListSize(overlay, sectionName, fieldName);
+        }
+        return count;
+    }
+
+    private int nestedListSize(Map<String, Object> overlay, String sectionName, String fieldName) {
+        Object section = overlay.get(sectionName);
+        if (!(section instanceof Map<?, ?> sectionMap)) return 0;
+        Object items = sectionMap.get(fieldName);
+        return items instanceof List<?> list ? list.size() : 0;
+    }
+
+    private String normalizeIdentifier(Object value) {
+        if (value == null) return null;
+        String normalized = String.valueOf(value).trim();
+        return normalized.isEmpty() ? null : normalized;
     }
 }

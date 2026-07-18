@@ -467,6 +467,11 @@ public class EventPublishingKnowledgeGraphService implements KnowledgeGraphServi
     }
 
     @Override
+    public GraphPage<GraphNode> getNodesInFactSheetPage(Long factSheetId, int cursor, int pageSize) {
+        return delegate.getNodesInFactSheetPage(factSheetId, cursor, pageSize);
+    }
+
+    @Override
     public List<GraphNode> getSourcesInFactSheet(Long factSheetId) {
         return delegate.getSourcesInFactSheet(factSheetId);
     }
@@ -512,6 +517,11 @@ public class EventPublishingKnowledgeGraphService implements KnowledgeGraphServi
     @Override
     public List<GraphEdge> getEdgesInFactSheet(Long factSheetId) {
         return delegate.getEdgesInFactSheet(factSheetId);
+    }
+
+    @Override
+    public GraphPage<GraphEdge> getEdgesInFactSheetPage(Long factSheetId, int cursor, int pageSize) {
+        return delegate.getEdgesInFactSheetPage(factSheetId, cursor, pageSize);
     }
 
     @Override

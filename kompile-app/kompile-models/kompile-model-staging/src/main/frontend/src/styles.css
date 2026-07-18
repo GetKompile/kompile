@@ -153,3 +153,111 @@ code, .monospace {
   padding: 0;
   overflow: hidden;
 }
+
+/* Responsive containment shared by every staging route. */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  max-width: 100%;
+}
+
+app-root {
+  display: block;
+  width: 100%;
+  min-width: 0;
+}
+
+router-outlet + * {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+}
+
+img,
+video,
+svg {
+  max-width: 100%;
+}
+
+pre,
+code {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 768px) {
+  .card-grid {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 12px;
+  }
+
+  .loading-container,
+  .empty-state {
+    padding: 24px 12px;
+  }
+
+  .mat-mdc-card {
+    min-width: 0;
+  }
+
+  .mat-mdc-form-field,
+  mat-form-field {
+    min-width: 0 !important;
+    max-width: 100%;
+  }
+
+  .mat-button-toggle-group {
+    max-width: 100%;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+  }
+
+  [class*='table-container'],
+  [class*='table-wrapper'] {
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .cdk-overlay-pane.mat-mdc-dialog-panel {
+    width: calc(100vw - 16px) !important;
+    min-width: 0 !important;
+    max-width: calc(100vw - 16px) !important;
+  }
+
+  .mat-mdc-dialog-container,
+  .mat-mdc-dialog-surface {
+    min-width: 0 !important;
+    max-width: 100% !important;
+  }
+
+  .mat-mdc-dialog-surface {
+    max-height: calc(100dvh - 16px);
+  }
+
+  .mat-mdc-dialog-content {
+    max-height: calc(100dvh - 144px);
+    overflow: auto;
+  }
+}
+
+@media (max-width: 480px) {
+  .mat-mdc-dialog-title {
+    padding: 16px 16px 8px;
+  }
+
+  .mat-mdc-dialog-content {
+    padding-inline: 16px;
+  }
+
+  .mat-mdc-dialog-actions {
+    flex-wrap: wrap;
+    padding: 8px 16px 16px;
+  }
+}

@@ -26,11 +26,16 @@ import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.Writer;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.zip.Deflater;
@@ -52,10 +57,24 @@ final class UnifiedGraphWriter {
     private UnifiedGraphWriter() { }
 
     static void write(UnifiedGraph graph, Path file, Dtype primaryVectorDtype) throws IOException {
-        Path parent = file.toAbsolutePath().getParent();
-        if (parent != null) Files.createDirectories(parent);
-        try (OutputStream out = Files.newOutputStream(file)) {
-            write(graph, out, primaryVectorDtype);
+        Path target = file.toAbsolutePath();
+        Path parent = target.getParent();
+        if (parent != null) {
+            Files.createDirectories(parent);
+        }
+        Path temporary = Files.createTempFile(parent, "." + target.getFileName() + "-", ".tmp");
+        boolean published = false;
+        try {
+            try (OutputStream out = Files.newOutputStream(
+                    temporary, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
+                write(graph, out, primaryVectorDtype);
+            }
+            moveAtomically(temporary, target);
+            published = true;
+        } finally {
+            if (!published) {
+                Files.deleteIfExists(temporary);
+            }
         }
     }
 
@@ -72,6 +91,7 @@ final class UnifiedGraphWriter {
                 graph.relations(), GraphRelation::id, GraphRelation::embedding);
         if (relationEmbeddings != null) layers.add(relationEmbeddings);
         layers.addAll(graph.vectorLayers().values());
+        validateEntryLayout(graph, layers);
 
         try (ZipOutputStream zip = new ZipOutputStream(new NonClosingOutputStream(out))) {
             zip.setLevel(Deflater.BEST_SPEED); // structural JSON compresses well even at level 1
@@ -105,7 +125,7 @@ final class UnifiedGraphWriter {
     // ═════════════════════════════════════════════════════════════════════════
 
     private static void writeEntities(ZipOutputStream zip, UnifiedGraph graph) throws IOException {
-        zip.putNextEntry(new ZipEntry(UnifiedGraphFormat.ENTRY_ENTITIES));
+        putNextEntry(zip, UnifiedGraphFormat.ENTRY_ENTITIES);
         Writer w = new BufferedWriter(new OutputStreamWriter(zip, StandardCharsets.UTF_8));
         for (GraphEntity e : graph.entities()) {
             Map<String, Object> m = new LinkedHashMap<>();
@@ -127,7 +147,7 @@ final class UnifiedGraphWriter {
     }
 
     private static void writeRelations(ZipOutputStream zip, UnifiedGraph graph) throws IOException {
-        zip.putNextEntry(new ZipEntry(UnifiedGraphFormat.ENTRY_RELATIONS));
+        putNextEntry(zip, UnifiedGraphFormat.ENTRY_RELATIONS);
         Writer w = new BufferedWriter(new OutputStreamWriter(zip, StandardCharsets.UTF_8));
         for (GraphRelation r : graph.relations()) {
             Map<String, Object> m = new LinkedHashMap<>();
@@ -171,7 +191,7 @@ final class UnifiedGraphWriter {
         if (rows.isEmpty()) {
             return;
         }
-        zip.putNextEntry(new ZipEntry(UnifiedGraphFormat.ENTRY_OPINIONS));
+        putNextEntry(zip, UnifiedGraphFormat.ENTRY_OPINIONS);
         Writer w = new BufferedWriter(new OutputStreamWriter(zip, StandardCharsets.UTF_8));
         for (Map<String, Object> row : rows) {
             w.write(MiniJson.write(row));
@@ -206,7 +226,7 @@ final class UnifiedGraphWriter {
     }
 
     private static void writeVectorEntry(ZipOutputStream zip, VectorLayer layer) throws IOException {
-        zip.putNextEntry(new ZipEntry(UnifiedGraphFormat.vectorEntry(layer.name())));
+        putNextEntry(zip, UnifiedGraphFormat.vectorEntry(layer.name()));
         DataOutputStream dos = new DataOutputStream(zip);
         VectorBlobCodec.write(dos, layer);
         dos.flush();
@@ -288,9 +308,68 @@ final class UnifiedGraphWriter {
     }
 
     private static void putEntry(ZipOutputStream zip, String name, byte[] data) throws IOException {
-        zip.putNextEntry(new ZipEntry(name));
+        putNextEntry(zip, name);
         zip.write(data);
         zip.closeEntry();
+    }
+
+    private static void putNextEntry(ZipOutputStream zip, String name) throws IOException {
+        validateEntryName(name);
+        zip.putNextEntry(new ZipEntry(name));
+    }
+
+    private static void validateEntryLayout(UnifiedGraph graph, List<VectorLayer> layers) throws IOException {
+        Set<String> names = new LinkedHashSet<>();
+        addEntryName(names, UnifiedGraphFormat.ENTRY_MANIFEST);
+        addEntryName(names, UnifiedGraphFormat.ENTRY_ENTITIES);
+        addEntryName(names, UnifiedGraphFormat.ENTRY_RELATIONS);
+        if (!graph.weightMaps().isEmpty()) {
+            addEntryName(names, UnifiedGraphFormat.ENTRY_WEIGHTS);
+        }
+        if (hasOrphanOpinions(graph)) {
+            addEntryName(names, UnifiedGraphFormat.ENTRY_OPINIONS);
+        }
+        for (String artifactName : graph.artifacts().keySet()) {
+            addEntryName(names, UnifiedGraphFormat.modelEntry(artifactName));
+        }
+        for (VectorLayer layer : layers) {
+            addEntryName(names, UnifiedGraphFormat.vectorEntry(layer.name()));
+        }
+    }
+
+    private static void addEntryName(Set<String> names, String name) throws IOException {
+        validateEntryName(name);
+        if (!names.add(name.toLowerCase(Locale.ROOT))) {
+            throw new IOException("Duplicate or case-colliding unified-graph entry: " + name);
+        }
+    }
+
+    private static void validateEntryName(String name) throws IOException {
+        if (name == null || name.isBlank() || name.length() > 4_096
+                || name.startsWith("/") || name.endsWith("/") || name.indexOf('\\') >= 0) {
+            throw new IOException("Unsafe unified-graph entry name: " + name);
+        }
+        for (int i = 0; i < name.length(); i++) {
+            if (Character.isISOControl(name.charAt(i))) {
+                throw new IOException("Unsafe unified-graph entry name");
+            }
+        }
+        String[] segments = name.split("/", -1);
+        for (int i = 0; i < segments.length; i++) {
+            String segment = segments[i];
+            if (segment.isEmpty() || ".".equals(segment) || "..".equals(segment)
+                    || (i == 0 && segment.matches("[A-Za-z]:"))) {
+                throw new IOException("Unsafe unified-graph entry name: " + name);
+            }
+        }
+    }
+
+    private static void moveAtomically(Path source, Path target) throws IOException {
+        try {
+            Files.move(source, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (AtomicMoveNotSupportedException e) {
+            Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
+        }
     }
 
     /** Wraps an {@link OutputStream} so {@code close()} flushes but does not close the delegate. */

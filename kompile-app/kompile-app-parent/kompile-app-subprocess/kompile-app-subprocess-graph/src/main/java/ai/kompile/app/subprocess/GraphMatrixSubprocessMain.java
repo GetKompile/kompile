@@ -78,8 +78,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -118,6 +120,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class GraphMatrixSubprocessMain {
 
     private static final Logger logger = LoggerFactory.getLogger(GraphMatrixSubprocessMain.class);
+    static final long DEFAULT_MAX_REQUEST_BYTES = 8L * 1024 * 1024;
+    static final long DEFAULT_MAX_RESPONSE_BYTES = 16L * 1024 * 1024;
+    static final int DEFAULT_RPC_THREADS = 8;
+    static final int DEFAULT_RPC_QUEUE_CAPACITY = 32;
 
     /** Signals that rehydrateGraphsOnStartup() has returned successfully. */
     private static volatile boolean rehydrationDone = false;
@@ -149,18 +155,22 @@ public class GraphMatrixSubprocessMain {
         AnnotationConfigApplicationContext context = createContext();
         springContext = context; // expose to static HTTP handlers for service-bean dispatch
 
-        // 3. Trigger rehydration HERE — the matrix lives ONLY in this process.
+        // 3. Keep persisted graphs in Lucene and load only the graph addressed by an RPC.
         VectorStoreMatrixGraphStore store = context.getBean(VectorStoreMatrixGraphStore.class);
-        MatrixGraphStore matrixStore = store; // VectorStoreMatrixGraphStore implements MatrixGraphStore
-        logger.info("[graph-matrix] starting graph rehydration...");
-        try {
-            store.rehydrateGraphsOnStartup();
-            rehydrationDone = true;
-            logger.info("[graph-matrix] rehydration complete");
-        } catch (Exception e) {
-            logger.error("[graph-matrix] rehydration failed — serving anyway (graphs may be empty)", e);
-            rehydrationDone = true; // still serve; individual calls will handle missing graphs
+        MatrixGraphStore matrixStore = store;
+        boolean eagerRehydration = Boolean.parseBoolean(
+                System.getProperty("kompile.graph.eager-rehydration-enabled", "false"));
+        if (eagerRehydration) {
+            logger.warn("[graph-matrix] eager graph rehydration explicitly enabled");
+            try {
+                store.rehydrateGraphsOnStartup();
+            } catch (Exception e) {
+                logger.error("[graph-matrix] eager rehydration failed; falling back to lazy loads", e);
+            }
+        } else {
+            logger.info("[graph-matrix] lazy graph loading enabled; Lucene remains authoritative");
         }
+        rehydrationDone = true;
 
         // 4. Start JDK HttpServer on loopback only.
         ObjectMapper objectMapper = context.getBean(ObjectMapper.class);
@@ -176,9 +186,20 @@ public class GraphMatrixSubprocessMain {
             return;
         }
 
+        long maxRequestBytes = positiveLongProperty("kompile.graph.subprocess.max-request-bytes", DEFAULT_MAX_REQUEST_BYTES);
+        long maxResponseBytes = positiveLongProperty("kompile.graph.subprocess.max-response-bytes", DEFAULT_MAX_RESPONSE_BYTES);
+        responseByteCap = maxResponseBytes;
+        int rpcThreads = (int) positiveLongProperty("kompile.graph.subprocess.rpc-threads", DEFAULT_RPC_THREADS);
+        int rpcQueueCapacity = (int) positiveLongProperty("kompile.graph.subprocess.rpc-queue-capacity", DEFAULT_RPC_QUEUE_CAPACITY);
+        ThreadPoolExecutor rpcExecutor = new ThreadPoolExecutor(
+                rpcThreads, rpcThreads, 0L, TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(rpcQueueCapacity),
+                new ThreadPoolExecutor.AbortPolicy());
+
         httpServer.createContext("/health", exchange -> handleHealth(exchange));
-        httpServer.createContext("/invoke", exchange -> handleInvoke(exchange, matrixStore, store, objectMapper));
-        httpServer.setExecutor(Executors.newCachedThreadPool());
+        httpServer.createContext("/invoke", exchange -> handleInvoke(
+                exchange, matrixStore, store, objectMapper, maxRequestBytes, maxResponseBytes));
+        httpServer.setExecutor(rpcExecutor);
         httpServer.start();
         logger.info("[graph-matrix] HTTP server listening on 127.0.0.1:{}", finalPort);
 
@@ -186,6 +207,7 @@ public class GraphMatrixSubprocessMain {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             logger.info("[graph-matrix] shutting down...");
             httpServer.stop(2);
+            rpcExecutor.shutdownNow();
             context.close();
         }, "graph-matrix-shutdown"));
 
@@ -206,21 +228,35 @@ public class GraphMatrixSubprocessMain {
         }
     }
 
-    private static void handleInvoke(HttpExchange exchange,
-                                     MatrixGraphStore matrixStore,
-                                     VectorStoreMatrixGraphStore store,
-                                     ObjectMapper mapper) throws IOException {
+    static void handleInvoke(HttpExchange exchange,
+                             MatrixGraphStore matrixStore,
+                             VectorStoreMatrixGraphStore store,
+                             ObjectMapper mapper,
+                             long maxRequestBytes,
+                             long maxResponseBytes) throws IOException {
         if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
             sendJson(exchange, 405, "{\"ok\":false,\"error\":\"only POST /invoke is supported\"}");
             return;
         }
-        String requestBody;
-        try (InputStream is = exchange.getRequestBody()) {
-            requestBody = new String(is.readAllBytes(), StandardCharsets.UTF_8);
+        long contentLength = parseContentLength(exchange);
+        if (contentLength > maxRequestBytes) {
+            sendJson(exchange, 413, "{\"ok\":false,\"error\":\"graph RPC request exceeds byte limit\"}");
+            return;
         }
+
         String responseJson;
-        try {
-            responseJson = dispatch(requestBody, matrixStore, store, mapper);
+        try (InputStream request = new BoundedInputStream(exchange.getRequestBody(), maxRequestBytes)) {
+            JsonNode requestNode = mapper.readTree(request);
+            responseJson = dispatch(requestNode, matrixStore, store, mapper);
+        } catch (PayloadTooLargeException e) {
+            sendJson(exchange, 413, "{\"ok\":false,\"error\":\"graph RPC request exceeds byte limit\"}");
+            return;
+        } catch (ResponseTooLargeException e) {
+            // The serializer aborted before materializing a huge string — a ~1GB
+            // getEdgesInFactSheet response previously OOM'd this whole process.
+            logger.warn("[graph-matrix] refusing oversized RPC response: {}", e.getMessage());
+            sendJson(exchange, 507, "{\"ok\":false,\"error\":\"graph RPC response exceeds byte limit; use a paged query\"}");
+            return;
         } catch (Exception e) {
             logger.error("[graph-matrix] invoke error: {}", e.getMessage(), e);
             ObjectNode err = mapper.createObjectNode();
@@ -228,7 +264,155 @@ public class GraphMatrixSubprocessMain {
             err.put("error", e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
             responseJson = mapper.writeValueAsString(err);
         }
+        if (utf8LengthExceeds(responseJson, maxResponseBytes)) {
+            logger.warn("[graph-matrix] refusing oversized RPC response (method={}, limit={} bytes)",
+                    responseMethod(responseJson), maxResponseBytes);
+            sendJson(exchange, 507, "{\"ok\":false,\"error\":\"graph RPC response exceeds byte limit; use a paged query\"}");
+            return;
+        }
         sendJson(exchange, 200, responseJson);
+    }
+
+    private static long parseContentLength(HttpExchange exchange) {
+        String value = exchange.getRequestHeaders().getFirst("Content-Length");
+        if (value == null || value.isBlank()) return -1L;
+        try {
+            return Long.parseLong(value);
+        } catch (NumberFormatException ignored) {
+            return -1L;
+        }
+    }
+
+    static boolean utf8LengthExceeds(String value, long limit) {
+        if (value == null) return false;
+        if (value.length() > limit) return true;
+        return value.getBytes(StandardCharsets.UTF_8).length > limit;
+    }
+
+    private static String responseMethod(String response) {
+        return response == null ? "unknown" : "serialized";
+    }
+
+    private static long positiveLongProperty(String name, long defaultValue) {
+        String value = System.getProperty(name);
+        if (value == null || value.isBlank()) return defaultValue;
+        try {
+            long parsed = Long.parseLong(value);
+            return parsed > 0 ? parsed : defaultValue;
+        } catch (NumberFormatException ignored) {
+            return defaultValue;
+        }
+    }
+
+    static final class PayloadTooLargeException extends IOException {
+        PayloadTooLargeException(long limit) {
+            super("payload exceeds " + limit + " bytes");
+        }
+    }
+
+    /** Response-side twin of {@link PayloadTooLargeException}; unchecked so the abort
+     *  propagates out of Jackson's serializer without signature changes. */
+    static final class ResponseTooLargeException extends RuntimeException {
+        ResponseTooLargeException(long limit) {
+            super("serialized response exceeds " + limit + " bytes");
+        }
+    }
+
+    /** Response byte cap applied at serialization time; set once in main(). */
+    static volatile long responseByteCap = DEFAULT_MAX_RESPONSE_BYTES;
+
+    /**
+     * Serialize into a capped buffer and abort as soon as the cap is crossed. The
+     * post-hoc length check in handleInvoke cannot help when the result is huge:
+     * building the intermediate string is itself the OOM (Jackson's TextBuffer dies
+     * past 1GB and the allocations killed this process). Never buffers more than
+     * {@link #responseByteCap} bytes.
+     */
+    static String writeCapped(ObjectMapper mapper, Object value) throws JsonProcessingException {
+        CappedByteArrayOutputStream out = new CappedByteArrayOutputStream(responseByteCap);
+        try {
+            mapper.writeValue(out, value);
+        } catch (ResponseTooLargeException e) {
+            throw e;
+        } catch (IOException e) {
+            if (out.exceeded()) {
+                throw new ResponseTooLargeException(responseByteCap);
+            }
+            if (e instanceof JsonProcessingException jpe) {
+                throw jpe;
+            }
+            throw new IllegalStateException("response serialization failed: " + e.getMessage(), e);
+        }
+        if (out.exceeded()) {
+            throw new ResponseTooLargeException(responseByteCap);
+        }
+        return out.toString(StandardCharsets.UTF_8);
+    }
+
+    /** ByteArrayOutputStream that throws on the first write crossing the cap and
+     *  swallows later writes (so Jackson's flush/close on abort cannot re-throw). */
+    static final class CappedByteArrayOutputStream extends java.io.ByteArrayOutputStream {
+        private final long limit;
+        private boolean exceeded;
+
+        CappedByteArrayOutputStream(long limit) {
+            this.limit = limit;
+        }
+
+        boolean exceeded() {
+            return exceeded;
+        }
+
+        @Override
+        public synchronized void write(int b) {
+            if (exceeded) return;
+            if (count + 1L > limit) {
+                exceeded = true;
+                throw new ResponseTooLargeException(limit);
+            }
+            super.write(b);
+        }
+
+        @Override
+        public synchronized void write(byte[] b, int off, int len) {
+            if (exceeded) return;
+            if (count + (long) len > limit) {
+                exceeded = true;
+                throw new ResponseTooLargeException(limit);
+            }
+            super.write(b, off, len);
+        }
+    }
+
+    static final class BoundedInputStream extends InputStream {
+        private final InputStream delegate;
+        private final long limit;
+        private long read;
+
+        BoundedInputStream(InputStream delegate, long limit) {
+            this.delegate = delegate;
+            this.limit = limit;
+        }
+
+        @Override
+        public int read() throws IOException {
+            int value = delegate.read();
+            if (value >= 0 && ++read > limit) throw new PayloadTooLargeException(limit);
+            return value;
+        }
+
+        @Override
+        public int read(byte[] bytes, int offset, int length) throws IOException {
+            int allowed = (int) Math.min(length, Math.max(1L, limit - read + 1L));
+            int count = delegate.read(bytes, offset, allowed);
+            if (count > 0 && (read += count) > limit) throw new PayloadTooLargeException(limit);
+            return count;
+        }
+
+        @Override
+        public void close() throws IOException {
+            delegate.close();
+        }
     }
 
     private static void sendJson(HttpExchange exchange, int code, String body) throws IOException {
@@ -246,11 +430,10 @@ public class GraphMatrixSubprocessMain {
      * Core dispatch: parse the invoke request, find the method, deserialize args,
      * invoke on the real bean, serialise the result with special-case encoding.
      */
-    private static String dispatch(String requestBody,
+    private static String dispatch(JsonNode root,
                                    MatrixGraphStore matrixStore,
                                    VectorStoreMatrixGraphStore store,
                                    ObjectMapper mapper) throws Exception {
-        JsonNode root = mapper.readTree(requestBody);
         String methodName = root.path("method").asText();
         JsonNode argTypesNode = root.path("argTypes");
         JsonNode argsNode = root.path("args");
@@ -628,6 +811,9 @@ public class GraphMatrixSubprocessMain {
 
             case "getNodesInFactSheet" -> svc.getNodesInFactSheet(argLong(args, 0));
 
+            case "getNodesInFactSheetPage" -> svc.getNodesInFactSheetPage(
+                    argLong(args, 0), argInt(args, 1), argInt(args, 2));
+
             case "getSourcesInFactSheet" -> svc.getSourcesInFactSheet(argLong(args, 0));
 
             case "getNodeByExternalIdInFactSheet" -> svc.getNodeByExternalIdInFactSheet(
@@ -739,6 +925,9 @@ public class GraphMatrixSubprocessMain {
                     argStr(args, 0), argStr(args, 1), argLong(args, 2));
 
             case "getEdgesInFactSheet" -> svc.getEdgesInFactSheet(argLong(args, 0));
+
+            case "getEdgesInFactSheetPage" -> svc.getEdgesInFactSheetPage(
+                    argLong(args, 0), argInt(args, 1), argInt(args, 2));
 
             case "getEdgesByTypeInFactSheet" -> svc.getEdgesByTypeInFactSheet(
                     argLong(args, 0), argObj(args, 1, EdgeType.class, mapper));
@@ -1081,13 +1270,13 @@ public class GraphMatrixSubprocessMain {
             } else {
                 response.putNull("result");
             }
-            return mapper.writeValueAsString(response);
+            return writeCapped(mapper, response);
         }
 
         // INDArray return methods.
         if (rawResult instanceof INDArray arr) {
             response.set("result", encodeINDArray(arr, mapper));
-            return mapper.writeValueAsString(response);
+            return writeCapped(mapper, response);
         }
 
         // Map<String, INDArray> returns (e.g. exportNodeEmbeddings, getEdgeTypeKgEmbeddings).
@@ -1096,7 +1285,7 @@ public class GraphMatrixSubprocessMain {
             @SuppressWarnings("unchecked")
             Map<String, INDArray> indArrayMap = (Map<String, INDArray>) m;
             response.set("result", encodeINDArrayMap(indArrayMap, mapper));
-            return mapper.writeValueAsString(response);
+            return writeCapped(mapper, response);
         }
 
         // Optional<T> — unwrap; inner value may itself need special handling.
@@ -1106,19 +1295,19 @@ public class GraphMatrixSubprocessMain {
             } else {
                 response.set("result", mapper.valueToTree(opt.get()));
             }
-            return mapper.writeValueAsString(response);
+            return writeCapped(mapper, response);
         }
 
         // AdjacencyMatrixGraph must never be serialized across the wire — return an ack shell.
         if (rawResult instanceof AdjacencyMatrixGraph graph) {
             response.set("result", buildGraphAck(graph, mapper));
-            return mapper.writeValueAsString(response);
+            return writeCapped(mapper, response);
         }
 
         // void/null
         if (rawResult == null) {
             response.putNull("result");
-            return mapper.writeValueAsString(response);
+            return writeCapped(mapper, response);
         }
 
         // List<Map.Entry<String,Double>> (getEdges, findSimilarNodes) — Jackson
@@ -1134,12 +1323,12 @@ public class GraphMatrixSubprocessMain {
                 arr.add(en);
             }
             response.set("result", arr);
-            return mapper.writeValueAsString(response);
+            return writeCapped(mapper, response);
         }
 
         // Default: standard Jackson serialisation.
         response.set("result", mapper.valueToTree(rawResult));
-        return mapper.writeValueAsString(response);
+        return writeCapped(mapper, response);
     }
 
     // ── INDArray wire codec ───────────────────────────────────────────────────
@@ -1256,12 +1445,10 @@ public class GraphMatrixSubprocessMain {
             context.getEnvironment().getSystemProperties().put("anserini.indexPath", kwPath);
         }
 
-        // Keep eager rehydration ENABLED: we invoke store.rehydrateGraphsOnStartup() explicitly after
-        // refresh, and THAT method early-returns when this flag is false (so disabling it here would
-        // load an empty graph). A bare AnnotationConfigApplicationContext never publishes
-        // ApplicationReadyEvent, so GraphRehydrationListener does not auto-fire here — there is no
-        // double-rehydration to guard against.
-        context.getEnvironment().getSystemProperties().put("kompile.graph.eager-rehydration-enabled", "true");
+        // Do not force all project graphs into one subprocess heap. Individual RPCs lazy-load
+        // their addressed graph from the project-scoped Lucene index.
+        context.getEnvironment().getSystemProperties().putIfAbsent(
+                "kompile.graph.eager-rehydration-enabled", "false");
 
         // This process IS the graph subprocess: the main-app @Primary HTTP delegate
         // (SubprocessMatrixGraphStore, in ai.kompile.app.*) is NOT on this context's component-scan

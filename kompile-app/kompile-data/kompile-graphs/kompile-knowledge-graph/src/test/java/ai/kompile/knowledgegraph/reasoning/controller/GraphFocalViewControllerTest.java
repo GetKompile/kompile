@@ -30,6 +30,7 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.RequestMapping;
 
 import java.util.List;
 import java.util.Map;
@@ -69,6 +70,18 @@ class GraphFocalViewControllerTest {
 
     /** Non-entity node — must not appear in conformance response. */
     private GraphNode documentNode;
+
+    @Test
+    void mapsCanonicalAndCachedClientBasePaths() {
+        RequestMapping mapping = GraphFocalViewController.class.getAnnotation(RequestMapping.class);
+
+        assertNotNull(mapping);
+        assertArrayEquals(new String[]{
+                "/api/graph/{factSheetId}",
+                "/api/api/graph/{factSheetId}",
+                "/{factSheetId}"
+        }, mapping.value());
+    }
 
     @BeforeEach
     void setUp() {
@@ -173,6 +186,84 @@ class GraphFocalViewControllerTest {
                 .thenThrow(new RuntimeException("DB unavailable"));
 
         ResponseEntity<?> response = controller.getConformanceOverlay(FS_ID);
+
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, response.getStatusCode());
+        @SuppressWarnings("unchecked")
+        Map<String, Object> body = (Map<String, Object>) response.getBody();
+        assertNotNull(body);
+        assertTrue(body.containsKey("error"));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // REASONING LAYERS TESTS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    @Test
+    void reasoningLayers_emptyFactSheet_returnsValidEmptyResponse() {
+        when(graphService.getNodesInFactSheet(FS_ID)).thenReturn(List.of());
+        when(graphService.getEdgesInFactSheet(FS_ID)).thenReturn(List.of());
+
+        ResponseEntity<?> response = controller.getReasoningLayers(FS_ID);
+
+        assertEquals(HttpStatus.OK, response.getStatusCode());
+        @SuppressWarnings("unchecked")
+        Map<String, Object> body = (Map<String, Object>) response.getBody();
+        assertNotNull(body);
+        assertEquals(FS_ID, body.get("factSheetId"));
+        assertEquals(List.of(), body.get("nodes"));
+        assertEquals(List.of(), body.get("edges"));
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> statistics = (Map<String, Object>) body.get("statistics");
+        assertNotNull(statistics);
+        assertEquals(0, statistics.get("nodeCount"));
+        assertEquals(0, statistics.get("edgeCount"));
+        assertEquals(0, statistics.get("ontologyCount"));
+        assertEquals(0, statistics.get("pslCount"));
+        assertEquals(0, statistics.get("mebnCount"));
+        assertEquals(0, statistics.get("provenanceCount"));
+        assertEquals(0, statistics.get("opinionCount"));
+        assertEquals(0, statistics.get("neuralScoreCount"));
+    }
+
+    @Test
+    void reasoningLayers_serializesNodeAndEdgeMetadata() {
+        GraphEdge edge = GraphEdge.builder()
+                .edgeId("reasoning-edge")
+                .sourceNode(conformantNode)
+                .targetNode(untaggedNode)
+                .edgeType(EdgeType.SHARED_ENTITY)
+                .relationType("MENTIONS")
+                .weight(0.8)
+                .metadataJson("{\"psl\":{\"ruleId\":\"edge-rule\",\"truthValue\":0.77}}")
+                .build();
+        when(graphService.getNodesInFactSheet(FS_ID)).thenReturn(List.of(conformantNode));
+        when(graphService.getEdgesInFactSheet(FS_ID)).thenReturn(List.of(edge));
+
+        ResponseEntity<?> response = controller.getReasoningLayers(FS_ID);
+
+        assertEquals(HttpStatus.OK, response.getStatusCode());
+        @SuppressWarnings("unchecked")
+        Map<String, Object> body = (Map<String, Object>) response.getBody();
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> nodes = (List<Map<String, Object>>) body.get("nodes");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> ontology = (Map<String, Object>) nodes.get(0).get("ontology");
+        assertEquals(Boolean.TRUE, ontology.get("conformant"));
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> edges = (List<Map<String, Object>>) body.get("edges");
+        assertEquals("node-conformant", edges.get(0).get("sourceNodeId"));
+        assertEquals("node-untagged", edges.get(0).get("targetNodeId"));
+        assertTrue(edges.get(0).get("psl") instanceof Map<?, ?>);
+    }
+
+    @Test
+    void reasoningLayers_serviceThrows_returns503() {
+        when(graphService.getNodesInFactSheet(FS_ID))
+                .thenThrow(new RuntimeException("DB unavailable"));
+
+        ResponseEntity<?> response = controller.getReasoningLayers(FS_ID);
 
         assertEquals(HttpStatus.SERVICE_UNAVAILABLE, response.getStatusCode());
         @SuppressWarnings("unchecked")

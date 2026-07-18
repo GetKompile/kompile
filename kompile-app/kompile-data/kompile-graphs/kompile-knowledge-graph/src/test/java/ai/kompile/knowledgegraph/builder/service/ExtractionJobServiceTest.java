@@ -29,8 +29,7 @@ import ai.kompile.knowledgegraph.builder.repository.TripleProposalRepository;
 import ai.kompile.knowledgegraph.builder.storage.GraphStorageRegistry;
 import ai.kompile.knowledgegraph.builder.storage.GraphStorageStrategy;
 import ai.kompile.knowledgegraph.builder.storage.GraphStorageStrategy.StorageResult;
-import ai.kompile.knowledgegraph.repository.GraphEdgeRepository;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
+import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -58,8 +57,7 @@ class ExtractionJobServiceTest {
     @Mock private ExtractionJobRepository jobRepository;
     @Mock private TripleProposalRepository proposalRepository;
     @Mock private ExtractionLogRepository logRepository;
-    @Mock private GraphNodeRepository nodeRepository;
-    @Mock private GraphEdgeRepository edgeRepository;
+    @Mock private KnowledgeGraphService graphService;
     @Mock private GraphStorageRegistry storageRegistry;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -69,7 +67,7 @@ class ExtractionJobServiceTest {
     void setUp() {
         service = new ExtractionJobService(
                 jobRepository, proposalRepository, logRepository,
-                nodeRepository, edgeRepository, storageRegistry, objectMapper);
+                graphService, storageRegistry, objectMapper);
     }
 
     private ExtractionJob pendingJob(String jobId, Long factSheetId) {

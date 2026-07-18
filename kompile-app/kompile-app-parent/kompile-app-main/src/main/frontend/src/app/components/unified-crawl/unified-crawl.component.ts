@@ -63,6 +63,8 @@ import { FactSheet } from '../../models/api-models';
 import { GraphExtractionService, ModelProvider, GraphExtractionConfig } from '../../services/graph-extraction.service';
 import { WebSocketService } from '../../services/websocket.service';
 import { DistributedCrawlService } from '../../services/distributed-crawl.service';
+import { NoteSyncService } from '../../services/note-sync.service';
+import { SyncConnectionResponse, SyncProvider, SyncStatusUpdate } from '../../models/sync-models';
 import { CrawlLauncherDialogComponent, CrawlLauncherDialogData, CrawlLauncherResult } from './crawl-launcher-dialog/crawl-launcher-dialog.component';
 
 @Component({
@@ -108,6 +110,13 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
 
   // Live graph stats (fetched separately from /api/unified-crawl/graph-stats)
   liveGraphStats: any = null;
+
+  // External source maintenance (Notion, Obsidian, local folders and Git repositories)
+  syncConnections: SyncConnectionResponse[] = [];
+  syncProgress = new Map<number, SyncStatusUpdate>();
+  pullingConnections = new Set<number>();
+  autoSyncUpdating = new Set<number>();
+  readonly defaultAutoSyncCron = '0 */15 * * * *';
 
   // Subprocess events for the selected job
   subprocessEvents: SubprocessEvent[] = [];
@@ -155,6 +164,7 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
     private jobLogService: JobLogService,
     private wsService: WebSocketService,
     private distributedCrawlService: DistributedCrawlService,
+    private noteSyncService: NoteSyncService,
     private dialog: MatDialog,
     private snackBar: MatSnackBar,
     private cdr: ChangeDetectorRef,
@@ -166,6 +176,11 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
     this.subscriptions.add(
       this.factSheetService.activeSheet$.subscribe(sheet => {
         this.activeFactSheet = sheet;
+        if (sheet?.id) {
+          this.loadSyncConnections(sheet.id);
+        } else {
+          this.syncConnections = [];
+        }
         this.cdr.markForCheck();
       })
     );
@@ -184,6 +199,16 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
         this.handleSchedulerEvent(event);
       })
     );
+    this.subscriptions.add(
+      this.wsService.subscribeToSyncProgress().subscribe((update: SyncStatusUpdate) => {
+        this.syncProgress.set(update.connectionId, update);
+        if (update.status === 'COMPLETED' || update.status === 'ERROR') {
+          this.pullingConnections.delete(update.connectionId);
+          if (this.activeFactSheet?.id) this.loadSyncConnections(this.activeFactSheet.id);
+        }
+        this.cdr.markForCheck();
+      })
+    );
     this.pollInterval = setInterval(() => {
       this.refreshJobs();
       this.refreshResumableJobs();
@@ -198,6 +223,7 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
 
   ngOnDestroy() {
     this.wsService.unsubscribeFromSchedulerEvents();
+    this.wsService.unsubscribeFromSyncProgress();
     this.subscriptions.unsubscribe();
     if (this.pollInterval) clearInterval(this.pollInterval);
     this.disconnectJobStream();
@@ -1133,6 +1159,79 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
 
   isStepActionInProgress(jobId: string, stepId: string): boolean {
     return !!this.stepActionInProgress[`${jobId}:${stepId}`];
+  }
+
+  refreshSyncConnections(): void {
+    const factSheetId = this.activeFactSheet?.id;
+    if (factSheetId) this.loadSyncConnections(factSheetId);
+  }
+
+  loadSyncConnections(factSheetId: number): void {
+    this.subscriptions.add(this.noteSyncService.loadConnections(factSheetId).subscribe({
+      next: connections => {
+        this.syncConnections = connections;
+        this.cdr.markForCheck();
+      },
+      error: err => console.error('Failed to load source sync connections:', err.message)
+    }));
+  }
+
+  pullSourceUpdates(connection: SyncConnectionResponse): void {
+    this.pullingConnections.add(connection.id);
+    this.syncProgress.set(connection.id, {
+      sessionId: '', connectionId: connection.id, status: 'RUNNING',
+      message: `Checking ${connection.provider} for updates`, pushed: 0, pulled: 0,
+      conflicts: 0, skipped: 0, errors: 0, timestamp: new Date().toISOString()
+    });
+    this.cdr.markForCheck();
+    this.subscriptions.add(this.noteSyncService.pullUpdates(connection.id).subscribe({
+      next: result => this.snackBar.open(`Pull started (${result.sessionId})`, 'OK', { duration: 3000 }),
+      error: err => {
+        this.pullingConnections.delete(connection.id);
+        this.snackBar.open(err.error?.error || 'Failed to pull source updates', 'Dismiss', { duration: 4000 });
+        this.cdr.markForCheck();
+      }
+    }));
+  }
+
+  setAutoSync(connection: SyncConnectionResponse, enabled: boolean): void {
+    this.autoSyncUpdating.add(connection.id);
+    const cron = connection.pollCron || this.defaultAutoSyncCron;
+    this.subscriptions.add(this.noteSyncService.updateAutoSync(connection.id, enabled, cron).subscribe({
+      next: updated => {
+        this.syncConnections = this.syncConnections.map(item => item.id === updated.id ? updated : item);
+        this.autoSyncUpdating.delete(connection.id);
+        this.snackBar.open(enabled ? 'Auto sync enabled (every 15 minutes)' : 'Auto sync disabled', 'OK', { duration: 2500 });
+        this.cdr.markForCheck();
+      },
+      error: err => {
+        this.autoSyncUpdating.delete(connection.id);
+        this.snackBar.open(err.error?.error || 'Failed to update auto sync', 'Dismiss', { duration: 4000 });
+        this.cdr.markForCheck();
+      }
+    }));
+  }
+
+  isPulling(connectionId: number): boolean {
+    return this.pullingConnections.has(connectionId) || this.syncProgress.get(connectionId)?.status === 'RUNNING';
+  }
+
+  getSyncProviderDescription(provider: SyncProvider): string {
+    switch (provider) {
+      case 'NOTION': return 'Pulls changed pages through the Notion API into fact-sheet notes.';
+      case 'OBSIDIAN': return 'Reads changed Markdown notes from a vault or the Local REST API.';
+      case 'LOCAL_FOLDER': return 'Scans changed Markdown files in the configured local folder.';
+      case 'GIT_REPOSITORY': return 'Pulls the configured branch, then scans changed Markdown files.';
+    }
+  }
+
+  getSyncProviderIcon(provider: SyncProvider): string {
+    switch (provider) {
+      case 'NOTION': return 'description';
+      case 'OBSIDIAN': return 'diamond';
+      case 'GIT_REPOSITORY': return 'account_tree';
+      default: return 'folder';
+    }
   }
 
   /** Builds the Set<string> of in-progress stepIds for a given jobId — passed to the step monitor. */

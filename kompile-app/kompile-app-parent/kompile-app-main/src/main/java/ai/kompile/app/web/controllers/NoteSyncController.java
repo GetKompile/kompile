@@ -84,6 +84,21 @@ public class NoteSyncController {
         return ResponseEntity.ok(Map.of("sessionId", sessionId, "status", "STARTED"));
     }
 
+    @PostMapping("/connections/{id}/pull")
+    public ResponseEntity<Map<String, Object>> pullUpdates(@PathVariable Long id) {
+        String sessionId = "pull-" + id + "-" + System.currentTimeMillis();
+        connectionService.triggerPull(id);
+        return ResponseEntity.ok(Map.of("sessionId", sessionId, "status", "STARTED", "mode", "PULL"));
+    }
+
+    @PatchMapping("/connections/{id}/auto-sync")
+    public ResponseEntity<SyncConnectionResponse> updateAutoSync(
+            @PathVariable Long id, @RequestBody Map<String, Object> body) {
+        boolean enabled = Boolean.TRUE.equals(body.get("enabled"));
+        String pollCron = body.get("pollCron") instanceof String cron ? cron : null;
+        return ResponseEntity.ok(connectionService.updateAutoSync(id, enabled, pollCron));
+    }
+
     @PostMapping("/connections/{id}/enable")
     public ResponseEntity<SyncConnectionResponse> enableConnection(@PathVariable Long id) {
         return ResponseEntity.ok(connectionService.enableConnection(id));

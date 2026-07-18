@@ -39,12 +39,16 @@ import ai.kompile.cli.main.chat.tools.ConversationImportTool;
 import ai.kompile.cli.main.chat.tools.DictationTool;
 import ai.kompile.cli.main.chat.tools.DynamicToolManager;
 import ai.kompile.cli.main.chat.tools.EditCoordinatorTool;
+import ai.kompile.cli.main.chat.tools.EditBatchTool;
+import ai.kompile.cli.main.chat.tools.EditPatchTool;
 import ai.kompile.cli.main.chat.tools.EditTool;
 import ai.kompile.cli.main.chat.tools.EnforcerConfigTool;
 import ai.kompile.cli.main.chat.tools.ExploreTool;
+import ai.kompile.cli.main.chat.tools.FetchResultBatchTool;
 import ai.kompile.cli.main.chat.tools.FetchResultTool;
 import ai.kompile.cli.main.chat.tools.FileActivityTool;
 import ai.kompile.cli.main.chat.tools.GlobTool;
+import ai.kompile.cli.main.chat.tools.GrepBatchTool;
 import ai.kompile.cli.main.chat.tools.GraphAggregateTool;
 import ai.kompile.cli.main.chat.tools.GraphBayesTool;
 import ai.kompile.cli.main.chat.tools.GraphCentralityTool;
@@ -64,6 +68,7 @@ import ai.kompile.cli.main.chat.tools.ProcessManagementTool;
 import ai.kompile.cli.main.chat.tools.ProcessMiningCliTool;
 import ai.kompile.cli.main.chat.tools.ProjectConfigTool;
 import ai.kompile.cli.main.chat.tools.RagSearchTool;
+import ai.kompile.cli.main.chat.tools.ReadBatchTool;
 import ai.kompile.cli.main.chat.tools.ReadTool;
 import ai.kompile.cli.main.chat.tools.ResumeTool;
 import ai.kompile.cli.main.chat.tools.RoleManagerTool;
@@ -185,17 +190,18 @@ public class McpStdioCommand implements Callable<Integer> {
                 "read", "grep", "glob", "list"
         )));
 
-        // explore: read-only + code intelligence (~9 tools, ~2500 tokens)
+        // explore: read-only + code intelligence (~2500 tokens)
         m.put("explore", new LinkedHashSet<>(Set.of(
-                "read", "grep", "glob", "list",
+                "read", "read_batch", "grep", "grep_batch", "glob", "list",
                 "explore", "code_search", "local_code_index", "code_graph",
-                "fetch_result"
+                "fetch_result", "fetch_result_batch"
         )));
 
-        // core: file I/O + search + workflow (~15 tools, ~3000 tokens)
+        // core: file I/O + search + workflow (~3000 tokens)
         m.put("core", new LinkedHashSet<>(Set.of(
-                "read", "write", "edit", "grep", "glob", "list", "bash",
-                "explore", "fetch_result", "patch",
+                "read", "read_batch", "write", "edit", "edit_batch",
+                "grep", "grep_batch", "glob", "list", "bash",
+                "explore", "fetch_result", "fetch_result_batch", "patch", "edit_patch",
                 "todowrite", "todoread", "memory",
                 "webfetch", "websearch"
         )));
@@ -257,6 +263,24 @@ public class McpStdioCommand implements Callable<Integer> {
                 t.setDaemon(true);
                 return t;
             });
+
+    /** In-flight tools/call requests by JSON-RPC id. notifications/cancelled aborts the
+     *  matching call, and after a cancel no progress notification or response may be
+     *  written for that id — the client has forgotten it, treats such messages as a
+     *  protocol error, and drops the whole STDIO connection. */
+    private final Map<String, InFlightCall> inFlightCalls = new ConcurrentHashMap<>();
+    private static final ThreadLocal<InFlightCall> CURRENT_CALL = new ThreadLocal<>();
+
+    static final class InFlightCall {
+        final AtomicBoolean cancelled = new AtomicBoolean(false);
+        volatile ToolContext context;
+        volatile String progressToken;
+    }
+
+    /** JSON-RPC id → in-flight registry key (ids may be numbers or strings). */
+    static String callKey(JsonNode idNode) {
+        return idNode == null || idNode.isNull() ? null : idNode.asText();
+    }
 
     /** ObjectMapper shared across the session. */
     private volatile ObjectMapper om;
@@ -466,18 +490,29 @@ public class McpStdioCommand implements Callable<Integer> {
                     // ping responses and Claude Code drops the MCP connection.
                     if ("tools/call".equals(msgMethod)) {
                         final JsonNode toolMsg = msg;
+                        final String callKey = callKey(toolMsg.get("id"));
+                        final InFlightCall inFlight = new InFlightCall();
+                        if (callKey != null) inFlightCalls.put(callKey, inFlight);
                         toolExecutor.submit(() -> {
                             try {
+                                CURRENT_CALL.set(inFlight);
                                 JsonNode response = handleMessage(toolMsg, tools, om);
                                 if (response != null) {
                                     synchronized (mcpOut) {
-                                        mcpOut.write(om.writeValueAsString(response) + "\n");
-                                        mcpOut.flush();
+                                        // A cancelled request gets NO late response — the
+                                        // client already forgot the id and would treat the
+                                        // response as a protocol error (connection drop).
+                                        if (!inFlight.cancelled.get()) {
+                                            mcpOut.write(om.writeValueAsString(response) + "\n");
+                                            mcpOut.flush();
+                                        }
                                     }
                                 }
                             } catch (Exception e) {
                                 System.err.println("[MCP] Error executing tool: " + e.getMessage());
                             } finally {
+                                if (callKey != null) inFlightCalls.remove(callKey);
+                                CURRENT_CALL.remove();
                                 CTX.remove();
                             }
                         });
@@ -551,7 +586,25 @@ public class McpStdioCommand implements Callable<Integer> {
                 }
 
                 // Notifications — no response needed (no id)
-                case "notifications/initialized", "notifications/cancelled",
+                case "notifications/cancelled" -> {
+                    // Abort the matching in-flight call and retire its progress token so
+                    // nothing further is written for this id (see inFlightCalls).
+                    if (params != null) {
+                        String key = callKey(params.get("requestId"));
+                        InFlightCall call = key != null ? inFlightCalls.get(key) : null;
+                        if (call != null) {
+                            call.cancelled.set(true);
+                            ToolContext cancelledCtx = call.context;
+                            if (cancelledCtx != null) {
+                                cancelledCtx.getAbortSignal().set(true);
+                            }
+                            System.err.println("[MCP] Client cancelled request " + key
+                                    + " — aborting tool call");
+                        }
+                    }
+                    return null;
+                }
+                case "notifications/initialized",
                      "notifications/progress", "notifications/roots/list_changed" -> {
                     return null; // Notifications never get a response
                 }
@@ -727,8 +780,11 @@ public class McpStdioCommand implements Callable<Integer> {
                             }
                         }
 
-                        // Send progress start notification
-                        if (progressToken != null) {
+                        // Send progress start notification (never for a cancelled call)
+                        InFlightCall currentCall = CURRENT_CALL.get();
+                        if (currentCall != null) currentCall.progressToken = progressToken;
+                        if (progressToken != null
+                                && (currentCall == null || !currentCall.cancelled.get())) {
                             sendProgress(progressToken, 0, 1);
                         }
 
@@ -809,6 +865,11 @@ public class McpStdioCommand implements Callable<Integer> {
 
                         } else {
                             // Standard synchronous execution with logging
+                            if (currentCall != null && currentCall.cancelled.get()) {
+                                // Client already gave up on this request — skip execution
+                                // entirely; no response or notification may be sent for it.
+                                return null;
+                            }
                             String callId = progressLogger != null
                                     ? progressLogger.toolStart(toolName, argMap)
                                     : null;
@@ -834,15 +895,21 @@ public class McpStdioCommand implements Callable<Integer> {
                                         auditDecision, auditReason, tr.isError(), callDuration);
                             }
 
-                            // Send progress complete notification
-                            if (progressToken != null) {
+                            // Send progress complete notification (never after a cancel —
+                            // the client no longer knows the token and would drop the
+                            // connection on an unknown-token progress notification)
+                            if (progressToken != null
+                                    && (currentCall == null || !currentCall.cancelled.get())) {
                                 sendProgress(progressToken, 1, 1);
                             }
 
                             // Auto-cache large results using reference handles
+                            // (never re-cache a fetch — the caller explicitly
+                            // asked for that content inline)
                             if (!tr.isError() && resultReferenceCache != null
                                     && tr.getOutput() != null
                                     && !"fetch_result".equals(toolName)
+                                    && !"fetch_result_batch".equals(toolName)
                                     && resultReferenceCache.shouldCache(tr.getOutput())) {
                                 tr = resultReferenceCache.storeAndSummarize(
                                         toolName, tr.getTitle(), tr.getOutput(), tr.getMetadata());
@@ -1259,12 +1326,16 @@ public class McpStdioCommand implements Callable<Integer> {
 
         // ── File I/O tools ─────────────────────────────────────────────────
         registerCliTool(tools, new ReadTool(), om, wd);
+        registerCliTool(tools, new ReadBatchTool(), om, wd);
         registerCliTool(tools, new WriteTool(coordinator), om, wd);
         registerCliTool(tools, new EditTool(coordinator), om, wd);
+        registerCliTool(tools, new EditBatchTool(coordinator), om, wd);
         registerCliTool(tools, new PatchTool(), om, wd);
+        registerCliTool(tools, new EditPatchTool(coordinator), om, wd);
 
         // ── Search tools ───────────────────────────────────────────────────
         registerCliTool(tools, new GrepTool(), om, wd);
+        registerCliTool(tools, new GrepBatchTool(), om, wd);
         registerCliTool(tools, new GlobTool(), om, wd);
         registerCliTool(tools, new ListTool(), om, wd);
         registerCliTool(tools, new ExploreTool(), om, wd);
@@ -1273,6 +1344,8 @@ public class McpStdioCommand implements Callable<Integer> {
         if (resultReferenceCache != null) {
             registerCliTool(tools,
                     new FetchResultTool(resultReferenceCache), om, wd);
+            registerCliTool(tools,
+                    new FetchResultBatchTool(resultReferenceCache), om, wd);
         }
 
         // ── Dynamic tool activation ──────────────────────────────────────
@@ -1664,6 +1737,12 @@ public class McpStdioCommand implements Callable<Integer> {
                 }
             });
             CTX.set(ctx);
+        }
+        // Bind this call's context so notifications/cancelled can flip its abort signal
+        // (ProcessManager's abort watcher then kills the running command tree).
+        InFlightCall call = CURRENT_CALL.get();
+        if (call != null && call.context == null) {
+            call.context = ctx;
         }
         return ctx;
     }

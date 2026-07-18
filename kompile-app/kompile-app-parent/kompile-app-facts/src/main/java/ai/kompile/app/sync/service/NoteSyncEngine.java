@@ -31,6 +31,7 @@ import ai.kompile.app.sync.repository.NoteSyncRecordRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -71,11 +72,24 @@ public class NoteSyncEngine {
     @Autowired
     private NoteSyncProgressTracker progressTracker;
 
+    @Autowired(required = false)
+    private ApplicationEventPublisher eventPublisher;
+
     /**
      * Run a full sync cycle for a given connection.
      */
     @Transactional
     public SyncRunResult syncConnection(Long connectionId) {
+        return syncConnection(connectionId, false);
+    }
+
+    /** Pull external changes without pushing local edits back to the provider. */
+    @Transactional
+    public SyncRunResult pullConnection(Long connectionId) {
+        return syncConnection(connectionId, true);
+    }
+
+    private SyncRunResult syncConnection(Long connectionId, boolean pullOnly) {
         NoteSyncConnection conn = connectionRepository.findById(connectionId)
                 .orElseThrow(() -> new IllegalArgumentException("Connection not found: " + connectionId));
         if (!conn.getEnabled()) {
@@ -87,7 +101,7 @@ public class NoteSyncEngine {
         progressTracker.start(syncSessionId, conn);
 
         try {
-            SyncRunResult result = doSync(conn, adapter, syncSessionId);
+            SyncRunResult result = doSync(conn, adapter, syncSessionId, pullOnly);
             conn.setLastSyncAt(Instant.now());
             if (result.getErrors() > 0) {
                 conn.setLastSyncStatus("ERROR");
@@ -101,6 +115,10 @@ public class NoteSyncEngine {
             }
             connectionRepository.save(conn);
             progressTracker.complete(syncSessionId, result);
+            if (result.getPulled() > 0 && eventPublisher != null) {
+                eventPublisher.publishEvent(new NoteSyncPulledEvent(
+                        syncSessionId, conn.getId(), conn.getFactSheetId(), conn.getProvider(), result.getPulled()));
+            }
             return result;
         } catch (Exception e) {
             log.error("Sync failed for connection {}: {}", connectionId, e.getMessage(), e);
@@ -112,7 +130,7 @@ public class NoteSyncEngine {
         }
     }
 
-    private SyncRunResult doSync(NoteSyncConnection conn, SyncAdapter adapter, String sessionId) {
+    private SyncRunResult doSync(NoteSyncConnection conn, SyncAdapter adapter, String sessionId, boolean pullOnly) {
         SyncRunResult.SyncRunResultBuilder result = SyncRunResult.builder().connectionId(conn.getId());
         Instant since = conn.getLastSyncAt() != null ? conn.getLastSyncAt() : Instant.EPOCH;
 
@@ -138,7 +156,7 @@ public class NoteSyncEngine {
         }
 
         // --- PUSH: Kompile -> external ---
-        if (conn.getDirection() != SyncDirection.EXTERNAL_TO_KOMPILE) {
+        if (!pullOnly && conn.getDirection() != SyncDirection.EXTERNAL_TO_KOMPILE) {
             try {
                 List<Note> modifiedNotes = noteRepository.findByFactSheetIdAndUpdatedAtAfter(
                         conn.getFactSheetId(), since);

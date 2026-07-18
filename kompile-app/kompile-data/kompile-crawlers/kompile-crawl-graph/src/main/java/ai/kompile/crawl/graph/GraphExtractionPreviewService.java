@@ -64,14 +64,35 @@ public class GraphExtractionPreviewService {
             ProcessingRouteConfig processingRoute,
             int maxDocuments,
             int maxCharsPerDocument) {
+        return previewDetailed(documents, config, processingRoute, maxDocuments, maxCharsPerDocument)
+                .response();
+    }
+
+    /**
+     * The same dry-run as {@link #preview}, additionally returning the raw parsed
+     * {@link GraphExtractionSchema.ExtractionResult} per analyzed document. This is the seam for
+     * harnesses that score extraction output (evaluators, model comparisons) or project it onto a
+     * {@code UnifiedGraph} — they get the canonical schema objects instead of re-assembling them
+     * from the flattened preview DTOs.
+     */
+    public DetailedPreview previewDetailed(
+            List<Document> documents,
+            GraphExtractionConfig config,
+            ProcessingRouteConfig processingRoute,
+            int maxDocuments,
+            int maxCharsPerDocument) {
         if (config == null) {
             config = GraphExtractionConfig.builder().build();
         }
         if (documents == null || documents.isEmpty()) {
-            return PreviewResponse.skipped("No loaded text was available for graph extraction preview.");
+            return new DetailedPreview(
+                    PreviewResponse.skipped("No loaded text was available for graph extraction preview."),
+                    List.of());
         }
         if (llmDispatcher == null) {
-            return PreviewResponse.unavailable("LLM graph extraction is not available in this runtime.");
+            return new DetailedPreview(
+                    PreviewResponse.unavailable("LLM graph extraction is not available in this runtime."),
+                    List.of());
         }
 
         int documentLimit = sanitizeDocumentLimit(maxDocuments);
@@ -79,6 +100,7 @@ public class GraphExtractionPreviewService {
         List<String> warnings = new ArrayList<>();
         List<EntityPreview> entities = new ArrayList<>();
         List<RelationPreview> relations = new ArrayList<>();
+        List<DocumentExtraction> extractions = new ArrayList<>();
         Map<String, EntityPreview> entitiesById = new LinkedHashMap<>();
 
         UnifiedCrawlJob previewJob = previewJob(config, processingRoute);
@@ -108,6 +130,7 @@ public class GraphExtractionPreviewService {
 
             String sourceDocumentId = sourceDocumentId(document, analyzed);
             String sourceTitle = sourceTitle(document, sourceDocumentId);
+            extractions.add(new DocumentExtraction(sourceDocumentId, sourceTitle, attempt.result()));
             Map<String, String> namesThisDocument = new LinkedHashMap<>();
             for (GraphExtractionSchema.ExtractedEntity entity : attempt.result().entities()) {
                 EntityPreview preview = new EntityPreview(
@@ -158,7 +181,7 @@ public class GraphExtractionPreviewService {
                     + " available document chunks.");
         }
 
-        return new PreviewResponse(
+        PreviewResponse response = new PreviewResponse(
                 true,
                 true,
                 true,
@@ -172,6 +195,7 @@ public class GraphExtractionPreviewService {
                 entities,
                 relations,
                 warnings);
+        return new DetailedPreview(response, List.copyOf(extractions));
     }
 
     private ExtractionAttempt extractDocument(
@@ -325,6 +349,19 @@ public class GraphExtractionPreviewService {
     }
 
     private record ExtractionAttempt(GraphExtractionSchema.ExtractionResult result) {
+    }
+
+    /** One analyzed document's raw parsed extraction, keyed by its resolved source identity. */
+    public record DocumentExtraction(
+            String sourceDocumentId,
+            String sourceTitle,
+            GraphExtractionSchema.ExtractionResult result) {
+    }
+
+    /** {@link PreviewResponse} plus the raw per-document extraction results behind it. */
+    public record DetailedPreview(
+            PreviewResponse response,
+            List<DocumentExtraction> extractions) {
     }
 
     public record PreviewResponse(

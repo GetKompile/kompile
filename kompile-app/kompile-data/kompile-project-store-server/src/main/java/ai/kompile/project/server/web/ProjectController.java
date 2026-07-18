@@ -2,12 +2,15 @@ package ai.kompile.project.server.web;
 
 import ai.kompile.project.server.ProjectStoreServerProperties;
 import ai.kompile.project.server.git.GitRepoService;
+import ai.kompile.project.server.git.HostedProjectNames;
 import ai.kompile.project.server.model.Project;
 import ai.kompile.project.server.model.ProjectRepository;
 import org.eclipse.jgit.lib.Repository;
+import org.eclipse.jgit.lib.ObjectId;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -61,9 +64,13 @@ public class ProjectController {
     @PostMapping
     @Transactional
     public ResponseEntity<ProjectDto> create(@RequestBody CreateProjectRequest req) {
-        if (req == null || isBlank(req.namespace) || isBlank(req.slug)) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "namespace and slug are required");
+        if (req == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "request body is required");
         }
+        requireIdentifier("namespace", req.namespace);
+        requireIdentifier("slug", req.slug);
+        String defaultBranch = req.defaultBranch != null ? req.defaultBranch : "main";
+        requireRef("defaultBranch", defaultBranch);
         if (projectRepo.existsByNamespaceAndSlug(req.namespace, req.slug)) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "project already exists");
         }
@@ -72,7 +79,7 @@ public class ProjectController {
                 .slug(req.slug)
                 .repoType(req.repoType != null ? req.repoType : "model")
                 .visibility(req.visibility != null ? req.visibility : "public")
-                .defaultBranch(req.defaultBranch != null ? req.defaultBranch : "main")
+                .defaultBranch(defaultBranch)
                 .description(req.description)
                 .gitPrefix(req.namespace + "/" + req.slug + ".git")
                 .build();
@@ -83,6 +90,7 @@ public class ProjectController {
 
     @GetMapping("/{namespace}/{slug}")
     public ProjectDto get(@PathVariable String namespace, @PathVariable String slug) {
+        requireProjectNames(namespace, slug);
         Project p = projectRepo.findByNamespaceAndSlug(namespace, slug)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
         ProjectDto dto = toDto(p);
@@ -101,6 +109,8 @@ public class ProjectController {
     public List<GitRepoService.TreeEntry> tree(@PathVariable String namespace, @PathVariable String slug,
                                                @PathVariable String ref,
                                                @RequestParam(required = false) String path) {
+        requireProjectNames(namespace, slug);
+        requireRef("ref", ref);
         projectRepo.findByNamespaceAndSlug(namespace, slug)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
         if (!gitRepoService.repoExists(namespace, slug)) {
@@ -116,6 +126,8 @@ public class ProjectController {
     @GetMapping("/{namespace}/{slug}/blob/{ref}")
     public ResponseEntity<byte[]> blob(@PathVariable String namespace, @PathVariable String slug,
                                        @PathVariable String ref, @RequestParam String path) {
+        requireProjectNames(namespace, slug);
+        requireRef("ref", ref);
         projectRepo.findByNamespaceAndSlug(namespace, slug)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
         try (Repository repo = gitRepoService.openRepo(namespace, slug)) {
@@ -125,7 +137,8 @@ public class ProjectController {
             }
             String filename = path.substring(path.lastIndexOf('/') + 1);
             return ResponseEntity.ok()
-                    .header(HttpHeaders.CONTENT_DISPOSITION, "inline; filename=\"" + filename + "\"")
+                    .header(HttpHeaders.CONTENT_DISPOSITION,
+                            ContentDisposition.inline().filename(filename, StandardCharsets.UTF_8).build().toString())
                     .contentType(MediaType.APPLICATION_OCTET_STREAM)
                     .body(content);
         } catch (IOException e) {
@@ -133,24 +146,40 @@ public class ProjectController {
         }
     }
 
-    /** Download the whole project tree at {@code ref} as a streamed ZIP archive. */
+    /**
+     * Download the Git tree at {@code ref} as a source-snapshot ZIP.
+     * This is not the versioned {@code .kproject} project archive contract.
+     */
     @GetMapping("/{namespace}/{slug}/archive/{ref}")
     public ResponseEntity<StreamingResponseBody> archive(@PathVariable String namespace,
                                                          @PathVariable String slug,
                                                          @PathVariable String ref) {
+        requireProjectNames(namespace, slug);
+        requireRef("ref", ref);
         projectRepo.findByNamespaceAndSlug(namespace, slug)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
         if (!gitRepoService.repoExists(namespace, slug)) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND);
         }
+        ObjectId commitId;
+        try (Repository repo = gitRepoService.openRepo(namespace, slug)) {
+            commitId = gitRepoService.resolveCommit(repo, ref);
+        } catch (IOException | IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+        }
+        if (commitId == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+        }
+        ObjectId resolvedCommit = commitId;
         StreamingResponseBody body = out -> {
             try (Repository repo = gitRepoService.openRepo(namespace, slug)) {
-                gitRepoService.writeArchive(repo, ref, out);
+                gitRepoService.writeArchive(repo, resolvedCommit, out);
             }
         };
         String filename = slug + "-" + ref + ".zip";
         return ResponseEntity.ok()
-                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + "\"")
+                .header(HttpHeaders.CONTENT_DISPOSITION,
+                        ContentDisposition.attachment().filename(filename).build().toString())
                 .contentType(MediaType.valueOf("application/zip"))
                 .body(body);
     }
@@ -170,8 +199,25 @@ public class ProjectController {
         return d;
     }
 
-    private static boolean isBlank(String s) {
-        return s == null || s.trim().isEmpty();
+    private static void requireProjectNames(String namespace, String slug) {
+        requireIdentifier("namespace", namespace);
+        requireIdentifier("slug", slug);
+    }
+
+    private static void requireIdentifier(String field, String value) {
+        try {
+            HostedProjectNames.requireIdentifier(field, value);
+        } catch (IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+        }
+    }
+
+    private static void requireRef(String field, String value) {
+        try {
+            HostedProjectNames.requireRef(field, value);
+        } catch (IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+        }
     }
 
     /** Request body for creating a project. */
