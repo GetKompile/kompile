@@ -1285,14 +1285,6 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
       .replace(/(^|\s)\S/g, value => value.toUpperCase());
   }
 
-  formatBytes(bytes: number | null | undefined): string {
-    if (bytes == null) return '—';
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
-  }
-
   loadSyncConnections(factSheetId: number): void {
     this.subscriptions.add(this.noteSyncService.loadConnections(factSheetId).subscribe({
       next: connections => {

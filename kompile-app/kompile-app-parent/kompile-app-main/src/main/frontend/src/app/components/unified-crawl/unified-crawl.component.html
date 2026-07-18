@@ -404,6 +404,105 @@
               </button>
             </div>
 
+            <mat-card class="source-maintenance-card portable-kb-card">
+              <mat-card-content>
+                <div class="portable-kb-header">
+                  <div class="portable-kb-heading">
+                    <mat-icon>inventory_2</mat-icon>
+                    <div>
+                      <div class="source-maintenance-title">Portable Knowledge Base</div>
+                      <div class="source-maintenance-description">
+                        Flush catalogs and graphs, package the project, or preflight and stage a portable project import.
+                      </div>
+                    </div>
+                  </div>
+                  <div class="source-maintenance-actions">
+                    <button mat-raised-button color="primary"
+                            [disabled]="isPortabilityRunning()"
+                            (click)="startPortableExport()">
+                      <mat-icon>archive</mat-icon>
+                      {{ isPortabilityRunning() ? 'Maintenance running…' : 'Prepare Snapshot' }}
+                    </button>
+                    <label mat-stroked-button [class.disabled]="portabilityActionInProgress">
+                      <mat-icon>upload_file</mat-icon> Inspect Package
+                      <input type="file" accept=".kproject"
+                             [disabled]="portabilityActionInProgress"
+                             (change)="selectPortableArchive($event)" hidden>
+                    </label>
+                  </div>
+                </div>
+
+                <div *ngIf="portabilityError" class="source-sync-error">
+                  <mat-icon>error</mat-icon>{{ portabilityError }}
+                </div>
+
+                <div *ngIf="portableArchive" class="portable-preflight">
+                  <div>
+                    <strong>{{ portableArchive.name }}</strong>
+                    <span class="status-badge status-completed">Format v{{ portableArchive.formatVersion }}</span>
+                  </div>
+                  <div class="source-maintenance-meta">
+                    <span>{{ portableArchive.entryCount }} files</span>
+                    <span>{{ formatBytes(portableArchive.totalBytes) }}</span>
+                    <span *ngIf="portableArchive.defaultGraph">Graph included</span>
+                    <span *ngIf="!portableArchive.defaultGraph">Graph rebuild required</span>
+                  </div>
+                  <div class="portable-assets" *ngIf="portableArchive.semantic.portableAssets.length">
+                    <span *ngFor="let asset of portableArchive.semantic.portableAssets">
+                      {{ portabilityStage(asset) }}
+                    </span>
+                  </div>
+                  <div class="portable-warning" *ngFor="let warning of portableArchive.warnings">
+                    <mat-icon>warning</mat-icon>{{ warning }}
+                  </div>
+                  <div class="portable-preflight-actions">
+                    <button mat-raised-button color="accent"
+                            [disabled]="portabilityActionInProgress"
+                            (click)="importPortableArchive()">
+                      <mat-icon>drive_folder_upload</mat-icon> Import as New Project
+                    </button>
+                    <span>The imported project stays inactive until explicitly opened.</span>
+                  </div>
+                </div>
+
+                <div class="portable-job-list" *ngIf="portableJobs.length">
+                  <div class="portable-job" *ngFor="let job of portableJobs | slice:0:5">
+                    <div class="portable-job-row">
+                      <mat-icon>{{ job.operation === 'EXPORT' ? 'archive' : 'drive_folder_upload' }}</mat-icon>
+                      <div class="portable-job-details">
+                        <div>
+                          <strong>{{ job.operation === 'EXPORT' ? 'Snapshot export' : 'Project import' }}</strong>
+                          <span class="status-badge" [class]="'status-' + job.status.toLowerCase()">
+                            {{ job.status }}
+                          </span>
+                        </div>
+                        <span>{{ portabilityStage(job.stage) }} · {{ formatTimestamp(job.createdAt) }}</span>
+                      </div>
+                      <button *ngIf="job.downloadReady" mat-stroked-button color="primary"
+                              (click)="downloadPortableArchive(job)">
+                        <mat-icon>download</mat-icon> Download
+                      </button>
+                    </div>
+                    <mat-progress-bar *ngIf="job.status === 'QUEUED' || job.status === 'RUNNING'"
+                                      [mode]="job.progress > 0 ? 'determinate' : 'indeterminate'"
+                                      [value]="job.progress"></mat-progress-bar>
+                    <div *ngIf="job.archive" class="source-maintenance-meta">
+                      <span>{{ job.archive.name }}</span>
+                      <span>{{ job.archive.entryCount }} files</span>
+                      <span>{{ formatBytes(job.archive.totalBytes) }}</span>
+                      <span *ngIf="job.importedPath">Staged at {{ job.importedPath }}</span>
+                    </div>
+                    <div *ngIf="job.error" class="source-sync-error">
+                      <mat-icon>error</mat-icon>{{ job.error }}
+                    </div>
+                    <div class="portable-warning" *ngFor="let warning of job.warnings">
+                      <mat-icon>info</mat-icon>{{ warning }}
+                    </div>
+                  </div>
+                </div>
+              </mat-card-content>
+            </mat-card>
+
             <div *ngIf="!activeFactSheet" class="empty-state">
               <mat-icon>dataset</mat-icon>
               <p>Select an active Fact Sheet to maintain connected sources.</p>

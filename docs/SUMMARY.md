@@ -15,6 +15,7 @@
   * [Ingestion Pipeline](concepts/ingestion-pipeline.md)
   * [Knowledge Graphs](concepts/knowledge-graphs.md)
   * [Fact Sheets](concepts/fact-sheets.md)
+  * [Portable Knowledge Bases](concepts/portable-knowledge-bases.md)
   * [Skills and Prompt Templates](concepts/skills-and-templates.md)
   * [Agents](concepts/agents.md)
   * [Code Projects](concepts/code-projects.md)

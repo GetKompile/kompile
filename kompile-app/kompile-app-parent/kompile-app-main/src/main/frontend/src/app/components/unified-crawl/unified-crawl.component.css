@@ -1135,6 +1135,36 @@
 .source-sync-message { display: flex; align-items: center; gap: 6px; margin-top: 7px; font-size: 12px; }
 .source-sync-message mat-icon, .source-sync-error mat-icon { font-size: 17px; width: 17px; height: 17px; }
 .source-sync-error { display: flex; gap: 6px; align-items: center; margin-top: 10px; color: var(--status-error-text); font-size: 12px; }
+.portable-kb-card { border-left-color: var(--status-info-icon, var(--color-primary)); }
+.portable-kb-header { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+.portable-kb-heading { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.portable-kb-heading > mat-icon { color: var(--color-primary); }
+.portable-kb-header label.disabled { opacity: .55; pointer-events: none; }
+.portable-preflight {
+  margin-top: 14px; padding: 12px; border: 1px solid var(--border-color);
+  border-radius: 6px; background: var(--bg-body);
+}
+.portable-preflight > div:first-child { display: flex; align-items: center; gap: 8px; }
+.portable-assets { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
+.portable-assets span {
+  padding: 2px 7px; border-radius: 10px; color: var(--status-info-text);
+  background: var(--status-info-bg); font-size: 10px; font-weight: 600;
+}
+.portable-warning {
+  display: flex; align-items: center; gap: 5px; margin-top: 7px;
+  color: var(--text-secondary); font-size: 11px;
+}
+.portable-warning mat-icon { font-size: 15px; width: 15px; height: 15px; }
+.portable-preflight-actions { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+.portable-preflight-actions span { color: var(--text-tertiary); font-size: 11px; }
+.portable-job-list { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
+.portable-job { padding: 10px; border: 1px solid var(--border-color); border-radius: 6px; }
+.portable-job-row { display: flex; align-items: center; gap: 9px; }
+.portable-job-row > mat-icon { color: var(--color-primary); }
+.portable-job-details { display: flex; flex: 1; flex-direction: column; min-width: 0; }
+.portable-job-details > div { display: flex; align-items: center; gap: 7px; }
+.portable-job-details > span { color: var(--text-tertiary); font-size: 11px; }
+.portable-job mat-progress-bar { margin-top: 8px; }
 @media (max-width: 800px) {
   .source-maintenance-row { align-items: flex-start; flex-wrap: wrap; }
   .source-maintenance-actions { width: 100%; justify-content: space-between; }
