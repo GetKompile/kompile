@@ -35,14 +35,16 @@ for d in "${BTDIRS[@]}"; do [[ -x $d/aapt2 && -x $d/apksigner ]] || continue
 [[ -n $AAPT2 && -n $APKSIGNER ]] || fail "aapt2/apksigner not found in one build-tools version"
 READELF=$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf
 [[ -x $READELF ]] || fail "llvm-readelf not found or not executable: $READELF"
+APKANALYZER=$ANDROID_SDK/cmdline-tools/latest/bin/apkanalyzer
+[[ -x $APKANALYZER ]] || fail "apkanalyzer not found or not executable: $APKANALYZER"
 
 CONTRACT=$TMP/contract
 cmake -DMODE=config -DINPUT="$CONFIG" -DVARIANT="$VARIANT" -DOUTPUT="$CONTRACT" -P "$VALIDATOR" >/dev/null
-declare APPLICATION PACKAGE_SUFFIX FLAVOR RUNTIME_AAR BACKEND GPU_TARGET MIN_SDK PROVIDER TARGET_PROFILE DSP_SERVICE REQUIRED_LIBS FORBIDDEN_LIBS
+declare APPLICATION PACKAGE_SUFFIX FLAVOR RUNTIME_AAR BACKEND GPU_TARGET RELEASE_COMPONENT RELEASE_PACKAGE_ROLE RELEASE_PLATFORM RELEASE_VARIANT MIN_SDK PROVIDER TARGET_PROFILE DSP_SERVICE REQUIRED_LIBS FORBIDDEN_LIBS
 while IFS='=' read -r k v; do case $k in
- APPLICATION|PACKAGE_SUFFIX|FLAVOR|RUNTIME_AAR|BACKEND|GPU_TARGET|MIN_SDK|PROVIDER|TARGET_PROFILE|DSP_SERVICE|REQUIRED_LIBS|FORBIDDEN_LIBS) printf -v "$k" %s "$v";;
+ APPLICATION|PACKAGE_SUFFIX|FLAVOR|RUNTIME_AAR|BACKEND|GPU_TARGET|RELEASE_COMPONENT|RELEASE_PACKAGE_ROLE|RELEASE_PLATFORM|RELEASE_VARIANT|MIN_SDK|PROVIDER|TARGET_PROFILE|DSP_SERVICE|REQUIRED_LIBS|FORBIDDEN_LIBS) printf -v "$k" %s "$v";;
  *) fail "unknown validator output: $k";; esac; done < "$CONTRACT"
-for k in APPLICATION PACKAGE_SUFFIX FLAVOR RUNTIME_AAR BACKEND MIN_SDK PROVIDER TARGET_PROFILE REQUIRED_LIBS FORBIDDEN_LIBS; do
+for k in APPLICATION PACKAGE_SUFFIX FLAVOR RUNTIME_AAR BACKEND RELEASE_COMPONENT RELEASE_PACKAGE_ROLE RELEASE_PLATFORM RELEASE_VARIANT MIN_SDK PROVIDER TARGET_PROFILE REQUIRED_LIBS FORBIDDEN_LIBS; do
  [[ -n ${!k:-} ]] || fail "validator omitted $k"; done
 
 NAMES=$TMP/apk.names
@@ -55,12 +57,15 @@ unzip -qq "$APK" -d "$TMP/apk" || fail "APK extraction failed"
 
 "$APKSIGNER" verify --verbose "$APK" >/dev/null || fail "APK signature audit failed"
 "$AAPT2" dump permissions "$APK" > "$TMP/permissions" || fail "APK permission audit failed"
-! grep -Fq android.permission.INTERNET "$TMP/permissions" || fail "offline APK requests INTERNET"
+grep -Fq android.permission.INTERNET "$TMP/permissions" ||
+  fail "APK cannot resolve public Hugging Face repositories without INTERNET"
 "$AAPT2" dump badging "$APK" > "$TMP/badging" || fail "APK identity audit failed"
 "$AAPT2" dump xmltree --file AndroidManifest.xml "$APK" > "$TMP/manifest-tree" ||
   fail "APK manifest audit failed"
 grep -Eq 'extractNativeLibs[^=]*=true' "$TMP/manifest-tree" ||
   fail "APK does not extract its bundled native runtime"
+grep -Eq 'usesCleartextTraffic[^=]*=false' "$TMP/manifest-tree" ||
+  fail "APK permits cleartext traffic despite its public-HTTPS discovery and transfer contract"
 if [[ $VARIANT == hexagon ]]; then
   grep -Fq 'libcdsprpc.so' "$TMP/manifest-tree" ||
     fail "Hexagon APK does not declare the system FastRPC transport"
@@ -104,6 +109,16 @@ is_hexagon_dsp_system_library(){
  return 1
 }
 
+# These libraries are the explicit provider-independent SDX GGUF CPU route. Their
+# names/symbols may mention ND4J CPU or OpenBLAS; no provider library receives that
+# exemption, and every dependency still has to be packaged and Android/AArch64-clean.
+is_raw_sdx_cpu_library(){
+ case "$1" in
+  libnd4jcpu.so|libjnind4jcpu.so|libjniopenblas*.so|libopenblas*.so) return 0;;
+ esac
+ return 1
+}
+
 audit_elf(){ local b=$1 f=$2 h d s needed undefined dependency_surface dep
  h=$("$READELF" -h -l "$f") || fail "ELF header audit failed: $b"
  d=$("$READELF" -d "$f") || fail "ELF dynamic audit failed: $b"
@@ -138,9 +153,12 @@ audit_elf(){ local b=$1 f=$2 h d s needed undefined dependency_surface dep
  needed=$(grep -oE 'Shared library: \[[^]]+\]' <<<"$d"|tr '\n' ' '||true)
  undefined=$(grep -E '[[:space:]]UND[[:space:]]' <<<"$s" || true)
  dependency_surface=$(printf '%s\n%s\n%s' "$h" "$d" "$undefined"|tr '[:upper:]' '[:lower:]')
- # Audit runtime dependencies and unresolved imports. Public compatibility symbols
- # may retain backend names even when that backend is compiled out.
- for x in openblas gfortran quadmath nd4jcpu sdx_cpu ld-linux linuxbrew; do ! grep -Fq "$x" <<<"$dependency_surface" || fail "forbidden ELF dependency $x in $b"; done
+ # Audit runtime dependencies and unresolved imports. Only the explicitly packaged
+ # raw-SDX CPU companion libraries may expose ND4J CPU/OpenBLAS names.
+ for x in gfortran quadmath sdx_cpu ld-linux linuxbrew; do ! grep -Fq "$x" <<<"$dependency_surface" || fail "forbidden ELF dependency $x in $b"; done
+ if ! is_raw_sdx_cpu_library "$b"; then
+  for x in openblas nd4jcpu; do ! grep -Fq "$x" <<<"$dependency_surface" || fail "forbidden provider dependency $x in $b"; done
+ fi
  while IFS= read -r dep; do
    [[ -z $dep ]] && continue
    is_android_system_library "$dep" && continue
@@ -163,6 +181,12 @@ audit_elf(){ local b=$1 f=$2 h d s needed undefined dependency_surface dep
    grep -Fq libneuralnetworks.so <<<"$needed" || fail "NNAPI system dependency missing"
    grep -Eq 'ANeuralNetworks[A-Za-z0-9_]+' <<<"$s" || fail "NNAPI symbols missing"
  fi
+ if [[ $b == libsdx_llm.so ]]; then
+  for symbol in sdxLlmCreateRuntime sdxLlmLoadModel sdxLlmRenderChatPrompt sdxLlmGenerate sdxLlmUnloadModel sdxLlmDestroyRuntime; do
+   grep -Eq "[[:space:]]$symbol(@[^[:space:]]*)?$" <<<"$s" ||
+    fail "libsdx_llm.so missing direct GGUF execution export: $symbol"
+  done
+ fi
 }
 for b in "${!LIBS[@]}"; do audit_elf "$b" "${LIBS[$b]}"; done
 
@@ -172,27 +196,64 @@ cmake -DMODE=assets -DINPUT="$ASSETS" -DVARIANT="$VARIANT" -DEXPECTED_BACKEND="$
 grep -Eq '^assets/.+\.kgraph$' "$NAMES" || fail "graph AOT asset missing"
 
 case $VARIANT in tensorG3) AD=tensor-g3;; tensorG5) AD=tensor-g5;; *) AD=$VARIANT;; esac
+CDIR=$(cd "$(dirname "$CONFIG")" && pwd -P)
 if [[ -n $RUNTIME_AAR_OVERRIDE ]]; then
  AAR=$RUNTIME_AAR_OVERRIDE
 else
- CDIR=$(cd "$(dirname "$CONFIG")" && pwd -P)
  AAR=$CDIR/app/libs/$AD/$RUNTIME_AAR
 fi
+# Gradle refreshes the provider-independent SDX Java and its paired tokenizer
+# libraries from canonical Maven artifacts before the AAR reaches the APK, because
+# the provider AARs come out of separate native builds and a provider whose
+# natives were not rebuilt otherwise drags a stale copy of that shared API along.
+# The APK is assembled from that normalized AAR, so it is the one to audit: the
+# byte-for-byte native comparison below would otherwise flag the refreshed
+# tokenizer libraries as a mismatch against the provider's original payload.
+NORMALIZED_AAR=$CDIR/app/build/sdx-normalized-aar/$AD/sdx-runtime-$AD.aar
+[[ -s $NORMALIZED_AAR ]] && AAR=$NORMALIZED_AAR
 [[ -s $AAR ]] || fail "configured runtime AAR not found: $AAR"
 AN=$TMP/aar.names; unzip -Z1 "$AAR" > "$AN" || fail "bad runtime AAR"
 [[ $(wc -l < "$AN") -eq $(sort -u "$AN"|wc -l) ]] || fail "AAR has duplicate members"
-for e in AndroidManifest.xml binding.json classes.jar; do grep -Fxq "$e" "$AN" || fail "AAR missing $e"; unzip -p "$AAR" "$e" > "$TMP/$e"; [[ -s $TMP/$e ]] || fail "AAR has empty $e"; done
-cmake -DMODE=binding -DINPUT="$TMP/binding.json" -DVARIANT="$VARIANT" -P "$VALIDATOR" >/dev/null
+for e in AndroidManifest.xml binding.json provider.json classes.jar; do grep -Fxq "$e" "$AN" || fail "AAR missing $e"; unzip -p "$AAR" "$e" > "$TMP/$e"; [[ -s $TMP/$e ]] || fail "AAR has empty $e"; done
+cmake -DMODE=binding -DINPUT="$TMP/binding.json" -DPROVIDER_INPUT="$TMP/provider.json" -DVARIANT="$VARIANT" -P "$VALIDATOR" >/dev/null
 unzip -Z1 "$TMP/classes.jar" > "$TMP/classes.names" || fail "bad classes.jar"
-CLASSES=(org/nd4j/dsp/model/SdxModelCache.class org/nd4j/dsp/model/SdxTargetProfile.class)
+# Every entry the application resolves against. A provider AAR that predates a
+# change to the shared SDX API otherwise ships a payload that passes every native
+# check and still cannot be compiled against, with nothing in the Kotlin errors
+# pointing at the AAR. Nested classes are single-quoted so the shell leaves the
+# JVM's `$` separator alone.
+CLASSES=(org/nd4j/dsp/model/HuggingFaceGgmlResolver.class 'org/nd4j/dsp/model/HuggingFaceGgmlResolver$Candidate.class' 'org/nd4j/dsp/model/HuggingFaceGgmlResolver$Discovery.class' 'org/nd4j/dsp/model/HuggingFaceGgmlResolver$Kind.class' 'org/nd4j/dsp/model/HuggingFaceGgmlResolver$Reference.class' 'org/nd4j/dsp/model/HuggingFaceGgmlResolver$RepositoryFile.class' org/nd4j/dsp/model/SdxCompiledModel.class org/nd4j/dsp/model/SdxModelCache.class org/nd4j/dsp/model/SdxTargetProfile.class org/nd4j/dsp/model/SdxTextModelAssets.class)
 if [[ $VARIANT == tensorG5 ]]; then CLASSES+=(org/nd4j/dsp/runtime/litertlm/SdxLiteRtLmChatSession.class org/nd4j/dsp/runtime/presets/LiteRtLmPresets.class org/nd4j/dsp/runtime/litertlm/bindings/LiteRtLmNative.class)
-else CLASSES+=(org/nd4j/dsp/runtime/SdxRuntime.class org/nd4j/dsp/runtime/SdxTextSession.class org/nd4j/dsp/runtime/presets/SdxRuntimePresets.class org/nd4j/dsp/runtime/bindings/SdxNative.class org/eclipse/deeplearning4j/tokenizers/NativeTokenizer.class org/eclipse/deeplearning4j/tokenizers/presets/TokenizersPresets.class org/eclipse/deeplearning4j/tokenizers/presets/TokenizersHelper.class org/eclipse/deeplearning4j/tokenizers/bindings/TokenizersNative.class); fi
+else CLASSES+=(org/nd4j/dsp/runtime/SdxRuntime.class org/nd4j/dsp/runtime/SdxTextSession.class org/nd4j/dsp/runtime/presets/SdxRuntimePresets.class org/nd4j/dsp/runtime/bindings/SdxNative.class org/eclipse/deeplearning4j/tokenizers/NativeTokenizer.class 'org/eclipse/deeplearning4j/tokenizers/NativeTokenizer$ChatMessage.class' org/eclipse/deeplearning4j/tokenizers/presets/TokenizersPresets.class org/eclipse/deeplearning4j/tokenizers/presets/TokenizersHelper.class org/eclipse/deeplearning4j/tokenizers/bindings/TokenizersNative.class); fi
 for c in "${CLASSES[@]}"; do grep -Fxq "$c" "$TMP/classes.names" || fail "AAR missing API class: $c"; done
 mapfile -t AE < <(grep -E '^jni/[^/]+/[^/]+\.so$' "$AN"||true); [[ ${#AE[@]} -gt 0 ]] || fail "AAR has no native libs"
 declare -A AL=(); for e in "${AE[@]}"; do [[ $e == jni/arm64-v8a/* ]] || fail "AAR has non-arm64 ABI"; AL[${e##*/}]=1; done
-for l in "${REQUIRED[@]}"; do [[ -n ${AL[$l]:-} ]] || fail "AAR missing $l"; done
-if [[ $VARIANT == tensorG5 ]]; then [[ -n ${AL[libjnilitertlm.so]:-} ]] || fail "AAR missing libjnilitertlm.so"
-else for l in libjnisdx.so libjnitokenizers.so libtokenizers_wrapper.so libtokenizers_ffi.so; do [[ -n ${AL[$l]:-} ]] || fail "AAR missing $l"; done; fi
+# Provider-independent application runtimes are staged outside the provider AAR:
+# libsdx_llm comes from DL4J's explicit android-aot SDK and libjnidispatch from
+# the Android JNA AAR. They remain mandatory in the final APK at line 87.
+for l in "${REQUIRED[@]}"; do
+ case "$l" in libsdx_llm.so|libjnidispatch.so) continue;; esac
+ [[ -n ${AL[$l]:-} ]] || fail "AAR missing $l"
+done
+if [[ $VARIANT == tensorG5 ]]; then
+ [[ -n ${AL[libjnilitertlm.so]:-} ]] || fail "AAR missing libjnilitertlm.so"
+else
+ for l in libjnisdx.so libjnitokenizers.so libtokenizers_wrapper.so libtokenizers_ffi.so; do
+  [[ -n ${AL[$l]:-} ]] || fail "AAR missing $l"
+ done
+ # Import success depends on native Hugging Face chat-template rendering, not
+ # merely on carrying tokenizer filenames or Java facade classes.
+ for tokenizer_contract in \
+  libtokenizers_wrapper.so:apply_chat_template \
+  libtokenizers_ffi.so:ffi_tokenizer_apply_chat_template; do
+  tokenizer_library=${tokenizer_contract%%:*}
+  tokenizer_symbol=${tokenizer_contract#*:}
+  tokenizer_symbols=$("$READELF" --dyn-syms --wide "${LIBS[$tokenizer_library]}") ||
+   fail "cannot inspect tokenizer contract library: $tokenizer_library"
+  grep -Eq "[[:space:]]$tokenizer_symbol(@[^[:space:]]*)?$" <<<"$tokenizer_symbols" ||
+   fail "APK tokenizer library $tokenizer_library missing required export: $tokenizer_symbol"
+ done
+fi
 for l in "${!AL[@]}"; do
  [[ -n ${LIBS[$l]:-} ]] || fail "AAR native library not packaged: $l"
  AH=$(unzip -p "$AAR" "jni/arm64-v8a/$l" | sha256sum) || fail "cannot hash AAR native library: $l"
@@ -204,14 +265,28 @@ done
 mapfile -t DEX < <(find "$TMP/apk" -maxdepth 1 -type f -name 'classes*.dex' -print|sort)
 [[ ${#DEX[@]} -gt 0 ]] || fail "APK has no DEX"
 "$DEXDUMP" -d "${DEX[@]}" > "$TMP/dexdump" || fail "DEX audit failed"
-for v in "$FLAVOR" "$PROVIDER" "$TARGET_PROFILE"; do grep -Fq "$v" "$TMP/dexdump" || fail "missing flavor/provider metadata: $v"; done
-grep -Fq DEVICE_ONLY "$TMP/dexdump" || fail "missing DEVICE_ONLY metadata"
+BUILD_CONFIG=$("$APKANALYZER" dex code --class "$APPLICATION.BuildConfig" "$APK") ||
+  fail "cannot decompile application BuildConfig"
+for FIELD in \
+  ".field public static final APPLICATION_ID:Ljava/lang/String; = \"$PACKAGE\"" \
+  ".field public static final FLAVOR:Ljava/lang/String; = \"$FLAVOR\"" \
+  ".field public static final ACCELERATOR_PROVIDER:Ljava/lang/String; = \"$PROVIDER\"" \
+  ".field public static final SDX_TARGET_PROFILE:Ljava/lang/String; = \"$TARGET_PROFILE\"" \
+  ".field public static final DEVICE_ONLY:Z = true"; do
+  grep -Fxq "$FIELD" <<<"$BUILD_CONFIG" ||
+    fail "BuildConfig field is missing or incorrect: $FIELD"
+done
 
 # A complete AAR is insufficient if D8 never carried its loader hierarchy into
 # the application. Audit the actual APK DEX closure that ART will resolve.
 DEX_CLASSES=(
+  "Lai/kompile/chat/local/android/acquisition/HuggingFaceGgmlAcquisition;"
   "Lai/kompile/chat/local/android/graph/KompileGraphNative;"
+  "Lai/kompile/chat/local/android/model/SdxRawGgufChatSession;"
+  "Lai/kompile/chat/local/android/model/SdxRawGgufChatSession\$SdxLlmBinding;"
+  "Lcom/sun/jna/Native;"
   "Lorg/bytedeco/javacpp/Loader;"
+  "Lorg/nd4j/dsp/model/HuggingFaceGgmlResolver;"
 )
 if [[ $VARIANT == tensorG5 ]]; then
   DEX_CLASSES+=(
@@ -231,6 +306,72 @@ fi
 for descriptor in "${DEX_CLASSES[@]}"; do
   grep -Fq "$descriptor" "$TMP/dexdump" ||
     fail "APK DEX missing runtime loader class: $descriptor"
+done
+
+# INTERNET exists only for bounded public Hugging Face discovery and app-owned model
+# transfer. Audit every direct reference from application code to common in-process
+# network clients; no other application component may open a connection.
+NETWORK_REFERENCE_TYPES=(
+  java.net.HttpURLConnection
+  java.net.URL
+  java.net.URLConnection
+  javax.net.ssl.HttpsURLConnection
+  java.net.Socket
+  java.net.ServerSocket
+  java.net.DatagramSocket
+  java.net.MulticastSocket
+  java.nio.channels.SocketChannel
+  java.nio.channels.ServerSocketChannel
+  java.nio.channels.DatagramChannel
+  android.app.DownloadManager
+  okhttp3.OkHttpClient
+  retrofit2.Retrofit
+  android.webkit.WebView
+)
+for network_type in "${NETWORK_REFERENCE_TYPES[@]}"; do
+  NETWORK_REFERENCE_TREE=$("$APKANALYZER" dex reference-tree \
+    --references-to "$network_type" "$APK") ||
+    fail "cannot audit APK references to $network_type"
+  if [[ $network_type == java.net.HttpURLConnection ]]; then
+    grep -Eq '^ ai[.]kompile[.]chat[.]local[.]android[.]acquisition[.]HuggingFaceGgmlAcquisition' \
+      <<<"$NETWORK_REFERENCE_TREE" ||
+      fail "APK is missing its bounded Hugging Face HTTP acquisition path"
+  fi
+  while IFS= read -r direct_reference; do
+    case "$direct_reference" in
+      ' ai.kompile.chat.local.android.acquisition.HuggingFaceGgmlAcquisition '*) ;;
+      ' ai.kompile.chat.local.android.acquisition.HuggingFaceGgmlAcquisition$'*) ;;
+      *) fail "network-capable application code escaped the Hugging Face allowlist: $direct_reference";;
+    esac
+  done < <(grep -E '^ ai[.]kompile[.]chat[.]local[.]android[.]' \
+    <<<"$NETWORK_REFERENCE_TREE" || true)
+done
+
+HF_ACQUISITION_CODE=$("$APKANALYZER" dex code \
+  --class ai.kompile.chat.local.android.acquisition.HuggingFaceGgmlAcquisition "$APK") ||
+  fail "cannot decompile Hugging Face acquisition boundary"
+for literal in '"huggingface.co"' '"/api/models/"' 'Ljava/net/HttpURLConnection;'; do
+  grep -Fq "$literal" <<<"$HF_ACQUISITION_CODE" ||
+    fail "Hugging Face acquisition boundary is missing required DEX contract: $literal"
+done
+HF_RESOLVER_CODE=$("$APKANALYZER" dex code \
+  --class org.nd4j.dsp.model.HuggingFaceGgmlResolver "$APK") ||
+  fail "cannot decompile Hugging Face repository resolver"
+grep -Fq '"https://huggingface.co/api/models/"' <<<"$HF_RESOLVER_CODE" ||
+  fail "Hugging Face resolver DEX is missing its public model API origin"
+
+# The chat core also carries desktop routes this device build must not ship.
+# Android's guarded app-local JNA bridge above is required; the core's desktop SDX
+# facade, remote HTTP client, and Java 11 HTTP stack must still be absent.
+FORBIDDEN_DEX_CLASSES=(
+  "Lai/kompile/chat/local/sdx/SdxChatModel;"
+  "Lai/kompile/chat/local/sdx/SdxLlmAbi;"
+  "Lai/kompile/chat/local/RemoteChatModel;"
+  "Ljava/net/http/"
+)
+for descriptor in "${FORBIDDEN_DEX_CLASSES[@]}"; do
+  ! grep -Fq "$descriptor" "$TMP/dexdump" ||
+    fail "host-only class reached the APK DEX: $descriptor"
 done
 
 ASH=$(sha256sum "$APK"); ASH=${ASH%% *}; RSH=$(sha256sum "$AAR"); RSH=${RSH%% *}

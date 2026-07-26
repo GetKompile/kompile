@@ -1,0 +1,34 @@
+/*
+ * Karma config for the crawl manager app's specs. `exclude` is this app's share of the monolith's
+ * known-broken spec list, split out of the old workspace-root tsconfig.spec.json.
+ *
+ * Keep it in step with this project's `test.options.exclude` in angular.json — karma discovers
+ * specs with its own glob, so a file excluded only here still loads and then fails with
+ * "missing from the TypeScript compilation".
+ */
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "outDir": "../../out-tsc/spec-crawl",
+    "types": [
+      "jasmine"
+    ]
+  },
+  "files": [
+    "../kompile-ui-shared/src/polyfills.ts"
+  ],
+  "include": [
+    "src/**/*.spec.ts",
+    "src/**/*.d.ts",
+    "../kompile-ui-shared/src/**/*.d.ts"
+  ],
+  "exclude": [
+    "src/app/components/orchestrator-hub/components/audit-log-viewer/audit-log-viewer.component.spec.ts",
+    "src/app/components/orchestrator-hub/components/output-classifier-config/output-classifier-config.component.spec.ts",
+    "src/app/components/orchestrator-hub/components/state-machine-editor/state-machine-editor.component.spec.ts",
+    "src/app/components/process-engine/graph-node-popover.component.spec.ts",
+    "src/app/components/index-browser/index-browser.component.spec.ts",
+    "src/app/components/chunk-manager/chunk-manager.component.spec.ts",
+    "src/app/components/mcp-config-manager/mcp-config-manager.component.spec.ts"
+  ]
+}

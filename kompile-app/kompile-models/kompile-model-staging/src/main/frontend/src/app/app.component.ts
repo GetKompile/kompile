@@ -17,6 +17,7 @@
 import { Component, DestroyRef, inject } from '@angular/core';
 import { BreakpointObserver } from '@angular/cdk/layout';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { StagingPairingService } from './services/staging-pairing.service';
 
 @Component({
   selector: 'app-root',
@@ -27,10 +28,17 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 export class AppComponent {
   title = 'Kompile Model Staging';
   isMobile = false;
+  pairingPanelOpen = false;
+  pairingRequired = false;
+  pairingTokenInput = '';
+  pairingError = '';
 
   private readonly destroyRef = inject(DestroyRef);
 
-  constructor(breakpointObserver: BreakpointObserver) {
+  constructor(
+    breakpointObserver: BreakpointObserver,
+    readonly pairing: StagingPairingService
+  ) {
     const mobileQuery = '(max-width: 768px)';
     this.isMobile = breakpointObserver.isMatched(mobileQuery);
 
@@ -39,6 +47,40 @@ export class AppComponent {
       .subscribe(result => {
         this.isMobile = result.matches;
       });
+
+    pairing.pairingRequired$
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe(required => {
+        this.pairingRequired = required;
+        if (required) {
+          this.pairingPanelOpen = true;
+        }
+      });
+  }
+
+  get pairingActive(): boolean {
+    return this.pairing.hasToken;
+  }
+
+  togglePairingPanel(): void {
+    this.pairingPanelOpen = !this.pairingPanelOpen;
+    this.pairingError = '';
+  }
+
+  savePairing(): void {
+    if (!this.pairing.pair(this.pairingTokenInput)) {
+      this.pairingError = 'Enter the non-empty token printed by the staging server.';
+      return;
+    }
+    this.pairingTokenInput = '';
+    this.pairingError = '';
+    this.pairingPanelOpen = false;
+  }
+
+  clearPairing(): void {
+    this.pairing.clear();
+    this.pairingTokenInput = '';
+    this.pairingError = '';
   }
 
   navItems = [

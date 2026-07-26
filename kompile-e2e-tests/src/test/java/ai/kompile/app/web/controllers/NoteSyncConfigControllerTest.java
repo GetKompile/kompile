@@ -44,8 +44,7 @@ class NoteSyncConfigControllerTest {
 
     @BeforeEach
     void setUp() {
-        controller = new NoteSyncConfigController();
-        ReflectionTestUtils.setField(controller, "configService", configService);
+        controller = new NoteSyncConfigController(configService);
     }
 
     private NoteSyncConfig makeConfig() {
@@ -57,22 +56,28 @@ class NoteSyncConfigControllerTest {
         NoteSyncConfig config = makeConfig();
         when(configService.getConfiguration()).thenReturn(config);
 
-        ResponseEntity<NoteSyncConfig> resp = controller.getConfig();
+        ResponseEntity<NoteSyncConfigController.NoteSyncConfigResponse> resp =
+                controller.getConfig();
 
         assertEquals(HttpStatus.OK, resp.getStatusCode());
-        assertSame(config, resp.getBody());
+        assertNotNull(resp.getBody());
+        assertEquals(config.getNotionEnabled(), resp.getBody().notionEnabled());
     }
 
     @Test
     void updateConfig_returnsUpdatedConfig() {
-        NoteSyncConfig update = makeConfig();
+        NoteSyncConfigController.NoteSyncConfigUpdateRequest update =
+                new NoteSyncConfigController.NoteSyncConfigUpdateRequest(
+                        false, null, null, true, false, true, 30_000L);
         NoteSyncConfig updated = makeConfig();
         when(configService.updateConfiguration(any())).thenReturn(updated);
 
-        ResponseEntity<NoteSyncConfig> resp = controller.updateConfig(update);
+        ResponseEntity<NoteSyncConfigController.NoteSyncConfigResponse> resp =
+                controller.updateConfig(update);
 
         assertEquals(HttpStatus.OK, resp.getStatusCode());
-        assertSame(updated, resp.getBody());
+        assertNotNull(resp.getBody());
+        verify(configService).updateConfiguration(any(NoteSyncConfig.class));
     }
 
     @Test
@@ -80,10 +85,11 @@ class NoteSyncConfigControllerTest {
         NoteSyncConfig reset = makeConfig();
         when(configService.resetConfiguration()).thenReturn(reset);
 
-        ResponseEntity<NoteSyncConfig> resp = controller.resetConfig();
+        ResponseEntity<NoteSyncConfigController.NoteSyncConfigResponse> resp =
+                controller.resetConfig();
 
         assertEquals(HttpStatus.OK, resp.getStatusCode());
-        assertSame(reset, resp.getBody());
+        assertNotNull(resp.getBody());
         verify(configService).resetConfiguration();
     }
 }

@@ -24,6 +24,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -36,7 +37,7 @@ import java.util.Map;
 public class DownloadRequest {
 
     /**
-     * Source type: "huggingface", "github", "http".
+     * Source type: "huggingface", "https-components", "github", "http".
      */
     private String source;
 
@@ -76,9 +77,40 @@ public class DownloadRequest {
     private Map<String, String> files = new HashMap<>();
 
     /**
-     * Optional revision/branch/tag.
+     * Typed SDX text-model asset declaration. This is authoritative when present;
+     * {@link #files} remains available for non-text and legacy callers.
+     */
+    private TextModelAssetMap textAssets;
+
+    /**
+     * Explicit public HTTPS locations for individual text-model assets. These
+     * either override repository discovery or form the complete input for the
+     * repository-free {@code https-components} source while preserving the same
+     * canonical SDZ staging path.
+     */
+    private TextModelAssetUrlMap textAssetUrls;
+
+    /**
+     * Optional revision/branch/tag. Hugging Face staging replaces this with the
+     * immutable commit SHA before any model asset is downloaded.
      */
     private String revision;
+
+    /**
+     * Original branch/tag requested before Hugging Face commit resolution.
+     */
+    private String requestedRevision;
+
+    /**
+     * Canonical, credential-free source reference retained for project provenance.
+     */
+    private String sourceReference;
+
+    /**
+     * Credential-free resolved asset provenance keyed by TextModelAssetMap keys.
+     */
+    @Builder.Default
+    private Map<String, String> sourceAssetProvenance = new LinkedHashMap<>();
 
     /**
      * Optional authentication token.
@@ -109,7 +141,7 @@ public class DownloadRequest {
     private String targetProfile;
 
     /**
-     * SDX quantization intent: "none" or "int8-per-channel".
+     * SDX quantization intent: "none" or target-optimized "int8".
      */
     @Builder.Default
     private String quantizationProfile = "none";
@@ -125,6 +157,35 @@ public class DownloadRequest {
     public DownloadRequest addFile(String key, String path) {
         files.put(key, path);
         return this;
+    }
+
+    /**
+     * Resolve the typed text assets over the legacy generic map.
+     */
+    public TextModelAssetMap effectiveTextAssets() {
+        return textAssets != null ? textAssets : TextModelAssetMap.fromFileMap(files);
+    }
+
+    /**
+     * Resolve all requested files while giving canonical text assets precedence.
+     */
+    public Map<String, String> effectiveFiles() {
+        Map<String, String> effective = new LinkedHashMap<>();
+        if (files != null) {
+            effective.putAll(files);
+        }
+        if (textAssets != null) {
+            effective.putAll(textAssets.toFileMap());
+        }
+        return effective;
+    }
+
+    /**
+     * Return credential-free asset provenance, including for callers that
+     * deserialize an explicit null instead of using the Lombok builder default.
+     */
+    public Map<String, String> effectiveSourceAssetProvenance() {
+        return sourceAssetProvenance == null ? Map.of() : sourceAssetProvenance;
     }
 
     /**

@@ -64,6 +64,13 @@ public class ProjectAutoRegistrar {
         try {
             String url = appUrl;
             if (url == null || url.isBlank()) {
+                // Any persona will do, which is why a fixed-base client is used below rather than
+                // KompileHttpClient.routed(). Both paths this method calls come from library modules
+                // — /api/code-projects from kompile-code-indexer, /api/chat-history from
+                // kompile-chat-history — so they mount on the admin console, chat and the crawl
+                // manager alike (verified 200 on :8080, :8081 and :8082), and all three read one
+                // project's data. Whichever instance discovery answers with can service the
+                // registration, and the endpoint is idempotent besides.
                 url = InstanceDiscovery.discover();
             }
             if (url == null) {

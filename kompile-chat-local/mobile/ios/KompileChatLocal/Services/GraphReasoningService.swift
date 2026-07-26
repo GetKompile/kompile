@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 
 /// Wraps the kompile_reasoning C library (kgr_* ABI).
 ///

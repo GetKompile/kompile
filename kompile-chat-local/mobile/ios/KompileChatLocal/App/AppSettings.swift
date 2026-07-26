@@ -5,20 +5,66 @@ import SwiftUI
 /// Shared across views as an EnvironmentObject.
 final class AppSettings: ObservableObject {
 
-    // ── Remote endpoint ───────────────────────────────────────────────────
-    @AppStorage("remoteBaseUrl")
-    var remoteBaseUrl: String = "http://localhost:8080"
+    // ── Settings migrations ─────────────────────────────────────────────────
+    // Versioned cleanup keeps endpoint credentials from surviving an upgrade from
+    // the former remote-fallback build. These keys are intentionally migration-only.
+    private static let migrationVersionKey = "settingsMigration.localOnly"
+    private static let currentMigrationVersion = 1
+    private static let legacyRemoteKeys = [
+        "remoteBaseUrl",
+        "remoteModel",
+        "remoteApiKey"
+    ]
 
-    @AppStorage("remoteModel")
-    var remoteModel: String = "gpt-4o-mini"
-
-    @AppStorage("remoteApiKey")
-    var remoteApiKey: String = ""
+    init(defaults: UserDefaults = .standard) {
+        guard defaults.integer(forKey: Self.migrationVersionKey) < Self.currentMigrationVersion else {
+            return
+        }
+        Self.legacyRemoteKeys.forEach { key in
+            defaults.removeObject(forKey: key)
+        }
+        defaults.set(Self.currentMigrationVersion, forKey: Self.migrationVersionKey)
+    }
 
     // ── Local model ───────────────────────────────────────────────────────
-    /// Absolute path to the .gguf / safetensors model file inside the app container.
+    /// Runtime paths are always app-owned. Canonical SDZ imports are resolved through
+    /// SdxModelCache; manual GGUF/GGML imports keep every required sidecar together.
     @AppStorage("localModelPath")
     var localModelPath: String = ""
+
+    @AppStorage("localTokenizerPath")
+    var localTokenizerPath: String = ""
+
+    @AppStorage("localTokenizerConfigPath")
+    var localTokenizerConfigPath: String = ""
+
+    @AppStorage("localTextGenerationConfigPath")
+    var localTextGenerationConfigPath: String = ""
+
+    @AppStorage("localModelConfigPath")
+    var localModelConfigPath: String = ""
+
+    @AppStorage("localChatTemplatePath")
+    var localChatTemplatePath: String = ""
+
+    @AppStorage("localGenerationConfigPath")
+    var localGenerationConfigPath: String = ""
+
+    @AppStorage("localSourceArchivePath")
+    var localSourceArchivePath: String = ""
+
+    @AppStorage("localModelSourceKind")
+    var localModelSourceKind: String = ""
+
+    @AppStorage("localTargetProfile")
+    var localTargetProfile: String = ""
+
+    @AppStorage("localModelManifestPath")
+    var localModelManifestPath: String = ""
+
+    /// Staging base only. Repository/component inputs and all credentials stay transient.
+    @AppStorage("modelStagingBaseUrl")
+    var modelStagingBaseUrl: String = ""
 
     // ── Graph (.kgraph file) ──────────────────────────────────────────────
     /// Absolute path to the .kgraph file inside the app container.
@@ -43,18 +89,71 @@ final class AppSettings: ObservableObject {
 
     // ── Derived helpers ───────────────────────────────────────────────────
 
-    /// True when a local model path has been configured.
+    /// A path alone is deliberately insufficient: chat needs tokenizer/config metadata.
     var hasLocalModel: Bool {
-        !localModelPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        configuredModelBundle != nil
     }
 
-    /// True when a remote endpoint has been configured.
-    var hasRemoteEndpoint: Bool {
-        !remoteBaseUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    var configuredModelBundle: LocalModelBundle? {
+        guard let sourceKind = LocalModelSourceKind(rawValue: localModelSourceKind),
+              !localModelPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !localTokenizerPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !localTokenizerConfigPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !localTargetProfile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !localTextGenerationConfigPath.isEmpty || !localModelConfigPath.isEmpty else {
+            return nil
+        }
+        return LocalModelBundle(
+            sourceKind: sourceKind,
+            targetProfile: localTargetProfile,
+            modelPath: localModelPath,
+            tokenizerPath: localTokenizerPath,
+            tokenizerConfigPath: localTokenizerConfigPath,
+            textGenerationConfigPath: localTextGenerationConfigPath.nilIfBlank,
+            modelConfigPath: localModelConfigPath.nilIfBlank,
+            chatTemplatePath: localChatTemplatePath.nilIfBlank,
+            generationConfigPath: localGenerationConfigPath.nilIfBlank,
+            sourceArchivePath: localSourceArchivePath.nilIfBlank
+        )
+    }
+
+    func applyLocalModel(_ bundle: LocalModelBundle, manifestPath: String) {
+        localModelPath = bundle.modelPath
+        localTokenizerPath = bundle.tokenizerPath
+        localTokenizerConfigPath = bundle.tokenizerConfigPath
+        localTextGenerationConfigPath = bundle.textGenerationConfigPath ?? ""
+        localModelConfigPath = bundle.modelConfigPath ?? ""
+        localChatTemplatePath = bundle.chatTemplatePath ?? ""
+        localGenerationConfigPath = bundle.generationConfigPath ?? ""
+        localSourceArchivePath = bundle.sourceArchivePath ?? ""
+        localModelSourceKind = bundle.sourceKind.rawValue
+        localTargetProfile = bundle.targetProfile
+        localModelManifestPath = manifestPath
+    }
+
+    func clearLocalModel() {
+        localModelPath = ""
+        localTokenizerPath = ""
+        localTokenizerConfigPath = ""
+        localTextGenerationConfigPath = ""
+        localModelConfigPath = ""
+        localChatTemplatePath = ""
+        localGenerationConfigPath = ""
+        localSourceArchivePath = ""
+        localModelSourceKind = ""
+        localTargetProfile = ""
+        localModelManifestPath = ""
     }
 
     /// True when a .kgraph file path has been configured.
     var hasKgraph: Bool {
         !kgraphPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+}
+
+private extension String {
+    var nilIfBlank: String? {
+        let value = trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
     }
 }

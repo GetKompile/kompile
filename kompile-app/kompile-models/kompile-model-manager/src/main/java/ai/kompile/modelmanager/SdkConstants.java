@@ -178,12 +178,19 @@ public class SdkConstants {
         return DEFAULT_SDX_SDK_BASE_URL;
     }
 
+    /** Returns the canonical schema-v1 manifest URL for an SDX SDK release. */
+    public static String getSdxManifestUrl(String version, String baseUrl) {
+        if (version == null) version = DEFAULT_SDX_SDK_VERSION;
+        if (baseUrl == null) baseUrl = resolveBaseUrl();
+        return sdxReleaseBaseUrl(version, baseUrl) + SdxSdkManifest.FILE_NAME;
+    }
+
     /**
      * Resolves the effective base URL for kompile-reasoning (kgr) artifacts from
      * environment variable, system property, or default.
      *
      * <p>Tag family decision (2026-07-12): separate {@code kgr-v{v}} tags in the kompile
-     * GitHub repo — decouples from dl4j's {@code sdx-v{v}} cadence.</p>
+     * GitHub repo — decouples from dl4j's {@code sdk-v{v}} cadence.</p>
      */
     public static String resolveKgrBaseUrl() {
         String envUrl = System.getenv(ENV_KGR_SDK_BASE_URL);
@@ -255,41 +262,29 @@ public class SdkConstants {
     }
 
     /**
-     * Creates an SdkDescriptor for the SDX Runtime with all known platform artifacts.
+     * Compatibility facade for callers that still pass an {@link SdkDescriptor} to
+     * {@link KompileModelManager#downloadSdk(SdkDescriptor, String)}. Canonical SDX
+     * artifacts are manifest-defined, so this descriptor deliberately contains no
+     * synthesized platform entries or filenames.
+     *
+     * @deprecated use {@link KompileModelManager#downloadSdxSdk(String, String, String, String, String, String)}
      */
+    @Deprecated
     public static SdkDescriptor createSdxRuntimeDescriptor(String version, String baseUrl) {
         if (version == null) version = DEFAULT_SDX_SDK_VERSION;
         if (baseUrl == null) baseUrl = resolveBaseUrl();
 
         String sdkId = "sdx-runtime";
-        String versionUrl = baseUrl.endsWith("/") ? baseUrl + "sdx-v" + version + "/" : baseUrl + "/sdx-v" + version + "/";
-
-        Map<String, SdkDescriptor.PlatformArtifact> artifacts = new LinkedHashMap<>();
-
-        // Add base platform artifacts
-        for (String platform : ALL_BASE_PLATFORMS) {
-            addArtifact(artifacts, sdkId, platform, versionUrl);
-        }
-
-        // Add extended classifier artifacts
-        for (Map.Entry<String, List<String>> entry : EXTENDED_CLASSIFIERS.entrySet()) {
-            String basePlatform = entry.getKey();
-            for (String suffix : entry.getValue()) {
-                String classifier = resolveClassifier(basePlatform, suffix);
-                addArtifact(artifacts, sdkId, classifier, versionUrl);
-            }
-        }
-
-        return new SdkDescriptor(sdkId, version, versionUrl, artifacts);
+        String versionUrl = sdxReleaseBaseUrl(version, baseUrl);
+        return new SdkDescriptor(sdkId, version, versionUrl, Collections.emptyMap());
     }
 
-    private static void addArtifact(Map<String, SdkDescriptor.PlatformArtifact> artifacts,
-                                    String sdkId, String classifier, String baseUrl) {
-        String fileName = getArtifactFileName(sdkId, classifier);
-        String downloadUrl = baseUrl + fileName;
-        String packaging = getPackagingForPlatform(classifier);
-        artifacts.put(classifier, new SdkDescriptor.PlatformArtifact(
-                classifier, fileName, packaging, downloadUrl, null));
+    private static String sdxReleaseBaseUrl(String version, String baseUrl) {
+        String value = baseUrl.trim();
+        String tag = "sdk-v" + version;
+        if (value.endsWith("/" + tag + "/")) return value;
+        if (value.endsWith("/" + tag)) return value + "/";
+        return (value.endsWith("/") ? value : value + "/") + tag + "/";
     }
 
     /**

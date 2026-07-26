@@ -20,6 +20,8 @@ import ai.kompile.cli.common.config.HardwareAutoConfigurator;
 import ai.kompile.cli.common.http.KompileHttpClient;
 import ai.kompile.cli.common.registry.InstanceInfo;
 import ai.kompile.cli.common.registry.InstanceRegistry;
+import ai.kompile.cli.common.routing.KompileService;
+import ai.kompile.cli.common.routing.KompileServiceEndpoints;
 import ai.kompile.cli.common.util.JsonUtils;
 import java.util.stream.Collectors;
 import ai.kompile.cli.common.util.JavaRuntimeLocator;
@@ -44,6 +46,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
@@ -244,19 +247,30 @@ public class DoctorCommand implements Callable<Integer> {
         return out;
     }
 
-    /** Check 3: kompile-app-main and kompile-model-staging installed. */
+    /** Check 3: the admin console, model staging, and the two end-user persona apps. */
     List<CheckResult> checkComponents() {
         List<CheckResult> out = new ArrayList<>();
         ComponentRegistry reg = new ComponentRegistry();
 
-        for (String id : List.of(ComponentRegistry.KOMPILE_APP_MAIN, ComponentRegistry.KOMPILE_MODEL_STAGING)) {
+        List<String> required = List.of(ComponentRegistry.KOMPILE_APP_MAIN, ComponentRegistry.KOMPILE_MODEL_STAGING);
+        // The persona apps serve the end-user surfaces that kompile-app-main no longer mounts, so
+        // their absence breaks `kompile chat` and `kompile project crawl --serve`. It is reported as
+        // a warning rather than a critical failure because an admin-only box is a legitimate install.
+        List<String> personas = List.of(ComponentRegistry.KOMPILE_APP_CHAT,
+                ComponentRegistry.KOMPILE_APP_CRAWL_MANAGER);
+        List<String> all = new ArrayList<>(required);
+        all.addAll(personas);
+
+        for (String id : all) {
             try {
                 File artifact = reg.findInstalledJar(id);
                 if (artifact == null) {
-                    out.add(CheckResult.fail(id,
-                            "not installed",
-                            "Install with: kompile install " + id
-                            + "  — or reinstall the full distribution (install.sh)"));
+                    String fix = "Install with: kompile install " + id
+                            + "  — or reinstall the full distribution (install.sh)";
+                    out.add(required.contains(id)
+                            ? CheckResult.fail(id, "not installed", fix)
+                            : CheckResult.warn(id, "not installed — "
+                                    + surfacesServedBy(id) + " will be unavailable", fix));
                 } else {
                     boolean isNative = artifact.canExecute() && !artifact.getName().endsWith(".jar");
                     String mode = isNative ? "native" : "jar";
@@ -269,6 +283,17 @@ public class DoctorCommand implements Callable<Integer> {
             }
         }
         return out;
+    }
+
+    /** Human-readable description of what a persona app serves, for the "not installed" warning. */
+    private static String surfacesServedBy(String componentId) {
+        if (ComponentRegistry.KOMPILE_APP_CHAT.equals(componentId)) {
+            return "chat, agents, and RAG";
+        }
+        if (ComponentRegistry.KOMPILE_APP_CRAWL_MANAGER.equals(componentId)) {
+            return "crawls, ingest, and indexing";
+        }
+        return "some surfaces";
     }
 
     /** Check 4: RAM tier, CPU count, GPU presence. Informational only. */
@@ -395,10 +420,20 @@ public class DoctorCommand implements Callable<Integer> {
         }
     }
 
-    /** Check 7: ports 8080, 8090, 8091 — warn only, cross-reference InstanceRegistry. */
+    /**
+     * Check 7: the ports kompile wants to bind — warn only, cross-referenced against InstanceRegistry.
+     *
+     * <p>The three persona apps come from the routing config, so an overridden port is checked instead
+     * of the built-in one; 8090/8091 are model staging and its sibling.</p>
+     */
     List<CheckResult> checkPorts() {
         List<CheckResult> out = new ArrayList<>();
-        int[] ports = {8080, 8090, 8091};
+        LinkedHashSet<Integer> ports = new LinkedHashSet<>();
+        for (KompileService service : KompileService.values()) {
+            ports.add(KompileServiceEndpoints.resolve(service).port());
+        }
+        ports.add(8090);
+        ports.add(8091);
         for (int port : ports) {
             out.add(checkPort(port));
         }

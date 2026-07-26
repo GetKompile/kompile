@@ -8,9 +8,9 @@ import ai.kompile.chat.local.Message
 import java.util.function.Consumer
 
 /**
- * Android's only local-model seam. The implementation selected by the Gradle
- * flavor is a thin JavaCPP facade over the device provider; prompt tokenization,
- * decode, sampling, KV state, and graph execution stay in SDX/Kompile.
+ * Android's only local-model seam. Prepared `.sdz` artifacts use the JavaCPP
+ * accelerator selected by the Gradle flavor; raw `.gguf`/`.ggml` files use DL4J's
+ * `libsdx_llm` Android AOT C ABI. Both routes perform model execution in SDX.
  */
 class AcceleratedChatModelAndroid(
     context: Context,
@@ -20,12 +20,21 @@ class AcceleratedChatModelAndroid(
 ) : ChatModel, AutoCloseable {
 
     private val opened = runCatching {
-        PlatformLocalChatModelFactory.open(
-            context.applicationContext,
-            modelPath,
-            temperature,
-            maxTokens
-        )
+        if (SdxRawGgufChatSession.supports(modelPath)) {
+            SdxRawGgufChatSession.open(
+                context.applicationContext,
+                modelPath,
+                temperature,
+                maxTokens
+            )
+        } else {
+            PlatformLocalChatModelFactory.open(
+                context.applicationContext,
+                modelPath,
+                temperature,
+                maxTokens
+            )
+        }
     }
 
     private var session: PlatformLocalChatSession? = opened.getOrNull()
@@ -70,7 +79,7 @@ class AcceleratedChatModelAndroid(
 
     private fun requireSession(): PlatformLocalChatSession =
         session ?: throw ChatException(
-            "Local accelerator provider is unavailable" +
+            "Local SDX runtime is unavailable" +
                 (startupError?.let { ": $it" } ?: "")
         )
 }
@@ -89,23 +98,13 @@ internal interface PlatformLocalChatSession : AutoCloseable {
     fun cancel()
 }
 
-/** Shared prompt/history helpers; provider code remains lifecycle-only. */
+/**
+ * History helpers every accelerator shares. Chat-template rendering lives with the SDX
+ * source set instead: it runs through the tokenizer runtime, which the LiteRT-LM
+ * provider does not ship because that engine applies the template inside its own
+ * pipeline.
+ */
 internal object MobilePromptRenderer {
-
-    fun chatMl(messages: List<Message>): String = buildString {
-        for (message in messages) {
-            val role = when (message.role()) {
-                "tool_result" -> "user"
-                else -> message.role()
-            }
-            append("<|")
-            append(role)
-            append("|>\n")
-            append(message.content())
-            append("\n<|end|>\n")
-        }
-        append("<|assistant|>\n")
-    }
 
     fun latestTurn(messages: List<Message>): String =
         messages.asReversed()

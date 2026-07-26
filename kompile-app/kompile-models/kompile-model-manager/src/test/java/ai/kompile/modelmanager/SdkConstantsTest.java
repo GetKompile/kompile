@@ -97,14 +97,11 @@ class SdkConstantsTest {
 
     @Test
     void createSdxRuntimeDescriptor_regressionStillWorks() {
-        SdkDescriptor d = SdkConstants.createSdxRuntimeDescriptor(null, null);
+        SdkDescriptor d = SdkConstants.createSdxRuntimeDescriptor("1.2.3", "https://mirror/releases");
         assertEquals("sdx-runtime", d.getSdkId());
-        assertTrue(d.hasPlatform(SdkConstants.LINUX_X86_64),
-                "sdx-runtime must still have linux-x86_64");
-        assertTrue(d.hasPlatform(SdkConstants.IOS_ARM64),
-                "sdx-runtime must still have ios-arm64");
-        assertTrue(d.hasPlatform(SdkConstants.ANDROID_ARM64),
-                "sdx-runtime must still have android-arm64");
+        assertEquals("https://mirror/releases/sdk-v1.2.3/", d.getBaseDownloadUrl());
+        assertTrue(d.getPlatformArtifacts().isEmpty(),
+                "compatibility facade must not synthesize canonical artifact filenames");
     }
 
     @Test

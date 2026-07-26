@@ -1,0 +1,20 @@
+# Gradle state and build outputs.
+.gradle/
+build/
+
+# Machine-specific SDK path. Set ANDROID_HOME instead, or write this file
+# locally; either way it must not be committed.
+local.properties
+
+# IDE metadata.
+.idea/
+*.iml
+.cxx/
+
+# Signing material must never enter the repository.
+*.jks
+*.keystore
+
+# Provider runtime AARs staged by tools/build-offline-accelerators.sh. Each is
+# around 100 MB of native payload produced by a separate libnd4j build.
+app/libs/

@@ -18,9 +18,12 @@
   <div class="page-header">
     <h1>
       <mat-icon>cloud_download</mat-icon>
-      Download Model
+      Build Mobile Chat Artifact
     </h1>
-    <p class="subtitle">Download and convert models from HuggingFace, GitHub, or custom URLs</p>
+    <p class="subtitle">
+      Compile a complete local chat model for one accelerator, with an optional synced
+      knowledge graph and Markdown project.
+    </p>
   </div>
 
   <div class="content-grid">
@@ -46,14 +49,43 @@
           </div>
 
           <!-- Repository/URL -->
-          <mat-form-field appearance="outline" class="full-width">
-            <mat-label>Repository / URL</mat-label>
+          <mat-form-field appearance="outline" class="full-width"
+                          *ngIf="!isLocalSource() && !isComponentUrlSource()">
+            <mat-label>{{ isHuggingFaceSource() ? 'Hugging Face repository or URL' : 'Repository / URL' }}</mat-label>
             <input matInput formControlName="repository"
+                   (input)="clearHuggingFaceDiscovery()"
                    [placeholder]="getSelectedSource()?.placeholder || 'Enter repository or URL'">
             <mat-hint>{{ getSelectedSource()?.hint }}</mat-hint>
             <mat-error *ngIf="downloadForm.get('repository')?.hasError('required')">
               Repository is required
             </mat-error>
+          </mat-form-field>
+
+          <div class="checkbox-row" *ngIf="isHuggingFaceSource()">
+            <button mat-stroked-button type="button"
+                    (click)="discoverHuggingFace()"
+                    [disabled]="isDiscoveringHuggingFace">
+              <mat-icon>travel_explore</mat-icon>
+              {{ isDiscoveringHuggingFace ? 'Discovering...' : 'Discover GGUF and tokenizer files' }}
+            </button>
+            <span *ngIf="huggingFaceDiscovery">
+              Pinned {{ huggingFaceDiscovery.resolvedRevision | slice:0:12 }}
+            </span>
+          </div>
+
+          <mat-form-field appearance="outline" class="full-width"
+                          *ngIf="huggingFaceDiscovery?.requiresModelSelection">
+            <mat-label>Select one GGUF/GGML model</mat-label>
+            <mat-select [value]="downloadForm.get('modelPath')?.value"
+                        (selectionChange)="selectHuggingFaceModel($event.value)">
+              <mat-option *ngFor="let candidate of huggingFaceDiscovery?.modelCandidates"
+                          [value]="candidate.path">
+                {{ candidate.path }}
+                · {{ candidate.quantizationHint || candidate.format }}
+                · {{ candidate.size | number }} bytes
+              </mat-option>
+            </mat-select>
+            <mat-hint>Multiple model files are never selected silently.</mat-hint>
           </mat-form-field>
 
           <!-- Model ID -->
@@ -92,6 +124,95 @@
             </mat-form-field>
           </div>
 
+          <section class="asset-section" *ngIf="isLocalSource()">
+            <h3>Complete local text-model bundle</h3>
+            <p>
+              Files are uploaded together, consolidated into canonical SDX text assets,
+              compiled for the selected accelerator, and cached in the generated project.
+            </p>
+
+            <div class="file-input-row">
+              <div><strong>Model *</strong><span>{{ selectedFileName('model') }}</span></div>
+              <label class="file-picker">
+                Choose GGUF/GGML/SDZ
+                <input type="file" hidden accept=".gguf,.ggml,.sdz,.onnx"
+                       (change)="onFileSelected('model', $event)">
+              </label>
+            </div>
+            <div class="file-input-row">
+              <div><strong>tokenizer.json *</strong><span>{{ selectedFileName('tokenizer') }}</span></div>
+              <label class="file-picker">
+                Choose tokenizer
+                <input type="file" hidden accept=".json,application/json"
+                       (change)="onFileSelected('tokenizer', $event)">
+              </label>
+            </div>
+            <div class="file-input-row">
+              <div>
+                <strong>tokenizer_config.json *</strong>
+                <span>{{ selectedFileName('tokenizer_config') }}</span>
+              </div>
+              <label class="file-picker">
+                Choose tokenizer config
+                <input type="file" hidden accept=".json,application/json"
+                       (change)="onFileSelected('tokenizer_config', $event)">
+              </label>
+            </div>
+            <p class="asset-alternative">
+              A standalone chat_template.jinja may replace tokenizer_config.json.
+            </p>
+            <div class="file-input-row">
+              <div><strong>config.json *</strong><span>{{ selectedFileName('model_config') }}</span></div>
+              <label class="file-picker">
+                Choose model config
+                <input type="file" hidden accept=".json,application/json"
+                       (change)="onFileSelected('model_config', $event)">
+              </label>
+            </div>
+            <p class="asset-alternative">
+              An authored SDX text-generation.json may replace config.json.
+            </p>
+
+            <details class="optional-assets">
+              <summary>Optional tokenizer and generation companions</summary>
+              <div class="file-input-row">
+                <div><strong>special_tokens_map.json</strong><span>{{ selectedFileName('special_tokens_map') }}</span></div>
+                <label class="file-picker">Choose file
+                  <input type="file" hidden accept=".json,application/json"
+                         (change)="onFileSelected('special_tokens_map', $event)">
+                </label>
+              </div>
+              <div class="file-input-row">
+                <div><strong>added_tokens.json</strong><span>{{ selectedFileName('added_tokens') }}</span></div>
+                <label class="file-picker">Choose file
+                  <input type="file" hidden accept=".json,application/json"
+                         (change)="onFileSelected('added_tokens', $event)">
+                </label>
+              </div>
+              <div class="file-input-row">
+                <div><strong>chat_template.jinja</strong><span>{{ selectedFileName('chat_template') }}</span></div>
+                <label class="file-picker">Choose file
+                  <input type="file" hidden accept=".jinja,.txt,text/plain"
+                         (change)="onFileSelected('chat_template', $event)">
+                </label>
+              </div>
+              <div class="file-input-row">
+                <div><strong>generation_config.json</strong><span>{{ selectedFileName('generation_config') }}</span></div>
+                <label class="file-picker">Choose file
+                  <input type="file" hidden accept=".json,application/json"
+                         (change)="onFileSelected('generation_config', $event)">
+                </label>
+              </div>
+              <div class="file-input-row">
+                <div><strong>text-generation.json</strong><span>{{ selectedFileName('text_generation') }}</span></div>
+                <label class="file-picker">Choose file
+                  <input type="file" hidden accept=".json,application/json"
+                         (change)="onFileSelected('text_generation', $event)">
+                </label>
+              </div>
+            </details>
+          </section>
+
           <!-- Output package and Android accelerator options -->
           <div class="form-row">
             <mat-form-field appearance="outline">
@@ -113,7 +234,27 @@
             </mat-form-field>
           </div>
 
-          <div class="form-row" *ngIf="downloadForm.get('outputFormat')?.value === 'kproject'">
+          <div class="asset-paths">
+            <ng-container *ngIf="downloadForm.get('outputFormat')?.value === 'model'">
+              <h4>Complete accelerator chat model</h4>
+              <p>
+                Produces a target-compiled .sdz with tokenizer.json, tokenizer configuration,
+                chat template, and generation configuration. Import it through the Android
+                model picker. It deliberately contains no knowledge graph or Markdown.
+              </p>
+            </ng-container>
+            <ng-container *ngIf="downloadForm.get('outputFormat')?.value === 'kproject'">
+              <h4>Full offline graph-chat project</h4>
+              <p>
+                Wraps the same complete .sdz with a validated graph and Markdown copied from
+                the synced server project. The server must configure
+                kompile.staging.project-dir; staging fails clearly if the project is missing,
+                invalid, or has not synced its graph and Markdown.
+              </p>
+            </ng-container>
+          </div>
+
+          <div class="form-row">
             <mat-form-field appearance="outline">
               <mat-label>Target SoC</mat-label>
               <input matInput formControlName="targetSoc">
@@ -130,15 +271,19 @@
             </mat-form-field>
           </div>
 
-          <!-- HuggingFace Options (conditionally shown) -->
-          <mat-expansion-panel *ngIf="downloadForm.get('source')?.value === 'huggingface'" class="options-panel">
+          <!-- Runnable repository/component inputs (conditionally shown) -->
+          <mat-expansion-panel
+              *ngIf="(isHuggingFaceSource() || isComponentUrlSource()) && isRunnableTextOutput()"
+              class="options-panel"
+              [expanded]="isComponentUrlSource()">
             <mat-expansion-panel-header>
               <mat-panel-title>
                 <mat-icon>settings</mat-icon>
-                HuggingFace Options
+                {{ isComponentUrlSource() ? 'Public HTTPS component bundle' : 'HuggingFace Options' }}
               </mat-panel-title>
             </mat-expansion-panel-header>
 
+            <ng-container *ngIf="isHuggingFaceSource()">
             <mat-form-field appearance="outline" class="full-width">
               <mat-label>HuggingFace Token (Optional)</mat-label>
               <input matInput formControlName="hfToken" type="password"
@@ -147,18 +292,117 @@
             </mat-form-field>
 
             <mat-form-field appearance="outline" class="full-width">
-              <mat-label>Revision/Branch</mat-label>
-              <input matInput formControlName="revision" placeholder="main">
-              <mat-hint>Branch, tag, or commit hash (default: main)</mat-hint>
+              <mat-label>Revision, tag, or branch (Optional)</mat-label>
+              <input matInput formControlName="revision"
+                     placeholder="main, a tag, or a commit SHA">
+              <mat-hint>The staging server resolves this to an immutable commit before downloading.</mat-hint>
             </mat-form-field>
+
+            <div class="asset-paths" *ngIf="isRunnableTextOutput()">
+              <h4>Discovered or explicit repository paths</h4>
+              <p>
+                Discovery fills these from the pinned commit. Leave them blank to auto-discover,
+                or override an exact repository-relative path.
+              </p>
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>Model file path</mat-label>
+                <input matInput formControlName="modelPath" placeholder="model.gguf">
+              </mat-form-field>
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>tokenizer.json path</mat-label>
+                <input matInput formControlName="tokenizerPath">
+              </mat-form-field>
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>tokenizer_config.json path</mat-label>
+                <input matInput formControlName="tokenizerConfigPath">
+                <mat-hint>Must contain a usable chat_template</mat-hint>
+              </mat-form-field>
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>config.json path</mat-label>
+                <input matInput formControlName="modelConfigPath">
+                <mat-hint>Used to derive the canonical SDX generation contract</mat-hint>
+              </mat-form-field>
+
+              <details class="optional-assets">
+                <summary>Optional repository sidecars</summary>
+                <mat-form-field appearance="outline" class="full-width">
+                  <mat-label>special_tokens_map.json path</mat-label>
+                  <input matInput formControlName="specialTokensMapPath">
+                </mat-form-field>
+                <mat-form-field appearance="outline" class="full-width">
+                  <mat-label>added_tokens.json path</mat-label>
+                  <input matInput formControlName="addedTokensPath">
+                </mat-form-field>
+                <mat-form-field appearance="outline" class="full-width">
+                  <mat-label>chat_template.jinja path</mat-label>
+                  <input matInput formControlName="chatTemplatePath">
+                </mat-form-field>
+                <mat-form-field appearance="outline" class="full-width">
+                  <mat-label>generation_config.json path</mat-label>
+                  <input matInput formControlName="generationConfigPath">
+                </mat-form-field>
+                <mat-form-field appearance="outline" class="full-width">
+                  <mat-label>Authored text-generation.json path</mat-label>
+                  <input matInput formControlName="textGenerationPath">
+                  <mat-hint>Optional alternative to deriving the SDX contract from config.json</mat-hint>
+                </mat-form-field>
+              </details>
+            </div>
+            </ng-container>
+
+            <details class="optional-assets"
+                     *ngIf="isRunnableTextOutput()"
+                     [open]="isComponentUrlSource()">
+              <summary>
+                {{ isComponentUrlSource()
+                    ? 'Complete public component URLs'
+                    : 'Individual public component URLs (override discovery)' }}
+              </summary>
+              <p>
+                Use these when GGUF and tokenizer/config files live at separate public HTTPS
+                locations. Credentials, escaped paths, and signed query strings are rejected.
+                Component-bundle mode never accepts or forwards an authentication token.
+              </p>
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>GGUF/GGML model URL</mat-label>
+                <input matInput formControlName="modelUrl"
+                       placeholder="https://host/model-Q4_K_M.gguf">
+              </mat-form-field>
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>tokenizer.json URL</mat-label>
+                <input matInput formControlName="tokenizerUrl">
+              </mat-form-field>
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>tokenizer_config.json URL</mat-label>
+                <input matInput formControlName="tokenizerConfigUrl">
+              </mat-form-field>
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>config.json URL</mat-label>
+                <input matInput formControlName="modelConfigUrl">
+              </mat-form-field>
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>special_tokens_map.json URL</mat-label>
+                <input matInput formControlName="specialTokensMapUrl">
+              </mat-form-field>
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>added_tokens.json URL</mat-label>
+                <input matInput formControlName="addedTokensUrl">
+              </mat-form-field>
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>chat_template.jinja URL</mat-label>
+                <input matInput formControlName="chatTemplateUrl">
+              </mat-form-field>
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>generation_config.json URL</mat-label>
+                <input matInput formControlName="generationConfigUrl">
+              </mat-form-field>
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>text-generation.json URL</mat-label>
+                <input matInput formControlName="textGenerationUrl">
+              </mat-form-field>
+            </details>
           </mat-expansion-panel>
 
-          <!-- Auto-promote checkbox -->
-          <div class="checkbox-row">
-            <mat-checkbox formControlName="autoPromote" color="primary">
-              Auto-promote to registry after conversion
-            </mat-checkbox>
-          </div>
         </form>
       </mat-card-content>
 
@@ -245,10 +489,10 @@
       <mat-card-actions align="end" *ngIf="currentStaging?.status === 'completed'">
         <button mat-button (click)="clearCompleted()">Clear</button>
         <button mat-raised-button color="primary"
-                *ngIf="completedOutputFormat === 'kproject'"
+                *ngIf="completedOutputFormat"
                 (click)="downloadOutput(currentStaging!.model_id)">
           <mat-icon>download</mat-icon>
-          Download .kproject
+          {{ completedOutputFormat === 'kproject' ? 'Download .kproject' : 'Download .sdz' }}
         </button>
       </mat-card-actions>
     </mat-card>
@@ -278,6 +522,55 @@
             </div>
           </mat-list-item>
         </mat-list>
+      </mat-card-content>
+    </mat-card>
+
+    <mat-card class="diagnostics-card" *ngIf="importDiagnostics.length > 0">
+      <mat-card-header>
+        <mat-icon mat-card-avatar>troubleshoot</mat-icon>
+        <mat-card-title>Import diagnostics</mat-card-title>
+        <mat-card-subtitle>
+          Sanitized server history · newest first
+        </mat-card-subtitle>
+      </mat-card-header>
+
+      <mat-card-content>
+        <button mat-stroked-button type="button" (click)="loadImportDiagnostics()">
+          <mat-icon>refresh</mat-icon>
+          Refresh
+        </button>
+        <mat-accordion>
+          <mat-expansion-panel
+            *ngFor="let event of importDiagnostics | slice:0:12"
+            [class.diagnostic-error]="event.severity === 'error'">
+            <mat-expansion-panel-header>
+              <mat-panel-title>
+                <mat-icon [class.diagnostic-error-icon]="event.severity === 'error'">
+                  {{ diagnosticIcon(event) }}
+                </mat-icon>
+                {{ event.summary }}
+              </mat-panel-title>
+              <mat-panel-description>
+                {{ event.phase | titlecase }} · {{ event.code }} ·
+                {{ event.timestamp | date:'short' }}
+              </mat-panel-description>
+            </mat-expansion-panel-header>
+
+            <p class="diagnostic-context">
+              Attempt <code>{{ event.attemptId }}</code> · model
+              <code>{{ event.modelId }}</code>
+            </p>
+            <p class="diagnostic-remediation" *ngIf="event.remediation">
+              <strong>Next step:</strong> {{ event.remediation }}
+            </p>
+            <dl class="diagnostic-details" *ngIf="diagnosticDetails(event).length > 0">
+              <ng-container *ngFor="let detail of diagnosticDetails(event)">
+                <dt>{{ detail.key }}</dt>
+                <dd>{{ detail.value }}</dd>
+              </ng-container>
+            </dl>
+          </mat-expansion-panel>
+        </mat-accordion>
       </mat-card-content>
     </mat-card>
   </div>

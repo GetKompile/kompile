@@ -29,7 +29,11 @@ import {
   ImportRequest,
   ExportResult,
   ImportResult,
-  ApiResponse
+  ApiResponse,
+  HuggingFaceDiscovery,
+  HuggingFaceDiscoveryRequest,
+  ImportDiagnosticEvent,
+  TextModelAssetKey
 } from '../models/api-models';
 
 export interface RestoreResult {
@@ -188,10 +192,62 @@ export class StagingService {
   }
 
   /**
+   * Browse the newest bounded, sanitized import diagnostics.
+   */
+  getImportDiagnostics(limit: number = 50): Observable<ImportDiagnosticEvent[]> {
+    const bounded = Math.max(1, Math.min(limit, 200));
+    return this.http.get<ImportDiagnosticEvent[]>(
+      `${this.baseUrl}/import-diagnostics`,
+      { params: { limit: bounded } }
+    ).pipe(catchError(this.handleError));
+  }
+
+  /**
+   * Browse the retained event sequence for one import attempt.
+   */
+  getImportAttemptDiagnostics(attemptId: string): Observable<ImportDiagnosticEvent[]> {
+    return this.http.get<ImportDiagnosticEvent[]>(
+      `${this.baseUrl}/import-diagnostics/${encodeURIComponent(attemptId)}`
+    ).pipe(catchError(this.handleError));
+  }
+
+  /**
+   * Resolve a repository/tree/blob URL to an immutable commit and enumerate
+   * GGUF/GGML plus tokenizer/config companions before starting a staging job.
+   */
+  discoverHuggingFace(request: HuggingFaceDiscoveryRequest): Observable<HuggingFaceDiscovery> {
+    return this.http.post<HuggingFaceDiscovery>(
+      `${this.baseUrl}/huggingface/discover`,
+      request
+    ).pipe(catchError(this.handleError));
+  }
+
+  /**
    * Stage a model (download and convert).
    */
-  stageModel(request: StageModelRequest): Observable<ApiResponse<StagingModelInfo>> {
-    return this.http.post<ApiResponse<StagingModelInfo>>(`${this.baseUrl}/stage`, request)
+  stageModel(request: StageModelRequest): Observable<StagingModelInfo> {
+    return this.http.post<StagingModelInfo>(`${this.baseUrl}/stage`, request)
+      .pipe(catchError(this.handleError));
+  }
+
+  /**
+   * Atomically upload a complete local GGUF/GGML/SDZ text-model source bundle.
+   */
+  stageTextBundle(
+    request: StageModelRequest,
+    files: Partial<Record<TextModelAssetKey, File>>
+  ): Observable<StagingModelInfo> {
+    const form = new FormData();
+    form.append(
+      'request',
+      new Blob([JSON.stringify(request)], { type: 'application/json' })
+    );
+    for (const [key, file] of Object.entries(files)) {
+      if (file) {
+        form.append(key, file, file.name);
+      }
+    }
+    return this.http.post<StagingModelInfo>(`${this.baseUrl}/stage/text-bundle`, form)
       .pipe(catchError(this.handleError));
   }
 

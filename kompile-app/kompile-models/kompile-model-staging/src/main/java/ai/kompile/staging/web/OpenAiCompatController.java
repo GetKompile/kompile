@@ -27,7 +27,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 @ConditionalOnProperty(name = "kompile.staging.app.enabled", havingValue = "true")
 @RestController
 @RequestMapping("/v1")
-@CrossOrigin(origins = "*")
 public class OpenAiCompatController {
 
     private static final Logger log = LoggerFactory.getLogger(OpenAiCompatController.class);

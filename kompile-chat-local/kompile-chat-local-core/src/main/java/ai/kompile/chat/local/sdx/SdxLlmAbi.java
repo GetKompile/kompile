@@ -40,9 +40,17 @@ public interface SdxLlmAbi extends Library {
      * Return the ABI version supported by the loaded library.
      *
      * @param runtime the active runtime
-     * @return integer ABI version (e.g. 1)
+     * @return integer ABI version (2 for canonical SDZ resolution + chat-template rendering)
      */
     int sdxLlmAbiVersion(Pointer runtime);
+
+    /**
+     * Resolve and validate a canonical compiled SDZ for one target. The output JSON owns
+     * the immutable runtime model and text-asset paths and must be released with
+     * {@link #sdxLlmFree(Pointer, Pointer)}.
+     */
+    int sdxLlmResolveModelBundle(Pointer runtime, String sourceSdz, String targetProfile,
+                                 String cacheDirectory, PointerByReference outJson);
 
     // ── Model lifecycle ───────────────────────────────────────────────────────
 
@@ -57,6 +65,13 @@ public interface SdxLlmAbi extends Library {
      */
     Pointer sdxLlmLoadModel(Pointer runtime, String modelPath, String tokenizerPath,
                             String optionsJson);
+
+    /**
+     * Open a resolver-produced immutable accelerator bundle through the shared native
+     * SDX text session. The target profile selects strict accelerator-only options.
+     */
+    Pointer sdxLlmLoadCompiledModel(Pointer runtime, String bundlePath, String tokenizerPath,
+                                    String targetProfile, String optionsJson);
 
     /**
      * Unload a model and release its resources.
@@ -84,6 +99,12 @@ public interface SdxLlmAbi extends Library {
      */
     int sdxLlmGenerate(Pointer runtime, Pointer model, String prompt, String optionsJson,
                        PointerByReference outText);
+
+    /**
+     * Apply the tokenizer-owned chat template to an ordered JSON message array.
+     */
+    int sdxLlmRenderChatPrompt(Pointer runtime, Pointer model, String messagesJson,
+                               int addGenerationPrompt, PointerByReference outPrompt);
 
     /**
      * Retrieve the last generation result as a JSON object containing timing, token counts,

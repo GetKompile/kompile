@@ -56,7 +56,7 @@ class StagingServiceSdxOutputTest {
     void setUp() {
         registryService = new RegistryService(temp.resolve("models"));
         when(downloadService.canHandle("fixture")).thenReturn(true);
-        when(downloadService.download(any(), any(), any())).thenAnswer(invocation -> {
+        when(downloadService.download(any(), any(), any(), any())).thenAnswer(invocation -> {
             Path destination = invocation.getArgument(1);
             Files.createDirectories(destination);
             Path model = destination.resolve("model.sdz");
@@ -69,17 +69,7 @@ class StagingServiceSdxOutputTest {
 
     @Test
     void publishesCompletedProjectThroughVerifiedOutputDirectory() throws Exception {
-        when(projectOutputService.createProject(any(), any(), any()))
-                .thenAnswer(invocation -> {
-                    Path workspace = invocation.getArgument(0);
-                    DownloadRequest request = invocation.getArgument(2);
-                    Path output = workspace.resolve("outputs").resolve(
-                            request.getModelId() + "-" + request.getTargetProfile()
-                                    + ".kproject");
-                    Files.createDirectories(output.getParent());
-                    Files.writeString(output, "project");
-                    return output;
-                });
+        stubTargetOutput();
         StagingService service = service();
 
         StagingModelInfo result = service.stageModel(projectRequest("mobile"));
@@ -90,13 +80,33 @@ class StagingServiceSdxOutputTest {
                 result.getCurrentFile());
         assertTrue(service.getStagedOutput("mobile").isPresent());
         assertTrue(Files.isRegularFile(service.getStagedOutput("mobile").orElseThrow()));
-        verify(projectOutputService).createProject(any(), any(), any());
+        verify(projectOutputService).createOutput(any(), any(), any(), any());
+    }
+
+    @Test
+    void publishesCompletedTargetModelAsDownloadableSdz() throws Exception {
+        stubTargetOutput();
+        StagingService service = service();
+        DownloadRequest request = baseRequest("model-only")
+                .outputFormat("model")
+                .targetProfile("android-arm64-vulkan")
+                .targetSoc("Adreno_715")
+                .build();
+
+        StagingModelInfo result = service.stageModel(request);
+
+        assertEquals(StagingStatus.COMPLETED, result.getStatus());
+        assertEquals(
+                "outputs/model-only-android-arm64-vulkan.sdz",
+                result.getCurrentFile());
+        assertTrue(service.getStagedOutput("model-only").isPresent());
+        verify(projectOutputService).createOutput(any(), any(), any(), any());
     }
 
     @Test
     void packagingFailureMovesWorkspaceToFailedAndPublishesNothing() throws Exception {
         doThrow(new IOException("vendor compiler unavailable"))
-                .when(projectOutputService).createProject(any(), any(), any());
+                .when(projectOutputService).createOutput(any(), any(), any(), any());
         StagingService service = service();
 
         StagingModelInfo result = service.stageModel(projectRequest("broken"));
@@ -132,11 +142,27 @@ class StagingServiceSdxOutputTest {
                 projectOutputService);
     }
 
+    private void stubTargetOutput() throws IOException {
+        when(projectOutputService.createOutput(any(), any(), any(), any()))
+                .thenAnswer(invocation -> {
+                    Path workspace = invocation.getArgument(0);
+                    DownloadRequest request = invocation.getArgument(2);
+                    String extension = "kproject".equals(request.getOutputFormat())
+                            ? ".kproject"
+                            : ".sdz";
+                    Path output = workspace.resolve("outputs").resolve(
+                            request.getModelId() + "-" + request.getTargetProfile() + extension);
+                    Files.createDirectories(output.getParent());
+                    Files.writeString(output, "target artifact");
+                    return output;
+                });
+    }
+
     private DownloadRequest projectRequest(String modelId) {
         return baseRequest(modelId)
                 .outputFormat("kproject")
                 .targetProfile("android-arm64-nnapi-accelerator")
-                .quantizationProfile("int8-per-channel")
+                .quantizationProfile("int8")
                 .targetSoc("Tensor_G3")
                 .build();
     }

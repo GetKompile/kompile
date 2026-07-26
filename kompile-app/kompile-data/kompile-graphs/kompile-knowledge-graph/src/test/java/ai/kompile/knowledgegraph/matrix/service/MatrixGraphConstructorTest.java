@@ -15,6 +15,7 @@
  */
 package ai.kompile.knowledgegraph.matrix.service;
 
+import ai.kompile.core.crawl.graph.GraphExtractionValidationPolicy;
 import ai.kompile.core.embeddings.EmbeddingModel;
 import ai.kompile.core.graphrag.model.Entity;
 import ai.kompile.core.graphrag.model.Graph;
@@ -371,11 +372,11 @@ class MatrixGraphConstructorTest {
         void usesDefaultWeightWhenNull() {
             String noWeight = """
                     {"entities": [
-                      {"id": "e1", "title": "A", "label": "X"},
-                      {"id": "e2", "title": "B", "label": "Y"}
+                      {"id": "e1", "title": "A", "label": "X", "description": "First entity"},
+                      {"id": "e2", "title": "B", "label": "Y", "description": "Second entity"}
                     ],
                     "relationships": [
-                      {"source": "e1", "target": "e2", "type": "REL"}
+                      {"source": "e1", "target": "e2", "type": "REL", "description": "A relates to B"}
                     ]}
                     """;
             when(callResponseSpec.content()).thenReturn(noWeight);
@@ -389,12 +390,12 @@ class MatrixGraphConstructorTest {
         }
 
         @Test
-        @DisplayName("uses default RELATED_TO type when relationship type is null")
-        void usesDefaultRelationTypeWhenNull() {
+        @DisplayName("rejects relationship when its required type is null")
+        void rejectsRelationTypeWhenNull() {
             String noType = """
                     {"entities": [
-                      {"id": "e1", "title": "A", "label": "X"},
-                      {"id": "e2", "title": "B", "label": "Y"}
+                      {"id": "e1", "title": "A", "label": "X", "description": "First entity"},
+                      {"id": "e2", "title": "B", "label": "Y", "description": "Second entity"}
                     ],
                     "relationships": [
                       {"source": "e1", "target": "e2", "description": "related"}
@@ -405,9 +406,11 @@ class MatrixGraphConstructorTest {
             when(graphStore.loadGraph(anyString())).thenReturn(Optional.empty());
 
             RetrievedDoc doc = new RetrievedDoc("doc1", "text", Map.of());
-            constructor.constructGraphFromDocs(List.of(doc), null, null);
+            Graph result = constructor.constructGraphFromDocs(List.of(doc), null, null);
 
-            verify(graphStore).addEdge(anyString(), anyString(), anyString(), eq(1.0), eq("RELATED_TO"), eq(false), isNull());
+            assertTrue(result.getRelationships().isEmpty());
+            verify(graphStore, never()).addEdge(
+                    anyString(), anyString(), anyString(), anyDouble(), anyString(), anyBoolean(), any());
         }
     }
 
@@ -584,6 +587,66 @@ class MatrixGraphConstructorTest {
             assertTrue(prompt.contains("KNOWS"), "Prompt should include schema relationship types");
             assertTrue(prompt.contains("A human being"), "Prompt should include schema descriptions");
         }
+
+        @Test
+        @DisplayName("uses validation signatures without semantic example facts")
+        void usesValidationSignaturesWithoutSemanticExampleFacts() {
+            GraphExtractionValidationPolicy policy = GraphExtractionValidationPolicy.builder()
+                    .relationPatterns(List.of("(PERSON)-[:APPROVED_BY]->(CLOSE_STEP)"))
+                    .build();
+            constructor.configureValidation(policy);
+
+            GraphSchema schema = new GraphSchema();
+            schema.setPatterns(policy.getRelationPatterns());
+            when(callResponseSpec.content()).thenReturn(
+                    "{\"entities\": [], \"relationships\": []}");
+            when(graphStore.createGraph(anyString(), isNull())).thenReturn(new AdjacencyMatrixGraph());
+            when(graphStore.loadGraph(anyString())).thenReturn(Optional.empty());
+
+            constructor.constructGraphFromDocs(
+                    List.of(new RetrievedDoc("doc1", "No graph facts.", Map.of())),
+                    schema,
+                    null);
+
+            ArgumentCaptor<String> promptCaptor = ArgumentCaptor.forClass(String.class);
+            verify(requestSpec).user(promptCaptor.capture());
+            String prompt = promptCaptor.getValue();
+            assertTrue(prompt.contains("(PERSON)-[:APPROVED_BY]->(CLOSE_STEP)"));
+            assertTrue(prompt.contains("{\"entities\":[],\"relationships\":[]}"));
+            assertFalse(prompt.contains("John"));
+            assertFalse(prompt.contains("Acme"));
+        }
+    }
+
+    @Test
+    @DisplayName("rejects parseable output with schema-invalid relationship endpoints")
+    void rejectsSchemaInvalidRelationshipEndpoints() {
+        GraphExtractionValidationPolicy policy = GraphExtractionValidationPolicy.builder()
+                .relationPatterns(List.of("(PERSON)-[:APPROVED_BY]->(CLOSE_STEP)"))
+                .build();
+        constructor.configureValidation(policy);
+        when(callResponseSpec.content()).thenReturn("""
+                {
+                  "entities": [
+                    {"id":"p","title":"Finance Lead","label":"PERSON","description":"A finance lead"},
+                    {"id":"f","title":"North Forecast","label":"REGIONAL_FORECAST","description":"A forecast"}
+                  ],
+                  "relationships": [
+                    {"source":"p","target":"f","type":"APPROVED_BY","description":"Approval","confidence":0.9}
+                  ]
+                }
+                """);
+        when(graphStore.createGraph(anyString(), isNull())).thenReturn(new AdjacencyMatrixGraph());
+        when(graphStore.loadGraph(anyString())).thenReturn(Optional.empty());
+
+        Graph result = constructor.constructGraphFromDocs(
+                List.of(new RetrievedDoc("doc1", "text", Map.of())),
+                new GraphSchema(null, null, policy.getRelationPatterns()),
+                null);
+
+        assertTrue(result.getEntities().isEmpty());
+        assertTrue(result.getRelationships().isEmpty());
+        verify(graphStore, never()).addNode(anyString(), any());
     }
 
     // ── convertToGraph ───────────────────────────────────────────────────────
@@ -640,8 +703,8 @@ class MatrixGraphConstructorTest {
             String batchResponse = """
                     {
                       "entities": [
-                        {"id": "alice", "title": "Alice", "label": "PERSON"},
-                        {"id": "bob",   "title": "Bob",   "label": "PERSON"}
+                        {"id": "alice", "title": "Alice", "label": "PERSON", "description": "A person named Alice"},
+                        {"id": "bob",   "title": "Bob",   "label": "PERSON", "description": "A person named Bob"}
                       ],
                       "relationships": []
                     }""";

@@ -19,8 +19,12 @@ package ai.kompile.app.sync.repository;
 import ai.kompile.app.sync.domain.NoteSyncConnection;
 import ai.kompile.app.sync.domain.SyncProvider;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 
@@ -34,4 +38,46 @@ public interface NoteSyncConnectionRepository extends JpaRepository<NoteSyncConn
     List<NoteSyncConnection> findByFactSheetIdAndProvider(Long factSheetId, SyncProvider provider);
 
     Optional<NoteSyncConnection> findByWebhookId(String webhookId);
+
+    @Modifying(flushAutomatically = true, clearAutomatically = true)
+    @Query("""
+            update NoteSyncConnection c
+               set c.activeSyncRunId = :runId,
+                   c.syncLeaseExpiresAt = :expiresAt,
+                   c.updatedAt = :now
+             where c.id = :connectionId
+               and (c.activeSyncRunId is null
+                    or c.syncLeaseExpiresAt is null
+                    or c.syncLeaseExpiresAt < :now)
+            """)
+    int acquireRunLease(@Param("connectionId") Long connectionId,
+                        @Param("runId") String runId,
+                        @Param("now") Instant now,
+                        @Param("expiresAt") Instant expiresAt);
+
+    @Modifying(flushAutomatically = true, clearAutomatically = true)
+    @Query("""
+            update NoteSyncConnection c
+               set c.syncLeaseExpiresAt = :expiresAt,
+                   c.updatedAt = :now
+             where c.id = :connectionId
+               and c.activeSyncRunId = :runId
+            """)
+    int renewRunLease(@Param("connectionId") Long connectionId,
+                      @Param("runId") String runId,
+                      @Param("now") Instant now,
+                      @Param("expiresAt") Instant expiresAt);
+
+    @Modifying(flushAutomatically = true, clearAutomatically = true)
+    @Query("""
+            update NoteSyncConnection c
+               set c.activeSyncRunId = null,
+                   c.syncLeaseExpiresAt = null,
+                   c.updatedAt = :now
+             where c.id = :connectionId
+               and c.activeSyncRunId = :runId
+            """)
+    int releaseRunLease(@Param("connectionId") Long connectionId,
+                        @Param("runId") String runId,
+                        @Param("now") Instant now);
 }

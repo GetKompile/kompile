@@ -18,6 +18,7 @@
 
   <modules>
     <module>kompile-chat-local-core</module>
+    <module>kompile-chat-local-mcp</module>
     <module>kompile-chat-local-cli</module>
   </modules>
 

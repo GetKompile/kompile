@@ -19,6 +19,8 @@ package ai.kompile.app.services;
 import ai.kompile.app.facts.domain.FactSheet;
 import ai.kompile.app.facts.service.FactSheetService;
 import ai.kompile.core.crawl.graph.GraphExtractionConfig;
+import ai.kompile.core.crawl.graph.GraphExtractionValidationPolicy;
+import ai.kompile.core.crawl.graph.GraphExtractionValidationPolicy.FailureMode;
 import ai.kompile.core.crawl.graph.UnifiedCrawlJob;
 import ai.kompile.core.crawl.graph.UnifiedCrawlRequest;
 import ai.kompile.core.crawl.graph.UnifiedCrawlService;
@@ -29,6 +31,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -104,6 +107,16 @@ class SingleSourceCrawlStarterTest {
         appConfig.schemaEnforcement = "STRICT";
         appConfig.deduplicationEnabled = true;
         appConfig.similarityThreshold = 0.91;
+        appConfig.validationPolicy = GraphExtractionValidationPolicy.builder()
+                .failureMode(FailureMode.WARN)
+                .enabledValidators(List.of(GraphExtractionValidationPolicy.TYPE_NAME_FORMAT))
+                .maxErrorsInRetryPrompt(4)
+                .build();
+        GraphSchemaPresetService presetService = mock(GraphSchemaPresetService.class);
+        when(presetService.getPresetTypeNames("finance-v1")).thenReturn(Optional.of(Map.of(
+                "entityTypes", List.of("PRODUCT", "REGION"),
+                "relationshipTypes", List.of("SOLD_IN"),
+                "patterns", List.of("(PRODUCT)-[:SOLD_IN]->(REGION)"))));
         when(graphConfigService.getConfig()).thenReturn(appConfig);
         when(crawlService.startJob(any())).thenReturn(UnifiedCrawlJob.builder()
                 .jobId("job-2")
@@ -112,7 +125,7 @@ class SingleSourceCrawlStarterTest {
         SingleSourceCrawlStarter starter = new SingleSourceCrawlStarter(
                 crawlService,
                 null,
-                null,
+                presetService,
                 null,
                 graphConfigService,
                 null);
@@ -140,6 +153,13 @@ class SingleSourceCrawlStarterTest {
         assertEquals(SchemaEnforcementMode.STRICT, graphConfig.getSchemaMode());
         assertTrue(graphConfig.isEntityResolution());
         assertEquals(0.91, graphConfig.getEntityResolutionSimilarityThreshold());
+        assertNotNull(graphConfig.getValidationPolicy());
+        assertEquals(FailureMode.WARN, graphConfig.getValidationPolicy().effectiveFailureMode());
+        assertEquals(List.of(GraphExtractionValidationPolicy.TYPE_NAME_FORMAT),
+                graphConfig.getValidationPolicy().effectiveEnabledValidators());
+        assertEquals(List.of("(PRODUCT)-[:SOLD_IN]->(REGION)"),
+                graphConfig.getValidationPolicy().effectiveRelationPatterns());
+        assertEquals(4, graphConfig.getValidationPolicy().effectiveMaxErrorsInRetryPrompt());
     }
 
     // ---- Flexible options entry point ----

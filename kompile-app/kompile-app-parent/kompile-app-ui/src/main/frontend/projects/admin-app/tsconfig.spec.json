@@ -1,0 +1,33 @@
+/*
+ * Karma config for the admin console's specs. `exclude` is this app's share of the monolith's
+ * known-broken spec list, split out of the old workspace-root tsconfig.spec.json.
+ *
+ * One entry from that list did not survive the split: knowledge-graph-hub.component.spec.ts no
+ * longer exists anywhere in the workspace, so it is simply gone rather than re-homed.
+ *
+ * Keep `exclude` in step with this project's `test.options.exclude` in angular.json — karma
+ * discovers specs with its own glob, so a file excluded only here still loads and then fails with
+ * "missing from the TypeScript compilation".
+ */
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "outDir": "../../out-tsc/spec-admin",
+    "types": [
+      "jasmine"
+    ]
+  },
+  "files": [
+    "../kompile-ui-shared/src/polyfills.ts"
+  ],
+  "include": [
+    "src/**/*.spec.ts",
+    "src/**/*.d.ts",
+    "../kompile-ui-shared/src/**/*.d.ts"
+  ],
+  "exclude": [
+    "src/app/components/settings/evaluation-settings/evaluation-settings.component.spec.ts",
+    "src/app/components/settings/log-settings/log-settings.component.spec.ts",
+    "src/app/components/contextual-rag-debug/contextual-rag-debug.component.spec.ts"
+  ]
+}

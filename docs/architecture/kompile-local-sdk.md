@@ -10,8 +10,9 @@ The Kompile Local SDK is a **platform-native, fully-offline SDK** that bundles:
    Bayesian / MEBN / embeddings / centrality) against `.kgraph` files with zero network access.
 
 2. **`libsdx_llm`** — the SDX AOT LLM engine (GraalVM native image from the dl4j sdx-aot module).
-   Exposes a 14-symbol C ABI (`sdxLlm*`) covering GGUF model loading, autoregressive generation,
-   tokenization, VLM extraction, and audio transcription.
+   Exposes the versioned ABI v2 C surface (`sdxLlm*`) covering canonical compiled-bundle
+   resolution/loading, explicit tokenizer and chat-template handling, autoregressive generation,
+   loose GGUF/GGML research loading, VLM extraction, and audio transcription.
 
 Together they enable any language to run a **local LLM pipeline with tool calls backed by a
 reasoning graph**, matching the semantics of `kompile-chat-local` for JVM/Android/iOS.
@@ -20,33 +21,15 @@ reasoning graph**, matching the semantics of `kompile-chat-local` for JVM/Androi
 
 ```
 kompile-local-sdk-<ver>-<platform>.zip
-├── manifest.json
+├── sdx-sdk-manifest.json             # canonical upstream file, unchanged
+├── kompile-composition-manifest.json # independent upstream/KGR provenance
 ├── README.md
-├── include/
-│   ├── kompile_reasoning.h    # kgr ABI (ABI v1, 11 symbols)
-│   └── sdx_llm_c.h            # sdxLlm ABI (ABI v1, 14 symbols)
-├── lib/
-│   ├── libkompile_reasoning.so   # linux-x86_64; .dylib on macOS, .dll on Windows
-│   └── libsdx_llm.so             # linux-x86_64 CPU; separate CUDA variant exists
-│       (lib64/ contains BLAS/ND4J side-loaded libs for libsdx_llm)
-├── bindings/
-│   ├── python/
-│   │   ├── kompile_reasoning.py   # ctypes binding (kompile, Apache-2.0)
-│   │   └── sdx_llm.py             # ctypes binding (dl4j/nd4j, Apache-2.0)
-│   ├── rust/
-│   │   ├── kompile_reasoning.rs   # FFI + safe wrapper (mirrors llm.rs style)
-│   │   └── sdx_llm.rs             # vendored from dl4j in-tree bindings
-│   ├── typescript/
-│   │   ├── kompile_reasoning.ts   # koffi binding (mirrors sdx_llm.ts worker style)
-│   │   └── sdx_llm.ts             # vendored from dl4j in-tree bindings
-│   ├── swift/
-│   │   ├── KompileReasoning.swift # Swift wrapper (mirrors SdxLlm.swift style)
-│   │   └── SdxLlm.swift           # vendored from dl4j in-tree bindings
-│   └── csharp/
-│       ├── KompileReasoning.cs    # P/Invoke wrapper (mirrors SdxLlmRuntime.cs style)
-│       └── SdxLlmRuntime.cs       # vendored from dl4j in-tree bindings
+├── <canonical SDX SDK tree extracted intact from the selected AOT archive>
+├── include/kompile_reasoning.h     # Kompile overlay
+├── lib/libkompile_reasoning.so     # Kompile overlay
+├── bindings/<language>/kompile_*   # Kompile-owned reasoning bindings only
 └── examples/
-    ├── data/fixture.kgraph          # Alice/acme test graph (WORKS_AT edge)
+    ├── data/fixture.kgraph          # optional locally supplied reasoning fixture
     ├── python/chat_with_graph.py    # REFERENCE PIPELINE — runs fully today
     ├── rust/chat_with_graph.rs      # + Cargo.toml
     ├── typescript/chat_with_graph.ts # + package.json
@@ -69,22 +52,18 @@ Classifier naming follows `SdkConstants` conventions in the kompile codebase.
 
 ## Version Pairing
 
-`manifest.json` in each zip stamps:
-- `kompileVersion`: the kompile release version (kompile-graph-reasoning-local artifact version)
-- `sdxVersion`: the dl4j/sdx-aot release version
-- `kgrAbiVersion`: 1 (from `KGR_ABI_VERSION` in kompile_reasoning.h)
-- `sdxLlmAbiVersion`: 1 (from `SDX_LLM_ABI_VERSION` in sdx_llm_c.h)
-- `platform`: e.g. `linux-x86_64`
-- `buildTimestamp`, `gitRevKompile`, `gitRevSdx`
+`kompile-composition-manifest.json` stamps the independent `kompileVersion` and
+`kgrAbiVersion`, plus the upstream `releaseVersion`, `releaseTag`, schema version,
+and SHA-256 of the untouched `sdx-sdk-manifest.json`.
 
 Both ABI versions are CHECKED at runtime by all bindings before first use.
 A mismatch aborts with a clear error rather than crashing unpredictably.
 
 ## Binding Shipping Strategy (Current)
 
-All bindings are shipped as **vendored source** inside the zip.  No package registry
-publication is required to use the SDK.  Language-specific registry publishing is planned
-as Phase 2:
+Kompile reasoning bindings are overlaid from this repository. SDX bindings are never
+vendored here; they remain whatever the canonical manifest-selected SDK provides.
+Language-specific registry publishing remains a later phase.
 
 | Language | Current | Phase 2 target |
 |---|---|---|
@@ -101,7 +80,8 @@ Every example implements the same logical pipeline, mirroring `ChatEngine` seman
 ```
 1. openGraph(kgraphPath)   → reasoning session (kgr ABI)
 2. printToolsCatalog()     → kgr_tools() → JSON array
-3. openModel(modelPath)    → optional; degrades gracefully if absent
+3. openModel(bundlePath)   → canonical compiled SDZ/bundle plus tokenizer metadata;
+                             loose GGUF/GGML is an explicit research-only path
 4. chatLoop:
      - user message
      - build system prompt = instructions + tools catalog JSON
@@ -126,8 +106,8 @@ Tool call parsing (from kompile-chat-local conventions):
 `kompile-chat-local` (JVM / Android / iOS consumer) and this SDK implement the SAME
 logical pipeline over the SAME two C ABIs. The difference is the consumer layer:
 
-- `kompile-chat-local`: uses JNA/JNI to call `kgr_*` and `sdxLlm*` from the JVM.
-  Used in the kompile app, Android app, and iOS app.
+- `kompile-chat-local`: uses JNA/JNI on JVM/Android and the versioned C/Swift bridge on
+  iOS to call `kgr_*` and `sdxLlm*`.
 - `kompile-local-sdk`: ships the `.so`/`.dylib` with language bindings for Python,
   Rust, TypeScript, Swift, and C#. Used by third-party developers integrating
   locally-run LLM+reasoning pipelines.
@@ -191,31 +171,25 @@ in the dl4j repository.
 
 `libsdx_llm.so` side-loads `libjnind4jcpu.so`, `libjniopenblas.so`,
 `libjnitokenizers.so` (and others) from the same directory at model-load time.
-These companions are NOT included in `kompile-local-sdk/lib/` — set
-`SDX_LLM_AOT_HOME` to the unpacked sdx-aot SDK root (where `lib/` contains all
-side-libs alongside `libsdx_llm.so`), or add the sdx-aot `lib/` directory to
-`LD_LIBRARY_PATH`.  `kompile-local-sdk/lib/` contains only the two `.so` files;
-the companion set is dl4j's responsibility to deliver.
+These companions come from the canonical manifest-selected AOT archive.
+Kompile assembly neither selects individual SDX libraries nor rebuilds their layout.
 
 ## dl4j Publishing Requirements
 
-For non-linux-x86_64 platforms, dl4j must publish `libsdx_llm` as:
+DL4J publishes `sdk-v<version>/sdx-sdk-manifest.json`; Kompile selects the artifact by
+component, package role, platform, and variant and uses its exact filename and checksum.
 
-- A GitHub release artifact or Maven classifier (same convention as `nd4j-native` classifiers)
-- Documented in `SDX_MOBILE_LLM_C_API_HANDOFF.md` (already exists in dl4j repo root)
-- Required behaviors: streaming generate, tokenization inside library, embeddings,
-  chat templating, constrained decoding (JSON-Schema/GBNF), Android/iOS mobile builds,
-  memory budgets
+## Assembly Ownership
 
-The `kompile-local-sdk/assemble-local-sdk.sh` script has explicit `MISSING` placeholders
-for each future platform that emit loud errors rather than silent omissions.
+`assemble-local-sdk.sh` requires the canonical manifest and checksum sidecar plus the exact
+selected AOT archive. It verifies the `aot/aot-sdk/platform/variant` record, filename, size,
+and SHA-256, extracts that archive intact, then overlays only Kompile reasoning artifacts.
+Missing or inconsistent inputs are hard failures; no placeholder SDK is emitted.
+The staged directory and ZIP are published as one journaled transaction: deterministic
+backups restore both outputs after a promotion failure or interrupted process, and the
+transaction commits only after both replacements are installed.
 
-## Assembly Script Behavior
-
-`assemble-local-sdk.sh` uses only `cp`, `zip`, and `python3 -c` (for manifest stamp).
-It reads library versions from `KGR_ABI_VERSION` / `SDX_LLM_ABI_VERSION` macros in the
-headers (grep-based, no compilation needed). The output zip is:
-`target/kompile-local-sdk-<kompileVersion>-linux-x86_64.zip`
-
-If `libsdx_llm.so` is absent a loud `*** MISSING ***` notice is printed to stderr and
-`lib/LIBSDX_LLM_MISSING.txt` is written into the zip instead.
+Reproducible mobile application distribution is owned by Maven and
+`kompile-chat-local/mobile/cmake/FinalOfflineDistribution.cmake`, including validation,
+staging, archive verification, and deterministic metadata. Missing accelerator runtimes are
+hard failures in that path; placeholder libraries are never presented as runnable builds.

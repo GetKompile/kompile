@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["cypress"],
+    "moduleResolution": "node",
+    "module": "commonjs",
+    "target": "ES2022",
+    "isolatedModules": false,
+    "noPropertyAccessFromIndexSignature": false
+  },
+  "include": [
+    "cypress/**/*.ts"
+  ]
+}

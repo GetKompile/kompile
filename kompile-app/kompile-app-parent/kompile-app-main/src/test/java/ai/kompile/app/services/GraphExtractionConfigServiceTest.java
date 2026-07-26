@@ -17,6 +17,8 @@ package ai.kompile.app.services;
 
 import ai.kompile.app.services.GraphExtractionConfigService.GraphExtractionConfig;
 import ai.kompile.app.services.agent.CliAgentModelService;
+import ai.kompile.core.crawl.graph.GraphExtractionValidationPolicy;
+import ai.kompile.core.crawl.graph.GraphExtractionValidationPolicy.FailureMode;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -86,10 +88,12 @@ class GraphExtractionConfigServiceTest {
     }
 
     @Test
-    void defaultConfigWritesJsonFileWithoutEnabledKey() throws IOException {
+    void defaultConfigWritesOnlyPersistedConfigurationKeys() throws IOException {
         Path configFile = tempDir.resolve("config").resolve("graph-extraction-config.json");
         assertTrue(Files.exists(configFile));
-        assertFalse(Files.readString(configFile).contains("\"enabled\""));
+        String persisted = Files.readString(configFile);
+        assertFalse(persisted.contains("\"enabled\""));
+        assertFalse(persisted.contains("\"extractionModelDisplayName\""));
     }
 
     // --- isEnabled / getBatchSize ---
@@ -102,6 +106,44 @@ class GraphExtractionConfigServiceTest {
     @Test
     void getBatchSizeReturnsDefaultOf10() {
         assertEquals(10, service.getBatchSize());
+    }
+
+    @Test
+    void defaultConfigEnablesProductionValidationPolicy() {
+        GraphExtractionConfig config = service.getConfig();
+
+        assertNotNull(config.validationPolicy);
+        assertEquals(FailureMode.RETRY, config.validationPolicy.effectiveFailureMode());
+        assertTrue(config.validationPolicy.effectiveEnabledValidators()
+                .contains(GraphExtractionValidationPolicy.ENTITY_NAME_TYPE_CONSISTENCY));
+        assertTrue(config.validationPolicy.effectiveEnabledValidators()
+                .contains(GraphExtractionValidationPolicy.RELATION_SCHEMA_PATTERN));
+    }
+
+    @Test
+    void legacyConfigWithoutValidationPolicyIsMigratedAndPersisted() throws IOException {
+        Path legacyRoot = tempDir.resolve("legacy-project");
+        Path configDir = legacyRoot.resolve("config");
+        Files.createDirectories(configDir);
+        Files.writeString(configDir.resolve("graph-extraction-config.json"), """
+                {
+                  "batchSize": 7,
+                  "schemaEnforcement": "LENIENT",
+                  "entityTypes": [],
+                  "relationshipTypes": []
+                }
+                """);
+
+        GraphExtractionConfigService legacyService = new GraphExtractionConfigService(legacyRoot.toString());
+        legacyService.init();
+
+        GraphExtractionConfig migrated = legacyService.getConfig();
+        assertEquals(7, migrated.batchSize);
+        assertNotNull(migrated.validationPolicy);
+        assertEquals(FailureMode.RETRY, migrated.validationPolicy.effectiveFailureMode());
+
+        String persisted = Files.readString(configDir.resolve("graph-extraction-config.json"));
+        assertTrue(persisted.contains("\"validationPolicy\""));
     }
 
     // --- updateConfig ---
@@ -268,6 +310,41 @@ class GraphExtractionConfigServiceTest {
         assertTrue(service.isEnabled());
         assertEquals(5, config.batchSize); // updated
         assertEquals("STRICT", config.schemaEnforcement); // unchanged
+    }
+
+    @Test
+    void updateConfigPersistsAndDeepCopiesValidationPolicy() {
+        GraphExtractionValidationPolicy policy = GraphExtractionValidationPolicy.builder()
+                .failureMode(FailureMode.WARN)
+                .enabledValidators(List.of(GraphExtractionValidationPolicy.TYPE_NAME_FORMAT))
+                .relationPatterns(List.of("(PERSON)-[:APPROVED_BY]->(CLOSE_STEP)"))
+                .requiredOccurredAtRelationTypes(List.of("FORECASTED_AT"))
+                .requirePatternForEveryRelationType(true)
+                .maxErrorsInRetryPrompt(3)
+                .build();
+        GraphExtractionConfig update = new GraphExtractionConfig();
+        update.validationPolicy = policy;
+
+        GraphExtractionConfig result = service.updateConfig(update);
+
+        assertEquals(FailureMode.WARN, result.validationPolicy.effectiveFailureMode());
+        assertEquals(List.of("(PERSON)-[:APPROVED_BY]->(CLOSE_STEP)"),
+                result.validationPolicy.effectiveRelationPatterns());
+        assertEquals(List.of("FORECASTED_AT"),
+                result.validationPolicy.effectiveRequiredOccurredAtRelationTypes());
+        assertEquals(3, result.validationPolicy.effectiveMaxErrorsInRetryPrompt());
+
+        result.validationPolicy.setRelationPatterns(List.of("(MUTATED)-[:MUTATED]->(MUTATED)"));
+        policy.setFailureMode(FailureMode.DISABLED);
+        GraphExtractionConfig stored = service.getConfig();
+        assertEquals(FailureMode.WARN, stored.validationPolicy.effectiveFailureMode());
+        assertEquals(List.of("(PERSON)-[:APPROVED_BY]->(CLOSE_STEP)"),
+                stored.validationPolicy.effectiveRelationPatterns());
+
+        GraphExtractionConfigService reloaded = new GraphExtractionConfigService(tempDir.toString());
+        reloaded.init();
+        assertEquals(FailureMode.WARN, reloaded.getConfig().validationPolicy.effectiveFailureMode());
+        assertTrue(reloaded.getConfig().validationPolicy.isRequirePatternForEveryRelationType());
     }
 
     // --- resetToDefaults ---

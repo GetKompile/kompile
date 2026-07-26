@@ -91,6 +91,58 @@
   flex: 1;
 }
 
+.pairing-button {
+  color: white;
+  border-color: rgba(255, 255, 255, 0.55);
+}
+
+.pairing-button.pairing-required {
+  background: #fff3e0;
+  border-color: #ffb74d;
+  color: #8a4100;
+}
+
+.pairing-panel {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(280px, 1fr);
+  gap: 12px 24px;
+  align-items: center;
+  padding: 16px 24px;
+  background: #fff8e1;
+  border-bottom: 1px solid #ffe082;
+}
+
+.pairing-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  line-height: 1.4;
+}
+
+.pairing-form {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.pairing-form mat-form-field {
+  flex: 1;
+  min-width: 220px;
+}
+
+.pairing-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.pairing-error {
+  grid-column: 1 / -1;
+  color: #b3261e;
+  font-weight: 500;
+}
+
 .content-area {
   flex: 1;
   overflow: auto;
@@ -127,6 +179,21 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .pairing-panel {
+    grid-template-columns: 1fr;
+    padding: 12px 16px;
+  }
+
+  .pairing-form {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .pairing-form mat-form-field {
+    min-width: 0;
+    width: 100%;
   }
 }
 

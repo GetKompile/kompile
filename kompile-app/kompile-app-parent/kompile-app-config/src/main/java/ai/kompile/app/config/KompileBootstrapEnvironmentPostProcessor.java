@@ -34,11 +34,12 @@ import java.util.Map;
  * only thing left — framework plumbing (datasource, web server, multipart, the MCP server, the
  * per-project data root) — is supplied here from the dependency jar.
  *
- * <p>Registered via app-main's {@code META-INF/spring.factories} under
- * {@code org.springframework.boot.env.EnvironmentPostProcessor}. It lives in <strong>app-main</strong>
- * (not app-core) on purpose: only the full web application and generated instances depend on
- * app-main, so the datasource / MCP-server defaults do NOT leak into the lightweight subprocesses
- * (embedding, vector, etc.) that depend on app-core alone.
+ * <p>Registered via <strong>kompile-app-web-shared</strong>'s {@code META-INF/spring.factories} under
+ * {@code org.springframework.boot.env.EnvironmentPostProcessor} — web-shared is the one module all
+ * three persona processes (admin console, chat, crawl-manager) depend on. It is registered there and
+ * not in app-core on purpose: only full web applications and generated instances pull web-shared in,
+ * so the datasource / MCP-server defaults do NOT leak into the lightweight subprocesses (embedding,
+ * vector, etc.) that depend on app-core alone.
  *
  * <p><strong>Precedence:</strong> added with {@code addLast} (lowest precedence) so anything explicit
  * overrides it — a {@code -D} system property, an OS environment variable, a managed JSON value
@@ -78,8 +79,21 @@ public class KompileBootstrapEnvironmentPostProcessor implements EnvironmentPost
         defaults.put("spring.application.name", "kompile-app");
 
         // --- Orchestrator JPA datasource (H2, file-backed, per-project under the data dir). ---
+        // AUTO_SERVER=TRUE is load-bearing since the persona split: the admin console, kompile-app-chat
+        // and kompile-app-crawl-manager are three JVMs sharing ONE project's orchestrator DB (a fact
+        // sheet created in the crawl manager has to be visible in chat). Embedded H2 is single-JVM, so
+        // the second process to start died on "The file is locked: .../orchestrator-db.mv.db". In
+        // auto-mixed mode the first process opens the file and serves it over loopback; the rest
+        // connect as clients, and the role migrates if that process exits. Same choice already made by
+        // kompile-graph-service and kompile-app-lite.
+        //
+        // DB_CLOSE_ON_EXIT=FALSE is deliberately gone: H2 rejects the pair outright with
+        // "Feature not supported: AUTO_SERVER=TRUE && DB_CLOSE_ON_EXIT=FALSE" [50100]. What it bought
+        // — suppressing H2's own shutdown hook so Spring/Hikari owns shutdown — is not what keeps the
+        // store alive mid-run; DB_CLOSE_DELAY=-1 is, and that stays. kompile-app-lite already runs
+        // this exact combination.
         defaults.put("spring.datasource.url",
-                "jdbc:h2:file:${kompile.data.dir}/data/orchestrator-db;DB_CLOSE_ON_EXIT=FALSE;DB_CLOSE_DELAY=-1;AUTO_RECONNECT=TRUE");
+                "jdbc:h2:file:${kompile.data.dir}/data/orchestrator-db;DB_CLOSE_DELAY=-1;AUTO_RECONNECT=TRUE;AUTO_SERVER=TRUE");
         defaults.put("spring.datasource.driverClassName", "org.h2.Driver");
         defaults.put("spring.datasource.username", "sa");
         defaults.put("spring.datasource.password", "");

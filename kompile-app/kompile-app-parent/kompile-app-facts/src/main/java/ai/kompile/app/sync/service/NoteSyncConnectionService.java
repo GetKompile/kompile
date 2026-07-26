@@ -18,23 +18,27 @@ package ai.kompile.app.sync.service;
 
 import ai.kompile.app.sync.adapter.SyncAdapter;
 import ai.kompile.app.sync.domain.NoteSyncConnection;
+import ai.kompile.app.sync.domain.NoteSyncRun;
 import ai.kompile.app.sync.domain.SyncAuthMode;
 import ai.kompile.app.sync.domain.SyncProvider;
 import ai.kompile.app.sync.dto.SyncConnectionRequest;
 import ai.kompile.app.sync.dto.SyncConnectionResponse;
 import ai.kompile.app.sync.dto.SyncConnectionTestResponse;
-import ai.kompile.app.sync.dto.SyncRunResult;
+import ai.kompile.app.sync.dto.SyncRunResponse;
 import ai.kompile.app.sync.repository.NoteSyncConnectionRepository;
 import ai.kompile.app.sync.repository.NoteSyncRecordRepository;
+import ai.kompile.app.sync.repository.NoteSyncRunRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.scheduling.annotation.Async;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
-import java.util.concurrent.CompletableFuture;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
 @Service
@@ -43,6 +47,7 @@ public class NoteSyncConnectionService {
 
 
 
+    private static final Duration RUN_LEASE_DURATION = Duration.ofMinutes(5);
     private static final Logger log = LoggerFactory.getLogger(NoteSyncConnectionService.class);
 
     @Autowired
@@ -52,7 +57,10 @@ public class NoteSyncConnectionService {
     private NoteSyncRecordRepository syncRecordRepository;
 
     @Autowired
-    private NoteSyncEngine syncEngine;
+    private NoteSyncRunRepository syncRunRepository;
+
+    @Autowired
+    private ApplicationEventPublisher eventPublisher;
 
     @Autowired(required = false)
     private ai.kompile.oauth.service.TokenEncryptionService tokenEncryptionService;
@@ -67,7 +75,7 @@ public class NoteSyncConnectionService {
                 .externalScope(req.getExternalScope())
                 .direction(req.getDirection())
                 .pollCron(req.getPollCron())
-                .repositoryUrl(trimToNull(req.getRepositoryUrl()))
+                .repositoryUrl(sanitizeRepositoryUrl(req.getRepositoryUrl()))
                 .gitBranch(trimToNull(req.getGitBranch()))
                 .gitUsername(trimToNull(req.getGitUsername()))
                 .authMode(resolveAuthMode(req))
@@ -101,7 +109,7 @@ public class NoteSyncConnectionService {
         conn.setExternalScope(req.getExternalScope());
         conn.setDirection(req.getDirection());
         conn.setPollCron(req.getPollCron());
-        conn.setRepositoryUrl(trimToNull(req.getRepositoryUrl()));
+        conn.setRepositoryUrl(sanitizeRepositoryUrl(req.getRepositoryUrl()));
         conn.setGitBranch(trimToNull(req.getGitBranch()));
         conn.setGitUsername(trimToNull(req.getGitUsername()));
         conn.setAuthMode(resolveAuthMode(req));
@@ -155,6 +163,7 @@ public class NoteSyncConnectionService {
     public SyncConnectionResponse enableConnection(Long id) {
         NoteSyncConnection conn = connectionRepository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("Connection not found: " + id));
+        requireAuthReady(conn);
         conn.setEnabled(true);
         conn = connectionRepository.save(conn);
         return SyncConnectionResponse.from(conn);
@@ -188,16 +197,98 @@ public class NoteSyncConnectionService {
         return result;
     }
 
-    @Async
-    public CompletableFuture<SyncRunResult> triggerSync(Long connectionId) {
-        SyncRunResult result = syncEngine.syncConnection(connectionId);
-        return CompletableFuture.completedFuture(result);
+    /**
+     * Atomically leases a connection, records the run, and dispatches it only after this
+     * transaction commits. The same session id is used by the API, worker, WebSocket, and graph crawl.
+     */
+    public SyncRunResponse startSync(Long connectionId, boolean pullOnly) {
+        NoteSyncConnection conn = connectionRepository.findById(connectionId)
+                .orElseThrow(() -> new IllegalArgumentException("Connection not found: " + connectionId));
+        validateCanRun(conn);
+
+        Instant now = Instant.now();
+        String displacedRunId = conn.getActiveSyncRunId();
+        Instant displacedLease = conn.getSyncLeaseExpiresAt();
+        String sessionId = (pullOnly ? "pull-" : "sync-") + UUID.randomUUID();
+        int acquired = connectionRepository.acquireRunLease(
+                connectionId, sessionId, now, now.plus(RUN_LEASE_DURATION));
+        if (acquired != 1) {
+            NoteSyncConnection active = connectionRepository.findById(connectionId).orElse(conn);
+            throw new SyncAlreadyRunningException(
+                    active.getActiveSyncRunId(), active.getSyncLeaseExpiresAt());
+        }
+
+        if (displacedRunId != null
+                && (displacedLease == null || !displacedLease.isAfter(now))) {
+            markDisplacedRunInterrupted(displacedRunId, now);
+        }
+
+        NoteSyncRun run = NoteSyncRun.builder()
+                .id(sessionId)
+                .connectionId(connectionId)
+                .factSheetId(conn.getFactSheetId())
+                .provider(conn.getProvider())
+                .mode(pullOnly ? "PULL" : "FULL")
+                .status("QUEUED")
+                .stage("QUEUED")
+                .message("Source sync queued")
+                .graphStatus("NOT_REQUIRED")
+                .checkpointBefore(conn.getLastSyncAt())
+                .queuedAt(now)
+                .updatedAt(now)
+                .build();
+        run = syncRunRepository.save(run);
+        eventPublisher.publishEvent(new NoteSyncRunQueuedEvent(sessionId, connectionId, pullOnly));
+        return SyncRunResponse.from(run);
     }
 
-    @Async
-    public CompletableFuture<SyncRunResult> triggerPull(Long connectionId) {
-        SyncRunResult result = syncEngine.pullConnection(connectionId);
-        return CompletableFuture.completedFuture(result);
+    public SyncRunResponse triggerSync(Long connectionId) {
+        return startSync(connectionId, false);
+    }
+
+    public SyncRunResponse triggerPull(Long connectionId) {
+        return startSync(connectionId, true);
+    }
+
+    @Transactional(readOnly = true)
+    public SyncRunResponse getRun(String sessionId) {
+        return syncRunRepository.findById(sessionId)
+                .map(SyncRunResponse::from)
+                .orElseThrow(() -> new IllegalArgumentException("Sync run not found: " + sessionId));
+    }
+
+    @Transactional(readOnly = true)
+    public List<SyncRunResponse> listRuns(Long connectionId) {
+        return listRuns(connectionId, null);
+    }
+
+    @Transactional(readOnly = true)
+    public List<SyncRunResponse> listRuns(Long connectionId, Long factSheetId) {
+        List<NoteSyncRun> runs;
+        if (connectionId != null) {
+            runs = syncRunRepository.findTop50ByConnectionIdOrderByQueuedAtDesc(connectionId);
+        } else if (factSheetId != null) {
+            runs = syncRunRepository.findTop50ByFactSheetIdOrderByQueuedAtDesc(factSheetId);
+        } else {
+            runs = syncRunRepository.findTop50ByOrderByQueuedAtDesc();
+        }
+        return runs.stream().map(SyncRunResponse::from).toList();
+    }
+
+    public boolean renewRunLease(Long connectionId, String sessionId) {
+        Instant now = Instant.now();
+        return connectionRepository.renewRunLease(
+                connectionId, sessionId, now, now.plus(RUN_LEASE_DURATION)) == 1;
+    }
+
+    public void renewRunLeaseOrThrow(Long connectionId, String sessionId) {
+        if (!renewRunLease(connectionId, sessionId)) {
+            throw new SyncLeaseLostException(connectionId, sessionId);
+        }
+    }
+
+    public void releaseRunLease(Long connectionId, String sessionId) {
+        connectionRepository.releaseRunLease(connectionId, sessionId, Instant.now());
     }
 
     public SyncConnectionResponse updateAutoSync(Long id, boolean enabled, String pollCron) {
@@ -205,9 +296,85 @@ public class NoteSyncConnectionService {
                 .orElseThrow(() -> new IllegalArgumentException("Connection not found: " + id));
         conn.setPollCron(enabled ? requireCron(pollCron) : null);
         if (enabled) {
+            requireAuthReady(conn);
             conn.setEnabled(true);
         }
         return SyncConnectionResponse.from(connectionRepository.save(conn));
+    }
+
+    /**
+     * Synchronous guard used by controllers before an asynchronous run is accepted.
+     */
+    public void validateCanRun(Long id) {
+        NoteSyncConnection conn = connectionRepository.findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("Connection not found: " + id));
+        validateCanRun(conn);
+    }
+
+    private void validateCanRun(NoteSyncConnection conn) {
+        if (!Boolean.TRUE.equals(conn.getEnabled())) {
+            throw new IllegalArgumentException(
+                    "Source connection is disabled. Test authentication and enable it before syncing.");
+        }
+        requireAuthReady(conn);
+    }
+
+    private void markDisplacedRunInterrupted(String runId, Instant now) {
+        syncRunRepository.findById(runId).ifPresent(run -> {
+            if (!isTerminal(run.getStatus())) {
+                run.setStatus("INTERRUPTED");
+                run.setStage("INTERRUPTED");
+                run.setMessage("Run lease expired before completion");
+                run.setErrorMessage("The worker stopped reporting progress and its lease expired.");
+                run.setFinishedAt(now);
+                syncRunRepository.save(run);
+            }
+        });
+    }
+
+    private boolean isTerminal(String status) {
+        return "COMPLETED".equals(status)
+                || "PARTIAL".equals(status)
+                || "ERROR".equals(status)
+                || "INTERRUPTED".equals(status);
+    }
+
+    public static final class SyncAlreadyRunningException extends IllegalStateException {
+        private final String activeRunId;
+        private final Instant leaseExpiresAt;
+
+        public SyncAlreadyRunningException(String activeRunId, Instant leaseExpiresAt) {
+            super("A source sync is already active"
+                    + (activeRunId == null ? "" : ": " + activeRunId));
+            this.activeRunId = activeRunId;
+            this.leaseExpiresAt = leaseExpiresAt;
+        }
+
+        public String getActiveRunId() {
+            return activeRunId;
+        }
+
+        public Instant getLeaseExpiresAt() {
+            return leaseExpiresAt;
+        }
+    }
+
+    /** Fencing failure raised when a stale worker no longer owns its connection lease. */
+    public static final class SyncLeaseLostException extends IllegalStateException {
+        public SyncLeaseLostException(Long connectionId, String sessionId) {
+            super("Source sync lease is no longer owned by run " + sessionId
+                    + " for connection " + connectionId);
+        }
+    }
+
+    private void requireAuthReady(NoteSyncConnection conn) {
+        SyncAuthMode mode = conn.getAuthMode() == null ? resolveAuthMode(conn) : conn.getAuthMode();
+        boolean credentialsRequired = conn.getProvider() == SyncProvider.NOTION
+                || mode != SyncAuthMode.NONE;
+        if (credentialsRequired && !"VALID".equalsIgnoreCase(conn.getAuthStatus())) {
+            throw new IllegalArgumentException(
+                    "Source authentication must pass Test Auth before this connection can be enabled or synced.");
+        }
     }
 
     private String requireCron(String pollCron) {
@@ -315,11 +482,26 @@ public class NoteSyncConnectionService {
         return value.trim();
     }
 
+    private String sanitizeRepositoryUrl(String value) {
+        String candidate = trimToNull(value);
+        if (candidate == null) return null;
+        int scheme = candidate.indexOf("://");
+        int at = candidate.indexOf('@', Math.max(0, scheme + 3));
+        if (scheme >= 0 && at > scheme) {
+            candidate = candidate.substring(0, scheme + 3) + candidate.substring(at + 1);
+        }
+        int query = candidate.indexOf('?');
+        if (query >= 0) candidate = candidate.substring(0, query);
+        int fragment = candidate.indexOf('#');
+        if (fragment >= 0) candidate = candidate.substring(0, fragment);
+        return candidate;
+    }
+
     private String encryptToken(String plainToken) {
         if (tokenEncryptionService != null) {
             return tokenEncryptionService.encrypt(plainToken);
         }
-        log.warn("TokenEncryptionService not available, storing Obsidian token in plaintext");
-        return plainToken;
+        throw new IllegalStateException(
+                "Credential encryption is unavailable; the token was not stored");
     }
 }

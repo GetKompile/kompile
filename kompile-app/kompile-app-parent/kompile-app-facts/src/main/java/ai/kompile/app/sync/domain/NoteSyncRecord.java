@@ -72,7 +72,7 @@ public class NoteSyncRecord {
     @Builder.Default
     private Boolean pendingPush = false;
 
-    /** SYNCED, CONFLICT, ERROR, PENDING */
+    /** SYNCED, CONFLICT, ERROR, PENDING, EXTERNAL_MISSING, EXTERNAL_DELETED */
     @Column(length = 20)
     @Builder.Default
     private String status = "PENDING";

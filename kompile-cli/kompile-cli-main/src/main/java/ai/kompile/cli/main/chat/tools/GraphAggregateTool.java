@@ -112,9 +112,10 @@ public class GraphAggregateTool implements CliTool {
         String graphId = params.path("graph_id").asText(null);
         boolean groupBySubtype = params.path("group_by_subtype").asBoolean(false);
 
-        if (!backend.isAvailable()) {
-            return ToolResult.error("Graph aggregation requires a running kompile-app instance. " +
-                    "Start kompile-app or use --url to connect.");
+        if (!backend.isAvailable("/api/graph/aggregate")) {
+            return ToolResult.error("Graph aggregation requires a running kompile-app-chat instance at "
+                    + backend.baseUrlFor("/api/graph/aggregate")
+                    + ". Start it with: kompile manage start kompile-app-chat, or use --url to connect.");
         }
 
         try {

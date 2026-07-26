@@ -89,6 +89,26 @@
             <destName>kompile-model-staging.jar</destName>
         </file>
 
+        <!-- ============ Persona app Spring Boot exec JARs ============
+             The end-user apps: chat on :8081, the crawl manager on :8082. kompile-app-main
+             is the admin console and no longer mounts the chat or crawl APIs, so without
+             these two a dist has no end-user surface at all — they are not optional extras.
+             Same shipping shape as the staging service above: exec jar by default, and the
+             launcher scripts `bin/kompile-chat.sh` / `bin/kompile-crawl-manager.sh` auto-prefer
+             a native binary in bin/ if a native profile is ever added. Staged into
+             ${project.build.directory}/persona-deps by the maven-dependency-plugin
+             (see kompile-dist/pom.xml). -->
+        <file>
+            <source>${project.build.directory}/persona-deps/kompile-app-chat-${project.version}-exec.jar</source>
+            <outputDirectory>lib</outputDirectory>
+            <destName>kompile-chat.jar</destName>
+        </file>
+        <file>
+            <source>${project.build.directory}/persona-deps/kompile-app-crawl-manager-${project.version}-exec.jar</source>
+            <outputDirectory>lib</outputDirectory>
+            <destName>kompile-crawl-manager.jar</destName>
+        </file>
+
         <!-- ============ kompile-server exec JAR (JBang/jar fallback) ============
              Produced by kompile-app-main's repackage-exec execution, which runs in both
              the `native` profile (kompile.dist) and the `uber` profile (kompile.uber).
@@ -161,6 +181,35 @@
             <outputDirectory>bin</outputDirectory>
             <includes>
                 <include>kompile-model-staging</include>
+            </includes>
+            <fileMode>0755</fileMode>
+        </fileSet>
+
+        <!-- ============ Optional persona app native binaries ============
+             Neither persona app declares a native-maven-plugin profile today, so in
+             practice these fileSets match nothing and the launcher scripts run the exec
+             jars from lib/. They are here so that adding a native profile needs no change
+             to this descriptor.
+
+             When that profile is added, set imageName to the DIST name (kompile-chat,
+             kompile-crawl-manager) rather than the artifactId. An assembly fileSet cannot
+             rename, so a binary built as `kompile-app-chat` would land in bin/ under a
+             different name here than build-dist.sh gives it, and the launcher would find
+             it on one dist path and not the other. Matching the names up front is what
+             keeps the two dist builders honest. -->
+        <fileSet>
+            <directory>${project.parent.basedir}/kompile-app/kompile-app-parent/kompile-app-chat/target</directory>
+            <outputDirectory>bin</outputDirectory>
+            <includes>
+                <include>kompile-chat</include>
+            </includes>
+            <fileMode>0755</fileMode>
+        </fileSet>
+        <fileSet>
+            <directory>${project.parent.basedir}/kompile-app/kompile-app-parent/kompile-app-crawl-manager/target</directory>
+            <outputDirectory>bin</outputDirectory>
+            <includes>
+                <include>kompile-crawl-manager</include>
             </includes>
             <fileMode>0755</fileMode>
         </fileSet>

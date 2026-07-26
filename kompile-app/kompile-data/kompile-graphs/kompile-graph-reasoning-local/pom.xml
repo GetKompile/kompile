@@ -274,5 +274,112 @@
                 </plugins>
             </build>
         </profile>
+
+        <!--
+            Android AOT remains implemented by build-android-ndk.sh, but Maven owns
+            compilation, dependency resolution, invocation, packaging, and attachment.
+            It joins the root mobile reactor with -Dkompile.mobile=<variant>; use
+            -Pandroid-aot when building this module directly.
+        -->
+        <profile>
+            <id>android-aot</id>
+            <activation>
+                <property>
+                    <name>kompile.mobile</name>
+                </property>
+            </activation>
+            <properties>
+                <!--
+                    The root mobile reactor supplies these shared properties.
+                    Direct module builds may still override kompile.android.*
+                    explicitly, preserving the standalone profile.
+                -->
+                <kompile.android.ndk>${mobile.android.ndk}</kompile.android.ndk>
+                <kompile.android.graalvm>${mobile.graalvm.home}</kompile.android.graalvm>
+                <kompile.android.jobs>12</kompile.android.jobs>
+                <kompile.android.work.dir>${project.build.directory}/android-ndk-aot</kompile.android.work.dir>
+                <kompile.android.output.dir>${project.build.directory}/android-aot</kompile.android.output.dir>
+                <kompile.android.classpath.file>${project.build.directory}/android-aot-classpath.txt</kompile.android.classpath.file>
+            </properties>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-dependency-plugin</artifactId>
+                        <version>3.8.1</version>
+                        <executions>
+                            <execution>
+                                <id>build-android-aot-classpath</id>
+                                <phase>process-classes</phase>
+                                <goals>
+                                    <goal>build-classpath</goal>
+                                </goals>
+                                <configuration>
+                                    <includeScope>runtime</includeScope>
+                                    <outputAbsoluteArtifactFilename>true</outputAbsoluteArtifactFilename>
+                                    <outputFile>${kompile.android.classpath.file}</outputFile>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <version>3.3.0</version>
+                        <executions>
+                            <execution>
+                                <id>build-android-aot-library</id>
+                                <phase>package</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>bash</executable>
+                                    <workingDirectory>${project.basedir}</workingDirectory>
+                                    <arguments>
+                                        <argument>${project.basedir}/build-android-ndk.sh</argument>
+                                        <argument>--android-ndk</argument>
+                                        <argument>${kompile.android.ndk}</argument>
+                                        <argument>--graalvm-home</argument>
+                                        <argument>${kompile.android.graalvm}</argument>
+                                        <argument>--jobs</argument>
+                                        <argument>${kompile.android.jobs}</argument>
+                                        <argument>--work-dir</argument>
+                                        <argument>${kompile.android.work.dir}</argument>
+                                        <argument>--output-dir</argument>
+                                        <argument>${kompile.android.output.dir}</argument>
+                                        <argument>--classes-dir</argument>
+                                        <argument>${project.build.outputDirectory}</argument>
+                                        <argument>--classpath-file</argument>
+                                        <argument>${kompile.android.classpath.file}</argument>
+                                    </arguments>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-assembly-plugin</artifactId>
+                        <version>3.7.1</version>
+                        <executions>
+                            <execution>
+                                <id>assemble-android-aot-sdk</id>
+                                <phase>package</phase>
+                                <goals>
+                                    <goal>single</goal>
+                                </goals>
+                                <configuration>
+                                    <descriptors>
+                                        <descriptor>src/main/assembly/android-aot-sdk.xml</descriptor>
+                                    </descriptors>
+                                    <attach>true</attach>
+                                    <appendAssemblyId>true</appendAssemblyId>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
     </profiles>
 </project>

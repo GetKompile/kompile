@@ -15,5 +15,6 @@ public record NoteSyncPulledEvent(
         Long connectionId,
         Long factSheetId,
         SyncProvider provider,
-        int pulledCount) {
+        int pulledCount,
+        int deletedCount) {
 }

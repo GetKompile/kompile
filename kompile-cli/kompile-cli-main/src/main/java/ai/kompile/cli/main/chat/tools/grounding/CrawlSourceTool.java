@@ -63,7 +63,8 @@ public class CrawlSourceTool implements CliTool {
                 + "Use dryRun=true for a synchronous LLM-extraction preview with ZERO persistence. "
                 + "The steps parameter selects which pipeline stages execute "
                 + "(PREPROCESSING, GRAPH_EXTRACTION, ENTITY_RESOLUTION, EDGE_COMPUTATION, "
-                + "VECTOR_INDEXING, ENRICHMENT); loading, conversion, and chunking always run. "
+                + "VECTOR_INDEXING, ENTITY_PARTITIONS, ENRICHMENT); loading, conversion, and "
+                + "chunking always run. "
                 + "Server-side dependency resolution ensures required predecessor stages are always "
                 + "included. Requires a running kompile-app. Default wait is 900 s; behind a reverse "
                 + "proxy the timeoutSeconds value must stay under the proxy read timeout. "
@@ -103,7 +104,8 @@ public class CrawlSourceTool implements CliTool {
         stepsNode.putObject("items").put("type", "string");
         stepsNode.put("description",
                 "Pipeline stages to run. Selectable: PREPROCESSING, GRAPH_EXTRACTION, "
-                + "ENTITY_RESOLUTION, EDGE_COMPUTATION, VECTOR_INDEXING, ENRICHMENT. "
+                + "ENTITY_RESOLUTION, EDGE_COMPUTATION, VECTOR_INDEXING, ENTITY_PARTITIONS, "
+                + "ENRICHMENT. "
                 + "Dependencies are auto-added server-side. Omit to run all stages.");
         props.putObject("factSheetId")
                 .put("type", "integer")

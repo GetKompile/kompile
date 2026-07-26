@@ -32,6 +32,11 @@
     <dependencies>
         <dependency>
             <groupId>ai.kompile</groupId>
+            <artifactId>kompile-project-contract</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-cli-common</artifactId>
             <version>${project.version}</version>
         </dependency>

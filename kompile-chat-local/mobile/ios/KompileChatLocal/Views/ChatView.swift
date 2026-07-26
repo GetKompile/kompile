@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 /// Features:
 ///   - Message bubble list with auto-scroll to bottom.
 ///   - Collapsible ToolRoundCard rows for each tool dispatch.
-///   - LOCAL / REMOTE route badge in the nav bar.
+///   - LOCAL / MODEL REQUIRED route badge in the nav bar.
 ///   - Graph-loaded banner showing OVERVIEW summary when a .kgraph is open.
 ///   - UIDocumentPicker import for .kgraph and model files (via Settings nav link).
 struct ChatView: View {
@@ -158,7 +158,7 @@ struct ChatView: View {
             Text("Ask about your knowledge graph")
                 .font(.title3.weight(.semibold))
             Text(inferenceRouter.activeRoute == .unavailable
-                 ? "Configure a remote endpoint in Settings to get started."
+                 ? "Import a compatible local model in Settings to get started."
                  : "Type a message below.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
@@ -196,9 +196,8 @@ struct ChatView: View {
     private var routeBadgeView: some View {
         let (label, color): (String, Color) = {
             switch inferenceRouter.activeRoute {
-            case .local:   return ("LOCAL", .green)
-            case .remote:  return ("REMOTE", .blue)
-            case .unavailable: return ("NO BACKEND", .red)
+            case .local: return ("LOCAL", .green)
+            case .unavailable: return ("MODEL REQUIRED", .red)
             }
         }()
         return Text(label)

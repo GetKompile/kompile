@@ -1,5 +1,7 @@
 package ai.kompile.chat.local;
 
+import ai.kompile.project.knowledge.PortableKnowledge;
+
 import java.io.IOException;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
@@ -9,6 +11,7 @@ import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -62,10 +65,28 @@ public final class ProjectArchiveInstaller {
         String modelRelative = selectModel(
                 archive.identity().descriptor(), archive.manifest(), targetProfile);
 
-        List<String> sourceRelatives = archive.manifest().entries().keySet().stream()
-                .filter(path -> path.startsWith(MARKDOWN_ROOT))
+        List<String> knowledgeRelatives = archive.manifest().entries().keySet().stream()
+                .filter(PortableKnowledge::isPortablePath)
                 .sorted()
                 .toList();
+        if (!knowledgeRelatives.contains(PROJECT_DESCRIPTOR)
+                || !knowledgeRelatives.contains(graphRelative)) {
+            throw new IOException("Project archive is missing required portable knowledge payloads");
+        }
+        List<String> sourceRelatives = knowledgeRelatives.stream()
+                .filter(path -> path.startsWith(MARKDOWN_ROOT))
+                .toList();
+        List<PortableKnowledge.Entry> knowledgeInventory = knowledgeRelatives.stream()
+                .map(path -> {
+                    ProjectBundleResolver.InventoryEntry entry = archive.manifest().entries().get(path);
+                    return new PortableKnowledge.Entry(entry.path(), entry.size(), entry.sha256());
+                })
+                .toList();
+        String knowledgeRevision = PortableKnowledge.revision(
+                archive.identity().projectId(),
+                archive.identity().name(),
+                graphRelative,
+                knowledgeInventory);
 
         String prefix = safeSegment(archive.identity().projectId())
                 + "-" + archive.revision().substring(0, 12)
@@ -75,12 +96,15 @@ public final class ProjectArchiveInstaller {
         boolean moved = false;
         try {
             Files.createDirectory(pending);
-            extract(archive, PROJECT_DESCRIPTOR, pending);
-            Path graphPath = extract(archive, graphRelative, pending);
+            Map<String, Path> knowledgePaths = new LinkedHashMap<>();
+            for (String relative : knowledgeRelatives) {
+                knowledgePaths.put(relative, extract(archive, relative, pending));
+            }
+            Path graphPath = knowledgePaths.get(graphRelative);
             Path modelPath = extract(archive, modelRelative, pending);
             List<Path> sources = new ArrayList<>(sourceRelatives.size());
             for (String source : sourceRelatives) {
-                sources.add(extract(archive, source, pending));
+                sources.add(knowledgePaths.get(source));
             }
 
             moveAtomically(pending, activated);
@@ -94,6 +118,7 @@ public final class ProjectArchiveInstaller {
                     archive.identity().projectId(),
                     archive.identity().name(),
                     archive.revision(),
+                    knowledgeRevision,
                     targetProfile);
         } catch (IOException | RuntimeException failure) {
             deleteTree(moved ? activated : pending);
@@ -294,6 +319,7 @@ public final class ProjectArchiveInstaller {
         private final String projectId;
         private final String projectName;
         private final String revision;
+        private final String knowledgeRevision;
         private final String targetProfile;
 
         private InstalledProject(
@@ -305,6 +331,7 @@ public final class ProjectArchiveInstaller {
                 String projectId,
                 String projectName,
                 String revision,
+                String knowledgeRevision,
                 String targetProfile) {
             this.installationRoot = installationRoot;
             this.modelPath = modelPath;
@@ -314,6 +341,7 @@ public final class ProjectArchiveInstaller {
             this.projectId = projectId;
             this.projectName = projectName;
             this.revision = revision;
+            this.knowledgeRevision = knowledgeRevision;
             this.targetProfile = targetProfile;
         }
 
@@ -347,6 +375,16 @@ public final class ProjectArchiveInstaller {
 
         public String revision() {
             return revision;
+        }
+
+        /** Content revision for descriptor, graph, Markdown, fact sheets, and indexes only. */
+        public String knowledgeRevision() {
+            return knowledgeRevision;
+        }
+
+        /** Root containing the portable knowledge tree. Initially the immutable installation root. */
+        public Path knowledgeRoot() {
+            return installationRoot;
         }
 
         public String targetProfile() {

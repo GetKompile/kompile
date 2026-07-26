@@ -207,7 +207,11 @@ if [ "${SKIP_JAVA_BUILD}" = true ] && [ "${JARS_ONLY}" = true ] && [ "${APP_NATI
     APP_EXEC_JAR=$(ls kompile-app/kompile-app-parent/kompile-app-main/target/*-exec.jar 2>/dev/null | head -1)
     STAGING_EXEC_JAR=$(ls kompile-app/kompile-models/kompile-model-staging/target/*-exec.jar 2>/dev/null | head -1)
 
-    if [ -z "${APP_EXEC_JAR}" ] || [ -z "${STAGING_EXEC_JAR}" ]; then
+    CHAT_EXEC_JAR=$(ls kompile-app/kompile-app-parent/kompile-app-chat/target/*-exec.jar 2>/dev/null | head -1)
+    CRAWL_MGR_EXEC_JAR=$(ls kompile-app/kompile-app-parent/kompile-app-crawl-manager/target/*-exec.jar 2>/dev/null | head -1)
+
+    if [ -z "${APP_EXEC_JAR}" ] || [ -z "${STAGING_EXEC_JAR}" ] \
+       || [ -z "${CHAT_EXEC_JAR}" ] || [ -z "${CRAWL_MGR_EXEC_JAR}" ]; then
         echo ""
         echo "──── Step 1b: Building exec JARs ─────────────────────────────────"
         echo ""
@@ -226,6 +230,20 @@ if [ "${SKIP_JAVA_BUILD}" = true ] && [ "${JARS_ONLY}" = true ] && [ "${APP_NATI
     if [ "${STAGING_NATIVE}" = true ] && [ -z "${STAGING_EXEC_JAR}" ]; then
         echo "  kompile-model-staging: exec JAR already built by default"
     fi
+
+    # The persona apps emit their exec jar on every build (no -Dkompile.uber), so this only
+    # fires when an earlier --skip-java-build left their target/ empty.
+    for PERSONA_MODULE in kompile-app-chat kompile-app-crawl-manager; do
+        if ! ls "kompile-app/kompile-app-parent/${PERSONA_MODULE}/target"/*-exec.jar 1>/dev/null 2>&1; then
+            echo "  ${PERSONA_MODULE}: building exec JAR..."
+            (
+                cd "kompile-app/kompile-app-parent/${PERSONA_MODULE}"
+                ${MVN} package -DskipTests ${BACKEND_FLAG} ${CUDA_FLAG} ${EXTRA_MVN_FLAGS} \
+                    2>&1 | tee "/tmp/${PERSONA_MODULE}-jar.log"
+            )
+            echo "  ✓ ${PERSONA_MODULE} exec JAR built"
+        fi
+    done
 fi
 
 # ── Step 2: Native image builds ──────────────────────────────────────────────
@@ -543,6 +561,60 @@ if [ "${STAGING_NATIVE}" = true ]; then
     fi
 fi
 
+# Copy the end-user persona apps: chat (:8081) and the crawl manager (:8082).
+#
+# These ship whenever the server ships. kompile-app-main is the admin console now and no
+# longer mounts the chat or crawl APIs at all, so a dist carrying only kompile-server has no
+# chat and no crawl manager in it. See docs/architecture/app-persona-boundary.md.
+#
+# Unlike app-main — a library whose exec jar is opt-in behind -Dkompile.uber — these follow
+# the model-staging shape: the -exec.jar classifier is produced on every build, so a plain
+# reactor build is enough. Neither declares a native-maven-plugin profile yet, so in practice
+# the JAR branch is the one that runs; the binary branch is here so adding a native profile
+# needs no change to this script. That profile must set imageName to the DIST name
+# (kompile-chat, kompile-crawl-manager), not the artifactId: the assembly descriptor
+# dist.xml picks the binary up with a fileSet, which cannot rename, so the two dist
+# builders only agree if the built name is already the shipped name.
+#
+# APP_NATIVE gates this because it means "the server ships in this variant" — it is true for
+# every variant except cli-only, and --jars-only selects the JAR branch below rather than
+# turning it off.
+if [ "${APP_NATIVE}" = true ]; then
+    for PERSONA in "kompile-app-chat:kompile-chat" "kompile-app-crawl-manager:kompile-crawl-manager"; do
+        PERSONA_MODULE="${PERSONA%%:*}"
+        PERSONA_ARTIFACT="${PERSONA##*:}"
+        PERSONA_TARGET="kompile-app/kompile-app-parent/${PERSONA_MODULE}/target"
+        if [ -f "${PERSONA_TARGET}/${PERSONA_ARTIFACT}" ]; then
+            cp "${PERSONA_TARGET}/${PERSONA_ARTIFACT}" "${DIST_DIR}/bin/${PERSONA_ARTIFACT}"
+            chmod +x "${DIST_DIR}/bin/${PERSONA_ARTIFACT}"
+            normalize_elf_portability "${DIST_DIR}/bin/${PERSONA_ARTIFACT}"
+            echo "  bin/${PERSONA_ARTIFACT} ($(du -h "${PERSONA_TARGET}/${PERSONA_ARTIFACT}" | cut -f1))"
+        elif ls "${PERSONA_TARGET}"/*-exec.jar 1>/dev/null 2>&1; then
+            PERSONA_JAR=$(ls "${PERSONA_TARGET}"/*-exec.jar | head -1)
+            cp "${PERSONA_JAR}" "${DIST_DIR}/lib/${PERSONA_ARTIFACT}.jar"
+            echo "  lib/${PERSONA_ARTIFACT}.jar ($(du -h "${PERSONA_JAR}" | cut -f1))"
+        else
+            echo "  WARN: ${PERSONA_MODULE} exec jar not found — ${PERSONA_ARTIFACT} absent from this dist"
+        fi
+    done
+fi
+
+# Copy the launcher scripts into bin/ (every variant).
+#
+# These are the wrappers that actually start the JVM services shipped in lib/:
+# kompile-server.sh, kompile-model-staging.sh, kompile-chat.sh, kompile-crawl-manager.sh.
+# dist.xml ships them via a fileSet on the same directory; this script had no equivalent,
+# so a dist built here carried lib/kompile-server.jar and lib/kompile-model-staging.jar
+# with nothing to launch them. Copying the directory rather than naming files keeps the
+# two dist paths from drifting again as scripts are added.
+SCRIPTS_SRC="kompile-dist/src/main/scripts"
+if [ -d "${SCRIPTS_SRC}" ]; then
+    cp "${SCRIPTS_SRC}"/*.sh "${DIST_DIR}/bin/"
+    chmod +x "${DIST_DIR}/bin/"*.sh
+    LAUNCHER_COUNT=$(ls "${DIST_DIR}/bin/"*.sh 2>/dev/null | wc -l)
+    echo "  bin/ (${LAUNCHER_COUNT} launcher scripts)"
+fi
+
 # Copy JBang catalog and quick-start guide into the dist root (every variant)
 JBANG_CATALOG_SRC="kompile-dist/src/main/resources/jbang-catalog.json"
 JBANG_MD_SRC="kompile-dist/src/main/resources/JBANG.md"
@@ -738,6 +810,8 @@ cat > "${DIST_DIR}/.dist-info.json" << EOF
     "cli": $([ -f "${DIST_DIR}/bin/kompile" ] && echo true || echo false),
     "server": $([ -f "${DIST_DIR}/bin/kompile-server" ] || [ -f "${DIST_DIR}/lib/kompile-server.jar" ] && echo true || echo false),
     "model-staging": $([ -f "${DIST_DIR}/bin/kompile-model-staging" ] || [ -f "${DIST_DIR}/lib/kompile-model-staging.jar" ] && echo true || echo false),
+    "chat": $([ -f "${DIST_DIR}/bin/kompile-chat" ] || [ -f "${DIST_DIR}/lib/kompile-chat.jar" ] && echo true || echo false),
+    "crawl-manager": $([ -f "${DIST_DIR}/bin/kompile-crawl-manager" ] || [ -f "${DIST_DIR}/lib/kompile-crawl-manager.jar" ] && echo true || echo false),
     "bundled-runtime": $([ -d "${DIST_DIR}/runtime" ] && echo true || echo false)
   },
   "backend": "${ND4J_BACKEND:-none}"

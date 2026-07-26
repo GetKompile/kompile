@@ -86,6 +86,11 @@ public final class JobResourceProfiles {
                                     "EDGE_COMPUTATION", true, 5 * GB, 30, false),
                             new JobResourceProfile.PhaseResourceProfile(
                                     "VECTOR_INDEXING", true, 5 * GB, 60, false),
+                            // Partition coverage re-reads chunks through the extraction subprocess,
+                            // which arbitrates its own device — same shape as GRAPH_EXTRACTION, so
+                            // the job must not hold an in-process GPU reservation across it.
+                            new JobResourceProfile.PhaseResourceProfile(
+                                    "ENTITY_PARTITIONS", false, 0, 120, true),
                             new JobResourceProfile.PhaseResourceProfile(
                                     "ENRICHMENT", false, 0, 180, true),
                             new JobResourceProfile.PhaseResourceProfile(

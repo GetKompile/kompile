@@ -1,4 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="ic_launcher_background">#005FAF</color>
+    <!-- Kompile brand blue; matches the kompile-logo.svg mark in kompile-app-main. -->
+    <color name="ic_launcher_background">#2563EB</color>
+    <!-- Window background mirrors KompileChatTheme's Compose background color so the
+         frame Android draws before first composition matches the app, not a default.
+         values-night overrides this for dark mode. -->
+    <color name="window_background">#FDFBFF</color>
 </resources>

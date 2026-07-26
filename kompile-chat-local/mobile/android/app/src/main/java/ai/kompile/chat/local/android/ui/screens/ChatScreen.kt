@@ -30,7 +30,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.AddComment
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ExpandLess
@@ -65,18 +65,23 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import ai.kompile.chat.local.android.R
 import ai.kompile.chat.local.android.viewmodel.ChatViewModel
+import ai.kompile.chat.local.android.viewmodel.EngineNotice
 import ai.kompile.chat.local.android.viewmodel.GraphUiState
 import ai.kompile.chat.local.android.viewmodel.ModelUiState
 import ai.kompile.chat.local.android.viewmodel.ProjectImportOutcome
 import ai.kompile.chat.local.android.viewmodel.ToolRoundUi
 import ai.kompile.chat.local.android.viewmodel.UiMessage
+import ai.kompile.chat.local.android.viewmodel.engineNotice
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -95,7 +100,9 @@ fun ChatScreen(
     val listState = rememberLazyListState()
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
-    var importingProject by remember { mutableStateOf(false) }
+    // Import progress lives in the ViewModel so an import started on any screen is
+    // visible here and can never run twice concurrently.
+    val importingProject by vm.importBusy.collectAsState()
     var importError by remember { mutableStateOf<String?>(null) }
 
     val projectPicker = rememberLauncherForActivityResult(
@@ -103,15 +110,27 @@ fun ChatScreen(
     ) { uri: Uri? ->
         uri?.let {
             scope.launch {
-                importingProject = true
                 importError = null
-                try {
-                    when (val outcome = vm.importProjectAndActivate(it)) {
-                        is ProjectImportOutcome.Active -> Unit
-                        is ProjectImportOutcome.Failed -> importError = outcome.displayMessage
-                    }
-                } finally {
-                    importingProject = false
+                when (val outcome = vm.importProjectAndActivate(it)) {
+                    is ProjectImportOutcome.Active -> Unit
+                    is ProjectImportOutcome.Failed -> importError = outcome.displayMessage
+                }
+            }
+        }
+    }
+
+    // A staged .sdz is the primary first-run artifact (Settings mirrors this); the
+    // chat screen must accept it directly or the browser-staging flow dead-ends here.
+    val modelPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        uri?.let {
+            scope.launch {
+                importError = null
+                val result = vm.importModelAndActivate(it)
+                if (result.isFailure) {
+                    importError = result.exceptionOrNull()?.message
+                        ?: "Complete model import failed."
                 }
             }
         }
@@ -138,17 +157,35 @@ fun ChatScreen(
         topBar = {
             CenterAlignedTopAppBar(
                 title = {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(
-                            text = "Kompile Chat",
-                            style = MaterialTheme.typography.titleMedium
+                    // Brand lockup mirrors the kompile-app-main header: mark + wordmark.
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            painter = painterResource(id = R.drawable.kompile_logo),
+                            contentDescription = stringResource(R.string.brand_logo_description),
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(30.dp)
                         )
-                        // Route badge names the exact device provider.
-                        RouteBadge(route = route)
+                        Spacer(Modifier.width(8.dp))
+                        Column {
+                            Text(
+                                text = "Kompile Chat",
+                                style = MaterialTheme.typography.titleMedium
+                            )
+                            // Route badge names the exact device provider.
+                            RouteBadge(route = route)
+                        }
                     }
                 },
                 navigationIcon = {},
                 actions = {
+                    // Small local context windows make resetting the conversation a
+                    // first-class action, not a hidden side effect of Settings changes.
+                    IconButton(
+                        onClick = { vm.clearHistory() },
+                        enabled = messages.isNotEmpty() && !thinking && !importingProject
+                    ) {
+                        Icon(Icons.Default.AddComment, contentDescription = "New chat")
+                    }
                     IconButton(onClick = onOpenSettings) {
                         Icon(Icons.Default.Settings, contentDescription = "Settings")
                     }
@@ -180,14 +217,9 @@ fun ChatScreen(
                     graphState = graphState,
                     importingProject = importingProject,
                     importError = importError,
+                    onImportModel = { modelPicker.launch("*/*") },
                     onImportProject = { projectPicker.launch("*/*") },
-                    onPrepareProject = {
-                        val result = vm.openModelStaging()
-                        importError = result.exceptionOrNull()?.message
-                        if (result.isFailure && vm.prefs.modelStagingUrl.isBlank()) {
-                            onOpenSettings()
-                        }
-                    },
+                    onPrepareProject = onOpenSettings,
                     onOpenSettings = onOpenSettings,
                     modifier = Modifier.weight(1f)
                 )
@@ -209,9 +241,18 @@ fun ChatScreen(
                 }
             }
 
-            // Input bar.
+            // With history on screen the startup panel is gone, so a disabled input must
+            // still explain itself: surface the exact model/graph state above the bar.
+            if (messages.isNotEmpty() && !thinking) {
+                engineNotice(modelState, graphState)?.let { notice ->
+                    EngineStatusBanner(notice = notice, onOpenSettings = onOpenSettings)
+                }
+            }
+
+            // Input bar. Imports swap the engine and reset the conversation mid-flight,
+            // so sending stays disabled until the activation transaction settles.
             ChatInputBar(
-                enabled = !thinking && engineReady,
+                enabled = !thinking && engineReady && !importingProject,
                 generating = thinking,
                 onSend = { text -> vm.sendMessage(text) },
                 onCancel = { vm.cancelGeneration() }
@@ -251,6 +292,7 @@ internal fun StartupStatePanel(
     graphState: GraphUiState,
     importingProject: Boolean,
     importError: String?,
+    onImportModel: () -> Unit,
     onImportProject: () -> Unit,
     onPrepareProject: () -> Unit,
     onOpenSettings: () -> Unit,
@@ -262,17 +304,14 @@ internal fun StartupStatePanel(
             verticalArrangement = Arrangement.Center,
             modifier = Modifier.padding(horizontal = 24.dp)
         ) {
-            val icon = if (modelState is ModelUiState.Ready) {
-                Icons.Default.AutoAwesome
-            } else {
-                Icons.Default.FolderOpen
-            }
+            // First-run surface leads with the Kompile brand mark; the text below
+            // carries the state, so the mark stays decorative.
             Icon(
-                imageVector = icon,
+                painter = painterResource(id = R.drawable.kompile_logo),
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.primary,
                 modifier = Modifier
-                    .size(48.dp)
+                    .size(56.dp)
                     .padding(bottom = 12.dp)
             )
 
@@ -291,9 +330,12 @@ internal fun StartupStatePanel(
                 }
 
                 modelState is ModelUiState.Missing -> {
-                    Text("Import an offline project", style = MaterialTheme.typography.titleMedium)
+                    Text("Import a local model", style = MaterialTheme.typography.titleMedium)
                     Text(
-                        importError ?: "Choose a .kproject prepared for this APK. It contains the target SameDiff model, AOT graph, Markdown sources, and one verified revision.",
+                        importError ?: "Choose a target-prepared chat model (.sdz) for chat only, or a "
+                            + "full project (.kproject) that also activates the knowledge graph "
+                            + "and Markdown sources. Settings keeps raw Hugging Face GGML/GGUF "
+                            + "acquisition separate from prepared Kompile artifacts.",
                         style = MaterialTheme.typography.bodySmall,
                         color = if (importError == null) {
                             MaterialTheme.colorScheme.onSurfaceVariant
@@ -304,17 +346,23 @@ internal fun StartupStatePanel(
                         modifier = Modifier.padding(top = 6.dp)
                     )
                     Spacer(Modifier.height(16.dp))
-                    Button(onClick = onImportProject) {
+                    Button(onClick = onImportModel) {
                         Icon(Icons.Default.FolderOpen, contentDescription = null)
                         Spacer(Modifier.width(8.dp))
-                        Text("Import .kproject")
+                        Text("Import chat model (.sdz)")
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(onClick = onImportProject) {
+                        Icon(Icons.Default.FolderOpen, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Import full project (.kproject)")
                     }
                     Spacer(Modifier.height(8.dp))
                     OutlinedButton(onClick = onPrepareProject) {
-                        Text("Prepare from GGUF / Hugging Face")
+                        Text("Get or prepare a model")
                     }
                     Text(
-                        "Preparation opens a configured Kompile staging server in your browser; inference stays offline.",
+                        "Hugging Face opens directly for GGML/GGUF. A Kompile server is only an optional source of prepared .sdz/.kproject downloads.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center,
@@ -332,7 +380,9 @@ internal fun StartupStatePanel(
                         modifier = Modifier.padding(top = 6.dp)
                     )
                     Spacer(Modifier.height(16.dp))
-                    Button(onClick = onImportProject) { Text("Choose another .kproject") }
+                    Button(onClick = onImportModel) { Text("Choose another model (.sdz)") }
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(onClick = onImportProject) { Text("Import full project (.kproject)") }
                 }
 
                 modelState is ModelUiState.Checking -> {
@@ -374,6 +424,54 @@ internal fun StartupStatePanel(
                         textAlign = TextAlign.Center,
                         modifier = Modifier.padding(top = 4.dp)
                     )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Compact strip above the input bar naming why sending is unavailable. Actionable
+ * states (missing/failed model or graph) link to Settings; transient states show
+ * progress instead so the user knows the app is working, not wedged.
+ */
+@Composable
+private fun EngineStatusBanner(
+    notice: EngineNotice,
+    onOpenSettings: () -> Unit
+) {
+    Surface(
+        color = if (notice.actionable)
+            MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.6f)
+        else
+            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+        ) {
+            if (!notice.actionable) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(14.dp),
+                    strokeWidth = 2.dp,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Spacer(Modifier.width(8.dp))
+            }
+            Text(
+                text = notice.message,
+                style = MaterialTheme.typography.bodySmall,
+                color = if (notice.actionable)
+                    MaterialTheme.colorScheme.onErrorContainer
+                else
+                    MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f)
+            )
+            if (notice.actionable) {
+                Spacer(Modifier.width(8.dp))
+                OutlinedButton(onClick = onOpenSettings) {
+                    Text("Settings")
                 }
             }
         }

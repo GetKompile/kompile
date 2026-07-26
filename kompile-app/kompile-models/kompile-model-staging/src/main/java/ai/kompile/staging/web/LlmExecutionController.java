@@ -42,7 +42,6 @@ import java.util.*;
 @ConditionalOnProperty(name = "kompile.staging.app.enabled", havingValue = "true")
 @RestController
 @RequestMapping("/api/llm")
-@CrossOrigin(origins = "*")
 public class LlmExecutionController {
 
     private static final Logger log = LoggerFactory.getLogger(LlmExecutionController.class);

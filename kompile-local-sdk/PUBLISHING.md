@@ -2,7 +2,8 @@
 
 This document describes how to publish the language-specific registry packages for
 the Kompile Local SDK bindings.  **No publishing is required to USE the SDK** — all
-bindings ship as vendored source inside the zip produced by `assemble-local-sdk.sh`.
+Kompile reasoning bindings ship as source inside the zip produced by `assemble-local-sdk.sh`;
+SDX-owned bindings come intact from the canonical, manifest-selected AOT archive.
 Registry publishing is a Phase 2 goal once the native artifacts stabilise.
 
 ## Packages
@@ -20,11 +21,14 @@ Registry publishing is a Phase 2 goal once the native artifacts stabilise.
 1. **Version**: the `kompile-local-sdk` version matches the `kompileVersion` field in
    `manifest.json` (set by `assemble-local-sdk.sh`).
 
-2. **ABI pairing**: `kgrAbiVersion` and `sdxLlmAbiVersion` in manifest.json must match
-   the `KGR_ABI_VERSION` and `SDX_LLM_ABI_VERSION` macros in the respective headers.
+2. **Provenance pairing**: `kgrAbiVersion` matches `KGR_ABI_VERSION`, while
+   `kompile-composition-manifest.json` records the upstream release identity and the
+   SHA-256 of its untouched `sdx-sdk-manifest.json`.
 
-3. **Native artifacts present**: `lib/libkompile_reasoning.so` and `lib/libsdx_llm.so`
-   must be present in the assembled zip (no MISSING placeholder files).
+3. **Native artifacts present**: CI must pass the intended reasoning library through
+   explicit `KGR_LIB_SRC`; the canonical upstream SDK root must also be complete.
+   Assembly fails rather than using repository-local defaults or creating MISSING
+   placeholder files.
 
 4. **Platform tag**: the zip name must contain the platform classifier
    (currently `linux-x86_64`; add `macos-arm64`, `windows-x86_64` as they ship).
@@ -64,8 +68,8 @@ The native libraries must be available at link time or via `LD_LIBRARY_PATH`.
 
 ## Swift (Swift Package Index)
 
-Create a `Package.swift` manifest in `bindings/swift/` pointing at the vendored
-`KompileReasoning.swift` and `SdxLlm.swift` sources.  Publish to Swift Package Index
+Create a `Package.swift` manifest for the Kompile-owned `KompileReasoning.swift` source;
+reference any SDX Swift package supplied by the canonical upstream SDK. Publish to Swift Package Index
 by tagging the repo with the SPI-compatible `v{version}` tag after including a
 `Package.swift`.  Prerequisite: xcframework artifacts for the target platforms.
 
@@ -84,4 +88,6 @@ Prerequisite: the `.so`/`.dll`/`.dylib` native libraries included as content fil
 - [ ] Tag the kompile repo: `kgr-v{version}` (for `libkompile_reasoning` releases)
   and `kompile-local-sdk-v{version}` (for combined SDK releases)
 - [ ] Re-run `assemble-local-sdk.sh` to produce the new zip
+- [ ] Verify `SDX_SDK_ARTIFACT` was selected from `sdk-v<version>/sdx-sdk-manifest.json`
+- [ ] Verify the composition manifest contains the expected upstream manifest SHA-256
 - [ ] Upload the zip to the corresponding GitHub release tag

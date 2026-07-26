@@ -1,0 +1,134 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ~ Copyright 2025 Kompile Inc.
+  ~
+  ~ Licensed under the Apache License, Version 2.0 (the "License");
+  ~ you may not use this file except in compliance with the License.
+  ~ You may obtain a copy of the License at
+  ~
+  ~ http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing, software
+  ~ distributed under the License is distributed on an "AS IS" BASIS,
+  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~ See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-app-parent</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>kompile-app-ingest-svc</artifactId>
+    <name>Kompile App - Ingest Service Layer</name>
+    <description>
+        Step 3 of the services decomposition: the document-ingest service layer extracted from
+        kompile-app-main. Carries the two largest god-classes in the old services package —
+        DocumentIngestService and VectorStorePopulationService — plus the ingest orchestration
+        around them (staged pipeline, chunk dedup/enrichment, contextual RAG config, cross-document
+        relation extraction, cross-index tracking, index status/sync, freshness, job resume, progress
+        trackers, adaptive batching + audit, Confluence/YouTube/markdown source conversion) and the
+        subprocess launch machinery those services drive (SubprocessIngestLauncher,
+        VectorPopulationSubprocessLauncher, and the shared subprocess config/command/lifecycle/output/
+        restart/handle types every other launcher in app-main also uses).
+
+        Sits above platform/ingest/crawl/mcp in the layering. Verified zero back-edges into
+        kompile-app-main: the two that existed were inverted — SubprocessHeartbeatBroadcaster moved
+        down into kompile-app-platform, and MonitorService is reached through the
+        SubprocessTaskCompletionListener SPI (also in platform, implemented by app-main).
+
+        This module is what lets the crawl/ingest web controllers move out of app-main into a persona
+        app without dragging the admin console along. Package names preserved
+        (ai.kompile.app.services.*) so native-image reflect/resource config and the many in-app
+        importers are unaffected.
+
+        See docs/architecture/services-decomposition-spec.md and
+        docs/architecture/app-persona-boundary.md.
+    </description>
+
+    <dependencies>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-config</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-dto</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-ingest</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-facts</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-platform</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-mcp</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-crawl</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-subprocess-common</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-subprocess-ingest</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-cli-common</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-knowledge-graph</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-loaders-orchestrator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-utils</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-embedding-anserini</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.jsoup</groupId>
+            <artifactId>jsoup</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+        </dependency>
+    </dependencies>
+</project>

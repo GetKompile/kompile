@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Maven attachment for the Android ARM64 graph-reasoning AOT SDK.
+  build-android-ndk.sh creates the target/android-aot tree; this descriptor
+  preserves that SDK layout and attaches it as classifier android-arm64.
+-->
+<assembly xmlns="http://maven.apache.org/ASSEMBLY/2.2.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/ASSEMBLY/2.2.0
+                              https://maven.apache.org/xsd/assembly-2.2.0.xsd">
+    <id>android-arm64</id>
+    <formats>
+        <format>zip</format>
+    </formats>
+    <includeBaseDirectory>false</includeBaseDirectory>
+    <fileSets>
+        <fileSet>
+            <directory>${project.build.directory}/android-aot</directory>
+            <outputDirectory>.</outputDirectory>
+            <includes>
+                <include>jni/**</include>
+                <include>include/**</include>
+                <include>metadata/**</include>
+            </includes>
+        </fileSet>
+        <fileSet>
+            <directory>${project.basedir}</directory>
+            <outputDirectory>bin</outputDirectory>
+            <includes>
+                <include>verify-android-ndk.sh</include>
+            </includes>
+            <fileMode>0755</fileMode>
+        </fileSet>
+    </fileSets>
+</assembly>

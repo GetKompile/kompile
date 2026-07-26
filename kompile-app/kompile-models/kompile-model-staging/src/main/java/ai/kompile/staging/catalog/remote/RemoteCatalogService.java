@@ -17,6 +17,8 @@
 package ai.kompile.staging.catalog.remote;
 
 import ai.kompile.staging.auth.AuthProviderChain;
+import ai.kompile.staging.config.StagingAssetLimits;
+import ai.kompile.staging.http.SafeHttpTransport;
 import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -26,10 +28,10 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.io.BufferedInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
+import java.net.URI;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
@@ -48,6 +50,8 @@ public class RemoteCatalogService {
 
     private final AuthProviderChain authProviderChain;
     private final ObjectMapper objectMapper;
+    private final StagingAssetLimits limits;
+    private final SafeHttpTransport httpTransport;
 
     // Cache of catalogs by URL
     private final Map<String, CachedCatalog> catalogCache = new ConcurrentHashMap<>();
@@ -64,10 +68,22 @@ public class RemoteCatalogService {
             "https://kompile.ai/archives/catalog.json"
     );
 
-    @Autowired
     public RemoteCatalogService(AuthProviderChain authProviderChain) {
+        this(
+                authProviderChain,
+                new StagingAssetLimits(),
+                new SafeHttpTransport());
+    }
+
+    @Autowired
+    public RemoteCatalogService(
+            AuthProviderChain authProviderChain,
+            StagingAssetLimits limits,
+            SafeHttpTransport httpTransport) {
         this.authProviderChain = authProviderChain;
         this.objectMapper = JsonUtils.standardMapper();
+        this.limits = limits;
+        this.httpTransport = httpTransport;
     }
 
     /**
@@ -91,7 +107,10 @@ public class RemoteCatalogService {
                     return catalog;
                 }
             } catch (Exception e) {
-                log.warn("Failed to fetch catalog from {}", url, e);
+                log.warn(
+                        "Failed to fetch catalog from {}",
+                        safeUrlForDiagnostics(url),
+                        e);
             }
         }
 
@@ -104,29 +123,31 @@ public class RemoteCatalogService {
      * Get catalog from a specific URL.
      */
     public RemoteCatalog getCatalogFromUrl(String url, boolean forceRefresh) {
+        String safeUrl = safeUrlForDiagnostics(url);
+
         // Check cache
         CachedCatalog cached = catalogCache.get(url);
         if (!forceRefresh && cached != null && !cached.isExpired(getRefreshDuration())) {
-            log.debug("Using cached catalog from {}", url);
+            log.debug("Using cached catalog from {}", safeUrl);
             return cached.getCatalog();
         }
 
         // Fetch fresh catalog
         try {
-            log.info("Fetching catalog from {}", url);
+            log.info("Fetching catalog from {}", safeUrl);
             RemoteCatalog catalog = fetchCatalog(url);
             if (catalog != null) {
-                catalog.setSourceUrl(url);
+                catalog.setSourceUrl(safeUrl);
                 catalogCache.put(url, new CachedCatalog(catalog, Instant.now()));
                 return catalog;
             }
         } catch (Exception e) {
-            log.error("Failed to fetch catalog from {}", url, e);
+            log.error("Failed to fetch catalog from {}", safeUrl, e);
         }
 
         // Return cached even if expired, if available
         if (cached != null) {
-            log.warn("Using expired cached catalog from {}", url);
+            log.warn("Using expired cached catalog from {}", safeUrl);
             return cached.getCatalog();
         }
 
@@ -148,7 +169,9 @@ public class RemoteCatalogService {
             try {
                 getCatalogFromUrl(url, true);
             } catch (Exception e) {
-                log.warn("Failed to refresh catalog from {}", url);
+                log.warn(
+                        "Failed to refresh catalog from {}",
+                        safeUrlForDiagnostics(url));
             }
         }
     }
@@ -169,8 +192,9 @@ public class RemoteCatalogService {
 
         for (Map.Entry<String, CachedCatalog> entry : catalogCache.entrySet()) {
             CachedCatalog cached = entry.getValue();
-            status.put(entry.getKey(), CacheStatus.builder()
-                    .url(entry.getKey())
+            String safeUrl = safeUrlForDiagnostics(entry.getKey());
+            status.put(safeUrl, CacheStatus.builder()
+                    .url(safeUrl)
                     .fetchedAt(cached.getFetchedAt().toString())
                     .expired(cached.isExpired(refreshDuration))
                     .archiveCount(cached.getCatalog().getArchiveCount())
@@ -181,30 +205,67 @@ public class RemoteCatalogService {
     }
 
     private RemoteCatalog fetchCatalog(String urlStr) throws IOException {
-        URL url = new URL(urlStr);
-        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-        conn.setConnectTimeout(CONNECTION_TIMEOUT);
-        conn.setReadTimeout(READ_TIMEOUT);
-        conn.setRequestProperty("User-Agent", "Kompile-Catalog-Client/1.0");
-        conn.setRequestProperty("Accept", "application/json");
-
-        // Add auth headers
-        Map<String, String> authHeaders = authProviderChain.getAuthHeaders(urlStr);
-        for (Map.Entry<String, String> header : authHeaders.entrySet()) {
-            conn.setRequestProperty(header.getKey(), header.getValue());
+        URI uri;
+        try {
+            uri = URI.create(urlStr);
+        } catch (IllegalArgumentException invalid) {
+            throw new IOException("Invalid remote catalog URI");
         }
 
-        conn.setInstanceFollowRedirects(true);
-        int responseCode = conn.getResponseCode();
+        Map<String, String> headers =
+                new HashMap<>(authProviderChain.getAuthHeaders(uri.toString()));
+        headers.put("User-Agent", "Kompile-Catalog-Client/1.0");
+        headers.put("Accept", "application/json");
 
-        if (responseCode != HttpURLConnection.HTTP_OK) {
-            throw new IOException("HTTP " + responseCode + " for " + urlStr);
+        try (SafeHttpTransport.Response response = httpTransport.execute(
+                uri,
+                "GET",
+                headers,
+                CONNECTION_TIMEOUT,
+                READ_TIMEOUT,
+                limits.getMaxRedirects())) {
+            int responseCode = response.statusCode();
+            if (responseCode != 200) {
+                throw new IOException("HTTP " + responseCode + " for "
+                        + SafeHttpTransport.safeUriForDiagnostics(response.uri()));
+            }
+
+            long maximumBytes = limits.maxBytesFor("remote_catalog");
+            long contentLength = response.contentLength();
+            if (contentLength > maximumBytes) {
+                throw new IOException(
+                        "Remote catalog exceeds its configured byte limit");
+            }
+
+            try (InputStream in = new BufferedInputStream(response.body());
+                 ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+                byte[] buffer = new byte[8192];
+                long bytesRead = 0;
+                int count;
+                while ((count = in.read(buffer)) != -1) {
+                    try {
+                        bytesRead = Math.addExact(bytesRead, count);
+                    } catch (ArithmeticException overflow) {
+                        throw new IOException(
+                                "Remote catalog byte count overflowed", overflow);
+                    }
+                    if (bytesRead > maximumBytes) {
+                        throw new IOException(
+                                "Remote catalog exceeded its configured byte limit");
+                    }
+                    output.write(buffer, 0, count);
+                }
+                return objectMapper.readValue(
+                        output.toByteArray(), RemoteCatalog.class);
+            }
         }
+    }
 
-        try (InputStream in = new BufferedInputStream(conn.getInputStream())) {
-            return objectMapper.readValue(in, RemoteCatalog.class);
-        } finally {
-            conn.disconnect();
+    private static String safeUrlForDiagnostics(String value) {
+        try {
+            return SafeHttpTransport.safeUriForDiagnostics(URI.create(value));
+        } catch (RuntimeException invalid) {
+            return "<invalid-remote-uri>";
         }
     }
 

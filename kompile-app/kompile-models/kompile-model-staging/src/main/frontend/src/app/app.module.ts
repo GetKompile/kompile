@@ -17,7 +17,7 @@
 import { NgModule } from '@angular/core';
 import { BrowserModule } from '@angular/platform-browser';
 import { BrowserAnimationsModule } from '@angular/platform-browser/animations';
-import { HttpClientModule } from '@angular/common/http';
+import { HTTP_INTERCEPTORS, HttpClientModule } from '@angular/common/http';
 import { FormsModule, ReactiveFormsModule } from '@angular/forms';
 import { RouterModule, Routes } from '@angular/router';
 
@@ -83,6 +83,7 @@ import { EvalDatasetManagerComponent } from './components/eval-dataset-manager/e
 import { ModelEvalHistoryComponent } from './components/model-eval-history/model-eval-history.component';
 import { OptimizeDialogComponent } from './components/optimize-dialog/optimize-dialog.component';
 import { ModelGraphDialogComponent } from './components/model-graph-visualizer/model-graph-visualizer.component';
+import { StagingSecurityInterceptor } from './services/staging-security.interceptor';
 
 // Routes
 const routes: Routes = [
@@ -189,7 +190,13 @@ const routes: Routes = [
     // Standalone components
     VlmModelsComponent
   ],
-  providers: [],
+  providers: [
+    {
+      provide: HTTP_INTERCEPTORS,
+      useClass: StagingSecurityInterceptor,
+      multi: true
+    }
+  ],
   bootstrap: [AppComponent]
 })
 export class AppModule { }

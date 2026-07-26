@@ -18,7 +18,7 @@ class ProjectArchiveInstallerTest {
     Path temp;
 
     @Test
-    void installsOnlyExactTargetGraphAndMarkdownSources() throws Exception {
+    void installsExactTargetModelAndCompletePortableKnowledge() throws Exception {
         Path project = Files.createDirectory(temp.resolve("project"));
         write(project, "kompile.project.json", """
                 {
@@ -49,6 +49,8 @@ class ProjectArchiveInstallerTest {
         write(project, "data/graph/project.kgraph", "graph");
         write(project, "data/markdown/facts/acme.md", "# Acme\nSource facts");
         write(project, "data/markdown/index.json", "{\"version\":1}");
+        write(project, "data/fact-sheets/project-fact-sheets.json", "{\"sheets\":[]}");
+        write(project, "data/indexes/project-markdown-index.json", "{\"documents\":[]}");
         write(project, "data/documents/private.json", "not installed");
 
         Path archive = temp.resolve("mobile-research.kproject");
@@ -62,6 +64,8 @@ class ProjectArchiveInstallerTest {
         assertEquals("Mobile Research", installed.projectName());
         assertEquals("android-arm64-nnapi-accelerator", installed.targetProfile());
         assertTrue(installed.revision().matches("[0-9a-f]{64}"));
+        assertTrue(installed.knowledgeRevision().matches("[0-9a-f]{64}"));
+        assertEquals(installed.installationRoot(), installed.knowledgeRoot());
         assertEquals("g3-sdz", Files.readString(installed.modelPath()));
         assertEquals("graph", Files.readString(installed.graphPath()));
         assertEquals("# Acme\nSource facts",
@@ -69,6 +73,10 @@ class ProjectArchiveInstallerTest {
         assertEquals("{\"version\":1}",
                 Files.readString(installed.sourcesRoot().resolve("index.json")));
         assertEquals(2, installed.sourcePaths().size());
+        assertEquals("{\"sheets\":[]}", Files.readString(installed.knowledgeRoot()
+                .resolve("data/fact-sheets/project-fact-sheets.json")));
+        assertEquals("{\"documents\":[]}", Files.readString(installed.knowledgeRoot()
+                .resolve("data/indexes/project-markdown-index.json")));
         assertFalse(Files.exists(installed.installationRoot()
                 .resolve("data/models/vulkan/model.sdz")));
         assertFalse(Files.exists(installed.installationRoot()

@@ -1,0 +1,396 @@
+{
+  "$schema": "./node_modules/@angular/cli/lib/config/schema.json",
+  "version": 1,
+  "newProjectRoot": "projects",
+  "schematics": {
+    "@schematics/angular:component": {
+      "standalone": false
+    },
+    "@schematics/angular:directive": {
+      "standalone": false
+    },
+    "@schematics/angular:pipe": {
+      "standalone": false
+    }
+  },
+  "projects": {
+    "kompile-ui-shared": {
+      "projectType": "library",
+      "root": "projects/kompile-ui-shared",
+      "sourceRoot": "projects/kompile-ui-shared/src",
+      "prefix": "app",
+      "architect": {
+        "test": {
+          "builder": "@angular-devkit/build-angular:karma",
+          "options": {
+            "polyfills": [
+              "projects/kompile-ui-shared/src/polyfills.ts",
+              "zone.js",
+              "zone.js/testing"
+            ],
+            "tsConfig": "projects/kompile-ui-shared/tsconfig.spec.json",
+            "exclude": [
+              "**/composite-entity-dialog/**/*.spec.ts",
+              "**/graph-hierarchy/graph-hierarchy.component.spec.ts",
+              "**/graph-overview/**/*.spec.ts",
+              "**/graph-visualizer/graph-visualizer.component.spec.ts",
+              "**/graph-visualizer/source-linking-panel.component.spec.ts",
+              "**/services/evaluation.service.spec.ts",
+              "**/services/graph.service.spec.ts",
+              "**/services/process-engine.service.spec.ts"
+            ],
+            "assets": [
+              {
+                "glob": "**/*",
+                "input": "public"
+              },
+              {
+                "glob": "**/*",
+                "input": "projects/kompile-ui-shared/src/assets",
+                "output": "assets"
+              }
+            ],
+            "styles": [
+              "node_modules/@angular/material/prebuilt-themes/indigo-pink.css"
+            ],
+            "scripts": []
+          }
+        }
+      }
+    },
+    "chat-app": {
+      "projectType": "application",
+      "root": "projects/chat-app",
+      "sourceRoot": "projects/chat-app/src",
+      "prefix": "app",
+      "architect": {
+        "build": {
+          "builder": "@angular-devkit/build-angular:application",
+          "options": {
+            "outputPath": "dist/chat-app",
+            "index": "projects/chat-app/src/index.html",
+            "browser": "projects/chat-app/src/main.ts",
+            "polyfills": [
+              "projects/kompile-ui-shared/src/polyfills.ts",
+              "zone.js"
+            ],
+            "tsConfig": "projects/chat-app/tsconfig.app.json",
+            "assets": [
+              {
+                "glob": "**/*",
+                "input": "public"
+              },
+              {
+                "glob": "**/*",
+                "input": "projects/kompile-ui-shared/src/assets",
+                "output": "assets"
+              }
+            ],
+            "styles": [
+              "node_modules/@angular/material/prebuilt-themes/indigo-pink.css",
+              "projects/kompile-ui-shared/src/styles.scss"
+            ],
+            "scripts": []
+          },
+          "configurations": {
+            "production": {
+              "optimization": false,
+              "extractLicenses": false,
+              "sourceMap": true,
+              "budgets": [
+                {
+                  "type": "initial",
+                  "maximumWarning": "500kB",
+                  "maximumError": "30MB"
+                },
+                {
+                  "type": "anyComponentStyle",
+                  "maximumWarning": "4kB",
+                  "maximumError": "10MB"
+                }
+              ],
+              "outputHashing": "all"
+            },
+            "development": {
+              "optimization": false,
+              "extractLicenses": false,
+              "sourceMap": true
+            }
+          },
+          "defaultConfiguration": "production"
+        },
+        "serve": {
+          "builder": "@angular-devkit/build-angular:dev-server",
+          "configurations": {
+            "production": {
+              "buildTarget": "chat-app:build:production"
+            },
+            "development": {
+              "buildTarget": "chat-app:build:development"
+            }
+          },
+          "defaultConfiguration": "development"
+        },
+        "extract-i18n": {
+          "builder": "@angular-devkit/build-angular:extract-i18n"
+        },
+        "test": {
+          "builder": "@angular-devkit/build-angular:karma",
+          "options": {
+            "polyfills": [
+              "projects/kompile-ui-shared/src/polyfills.ts",
+              "zone.js",
+              "zone.js/testing"
+            ],
+            "tsConfig": "projects/chat-app/tsconfig.spec.json",
+            "exclude": [
+              "**/unified-chat/unified-chat-dark-mode.spec.ts",
+              "**/unified-chat/unified-chat-token-usage.spec.ts",
+              "**/unified-chat/unified-chat-context-panel.spec.ts"
+            ],
+            "assets": [
+              {
+                "glob": "**/*",
+                "input": "public"
+              },
+              {
+                "glob": "**/*",
+                "input": "projects/kompile-ui-shared/src/assets",
+                "output": "assets"
+              }
+            ],
+            "styles": [
+              "node_modules/@angular/material/prebuilt-themes/indigo-pink.css"
+            ],
+            "scripts": []
+          }
+        }
+      }
+    },
+    "crawl-app": {
+      "projectType": "application",
+      "root": "projects/crawl-app",
+      "sourceRoot": "projects/crawl-app/src",
+      "prefix": "app",
+      "architect": {
+        "build": {
+          "builder": "@angular-devkit/build-angular:application",
+          "options": {
+            "outputPath": "dist/crawl-app",
+            "index": "projects/crawl-app/src/index.html",
+            "browser": "projects/crawl-app/src/main.ts",
+            "polyfills": [
+              "projects/kompile-ui-shared/src/polyfills.ts",
+              "zone.js"
+            ],
+            "tsConfig": "projects/crawl-app/tsconfig.app.json",
+            "assets": [
+              {
+                "glob": "**/*",
+                "input": "public"
+              },
+              {
+                "glob": "**/*",
+                "input": "projects/kompile-ui-shared/src/assets",
+                "output": "assets"
+              }
+            ],
+            "styles": [
+              "node_modules/@angular/material/prebuilt-themes/indigo-pink.css",
+              "projects/kompile-ui-shared/src/styles.scss"
+            ],
+            "scripts": []
+          },
+          "configurations": {
+            "production": {
+              "optimization": false,
+              "extractLicenses": false,
+              "sourceMap": true,
+              "budgets": [
+                {
+                  "type": "initial",
+                  "maximumWarning": "500kB",
+                  "maximumError": "30MB"
+                },
+                {
+                  "type": "anyComponentStyle",
+                  "maximumWarning": "4kB",
+                  "maximumError": "10MB"
+                }
+              ],
+              "outputHashing": "all"
+            },
+            "development": {
+              "optimization": false,
+              "extractLicenses": false,
+              "sourceMap": true
+            }
+          },
+          "defaultConfiguration": "production"
+        },
+        "serve": {
+          "builder": "@angular-devkit/build-angular:dev-server",
+          "configurations": {
+            "production": {
+              "buildTarget": "crawl-app:build:production"
+            },
+            "development": {
+              "buildTarget": "crawl-app:build:development"
+            }
+          },
+          "defaultConfiguration": "development"
+        },
+        "extract-i18n": {
+          "builder": "@angular-devkit/build-angular:extract-i18n"
+        },
+        "test": {
+          "builder": "@angular-devkit/build-angular:karma",
+          "options": {
+            "polyfills": [
+              "projects/kompile-ui-shared/src/polyfills.ts",
+              "zone.js",
+              "zone.js/testing"
+            ],
+            "tsConfig": "projects/crawl-app/tsconfig.spec.json",
+            "exclude": [
+              "**/orchestrator-hub/components/audit-log-viewer/audit-log-viewer.component.spec.ts",
+              "**/orchestrator-hub/components/output-classifier-config/output-classifier-config.component.spec.ts",
+              "**/orchestrator-hub/components/state-machine-editor/state-machine-editor.component.spec.ts",
+              "**/process-engine/graph-node-popover.component.spec.ts",
+              "**/index-browser/index-browser.component.spec.ts",
+              "**/chunk-manager/chunk-manager.component.spec.ts",
+              "**/mcp-config-manager/mcp-config-manager.component.spec.ts"
+            ],
+            "assets": [
+              {
+                "glob": "**/*",
+                "input": "public"
+              },
+              {
+                "glob": "**/*",
+                "input": "projects/kompile-ui-shared/src/assets",
+                "output": "assets"
+              }
+            ],
+            "styles": [
+              "node_modules/@angular/material/prebuilt-themes/indigo-pink.css"
+            ],
+            "scripts": []
+          }
+        }
+      }
+    },
+    "admin-app": {
+      "projectType": "application",
+      "root": "projects/admin-app",
+      "sourceRoot": "projects/admin-app/src",
+      "prefix": "app",
+      "architect": {
+        "build": {
+          "builder": "@angular-devkit/build-angular:application",
+          "options": {
+            "outputPath": "dist/admin-app",
+            "index": "projects/admin-app/src/index.html",
+            "browser": "projects/admin-app/src/main.ts",
+            "polyfills": [
+              "projects/kompile-ui-shared/src/polyfills.ts",
+              "zone.js"
+            ],
+            "tsConfig": "projects/admin-app/tsconfig.app.json",
+            "assets": [
+              {
+                "glob": "**/*",
+                "input": "public"
+              },
+              {
+                "glob": "**/*",
+                "input": "projects/kompile-ui-shared/src/assets",
+                "output": "assets"
+              }
+            ],
+            "styles": [
+              "node_modules/@angular/material/prebuilt-themes/indigo-pink.css",
+              "projects/kompile-ui-shared/src/styles.scss"
+            ],
+            "scripts": []
+          },
+          "configurations": {
+            "production": {
+              "optimization": false,
+              "extractLicenses": false,
+              "sourceMap": true,
+              "budgets": [
+                {
+                  "type": "initial",
+                  "maximumWarning": "500kB",
+                  "maximumError": "30MB"
+                },
+                {
+                  "type": "anyComponentStyle",
+                  "maximumWarning": "4kB",
+                  "maximumError": "10MB"
+                }
+              ],
+              "outputHashing": "all"
+            },
+            "development": {
+              "optimization": false,
+              "extractLicenses": false,
+              "sourceMap": true
+            }
+          },
+          "defaultConfiguration": "production"
+        },
+        "serve": {
+          "builder": "@angular-devkit/build-angular:dev-server",
+          "configurations": {
+            "production": {
+              "buildTarget": "admin-app:build:production"
+            },
+            "development": {
+              "buildTarget": "admin-app:build:development"
+            }
+          },
+          "defaultConfiguration": "development"
+        },
+        "extract-i18n": {
+          "builder": "@angular-devkit/build-angular:extract-i18n"
+        },
+        "test": {
+          "builder": "@angular-devkit/build-angular:karma",
+          "options": {
+            "polyfills": [
+              "projects/kompile-ui-shared/src/polyfills.ts",
+              "zone.js",
+              "zone.js/testing"
+            ],
+            "tsConfig": "projects/admin-app/tsconfig.spec.json",
+            "exclude": [
+              "**/settings/evaluation-settings/evaluation-settings.component.spec.ts",
+              "**/settings/log-settings/log-settings.component.spec.ts",
+              "**/contextual-rag-debug/contextual-rag-debug.component.spec.ts"
+            ],
+            "assets": [
+              {
+                "glob": "**/*",
+                "input": "public"
+              },
+              {
+                "glob": "**/*",
+                "input": "projects/kompile-ui-shared/src/assets",
+                "output": "assets"
+              }
+            ],
+            "styles": [
+              "node_modules/@angular/material/prebuilt-themes/indigo-pink.css"
+            ],
+            "scripts": []
+          }
+        }
+      }
+    }
+  },
+  "cli": {
+    "analytics": "6a9c303e-6118-4a53-97de-29ac3b96625c"
+  }
+}

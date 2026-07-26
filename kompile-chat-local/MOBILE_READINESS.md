@@ -135,9 +135,10 @@ Model-artifact compiler gates:
   and publishes complete validated SPIR-V replay coverage;
 - [ ] Hexagon host adapter drives functional replay, Qualcomm compilation, and
   `HexagonAot` finalization in one source-identity-checked transaction;
-- [ ] Tensor G3 quantization adapter rewrites SameDiff weights to real
-  per-channel INT8 and emits a matching accelerator-only policy; a
-  metadata-only copy is rejected;
+- [x] Tensor G3 quantization adapter rewrites eligible constant SameDiff
+  matmul weights to signed symmetric per-tensor INT8, supplies calibrated
+  FLOAT32 activation/weight/output scales through the five-input primitive,
+  and emits a matching accelerator-only policy; a metadata-only copy is rejected;
 - [ ] Tensor G5 host adapter exports a structurally valid `.litertlm` package
   using a supported Google exporter.
 

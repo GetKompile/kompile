@@ -1,0 +1,47 @@
+/* To learn more about Typescript configuration file: https://www.typescriptlang.org/docs/handbook/tsconfig-json.html. */
+/* To learn more about Angular compiler options: https://angular.dev/reference/configs/angular-compiler-options. */
+{
+  "compileOnSave": false,
+  "compilerOptions": {
+    "outDir": "./dist/out-tsc",
+    /*
+     * The shared library is consumed through a path alias rather than ng-packagr. `lib/` sits at
+     * the same depth `app/` did, so every intra-library relative import — including the ~25
+     * `../../../environments/environment` ones — kept working unchanged when the code moved.
+     * Building the library as a package would have meant rewriting all of them and adding a
+     * build-order dependency for no gain: nothing outside this workspace consumes it.
+     *
+     * tools/check-project-boundaries.mjs enforces the other half of the contract: relative
+     * imports may not cross a project, and every @shared/ specifier must resolve.
+     */
+    "baseUrl": "./",
+    "paths": {
+      "@shared/*": ["projects/kompile-ui-shared/src/lib/*"],
+      /*
+       * The environment file sits beside `lib/`, not inside it, so it is not reachable through
+       * @shared/*. Library code still reaches it with the relative path it always used; app code
+       * uses this alias, because from an app the relative path would leave the project.
+       */
+      "@env": ["projects/kompile-ui-shared/src/environments/environment"]
+    },
+    "strict": true,
+    "noImplicitOverride": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "esModuleInterop": true,
+    "experimentalDecorators": true,
+    "moduleResolution": "bundler",
+    "importHelpers": true,
+    "target": "ES2022",
+    "module": "ES2022"
+  },
+  "angularCompilerOptions": {
+    "enableI18nLegacyMessageIdFormat": false,
+    "strictInjectionParameters": true,
+    "strictInputAccessModifiers": true,
+    "strictTemplates": true
+  }
+}

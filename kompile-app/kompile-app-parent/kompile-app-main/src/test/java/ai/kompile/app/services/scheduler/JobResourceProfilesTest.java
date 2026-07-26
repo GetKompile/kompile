@@ -52,7 +52,7 @@ class JobResourceProfilesTest {
     void unifiedCrawlHasPhaseBreakdown() {
         JobResourceProfile unified = JobResourceProfiles.UNIFIED_CRAWL;
         assertTrue(unified.hasPhaseBreakdown());
-        assertEquals(10, unified.phaseProfiles().size());
+        assertEquals(11, unified.phaseProfiles().size());
 
         // CPU-only early phases
         assertFalse(unified.phaseRequiresGpu("LOADING"));
@@ -60,6 +60,7 @@ class JobResourceProfilesTest {
         assertFalse(unified.phaseRequiresGpu("ROUTING"));
         assertFalse(unified.phaseRequiresGpu("CHUNKING"));
         assertFalse(unified.phaseRequiresGpu("GRAPH_EXTRACTION"));
+        assertFalse(unified.phaseRequiresGpu("ENTITY_PARTITIONS"));
         assertFalse(unified.phaseRequiresGpu("ENRICHMENT"));
         assertFalse(unified.phaseRequiresGpu("LEARNING"));
 
@@ -67,6 +68,25 @@ class JobResourceProfilesTest {
         assertTrue(unified.phaseRequiresGpu("ENTITY_RESOLUTION"));
         assertTrue(unified.phaseRequiresGpu("EDGE_COMPUTATION"));
         assertTrue(unified.phaseRequiresGpu("VECTOR_INDEXING"));
+    }
+
+    /**
+     * A phase with no profile silently inherits the job-level answer — {@code requiresGpu=true} and
+     * the 5 GB peak — so "declared CPU-only" and "never declared" are indistinguishable through
+     * {@link JobResourceProfile#phaseRequiresGpu} alone. Asserting the budget too is what separates
+     * them: a phase the pipeline runs but the profile forgot would reserve GPU it never touches.
+     */
+    @Test
+    void everyUnifiedCrawlPhaseIsDeclaredNotInherited() {
+        JobResourceProfile unified = JobResourceProfiles.UNIFIED_CRAWL;
+
+        assertEquals(0, unified.gpuMemoryForPhase("GRAPH_EXTRACTION"));
+        assertEquals(0, unified.gpuMemoryForPhase("ENTITY_PARTITIONS"));
+        assertEquals(5 * GB, unified.gpuMemoryForPhase("VECTOR_INDEXING"));
+
+        // The fallback itself, so the assertions above are known to be reading real entries.
+        assertEquals(unified.peakGpuMemoryBytes(), unified.gpuMemoryForPhase("NO_SUCH_PHASE"));
+        assertTrue(unified.phaseRequiresGpu("NO_SUCH_PHASE"));
     }
 
     @Test

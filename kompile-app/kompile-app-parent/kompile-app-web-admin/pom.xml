@@ -1,0 +1,293 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ~ Copyright 2025 Kompile Inc.
+  ~
+  ~ Licensed under the Apache License, Version 2.0 (the "License");
+  ~ you may not use this file except in compliance with the License.
+  ~ You may obtain a copy of the License at
+  ~
+  ~ http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing, software
+  ~ distributed under the License is distributed on an "AS IS" BASIS,
+  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~ See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-app-parent</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>kompile-app-web-admin</artifactId>
+    <name>Kompile App - Admin Console Web Layer</name>
+    <description>
+        The admin persona web layer — everything that is not an end-user surface: nd4j and GPU
+        diagnostics, model staging and the model registry, VLM and Triton, benchmarks, the scheduler
+        and subprocess management, the enforcer, MCP administration and tool permissions, install and
+        backup, experiments and evaluation, and graph maintenance/rules/health/simulator/OWL.
+
+        85 controllers plus the 32 support types only they reach: the diagram, monitor and
+        allocation-diagnostics domains, the git diff services, and the backup/benchmark/sdx/writeback
+        services. Mounted only by kompile-app-main.
+
+        Packages are preserved (ai.kompile.app.web.controllers, ai.kompile.app.diagram,
+        ai.kompile.app.monitor, ai.kompile.app.diagnostics, ai.kompile.app.services...) — the move is
+        git mv plus pom wiring, so native-image reflect/resource config and every existing import are
+        unaffected. Isolation comes from classpath presence, not package naming.
+
+        Verified zero back-edges into kompile-app-main: the closure is transitive, so every app-main
+        type an admin controller reaches came with it. What stays behind in app-main is application
+        wiring — MainApplication, the @Configuration classes, the SPI implementations, the subprocess
+        launchers, and the MCP @Tool classes, which reach admin controllers in the legal direction
+        because app-main depends on this module.
+
+        See docs/architecture/app-persona-boundary.md.
+    </description>
+
+    <dependencies>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-web-shared</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-agent</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-config</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-diff</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-dto</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-enforcer</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-facts</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-ingest</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-ingest-svc</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <!-- McpToolController / McpServerBuilderController drive the MCP server, which now lives
+             here so every persona app can expose the @Tool classes its web module owns. -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-mcp</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-ontology</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-platform</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-subprocess-ingest</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-subprocess-model</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-loaders-orchestrator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-chat-history</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-cli-common</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-crawl-graph</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-embedding-anserini</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-evaluation</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-filter-chain</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-graph-reasoning</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-guardrails</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-knowledge-graph</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-model-manager</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-ocr-integration</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-orchestrator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-pipelines-framework-api</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-pipelines-framework-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-pipelines-framework-runtime</artifactId>
+        </dependency>
+        <!-- NOTE: kompile-pipelines-steps-deeplearning4j / -samediff are deliberately NOT declared.
+             No source here references them, and they pull org.deeplearning4j:nd4j-api — an
+             old-namespace twin of org.eclipse.deeplearning4j:nd4j-api carrying the same packages.
+             Maven cannot dedupe across groupIds, so both land on the compile classpath and javac
+             resolves org.nd4j.linalg.factory.Environment against whichever comes first. The stale
+             one lacks the lifecycle/allocation accessors the diagnostics controllers call. -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-process-discovery</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-process-engine</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-query-transformer</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-react-agent</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-test-milestone</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-tool-filesystem</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-tool-gateway</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-tool-rag</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-utils</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-vectorstore-anserini</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <!-- DiagramSessionRepository and MonitorRegistrationRepository are Spring Data JPA. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+        </dependency>
+        <!-- MonitorFireJob is a Quartz job; MonitorService schedules it. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-quartz</artifactId>
+        </dependency>
+        <!-- Admin progress pushes over STOMP via SimpMessagingTemplate. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-websocket</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.eclipse.deeplearning4j</groupId>
+            <artifactId>nd4j-api</artifactId>
+        </dependency>
+        <!-- ComprehensiveDiagnosticsController and LifecycleTrackingController read allocation,
+             TAD/shape-cache and lifecycle-tracking counters off Environment and NativeOps. Those
+             methods are declared by the backend, not by nd4j-api, so this module needs a backend to
+             compile against. It is `provided`: this is a web-layer library and must not put a
+             compute backend (or the platform-classified libnd4j twin) into anyone's dependency
+             graph — the app that mounts it, kompile-app-main, selects and ships the real backend
+             via -Dnd4j.backend. -->
+        <dependency>
+            <groupId>org.eclipse.deeplearning4j</groupId>
+            <artifactId>${nd4j.backend}</artifactId>
+            <version>${nd4j.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+        </dependency>
+
+        <!-- Tests for this module's controllers live here rather than in an app, so a persona app
+             can be swapped without orphaning them. They are plain Mockito unit tests; no Boot
+             context is started, so no @SpringBootApplication is needed in a library module. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>

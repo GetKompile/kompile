@@ -34,6 +34,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
@@ -60,6 +61,11 @@ public class GitMarkdownSyncAdapter implements SyncAdapter {
     public List<ExternalNoteSnapshot> fetchChangedSince(NoteSyncConnection conn, Instant since) {
         prepareRepository(conn, true);
         return fileStore.fetchChangedSince(conn, since);
+    }
+
+    @Override
+    public Optional<Set<String>> listExternalIds(NoteSyncConnection conn) {
+        return Optional.of(fileStore.listExternalIds(conn));
     }
 
     @Override
@@ -91,8 +97,10 @@ public class GitMarkdownSyncAdapter implements SyncAdapter {
     }
 
     private void prepareRepository(NoteSyncConnection conn, boolean pullRemote) {
-        Path root = fileStore.ensureRoot(conn);
         String remoteUrl = trimToNull(conn.getRepositoryUrl());
+        Path root = remoteUrl == null
+                ? fileStore.requireExistingRoot(conn)
+                : fileStore.ensureRoot(conn);
         String branch = branch(conn);
         Path gitDir = root.resolve(".git");
 
@@ -166,14 +174,17 @@ public class GitMarkdownSyncAdapter implements SyncAdapter {
     @Override
     public SyncConnectionTestResponse testConnection(NoteSyncConnection conn) {
         try {
-            Path root = fileStore.ensureRoot(conn);
+            String remoteUrl = trimToNull(conn.getRepositoryUrl());
+            boolean validateRemote = remoteUrl != null && remoteSyncEnabled(conn);
+            Path root = validateRemote
+                    ? fileStore.ensureRoot(conn)
+                    : fileStore.requireExistingRoot(conn);
             runGit(root, false, "--version");
             if (!Files.isDirectory(root) || !Files.isReadable(root) || !Files.isWritable(root)) {
                 return SyncConnectionTestResponse.failure(conn.getId(), conn.getAuthMode(),
                         "Git working tree path is not readable and writable: " + root);
             }
-            String remoteUrl = trimToNull(conn.getRepositoryUrl());
-            if (remoteUrl == null || !remoteSyncEnabled(conn)) {
+            if (!validateRemote) {
                 return SyncConnectionTestResponse.success(conn.getId(), conn.getAuthMode(),
                         "Local git working tree is available. Remote pull/push is disabled.");
             }
@@ -284,15 +295,16 @@ public class GitMarkdownSyncAdapter implements SyncAdapter {
         if (encrypted == null || encrypted.isBlank()) {
             throw new IllegalStateException("No Git HTTPS token configured for this connection.");
         }
-        if (tokenEncryptionService != null) {
-            try {
-                return tokenEncryptionService.decrypt(encrypted);
-            } catch (Exception e) {
-                log.warn("Failed to decrypt Git token, using stored value as-is: {}", e.getMessage());
-                return encrypted;
-            }
+        if (tokenEncryptionService == null) {
+            throw new IllegalStateException(
+                    "Git credential decryption is unavailable; reconfigure credentials before syncing.");
         }
-        return encrypted;
+        try {
+            return tokenEncryptionService.decrypt(encrypted);
+        } catch (Exception e) {
+            throw new IllegalStateException(
+                    "Git credential could not be decrypted; reconfigure credentials before syncing.", e);
+        }
     }
 
     private boolean isDirectoryEmpty(Path path) {

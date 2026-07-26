@@ -2,6 +2,9 @@ package ai.kompile.project.archive;
 
 import ai.kompile.project.KompileProjectManifest;
 import ai.kompile.project.KompileProjectStore;
+import ai.kompile.project.knowledge.KnowledgeInventory;
+import ai.kompile.project.knowledge.KnowledgeUpdateManifest;
+import ai.kompile.project.knowledge.PortableKnowledge;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.sun.jna.Library;
@@ -48,6 +51,7 @@ import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.UUID;
+import java.util.function.Predicate;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
@@ -60,6 +64,8 @@ public final class ProjectArchiveService {
     public static final int FORMAT_VERSION = 2;
     public static final String MANIFEST_ENTRY = "manifest.json";
     public static final String PAYLOAD_PREFIX = "project/";
+    public static final String KNOWLEDGE_MANIFEST_ENTRY = "knowledge-manifest.json";
+    public static final String KNOWLEDGE_PAYLOAD_PREFIX = "knowledge/";
     private static final int BUFFER_SIZE = 64 * 1024;
     private static final String COMPLETE_PROJECT_GRAPH = "data/graph/project.kgraph";
     private static final String GLOBAL_GRAPH = "data/graph/global.kgraph";
@@ -105,6 +111,10 @@ public final class ProjectArchiveService {
                                                ProjectArchiveExportOptions options) throws IOException {
         ProjectArchiveExportOptions effectiveOptions = options == null
                 ? ProjectArchiveExportOptions.defaults() : options;
+        if (effectiveOptions.includeSensitiveFiles()) {
+            throw new IOException(".kproject archives never include sensitive files; "
+                    + "use a separate encrypted backup format");
+        }
         Path projectRoot = root.toAbsolutePath().normalize();
         Path destination = output.toAbsolutePath().normalize();
         if (destination.getFileName() == null || !destination.getFileName().toString()
@@ -158,6 +168,183 @@ public final class ProjectArchiveService {
             }
             if (e instanceof IOException io) throw io;
             throw new IOException("Failed to export project archive", e);
+        }
+    }
+
+    /**
+     * Captures the current descriptor, graph, Markdown, fact-sheet, and index inventory without
+     * exporting model binaries or other desktop-only project state.
+     */
+    public KnowledgeInventory inspectKnowledge(Path root) throws IOException {
+        Path projectRoot = root.toAbsolutePath().normalize();
+        if (!Files.isDirectory(projectRoot, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("Project root is not a directory: " + projectRoot);
+        }
+        Snapshot snapshot = captureSnapshot(
+                projectRoot,
+                Set.of(),
+                new ProjectArchiveExportOptions(true, false),
+                null,
+                PortableKnowledge::isPortablePath,
+                KNOWLEDGE_PAYLOAD_PREFIX);
+        return knowledgeInventory(snapshot);
+    }
+
+    /**
+     * Exports a content-addressed {@code .kupdate} delta from a client-supplied full base inventory.
+     * The exporter uses the same race-safe file capture as canonical {@code .kproject} export and
+     * repeats a full portable snapshot before publication.
+     */
+    public KnowledgeUpdateArchiveResult exportKnowledgeUpdate(
+            Path root,
+            Path output,
+            KnowledgeInventory base) throws IOException {
+        Objects.requireNonNull(base, "Base knowledge inventory is required");
+        Path projectRoot = root.toAbsolutePath().normalize();
+        Path destination = output.toAbsolutePath().normalize();
+        if (destination.getFileName() == null
+                || !destination.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".kupdate")) {
+            throw new IOException("Knowledge update output must use the .kupdate extension: " + destination);
+        }
+        if (!Files.isDirectory(projectRoot, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("Project root is not a directory: " + projectRoot);
+        }
+        if (destination.getParent() == null) {
+            throw new IOException("Knowledge update output must have a parent directory");
+        }
+        if (Files.exists(destination, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("Knowledge update output already exists: " + destination);
+        }
+        Files.createDirectories(destination.getParent());
+
+        Path temp = destination.resolveSibling("." + destination.getFileName() + ".tmp-" + UUID.randomUUID());
+        Set<String> excludedPaths = excludedProjectPaths(projectRoot, destination, temp);
+        ProjectArchiveExportOptions options = new ProjectArchiveExportOptions(true, false);
+        try {
+            Snapshot first = captureSnapshot(
+                    projectRoot,
+                    excludedPaths,
+                    options,
+                    null,
+                    PortableKnowledge::isPortablePath,
+                    KNOWLEDGE_PAYLOAD_PREFIX);
+            KnowledgeInventory current = knowledgeInventory(first);
+            if (!base.projectId().equals(current.projectId())) {
+                throw new IOException("Knowledge base projectId " + base.projectId()
+                        + " does not match current project " + current.projectId());
+            }
+
+            Map<String, PortableKnowledge.Entry> baseEntries = new HashMap<>();
+            base.entries().forEach(entry -> baseEntries.put(entry.path(), entry));
+            List<PortableKnowledge.Entry> changed = new ArrayList<>();
+            long changedBytes = 0;
+            for (PortableKnowledge.Entry entry : current.entries()) {
+                PortableKnowledge.Entry previous = baseEntries.get(entry.path());
+                if (previous == null || previous.size() != entry.size()
+                        || !previous.sha256().equals(entry.sha256())
+                        || PortableKnowledge.PROJECT_DESCRIPTOR.equals(entry.path())) {
+                    changed.add(entry);
+                    changedBytes = Math.addExact(changedBytes, entry.size());
+                }
+            }
+            Set<String> currentPaths = new HashSet<>();
+            current.entries().forEach(entry -> currentPaths.add(entry.path()));
+            List<String> deleted = base.entries().stream()
+                    .map(PortableKnowledge.Entry::path)
+                    .filter(path -> !currentPaths.contains(path))
+                    .sorted()
+                    .toList();
+
+            KnowledgeUpdateManifest manifest = new KnowledgeUpdateManifest(
+                    KnowledgeUpdateManifest.FORMAT,
+                    PortableKnowledge.FORMAT_VERSION,
+                    current.projectId(),
+                    current.projectName(),
+                    base.revision(),
+                    current.revision(),
+                    current.defaultGraph(),
+                    Instant.now().toString(),
+                    "kompile",
+                    current.entries(),
+                    changed,
+                    deleted);
+            Set<String> changedPaths = new HashSet<>();
+            changed.forEach(entry -> changedPaths.add(entry.path()));
+
+            Snapshot capturedChanged;
+            try (OutputStream fileOut = new BufferedOutputStream(Files.newOutputStream(
+                    temp, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE));
+                 ZipOutputStream zip = new ZipOutputStream(fileOut)) {
+                capturedChanged = captureSnapshot(
+                        projectRoot,
+                        excludedPaths,
+                        options,
+                        zip,
+                        changedPaths::contains,
+                        KNOWLEDGE_PAYLOAD_PREFIX);
+                verifySelectedSnapshot(changed, capturedChanged.entries());
+                byte[] manifestBytes = mapper.writeValueAsBytes(manifest);
+                if (manifestBytes.length > ProjectArchiveImportOptions.defaults().maxManifestSize()) {
+                    throw new IOException("Generated knowledge manifest exceeds supported import limit");
+                }
+                ZipEntry manifestEntry = new ZipEntry(KNOWLEDGE_MANIFEST_ENTRY);
+                manifestEntry.setTime(0);
+                zip.putNextEntry(manifestEntry);
+                zip.write(manifestBytes);
+                zip.closeEntry();
+            }
+
+            Snapshot after = captureSnapshot(
+                    projectRoot,
+                    excludedPaths,
+                    options,
+                    null,
+                    PortableKnowledge::isPortablePath,
+                    KNOWLEDGE_PAYLOAD_PREFIX);
+            verifySnapshot(first, after);
+            publicationHook.beforePublish(destination);
+            movePublished(temp, destination);
+            return new KnowledgeUpdateArchiveResult(destination, current, manifest, changedBytes);
+        } catch (Exception e) {
+            try {
+                Files.deleteIfExists(temp);
+            } catch (IOException cleanup) {
+                e.addSuppressed(cleanup);
+            }
+            if (e instanceof IOException io) throw io;
+            throw new IOException("Failed to export knowledge update", e);
+        }
+    }
+
+    private KnowledgeInventory knowledgeInventory(Snapshot snapshot) throws IOException {
+        List<PortableKnowledge.Entry> entries = snapshot.entries().stream()
+                .map(entry -> new PortableKnowledge.Entry(entry.path(), entry.size(), entry.sha256()))
+                .toList();
+        String defaultGraph = selectDefaultGraph(snapshot.entries());
+        if (defaultGraph == null || !PortableKnowledge.isPortablePath(defaultGraph)) {
+            throw new IOException("Portable knowledge has no unambiguous default .kgraph");
+        }
+        return KnowledgeInventory.create(
+                snapshot.project().getProjectId(),
+                snapshot.project().getName(),
+                defaultGraph,
+                entries);
+    }
+
+    private static void verifySelectedSnapshot(
+            List<PortableKnowledge.Entry> expected,
+            List<ProjectArchiveManifest.Entry> actual) throws IOException {
+        Map<String, ProjectArchiveManifest.Entry> byPath = new HashMap<>();
+        actual.forEach(entry -> byPath.put(entry.path(), entry));
+        if (byPath.size() != expected.size()) {
+            throw new IOException("Selected knowledge payload inventory changed during export");
+        }
+        for (PortableKnowledge.Entry entry : expected) {
+            ProjectArchiveManifest.Entry captured = byPath.get(entry.path());
+            if (captured == null || captured.size() != entry.size()
+                    || !captured.sha256().equals(entry.sha256())) {
+                throw new IOException("Knowledge payload changed during export: " + entry.path());
+            }
         }
     }
 
@@ -346,12 +533,22 @@ public final class ProjectArchiveService {
     private Snapshot captureSnapshot(Path root, Set<String> excludedPaths,
                                      ProjectArchiveExportOptions options,
                                      ZipOutputStream zip) throws IOException {
+        return captureSnapshot(root, excludedPaths, options, zip, path -> true, PAYLOAD_PREFIX);
+    }
+
+    private Snapshot captureSnapshot(Path root, Set<String> excludedPaths,
+                                     ProjectArchiveExportOptions options,
+                                     ZipOutputStream zip,
+                                     Predicate<String> includedFiles,
+                                     String payloadPrefix) throws IOException {
         SnapshotCollector collector = new SnapshotCollector();
         try (SecureDirectoryStream<Path> secureRoot = openSecureDirectory(root)) {
-            captureDirectory(secureRoot, "", excludedPaths, options, zip, collector);
+            captureDirectory(secureRoot, "", excludedPaths, options, zip, collector,
+                    includedFiles, payloadPrefix);
         }
         if (collector.projectDescriptor == null) {
-            throw new IOException("Project root does not contain " + KompileProjectStore.MANIFEST_FILE);
+            throw new IOException("Selected project inventory does not contain "
+                    + KompileProjectStore.MANIFEST_FILE);
         }
         KompileProjectManifest project = parseSupportedProject(collector.projectDescriptor);
         return new Snapshot(project, List.copyOf(collector.entries), collector.totalSize);
@@ -359,7 +556,9 @@ public final class ProjectArchiveService {
 
     private void captureDirectory(SecureDirectoryStream<Path> directory, String prefix,
                                   Set<String> excludedPaths, ProjectArchiveExportOptions options,
-                                  ZipOutputStream zip, SnapshotCollector collector) throws IOException {
+                                  ZipOutputStream zip, SnapshotCollector collector,
+                                  Predicate<String> includedFiles,
+                                  String payloadPrefix) throws IOException {
         List<Path> names = new ArrayList<>();
         for (Path child : directory) {
             Path name = child.getFileName();
@@ -384,12 +583,14 @@ public final class ProjectArchiveService {
                 if (excludedDirectory(relative, options.includeSensitiveFiles())) continue;
                 try (SecureDirectoryStream<Path> child =
                              directory.newDirectoryStream(name, LinkOption.NOFOLLOW_LINKS)) {
-                    captureDirectory(child, relative, excludedPaths, options, zip, collector);
+                    captureDirectory(child, relative, excludedPaths, options, zip, collector,
+                            includedFiles, payloadPrefix);
                 }
             } else if (attrs.isRegularFile()
+                    && includedFiles.test(relative)
                     && !excludedPaths.contains(relative)
                     && !excludedFile(relative, options.includeSensitiveFiles())) {
-                captureFile(directory, name, relative, attrs, options, zip, collector);
+                captureFile(directory, name, relative, attrs, options, zip, collector, payloadPrefix);
             }
         }
     }
@@ -397,7 +598,7 @@ public final class ProjectArchiveService {
     private void captureFile(SecureDirectoryStream<Path> directory, Path name, String relative,
                              BasicFileAttributes listedAttributes,
                              ProjectArchiveExportOptions options, ZipOutputStream zip,
-                             SnapshotCollector collector) throws IOException {
+                             SnapshotCollector collector, String payloadPrefix) throws IOException {
         if (collector.entries.size() >= ProjectArchiveImportOptions.defaults().maxEntries()) {
             throw new IOException("Project exceeds supported archive entry limit");
         }
@@ -410,9 +611,9 @@ public final class ProjectArchiveService {
             if (relative.equals(KompileProjectStore.MANIFEST_FILE)) {
                 descriptor = readChannelBounded(channel, MAX_PROJECT_DESCRIPTOR_BYTES, relative);
             }
-            if (!options.includeSensitiveFiles() && containsEmbeddedSecret(channel, relative)) {
+            if (containsEmbeddedSecret(channel, relative)) {
                 throw new IOException("Potential embedded credential in " + relative
-                        + "; remove it or use includeSensitiveFiles explicitly");
+                        + "; remove it before exporting");
             }
 
             boolean executable = secureExecutable(directory, name);
@@ -421,7 +622,7 @@ public final class ProjectArchiveService {
             long count = 0;
             ByteBuffer buffer = ByteBuffer.allocate(BUFFER_SIZE);
             if (zip != null) {
-                ZipEntry entry = new ZipEntry(PAYLOAD_PREFIX + relative);
+                ZipEntry entry = new ZipEntry(payloadPrefix + relative);
                 entry.setTime(0);
                 zip.putNextEntry(entry);
             }

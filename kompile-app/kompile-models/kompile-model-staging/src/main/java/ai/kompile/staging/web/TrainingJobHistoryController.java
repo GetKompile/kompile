@@ -37,7 +37,6 @@ import java.util.Map;
 @ConditionalOnProperty(name = "kompile.staging.app.enabled", havingValue = "true")
 @RestController
 @RequestMapping("/api/training/history")
-@CrossOrigin(origins = "*")
 public class TrainingJobHistoryController {
 
     private static final Logger log = LoggerFactory.getLogger(TrainingJobHistoryController.class);

@@ -48,13 +48,56 @@
       </button>
       <span class="toolbar-title">{{ title }}</span>
       <span class="spacer"></span>
-      <button mat-icon-button matTooltip="Health Status">
-        <mat-icon>favorite</mat-icon>
-      </button>
-      <button mat-icon-button matTooltip="Documentation">
-        <mat-icon>help_outline</mat-icon>
+      <button mat-stroked-button
+              class="pairing-button"
+              type="button"
+              [class.pairing-required]="pairingRequired"
+              [attr.aria-expanded]="pairingPanelOpen"
+              aria-controls="staging-pairing-panel"
+              (click)="togglePairingPanel()">
+        <mat-icon>{{ pairingActive ? 'link' : 'link_off' }}</mat-icon>
+        <span>{{ pairingActive ? 'Paired' : 'Pair' }}</span>
       </button>
     </mat-toolbar>
+
+    <section *ngIf="pairingPanelOpen"
+             id="staging-pairing-panel"
+             class="pairing-panel"
+             aria-live="polite">
+      <div class="pairing-copy">
+        <strong>{{ pairingRequired ? 'Pairing required' : 'LAN pairing' }}</strong>
+        <span *ngIf="pairingRequired">
+          The server rejected this session. Enter the token printed when it started.
+        </span>
+        <span>
+          The token stays in session storage and is sent only in the
+          X-Kompile-Staging-Token header to this server's API. It is never put in a URL or cookie.
+        </span>
+      </div>
+      <form class="pairing-form" autocomplete="off" (ngSubmit)="savePairing()">
+        <mat-form-field appearance="outline" subscriptSizing="dynamic">
+          <mat-label>Staging pairing token</mat-label>
+          <input matInput
+                 type="password"
+                 name="stagingPairingToken"
+                 autocomplete="new-password"
+                 autocapitalize="off"
+                 spellcheck="false"
+                 [(ngModel)]="pairingTokenInput">
+        </mat-form-field>
+        <div class="pairing-actions">
+          <button mat-flat-button color="primary" type="submit"
+                  [disabled]="!pairingTokenInput.trim()">
+            Pair this session
+          </button>
+          <button *ngIf="pairingActive" mat-button type="button" (click)="clearPairing()">
+            Clear pairing
+          </button>
+          <button mat-button type="button" (click)="togglePairingPanel()">Close</button>
+        </div>
+      </form>
+      <div *ngIf="pairingError" class="pairing-error" role="alert">{{ pairingError }}</div>
+    </section>
 
     <div class="content-area">
       <router-outlet></router-outlet>

@@ -1,0 +1,23 @@
+/*
+ * Build-time TypeScript config for the crawl manager app. See chat-app/tsconfig.app.json for why
+ * shared sources are not listed in `include` while the shared ambient .d.ts files are.
+ */
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "outDir": "../../out-tsc/crawl-app",
+    "types": []
+  },
+  "files": [
+    "src/main.ts",
+    "../kompile-ui-shared/src/polyfills.ts"
+  ],
+  "include": [
+    "src/**/*.d.ts",
+    "src/app/**/*.ts",
+    "../kompile-ui-shared/src/**/*.d.ts"
+  ],
+  "exclude": [
+    "src/**/*.spec.ts"
+  ]
+}

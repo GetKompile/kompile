@@ -15,6 +15,8 @@
  */
 package ai.kompile.core.graphrag.format;
 
+import ai.kompile.core.crawl.graph.GraphExtractionValidationPolicy;
+import ai.kompile.core.crawl.graph.GraphExtractionValidationPolicy.FailureMode;
 import ai.kompile.core.graphrag.format.GraphExtractionSchema.ExtractionMetadata;
 import ai.kompile.core.graphrag.format.GraphExtractionSchema.ExtractionResult;
 import ai.kompile.core.graphrag.format.GraphExtractionSchema.ExtractedEntity;
@@ -23,6 +25,7 @@ import ai.kompile.core.graphrag.format.GraphExtractionValidator.ValidationResult
 import ai.kompile.core.graphrag.model.Entity;
 import ai.kompile.core.graphrag.model.Graph;
 import ai.kompile.core.graphrag.model.Relationship;
+import ai.kompile.core.graphrag.model.schema.GraphSchema;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -503,6 +506,163 @@ class GraphExtractionValidatorTest {
     void llmSuppliedRelationConfidenceIsPreserved() {
         ExtractedRelation r = new ExtractedRelation("e1", "e2", "REL", "desc", 0.63, null);
         assertEquals(0.63, r.confidence(), 1e-9);
+    }
+
+    @Nested
+    class SemanticPolicyValidation {
+
+        @Test
+        void retryModeRejectsSameEntityNameWithConflictingTypes() {
+            ExtractionResult result = ExtractionResult.of(
+                    List.of(
+                            entity("e1", "North Region", "REGION"),
+                            entity("e2", " north region ", "BUSINESS_UNIT")),
+                    List.of(),
+                    null);
+
+            ValidationResult validation = GraphExtractionValidator.validate(
+                    result, GraphExtractionValidationPolicy.defaults(), null);
+
+            assertFalse(validation.valid());
+            assertTrue(validation.errors().stream()
+                    .anyMatch(error -> error.contains("[ENTITY_NAME_TYPE_CONSISTENCY]")));
+        }
+
+        @Test
+        void warnModeAcceptsSemanticViolationsAndReturnsWarnings() {
+            GraphExtractionValidationPolicy policy = GraphExtractionValidationPolicy.builder()
+                    .failureMode(FailureMode.WARN)
+                    .build();
+            ExtractionResult result = ExtractionResult.of(
+                    List.of(
+                            entity("e1", "Forecast", "REGIONAL_FORECAST"),
+                            entity("e2", "Forecast", "SPREADSHEET")),
+                    List.of(),
+                    null);
+
+            ValidationResult validation = GraphExtractionValidator.validate(result, policy, null);
+
+            assertTrue(validation.valid());
+            assertTrue(validation.errors().isEmpty());
+            assertTrue(validation.warnings().stream()
+                    .anyMatch(warning -> warning.contains("[ENTITY_NAME_TYPE_CONSISTENCY]")));
+        }
+
+        @Test
+        void disabledModeSkipsSemanticRulesButNeverStructuralRules() {
+            ExtractedEntity lowerCaseType = new ExtractedEntity(
+                    "e1", "Forecast", "regional_forecast", List.of(), null, 0.9, Map.of());
+            ExtractionResult semanticOnly = ExtractionResult.of(
+                    List.of(lowerCaseType), List.of(), null);
+
+            assertTrue(GraphExtractionValidator.validate(
+                    semanticOnly, GraphExtractionValidationPolicy.disabled(), null).valid());
+
+            ExtractedRelation unknownEndpoint = new ExtractedRelation(
+                    "missing", "e1", "REL", "bad endpoint", 0.8, Map.of());
+            ExtractionResult structurallyInvalid = ExtractionResult.of(
+                    List.of(lowerCaseType), List.of(unknownEndpoint), null);
+            assertFalse(GraphExtractionValidator.validate(
+                    structurallyInvalid, GraphExtractionValidationPolicy.disabled(), null).valid());
+        }
+
+        @Test
+        void validatesRelationEndpointTypesAgainstConfiguredSignatures() {
+            GraphExtractionValidationPolicy policy = GraphExtractionValidationPolicy.builder()
+                    .relationPatterns(List.of("(PERSON)-[:APPROVED_BY]->(CLOSE_STEP)"))
+                    .build();
+            ExtractedRelation approval = new ExtractedRelation(
+                    "person", "target", "APPROVED_BY", "Approval evidence", 0.95, Map.of());
+
+            ExtractionResult wrongTarget = ExtractionResult.of(
+                    List.of(
+                            entity("person", "Finance Lead", "PERSON"),
+                            entity("target", "North Forecast", "REGIONAL_FORECAST")),
+                    List.of(approval),
+                    null);
+            ValidationResult rejected = GraphExtractionValidator.validate(wrongTarget, policy, null);
+            assertFalse(rejected.valid());
+            assertTrue(rejected.errors().stream()
+                    .anyMatch(error -> error.contains("[RELATION_SCHEMA_PATTERN]")));
+
+            ExtractionResult rightTarget = ExtractionResult.of(
+                    List.of(
+                            entity("person", "Finance Lead", "PERSON"),
+                            entity("target", "Review close checklist", "CLOSE_STEP")),
+                    List.of(approval),
+                    null);
+            assertTrue(GraphExtractionValidator.validate(rightTarget, policy, null).valid());
+        }
+
+        @Test
+        void rejectsSelfLoopsAndInvalidOrMissingRequiredTimestamps() {
+            GraphExtractionValidationPolicy policy = GraphExtractionValidationPolicy.builder()
+                    .requiredOccurredAtRelationTypes(List.of("SUBMITTED_BY"))
+                    .build();
+            List<ExtractedEntity> entities = List.of(
+                    entity("forecast", "North Forecast", "REGIONAL_FORECAST"),
+                    entity("person", "Finance Lead", "PERSON"));
+
+            ExtractedRelation selfLoop = new ExtractedRelation(
+                    "person", "person", "APPROVED_BY", "Self approval", 0.8, Map.of(), null);
+            ValidationResult selfLoopResult = GraphExtractionValidator.validate(
+                    ExtractionResult.of(entities, List.of(selfLoop), null), policy, null);
+            assertFalse(selfLoopResult.valid());
+            assertTrue(selfLoopResult.errors().stream()
+                    .anyMatch(error -> error.contains("[RELATION_SELF_LOOP]")));
+
+            ExtractedRelation missingTimestamp = new ExtractedRelation(
+                    "forecast", "person", "SUBMITTED_BY", "Submission", 0.9, Map.of(), null);
+            ValidationResult missingResult = GraphExtractionValidator.validate(
+                    ExtractionResult.of(entities, List.of(missingTimestamp), null), policy, null);
+            assertTrue(missingResult.errors().stream()
+                    .anyMatch(error -> error.contains("[REQUIRED_RELATION_OCCURRED_AT]")));
+
+            ExtractedRelation malformedTimestamp = new ExtractedRelation(
+                    "forecast", "person", "SUBMITTED_BY", "Submission", 0.9, Map.of(), "last Tuesday");
+            ValidationResult malformedResult = GraphExtractionValidator.validate(
+                    ExtractionResult.of(entities, List.of(malformedTimestamp), null), policy, null);
+            assertTrue(malformedResult.errors().stream()
+                    .anyMatch(error -> error.contains("[OCCURRED_AT_FORMAT]")));
+
+            ExtractedRelation validTimestamp = new ExtractedRelation(
+                    "forecast", "person", "SUBMITTED_BY", "Submission", 0.9, Map.of(), "2026-07-19T09:15:00Z");
+            assertTrue(GraphExtractionValidator.validate(
+                    ExtractionResult.of(entities, List.of(validTimestamp), null), policy, null).valid());
+        }
+
+        @Test
+        void unknownValidatorIdsFailClosedInDefaultRetryMode() {
+            GraphExtractionValidationPolicy policy = GraphExtractionValidationPolicy.builder()
+                    .enabledValidators(List.of("misspelled-validator"))
+                    .build();
+
+            ValidationResult validation = GraphExtractionValidator.validate(
+                    ExtractionResult.of(List.of(entity("e1", "Forecast", "FORECAST")), List.of(), null),
+                    policy,
+                    null);
+
+            assertFalse(validation.valid());
+            assertTrue(validation.errors().stream()
+                    .anyMatch(error -> error.contains("[VALIDATION_CONFIG]")));
+        }
+
+        @Test
+        void promptRulesAreGeneratedFromTheSamePolicyWithoutExampleFacts() {
+            GraphExtractionValidationPolicy policy = GraphExtractionValidationPolicy.builder()
+                    .relationPatterns(List.of("(PERSON)-[:APPROVED_BY]->(CLOSE_STEP)"))
+                    .requiredOccurredAtRelationTypes(List.of("APPROVED_BY"))
+                    .build();
+            GraphSchema schema = new GraphSchema(null, null, policy.getRelationPatterns());
+
+            String prompt = GraphExtractionValidator.getExtractionPromptInstructions(policy, schema);
+
+            assertTrue(prompt.contains("(PERSON)-[:APPROVED_BY]->(CLOSE_STEP)"));
+            assertTrue(prompt.contains("occurredAt is REQUIRED"));
+            assertTrue(prompt.contains("same normalized entity name"));
+            assertFalse(prompt.contains("Acme Corp"));
+            assertFalse(prompt.contains("John"));
+        }
     }
 
     // ── Prompt instructions ─────────────────────────────────────────

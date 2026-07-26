@@ -306,14 +306,14 @@
             </activation>
             <build>
                 <plugins>
-                    <!-- Clear Angular cache before build -->
+                    <!-- Keep every generated UI byte under target and remove legacy source output. -->
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-antrun-plugin</artifactId>
                         <version>3.1.0</version>
                         <executions>
                             <execution>
-                                <id>clean-angular-cache</id>
+                                <id>clean-generated-angular-output</id>
                                 <phase>initialize</phase>
                                 <goals>
                                     <goal>run</goal>
@@ -322,6 +322,9 @@
                                     <target>
                                         <delete dir="${project.basedir}/src/main/frontend/.angular/cache" quiet="true"/>
                                         <delete dir="${project.basedir}/src/main/frontend/dist" quiet="true"/>
+                                        <delete dir="${project.basedir}/src/main/resources/static/model-staging" quiet="true"/>
+                                        <delete dir="${project.build.directory}/generated-resources/static/model-staging" quiet="true"/>
+                                        <delete dir="${project.build.outputDirectory}/static/model-staging" quiet="true"/>
                                     </target>
                                 </configuration>
                             </execution>
@@ -343,7 +346,7 @@
                                 </configuration>
                             </execution>
                             <execution>
-                                <id>npm build</id>
+                                <id>angular-build-for-debug</id>
                                 <goals>
                                     <goal>npm</goal>
                                 </goals>
@@ -365,31 +368,37 @@
                                 <goals>
                                     <goal>copy-resources</goal>
                                 </goals>
-                                <phase>prepare-package</phase>
+                                <phase>process-resources</phase>
                                 <configuration>
                                     <outputDirectory>${project.build.outputDirectory}/static/model-staging</outputDirectory>
                                     <resources>
                                         <resource>
-                                            <directory>src/main/frontend/dist/model-staging-frontend/browser</directory>
+                                            <directory>${project.build.directory}/generated-resources/static/model-staging</directory>
                                             <filtering>false</filtering>
                                         </resource>
                                     </resources>
                                 </configuration>
                             </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <version>3.2.0</version>
+                        <executions>
                             <execution>
-                                <id>copy-angular-to-src-main-resources</id>
+                                <id>validate-executable-jar-ui-bundle</id>
+                                <phase>verify</phase>
                                 <goals>
-                                    <goal>copy-resources</goal>
+                                    <goal>java</goal>
                                 </goals>
-                                <phase>prepare-package</phase>
                                 <configuration>
-                                    <outputDirectory>${project.basedir}/src/main/resources/static/model-staging</outputDirectory>
-                                    <resources>
-                                        <resource>
-                                            <directory>src/main/frontend/dist/model-staging-frontend/browser</directory>
-                                            <filtering>false</filtering>
-                                        </resource>
-                                    </resources>
+                                    <mainClass>ai.kompile.staging.build.StagingUiJarValidator</mainClass>
+                                    <classpathScope>test</classpathScope>
+                                    <arguments>
+                                        <argument>${project.build.directory}/${project.build.finalName}-exec.jar</argument>
+                                        <argument>${project.basedir}/src/main/resources/static/model-staging</argument>
+                                    </arguments>
                                 </configuration>
                             </execution>
                         </executions>

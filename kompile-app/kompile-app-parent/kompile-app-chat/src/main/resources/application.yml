@@ -1,0 +1,21 @@
+# Framework bootstrap ONLY. Feature configuration does NOT belong here — it goes through the
+# kompile-managed JSON under ~/.kompile/config/ read by the *ConfigService beans and edited via the
+# *ConfigController REST surface and the settings panel. What is left is the irreducible Spring
+# plumbing that has to exist before any bean does, and the per-process identity/port that
+# KompileBootstrapEnvironmentPostProcessor cannot know. Same split as
+# kompile-models/kompile-model-staging/src/main/resources/application.yml.
+
+server:
+  # The chat persona owns 8081; the admin console keeps 8080 and the crawl manager takes 8082.
+  port: ${KOMPILE_CHAT_PORT:8081}
+  address: ${KOMPILE_CHAT_ADDRESS:127.0.0.1}
+
+spring:
+  application:
+    name: kompile-app-chat
+
+# Upload limits are deliberately absent: AppConfig (kompile-app-web-shared) contributes a
+# MultipartConfigElement bean, and that bean beats spring.servlet.multipart.*, so anything set here
+# would be dead config. It reads kompile.multipart.max-file-size / max-request-size, which
+# KompileServerRuntime.bootstrap() seeds from the --kompile.multipart.* command line — one source of
+# truth shared by all three persona processes.

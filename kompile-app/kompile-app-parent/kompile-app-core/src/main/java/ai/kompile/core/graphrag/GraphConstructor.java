@@ -16,6 +16,7 @@
 
 package ai.kompile.core.graphrag;
 
+import ai.kompile.core.crawl.graph.GraphExtractionValidationPolicy;
 import ai.kompile.core.graphrag.model.schema.GraphSchema;
 import ai.kompile.core.graphrag.model.schema.SchemaEnforcementMode;
 import ai.kompile.core.retrievers.RetrievedDoc;
@@ -50,6 +51,14 @@ public interface GraphConstructor {
      * @param config the extraction model configuration
      */
     default void configure(ExtractionModelConfig config) {
+        // Default implementation does nothing - implementations can override
+    }
+
+    /**
+     * Configure project-specific semantic validation and aligned prompt rules.
+     * Implementations that perform their own LLM extraction should override this.
+     */
+    default void configureValidation(GraphExtractionValidationPolicy policy) {
         // Default implementation does nothing - implementations can override
     }
 

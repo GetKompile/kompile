@@ -17,9 +17,10 @@
 package ai.kompile.staging.conversion;
 
 import org.nd4j.autodiff.samediff.SameDiff;
-import org.nd4j.autodiff.samediff.serde.SameDiffSerializer;
+import org.nd4j.autodiff.samediff.serde.SDZSerializer;
 import org.nd4j.ggml.GGMLModelImport;
 import org.nd4j.ggml.convert.ConversionOptions;
+import ai.kompile.staging.download.StagingCancellation;
 import org.nd4j.samediff.frameworkimport.onnx.importer.OnnxFrameworkImporter;
 import org.nd4j.samediff.frameworkimport.tensorflow.importer.TensorflowFrameworkImporter;
 import org.slf4j.Logger;
@@ -28,12 +29,17 @@ import org.springframework.stereotype.Service;
 
 import java.io.*;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
+import java.util.UUID;
+import java.util.concurrent.CancellationException;
 
 /**
  * Service for converting models from various formats to SameDiff.
@@ -54,12 +60,28 @@ public class ConversionService {
      * @return Result of the conversion
      */
     public ConversionResult convert(Path inputPath, Path outputPath, String format) {
+        return convert(inputPath, outputPath, format, StagingCancellation.NONE);
+    }
+
+    /**
+     * Convert to one canonical SDZ while honoring cooperative staging cancellation.
+     */
+    public ConversionResult convert(
+            Path inputPath,
+            Path outputPath,
+            String format,
+            StagingCancellation cancellation) {
         long startTime = System.currentTimeMillis();
         List<String> warnings = new ArrayList<>();
+        StagingCancellation signal =
+                cancellation == null ? StagingCancellation.NONE : cancellation;
+        Path pendingOutput = null;
 
         try {
+            signal.checkpoint();
             // Validate input
-            if (!Files.exists(inputPath)) {
+            if (!Files.isRegularFile(inputPath, LinkOption.NOFOLLOW_LINKS)
+                    || Files.isSymbolicLink(inputPath)) {
                 return ConversionResult.failure("Input file does not exist: " + inputPath);
             }
 
@@ -67,10 +89,17 @@ public class ConversionService {
             log.info("Converting {} model: {} -> {}", resolvedFormat, inputPath, outputPath);
 
             // Create output directory if needed
-            Files.createDirectories(outputPath.getParent());
+            Path canonicalOutput = outputPath.toAbsolutePath().normalize();
+            if (!canonicalOutput.getFileName().toString()
+                    .toLowerCase(Locale.ROOT).endsWith(".sdz")) {
+                return ConversionResult.failure(
+                        "Canonical conversion output must end with .sdz: " + canonicalOutput);
+            }
+            Files.createDirectories(canonicalOutput.getParent());
 
             // Import model based on format
             SameDiff sameDiff = importModel(inputPath, resolvedFormat);
+            signal.checkpoint();
 
             if (sameDiff == null) {
                 return ConversionResult.failure("Failed to import model - null result");
@@ -86,25 +115,35 @@ public class ConversionService {
 
             log.info("Imported model with {} operations and {} variables", numOps, numVars);
 
-            // Save to SameDiff format. saveAutoShard writes
-            // "{baseName}.shard{i}-of-{N}.sdnb" files next to outputPath (stripping the
-            // extension), not outputPath itself — validate the shard-0 presence instead.
-            SameDiffSerializer.saveAutoShard(sameDiff, outputPath.toFile(), true, Collections.emptyMap());
+            // SDZSerializer is the canonical format owner. It creates the complete atomic
+            // SDNB shard set internally and packages those shards into one runtime .sdz.
+            pendingOutput = canonicalOutput.resolveSibling(
+                    "." + UUID.randomUUID() + ".pending-" + canonicalOutput.getFileName());
+            SDZSerializer.save(
+                    sameDiff,
+                    pendingOutput.toFile(),
+                    true,
+                    Collections.emptyMap());
+            signal.checkpoint();
 
-            Path shard0 = findShard0(outputPath);
-            if (shard0 == null) {
-                return ConversionResult.failure("Output shard files were not created next to " + outputPath);
+            SameDiff reloaded = SDZSerializer.load(pendingOutput.toFile(), true);
+            if (reloaded == null || reloaded.ops().length != numOps) {
+                return ConversionResult.failure(
+                        "Canonical SDZ validation did not preserve the imported graph");
             }
+            signal.checkpoint();
+            publishAtomically(pendingOutput, canonicalOutput);
+            pendingOutput = null;
 
-            // Calculate checksum on the shard-0 file (representative of the output bundle).
-            String checksum = calculateSha256(shard0);
+            ConversionArtifact artifact = ConversionArtifact.canonicalSdz(canonicalOutput);
+            String checksum = calculateSha256(artifact.canonicalPath());
 
             long duration = System.currentTimeMillis() - startTime;
             log.info("Conversion completed in {}ms", duration);
 
             return ConversionResult.builder()
                     .success(true)
-                    .outputModelPath(outputPath)
+                    .artifact(artifact)
                     .originalFormat(resolvedFormat)
                     .checksum(checksum)
                     .numOperations(numOps)
@@ -113,6 +152,8 @@ public class ConversionService {
                     .warnings(warnings.isEmpty() ? null : warnings.toArray(new String[0]))
                     .build();
 
+        } catch (CancellationException cancelled) {
+            throw cancelled;
         } catch (Exception e) {
             log.error("Conversion failed for: {}", inputPath, e);
             // Do NOT wrap in "Conversion failed: " here — StagingService already adds
@@ -120,6 +161,14 @@ public class ConversionService {
             // twice produces the confusing "Conversion failed: Conversion failed: …" message
             // that was observed in production.
             return ConversionResult.failure(e.getMessage());
+        } finally {
+            if (pendingOutput != null) {
+                try {
+                    Files.deleteIfExists(pendingOutput);
+                } catch (IOException cleanupFailure) {
+                    log.warn("Could not remove partial canonical SDZ {}", pendingOutput, cleanupFailure);
+                }
+            }
         }
     }
 
@@ -251,7 +300,10 @@ public class ConversionService {
                 return ValidationResult.failure("Model file does not exist: " + modelPath);
             }
 
-            SameDiff sd = SameDiff.load(modelPath.toFile(), true);
+            SameDiff sd = modelPath.getFileName().toString().toLowerCase(Locale.ROOT)
+                    .endsWith(".sdz")
+                    ? SDZSerializer.load(modelPath.toFile(), true)
+                    : SameDiff.load(modelPath.toFile(), true);
             int numOps = sd.ops().length;
             int numVars = sd.variables().size();
 
@@ -263,6 +315,21 @@ public class ConversionService {
         } catch (Exception e) {
             log.error("Validation failed for: {}", modelPath, e);
             return ValidationResult.failure("Validation failed: " + e.getMessage());
+        }
+    }
+
+    private Path findShard0(Path modelPath) throws IOException {
+        Path parent = modelPath.toAbsolutePath().normalize().getParent();
+        if (parent == null || !Files.isDirectory(parent)) {
+            return null;
+        }
+        String baseName = modelPath.getFileName().toString();
+        try (var entries = Files.list(parent)) {
+            return entries
+                    .filter(path -> path.getFileName().toString()
+                            .startsWith(baseName + ".shard0-of-"))
+                    .findFirst()
+                    .orElse(null);
         }
     }
 
@@ -283,28 +350,15 @@ public class ConversionService {
         return sb.toString();
     }
 
-    /**
-     * Locate the shard-0 file produced by SameDiffSerializer.saveAutoShard for the given
-     * base path. saveAutoShard strips the extension of baseFile and writes
-     * "{baseName}.shard{i}-of-{N}.sdnb" into the same directory.
-     */
-    private Path findShard0(Path basePath) throws IOException {
-        Path parent = basePath.toAbsolutePath().getParent();
-        if (parent == null || !Files.isDirectory(parent)) {
-            return null;
-        }
-        String fileName = basePath.getFileName().toString();
-        int dotIdx = fileName.lastIndexOf('.');
-        String baseName = dotIdx > 0 ? fileName.substring(0, dotIdx) : fileName;
-        String prefix = baseName + ".shard0-of-";
-        try (java.util.stream.Stream<Path> entries = Files.list(parent)) {
-            return entries
-                    .filter(p -> {
-                        String n = p.getFileName().toString();
-                        return n.startsWith(prefix) && n.endsWith(".sdnb");
-                    })
-                    .findFirst()
-                    .orElse(null);
+    private static void publishAtomically(Path pending, Path output) throws IOException {
+        try {
+            Files.move(
+                    pending,
+                    output,
+                    StandardCopyOption.ATOMIC_MOVE,
+                    StandardCopyOption.REPLACE_EXISTING);
+        } catch (java.nio.file.AtomicMoveNotSupportedException unsupported) {
+            Files.move(pending, output, StandardCopyOption.REPLACE_EXISTING);
         }
     }
 

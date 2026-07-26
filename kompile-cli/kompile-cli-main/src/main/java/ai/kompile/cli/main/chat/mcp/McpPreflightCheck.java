@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat.mcp;
 
+import ai.kompile.cli.common.routing.KompileServiceEndpoints;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -52,9 +53,6 @@ public class McpPreflightCheck {
     private static final String YELLOW = "\033[33m";
     private static final String DIM = "\033[2m";
 
-    // Ports to probe for kompile-app
-    private static final int[] KOMPILE_APP_PORTS = {8080, 8443, 9090, 3000};
-
     // Process handle for the stdio MCP server
     private volatile Process stdioMcpProcess;
     private final AtomicBoolean isRunning = new AtomicBoolean(false);
@@ -82,17 +80,20 @@ public class McpPreflightCheck {
     }
 
     /**
-     * Probes common ports to find a running kompile-app instance.
+     * Probes the resolved kompile service endpoints to find a running app that serves MCP.
+     *
+     * <p>Any persona will do — each mounts an MCP server carrying its own tools, and this check only
+     * decides whether the CLI needs to start its own stdio server as a stand-in.</p>
      */
     private String probeForKompileApp() {
         HttpClient client = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofMillis(500))
                 .build();
 
-        for (int port : KOMPILE_APP_PORTS) {
+        for (String baseUrl : KompileServiceEndpoints.allBaseUrls()) {
             try {
                 HttpRequest request = HttpRequest.newBuilder()
-                        .uri(java.net.URI.create("http://localhost:" + port + "/mcp/status"))
+                        .uri(java.net.URI.create(baseUrl + "/mcp/status"))
                         .timeout(Duration.ofMillis(1000))
                         .GET()
                         .build();
@@ -101,15 +102,15 @@ public class McpPreflightCheck {
                         HttpResponse.BodyHandlers.ofString());
                 
                 if (response.statusCode() == 200) {
-                    return "http://localhost:" + port + "/mcp/sse";
+                    return baseUrl + "/mcp/sse";
                 }
             } catch (Exception e) {
-                // Port not available, try next
-                logger.debug("Port {} not available: {}", port, e.getMessage());
+                // Not serving MCP there, try the next service
+                logger.debug("No MCP server at {}: {}", baseUrl, e.getMessage());
             }
         }
 
-        return null; // kompile-app not found
+        return null; // no kompile app found
     }
 
     /**

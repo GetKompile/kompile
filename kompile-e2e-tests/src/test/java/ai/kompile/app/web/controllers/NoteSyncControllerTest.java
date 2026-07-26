@@ -17,8 +17,10 @@
 package ai.kompile.app.web.controllers;
 
 import ai.kompile.app.sync.domain.NoteSyncRecord;
+import ai.kompile.app.sync.domain.NoteSyncRun;
 import ai.kompile.app.sync.dto.SyncConnectionRequest;
 import ai.kompile.app.sync.dto.SyncConnectionResponse;
+import ai.kompile.app.sync.dto.SyncRunResponse;
 import ai.kompile.app.sync.repository.NoteSyncRecordRepository;
 import ai.kompile.app.sync.service.NoteSyncConnectionService;
 import org.junit.jupiter.api.BeforeEach;
@@ -135,14 +137,22 @@ class NoteSyncControllerTest {
     // ── triggerSync ───────────────────────────────────────────────────────
 
     @Test
-    void triggerSync_returnsStartedStatus() {
-        // triggerSync returns a CompletableFuture — controller ignores the return value,
-        // so no stub is needed; Mockito returns null by default for non-void methods.
-        ResponseEntity<Map<String, Object>> resp = controller.triggerSync(1L);
+    void triggerSync_returnsAcceptedDurableRun() {
+        SyncRunResponse accepted = SyncRunResponse.from(NoteSyncRun.builder()
+                .id("sync-1")
+                .connectionId(1L)
+                .factSheetId(10L)
+                .mode("FULL")
+                .status("QUEUED")
+                .stage("QUEUED")
+                .build());
+        when(connectionService.triggerSync(1L)).thenReturn(accepted);
 
-        assertEquals(HttpStatus.OK, resp.getStatusCode());
-        assertEquals("STARTED", resp.getBody().get("status"));
-        assertTrue(resp.getBody().containsKey("sessionId"));
+        ResponseEntity<SyncRunResponse> resp = controller.triggerSync(1L);
+
+        assertEquals(HttpStatus.ACCEPTED, resp.getStatusCode());
+        assertSame(accepted, resp.getBody());
+        assertEquals("sync-1", resp.getBody().sessionId());
     }
 
     // ── enableConnection ──────────────────────────────────────────────────

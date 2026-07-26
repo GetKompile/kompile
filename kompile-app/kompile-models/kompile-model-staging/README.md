@@ -33,6 +33,22 @@ If the first argument does not start with `--server`, it dispatches to the CLI. 
 
 You usually don't run this manually — `kompile web` or `kompile-app-main` launches it automatically as a child process on port 8090.
 
+### Pixel / trusted-LAN pairing
+
+The server binds only to `127.0.0.1` by default. To open the staging UI from a Pixel on the same trusted LAN, bind explicitly, require a random token of at least 32 bytes, and list the browser's exact origin (scheme, host, and port; no path or wildcard):
+
+```bash
+export KOMPILE_STAGING_ADDRESS=0.0.0.0
+export KOMPILE_STAGING_LAN_ENABLED=true
+export KOMPILE_STAGING_API_TOKEN="$(openssl rand -hex 32)"
+export KOMPILE_STAGING_ALLOWED_ORIGINS=http://192.168.1.42:8090
+java -jar kompile-model-staging-*-exec.jar
+```
+
+Replace `192.168.1.42` with the staging host's LAN address, then open `http://192.168.1.42:8090` on the Pixel. If a development UI is served separately, list its exact origin instead (for example `http://192.168.1.42:4200`); multiple origins are comma-separated. `*`, paths, query strings, fragments, and non-HTTP(S) origins are rejected.
+
+Use the toolbar's **Pair** control to enter `KOMPILE_STAGING_API_TOKEN`. The UI keeps it only in `sessionStorage`, clears it when the browser session ends or **Clear pairing** is selected, and sends it only in the `X-Kompile-Staging-Token` request header. Never place the token in a URL, query parameter, fragment, cookie, or saved import draft. A `401` response opens the pairing guidance again. Restrict port 8090 to the trusted LAN with the host firewall; LAN mode is not an internet-facing deployment mode.
+
 ## Default Configuration
 
 | Setting | Default |
@@ -96,25 +112,34 @@ Custom model mirror: set `KOMPILE_MODEL_MIRROR_URL` and `KOMPILE_MODEL_MIRROR_EN
 
 Models transition through statuses: `PENDING` → `DOWNLOADING` → `CONVERTING` → `VALIDATING` → `READY` → `ACTIVE`. Progress is streamed via SSE at `GET /api/staging/models/{id}/stream`.
 
-## Offline Android graph-chat projects
+## Offline Android chat artifacts
 
-Model staging can turn a Hugging Face, HTTP, GGUF, or existing SameDiff input into
-one target-specific `.kproject` for the offline Android chat app. The public model
-inside the project remains `.sdz`: Vulkan SPIR-V, Hexagon kernels, NNAPI policy,
-and LiteRT-LM packages are immutable SDX cache entries embedded by
-`SdxModelCache.packageCompiledSdz`.
+A targeted chat build has two explicit outputs. `outputFormat: model` plus a
+`targetProfile` publishes a complete accelerator-ready `.sdz`: the model,
+`tokenizer.json`, `tokenizer_config.json`, generation/chat configuration, and
+the target payload are compiled and cached together. It deliberately contains no
+knowledge graph or Markdown and does not require a configured Kompile project.
 
-The staging server must be project-scoped. Before staging, sync the fact sheet so
-the configured project contains:
+`outputFormat: kproject` runs that exact same content-addressed SDZ compilation
+and then wraps the resulting `.sdz` in a portable graph-chat project. It fails
+closed unless `kompile.staging.project-dir` points to a valid synced project
+containing:
 
 - `data/graph/project.kgraph`, exported by the existing project graph portability service
 - at least one Markdown source below `data/markdown/`
 - optional `data/fact-sheets/`, `data/sources/`, and `data/indexed-documents/` provenance
 
-Configure the project. Vulkan, Hexagon, Tensor G5, and every quantized request
-also require an actual target compiler. The compiler command is an argument
-vector and is executed directly; it is never passed through a shell. An
-unquantized `android-arm64-nnapi-accelerator` request instead uses
+Hugging Face input accepts a repository ID or repository URL. Repository
+discovery resolves the source revision and tokenizer/config files; when several
+GGUF/GGML models are present, the caller must select one exact model path.
+Manual/local and public HTTPS component imports must declare every runnable chat
+asset instead of relying on discovery. Omitting both `targetProfile` and
+`outputFormat` retains the legacy staging/promotion flow.
+
+Vulkan, Hexagon, Tensor G5, and every quantized targeted build require an actual
+target compiler. The compiler command is an argument vector and is executed
+directly; it is never passed through a shell. An unquantized
+`android-arm64-nnapi-accelerator` request instead uses
 `SdxModelCompiler.nnapiDeviceCompilationPolicy`: the Pixel NNAPI driver performs
 the device-specific compilation and the accelerator-only runtime persists its
 device cache.
@@ -133,14 +158,14 @@ kompile:
 ```
 
 The configured executable is a real model compiler, not an APK/AAR builder or
-validator. This repository currently provides the target artifact contracts,
+validator. SDX provides the target artifact contracts, content-addressed
 cache/package layer, Vulkan compiler primitives, Hexagon plan/finalize support,
-the built-in unquantized NNAPI device policy, and LiteRT-LM package validation;
-it does not yet ship one host executable that performs every model conversion.
-Except for the unquantized NNAPI case, a target job therefore remains unavailable
-until its actual adapter is configured. Tensor G3 INT8 must rewrite SDZ weights,
-and Tensor G5 must use a supported LiteRT-LM exporter. Copying an input SDZ or
-emitting quantization metadata without a rewritten graph is rejected.
+the NNAPI device policy, the in-process Tensor G3 SameDiff INT8 graph rewriter,
+and LiteRT-LM package validation. Targets without an in-process adapter remain
+unavailable until their compiler command is configured. Tensor G3 compilation
+requires calibrated per-tensor metadata embedded in the canonical SDZ and emits
+a byte-distinct graph; Tensor G5 must use a supported LiteRT-LM exporter. Copying
+an input SDZ or emitting metadata without a rewritten graph is rejected.
 
 On an SDX cache miss the executable receives `--input`, `--target`,
 `--output`, `--source-sha256`, and `--model-output`, plus any tokenizer,
@@ -157,13 +182,15 @@ Supported Android targets:
 | `android-arm64-nnapi-accelerator` | Pixel 8a / Tensor G3 NNAPI accelerator | `Tensor_G3` |
 | `android-arm64-google-tensor-g5` | Google Tensor G5 direct NPU | `Tensor_G5` |
 
-`int8-per-channel` means symmetric per-channel INT8 weights with FLOAT16
-activations, device-only vendor AOT, and no float/host fallback. The quantization
-contract is materialized by `nd4j-sdx-model` and participates in the content
-cache key. Tensor G3 additionally requires the target compiler to emit the
-derived quantized `.sdz`; metadata alone is rejected.
+Request `int8` and staging resolves the actual scheme from the target. Tensor G3
+uses signed symmetric per-tensor INT8 weights plus calibrated FLOAT32 activation,
+weight, and output scales required by NNAPI; Hexagon and Tensor G5 retain their
+per-channel contracts. The resolved scheme is recorded in model/project metadata
+and participates in the SDX content-addressed cache key. Legacy
+`int8-per-channel` request values are accepted as an intent alias, but output
+metadata always reports the scheme actually compiled.
 
-Example:
+Example model-only mobile chat build:
 
 ```http
 POST /api/staging/stage
@@ -171,11 +198,11 @@ Content-Type: application/json
 
 {
   "source": "huggingface",
-  "repository": "Qwen/Qwen2.5-0.5B-Instruct",
+  "repository": "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
   "modelId": "qwen-mobile",
   "type": "llm_ggml",
   "format": "gguf",
-  "outputFormat": "kproject",
+  "outputFormat": "model",
   "targetProfile": "android-arm64-nnapi-accelerator",
   "quantizationProfile": "none",
   "targetSoc": "Tensor_G3"
@@ -183,10 +210,10 @@ Content-Type: application/json
 ```
 
 Poll `GET /api/staging/status/qwen-mobile`. After it reaches `completed`,
-download `GET /api/staging/models/qwen-mobile/output`. The response is the
-checksummed canonical project archive containing the exact target `.sdz`,
-`project.kgraph`, and Markdown tree. The normal model-only staging and promotion
-flow remains unchanged when `outputFormat` is omitted.
+download `GET /api/staging/models/qwen-mobile/output`. This request returns the
+complete target `.sdz`. Change `outputFormat` to `kproject` only when the
+configured project already contains a valid portable graph and Markdown tree;
+the resulting archive embeds the same cached target SDZ.
 
 ## Generated audio synthesis
 
@@ -230,7 +257,7 @@ A registry or catalog entry carries the ABI under `audio_synthesis`:
 
 - `GET /api/staging/catalog` — browse available models (static YAML + registered)
 - `POST /api/staging/stage` — start staging a model (async, returns immediately)
-- `GET /api/staging/models/{modelId}/output` — download a completed mobile `.kproject`
+- `GET /api/staging/models/{modelId}/output` — download a completed target `.sdz` or full graph-chat `.kproject`
 - `POST /api/staging/stage/catalog/{modelId}` — stage from catalog by ID
 - `GET /api/staging/models/{id}/stream` — SSE progress stream
 - `POST /api/staging/promote/{modelId}` — promote to active

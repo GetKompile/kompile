@@ -6,6 +6,7 @@ import io.vertx.ext.web.Router;
 import org.eclipse.deeplearning4j.llm.config.TokenizerConfig;
 import org.eclipse.deeplearning4j.llm.generation.GenerationPipeline;
 import org.eclipse.deeplearning4j.llm.generation.GenerationPipelineConfig;
+import org.eclipse.deeplearning4j.llm.generation.SameDiffMemoryUtils;
 import org.eclipse.deeplearning4j.llm.generation.sampling.SamplingConfig;
 import org.eclipse.deeplearning4j.llm.tokenizer.ChatTemplate;
 import org.eclipse.deeplearning4j.llm.tokenizer.HuggingFaceTokenizer;
@@ -20,6 +21,7 @@ import java.io.File;
 import java.util.Optional;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Standalone OpenAI-compatible server entry point.
@@ -120,6 +122,7 @@ public class OpenAiCompatibleServer implements Callable<Integer> {
                 .decoder(model)
                 .tokenizer(tokenizer)
                 .samplingConfig(defaultConfig)
+                .prefillLastPositionLogitsEnabled(true)
                 .build();
         GenerationPipeline pipeline = GenerationPipeline.create(pipelineConfig);
         log.info("GenerationPipeline initialized");
@@ -158,16 +161,57 @@ public class OpenAiCompatibleServer implements Callable<Integer> {
                     }
                 });
 
-        // Register shutdown hook
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+        // The pipeline does not own the pre-loaded SameDiff model or tokenizer,
+        // so the server must close all three in dependency order. Guard the sequence
+        // because both bind failure and the JVM shutdown hook can reach it.
+        AtomicBoolean resourcesClosed = new AtomicBoolean(false);
+        Runnable closeResources = () -> {
+            if (!resourcesClosed.compareAndSet(false, true)) {
+                return;
+            }
             log.info("Shutting down server...");
-            server.close();
-            vertx.close();
-            tokenizer.close();
-            latch.countDown();
-        }));
+            try {
+                server.close().toCompletionStage().toCompletableFuture().join();
+            } catch (Exception e) {
+                log.warn("Error closing HTTP server: {}", e.getMessage());
+            }
+            try {
+                vertx.close().toCompletionStage().toCompletableFuture().join();
+            } catch (Exception e) {
+                log.warn("Error closing Vert.x: {}", e.getMessage());
+            }
+            try {
+                pipeline.close();
+            } catch (Exception e) {
+                log.warn("Error closing generation pipeline: {}", e.getMessage());
+            }
+            try {
+                model.close();
+                SameDiffMemoryUtils.freeModelArrays(model);
+            } catch (Exception e) {
+                log.warn("Error closing model: {}", e.getMessage());
+            }
+            try {
+                tokenizer.close();
+            } catch (Exception e) {
+                log.warn("Error closing tokenizer: {}", e.getMessage());
+            } finally {
+                latch.countDown();
+            }
+        };
 
-        latch.await();
+        Thread shutdownHook = new Thread(closeResources, "kompile-sdk-serving-shutdown");
+        Runtime.getRuntime().addShutdownHook(shutdownHook);
+        try {
+            latch.await();
+        } finally {
+            closeResources.run();
+            try {
+                Runtime.getRuntime().removeShutdownHook(shutdownHook);
+            } catch (IllegalStateException ignored) {
+                // The JVM is already executing shutdown hooks.
+            }
+        }
         return 0;
     }
 

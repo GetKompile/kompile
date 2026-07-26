@@ -18,14 +18,23 @@ package ai.kompile.staging.staging;
 
 import ai.kompile.staging.conversion.ConversionResult;
 import ai.kompile.staging.conversion.ConversionService;
+import ai.kompile.staging.conversion.ConversionArtifact;
+import ai.kompile.staging.config.StagingAssetLimits;
+import ai.kompile.staging.diagnostics.ImportDiagnosticCode;
+import ai.kompile.staging.diagnostics.ImportDiagnosticEvent;
+import ai.kompile.staging.diagnostics.ImportDiagnosticJournal;
+import ai.kompile.staging.diagnostics.ImportDiagnosticSeverity;
+import ai.kompile.staging.diagnostics.ImportPhase;
 import ai.kompile.staging.download.*;
 import ai.kompile.staging.download.DownloadProgress;
+import ai.kompile.staging.http.SafeHttpTransport;
 import ai.kompile.staging.optimization.OptimizationService;
 import ai.kompile.staging.sdx.SdxProjectOutputService;
 import ai.kompile.staging.web.dto.StageWithOptimizationRequest;
 import ai.kompile.staging.web.dto.TrainingArtifactStageRequest;
 import ai.kompile.modelmanager.registry.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import ai.kompile.core.staging.StagingModelInfo;
 import ai.kompile.core.staging.StagingStatus;
 import org.slf4j.Logger;
@@ -35,16 +44,19 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import org.nd4j.autodiff.samediff.SameDiff;
+import org.nd4j.ggml.format.GGUFHeader;
+import org.nd4j.ggml.format.GGUFReader;
 
 import java.io.File;
 import java.io.IOException;
+import java.net.URI;
 import java.nio.file.*;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
-import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 /**
@@ -56,14 +68,13 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
     private static final Logger log = LoggerFactory.getLogger(StagingService.class);
     private static final String TRAINING_ARTIFACT_MANIFEST_FILE = "training-artifact.json";
     private static final String AUDIO_SYNTHESIS_CONFIG_FILE = ".audio-synthesis.json";
-    private static final Pattern SAFE_MODEL_ID =
-            Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{0,127}");
-
     private final RegistryService registryService;
     private final ConversionService conversionService;
     private final List<DownloadService> downloadServices;
     private final OptimizationService optimizationService;
     private final SdxProjectOutputService sdxProjectOutputService;
+    private final StagingAssetLimits assetLimits;
+    private final ImportDiagnosticJournal diagnosticJournal;
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final Path stagingDir;
     private final Path modelsDir;
@@ -71,6 +82,7 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
     // Track active staging operations
     private final Map<String, StagingModelInfo> stagingModels = new ConcurrentHashMap<>();
     private final Map<String, List<SseEmitter>> stagingEmitters = new ConcurrentHashMap<>();
+    private final Map<String, StagingOperation> activeOperations = new ConcurrentHashMap<>();
     private final ExecutorService executor = Executors.newFixedThreadPool(2);
 
     // Auto-optimization configuration (set via API, applied to newly staged models)
@@ -81,15 +93,51 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
                           ConversionService conversionService,
                           List<DownloadService> downloadServices,
                           OptimizationService optimizationService,
-                          SdxProjectOutputService sdxProjectOutputService) {
+                          SdxProjectOutputService sdxProjectOutputService,
+                          StagingAssetLimits assetLimits,
+                          ImportDiagnosticJournal diagnosticJournal) {
         this.registryService = registryService;
         this.conversionService = conversionService;
         this.downloadServices = downloadServices;
         this.optimizationService = optimizationService;
         this.sdxProjectOutputService = sdxProjectOutputService;
-        this.modelsDir = registryService.getModelDir();
-        this.stagingDir = modelsDir.resolve(".staging");
+        this.assetLimits = assetLimits == null ? new StagingAssetLimits() : assetLimits;
+        this.diagnosticJournal = diagnosticJournal == null
+                ? new ImportDiagnosticJournal()
+                : diagnosticJournal;
+        this.modelsDir = registryService.getModelDir().toAbsolutePath().normalize();
+        this.stagingDir = modelsDir.resolve(".staging").normalize();
         ensureDirectories();
+    }
+
+    public StagingService(RegistryService registryService,
+                          ConversionService conversionService,
+                          List<DownloadService> downloadServices,
+                          OptimizationService optimizationService,
+                          SdxProjectOutputService sdxProjectOutputService,
+                          StagingAssetLimits assetLimits) {
+        this(
+                registryService,
+                conversionService,
+                downloadServices,
+                optimizationService,
+                sdxProjectOutputService,
+                assetLimits,
+                new ImportDiagnosticJournal());
+    }
+
+    public StagingService(RegistryService registryService,
+                          ConversionService conversionService,
+                          List<DownloadService> downloadServices,
+                          OptimizationService optimizationService,
+                          SdxProjectOutputService sdxProjectOutputService) {
+        this(
+                registryService,
+                conversionService,
+                downloadServices,
+                optimizationService,
+                sdxProjectOutputService,
+                new StagingAssetLimits());
     }
 
     /**
@@ -100,7 +148,13 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
                           ConversionService conversionService,
                           List<DownloadService> downloadServices,
                           OptimizationService optimizationService) {
-        this(registryService, conversionService, downloadServices, optimizationService, null);
+        this(
+                registryService,
+                conversionService,
+                downloadServices,
+                optimizationService,
+                null,
+                new StagingAssetLimits());
     }
 
     public StageWithOptimizationRequest.OptimizationConfigDto getAutoOptimizationConfig() {
@@ -110,6 +164,14 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
     public void setAutoOptimizationConfig(StageWithOptimizationRequest.OptimizationConfigDto config) {
         this.autoOptimizationConfig = config;
         log.info("Auto-optimization config {}", config != null ? "set" : "cleared");
+    }
+
+    public List<ImportDiagnosticEvent> getImportDiagnostics(int limit) {
+        return diagnosticJournal.recent(limit);
+    }
+
+    public List<ImportDiagnosticEvent> getImportDiagnostics(String attemptId) {
+        return diagnosticJournal.attempt(attemptId);
     }
 
     private void ensureDirectories() {
@@ -127,7 +189,10 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
      * Downloads, converts, validates, and prepares for promotion.
      */
     public CompletableFuture<ai.kompile.core.staging.StagingModelInfo> stageModelAsync(DownloadRequest request) {
-        return CompletableFuture.supplyAsync(() -> stageModel(request), executor);
+        StagingOperation operation = beginOperation(request);
+        Future<?> worker = executor.submit(() -> runAsyncOperation(request, operation));
+        operation.attachWorker(worker);
+        return operation.completion;
     }
 
     /**
@@ -141,25 +206,60 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
      * Stage a model with progress callback.
      */
     public ai.kompile.core.staging.StagingModelInfo stageModel(DownloadRequest request, Consumer<ai.kompile.core.staging.StagingModelInfo> progressCallback) {
-        String modelId = request.getModelId();
-        String source = request.getSource() + ":" + request.getRepository();
-
-        StagingModelInfo info = StagingModelInfo.create(modelId, source, request.getModelType());
-        if (request.getModelType() == ModelType.AUDIO_SYNTHESIS
-                && request.getAudioSynthesis() == null) {
-            return info.failed(
-                    "audio_synthesis configuration is required for an audio synthesis model");
+        StagingOperation operation = beginOperation(request);
+        if (!operation.markStarted()) {
+            return operation.info;
         }
-        stagingModels.put(modelId, info);
+        try {
+            return executeStage(request, progressCallback == null ? progress -> {} : progressCallback, operation);
+        } finally {
+            finishOperation(operation);
+        }
+    }
+
+    private ai.kompile.core.staging.StagingModelInfo executeStage(
+            DownloadRequest request,
+            Consumer<ai.kompile.core.staging.StagingModelInfo> progressCallback,
+            StagingOperation operation) {
+        String modelId = operation.modelId;
+        String source = operation.source;
+        StagingModelInfo info = operation.info;
+        ImportPhase diagnosticPhase = ImportPhase.RESOLVE;
         progressCallback.accept(info);
         emitStagingStatus(modelId, info);
 
         try {
-            // 1. Download
+            operation.checkpoint();
+            // 1. Resolve/discover/select and download.
+            boolean repositoryDiscovery = "huggingface".equalsIgnoreCase(request.getSource());
+            if (repositoryDiscovery) {
+                diagnosticPhase = ImportPhase.DISCOVER;
+                recordDiagnostic(
+                        operation,
+                        diagnosticPhase,
+                        ImportDiagnosticCode.DISCOVERY_STARTED,
+                        "Discovering runnable model and tokenizer/config assets.",
+                        diagnosticDetails(request));
+            } else if (ComponentUrlDownloader.isComponentSource(request.getSource())) {
+                diagnosticPhase = ImportPhase.SELECT;
+                recordDiagnostic(
+                        operation,
+                        diagnosticPhase,
+                        ImportDiagnosticCode.ASSETS_SELECTED,
+                        "Selected the explicit model, tokenizer, and configuration URLs.",
+                        diagnosticDetails(request));
+            }
+            diagnosticPhase = ImportPhase.DOWNLOAD;
+            recordDiagnostic(
+                    operation,
+                    diagnosticPhase,
+                    ImportDiagnosticCode.DOWNLOAD_STARTED,
+                    "Downloading the selected model bundle.",
+                    diagnosticDetails(request));
             info.withStatus(StagingStatus.DOWNLOADING, 5, "Downloading from " + source);
             progressCallback.accept(info);
 
-            Path pendingDir = stagingDir.resolve("pending").resolve(modelId);
+            Path pendingDir = workspace("pending", modelId);
 
             // Clean up any stale workspace left by a prior failed or cancelled attempt.
             // Without this, a previous partial download/conversion can leave artifacts
@@ -174,6 +274,7 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
                 }
             }
 
+            operation.checkpoint();
             DownloadResult downloadResult = download(request, pendingDir, dlProgress -> {
                 if (dlProgress.getPhase() == DownloadProgress.Phase.DOWNLOADING) {
                     // Map download 0-100% to staging 5-35%
@@ -192,51 +293,108 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
                 } else if (dlProgress.getPhase() == DownloadProgress.Phase.VERIFYING) {
                     info.withStatus(StagingStatus.DOWNLOADING, 37, dlProgress.getMessage());
                 }
-            });
+            }, operation);
+            operation.checkpoint();
 
             if (!downloadResult.isSuccess()) {
-                return info.failed("Download failed: " + downloadResult.getErrorMessage());
+                throw new IOException("Download failed: " + downloadResult.getErrorMessage());
             }
+            if (repositoryDiscovery) {
+                recordDiagnostic(
+                        operation,
+                        ImportPhase.DISCOVER,
+                        ImportDiagnosticCode.DISCOVERY_COMPLETE,
+                        "Repository discovery resolved an immutable revision and runnable assets.",
+                        diagnosticDetails(request));
+                recordDiagnostic(
+                        operation,
+                        ImportPhase.SELECT,
+                        ImportDiagnosticCode.ASSETS_SELECTED,
+                        "Selected the exact discovered model and companion assets.",
+                        diagnosticDetails(request));
+            }
+            Map<String, Object> downloadedDetails = new LinkedHashMap<>(diagnosticDetails(request));
+            downloadedDetails.put("downloadedBytes", downloadResult.getTotalBytes());
+            putDiagnosticDetail(downloadedDetails, "bundleChecksum", downloadResult.getChecksum());
+            recordDiagnostic(
+                    operation,
+                    ImportPhase.DOWNLOAD,
+                    ImportDiagnosticCode.DOWNLOAD_COMPLETE,
+                    "Downloaded the selected model bundle.",
+                    downloadedDetails);
 
             // 2. Convert if needed
             Path modelPath = downloadResult.getModelPath();
             Path outputPath;
+            ConversionArtifact conversionArtifact = null;
 
             if (shouldConvert(modelPath, request.getModelType(), request.getFormat())) {
+                diagnosticPhase = ImportPhase.COMPILE;
+                recordDiagnostic(
+                        operation,
+                        diagnosticPhase,
+                        ImportDiagnosticCode.COMPILE_STARTED,
+                        "Compiling the source model into the canonical SameDiff/SDZ artifact.",
+                        diagnosticDetails(request));
                 info.withStatus(StagingStatus.CONVERTING, 40, "Converting to SameDiff format");
                 progressCallback.accept(info);
 
                 outputPath = pendingDir.resolve("model.sdz");
                 ConversionResult conversionResult = conversionService.convert(
-                        modelPath, outputPath, request.getFormat());
+                        modelPath, outputPath, request.getFormat(), operation);
 
                 if (!conversionResult.isSuccess()) {
-                    moveToFailed(pendingDir, modelId);
-                    return info.failed("Conversion failed: " + conversionResult.getErrorMessage());
+                    throw new IOException("Conversion failed: " + conversionResult.getErrorMessage());
                 }
+                conversionArtifact = conversionResult.getArtifact();
+                outputPath = conversionArtifact.requireCanonicalSdz();
+                recordDiagnostic(
+                        operation,
+                        ImportPhase.COMPILE,
+                        ImportDiagnosticCode.COMPILE_COMPLETE,
+                        "Compiled one canonical SameDiff/SDZ artifact.",
+                        Map.of("artifact", outputPath.getFileName().toString()));
             } else {
                 outputPath = modelPath;
+                if (isCanonicalSdz(outputPath)) {
+                    conversionArtifact = ConversionArtifact.canonicalSdz(outputPath);
+                }
             }
+            operation.checkpoint();
 
             // 2b. Download tokenizer if needed for converted artifacts.
             if (shouldConvert(modelPath, request.getModelType(), request.getFormat())) {
                 ensureTokenizer(request, pendingDir, modelPath);
+                ensureChatTemplate(request, pendingDir, modelPath);
             }
+            operation.checkpoint();
 
             // 3. Validate SameDiff artifacts. VLM pipeline manifests are validated by their
             // pipeline loader at runtime and must not be loaded as SameDiff graphs.
+            diagnosticPhase = ImportPhase.VALIDATE;
+            recordDiagnostic(
+                    operation,
+                    diagnosticPhase,
+                    ImportDiagnosticCode.VALIDATION_STARTED,
+                    "Validating the model and runnable chat asset bundle.",
+                    diagnosticDetails(request));
             info.withStatus(StagingStatus.VALIDATING, 70, "Validating model");
             progressCallback.accept(info);
 
             if (requiresSameDiffValidation(outputPath, request.getModelType(), request.getFormat())) {
                 ConversionService.ValidationResult validationResult = conversionService.validate(outputPath);
                 if (!validationResult.isValid()) {
-                    moveToFailed(pendingDir, modelId);
-                    return info.failed("Validation failed: " + validationResult.getErrorMessage());
+                    throw new IOException("Validation failed: " + validationResult.getErrorMessage());
                 }
             } else {
                 log.info("Skipping SameDiff validation for non-SameDiff model artifact: {}", outputPath);
             }
+            recordDiagnostic(
+                    operation,
+                    ImportPhase.VALIDATE,
+                    ImportDiagnosticCode.VALIDATION_COMPLETE,
+                    "Validated the staged model and its runnable chat assets.",
+                    diagnosticDetails(request));
 
             // Persist the trusted serving ABI with the staged artifact so promotion
             // remains correct across service restarts.
@@ -246,51 +404,120 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
                         request.getAudioSynthesis());
             }
 
-            // 3b. Target compilation is host-only and content-addressed. The generated
-            // .kproject contains the enriched canonical SDZ, project.kgraph, and Markdown
-            // provenance. No provider format or CPU fallback becomes an application input.
-            if (SdxProjectOutputService.isProjectOutputRequested(request)) {
+            // 3b. Target compilation is host-only and content-addressed. Model output is the
+            // complete enriched SDZ; project output wraps those exact bytes with project.kgraph
+            // and Markdown provenance. No provider format or CPU fallback becomes an input.
+            boolean targetOutput = SdxProjectOutputService.isTargetOutputRequested(request);
+            boolean projectOutput = SdxProjectOutputService.isProjectOutputRequested(request);
+            if (targetOutput) {
                 if (sdxProjectOutputService == null) {
                     throw new IllegalStateException(
-                            "SDX project output is unavailable in this staging service");
+                            "Mobile SDX output is unavailable in this staging service");
                 }
+                String compileMessage = projectOutput
+                        ? "Compiling the exact mobile target and packaging the synced graph project."
+                        : "Compiling the exact mobile target and packaging a complete chat model.";
+                diagnosticPhase = ImportPhase.COMPILE;
+                recordDiagnostic(
+                        operation,
+                        diagnosticPhase,
+                        ImportDiagnosticCode.COMPILE_STARTED,
+                        compileMessage,
+                        diagnosticDetails(request));
                 info.withStatus(
                         StagingStatus.VALIDATING,
                         82,
-                        "Compiling the exact mobile target and packaging the offline project");
+                        compileMessage);
                 progressCallback.accept(info);
                 emitStagingStatus(modelId, info);
-                Path projectOutput =
-                        sdxProjectOutputService.createProject(pendingDir, outputPath, request);
+                if (conversionArtifact == null) {
+                    throw new IOException(
+                            "Mobile target output requires one canonical .sdz artifact");
+                }
+                Path mobileOutput = sdxProjectOutputService.createOutput(
+                        pendingDir, conversionArtifact, request, operation);
                 info.setCurrentFile(
-                        pendingDir.relativize(projectOutput).toString()
+                        pendingDir.relativize(mobileOutput).toString()
                                 .replace(File.separatorChar, '/'));
+                recordDiagnostic(
+                        operation,
+                        ImportPhase.COMPILE,
+                        ImportDiagnosticCode.COMPILE_COMPLETE,
+                        projectOutput
+                                ? "Compiled the model and packaged the synced graph/Markdown project."
+                                : "Compiled and packaged the complete accelerator chat model.",
+                        Map.of("artifact", mobileOutput.getFileName().toString()));
             }
 
             // 4. Move to verified staging
             info.withStatus(
                     StagingStatus.READY,
                     90,
-                    SdxProjectOutputService.isProjectOutputRequested(request)
-                            ? "Offline mobile project ready for download"
-                            : "Model ready for promotion");
+                    projectOutput
+                            ? "Offline graph-chat project ready for download"
+                            : targetOutput
+                                    ? "Accelerator chat model (.sdz) ready for download"
+                                    : "Model ready for promotion");
             progressCallback.accept(info);
 
-            Path verifiedDir = stagingDir.resolve("verified").resolve(modelId);
+            operation.checkpoint();
+            Path verifiedDir = workspace("verified", modelId);
+            if (Files.exists(verifiedDir, LinkOption.NOFOLLOW_LINKS)) {
+                deleteDirectory(verifiedDir);
+            }
             moveDirectory(pendingDir, verifiedDir);
+            operation.checkpoint();
 
+            diagnosticPhase = ImportPhase.CACHE;
+            recordDiagnostic(
+                    operation,
+                    diagnosticPhase,
+                    ImportDiagnosticCode.CACHE_COMPLETE,
+                    "Stored the verified, content-addressed staging output.",
+                    Map.of("workspace", "verified/" + modelId));
             info.completed();
             progressCallback.accept(info);
+            recordDiagnostic(
+                    operation,
+                    ImportPhase.CACHE,
+                    ImportDiagnosticCode.IMPORT_COMPLETE,
+                    "The model import is complete and ready for use.",
+                    diagnosticDetails(request));
 
             log.info("Model {} staged successfully", modelId);
             return info;
 
+        } catch (CancellationException cancelled) {
+            cleanupCancelledWorkspaces(modelId);
+            diagnosticJournal.record(
+                    operation.attemptId,
+                    operation.modelId,
+                    operation.source,
+                    diagnosticPhase,
+                    ImportDiagnosticCode.IMPORT_CANCELLED,
+                    ImportDiagnosticSeverity.INFO,
+                    "The import was cancelled by the user.",
+                    "",
+                    Map.of());
+            info.cancelled("Cancelled by user");
+            progressCallback.accept(info);
+            emitStagingStatus(modelId, info);
+            return info;
         } catch (Exception e) {
-            log.error("Staging failed for model {}", modelId, e);
-            // Move any partial pending workspace to failed so it does not accumulate
-            // and confuse a subsequent re-staging attempt for the same model.
-            moveToFailed(stagingDir.resolve("pending").resolve(modelId), modelId);
-            return info.failed("Staging failed: " + e.getMessage());
+            ImportDiagnosticEvent failure = diagnosticJournal.failure(
+                    operation.attemptId,
+                    operation.modelId,
+                    operation.source,
+                    diagnosticPhase,
+                    e);
+            log.error("Staging failed for model {} during {} ({})",
+                    modelId, diagnosticPhase.value(), e.getClass().getSimpleName());
+            log.debug("Staging failure details for model {}", modelId, e);
+            moveToFailed(workspace("pending", modelId), modelId);
+            StagingModelInfo failed = info.failed("Staging failed: " + failure.summary());
+            progressCallback.accept(failed);
+            emitStagingStatus(modelId, failed);
+            return failed;
         }
     }
 
@@ -298,6 +525,7 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
      * Promote a staged model to production.
      */
     public boolean promoteModel(String modelId, ModelMetadata metadata) {
+        ModelIdPolicy.requireValid(modelId);
         StagingModelInfo info = stagingModels.get(modelId);
         if (info == null) {
             info = findStagedModel(modelId);
@@ -622,17 +850,17 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
         Map<String, Object> manifest = readTrainingArtifactManifest(manifestPath);
         Path outputDir = resolveTrainingArtifactOutputDir(request, manifestPath, manifest);
         Path modelFile = resolveTrainingArtifactModelFile(outputDir, manifest);
-        String modelId = sanitizeModelId(firstNonBlank(
+        String modelId = ModelIdPolicy.requireValid(sanitizeModelId(firstNonBlank(
                 request.getModelId(),
                 stringValue(manifest.get("trainedModelId")),
-                stringValue(manifest.get("modelId"))));
+                stringValue(manifest.get("modelId")))));
         ModelType modelType = resolveTrainingArtifactModelType(request, manifest, modelFile);
 
         StagingModelInfo info = StagingModelInfo.create(modelId, "training-artifact:" + manifestPath, modelType);
         stagingModels.put(modelId, info);
         emitStagingStatus(modelId, info);
 
-        Path verifiedDir = stagingDir.resolve("verified").resolve(modelId);
+        Path verifiedDir = workspace("verified", modelId);
         try {
             if (Files.exists(verifiedDir)) {
                 deleteDirectory(verifiedDir);
@@ -860,135 +1088,70 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
      * @return Staging info for the model
      */
     public StagingModelInfo stageLocalModel(String modelId, String filePath, String format, boolean autoPromote) {
-        Path modelPath = Paths.get(filePath);
-        String source = "local:" + filePath;
+        String validModelId = ModelIdPolicy.requireValid(modelId);
+        Path modelPath = Paths.get(Objects.requireNonNull(filePath, "filePath"))
+                .toAbsolutePath().normalize();
+        if (!Files.isRegularFile(modelPath, LinkOption.NOFOLLOW_LINKS)
+                || Files.isSymbolicLink(modelPath)) {
+            throw new IllegalArgumentException("Trusted local model is not a regular file: " + modelPath);
+        }
 
-        // Infer model type from file extension/format.
-        String lowerName = modelPath.getFileName().toString().toLowerCase();
+        String lowerName = modelPath.getFileName().toString().toLowerCase(Locale.ROOT);
         ModelType inferredType = inferLocalModelType(lowerName, format);
+        Path sourceDirectory = modelPath.getParent();
+        if (sourceDirectory == null) {
+            throw new IllegalArgumentException("Trusted local model has no parent directory");
+        }
 
-        StagingModelInfo info = StagingModelInfo.create(modelId, source, inferredType);
-        stagingModels.put(modelId, info);
-        emitStagingStatus(modelId, info);
-
-        // Run staging asynchronously
-        executor.submit(() -> {
-            try {
-                // 1. Set up pending directory
-                Path pendingDir = stagingDir.resolve("pending").resolve(modelId);
-                // Clean up stale workspace from a prior failed/cancelled attempt so that
-                // a re-staging run always gets a fresh directory.  Without this the ONNX
-                // importer can encounter duplicate-variable errors from leftover artifacts.
-                if (Files.exists(pendingDir)) {
-                    log.info("Cleaning stale pending workspace for model {} before re-attempt", modelId);
-                    deleteDirectory(pendingDir);
-                }
-                Files.createDirectories(pendingDir);
-
-                // Copy local file to pending directory
-                Path localModelPath = pendingDir.resolve(modelPath.getFileName());
-                Files.copy(modelPath, localModelPath, StandardCopyOption.REPLACE_EXISTING);
-
-                long fileSize = Files.exists(localModelPath) ? Files.size(localModelPath) : 0;
-                info.withDownloadProgress(20, "File copied to staging",
-                        fileSize, fileSize, 0);
-                info.setCurrentFile(modelPath.getFileName().toString());
-
-                // 2. Convert if needed
-                Path outputPath;
-                if (shouldConvert(localModelPath, inferredType, format)) {
-                    info.withStatus(StagingStatus.CONVERTING, 40, "Converting to SameDiff format");
-
-                    // GGUF/GGML models convert to sharded .sdnb; others use single .sdz
-                    String localFileName = localModelPath.getFileName().toString().toLowerCase();
-                    boolean isGguf = localFileName.endsWith(".gguf") || localFileName.endsWith(".ggml");
-                    outputPath = pendingDir.resolve(isGguf ? "model.sdnb" : "model.sdz");
-
-                    // Copy tokenizer.json from the source directory if present
-                    if (isGguf) {
-                        Path sourceTokenizer = modelPath.getParent() != null
-                                ? modelPath.getParent().resolve("tokenizer.json") : null;
-                        if (sourceTokenizer != null && Files.exists(sourceTokenizer)
-                                && Files.size(sourceTokenizer) > 0) {
-                            Files.copy(sourceTokenizer, pendingDir.resolve("tokenizer.json"),
-                                    StandardCopyOption.REPLACE_EXISTING);
-                            log.info("Copied tokenizer.json from source dir for model {}", modelId);
-                        }
-                    }
-
-                    ConversionResult conversionResult = conversionService.convert(
-                            localModelPath, outputPath, format);
-
-                    if (!conversionResult.isSuccess()) {
-                        moveToFailed(pendingDir, modelId);
-                        info.failed("Conversion failed: " + conversionResult.getErrorMessage());
-                        return;
-                    }
-                } else {
-                    outputPath = localModelPath;
-                }
-
-                // 3. Validate SameDiff artifacts. VLM pipeline manifests are not SameDiff graphs.
-                info.withStatus(StagingStatus.VALIDATING, 70, "Validating model");
-
-                if (requiresSameDiffValidation(outputPath, inferredType, format)) {
-                    ConversionService.ValidationResult validationResult = conversionService.validate(outputPath);
-                    if (!validationResult.isValid()) {
-                        moveToFailed(pendingDir, modelId);
-                        info.failed("Validation failed: " + validationResult.getErrorMessage());
-                        return;
-                    }
-                } else {
-                    log.info("Skipping SameDiff validation for non-SameDiff local model artifact: {}", outputPath);
-                }
-
-                // 4. Move to verified staging
-                Path verifiedDir = stagingDir.resolve("verified").resolve(modelId);
-                moveDirectory(pendingDir, verifiedDir);
-
-                log.info("Local model {} staged successfully", modelId);
-
-                // 5. Auto-promote if requested, otherwise leave in READY state
-                if (autoPromote) {
-                    info.withStatus(StagingStatus.PROMOTING, 95, "Auto-promoting to registry");
-                    boolean promoted = promoteModel(modelId, null);
-                    if (promoted) {
-                        info.completed();
-                    } else {
-                        info.withStatus(StagingStatus.READY, 90, "Model ready for manual promotion");
-                    }
-                } else {
-                    // Stay in READY state for manual promotion
-                    info.withStatus(StagingStatus.READY, 100, "Model ready for promotion");
-                }
-
-            } catch (Exception e) {
-                log.error("Staging failed for local model {}", modelId, e);
-                // Move partial pending workspace to failed so it doesn't accumulate
-                // and interfere with a future retry for the same model.
-                moveToFailed(stagingDir.resolve("pending").resolve(modelId), modelId);
-                info.failed("Staging failed: " + e.getMessage());
+        Map<String, String> files = new LinkedHashMap<>();
+        files.put(TextModelAssetMap.MODEL, modelPath.getFileName().toString());
+        for (Map.Entry<String, String> asset : Map.of(
+                TextModelAssetMap.TOKENIZER, TextModelAssetMap.TOKENIZER_FILE,
+                TextModelAssetMap.TOKENIZER_CONFIG, TextModelAssetMap.TOKENIZER_CONFIG_FILE,
+                TextModelAssetMap.MODEL_CONFIG, TextModelAssetMap.MODEL_CONFIG_FILE,
+                TextModelAssetMap.GENERATION_CONFIG, TextModelAssetMap.GENERATION_CONFIG_FILE,
+                TextModelAssetMap.SPECIAL_TOKENS_MAP, TextModelAssetMap.SPECIAL_TOKENS_MAP_FILE,
+                TextModelAssetMap.ADDED_TOKENS, TextModelAssetMap.ADDED_TOKENS_FILE,
+                TextModelAssetMap.CHAT_TEMPLATE, TextModelAssetMap.CHAT_TEMPLATE_FILE).entrySet()) {
+            if (Files.isRegularFile(sourceDirectory.resolve(asset.getValue()), LinkOption.NOFOLLOW_LINKS)) {
+                files.put(asset.getKey(), asset.getValue());
             }
-        });
+        }
 
-        return info;
+        DownloadRequest request = DownloadRequest.builder()
+                .source("trusted-local")
+                .repository(sourceDirectory.toString())
+                .format(format)
+                .modelType(inferredType)
+                .modelId(validModelId)
+                .files(files)
+                .textAssets(TextModelAssetMap.fromFileMap(files))
+                .build();
+        CompletableFuture<StagingModelInfo> completion = stageModelAsync(request);
+        if (autoPromote) {
+            completion.thenAccept(staged -> {
+                if (staged.getStatus() == StagingStatus.COMPLETED
+                        || staged.getStatus() == StagingStatus.READY) {
+                    promoteModel(validModelId, null);
+                }
+            });
+        }
+        return stagingModels.get(validModelId);
     }
 
     /**
      * Get staging info for a specific model.
      */
     public StagingModelInfo getStagingModel(String modelId) {
-        return stagingModels.get(modelId);
+        return stagingModels.get(ModelIdPolicy.requireValid(modelId));
     }
 
     /**
-     * Resolve the single completed .kproject for a staged model. Pending, failed,
+     * Resolve the single completed mobile .sdz or .kproject for a staged model. Pending, failed,
      * ambiguous, symbolic-link, and path-traversal cases are deliberately invisible.
      */
     public Optional<Path> getStagedOutput(String modelId) {
-        if (modelId == null || !SAFE_MODEL_ID.matcher(modelId).matches()) {
-            return Optional.empty();
-        }
+        ModelIdPolicy.requireValid(modelId);
         Path verifiedRoot = stagingDir.resolve("verified").toAbsolutePath().normalize();
         Path outputDir = verifiedRoot.resolve(modelId).resolve("outputs").normalize();
         if (!outputDir.startsWith(verifiedRoot)
@@ -1000,19 +1163,21 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
             List<Path> outputs = files
                     .filter(path -> Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS))
                     .filter(path -> !Files.isSymbolicLink(path))
-                    .filter(path -> path.getFileName().toString()
-                            .toLowerCase(Locale.ROOT).endsWith(".kproject"))
+                    .filter(path -> {
+                        String name = path.getFileName().toString().toLowerCase(Locale.ROOT);
+                        return name.endsWith(".sdz") || name.endsWith(".kproject");
+                    })
                     .sorted()
                     .toList();
             if (outputs.size() != 1) {
                 if (outputs.size() > 1) {
-                    log.error("Staged model {} has ambiguous mobile project outputs", modelId);
+                    log.error("Staged model {} has ambiguous mobile artifact outputs", modelId);
                 }
                 return Optional.empty();
             }
             return Optional.of(outputs.get(0));
         } catch (IOException e) {
-            log.warn("Could not resolve staged mobile project for {}", modelId, e);
+            log.warn("Could not resolve staged mobile artifact for {}", modelId, e);
             return Optional.empty();
         }
     }
@@ -1021,15 +1186,25 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
      * Cancel a staging operation.
      */
     public boolean cancelStaging(String modelId) {
-        StagingModelInfo info = stagingModels.get(modelId);
-        if (info != null && !info.getStatus().isTerminal()) {
-            info.failed("Cancelled by user");
-            emitStagingStatus(modelId, info);
-            completeStagingEmitters(modelId);
-            stagingModels.remove(modelId);
-            return true;
+        String validModelId = ModelIdPolicy.requireValid(modelId);
+        StagingOperation operation = activeOperations.get(validModelId);
+        if (operation == null || !operation.requestCancellation()) {
+            return false;
         }
-        return false;
+        if (!operation.started.get()) {
+            completeCancelledBeforeStart(operation);
+        }
+        try {
+            if (!operation.quiesced.await(
+                    assetLimits.getCancellationWaitMillis(), TimeUnit.MILLISECONDS)) {
+                log.warn("Timed out waiting for staging operation {} to quiesce", validModelId);
+                return false;
+            }
+            return operation.info.getStatus() == StagingStatus.CANCELLED;
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
     }
 
     /**
@@ -1135,6 +1310,7 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
      * @return SseEmitter for streaming status events
      */
     public SseEmitter subscribeToStagingStream(String modelId) {
+        ModelIdPolicy.requireValid(modelId);
         SseEmitter emitter = new SseEmitter(300000L); // 5 min timeout
         stagingEmitters.computeIfAbsent(modelId, k -> new CopyOnWriteArrayList<>()).add(emitter);
 
@@ -1199,15 +1375,177 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
 
     // Helper methods
 
+    private void recordDiagnostic(
+            StagingOperation operation,
+            ImportPhase phase,
+            ImportDiagnosticCode code,
+            String summary,
+            Map<String, ?> details) {
+        diagnosticJournal.record(
+                operation.attemptId,
+                operation.modelId,
+                operation.source,
+                phase,
+                code,
+                ImportDiagnosticSeverity.INFO,
+                summary,
+                "",
+                details);
+    }
+
+    private Map<String, Object> diagnosticDetails(DownloadRequest request) {
+        Map<String, Object> details = new LinkedHashMap<>();
+        putDiagnosticDetail(details, "format", request.getFormat());
+        putDiagnosticDetail(details, "outputFormat", request.getOutputFormat());
+        putDiagnosticDetail(details, "targetProfile", request.getTargetProfile());
+        putDiagnosticDetail(details, "quantizationProfile", request.getQuantizationProfile());
+        putDiagnosticDetail(details, "targetSoc", request.getTargetSoc());
+        putDiagnosticDetail(details, "requestedRevision", request.getRequestedRevision());
+        putDiagnosticDetail(details, "resolvedRevision", request.getRevision());
+        putDiagnosticDetail(details, "sourceReference", request.getSourceReference());
+
+        Map<String, String> assets = request.effectiveSourceAssetProvenance();
+        if (assets.isEmpty() && request.getTextAssetUrls() != null) {
+            assets = request.getTextAssetUrls().toUrlMap();
+        }
+        for (Map.Entry<String, String> asset : assets.entrySet()) {
+            putDiagnosticDetail(details, "asset." + asset.getKey(), asset.getValue());
+        }
+        if (!assets.isEmpty()) {
+            details.put("selectedAssetCount", assets.size());
+        }
+        return details;
+    }
+
+    private static void putDiagnosticDetail(
+            Map<String, Object> details,
+            String key,
+            Object value) {
+        if (value != null && !String.valueOf(value).isBlank()) {
+            details.put(key, value);
+        }
+    }
+
+    private StagingOperation beginOperation(DownloadRequest request) {
+        Objects.requireNonNull(request, "request");
+        String modelId = ModelIdPolicy.requireValid(request.getModelId());
+        if (isBlank(request.getSource())) {
+            throw new IllegalArgumentException("Staging source is required");
+        }
+        boolean componentBundle =
+                ComponentUrlDownloader.isComponentSource(request.getSource());
+        if (isBlank(request.getRepository()) && !componentBundle) {
+            throw new IllegalArgumentException("Staging repository or upload handle is required");
+        }
+        if (request.getModelType() == ModelType.AUDIO_SYNTHESIS
+                && request.getAudioSynthesis() == null) {
+            throw new IllegalArgumentException(
+                    "audio_synthesis configuration is required for an audio synthesis model");
+        }
+        String source = request.getSource() + ":"
+                + (componentBundle ? "component-bundle" : request.getRepository());
+        String attemptId = diagnosticJournal.start(
+                modelId,
+                source,
+                diagnosticDetails(request));
+        diagnosticJournal.record(
+                attemptId,
+                modelId,
+                source,
+                ImportPhase.RESOLVE,
+                ImportDiagnosticCode.SOURCE_RESOLVED,
+                ImportDiagnosticSeverity.INFO,
+                componentBundle
+                        ? "Resolved a complete repository-free component bundle."
+                        : "Resolved the requested model source.",
+                "",
+                diagnosticDetails(request));
+        StagingModelInfo info = StagingModelInfo.create(modelId, source, request.getModelType());
+        StagingOperation operation = new StagingOperation(modelId, source, attemptId, info);
+        StagingOperation active = activeOperations.putIfAbsent(modelId, operation);
+        if (active != null) {
+            throw new IllegalStateException("A staging operation is already active for model " + modelId);
+        }
+        stagingModels.put(modelId, info);
+        return operation;
+    }
+
+    private void runAsyncOperation(DownloadRequest request, StagingOperation operation) {
+        if (!operation.markStarted()) {
+            return;
+        }
+        try {
+            StagingModelInfo result = executeStage(request, progress -> {}, operation);
+            operation.completion.complete(result);
+        } catch (Throwable failure) {
+            operation.completion.completeExceptionally(failure);
+        } finally {
+            finishOperation(operation);
+        }
+    }
+
+    private void finishOperation(StagingOperation operation) {
+        if (!operation.finished.compareAndSet(false, true)) {
+            return;
+        }
+        activeOperations.remove(operation.modelId, operation);
+        operation.runningThread = null;
+        operation.quiesced.countDown();
+        if (operation.info.getStatus().isTerminal()) {
+            completeStagingEmitters(operation.modelId);
+        }
+    }
+
+    private void completeCancelledBeforeStart(StagingOperation operation) {
+        if (operation.started.get()) {
+            return;
+        }
+        cleanupCancelledWorkspaces(operation.modelId);
+        operation.info.cancelled("Cancelled by user");
+        emitStagingStatus(operation.modelId, operation.info);
+        operation.completion.complete(operation.info);
+        finishOperation(operation);
+    }
+
+    private void cleanupCancelledWorkspaces(String modelId) {
+        for (String phase : List.of("pending", "verified")) {
+            try {
+                deleteDirectory(workspace(phase, modelId));
+            } catch (IOException cleanupFailure) {
+                log.warn("Could not clean cancelled {} workspace for {}", phase, modelId, cleanupFailure);
+            }
+        }
+    }
+
+    private Path workspace(String phase, String modelId) {
+        Path root = stagingDir.resolve(phase).toAbsolutePath().normalize();
+        return ModelIdPolicy.contained(root, modelId);
+    }
+
+    private boolean isCanonicalSdz(Path path) {
+        return path != null
+                && path.getFileName() != null
+                && path.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".sdz");
+    }
+
     private DownloadResult download(DownloadRequest request, Path destination) {
         return download(request, destination, progress -> {});
     }
 
     private DownloadResult download(DownloadRequest request, Path destination,
                                      Consumer<DownloadProgress> progressCallback) {
+        return download(request, destination, progressCallback, StagingCancellation.NONE);
+    }
+
+    private DownloadResult download(
+            DownloadRequest request,
+            Path destination,
+            Consumer<DownloadProgress> progressCallback,
+            StagingCancellation cancellation) {
+        cancellation.checkpoint();
         for (DownloadService downloader : downloadServices) {
             if (downloader.canHandle(request.getSource())) {
-                return downloader.download(request, destination, progressCallback);
+                return downloader.download(request, destination, progressCallback, cancellation);
             }
         }
         return DownloadResult.failure("No downloader available for source: " + request.getSource());
@@ -1278,46 +1616,224 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
     private void ensureTokenizer(DownloadRequest request, Path pendingDir, Path originalModelPath) {
         try {
             Path tokenizerJson = pendingDir.resolve("tokenizer.json");
-            if (Files.exists(tokenizerJson) && Files.size(tokenizerJson) > 100) {
+            if (isUsableTokenizerJson(tokenizerJson)) {
                 log.debug("tokenizer.json already present at {}", tokenizerJson);
                 return;
             }
 
-            List<String> candidates = new java.util.ArrayList<>();
+            HttpDownloader httpDownloader = downloadServices.stream()
+                    .filter(HttpDownloader.class::isInstance)
+                    .map(HttpDownloader.class::cast)
+                    .findFirst()
+                    .orElse(null);
+            if (httpDownloader == null) {
+                log.warn(
+                        "No HTTP downloader is configured; tokenizer bootstrap is unavailable for model {}",
+                        request.getModelId());
+                return;
+            }
+
+            Set<String> candidates = new LinkedHashSet<>();
             if (request.getTokenizerUrl() != null && !request.getTokenizerUrl().isBlank()) {
                 candidates.add(request.getTokenizerUrl());
             }
             candidates.addAll(inferTokenizerUrlCandidates(request.getRepository()));
 
+            Path partialTokenizer = pendingDir.resolve("tokenizer.json.part");
+            Map<String, String> headers = new HashMap<>();
+            if (request.getAuthToken() != null && !request.getAuthToken().isBlank()) {
+                headers.put("Authorization", "Bearer " + request.getAuthToken());
+            }
+
             for (String tokenizerUrl : candidates) {
-                log.info("Trying tokenizer.json from {} for model {}", tokenizerUrl, request.getModelId());
+                String safeUrl = safeRemoteUrlForDiagnostics(tokenizerUrl);
+                log.info(
+                        "Trying tokenizer.json from {} for model {}",
+                        safeUrl,
+                        request.getModelId());
                 try {
-                    java.net.HttpURLConnection conn = (java.net.HttpURLConnection) new java.net.URL(tokenizerUrl).openConnection();
-                    conn.setConnectTimeout(30000);
-                    conn.setReadTimeout(60000);
-                    conn.setRequestProperty("User-Agent", "Kompile-Model-Staging/1.0");
-                    conn.setInstanceFollowRedirects(true);
-                    int code = conn.getResponseCode();
-                    if (code == 200) {
-                        try (java.io.InputStream in = conn.getInputStream()) {
-                            Files.copy(in, tokenizerJson, StandardCopyOption.REPLACE_EXISTING);
-                        }
-                        if (Files.size(tokenizerJson) > 100) {
-                            log.info("Downloaded tokenizer.json ({} bytes) from {}", Files.size(tokenizerJson), tokenizerUrl);
-                            conn.disconnect();
-                            return;
-                        }
-                    } else {
-                        log.debug("HTTP {} from {}, trying next candidate", code, tokenizerUrl);
+                    Files.deleteIfExists(partialTokenizer);
+                    long downloadedBytes = httpDownloader.downloadAsset(
+                            tokenizerUrl,
+                            partialTokenizer,
+                            headers,
+                            assetLimits.maxBytesFor(TextModelAssetMap.TOKENIZER));
+                    if (isUsableTokenizerJson(partialTokenizer)) {
+                        replaceAtomically(partialTokenizer, tokenizerJson);
+                        log.info(
+                                "Downloaded tokenizer.json ({} bytes) from {}",
+                                downloadedBytes,
+                                safeUrl);
+                        return;
                     }
-                    conn.disconnect();
+                    log.debug(
+                            "Remote tokenizer from {} was not a valid tokenizer.json; trying next candidate",
+                            safeUrl);
                 } catch (Exception e) {
-                    log.debug("Failed to fetch tokenizer from {}: {}", tokenizerUrl, e.getMessage());
+                    log.debug(
+                            "Failed to fetch tokenizer from {}: {}",
+                            safeUrl,
+                            e.getMessage());
+                } finally {
+                    try {
+                        Files.deleteIfExists(partialTokenizer);
+                    } catch (IOException cleanupFailure) {
+                        log.debug(
+                                "Failed to clean tokenizer partial file for model {}: {}",
+                                request.getModelId(),
+                                cleanupFailure.getMessage());
+                    }
                 }
             }
-            log.warn("No tokenizer.json could be downloaded for model {}. LLM loading may need manual tokenizer setup.", request.getModelId());
+            log.warn(
+                    "No tokenizer.json could be downloaded for model {}. "
+                            + "LLM loading may need manual tokenizer setup.",
+                    request.getModelId());
         } catch (Exception e) {
             log.warn("Failed to download tokenizer for model '{}'", request.getModelId(), e);
+        }
+    }
+
+    /**
+     * Ensure the staged model carries the chat template its tokenizer needs.
+     *
+     * <p>{@code tokenizer.json} holds vocabulary and merges only — the chat template lives in
+     * {@code tokenizer_config.json}, which GGUF repositories do not publish. A model staged without
+     * it loads and encodes perfectly well and then behaves as a base completion model: the prompt is
+     * fed verbatim with no turn markers and no generation prompt, so an instruction that ends in a
+     * directive is continued as a document rather than answered, and the likeliest continuation of
+     * such a document is its end. The symptom is a model that replies with end-of-sequence and
+     * nothing else.</p>
+     *
+     * <p>The template is read from the GGUF that was staged alongside the converted graph, which
+     * declares {@code tokenizer.chat_template} in its own metadata — the model's real template, not
+     * a generic ChatML stand-in that merely resembles it. Nothing is downloaded, and an existing
+     * template is never overwritten.</p>
+     */
+    private void ensureChatTemplate(DownloadRequest request, Path pendingDir, Path originalModelPath) {
+        Path configPath = pendingDir.resolve(TextModelAssetMap.TOKENIZER_CONFIG_FILE);
+        try {
+            if (hasChatTemplate(configPath)
+                    || Files.isRegularFile(pendingDir.resolve(TextModelAssetMap.CHAT_TEMPLATE_FILE))) {
+                log.debug("Chat template already staged for model {}", request.getModelId());
+                return;
+            }
+
+            Path gguf = findGgufBeside(pendingDir, originalModelPath);
+            if (gguf == null) {
+                log.debug("No GGUF beside {} to read a chat template from", pendingDir);
+                return;
+            }
+
+            String template;
+            List<String> tokens;
+            int bosId;
+            int eosId;
+            try (GGUFReader reader = new GGUFReader(gguf.toFile())) {
+                GGUFHeader header = reader.getHeader();
+                template = header.getChatTemplate();
+                tokens = header.getTokens();
+                bosId = header.getBosTokenId();
+                eosId = header.getEosTokenId();
+            }
+            if (template == null || template.isBlank()) {
+                log.warn(
+                        "GGUF {} declares no chat template; model {} will be prompted as a base "
+                                + "completion model",
+                        gguf.getFileName(), request.getModelId());
+                return;
+            }
+
+            ObjectNode config = Files.isRegularFile(configPath)
+                    ? (ObjectNode) objectMapper.readTree(configPath.toFile())
+                    : objectMapper.createObjectNode();
+            config.put("chat_template", template);
+            // The template itself interpolates bos_token/eos_token, so they travel with it.
+            putTokenIfResolvable(config, "bos_token", tokens, bosId);
+            putTokenIfResolvable(config, "eos_token", tokens, eosId);
+
+            Path partial = pendingDir.resolve(TextModelAssetMap.TOKENIZER_CONFIG_FILE + ".part");
+            objectMapper.writerWithDefaultPrettyPrinter().writeValue(partial.toFile(), config);
+            replaceAtomically(partial, configPath);
+            log.info(
+                    "Wrote {} for model {} with the chat template declared by {} ({} chars)",
+                    TextModelAssetMap.TOKENIZER_CONFIG_FILE, request.getModelId(),
+                    gguf.getFileName(), template.length());
+        } catch (Exception e) {
+            log.warn(
+                    "Could not stage a chat template for model '{}': {}",
+                    request.getModelId(), e.getMessage());
+        }
+    }
+
+    private boolean hasChatTemplate(Path configPath) {
+        if (!Files.isRegularFile(configPath)) {
+            return false;
+        }
+        try {
+            var root = objectMapper.readTree(configPath.toFile());
+            var template = root == null ? null : root.get("chat_template");
+            return template != null && !template.asText("").isBlank();
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    private void putTokenIfResolvable(ObjectNode config, String field, List<String> tokens, int id) {
+        if (config.hasNonNull(field) || tokens == null || id < 0 || id >= tokens.size()) {
+            return;
+        }
+        config.put(field, tokens.get(id));
+    }
+
+    private Path findGgufBeside(Path pendingDir, Path originalModelPath) throws IOException {
+        if (originalModelPath != null
+                && originalModelPath.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".gguf")
+                && Files.isRegularFile(originalModelPath)) {
+            return originalModelPath;
+        }
+        try (Stream<Path> entries = Files.list(pendingDir)) {
+            return entries
+                    .filter(Files::isRegularFile)
+                    .filter(p -> p.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".gguf"))
+                    .findFirst()
+                    .orElse(null);
+        }
+    }
+
+    private boolean isUsableTokenizerJson(Path candidate) {
+        if (candidate == null || !Files.isRegularFile(candidate)) {
+            return false;
+        }
+        try {
+            var root = objectMapper.readTree(candidate.toFile());
+            return root != null && root.isObject() && root.has("model");
+        } catch (IOException invalid) {
+            return false;
+        }
+    }
+
+    private static String safeRemoteUrlForDiagnostics(String value) {
+        try {
+            return SafeHttpTransport.safeUriForDiagnostics(URI.create(value));
+        } catch (RuntimeException invalid) {
+            return "<invalid-remote-uri>";
+        }
+    }
+
+    private static void replaceAtomically(Path source, Path destination)
+            throws IOException {
+        try {
+            Files.move(
+                    source,
+                    destination,
+                    StandardCopyOption.ATOMIC_MOVE,
+                    StandardCopyOption.REPLACE_EXISTING);
+        } catch (AtomicMoveNotSupportedException unsupported) {
+            Files.move(
+                    source,
+                    destination,
+                    StandardCopyOption.REPLACE_EXISTING);
         }
     }
 
@@ -1496,7 +2012,7 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
     }
 
     private StagingModelInfo findStagedModel(String modelId) {
-        Path verifiedDir = stagingDir.resolve("verified").resolve(modelId);
+        Path verifiedDir = workspace("verified", modelId);
         if (!Files.exists(verifiedDir)) {
             return null;
         }
@@ -1528,6 +2044,67 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
         info.setType(inferredType);
         info.setStatus(StagingStatus.READY);
         return info;
+    }
+
+    private static final class StagingOperation implements StagingCancellation {
+        private final String modelId;
+        private final String source;
+        private final String attemptId;
+        private final StagingModelInfo info;
+        private final AtomicBoolean cancellationRequested = new AtomicBoolean();
+        private final AtomicBoolean started = new AtomicBoolean();
+        private final AtomicBoolean finished = new AtomicBoolean();
+        private final CountDownLatch quiesced = new CountDownLatch(1);
+        private final CompletableFuture<StagingModelInfo> completion = new CompletableFuture<>();
+        private volatile Future<?> worker;
+        private volatile Thread runningThread;
+
+        private StagingOperation(
+                String modelId,
+                String source,
+                String attemptId,
+                StagingModelInfo info) {
+            this.modelId = modelId;
+            this.source = source;
+            this.attemptId = attemptId;
+            this.info = info;
+        }
+
+        private boolean markStarted() {
+            if (finished.get() || !started.compareAndSet(false, true)) {
+                return false;
+            }
+            runningThread = Thread.currentThread();
+            return true;
+        }
+
+        private void attachWorker(Future<?> worker) {
+            this.worker = worker;
+            if (cancellationRequested.get()) {
+                worker.cancel(true);
+            }
+        }
+
+        private boolean requestCancellation() {
+            if (finished.get()) {
+                return false;
+            }
+            cancellationRequested.set(true);
+            Future<?> submitted = worker;
+            if (submitted != null) {
+                submitted.cancel(true);
+            }
+            Thread running = runningThread;
+            if (running != null) {
+                running.interrupt();
+            }
+            return true;
+        }
+
+        @Override
+        public boolean isCancellationRequested() {
+            return cancellationRequested.get();
+        }
     }
 
     private String calculateChecksum(Path file) {

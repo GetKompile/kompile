@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Deliberately no INTERNET permission. SAF needs no broad storage grant. -->
+    <!-- Public Hugging Face discovery and app-owned model transfer only. Inference remains local. -->
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <application
         android:name=".KompileChatApplication"

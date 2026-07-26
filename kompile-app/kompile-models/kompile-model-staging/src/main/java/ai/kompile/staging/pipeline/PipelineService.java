@@ -16,6 +16,8 @@
 
 package ai.kompile.staging.pipeline;
 
+import ai.kompile.staging.config.StagingAssetLimits;
+import ai.kompile.staging.http.SafeHttpTransport;
 import org.eclipse.deeplearning4j.pipeline.AutoModel;
 import org.eclipse.deeplearning4j.pipeline.ModelFormat;
 import org.eclipse.deeplearning4j.pipeline.ModelManifest;
@@ -27,14 +29,15 @@ import org.eclipse.deeplearning4j.pipeline.PreprocessorConfig;
 import org.nd4j.autodiff.samediff.SameDiff;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
+import java.io.OutputStream;
+import java.net.URI;
 import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.*;
@@ -73,10 +76,22 @@ public class PipelineService {
     private static final int BUFFER_SIZE = 8192;
 
     private final Path cacheDirectory;
+    private final StagingAssetLimits limits;
+    private final SafeHttpTransport httpTransport;
     private final ExecutorService downloadExecutor = Executors.newFixedThreadPool(4);
     private final Map<String, CompletableFuture<Pipeline>> loadingPipelines = new ConcurrentHashMap<>();
 
-    public PipelineService(@Value("${kompile.pipeline.cache-dir:#{null}}") String cacheDir) {
+    public PipelineService(String cacheDir) {
+        this(cacheDir, new StagingAssetLimits(), new SafeHttpTransport());
+    }
+
+    @Autowired
+    public PipelineService(
+            @Value("${kompile.pipeline.cache-dir:#{null}}") String cacheDir,
+            StagingAssetLimits limits,
+            SafeHttpTransport httpTransport) {
+        this.limits = Objects.requireNonNull(limits, "limits");
+        this.httpTransport = Objects.requireNonNull(httpTransport, "httpTransport");
         if (cacheDir != null && !cacheDir.isEmpty()) {
             this.cacheDirectory = Paths.get(cacheDir);
         } else {
@@ -208,6 +223,7 @@ public class PipelineService {
         // Download each file
         int total = files.size();
         int current = 0;
+        long totalDownloadedBytes = 0L;
         for (String file : files) {
             current++;
             int finalCurrent = current;
@@ -221,7 +237,20 @@ public class PipelineService {
             // Create parent directories if needed (for nested files like "onnx/model.onnx")
             Files.createDirectories(targetPath.getParent());
 
-            downloadFile(url, targetPath, authToken);
+            long remainingTotalBytes = limits.getTotalBytes() - totalDownloadedBytes;
+            if (remainingTotalBytes <= 0L) {
+                throw new IOException("Pipeline download exceeds its configured total byte limit");
+            }
+            long maximumFileBytes = Math.min(
+                    limits.maxBytesForFileName(file), remainingTotalBytes);
+            long downloadedBytes = downloadFile(
+                    url, targetPath, authToken, maximumFileBytes);
+            try {
+                totalDownloadedBytes = Math.addExact(
+                        totalDownloadedBytes, downloadedBytes);
+            } catch (ArithmeticException overflow) {
+                throw new IOException("Pipeline download byte count overflowed", overflow);
+            }
             log.debug("Downloaded: {}", file);
         }
 
@@ -438,18 +467,26 @@ public class PipelineService {
 
     private boolean fileExistsInRepo(String repoId, String file, String revision,
                                      String authToken) {
+        URI uri;
         try {
-            String url = buildDownloadUrl(repoId, file, revision);
-            HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
-            conn.setRequestMethod("HEAD");
-            conn.setConnectTimeout(CONNECTION_TIMEOUT);
-            if (authToken != null && !authToken.isEmpty()) {
-                conn.setRequestProperty("Authorization", "Bearer " + authToken);
-            }
-            int responseCode = conn.getResponseCode();
-            conn.disconnect();
-            return responseCode == 200;
-        } catch (Exception e) {
+            uri = parseRemoteUri(buildDownloadUrl(repoId, file, revision));
+        } catch (IOException invalid) {
+            return false;
+        }
+
+        try (SafeHttpTransport.Response response = httpTransport.execute(
+                uri,
+                "HEAD",
+                downloadHeaders(authToken),
+                CONNECTION_TIMEOUT,
+                READ_TIMEOUT,
+                limits.getMaxRedirects())) {
+            return response.statusCode() == 200;
+        } catch (IOException e) {
+            log.debug(
+                    "Pipeline repository probe failed for {}: {}",
+                    SafeHttpTransport.safeUriForDiagnostics(uri),
+                    e.getMessage());
             return false;
         }
     }
@@ -458,36 +495,102 @@ public class PipelineService {
         return String.format("%s/%s/resolve/%s/%s", HF_BASE_URL, repoId, revision, file);
     }
 
-    private void downloadFile(String urlStr, Path destination, String authToken) throws IOException {
-        URL url = new URL(urlStr);
-        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-        conn.setConnectTimeout(CONNECTION_TIMEOUT);
-        conn.setReadTimeout(READ_TIMEOUT);
-        conn.setRequestProperty("User-Agent", "Kompile-Pipeline-Service/1.0");
-
-        if (authToken != null && !authToken.isEmpty()) {
-            conn.setRequestProperty("Authorization", "Bearer " + authToken);
+    long downloadFile(
+            String urlStr,
+            Path destination,
+            String authToken,
+            long maximumBytes) throws IOException {
+        if (maximumBytes <= 0L) {
+            throw new IOException("Pipeline asset byte limit must be positive");
         }
 
-        // Handle redirects
-        int responseCode = conn.getResponseCode();
-        if (responseCode == HttpURLConnection.HTTP_MOVED_PERM ||
-            responseCode == HttpURLConnection.HTTP_MOVED_TEMP ||
-            responseCode == 307 || responseCode == 308) {
-            String newUrl = conn.getHeaderField("Location");
-            conn.disconnect();
-            downloadFile(newUrl, destination, authToken);
-            return;
-        }
+        URI uri = parseRemoteUri(urlStr);
+        Path partialPath = destination.resolveSibling(
+                destination.getFileName() + ".part");
+        Files.deleteIfExists(partialPath);
 
-        if (responseCode != HttpURLConnection.HTTP_OK) {
-            throw new IOException("HTTP " + responseCode + " for " + urlStr);
-        }
+        try (SafeHttpTransport.Response response = httpTransport.execute(
+                uri,
+                "GET",
+                downloadHeaders(authToken),
+                CONNECTION_TIMEOUT,
+                READ_TIMEOUT,
+                limits.getMaxRedirects())) {
+            if (response.statusCode() != 200) {
+                throw new IOException(
+                        "HTTP " + response.statusCode() + " for "
+                                + SafeHttpTransport.safeUriForDiagnostics(response.uri()));
+            }
+            if (response.contentLength() > maximumBytes) {
+                throw new IOException(
+                        "Pipeline asset exceeds its configured byte limit");
+            }
 
-        try (InputStream in = conn.getInputStream()) {
-            Files.copy(in, destination, StandardCopyOption.REPLACE_EXISTING);
-        } finally {
-            conn.disconnect();
+            long bytesRead = 0L;
+            try (InputStream input = response.body();
+                 OutputStream output = Files.newOutputStream(
+                         partialPath,
+                         StandardOpenOption.CREATE_NEW,
+                         StandardOpenOption.WRITE)) {
+                byte[] buffer = new byte[BUFFER_SIZE];
+                int count;
+                while ((count = input.read(buffer)) != -1) {
+                    try {
+                        bytesRead = Math.addExact(bytesRead, count);
+                    } catch (ArithmeticException overflow) {
+                        throw new IOException(
+                                "Pipeline asset byte count overflowed", overflow);
+                    }
+                    if (bytesRead > maximumBytes) {
+                        throw new IOException(
+                                "Pipeline asset exceeded its configured byte limit");
+                    }
+                    output.write(buffer, 0, count);
+                }
+            }
+
+            moveAtomically(partialPath, destination);
+            return bytesRead;
+        } catch (IOException | RuntimeException failure) {
+            try {
+                Files.deleteIfExists(partialPath);
+            } catch (IOException cleanupFailure) {
+                failure.addSuppressed(cleanupFailure);
+            }
+            throw failure;
+        }
+    }
+
+    private static Map<String, String> downloadHeaders(String authToken) {
+        Map<String, String> headers = new HashMap<>();
+        headers.put("User-Agent", "Kompile-Pipeline-Service/1.0");
+        if (authToken != null && !authToken.isBlank()) {
+            headers.put("Authorization", "Bearer " + authToken);
+        }
+        return headers;
+    }
+
+    private static URI parseRemoteUri(String value) throws IOException {
+        try {
+            return SafeHttpTransport.validateRemoteUri(URI.create(value));
+        } catch (IllegalArgumentException invalid) {
+            throw new IOException("Invalid pipeline download URI");
+        }
+    }
+
+    private static void moveAtomically(Path source, Path destination)
+            throws IOException {
+        try {
+            Files.move(
+                    source,
+                    destination,
+                    StandardCopyOption.ATOMIC_MOVE,
+                    StandardCopyOption.REPLACE_EXISTING);
+        } catch (AtomicMoveNotSupportedException unsupported) {
+            Files.move(
+                    source,
+                    destination,
+                    StandardCopyOption.REPLACE_EXISTING);
         }
     }
 

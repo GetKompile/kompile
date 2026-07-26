@@ -8,6 +8,9 @@ import ai.kompile.staging.catalog.CatalogService;
 import ai.kompile.staging.config.ModelSourceConfiguration;
 import ai.kompile.staging.config.StagingSettingsService;
 import ai.kompile.staging.download.DownloadRequest;
+import ai.kompile.staging.download.ComponentUrlDownloader;
+import ai.kompile.staging.download.TextModelAssetMap;
+import ai.kompile.staging.download.TextModelAssetUrlMap;
 import ai.kompile.staging.export.ExportService;
 import ai.kompile.staging.export.ImportService;
 import ai.kompile.staging.staging.StagingService;
@@ -23,6 +26,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.core.io.Resource;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.lang.reflect.Method;
@@ -30,10 +34,14 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -114,6 +122,13 @@ class StagingControllerTest {
                   "modelType": "llm_ggml",
                   "format": "gguf",
                   "token": "secret",
+                  "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "textAssets": {
+                    "model": "qwen2.5-q4.gguf",
+                    "tokenizer": "tokenizer.json",
+                    "tokenizerConfig": "tokenizer_config.json",
+                    "modelConfig": "config.json"
+                  },
                   "outputFormat": "kproject",
                   "targetProfile": "pixel-8a",
                   "quantizationProfile": "int8",
@@ -134,8 +149,220 @@ class StagingControllerTest {
         assertEquals(
                 "android-arm64-nnapi-accelerator",
                 forwarded.getTargetProfile());
-        assertEquals("int8-per-channel", forwarded.getQuantizationProfile());
+        assertEquals("int8", forwarded.getQuantizationProfile());
         assertEquals("Tensor_G3", forwarded.getTargetSoc());
+        assertEquals("qwen2.5-q4.gguf", forwarded.getTextAssets().getModel());
+        assertEquals(
+                "tokenizer_config.json",
+                forwarded.getTextAssets().getTokenizerConfig());
+    }
+
+    @Test
+    void stageModel_forwardsMutableHuggingFaceRevisionForDownloaderPinning() {
+        StageModelRequest request = StageModelRequest.builder()
+                .source("huggingface")
+                .repository("https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF")
+                .modelId("mutable")
+                .type("llm_ggml")
+                .format("gguf")
+                .revision("main")
+                .textAssets(completeAssets("model.gguf"))
+                .outputFormat("kproject")
+                .targetProfile("pixel-8a")
+                .targetSoc("Tensor_G3")
+                .build();
+
+        controller.stageModel(request);
+
+        ArgumentCaptor<DownloadRequest> captured =
+                ArgumentCaptor.forClass(DownloadRequest.class);
+        verify(stagingService).stageModelAsync(captured.capture());
+        DownloadRequest forwarded = captured.getValue();
+        assertEquals(
+                "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF",
+                forwarded.getRepository());
+        assertEquals("main", forwarded.getRevision());
+        assertEquals("model.gguf", forwarded.getTextAssets().getModel());
+    }
+
+    @Test
+    void stageModel_normalizesTargetedModelAsCompleteDownloadableSdz() {
+        StageModelRequest request = StageModelRequest.builder()
+                .source("huggingface")
+                .repository("Qwen/Qwen2.5-0.5B-Instruct-GGUF")
+                .modelId("mobile-sdz")
+                .type("llm_ggml")
+                .format("gguf")
+                .revision("main")
+                .textAssets(completeAssets("model.gguf"))
+                .outputFormat("model")
+                .targetProfile("pixel-8a")
+                .quantizationProfile("int8")
+                .build();
+
+        controller.stageModel(request);
+
+        ArgumentCaptor<DownloadRequest> captured =
+                ArgumentCaptor.forClass(DownloadRequest.class);
+        verify(stagingService).stageModelAsync(captured.capture());
+        DownloadRequest forwarded = captured.getValue();
+        assertEquals("model", forwarded.getOutputFormat());
+        assertEquals(
+                "android-arm64-nnapi-accelerator",
+                forwarded.getTargetProfile());
+        assertEquals("Tensor_G3", forwarded.getTargetSoc());
+        assertEquals("int8", forwarded.getQuantizationProfile());
+        assertEquals("tokenizer.json", forwarded.getTextAssets().getTokenizer());
+        assertEquals(
+                "tokenizer_config.json",
+                forwarded.getTextAssets().getTokenizerConfig());
+    }
+
+    @Test
+    void stageModel_rejectsTargetedLocalModelMissingRunnableChatAssets() {
+        StageModelRequest request = StageModelRequest.builder()
+                .source("local")
+                .repository("incomplete-upload")
+                .modelId("incomplete-mobile-sdz")
+                .type("llm_ggml")
+                .format("gguf")
+                .outputFormat("model")
+                .targetProfile("pixel-8a")
+                .build();
+
+        ResponseStatusException failure = assertThrows(
+                ResponseStatusException.class,
+                () -> controller.stageModel(request));
+
+        assertEquals(HttpStatus.BAD_REQUEST, failure.getStatusCode());
+        assertTrue(failure.getReason().contains("tokenizer.json"));
+        verify(stagingService, never()).stageModelAsync(any());
+    }
+
+    @Test
+    void stageModel_acceptsCompleteRepositoryFreeHttpsComponentBundle() {
+        StageModelRequest request = componentRequest(completeComponentUrls());
+
+        controller.stageModel(request);
+
+        ArgumentCaptor<DownloadRequest> captured =
+                ArgumentCaptor.forClass(DownloadRequest.class);
+        verify(stagingService).stageModelAsync(captured.capture());
+        DownloadRequest forwarded = captured.getValue();
+        assertEquals(ComponentUrlDownloader.SOURCE, forwarded.getSource());
+        assertNull(forwarded.getRepository());
+        assertEquals(
+                "https://models.example/chat.gguf",
+                forwarded.getTextAssetUrls().getModel());
+        assertEquals("kproject", forwarded.getOutputFormat());
+    }
+
+    @Test
+    void stageModel_rejectsIncompleteOrMixedHttpsComponentsBeforeAsyncWork() {
+        StageModelRequest incomplete = componentRequest(TextModelAssetUrlMap.builder()
+                .model("https://models.example/chat.gguf")
+                .tokenizer("https://models.example/tokenizer.json")
+                .build());
+        ResponseStatusException incompleteFailure = assertThrows(
+                ResponseStatusException.class,
+                () -> controller.stageModel(incomplete));
+        assertEquals(HttpStatus.BAD_REQUEST, incompleteFailure.getStatusCode());
+        assertTrue(incompleteFailure.getReason().contains("tokenizer_config.json"));
+
+        StageModelRequest mixed = componentRequest(completeComponentUrls());
+        mixed.setRepository("owner/repo");
+        ResponseStatusException mixedFailure = assertThrows(
+                ResponseStatusException.class,
+                () -> controller.stageModel(mixed));
+        assertEquals(HttpStatus.BAD_REQUEST, mixedFailure.getStatusCode());
+        assertTrue(mixedFailure.getReason().contains("repository-free"));
+        verify(stagingService, never()).stageModelAsync(any());
+    }
+
+    @Test
+    void multipartTextBundleForwardsTokenizerConfigThroughLocalDownloaderContract()
+            throws Exception {
+        when(stagingService.getStagingDirectory()).thenReturn(temp.resolve("staging"));
+        when(stagingService.stageModelAsync(any()))
+                .thenReturn(CompletableFuture.completedFuture(null));
+        StageModelRequest request = mobileLocalRequest("local-gguf");
+
+        controller.stageTextBundle(
+                request,
+                part("phone.gguf", "GGUF"),
+                part("tokenizer.json", "{\"model\":{}}"),
+                part("tokenizer_config.json", "{\"chat_template\":\"{{ messages }}\"}"),
+                null,
+                null,
+                null,
+                null,
+                part("config.json", "{\"eos_token_id\":2}"),
+                null);
+
+        ArgumentCaptor<DownloadRequest> captured =
+                ArgumentCaptor.forClass(DownloadRequest.class);
+        verify(stagingService).stageModelAsync(captured.capture());
+        DownloadRequest forwarded = captured.getValue();
+        assertEquals("local", forwarded.getSource());
+        assertEquals("model.gguf", forwarded.getTextAssets().getModel());
+        assertEquals(
+                "tokenizer_config.json",
+                forwarded.getTextAssets().getTokenizerConfig());
+        assertEquals("config.json", forwarded.getTextAssets().getModelConfig());
+    }
+
+    @Test
+    void multipartTextBundleAcceptsStandaloneChatTemplateAndAuthoredContract()
+            throws Exception {
+        when(stagingService.getStagingDirectory()).thenReturn(temp.resolve("staging"));
+        when(stagingService.stageModelAsync(any()))
+                .thenReturn(CompletableFuture.completedFuture(null));
+
+        controller.stageTextBundle(
+                mobileLocalRequest("local-ggml"),
+                part("phone.ggml", "GGML"),
+                part("tokenizer.json", "{\"model\":{}}"),
+                null,
+                null,
+                null,
+                part("chat_template.jinja", "{{ messages }}"),
+                null,
+                null,
+                part("text-generation.json", "{\"formatVersion\":1}"));
+
+        ArgumentCaptor<DownloadRequest> captured =
+                ArgumentCaptor.forClass(DownloadRequest.class);
+        verify(stagingService).stageModelAsync(captured.capture());
+        assertEquals(
+                "chat_template.jinja",
+                captured.getValue().getTextAssets().getChatTemplate());
+        assertEquals(
+                "text-generation.json",
+                captured.getValue().getTextAssets().getTextGeneration());
+    }
+
+    @Test
+    void multipartTextBundleRejectsMissingTokenizerConfigurationBeforeAsyncWork()
+            throws Exception {
+        when(stagingService.getStagingDirectory()).thenReturn(temp.resolve("staging"));
+
+        ResponseStatusException failure = assertThrows(
+                ResponseStatusException.class,
+                () -> controller.stageTextBundle(
+                        mobileLocalRequest("missing-config"),
+                        part("phone.gguf", "GGUF"),
+                        part("tokenizer.json", "{\"model\":{}}"),
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        part("config.json", "{}"),
+                        null));
+
+        assertEquals(HttpStatus.BAD_REQUEST, failure.getStatusCode());
+        assertTrue(failure.getReason().contains("tokenizer_config.json"));
+        verify(stagingService, never()).stageModelAsync(any());
     }
 
     @Test
@@ -177,6 +404,25 @@ class StagingControllerTest {
     }
 
     @Test
+    void downloadStagedOutput_streamsCompletedTargetSdz() throws Exception {
+        Path output = temp.resolve("qwen-mobile.sdz");
+        Files.writeString(output, "complete target model");
+        when(stagingService.getStagedOutput("qwen-mobile"))
+                .thenReturn(Optional.of(output));
+
+        ResponseEntity<Resource> response =
+                controller.downloadStagedOutput("qwen-mobile");
+
+        assertEquals(HttpStatus.OK, response.getStatusCode());
+        assertEquals(
+                "application/vnd.kompile.sdx+zip",
+                response.getHeaders().getContentType().toString());
+        assertTrue(response.getHeaders().getFirst("Content-Disposition")
+                .contains("qwen-mobile.sdz"));
+        assertEquals(Files.size(output), response.getHeaders().getContentLength());
+    }
+
+    @Test
     void downloadStagedOutput_hidesIncompleteOutput() {
         when(stagingService.getStagedOutput("pending"))
                 .thenReturn(Optional.empty());
@@ -184,6 +430,71 @@ class StagingControllerTest {
         assertEquals(
                 HttpStatus.NOT_FOUND,
                 controller.downloadStagedOutput("pending").getStatusCode());
+    }
+
+    @Test
+    void exposesBoundedImportDiagnosticHistoryAndAttemptTimeline() {
+        when(stagingService.getImportDiagnostics(17)).thenReturn(List.of());
+        when(stagingService.getImportDiagnostics("attempt-123")).thenReturn(List.of());
+
+        assertTrue(controller.getImportDiagnostics(17).isEmpty());
+        assertTrue(controller.getImportDiagnostics("attempt-123").isEmpty());
+
+        verify(stagingService).getImportDiagnostics(17);
+        verify(stagingService).getImportDiagnostics("attempt-123");
+    }
+
+    private static TextModelAssetMap completeAssets(String model) {
+        return TextModelAssetMap.builder()
+                .model(model)
+                .tokenizer("tokenizer.json")
+                .tokenizerConfig("tokenizer_config.json")
+                .modelConfig("config.json")
+                .build();
+    }
+
+    private static TextModelAssetUrlMap completeComponentUrls() {
+        return TextModelAssetUrlMap.builder()
+                .model("https://models.example/chat.gguf")
+                .tokenizer("https://models.example/tokenizer.json")
+                .tokenizerConfig("https://models.example/tokenizer_config.json")
+                .modelConfig("https://models.example/config.json")
+                .build();
+    }
+
+    private static StageModelRequest componentRequest(TextModelAssetUrlMap urls) {
+        return StageModelRequest.builder()
+                .modelId("component-mobile-chat")
+                .source(ComponentUrlDownloader.SOURCE)
+                .type("llm_ggml")
+                .format("gguf")
+                .textAssetUrls(urls)
+                .outputFormat("kproject")
+                .targetProfile("pixel-8a")
+                .targetSoc("Tensor_G3")
+                .build();
+    }
+
+    private static StageModelRequest mobileLocalRequest(String modelId) {
+        return StageModelRequest.builder()
+                .modelId(modelId)
+                .source("local")
+                .repository("replaced-by-upload")
+                .type("llm_ggml")
+                .format(modelId.contains("ggml") ? "ggml" : "gguf")
+                .outputFormat("kproject")
+                .targetProfile("pixel-8a")
+                .quantizationProfile("int8")
+                .targetSoc("Tensor_G3")
+                .build();
+    }
+
+    private static MockMultipartFile part(String name, String content) {
+        return new MockMultipartFile(
+                name,
+                name,
+                "application/octet-stream",
+                content.getBytes(java.nio.charset.StandardCharsets.UTF_8));
     }
 
     private ModelType resolve(CatalogModel model) throws Exception {

@@ -66,6 +66,25 @@ public class SdkScaffold implements Callable<Integer> {
                     "ios: Resources/Graphs/, android: app/src/main/assets/graphs/)")
     private File includeGraph;
 
+    @CommandLine.Option(names = "--sdk-version",
+            description = "SDK version (default: " + SdkConstants.DEFAULT_SDX_SDK_VERSION + ")")
+    private String sdkVersion;
+
+    @CommandLine.Option(names = "--sdk-base-url", description = "Override SDK release base URL")
+    private String sdkBaseUrl;
+
+    @CommandLine.Option(names = "--sdk-component", defaultValue = "runtime",
+            description = "Manifest component (default: ${DEFAULT-VALUE})")
+    private String sdkComponent;
+
+    @CommandLine.Option(names = "--sdk-package-role",
+            description = "Manifest package role; defaults to android-aar or apple-xcframework")
+    private String sdkPackageRole;
+
+    @CommandLine.Option(names = "--sdk-variant",
+            description = "Manifest variant; cpu is defaulted only when it is the sole available variant")
+    private String sdkVariant;
+
     @Override
     public Integer call() throws Exception {
         if (!"ios".equals(platform) && !"android".equals(platform)) {
@@ -102,13 +121,18 @@ public class SdkScaffold implements Callable<Integer> {
             sdkClassifier = SdkConstants.ANDROID_ARM64;
         }
 
-        SdkDescriptor sdkDescriptor = SdkConstants.createSdxRuntimeDescriptor(null, null);
-        Path sdkArtifactPath = null;
+        KompileModelManager.ResolvedSdxSdkArtifact resolvedSdk = null;
+        String packageRole = sdkPackageRole;
+        if (packageRole == null || packageRole.isBlank()) {
+            packageRole = "ios".equals(platform) ? "apple-xcframework" : "android-aar";
+        }
         try {
-            sdkArtifactPath = manager.downloadSdk(sdkDescriptor, sdkClassifier);
-            System.out.println("  SDK ready: " + sdkArtifactPath);
+            resolvedSdk = manager.resolveAndDownloadSdxSdk(sdkVersion, sdkComponent, packageRole,
+                    sdkClassifier, sdkVariant, sdkBaseUrl);
+            System.out.println("  SDK ready: " + resolvedSdk.path());
         } catch (Exception e) {
-            System.err.println("  SDK download failed (will scaffold without SDK binary): " + e.getMessage());
+            System.err.println("  SDK download failed: " + e.getMessage());
+            return 1;
         }
 
         // TODO(P3): add kompile-reasoning xcframework/aar copy step here once
@@ -139,7 +163,7 @@ public class SdkScaffold implements Callable<Integer> {
         context.setPackageName(packageName);
         context.setModelId(model);
         context.setModelFileName(model + ".sdz");
-        context.setSdkVersion(sdkDescriptor.getVersion());
+        context.setSdkVersion(sdkVersion == null ? SdkConstants.DEFAULT_SDX_SDK_VERSION : sdkVersion);
         context.setInferenceMode(mode);
         context.setApiKeyPlaceholder(apiKeyPlaceholder);
         context.setPlatform(platform);
@@ -150,18 +174,16 @@ public class SdkScaffold implements Callable<Integer> {
         System.out.println("  Project files generated.");
 
         // 4. Copy SDK binary into project
-        if (sdkArtifactPath != null) {
-            System.out.println("\nStep 4: Copying SDK binary...");
+        if (resolvedSdk != null) {
+            System.out.println("\nStep 4: Installing SDK artifact...");
             Path sdkDest;
             if ("ios".equals(platform)) {
                 sdkDest = output.resolve("Frameworks");
             } else {
                 sdkDest = output.resolve("app/libs");
             }
-            Files.createDirectories(sdkDest);
-            Files.copy(sdkArtifactPath, sdkDest.resolve(sdkArtifactPath.getFileName()),
-                    StandardCopyOption.REPLACE_EXISTING);
-            System.out.println("  SDK binary copied to: " + sdkDest);
+            Path installed = SdxSdkArtifactInstaller.install(resolvedSdk, sdkDest);
+            System.out.println("  SDK artifact installed at: " + installed);
         }
 
         // 5. Copy model bundle

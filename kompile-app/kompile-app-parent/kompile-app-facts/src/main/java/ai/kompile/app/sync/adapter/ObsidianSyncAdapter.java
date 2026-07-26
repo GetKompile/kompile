@@ -81,51 +81,40 @@ public class ObsidianSyncAdapter implements SyncAdapter {
         if (useLocalVault(conn)) {
             return localMarkdownFileStore.fetchChangedSince(conn, since);
         }
+
         List<ExternalNoteSnapshot> results = new ArrayList<>();
-
-        // Use simple search to find all .md files in the scope directory
-        String scopePath = conn.getExternalScope();
-        if (scopePath == null || scopePath.isBlank()) scopePath = "";
-
-        try {
-            // Fetch file listing via search
-            String searchUrl = getBaseUrl(conn) + "/search/simple/?query=" + scopePath;
-            HttpEntity<Void> entity = new HttpEntity<>(obsidianHeaders(conn));
-            ResponseEntity<String> resp = restTemplate.exchange(
-                    searchUrl, HttpMethod.POST, entity, String.class);
-
-            // The simple search returns file paths; iterate and read each
-            // For simplicity, read all .md files in scope and filter by mtime
-            List<String> filePaths = findMarkdownFiles(conn, scopePath);
-
-            for (String filePath : filePaths) {
-                try {
-                    String content = readVaultFile(conn, filePath);
-                    if (content == null) continue;
-
-                    ParsedObsidianNote parsed = frontmatterConverter.fromObsidianFormat(content);
-
-                    // Use updated timestamp from frontmatter, or assume recent
-                    Instant fileUpdated = parsed.updatedAt() != null ? parsed.updatedAt() : Instant.now();
-                    if (fileUpdated.isAfter(since)) {
-                        results.add(new ExternalNoteSnapshot(
-                                filePath,
-                                parsed.title() != null ? parsed.title() : fileNameToTitle(filePath),
-                                parsed.body(),
-                                parsed.tags(),
-                                fileUpdated
-                        ));
-                    }
-                } catch (Exception e) {
-                    log.warn("Failed to read Obsidian file {}: {}", filePath, e.getMessage());
-                }
+        for (String filePath : listRemoteMarkdownFiles(conn)) {
+            String content = readVaultFile(conn, filePath);
+            if (content == null) {
+                throw new IllegalStateException("Obsidian returned no content for " + filePath);
             }
-        } catch (Exception e) {
-            log.error("Obsidian fetchChangedSince failed: {}", e.getMessage());
+
+            ParsedObsidianNote parsed = frontmatterConverter.fromObsidianFormat(content);
+            // Older vault files may lack portable frontmatter timestamps. Fetching them again is
+            // safe because the engine compares a canonical checksum before applying an update.
+            Instant fileUpdated = parsed.updatedAt() != null ? parsed.updatedAt() : Instant.now();
+            if (fileUpdated.isAfter(since)) {
+                results.add(new ExternalNoteSnapshot(
+                        filePath,
+                        parsed.title() != null ? parsed.title() : fileNameToTitle(filePath),
+                        parsed.body(),
+                        parsed.tags(),
+                        fileUpdated
+                ));
+            }
         }
 
         log.info("Obsidian fetch: found {} changed files since {}", results.size(), since);
         return results;
+    }
+
+    @Override
+    public Optional<Set<String>> listExternalIds(NoteSyncConnection conn) {
+        checkEnabled();
+        if (useLocalVault(conn)) {
+            return Optional.of(localMarkdownFileStore.listExternalIds(conn));
+        }
+        return Optional.of(listRemoteMarkdownFiles(conn));
     }
 
     @Override
@@ -196,7 +185,7 @@ public class ObsidianSyncAdapter implements SyncAdapter {
     @Override
     public SyncConnectionTestResponse testConnection(NoteSyncConnection conn) {
         if (useLocalVault(conn)) {
-            Path root = localMarkdownFileStore.ensureRoot(conn);
+            Path root = localMarkdownFileStore.requireExistingRoot(conn);
             if (!Files.isDirectory(root) || !Files.isReadable(root) || !Files.isWritable(root)) {
                 return SyncConnectionTestResponse.failure(conn.getId(), conn.getAuthMode(),
                         "Vault path is not readable and writable: " + root);
@@ -239,41 +228,49 @@ public class ObsidianSyncAdapter implements SyncAdapter {
         restTemplate.exchange(url, HttpMethod.PUT, entity, Void.class);
     }
 
-    private List<String> findMarkdownFiles(NoteSyncConnection conn, String scopePath) {
-        // Use the vault listing or simple search to find .md files
-        // The Local REST API doesn't have a directory listing endpoint,
-        // so we use the simple search with the scope path
-        try {
-            String url = getBaseUrl(conn) + "/search/simple/?query=.md";
-            HttpHeaders headers = obsidianHeaders(conn);
-            headers.setContentType(MediaType.TEXT_PLAIN);
-            HttpEntity<String> entity = new HttpEntity<>(scopePath, headers);
-            ResponseEntity<List> resp = restTemplate.exchange(url, HttpMethod.POST, entity, List.class);
+    @SuppressWarnings("unchecked")
+    private Set<String> listRemoteMarkdownFiles(NoteSyncConnection conn) {
+        String configuredScope = conn.getExternalScope();
+        String rootScope = configuredScope == null ? "" : configuredScope
+                .replace('\\', '/')
+                .replaceAll("^/+|/+$", "");
 
-            List<String> allFiles = new ArrayList<>();
-            if (resp.getBody() != null) {
-                for (Object item : resp.getBody()) {
-                    if (item instanceof Map<?, ?> map) {
-                        String filename = (String) map.get("filename");
-                        if (filename != null && filename.endsWith(".md")) {
-                            if (scopePath.isEmpty() || filename.startsWith(scopePath)) {
-                                allFiles.add(filename);
-                            }
-                        }
-                    } else if (item instanceof String filename) {
-                        if (filename.endsWith(".md")) {
-                            if (scopePath.isEmpty() || filename.startsWith(scopePath)) {
-                                allFiles.add(filename);
-                            }
-                        }
-                    }
+        Set<String> markdownFiles = new LinkedHashSet<>();
+        Deque<String> directories = new ArrayDeque<>();
+        directories.add(rootScope);
+
+        while (!directories.isEmpty()) {
+            String directory = directories.removeFirst();
+            String encodedDirectory = directory.isEmpty() ? "" : encodePath(directory) + "/";
+            String url = getBaseUrl(conn) + "/vault/" + encodedDirectory;
+            HttpEntity<Void> entity = new HttpEntity<>(obsidianHeaders(conn));
+            ResponseEntity<Map> response =
+                    restTemplate.exchange(url, HttpMethod.GET, entity, Map.class);
+            Object listed = response.getBody() == null ? null : response.getBody().get("files");
+            if (!(listed instanceof List<?> entries)) {
+                throw new IllegalStateException(
+                        "Obsidian directory listing returned an invalid response for " + directory);
+            }
+
+            for (Object value : entries) {
+                if (!(value instanceof String entry) || entry.isBlank()) {
+                    continue;
+                }
+                String normalizedEntry = entry.replace('\\', '/');
+                boolean directoryEntry = normalizedEntry.endsWith("/");
+                String name = directoryEntry
+                        ? normalizedEntry.substring(0, normalizedEntry.length() - 1)
+                        : normalizedEntry;
+                String child = directory.isEmpty() ? name : directory + "/" + name;
+                if (directoryEntry) {
+                    directories.addLast(child);
+                } else if (child.toLowerCase(Locale.ROOT).endsWith(".md")
+                        || child.toLowerCase(Locale.ROOT).endsWith(".markdown")) {
+                    markdownFiles.add(child);
                 }
             }
-            return allFiles;
-        } catch (Exception e) {
-            log.warn("Failed to list Obsidian files: {}", e.getMessage());
-            return List.of();
         }
+        return markdownFiles;
     }
 
     private HttpHeaders obsidianHeaders(NoteSyncConnection conn) {
@@ -297,21 +294,21 @@ public class ObsidianSyncAdapter implements SyncAdapter {
         if (encrypted == null || encrypted.isBlank()) {
             throw new IllegalStateException("No Obsidian API token configured for this connection");
         }
-        if (tokenEncryptionService != null) {
-            try {
-                return tokenEncryptionService.decrypt(encrypted);
-            } catch (Exception e) {
-                // May not be encrypted (e.g., TokenEncryptionService was unavailable when saved)
-                log.warn("Failed to decrypt Obsidian token, using as-is: {}", e.getMessage());
-                return encrypted;
-            }
+        if (tokenEncryptionService == null) {
+            throw new IllegalStateException(
+                    "Obsidian credential decryption is unavailable; reconfigure credentials before syncing.");
         }
-        return encrypted;
+        try {
+            return tokenEncryptionService.decrypt(encrypted);
+        } catch (Exception e) {
+            throw new IllegalStateException(
+                    "Obsidian credential could not be decrypted; reconfigure credentials before syncing.", e);
+        }
     }
 
     private String encodePath(String path) {
-        // Encode path segments while preserving /
-        return path.replace(" ", "%20");
+        return org.springframework.web.util.UriUtils.encodePath(
+                path, java.nio.charset.StandardCharsets.UTF_8);
     }
 
     private String fileNameToTitle(String filePath) {
@@ -345,7 +342,19 @@ public class ObsidianSyncAdapter implements SyncAdapter {
             SSLContext sc = SSLContext.getInstance("TLS");
             sc.init(null, trustAllCerts, new java.security.SecureRandom());
 
-            var factory = new org.springframework.http.client.SimpleClientHttpRequestFactory();
+            var factory = new org.springframework.http.client.SimpleClientHttpRequestFactory() {
+                @Override
+                protected void prepareConnection(
+                        java.net.HttpURLConnection connection, String httpMethod)
+                        throws java.io.IOException {
+                    super.prepareConnection(connection, httpMethod);
+                    if (connection instanceof HttpsURLConnection https
+                            && isLoopbackHost(connection.getURL().getHost())) {
+                        https.setSSLSocketFactory(sc.getSocketFactory());
+                        https.setHostnameVerifier((hostname, session) -> isLoopbackHost(hostname));
+                    }
+                }
+            };
             factory.setConnectTimeout(10_000);
             factory.setReadTimeout(30_000);
             return new RestTemplate(factory);
@@ -356,6 +365,14 @@ public class ObsidianSyncAdapter implements SyncAdapter {
             fallbackFactory.setReadTimeout(30_000);
             return new RestTemplate(fallbackFactory);
         }
+    }
+
+    private static boolean isLoopbackHost(String host) {
+        return host != null && (
+                "localhost".equalsIgnoreCase(host)
+                        || "127.0.0.1".equals(host)
+                        || "::1".equals(host)
+                        || "[::1]".equals(host));
     }
 
 }

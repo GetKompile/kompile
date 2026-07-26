@@ -1,0 +1,40 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~
+  ~  Licensed under the Apache License, Version 2.0 (the "License");
+  ~  you may not use this file except in compliance with the License.
+  ~  You may obtain a copy of the License at
+  ~
+  ~  http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~  Unless required by applicable law or agreed to in writing, software
+  ~   distributed under the License is distributed on an "AS IS" BASIS,
+  ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Kompile Chat</title>
+  <base href="/">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- Branded favicon: SVG brand mark (modern browsers) with .ico fallback.
+       White-labelable at runtime via the branding config — see AppShellComponent.updateFavicon(). -->
+  <link rel="icon" href="favicon.ico" sizes="any">
+  <link rel="icon" type="image/svg+xml" href="assets/branding/kompile-logo.svg">
+  <!-- Polyfill for Node.js globals required by sockjs-client (must load before any modules) -->
+  <script>
+    window.global = window;
+    window.process = window.process || { env: {}, nextTick: function(fn) { setTimeout(fn, 0); } };
+    window.Buffer = window.Buffer || { isBuffer: function() { return false; } };
+  </script>
+  <!-- Local fonts: Roboto for UI, Source Code Pro for monospace, Material Icons -->
+  <link rel="stylesheet" href="assets/fonts/fonts.css">
+</head>
+<body>
+  <app-root></app-root>
+</body>
+</html>

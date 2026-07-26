@@ -38,7 +38,11 @@ public class SyncStatusUpdate {
     private String message;
     @Builder.Default private int pushed = 0;
     @Builder.Default private int pulled = 0;
+    @Builder.Default private int deleted = 0;
     @Builder.Default private int conflicts = 0;
     @Builder.Default private int skipped = 0;
+    @Builder.Default private int errors = 0;
+    private String crawlJobId;
+    private String graphStatus;
     @Builder.Default private Instant timestamp = Instant.now();
 }

@@ -18,7 +18,7 @@ import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
-/** Publishes a fully written project archive exactly once across threads and processes. */
+/** Publishes a fully written mobile artifact exactly once across threads and processes. */
 final class AtomicProjectPublisher {
     static final String LOCK_DIRECTORY = ".publication-locks";
     private static final ConcurrentMap<Path, LocalLock> LOCAL_LOCKS =
@@ -34,16 +34,16 @@ final class AtomicProjectPublisher {
                 .toAbsolutePath().normalize();
         Path outputDirectory = output.getParent();
         if (outputDirectory == null) {
-            throw new IOException("Project output has no parent directory: " + output);
+            throw new IOException("Artifact output has no parent directory: " + output);
         }
         Files.createDirectories(outputDirectory);
         if (!Files.isRegularFile(source, LinkOption.NOFOLLOW_LINKS)
                 || Files.isSymbolicLink(source)) {
-            throw new IOException("Completed project archive is not a regular file: " + source);
+            throw new IOException("Completed mobile artifact is not a regular file: " + source);
         }
         if (!outputDirectory.equals(source.getParent())) {
             throw new IOException(
-                    "Atomic project publication requires staging beside the destination: "
+                    "Atomic artifact publication requires staging beside the destination: "
                             + source);
         }
 
@@ -75,7 +75,7 @@ final class AtomicProjectPublisher {
                 Files.move(source, output, StandardCopyOption.ATOMIC_MOVE);
             } catch (AtomicMoveNotSupportedException unsupported) {
                 throw new IOException(
-                        "Filesystem does not support atomic .kproject publication: " + output,
+                        "Filesystem does not support atomic mobile artifact publication: " + output,
                         unsupported);
             }
         }
@@ -89,7 +89,7 @@ final class AtomicProjectPublisher {
         }
         if (!Files.isDirectory(directory, LinkOption.NOFOLLOW_LINKS)
                 || Files.isSymbolicLink(directory)) {
-            throw new IOException("Project publication lock path is not a directory: " + directory);
+            throw new IOException("Artifact publication lock path is not a directory: " + directory);
         }
     }
 

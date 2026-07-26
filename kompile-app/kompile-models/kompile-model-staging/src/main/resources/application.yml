@@ -1,8 +1,13 @@
 server:
   port: 8090
+  address: ${KOMPILE_STAGING_ADDRESS:127.0.0.1}
 
 kompile:
   staging:
+    security:
+      lan-enabled: ${KOMPILE_STAGING_LAN_ENABLED:false}
+      api-token: ${KOMPILE_STAGING_API_TOKEN:}
+      allowed-origins: ${KOMPILE_STAGING_ALLOWED_ORIGINS:}
     ui:
       enabled: true
     app:
@@ -14,6 +19,15 @@ kompile:
     settings-dir: ${user.home}/.kompile
     project-dir: ""
     callback-url: ""
+    limits:
+      model-bytes: ${KOMPILE_STAGING_MODEL_BYTES:8589934592}
+      tokenizer-bytes: ${KOMPILE_STAGING_TOKENIZER_BYTES:67108864}
+      config-bytes: ${KOMPILE_STAGING_CONFIG_BYTES:8388608}
+      total-bytes: ${KOMPILE_STAGING_TOTAL_BYTES:9663676416}
+      local-max-files: ${KOMPILE_STAGING_LOCAL_MAX_FILES:64}
+      local-max-depth: ${KOMPILE_STAGING_LOCAL_MAX_DEPTH:4}
+      max-redirects: ${KOMPILE_STAGING_MAX_REDIRECTS:5}
+      cancellation-wait-millis: ${KOMPILE_STAGING_CANCELLATION_WAIT_MILLIS:60000}
     # Host-only target compilation for downloadable Android .kproject artifacts.
     # Supply compiler-command as a YAML argument vector or indexed command-line
     # properties; it is executed directly and never through a shell.
@@ -62,8 +76,8 @@ spring:
   servlet:
     multipart:
       enabled: true
-      max-file-size: 10GB
-      max-request-size: 10GB
+      max-file-size: ${KOMPILE_STAGING_MULTIPART_FILE_SIZE:8GB}
+      max-request-size: ${KOMPILE_STAGING_MULTIPART_REQUEST_SIZE:9GB}
       file-size-threshold: 10MB
 
 management:

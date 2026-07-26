@@ -16,6 +16,8 @@
 package ai.kompile.cli.main.project;
 
 import ai.kompile.cli.common.http.KompileHttpClient;
+import ai.kompile.cli.common.routing.KompileService;
+import ai.kompile.cli.common.routing.KompileServiceEndpoints;
 import ai.kompile.cli.main.app.CrawlCommand;
 import ai.kompile.cli.main.install.registry.ComponentRegistry;
 import ai.kompile.cli.main.manage.ServiceManager;
@@ -95,6 +97,9 @@ import static ai.kompile.cli.main.project.ProjectPrintUtils.printWorkflows;
         })
 public class ProjectCrawlCommand implements Callable<Integer> {
 
+    /** Workflow-step template token standing in for "the kompile server". */
+    private static final String APP_URL_TOKEN = "${appUrl}";
+
     private static final Set<String> LOCAL_KNOWLEDGE_STOP_WORDS = Set.of(
             "the", "and", "for", "that", "with", "this", "from", "are", "was", "were",
             "will", "you", "your", "have", "has", "had", "not", "but", "all", "can",
@@ -120,7 +125,8 @@ public class ProjectCrawlCommand implements Callable<Integer> {
         @Option(names = {"--profile", "--id"}, description = "Crawl profile ID or name. Auto-selected when omitted.")
         private String profileId;
 
-        @Option(names = "--url", description = "Base URL of kompile-app, such as http://localhost:8080.")
+        @Option(names = "--url", description = "Pin the backend base URL, such as http://localhost:8082. "
+                + "Defaults to routing each API to its service (crawl manager, chat, admin).")
         private String appUrl;
 
         @Option(names = {"--port", "-p"}, description = "Localhost kompile-app port.")
@@ -168,13 +174,13 @@ public class ProjectCrawlCommand implements Callable<Integer> {
             if (workflow != null) {
                 printCrawlPlan(store, manifest, workflow, projectRoot);
                 if (Boolean.TRUE.equals(serve)) {
-                    int targetPort = port != null ? port : 8080;
+                    int targetPort = crawlServicePort(appUrl, port);
                     if (new ServiceManager().checkHealth(targetPort)) {
-                        System.out.println("App already running at http://localhost:" + targetPort
+                        System.out.println("Crawl backend already running at http://localhost:" + targetPort
                                 + " — skipping start-services.");
                     } else {
                         int serveExit = runServeSelection(store, manifest, projectRoot, null,
-                                false, false, false, appUrl, port, dryRun);
+                                false, false, false, false, false, appUrl, port, dryRun);
                         if (serveExit != 0) {
                             return serveExit;
                         }
@@ -207,26 +213,19 @@ public class ProjectCrawlCommand implements Callable<Integer> {
 
             boolean shouldServe = serve == null || serve;
             if (shouldServe) {
-                int targetPort = port != null ? port : 8080;
-                // Skip start-services if the app is already healthy on the target port
+                int targetPort = crawlServicePort(appUrl, port);
+                // Skip start-services if the crawl backend is already healthy on the target port
                 if (new ServiceManager().checkHealth(targetPort)) {
-                    System.out.println("App already running at http://localhost:" + targetPort + " — skipping start-services.");
+                    System.out.println("Crawl backend already running at http://localhost:" + targetPort
+                            + " — skipping start-services.");
                 } else {
                     int serveExit = runServeSelection(store, manifest, projectRoot, null,
-                            false, false, false, appUrl, port, dryRun);
+                            false, false, false, false, false, appUrl, port, dryRun);
                     if (serveExit != 0) {
                         return serveExit;
                     }
-                    if (!dryRun) {
-                        KompileProjectWorkflowStep readiness = new KompileProjectWorkflowStep();
-                        readiness.setTimeoutSeconds(120);
-                        String targetBaseUrl = firstNonBlank(appUrl,
-                                "http://localhost:" + targetPort);
-                        if (runHealthCheckStep(readiness, projectRoot, targetBaseUrl, false) != 0) {
-                            System.err.println("Project services started, but kompile-app did not become ready at "
-                                    + targetBaseUrl + " within 120 seconds.");
-                            return 1;
-                        }
+                    if (!dryRun && !ensureCrawlBackend(targetPort, appUrl, projectRoot)) {
+                        return 1;
                     }
                 }
             }
@@ -249,7 +248,8 @@ public class ProjectCrawlCommand implements Callable<Integer> {
         @Option(names = {"--id", "--profile"}, required = true, description = "Crawl profile ID or name.")
         private String profileId;
 
-        @Option(names = "--url", description = "Base URL of kompile-app, such as http://localhost:8080.")
+        @Option(names = "--url", description = "Pin the backend base URL, such as http://localhost:8082. "
+                + "Defaults to routing each API to its service (crawl manager, chat, admin).")
         private String appUrl;
 
         @Option(names = {"--port", "-p"}, description = "Localhost kompile-app port.")
@@ -415,6 +415,7 @@ public class ProjectCrawlCommand implements Callable<Integer> {
     static int runServeSelection(KompileProjectStore store, KompileProjectManifest manifest,
                                  Path projectRoot, String workflowId,
                                  boolean stagingOnly, boolean servingOnly, boolean appOnly,
+                                 boolean chatOnly, boolean crawlManagerOnly,
                                  String appUrl, Integer port, boolean dryRun) throws Exception {
         if (workflowId != null && !workflowId.isBlank()) {
             KompileProjectWorkflow workflow = store.findWorkflow(manifest, workflowId)
@@ -429,8 +430,29 @@ public class ProjectCrawlCommand implements Callable<Integer> {
             scriptId = "start-serving";
         } else if (appOnly) {
             scriptId = "start-app";
+        } else if (chatOnly) {
+            scriptId = "start-chat";
+        } else if (crawlManagerOnly) {
+            scriptId = "start-crawl-manager";
         }
         if (scriptId != null) {
+            KompileService persona = personaForScript(scriptId);
+            // Projects generated before the persona split ship start-app but no start-chat or
+            // start-crawl-manager. Rather than fail on a missing script ref, launch the persona
+            // directly — the script would only have wrapped the same command.
+            if (persona != null && store.findScript(manifest, scriptId).isEmpty()) {
+                Optional<String> command = defaultPersonaCommand(persona, projectRoot);
+                if (command.isEmpty()) {
+                    System.err.println(launcherFor(persona).componentId() + " not found — install with: "
+                            + "kompile install " + launcherFor(persona).componentId());
+                    return 1;
+                }
+                System.out.println("No " + scriptId + " script in this project — starting "
+                        + launcherFor(persona).componentId() + " directly.");
+                return runAdHocWorkflow(store, manifest, projectRoot, "serve-" + scriptId,
+                        "Serve " + scriptId, List.of(commandStep(scriptId, command.get())),
+                        appUrl, port, dryRun);
+            }
             return runAdHocWorkflow(store, manifest, projectRoot, "serve-" + scriptId,
                     "Serve " + scriptId, List.of(scriptStep(scriptId, scriptId)), appUrl, port, dryRun);
         }
@@ -467,7 +489,9 @@ public class ProjectCrawlCommand implements Callable<Integer> {
     static int runWorkflow(KompileProjectStore store, KompileProjectManifest manifest,
                            KompileProjectWorkflow workflow, Path projectRoot,
                            String appUrl, Integer port, boolean dryRun) throws Exception {
-        String baseUrl = firstNonBlank(appUrl, port == null ? null : "http://localhost:" + port, "http://localhost:8080");
+        // Null means "route each step by its API path" — crawl steps go to the crawl manager,
+        // chat/RAG steps to the chat app. A pinned --url/--port still overrides everything.
+        String baseUrl = firstNonBlank(appUrl, port == null ? null : "http://localhost:" + port);
         System.out.println("Workflow: " + workflow.getName() + " (" + workflow.getId() + ")");
         int index = 1;
         for (KompileProjectWorkflowStep step : workflow.getSteps()) {
@@ -616,7 +640,8 @@ public class ProjectCrawlCommand implements Callable<Integer> {
         String resolvedUrl = useKompileProbe ? null : resolveTemplate(stepUrl, projectRoot, baseUrl);
         int timeoutSeconds = step.getTimeoutSeconds() == null ? 120 : step.getTimeoutSeconds();
         if (dryRun) {
-            String target = resolvedUrl != null ? resolvedUrl : baseUrl + " (kompile readiness probe)";
+            String probeTarget = baseUrl != null ? baseUrl : "any kompile service";
+            String target = resolvedUrl != null ? resolvedUrl : probeTarget + " (kompile readiness probe)";
             System.out.println("  wait for " + target + " timeout=" + timeoutSeconds + "s");
             return 0;
         }
@@ -625,7 +650,8 @@ public class ProjectCrawlCommand implements Callable<Integer> {
             try {
                 boolean healthy;
                 if (useKompileProbe) {
-                    healthy = new KompileHttpClient(baseUrl).isHealthy();
+                    healthy = (baseUrl != null ? new KompileHttpClient(baseUrl) : KompileHttpClient.routed())
+                            .isHealthy();
                 } else {
                     KompileProjectWorkflowStep httpStep = new KompileProjectWorkflowStep();
                     httpStep.setUrl(resolvedUrl);
@@ -658,8 +684,31 @@ public class ProjectCrawlCommand implements Callable<Integer> {
         if (value == null) {
             return null;
         }
-        return value.replace("${appUrl}", baseUrl)
+        return substituteAppUrl(value, baseUrl)
                 .replace("${projectRoot}", projectRoot.toString());
+    }
+
+    /**
+     * Replace every {@code ${appUrl}} with the base URL of the service that owns the path
+     * following it. Workflow steps were authored against one server on :8080; now
+     * {@code /api/unified-crawl} belongs to the crawl manager and {@code /api/rag} to chat,
+     * so the token resolves per path. A pinned base ({@code --url}/{@code --port}) wins.
+     */
+    static String substituteAppUrl(String value, String pinnedBaseUrl) {
+        int token = value.indexOf(APP_URL_TOKEN);
+        if (token < 0) {
+            return value;
+        }
+        StringBuilder out = new StringBuilder();
+        int cursor = 0;
+        while (token >= 0) {
+            out.append(value, cursor, token);
+            cursor = token + APP_URL_TOKEN.length();
+            out.append(KompileServiceEndpoints.baseUrlForPath(value.substring(cursor), pinnedBaseUrl));
+            token = value.indexOf(APP_URL_TOKEN, cursor);
+        }
+        out.append(value.substring(cursor));
+        return out.toString();
     }
 
     private static Map<String, String> defaultServeEnvironment(KompileProjectManifest manifest,
@@ -675,13 +724,49 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                 environment.put("KOMPILE_STAGING_COMMAND",
                         "echo 'Model staging not found — install with: kompile install kompile-model-staging' >&2; exit 1");
             }
-        } else if ("start-app".equals(scriptId) && firstNonBlank(System.getenv("KOMPILE_APP_COMMAND")) == null) {
-            defaultAppCommand(projectRoot).ifPresentOrElse(
-                    command -> environment.put("KOMPILE_APP_COMMAND", command),
-                    () -> environment.put("KOMPILE_APP_COMMAND",
-                            "echo 'Kompile app not found — install with: kompile install kompile-app' >&2; exit 1"));
+        } else {
+            // Persona start scripts. start-app is the admin console; the chat app and the crawl
+            // manager are separate processes with separate scripts, because /api/unified-crawl and
+            // /api/agents/chat are no longer mounted on :8080.
+            KompileService persona = personaForScript(scriptId);
+            if (persona != null) {
+                String variable = personaCommandVariable(persona);
+                if (firstNonBlank(System.getenv(variable)) == null) {
+                    PersonaLauncher launcher = launcherFor(persona);
+                    defaultPersonaCommand(persona, projectRoot).ifPresentOrElse(
+                            command -> environment.put(variable, command),
+                            () -> environment.put(variable, "echo '" + launcher.componentId()
+                                    + " not found — install with: kompile install "
+                                    + launcher.componentId() + "' >&2; exit 1"));
+                }
+            }
         }
         return environment;
+    }
+
+    /** Script id → persona, for the three {@code start-*} scripts generated projects ship. */
+    private static KompileService personaForScript(String scriptId) {
+        if (scriptId == null) {
+            return null;
+        }
+        return switch (scriptId) {
+            case "start-app" -> KompileService.ADMIN;
+            case "start-chat" -> KompileService.CHAT;
+            case "start-crawl-manager" -> KompileService.CRAWL;
+            default -> null;
+        };
+    }
+
+    /**
+     * Environment variable a generated project's start script reads for its launch command.
+     * {@code KOMPILE_APP_COMMAND} keeps its name so projects generated before the split still run.
+     */
+    static String personaCommandVariable(KompileService service) {
+        return switch (service) {
+            case ADMIN -> "KOMPILE_APP_COMMAND";
+            case CHAT -> "KOMPILE_CHAT_COMMAND";
+            case CRAWL -> "KOMPILE_CRAWL_MANAGER_COMMAND";
+        };
     }
 
     private static String normalizeScriptId(KompileProjectScript script) {
@@ -703,7 +788,8 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                     File installed = new ComponentRegistry().findInstalledJar(ComponentRegistry.KOMPILE_MODEL_STAGING);
                     return installed != null ? Optional.of(installed.toPath()) : Optional.empty();
                 })
-                .or(() -> findSourceRoot(projectRoot).flatMap(ProjectCrawlCommand::findModelStagingExecutableJar));
+                .or(() -> findSourceRoot(projectRoot)
+                        .flatMap(root -> findModuleExecutableJar(root, "kompile-model-staging")));
         if (stagingJar.isEmpty()) {
             System.err.println("No model staging jar found. Install with: kompile install kompile-model-staging"
                     + " or set KOMPILE_STAGING_COMMAND / KOMPILE_MODEL_STAGING_JAR.");
@@ -749,44 +835,94 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                     + "KOMPILE_PIPELINE_SERVING_COMMAND, or KOMPILE_PIPELINE_SERVING_CLASSPATH.");
             return Optional.empty();
         }
+        // -pl takes the artifactId (colon syntax), not a module path: pipeline-serving sits under
+        // kompile-app/kompile-data/kompile-pipelines/, and a path here goes stale on every regroup.
         return Optional.of("cd " + shellQuote(sourceRoot.get().toString())
-                + " && exec ./mvnw -q -pl kompile-app/kompile-pipeline-serving exec:java"
+                + " && exec ./mvnw -q -pl :kompile-pipeline-serving exec:java"
                 + " -Dexec.mainClass=ai.kompile.pipeline.serving.subprocess.PipelineServingSubprocessMain"
                 + " -Dexec.args=" + shellQuote(argsPath.toString())
                 + " -DskipTests -Dskip.ui");
     }
 
-    private static Optional<String> defaultAppCommand(Path projectRoot) throws IOException {
-        String port = firstNonBlank(System.getenv("KOMPILE_APP_PORT"),
-                System.getProperty("kompile.app.port"), "8080");
-        // If the app is already listening, return a no-op rather than spawning a duplicate
-        if (isPortInUse(Integer.parseInt(port))) {
-            System.out.println("Kompile app already running on port " + port + " — skipping.");
-            return Optional.of("echo 'Kompile app already running on port " + port + " — skipping.'");
+    /**
+     * How one persona's launcher is discovered. Kept next to the launch code rather than on
+     * {@link KompileService}, which describes routing — where a request goes — not where a jar
+     * lives on this machine.
+     *
+     * @param componentId  install-registry id, for {@code ~/.kompile/components}
+     * @param jarEnv       env var pinning the jar outright
+     * @param jarProperty  system property pinning the jar outright
+     * @param moduleName   Maven module directory, for a source checkout
+     * @param portEnv      env var pinning the port
+     * @param portProperty system property pinning the port
+     */
+    private record PersonaLauncher(String componentId, String jarEnv, String jarProperty,
+                                   String moduleName, String portEnv, String portProperty) {
+    }
+
+    private static PersonaLauncher launcherFor(KompileService service) {
+        return switch (service) {
+            case ADMIN -> new PersonaLauncher(ComponentRegistry.KOMPILE_APP_MAIN,
+                    "KOMPILE_APP_JAR", "kompile.app.jar", "kompile-app-main",
+                    "KOMPILE_APP_PORT", "kompile.app.port");
+            case CHAT -> new PersonaLauncher(ComponentRegistry.KOMPILE_APP_CHAT,
+                    "KOMPILE_CHAT_JAR", "kompile.chat.jar", "kompile-app-chat",
+                    "KOMPILE_CHAT_PORT", "kompile.chat.port");
+            case CRAWL -> new PersonaLauncher(ComponentRegistry.KOMPILE_APP_CRAWL_MANAGER,
+                    "KOMPILE_CRAWL_MANAGER_JAR", "kompile.crawlManager.jar", "kompile-app-crawl-manager",
+                    "KOMPILE_CRAWL_MANAGER_PORT", "kompile.crawlManager.port");
+        };
+    }
+
+    /**
+     * Build the shell command that starts one persona: the admin console, chat, or the crawl
+     * manager. Generated projects call this through {@code KOMPILE_*_COMMAND}, so a project that
+     * only ships {@code start-app} keeps working — it just starts the admin console now, and the
+     * crawl manager comes up under its own script.
+     *
+     * <p>Resolution order per persona: pinned jar env/property → installed component → the module's
+     * build output in a source checkout. There is no {@code spring-boot:run} fallback: app-main is a
+     * library whose plain artifact is a thin jar that cannot boot, so an absent jar is reported as
+     * "install this" rather than papered over with a run goal that would fail later and less
+     * legibly.</p>
+     */
+    private static Optional<String> defaultPersonaCommand(KompileService service, Path projectRoot) {
+        PersonaLauncher launcher = launcherFor(service);
+        int port = personaCommandPort(service, launcher);
+        String label = launcher.componentId();
+        // If it is already listening, emit a no-op rather than spawning a duplicate.
+        if (isPortInUse(port)) {
+            System.out.println(label + " already running on port " + port + " — skipping.");
+            return Optional.of("echo '" + label + " already running on port " + port + " — skipping.'");
         }
-        // Resolution order: explicit env/property → installed component → source-tree build output → mvnw dev run
-        Optional<Path> appJar = configuredPath("KOMPILE_APP_JAR", "kompile.app.jar")
+        Optional<Path> jar = configuredPath(launcher.jarEnv(), launcher.jarProperty())
                 .or(() -> {
-                    File installed = new ComponentRegistry().findInstalledJar(ComponentRegistry.KOMPILE_APP_MAIN);
+                    File installed = new ComponentRegistry().findInstalledJar(launcher.componentId());
                     return installed != null ? Optional.of(installed.toPath()) : Optional.empty();
                 })
-                .or(() -> findSourceRoot(projectRoot).flatMap(ProjectCrawlCommand::findAppExecutableJar));
-        if (appJar.isPresent()) {
-            return Optional.of("exec java -jar " + shellQuote(appJar.get().toString())
-                    + " --server.port=" + shellQuote(port)
-                    + " --kompile.project.root=" + shellQuote(projectRoot.toAbsolutePath().normalize().toString())
-                    + " --spring.main.banner-mode=off");
+                .or(() -> findSourceRoot(projectRoot)
+                        .flatMap(root -> findModuleExecutableJar(root, launcher.moduleName())));
+        return jar.map(path -> "exec java -jar " + shellQuote(path.toString())
+                + " --server.port=" + shellQuote(String.valueOf(port))
+                + " --kompile.project.root=" + shellQuote(projectRoot.toAbsolutePath().normalize().toString())
+                + " --spring.main.banner-mode=off");
+    }
+
+    /**
+     * Port to launch a persona on. An explicit port env/property wins — those name a port outright.
+     * Otherwise the routing ladder decides, so the port a project <em>starts</em> a persona on is
+     * the one the rest of the CLI <em>looks</em> for it on.
+     */
+    private static int personaCommandPort(KompileService service, PersonaLauncher launcher) {
+        String pinned = firstNonBlank(System.getenv(launcher.portEnv()), System.getProperty(launcher.portProperty()));
+        if (pinned != null) {
+            try {
+                return Integer.parseInt(pinned.trim());
+            } catch (NumberFormatException e) {
+                System.err.println("Ignoring non-numeric " + launcher.portEnv() + "=" + pinned);
+            }
         }
-        Optional<Path> sourceRoot = findSourceRoot(projectRoot);
-        if (sourceRoot.isPresent()
-                && Files.isRegularFile(sourceRoot.get().resolve("kompile-app/kompile-app-main/pom.xml"))) {
-            return Optional.of("cd " + shellQuote(sourceRoot.get().toString())
-                    + " && exec ./mvnw -q -pl kompile-app/kompile-app-main spring-boot:run"
-                    + " -DskipTests -Dskip.ui"
-                    + " -Dspring-boot.run.arguments="
-                    + shellQuote("--server.port=" + port + " --spring.main.banner-mode=off"));
-        }
-        return Optional.empty();
+        return KompileServiceEndpoints.resolve(service).port();
     }
 
     private static Path resolveServingArgsPath(KompileProjectManifest manifest, Path projectRoot) throws IOException {
@@ -893,41 +1029,75 @@ public class ProjectCrawlCommand implements Callable<Integer> {
         return configured == null ? Optional.empty() : Optional.of(Path.of(configured).toAbsolutePath().normalize());
     }
 
-    private static Optional<Path> findModelStagingExecutableJar(Path sourceRoot) {
-        Path target = sourceRoot.resolve("kompile-app/kompile-model-staging/target");
-        Path expected = target.resolve("kompile-model-staging-0.1.0-SNAPSHOT-exec.jar");
-        if (Files.isRegularFile(expected)) {
-            return Optional.of(expected);
-        }
-        if (!Files.isDirectory(target)) {
+    /** Directory names never worth descending into when locating a module in a source checkout. */
+    private static final Set<String> MODULE_SCAN_SKIP =
+            Set.of("target", "node_modules", "src", ".git", "dist", "docs");
+
+    /**
+     * Find a module's runnable jar in a source checkout, by module directory name.
+     *
+     * <p>Searched rather than hardcoded because the nesting under {@code kompile-app/} moves:
+     * app-main and the persona apps live under {@code kompile-app-parent/}, model-staging under
+     * {@code kompile-models/}, pipeline-serving under {@code kompile-data/kompile-pipelines/}.
+     * A path constant here silently stops resolving the next time a module is regrouped, and the
+     * failure looks like "not installed" rather than "moved".</p>
+     */
+    private static Optional<Path> findModuleExecutableJar(Path sourceRoot, String moduleName) {
+        return findModuleDirectory(sourceRoot.resolve("kompile-app"), moduleName, 3)
+                .map(module -> module.resolve("target"))
+                .filter(Files::isDirectory)
+                .flatMap(ProjectCrawlCommand::pickExecutableJar);
+    }
+
+    private static Optional<Path> findModuleDirectory(Path dir, String moduleName, int depth) {
+        if (depth < 0 || !Files.isDirectory(dir)) {
             return Optional.empty();
         }
-        try (Stream<Path> listing = Files.list(target)) {
-            return listing
-                    .filter(path -> path.getFileName().toString().startsWith("kompile-model-staging-"))
-                    .filter(path -> path.getFileName().toString().endsWith("-exec.jar"))
-                    .filter(Files::isRegularFile)
-                    .findFirst();
+        List<Path> children;
+        try (Stream<Path> listing = Files.list(dir)) {
+            children = listing.filter(Files::isDirectory)
+                    .filter(path -> !MODULE_SCAN_SKIP.contains(path.getFileName().toString()))
+                    .sorted()
+                    .toList();
         } catch (IOException e) {
             return Optional.empty();
         }
+        for (Path child : children) {
+            if (moduleName.equals(child.getFileName().toString())) {
+                return Optional.of(child);
+            }
+        }
+        // Breadth first: a module named X directly under kompile-app wins over one nested deeper.
+        for (Path child : children) {
+            Optional<Path> found = findModuleDirectory(child, moduleName, depth - 1);
+            if (found.isPresent()) {
+                return found;
+            }
+        }
+        return Optional.empty();
     }
 
-    private static Optional<Path> findAppExecutableJar(Path sourceRoot) {
-        Path target = sourceRoot.resolve("kompile-app/kompile-app-main/target");
-        if (!Files.isDirectory(target)) {
-            return Optional.empty();
-        }
-        try (Stream<Path> stream = Files.list(target)) {
-            return stream
+    /**
+     * The runnable jar in a {@code target/} directory. {@code -exec.jar} wins outright: app-main's
+     * plain artifact is a thin library jar that has no dependencies inside it and cannot boot.
+     */
+    private static Optional<Path> pickExecutableJar(Path target) {
+        try (Stream<Path> listing = Files.list(target)) {
+            List<Path> jars = listing
                     .filter(Files::isRegularFile)
                     .filter(path -> {
                         String name = path.getFileName().toString();
-                        return name.endsWith("-exec.jar")
-                                || name.endsWith(".jar") && !name.endsWith("-sources.jar");
+                        return name.endsWith(".jar")
+                                && !name.endsWith("-sources.jar")
+                                && !name.endsWith("-javadoc.jar")
+                                && !name.endsWith("-tests.jar");
                     })
                     .sorted()
-                    .findFirst();
+                    .toList();
+            return jars.stream()
+                    .filter(path -> path.getFileName().toString().endsWith("-exec.jar"))
+                    .findFirst()
+                    .or(() -> jars.stream().findFirst());
         } catch (IOException e) {
             return Optional.empty();
         }
@@ -1046,6 +1216,50 @@ public class ProjectCrawlCommand implements Callable<Integer> {
         return model;
     }
 
+    /**
+     * Make sure something answers the crawl API on {@code port} before a crawl is submitted.
+     * A project's start scripts may only bring up the admin app, which no longer serves
+     * {@code /api/unified-crawl}, so fall back to starting the installed crawl-manager
+     * component. A caller-pinned {@code --url} is never second-guessed: they named the server.
+     */
+    private static boolean ensureCrawlBackend(int port, String appUrl, Path projectRoot) throws Exception {
+        KompileProjectWorkflowStep readiness = new KompileProjectWorkflowStep();
+        readiness.setTimeoutSeconds(120);
+        String baseUrl = firstNonBlank(appUrl, "http://localhost:" + port);
+        if (runHealthCheckStep(readiness, projectRoot, baseUrl, false) == 0) {
+            return true;
+        }
+        if (appUrl != null && !appUrl.isBlank()) {
+            System.err.println("Crawl backend did not become ready at " + baseUrl + " within 120 seconds.");
+            return false;
+        }
+        System.out.println("No crawl backend on port " + port + " — starting "
+                + ComponentRegistry.KOMPILE_APP_CRAWL_MANAGER + "...");
+        ServiceManager services = new ServiceManager();
+        ServiceManager.ProcessResult started = services.startComponent(
+                ComponentRegistry.KOMPILE_APP_CRAWL_MANAGER, port, List.of(),
+                List.of("--kompile.project.root=" + projectRoot.toAbsolutePath().normalize()));
+        if (!started.isSuccess() || !services.waitForHealth(port, 120)) {
+            System.err.println("Could not start the crawl manager: " + started.getMessage());
+            System.err.println("Install it with: kompile install " + ComponentRegistry.KOMPILE_APP_CRAWL_MANAGER
+                    + ", or point --url at a running crawl backend.");
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * Local port of the service that answers the crawl API. {@code --port} pins it outright;
+     * otherwise it comes from the routing ladder, which lands on the crawl manager (:8082)
+     * rather than the admin console — {@code /api/unified-crawl} no longer lives on :8080.
+     */
+    private static int crawlServicePort(String appUrl, Integer port) {
+        if (port != null) {
+            return port;
+        }
+        return KompileServiceEndpoints.resolve(KompileService.CRAWL, appUrl).port();
+    }
+
     // ==================== Local crawl engine ====================
 
     private static boolean shouldRunLocalCrawl(KompileProjectCrawlProfile profile, Boolean local,
@@ -1085,9 +1299,23 @@ public class ProjectCrawlCommand implements Callable<Integer> {
         return true;
     }
 
+    /**
+     * True when the caller never named a specific backend, so a headless local crawl is still
+     * on the table. Every persona's built-in local URL counts as "not named" — the split gave
+     * localhost three default ports, not one.
+     */
     private static boolean isDefaultLocalAppUrl(String baseUrl) {
-        return baseUrl == null || baseUrl.isBlank() || "http://localhost:8080".equals(baseUrl)
-                || "http://127.0.0.1:8080".equals(baseUrl);
+        if (baseUrl == null || baseUrl.isBlank()) {
+            return true;
+        }
+        String normalized = baseUrl.trim().replaceAll("/+$", "");
+        for (KompileService service : KompileService.values()) {
+            if (normalized.equals(service.defaultUrl())
+                    || normalized.equals("http://127.0.0.1:" + service.defaultPort())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     static int runLocalCrawl(KompileProjectCrawlProfile profile, Path projectRoot, boolean dryRun) {
@@ -1577,25 +1805,39 @@ public class ProjectCrawlCommand implements Callable<Integer> {
 
     /**
      * Best-effort call to register crawled markdown as facts via the running backend.
-     * Silently skips if the backend is not reachable.
+     * Silently skips if no backend is reachable.
+     *
+     * <p>{@code /api/projects} is part of the shared surface every persona app mounts, so this
+     * walks the services rather than assuming the admin console is the one that is running —
+     * an end-user install may only have chat and the crawl manager up.</p>
      */
     private static void tryRegisterMarkdownAsFacts(String factSheetName) {
-        try {
-            String body = "{\"factSheetName\":" + jsonString(factSheetName) + "}";
-            HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:8080/api/projects/current/markdown/register-facts"))
-                    .header("Content-Type", "application/json")
-                    .POST(HttpRequest.BodyPublishers.ofString(body))
-                    .timeout(Duration.ofSeconds(5))
-                    .build();
-            HttpResponse<String> response = HttpClient.newHttpClient()
-                    .send(request, HttpResponse.BodyHandlers.ofString());
-            if (response.statusCode() >= 200 && response.statusCode() < 300) {
-                System.out.println("  Registered markdown as facts in backend");
-            }
-        } catch (Exception ignored) {
-            // Backend not running — facts can be registered later via:
-            //   kompile project markdown-register-facts --fact-sheet <name>
+        String path = "/api/projects/current/markdown/register-facts";
+        String body = "{\"factSheetName\":" + jsonString(factSheetName) + "}";
+        LinkedHashSet<String> candidates = new LinkedHashSet<>();
+        candidates.add(KompileServiceEndpoints.baseUrlForPath(path, null));
+        for (KompileService service : KompileService.values()) {
+            candidates.add(KompileServiceEndpoints.resolve(service).baseUrl());
         }
+        HttpClient http = HttpClient.newHttpClient();
+        for (String candidate : candidates) {
+            try {
+                HttpRequest request = HttpRequest.newBuilder(URI.create(candidate + path))
+                        .header("Content-Type", "application/json")
+                        .POST(HttpRequest.BodyPublishers.ofString(body))
+                        .timeout(Duration.ofSeconds(5))
+                        .build();
+                HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
+                if (response.statusCode() >= 200 && response.statusCode() < 300) {
+                    System.out.println("  Registered markdown as facts in backend (" + candidate + ")");
+                    return;
+                }
+            } catch (Exception ignored) {
+                // Try the next service.
+            }
+        }
+        // No backend running — facts can be registered later via:
+        //   kompile project markdown-register-facts --fact-sheet <name>
     }
 
     private static void writeLocalKnowledgeAnalysis(KompileProjectCrawlProfile profile, Path projectRoot, Path markdownDir,
@@ -1827,6 +2069,15 @@ public class ProjectCrawlCommand implements Callable<Integer> {
         step.setName(id);
         step.setType("SCRIPT");
         step.setRef(ref);
+        return step;
+    }
+
+    private static KompileProjectWorkflowStep commandStep(String id, String command) {
+        KompileProjectWorkflowStep step = new KompileProjectWorkflowStep();
+        step.setId(id);
+        step.setName(id);
+        step.setType("COMMAND");
+        step.setCommand(command);
         return step;
     }
 

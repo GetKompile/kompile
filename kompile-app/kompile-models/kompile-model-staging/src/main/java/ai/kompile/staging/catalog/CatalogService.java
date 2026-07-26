@@ -450,7 +450,7 @@ public class CatalogService {
 
         return CatalogModel.builder()
                 .id(entry.getModelId())
-                .source("local")
+                .source("trusted-local")
                 .repo(entry.getPath())
                 .format(format)
                 .files(files)

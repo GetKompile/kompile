@@ -44,7 +44,6 @@ import java.util.Map;
 @ConditionalOnProperty(name = "kompile.staging.app.enabled", havingValue = "true")
 @RestController
 @RequestMapping("/api/datasets")
-@CrossOrigin(origins = "*")
 public class DatasetController {
 
     private static final Logger log = LoggerFactory.getLogger(DatasetController.class);

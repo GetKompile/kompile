@@ -16,6 +16,8 @@ Options:
   --jobs <n>                Parallel native build jobs (default: host CPUs)
   --work-dir <dir>          Disposable/cached build root under target/
   --output-dir <dir>        SDK output root (default: target/android-aot)
+  --classes-dir <dir>       Compiled project classes supplied by Maven
+  --classpath-file <file>   Runtime dependency classpath supplied by Maven
   --reuse-object <file>     Skip Native Image and relink this AArch64 object
   --reuse-jdk-libs <dir>    Reuse libjava/libnet/libnio/libzip archives
   --reuse-svm-libs <dir>    Reuse libjvm/liblibchelper archives
@@ -37,6 +39,8 @@ MAVEN="${MAVEN:-$MODULE_DIR/../../../../mvnw}"
 JOBS="${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 8)}"
 WORK_DIR="$MODULE_DIR/target/android-ndk-aot"
 OUTPUT_DIR="$MODULE_DIR/target/android-aot"
+CLASSES_DIR=""
+CLASSPATH_FILE=""
 REUSE_OBJECT=""
 REUSE_JDK_LIBS=""
 REUSE_SVM_LIBS=""
@@ -51,6 +55,8 @@ while [[ $# -gt 0 ]]; do
         --jobs) JOBS="${2:?missing value for --jobs}"; shift 2 ;;
         --work-dir) WORK_DIR="${2:?missing value for --work-dir}"; shift 2 ;;
         --output-dir) OUTPUT_DIR="${2:?missing value for --output-dir}"; shift 2 ;;
+        --classes-dir) CLASSES_DIR="${2:?missing value for --classes-dir}"; shift 2 ;;
+        --classpath-file) CLASSPATH_FILE="${2:?missing value for --classpath-file}"; shift 2 ;;
         --reuse-object) REUSE_OBJECT="${2:?missing value for --reuse-object}"; shift 2 ;;
         --reuse-jdk-libs) REUSE_JDK_LIBS="${2:?missing value for --reuse-jdk-libs}"; shift 2 ;;
         --reuse-svm-libs) REUSE_SVM_LIBS="${2:?missing value for --reuse-svm-libs}"; shift 2 ;;
@@ -262,11 +268,22 @@ done
 GRAPH_OBJECT="$REUSE_OBJECT"
 GENERATED_DIR="$WORK_DIR/generated"
 if [[ -z "$GRAPH_OBJECT" ]]; then
-    MAVEN_FLAGS=(-q -DskipTests)
-    [[ "$OFFLINE" == false ]] || MAVEN_FLAGS+=(-o)
-    "$MAVEN" "${MAVEN_FLAGS[@]}" -f "$MODULE_DIR/pom.xml" package         dependency:build-classpath         -Dmdep.includeScope=runtime         -Dmdep.outputFile="$WORK_DIR/dependency-classpath.txt"
-    [[ -s "$WORK_DIR/dependency-classpath.txt" ]] || fail "Maven dependency classpath was not generated"
-    GRAPH_CLASSPATH="$MODULE_DIR/target/classes:$(<"$WORK_DIR/dependency-classpath.txt")"
+    if [[ -n "$CLASSES_DIR" || -n "$CLASSPATH_FILE" ]]; then
+        [[ -n "$CLASSES_DIR" && -n "$CLASSPATH_FILE" ]] || \
+            fail "--classes-dir and --classpath-file must be supplied together"
+        [[ -d "$CLASSES_DIR" ]] || fail "Compiled classes directory not found: $CLASSES_DIR"
+        [[ -s "$CLASSPATH_FILE" ]] || fail "Runtime dependency classpath not found: $CLASSPATH_FILE"
+        GRAPH_CLASSPATH="$CLASSES_DIR:$(<"$CLASSPATH_FILE")"
+    else
+        MAVEN_FLAGS=(-q -DskipTests)
+        [[ "$OFFLINE" == false ]] || MAVEN_FLAGS+=(-o)
+        "$MAVEN" "${MAVEN_FLAGS[@]}" -f "$MODULE_DIR/pom.xml" package \
+            dependency:build-classpath \
+            -Dmdep.includeScope=runtime \
+            -Dmdep.outputFile="$WORK_DIR/dependency-classpath.txt"
+        [[ -s "$WORK_DIR/dependency-classpath.txt" ]] || fail "Maven dependency classpath was not generated"
+        GRAPH_CLASSPATH="$MODULE_DIR/target/classes:$(<"$WORK_DIR/dependency-classpath.txt")"
+    fi
 
     STAGED_GRAAL="$WORK_DIR/graalvm-android"
     if [[ ! -x "$STAGED_GRAAL/bin/native-image" ]]; then
@@ -283,7 +300,17 @@ if [[ -z "$GRAPH_OBJECT" ]]; then
 
     COMPILER_WRAPPER="$WORK_DIR/ndk-compiler/gcc"
     mkdir -p "$(dirname "$COMPILER_WRAPPER")"
-    cp "$ANDROID_SUPPORT/ndk-compiler-wrapper.sh" "$COMPILER_WRAPPER"
+    # GraalVM's toolchain detector intentionally sanitizes child environments.
+    # Bake the Maven-selected toolchain into this target-local wrapper so both
+    # detection and compilation use the same validated NDK/API deterministically.
+    {
+        printf '#!/usr/bin/env bash\n'
+        printf 'ANDROID_NDK=%q\n' "$ANDROID_NDK"
+        printf 'ANDROID_API=%q\n' "$ANDROID_API"
+        printf 'NDK_HOST_TAG=%q\n' "$NDK_HOST_TAG"
+        printf 'QEMU_AARCH64=%q\n' "${QEMU_AARCH64:-qemu-aarch64-static}"
+        tail -n +2 "$ANDROID_SUPPORT/ndk-compiler-wrapper.sh"
+    } > "$COMPILER_WRAPPER"
     chmod +x "$COMPILER_WRAPPER"
     ln -sfn gcc "$(dirname "$COMPILER_WRAPPER")/cc"
 

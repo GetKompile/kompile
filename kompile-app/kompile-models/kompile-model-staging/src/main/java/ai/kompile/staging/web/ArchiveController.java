@@ -43,7 +43,6 @@ import java.util.Optional;
  */
 @RestController
 @RequestMapping("/api/staging/archives")
-@CrossOrigin(origins = "*")
 public class ArchiveController {
 
     private static final Logger log = LoggerFactory.getLogger(ArchiveController.class);

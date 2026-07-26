@@ -29,6 +29,10 @@ settings:
     # Header search path for the kompile_reasoning.h copy (optional convenience copy)
     HEADER_SEARCH_PATHS: $(PROJECT_DIR)/KompileChatLocal/BridgingHeader $(inherited)
     PRODUCT_BUNDLE_IDENTIFIER: ai.kompile.chat.local
+    # Core ML/ANE remains gated on the exact provider text-session bridge and xcframework.
+    # After those are integrated, override with:
+    #   xcodebuild ... SDX_TARGET_PROFILE=ios-arm64-coreml-ane
+    SDX_TARGET_PROFILE: ios-arm64-metal
     DEVELOPMENT_TEAM: ""   # <-- fill in your Apple Team ID
 
 targets:
@@ -59,3 +63,25 @@ targets:
       base:
         INFOPLIST_FILE: KompileChatLocal/Info.plist
         CODE_SIGN_STYLE: Automatic
+
+  KompileChatLocalTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: KompileChatLocalTests
+    dependencies:
+      - target: KompileChatLocal
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGN_STYLE: Automatic
+
+schemes:
+  KompileChatLocal:
+    build:
+      targets:
+        KompileChatLocal: all
+    test:
+      targets:
+        - KompileChatLocalTests

@@ -110,6 +110,15 @@ public class StagingModelInfo {
         return this;
     }
 
+    /** Mark as cooperatively cancelled after the worker has quiesced and cleaned up. */
+    public StagingModelInfo cancelled(String message) {
+        this.status = StagingStatus.CANCELLED;
+        this.message = message;
+        this.error = null;
+        this.completedAt = Instant.now().toString();
+        return this;
+    }
+
     /** Mark as completed. */
     public void completed() {
         this.status = StagingStatus.COMPLETED;

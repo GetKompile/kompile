@@ -443,6 +443,29 @@ public class UnifiedCrawlJob {
     @Builder.Default
     private List<PipelineStepProgress> pipelineSteps = new CopyOnWriteArrayList<>();
 
+    // ---- Entity partition coverage ----
+
+    /** Subjects this run recorded a durable coverage claim for. */
+    @Builder.Default
+    private AtomicInteger partitionsCovered = new AtomicInteger(0);
+
+    /** Subjects the partition pass asked for and did not get a claim for. */
+    @Builder.Default
+    private AtomicInteger partitionsUncovered = new AtomicInteger(0);
+
+    /**
+     * The subjects behind {@link #partitionsUncovered}, named rather than counted.
+     *
+     * <p>An entity with no coverage claim is one an answer drawn from this graph will be
+     * confidently wrong about, and a count gives nobody anything to act on. Bounded to the first
+     * 50: past that the shape of the failure is clear and the list stops being diagnosis.</p>
+     */
+    @Builder.Default
+    private List<String> uncoveredPartitionSubjects = new CopyOnWriteArrayList<>();
+
+    /** How the partition pass finished, in its own words; null when it never ran. */
+    private String partitionCoverageDetail;
+
     /** Fine-grained per-document graph/loading progress keyed by stable source path or document id */
     @Builder.Default
     private Map<String, DocumentProgress> documentProgress = new ConcurrentHashMap<>();
@@ -1096,6 +1119,13 @@ public class UnifiedCrawlJob {
                 .errors(errors.isEmpty() ? null : new ArrayList<>(errors))
                 .recentEvents(recentEvents.isEmpty() ? null : new ArrayList<>(recentEvents))
                 .pipelineSteps(stepSnapshots.isEmpty() ? null : stepSnapshots)
+                // Partition coverage: a claim nobody can see is a claim nobody relies on, and the
+                // uncovered subjects are the half of it that changes what a reader should trust.
+                .partitionsCovered(partitionsCovered.get())
+                .partitionsUncovered(partitionsUncovered.get())
+                .uncoveredPartitionSubjects(uncoveredPartitionSubjects.isEmpty() ? null
+                        : new ArrayList<>(uncoveredPartitionSubjects))
+                .partitionCoverageDetail(partitionCoverageDetail)
                 .documentProgress(documentSnapshots.isEmpty() ? null : documentSnapshots)
                 .elapsedMs(elapsedMs())
                 .sourceProgress(sourceProgress)
@@ -1165,6 +1195,10 @@ public class UnifiedCrawlJob {
         private List<String> errors;
         private List<StageEvent> recentEvents;
         private List<PipelineStepSnapshot> pipelineSteps;
+        private int partitionsCovered;
+        private int partitionsUncovered;
+        private List<String> uncoveredPartitionSubjects;
+        private String partitionCoverageDetail;
         private List<DocumentProgress> documentProgress;
         private long elapsedMs;
         private List<SourceProgress> sourceProgress;

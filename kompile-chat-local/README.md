@@ -1,41 +1,52 @@
 # kompile-chat-local
 
-A **local-first chat application**: load a `.kgraph` knowledge graph and an SDX model,
-chat with the model, and let it **tool-call the local graph-reasoning dispatcher** —
-falling back to a configured remote kompile chat endpoint when local inference is
-unavailable. Companion design: `docs/architecture/graph-reasoning-mobile-aot.md`;
-dl4j-side dependencies: `~/Documents/GitHub/deeplearning4j/SDX_MOBILE_LLM_C_API_HANDOFF.md`.
+A **local-first chat application and graph MCP server**: load a `.kgraph`
+knowledge graph and an SDX model, chat with the model, and let it tool-call the
+local graph-reasoning dispatcher. The same graph backend is exposed as a real
+MCP 2024-11-05 stdio server for external clients. Companion design:
+`docs/architecture/graph-reasoning-mobile-aot.md`; dl4j-side dependencies:
+`~/Documents/GitHub/deeplearning4j/SDX_MOBILE_LLM_C_API_HANDOFF.md`.
 
-The repository-wide root reactor deliberately does not reference this
-application. Its own parent is a normal Maven reactor, and the Android lifecycle
-is an ordinary profile-gated `kompile-chat-local-mobile` module. Build it
-standalone:
+`kompile-chat-local` is part of the repository root reactor. The normal JVM and
+MCP builds use Maven only:
 
 ```bash
-# prereq (once): install the reasoning modules to the local repo
-mvn -pl kompile-app/kompile-data/kompile-graphs/kompile-graph-reasoning,kompile-app/kompile-data/kompile-graphs/kompile-graph-reasoning-local install
-# build + test this parent
-mvn -f kompile-chat-local/pom.xml test
-# build the runnable CLI jar
-mvn -f kompile-chat-local/pom.xml package -DskipTests
-# build and verify the Pixel 8a accelerator APK (Android/NDK paths may also be
-# supplied through ANDROID_SDK_ROOT and ANDROID_NDK_ROOT)
-mvn -f kompile-chat-local/pom.xml -o \
-  -Dkompile.mobile=tensor-g3 \
-  -Dmobile.android.sdk=/path/to/android-sdk \
-  -Dmobile.android.ndk=/path/to/android-ndk-r28b \
-  -pl :kompile-chat-local-mobile -am verify
+# build and test the library, MCP server, and CLI
+./mvnw -pl :kompile-chat-local-cli -am test
+
+# build the two runnable shaded jars
+./mvnw -pl :kompile-chat-local-cli -am -DskipTests package
+# See "Running the CLI" below for chat model/graph arguments.
+java -jar kompile-chat-local/kompile-chat-local-cli/target/kompile-chat-local-cli-0.1.0-SNAPSHOT-mcp.jar --kgraph /path/to/graph.kgraph
+
+# build the standalone GraalVM MCP executable
+./mvnw -pl :kompile-chat-local-cli -am -Pnative-mcp -DskipTests package
+kompile-chat-local/kompile-chat-local-cli/target/kompile-chat-local-mcp --kgraph /path/to/graph.kgraph
 ```
+
+The Android module remains opt-in with `-Dkompile.mobile=<variant>`. Its Maven
+lifecycle consumes Maven-installed graph and SDX AAR artifacts; see
+`mobile/android/README.md` for the producer and APK commands.
 
 ## Modules
 
 | Module | What it is |
 |---|---|
 | `kompile-chat-local-core` | Pure-JVM engine: `ChatEngine` tool loop (max 4 rounds, corrective retry), `ToolCallParser`, `GraphToolBridge` (LocalReasoningSession + LocalToolDispatcher), `SdxChatModel` (JNA → `libsdx_llm`, text-level `sdxLlm*` ABI v1), `SdxSubprocessChatModel` (subprocess via `sdx-llm` binary — avoids GraalVM isolate conflict when running inside JVM), `RemoteChatModel` (OpenAI-compatible `/v1/chat/completions`), `InferenceRouter` (local-first, remote fallback), `ChatConfig` (properties + `KOMPILE_CHAT_*` env) |
-| `kompile-chat-local-cli` | Interactive terminal REPL: route badge, live tool-round rendering, `/tools`, `/save <path>` |
-| `kompile-chat-local-mobile` | Profile-gated Maven lifecycle owner for CMake/NDK provider builds, Android APK assembly, final-APK verification, and the deterministic all-runtime ZIP; supported paths contain no Python |
+| `kompile-chat-local-mcp` | Embeddable MCP 2024-11-05 server and stdio transport exposing the complete local graph tool catalog through `initialize`, `tools/list`, and `tools/call` |
+| `kompile-chat-local-cli` | Two launchers: the interactive terminal REPL in the `exec` shaded jar and the graph MCP stdio server in the `mcp` shaded jar; the MCP launcher also has a GraalVM `native-mcp` profile |
+| `kompile-chat-local-mobile` | Profile-gated Maven lifecycle owner for Maven artifact staging, Android APK assembly, final-APK verification, and the deterministic all-runtime ZIP; supported paths contain no Python |
 | `mobile/android` | Fully offline Compose app (minSdk 28): stock-GraalVM/NDK graph AOT through JavaCPP plus separate Vulkan GPU, Hexagon/HTP, and Tensor G5 TPU/NPU flavors; device-only and fail-closed with no CPU/OpenBLAS fallback |
 | `mobile/ios` | SwiftUI app (iOS 16+, XcodeGen `project.yml`). Swift **port** of the ChatEngine loop (verbatim prompts/conventions); binds `kgr_*` (`kompile_reasoning.h`) and `sdxLlm*` behind `#if canImport` guards; URLSession remote fallback |
+
+## MCP graph server
+
+This is an actual MCP server, not only a `.kgraph` importer. It publishes the
+same 16-tool catalog used by the chat engine, including graph loading, search,
+reasoning, explanation, assertions, validation, and export operations. Start it
+with an empty graph and call `graph_load`, or preload a graph with `--kgraph`.
+Both the JVM shaded jar and the GraalVM executable speak MCP over stdio and keep
+stdout reserved for protocol messages.
 
 ## Conventions (identical across JVM/Android/iOS)
 

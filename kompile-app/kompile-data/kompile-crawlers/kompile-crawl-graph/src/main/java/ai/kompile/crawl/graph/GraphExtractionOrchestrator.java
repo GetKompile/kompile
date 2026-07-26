@@ -21,6 +21,7 @@ import ai.kompile.core.crawl.graph.BatchRetryPolicy;
 import ai.kompile.core.crawl.graph.DynamicBatchSizer;
 import ai.kompile.core.crawl.graph.FallbackBackendSelector;
 import ai.kompile.core.crawl.graph.GraphExtractionConfig;
+import ai.kompile.core.crawl.graph.GraphExtractionValidationPolicy;
 import ai.kompile.core.crawl.graph.LlmTranscriptLogger;
 import ai.kompile.core.crawl.graph.ModelCapabilityResolver;
 import ai.kompile.core.crawl.graph.ProcessingCapacityTracker;
@@ -43,6 +44,7 @@ import ai.kompile.core.graphrag.model.schema.SchemaEnforcementMode;
 import ai.kompile.core.llm.ModelCapability;
 import ai.kompile.core.llm.ModelContextWindows;
 import ai.kompile.core.retrievers.RetrievedDoc;
+import ai.kompile.crawl.graph.passes.DecomposedExtractionExecutor;
 import ai.kompile.knowledgegraph.confidence.ExtractionConfidenceStamper;
 import ai.kompile.knowledgegraph.domain.EdgeProvenance;
 import ai.kompile.knowledgegraph.domain.EdgeType;
@@ -183,6 +185,13 @@ class GraphExtractionOrchestrator {
     @Autowired
     CrawlLlmDispatcher llmDispatcher;
 
+    /**
+     * Runs bounded per-pass extraction when {@link GraphExtractionConfig#getExtractionMode()} asks
+     * for it. Stateless and dependency-free — every collaborator it needs (candidates, schema,
+     * dispatch) is handed to it per chunk — so it is a plain field rather than a bean.
+     */
+    final DecomposedExtractionExecutor decomposedExecutor = new DecomposedExtractionExecutor();
+
     @Autowired
     CrawlMemoryMonitor memoryMonitor;
 
@@ -293,6 +302,7 @@ class GraphExtractionOrchestrator {
                     config.getMaxTokens(),
                     config.getCustomPrompt()
             ));
+            graphConstructor.configureValidation(effectiveValidationPolicy(config));
         }
 
         if (graphConstructor == null && llmDispatcher == null) {
@@ -433,6 +443,44 @@ class GraphExtractionOrchestrator {
             log.debug("[Job {}] Per-chunk constructor extraction failed for chunk: {}",
                     job.getJobId(), e.getMessage());
             return false;
+        } finally {
+            AgentCallContext.setJobId(null);
+        }
+    }
+
+    /**
+     * Extracts one chunk's graph and hands it back without writing anything.
+     *
+     * <p>A partition run needs the extraction the crawl already does, minus the persistence. It
+     * stages every chunk it reads and commits the merged result once — so a per-chunk write here
+     * would put the same facts in the graph twice, the second time unmerged. The write happens in
+     * {@link PartitionGraphCommitter}, through this same
+     * {@link GraphPersistenceHelper#persistConstructedGraphBatch}.</p>
+     *
+     * <p>Failures propagate rather than becoming a null. A staged run reads null as "this chunk
+     * taught the partition nothing", which is a claim about the corpus; an extraction that fell
+     * over has made no such claim, and the lifecycle defers the chunk for a later round when it is
+     * told what happened.</p>
+     *
+     * @return what the chunk taught, or null when it holds no extractable text
+     * @throws IllegalStateException when this deployment has no {@link GraphConstructor} to run
+     */
+    public Graph extractChunkGraph(Document doc, GraphExtractionConfig config, UnifiedCrawlJob job) {
+        Objects.requireNonNull(config, "extraction config");
+        if (graphConstructor == null) {
+            throw new IllegalStateException("no GraphConstructor is configured; this deployment "
+                    + "cannot extract a partition's chunks");
+        }
+        if (!hasExtractableText(doc)) {
+            return null;
+        }
+        GraphSchema schema = buildGraphSchema(config);
+        SchemaEnforcementMode mode = config.getSchemaMode() != null
+                ? config.getSchemaMode() : SchemaEnforcementMode.LENIENT;
+        AgentCallContext.setJobId(job == null ? null : job.getJobId());
+        try {
+            return graphConstructor.constructGraphFromDocs(List.of(toRetrievedDoc(doc)), schema,
+                    mode, graphConstructorSkipEmbedding, !graphConstructorPersistMatrixGraph, null);
         } finally {
             AgentCallContext.setJobId(null);
         }
@@ -1407,7 +1455,12 @@ class GraphExtractionOrchestrator {
                 }
 
                 long llmCallStart = System.currentTimeMillis();
-                String response = llmDispatcher.promptWithCapacityFallback(promptToSend, "llm", job);
+                // DECOMPOSED mode replaces the one-shot prompt with a sequence of bounded passes.
+                // It returns the same schema-shaped JSON, so everything below is unchanged. The
+                // validation-retry loop still applies: a later attempt re-runs the passes.
+                String response = DecomposedExtractionExecutor.isEnabled(config)
+                        ? extractViaDecomposedPasses(text, doc, config, targetGraph, job)
+                        : llmDispatcher.promptWithCapacityFallback(promptToSend, "llm", job);
                 long llmCallLatencyMs = System.currentTimeMillis() - llmCallStart;
                 // Belt-and-suspenders: record a transcript here when the dispatcher's own logger is
                 // absent (e.g. subprocess context) so the call is never silently dropped.
@@ -1439,8 +1492,10 @@ class GraphExtractionOrchestrator {
                         }
                         continue;
                     }
-                    var validation = GraphExtractionValidator.validate(result);
+                    var validation = GraphExtractionValidator.validate(
+                        result, effectiveValidationPolicy(config), buildGraphSchema(config));
                     if (validation.valid()) {
+                        logValidationWarnings(jobId, "single-document", validation.warnings());
                         extractionSucceeded = true;
                         Graph chunkGraph = GraphExtractionValidator.toGraph(result);
                         if (retainResultGraph) {
@@ -1599,7 +1654,7 @@ class GraphExtractionOrchestrator {
                             }
                         }
                     } else {
-                        lastValidationErrors = String.join("; ", validation.errors());
+                        lastValidationErrors = validationFeedback(validation.errors(), effectiveValidationPolicy(config));
                         if (valAttempt >= maxValRetries) {
                             // Final attempt — mark as failed
                             log.debug("Graph extraction validation failed after {} retries: {}",
@@ -1737,7 +1792,8 @@ class GraphExtractionOrchestrator {
 
         // Assemble the multi-chunk prompt.
         StringBuilder promptBuilder = new StringBuilder();
-        promptBuilder.append(GraphExtractionValidator.getMultiChunkExtractionPromptInstructions());
+        promptBuilder.append(GraphExtractionValidator.getMultiChunkExtractionPromptInstructions(
+                effectiveValidationPolicy(config), buildGraphSchema(config)));
         if (config.getEntityTypes() != null && !config.getEntityTypes().isEmpty()) {
             promptBuilder.append("\n\nFocus on extracting these entity types: ");
             promptBuilder.append(String.join(", ", config.getEntityTypes()));
@@ -1819,9 +1875,10 @@ class GraphExtractionOrchestrator {
                             jobId, valAttempt + 1, maxValRetries + 1, parseMessage);
                     continue;
                 }
-                var validation = GraphExtractionValidator.validate(result);
+                var validation = GraphExtractionValidator.validate(
+                        result, effectiveValidationPolicy(config), buildGraphSchema(config));
                 if (!validation.valid()) {
-                    lastValidationErrors = String.join("; ", validation.errors());
+                    lastValidationErrors = validationFeedback(validation.errors(), effectiveValidationPolicy(config));
                     if (valAttempt >= maxValRetries) {
                         log.debug("Multi-chunk graph extraction validation failed after {} retries: {}",
                                 valAttempt, validation.errors());
@@ -1837,6 +1894,7 @@ class GraphExtractionOrchestrator {
                     continue;
                 }
 
+                logValidationWarnings(jobId, "multi-chunk", validation.warnings());
                 groupSucceeded = true;
 
                 // Partition entities and relations by their chunkId attribution.
@@ -2525,9 +2583,49 @@ class GraphExtractionOrchestrator {
     // Prompt and JSON extraction helpers
     // -------------------------------------------------------------------------
 
+    /**
+     * Runs the decomposed passes for one chunk and returns schema-shaped JSON.
+     *
+     * <p>The engine supplies the vocabularies: entity candidates from the in-run graph, relation
+     * types from the project schema and its relation signatures, claims from edges already recorded
+     * between the endpoints. Each pass is dispatched through the same capacity-aware lane a
+     * one-shot extraction uses, so routing, fallback and transcripts are unchanged.</p>
+     *
+     * <p>Returns {@code null} when nothing usable came back, which the caller already handles as an
+     * unusable LLM response (transcript, retry, failure accounting).</p>
+     */
+    String extractViaDecomposedPasses(String text,
+                                      Document doc,
+                                      GraphExtractionConfig config,
+                                      Graph targetGraph,
+                                      UnifiedCrawlJob job) {
+        String jobId = job != null ? job.getJobId() : "?";
+        String chunkId = doc != null && doc.getId() != null ? doc.getId() : "chunk";
+        String sourcePath = docSourcePath(doc);
+        String documentId = sourcePath != null ? sourcePath : chunkId;
+        try {
+            DecomposedExtractionExecutor.Result result = decomposedExecutor.extract(
+                    text, chunkId, documentId, config,
+                    buildGraphSchema(config), effectiveValidationPolicy(config), targetGraph,
+                    (passId, prompt) -> llmDispatcher.promptWithCapacityFallback(prompt, "llm", job));
+            log.debug("[Job {}] Decomposed extraction chunk {}: {}", jobId, chunkId, result.summary());
+            if (log.isTraceEnabled() && result.outcome() != null) {
+                for (String note : result.outcome().notes()) {
+                    log.trace("[Job {}] chunk {} withheld: {}", jobId, chunkId, note);
+                }
+            }
+            return result.usable() ? result.json() : null;
+        } catch (RuntimeException e) {
+            log.warn("[Job {}] Decomposed extraction failed for chunk {}: {}",
+                    jobId, chunkId, e.toString());
+            return null;
+        }
+    }
+
     private String buildExtractionPrompt(GraphExtractionConfig config) {
         StringBuilder sb = new StringBuilder();
-        sb.append(GraphExtractionValidator.getExtractionPromptInstructions());
+        sb.append(GraphExtractionValidator.getExtractionPromptInstructions(
+                effectiveValidationPolicy(config), buildGraphSchema(config)));
 
         if (config.getEntityTypes() != null && !config.getEntityTypes().isEmpty()) {
             sb.append("\n\nFocus on extracting these entity types: ");
@@ -2610,7 +2708,7 @@ class GraphExtractionOrchestrator {
     }
 
     /**
-     * Builds a GraphSchema from GraphExtractionConfig entity/relationship type lists.
+     * Builds a GraphSchema from graph type lists and project validation signatures.
      */
     private GraphSchema buildGraphSchema(GraphExtractionConfig config) {
         List<NodeType> nodeTypes = null;
@@ -2628,11 +2726,41 @@ class GraphExtractionOrchestrator {
                     .collect(Collectors.toList());
         }
 
-        if (nodeTypes == null && relTypes == null) {
+        List<String> patterns = effectiveValidationPolicy(config).effectiveRelationPatterns();
+        if (nodeTypes == null && relTypes == null && patterns.isEmpty()) {
             return null;
         }
 
-        return new GraphSchema(nodeTypes, relTypes, null);
+        return new GraphSchema(nodeTypes, relTypes, patterns.isEmpty() ? null : patterns);
+    }
+
+    private GraphExtractionValidationPolicy effectiveValidationPolicy(GraphExtractionConfig config) {
+        return config == null || config.getValidationPolicy() == null
+                ? GraphExtractionValidationPolicy.defaults()
+                : config.getValidationPolicy();
+    }
+
+    private String validationFeedback(List<String> errors,
+                                      GraphExtractionValidationPolicy policy) {
+        if (errors == null || errors.isEmpty()) {
+            return "Unknown validation failure";
+        }
+        int limit = policy == null
+                ? GraphExtractionValidationPolicy.DEFAULT_MAX_ERRORS_IN_RETRY_PROMPT
+                : policy.effectiveMaxErrorsInRetryPrompt();
+        String feedback = errors.stream().limit(limit).collect(Collectors.joining("; "));
+        if (errors.size() > limit) {
+            feedback += "; ... and " + (errors.size() - limit) + " more";
+        }
+        return feedback;
+    }
+
+    private void logValidationWarnings(String jobId, String scope, List<String> warnings) {
+        if (warnings != null && !warnings.isEmpty()) {
+            log.warn("[Job {}] Accepted {} graph extraction with {} validation warning(s): {}",
+                    jobId, scope, warnings.size(),
+                    validationFeedback(warnings, GraphExtractionValidationPolicy.defaults()));
+        }
     }
 
     // -------------------------------------------------------------------------

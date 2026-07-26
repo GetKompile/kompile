@@ -1,6 +1,7 @@
 package ai.kompile.project.archive;
 
 import ai.kompile.project.KompileProjectStore;
+import ai.kompile.project.knowledge.KnowledgeInventory;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.junit.jupiter.api.Test;
@@ -94,7 +95,7 @@ class ProjectArchiveServiceTest {
     }
 
     @Test
-    void sensitiveFilesRequireExplicitOptIn() throws Exception {
+    void sensitiveFilesAreNeverPortable() throws Exception {
         Path root = project("sensitive-opt-in");
         write(root, "credentials.json", "credential");
         write(root, "config/application.properties", "service.api-key=actual-secret");
@@ -104,13 +105,11 @@ class ProjectArchiveServiceTest {
                 () -> service.exportProject(root, temp.resolve("sensitive-default.kproject")));
         assertTrue(refusal.getMessage().contains("embedded credential"));
 
-        ProjectArchiveResult result = service.exportProject(root, archive,
-                new ProjectArchiveExportOptions(false, true));
-
-        assertTrue(result.manifest().entries().stream()
-                .anyMatch(entry -> entry.path().equals("credentials.json")));
-        assertTrue(result.manifest().entries().stream()
-                .anyMatch(entry -> entry.path().equals("config/application.properties")));
+        IOException explicitRefusal = assertThrows(IOException.class,
+                () -> service.exportProject(root, archive,
+                        new ProjectArchiveExportOptions(false, true)));
+        assertTrue(explicitRefusal.getMessage().contains("never include sensitive files"));
+        assertFalse(Files.exists(archive));
     }
 
     @Test
@@ -368,6 +367,50 @@ class ProjectArchiveServiceTest {
         assertDoesNotThrow(() -> service.inspectProject(bad));
         assertThrows(IOException.class,
                 () -> service.importProject(bad, temp.resolve("inspect-checksum-target")));
+    }
+
+    @Test
+    void exportsRevisionAwarePortableKnowledgeDeltaWithoutModels() throws Exception {
+        Path root = project("knowledge-delta");
+        write(root, "data/graph/project.kgraph", "graph-v1");
+        write(root, "data/markdown/keep.md", "# Keep");
+        write(root, "data/markdown/remove.md", "# Remove");
+        write(root, "data/fact-sheets/project-fact-sheets.json", "{\"sheets\":[]}");
+        write(root, "data/models/model.sdz", "model-v1");
+        write(root, "data/pids/app.pid", "running");
+
+        KnowledgeInventory base = service.inspectKnowledge(root);
+        assertTrue(base.revision().matches("[0-9a-f]{64}"));
+        assertFalse(base.entries().stream().anyMatch(entry -> entry.path().contains("models")));
+
+        write(root, "data/graph/project.kgraph", "graph-v2");
+        Files.delete(root.resolve("data/markdown/remove.md"));
+        write(root, "data/markdown/mobile/new.md", "# New");
+        write(root, "data/models/model.sdz", "model-v2");
+        Path archive = temp.resolve("knowledge-delta.kupdate");
+
+        KnowledgeUpdateArchiveResult update = service.exportKnowledgeUpdate(root, archive, base);
+
+        assertNotEquals(base.revision(), update.inventory().revision());
+        assertEquals(base.revision(), update.manifest().baseRevision());
+        assertEquals(update.inventory().revision(), update.manifest().revision());
+        List<String> changed = update.manifest().changed().stream()
+                .map(entry -> entry.path()).toList();
+        assertTrue(changed.containsAll(List.of(
+                "kompile.project.json",
+                "data/graph/project.kgraph",
+                "data/markdown/mobile/new.md")));
+        assertFalse(changed.contains("data/markdown/keep.md"));
+        assertFalse(changed.stream().anyMatch(path -> path.contains("models")));
+        assertEquals(List.of("data/markdown/remove.md"), update.manifest().deleted());
+
+        Map<String, byte[]> zip = readZip(archive);
+        assertTrue(zip.containsKey(ProjectArchiveService.KNOWLEDGE_MANIFEST_ENTRY));
+        assertTrue(zip.containsKey(ProjectArchiveService.KNOWLEDGE_PAYLOAD_PREFIX
+                + "data/graph/project.kgraph"));
+        assertFalse(zip.containsKey(ProjectArchiveService.KNOWLEDGE_PAYLOAD_PREFIX
+                + "data/markdown/keep.md"));
+        assertFalse(zip.keySet().stream().anyMatch(path -> path.contains("models")));
     }
 
     @Test

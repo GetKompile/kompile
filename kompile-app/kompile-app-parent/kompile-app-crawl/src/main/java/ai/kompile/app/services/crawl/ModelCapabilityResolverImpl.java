@@ -123,7 +123,8 @@ public class ModelCapabilityResolverImpl implements ModelCapabilityResolver {
         // Source order, most-authoritative first:
         //   1. The live serving lane's maxContextLength when THIS model is the one loaded
         //      (post KV-bucketing truth — can be smaller than the file's declared window).
-        //   2. The staged candidate's GGUF-derived contextWindow from local discovery.
+        //   2. The staged candidate's GGUF-derived window clamped to the serving lane's
+        //      configured executable-context ceiling.
         //   3. The (embedding-oriented) model registry's max_sequence_length.
         //   4. LOCAL_DEFAULT_CONTEXT as the last resort.
         // Without 1-2, a staged GGUF LLM the registry doesn't know is budgeted at 2k tokens and
@@ -160,7 +161,7 @@ public class ModelCapabilityResolverImpl implements ModelCapabilityResolver {
                     return live;
                 }
             }
-            return candidate.contextWindow() > 0 ? candidate.contextWindow() : null;
+            return localStagingLlmService.executableContextWindow(candidate);
         } catch (Exception e) {
             log.debug("Staged-LLM context lookup failed for '{}': {}", modelId, e.getMessage());
             return null;

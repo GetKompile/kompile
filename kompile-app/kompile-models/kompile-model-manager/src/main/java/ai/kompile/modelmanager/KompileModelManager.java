@@ -29,6 +29,7 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.URI;
 import java.net.URL;
 import java.net.http.HttpClient;
@@ -50,6 +51,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.function.Consumer;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import ai.kompile.utils.HashUtils;
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
@@ -68,6 +71,16 @@ import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream;
  */
 public class KompileModelManager {
     private static final Logger LOGGER = LoggerFactory.getLogger(KompileModelManager.class);
+    private static final String SDX_MANIFEST_CHECKSUM_NAME = SdxSdkManifest.FILE_NAME + ".sha256";
+    private static final long MAX_SDX_MANIFEST_BYTES = 16L * 1024L * 1024L;
+    private static final long MAX_SDX_CHECKSUM_BYTES = 512L;
+    private static final Duration SDX_DOWNLOAD_TIMEOUT = Duration.ofMinutes(30);
+    private static final Pattern SDX_MANIFEST_CHECKSUM = Pattern.compile(
+            "^([0-9a-fA-F]{64})[ \\t]+\\*?" + Pattern.quote(SdxSdkManifest.FILE_NAME) + "\\s*$");
+    private static final HttpClient SDX_HTTP_CLIENT = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(30))
+            .followRedirects(HttpClient.Redirect.NORMAL)
+            .build();
 
     // Environment variable to specify the model cache directory at runtime
     public static final String ENV_KOMPILE_MODEL_CACHE_DIR = "KOMPILE_MODEL_CACHE_DIR";
@@ -1645,11 +1658,11 @@ public class KompileModelManager {
         }
     }
 
-    // ==================== SDX SDK Support ====================
+    // ==================== SDK Support ====================
 
     /**
      * Downloads an SDX SDK artifact for a specific platform classifier.
-     * Downloaded to ~/.kompile/models/sdx-sdk/{version}/{classifier}/
+     * Downloaded to ~/.kompile/models/sdx-sdk/{sdkId}/{version}/{platform}/{variant}/
      *
      * @param sdkDescriptor The SDK descriptor
      * @param platformClassifier The platform classifier (e.g., "ios-arm64", "android-arm64-nnapi")
@@ -1657,13 +1670,23 @@ public class KompileModelManager {
      * @throws IOException if download fails
      */
     public Path downloadSdk(SdkDescriptor sdkDescriptor, String platformClassifier) throws IOException {
+        if ("sdx-runtime".equals(sdkDescriptor.getSdkId()) && sdkDescriptor.getPlatformArtifacts().isEmpty()) {
+            SdxSdkManifest manifest = loadSdxManifest(sdkDescriptor.getVersion(), sdkDescriptor.getBaseDownloadUrl());
+            return downloadManifestArtifact(sdkDescriptor.getSdkId(), manifest,
+                    manifest.selectClassifier("runtime", "platform-sdk", platformClassifier),
+                    releaseBaseUrl(sdkDescriptor.getVersion(), sdkDescriptor.getBaseDownloadUrl()));
+        }
         SdkDescriptor.PlatformArtifact artifact = sdkDescriptor.getArtifact(platformClassifier);
         if (artifact == null) {
             throw new IOException("No SDK artifact found for platform: " + platformClassifier +
                     ". Available platforms: " + sdkDescriptor.getPlatformArtifacts().keySet());
         }
 
+        requireSafeCacheSegment(sdkDescriptor.getSdkId(), "sdkId");
+        requireSafeCacheSegment(sdkDescriptor.getVersion(), "version");
+        requireSafeCacheSegment(platformClassifier, "platformClassifier");
         Path sdkDir = baseCachePath.resolve("sdx-sdk")
+                .resolve(sdkDescriptor.getSdkId())
                 .resolve(sdkDescriptor.getVersion())
                 .resolve(platformClassifier);
         Path artifactPath = sdkDir.resolve(artifact.getArtifactFileName());
@@ -1704,6 +1727,256 @@ public class KompileModelManager {
         }
 
         return artifactPath;
+    }
+
+    /**
+     * Resolves and downloads one canonical SDX SDK artifact from the release manifest.
+     * The manifest, not the consumer, owns the artifact filename.
+     */
+    public record ResolvedSdxSdkArtifact(Path path, SdxSdkManifest.Artifact artifact) {}
+
+    public Path downloadSdxSdk(String version, String component, String packageRole,
+                               String platform, String variant, String baseUrl) throws IOException {
+        return resolveAndDownloadSdxSdk(version, component, packageRole, platform, variant, baseUrl).path();
+    }
+
+    /** Resolves the exact manifest entry and returns it with the verified cached artifact. */
+    public ResolvedSdxSdkArtifact resolveAndDownloadSdxSdk(String version, String component, String packageRole,
+                                                           String platform, String variant, String baseUrl)
+            throws IOException {
+        if (version == null) version = SdkConstants.DEFAULT_SDX_SDK_VERSION;
+        if (baseUrl == null) baseUrl = SdkConstants.resolveBaseUrl();
+        String versionUrl = releaseBaseUrl(version, baseUrl);
+        SdxSdkManifest manifest = loadSdxManifest(version, versionUrl);
+        if (variant == null || variant.isBlank()) {
+            variant = SdxSdkManifest.defaultVariant(manifest, component, packageRole, platform);
+        }
+        SdxSdkManifest.Artifact artifact = manifest.select(component, packageRole, platform, variant);
+        Path path = downloadManifestArtifact(manifestSdkId(artifact.component()), manifest, artifact, versionUrl);
+        return new ResolvedSdxSdkArtifact(path, artifact);
+    }
+
+    public SdxSdkManifest loadSdxManifest(String version, String baseUrl) throws IOException {
+        requireSafeCacheSegment(version, "version");
+        String versionUrl = releaseBaseUrl(version, baseUrl == null ? SdkConstants.resolveBaseUrl() : baseUrl);
+        Path manifestDir = getSdxManifestCachePath(version, versionUrl).getParent();
+        Path manifestPath = manifestDir.resolve(SdxSdkManifest.FILE_NAME);
+        Path checksumPath = manifestDir.resolve(SDX_MANIFEST_CHECKSUM_NAME);
+        boolean hasManifest = Files.exists(manifestPath);
+        boolean hasChecksum = Files.exists(checksumPath);
+        if (hasManifest != hasChecksum) {
+            throw new IOException("Incomplete cached SDX manifest at " + manifestDir
+                    + ": both manifest and checksum sidecar are required");
+        }
+        if (!hasManifest) {
+            Files.createDirectories(manifestDir);
+            Path tempManifest = Files.createTempFile(manifestDir, "manifest-download-", ".tmp");
+            Path tempChecksum = Files.createTempFile(manifestDir, "manifest-checksum-download-", ".tmp");
+            try {
+                URI releaseUri = URI.create(versionUrl);
+                downloadUrl(releaseUri.resolve(SDX_MANIFEST_CHECKSUM_NAME), tempChecksum,
+                        MAX_SDX_CHECKSUM_BYTES);
+                downloadUrl(releaseUri.resolve(SdxSdkManifest.FILE_NAME), tempManifest,
+                        MAX_SDX_MANIFEST_BYTES);
+                parseAndVerifyManifest(version, tempManifest, tempChecksum);
+                Files.move(tempChecksum, checksumPath, StandardCopyOption.REPLACE_EXISTING);
+                Files.move(tempManifest, manifestPath, StandardCopyOption.REPLACE_EXISTING);
+            } finally {
+                Files.deleteIfExists(tempManifest);
+                Files.deleteIfExists(tempChecksum);
+            }
+        }
+        return parseAndVerifyManifest(version, manifestPath, checksumPath);
+    }
+
+    /** Returns the source-qualified manifest cache path used for a release URL. */
+    Path getSdxManifestCachePath(String version, String baseUrl) throws IOException {
+        requireSafeCacheSegment(version, "version");
+        String versionUrl = releaseBaseUrl(version, baseUrl == null ? SdkConstants.resolveBaseUrl() : baseUrl);
+        return baseCachePath.resolve("sdx-sdk").resolve("sdx-runtime").resolve(version)
+                .resolve("origins").resolve(sourceCacheKey(versionUrl)).resolve(SdxSdkManifest.FILE_NAME);
+    }
+
+    private SdxSdkManifest parseAndVerifyManifest(String version, Path manifestPath, Path checksumPath)
+            throws IOException {
+        if (!Files.isRegularFile(manifestPath) || Files.size(manifestPath) > MAX_SDX_MANIFEST_BYTES) {
+            throw new IOException("Cached " + SdxSdkManifest.FILE_NAME + " is missing or exceeds the size limit");
+        }
+        if (!Files.isRegularFile(checksumPath) || Files.size(checksumPath) > MAX_SDX_CHECKSUM_BYTES) {
+            throw new IOException("Cached " + SDX_MANIFEST_CHECKSUM_NAME + " is missing or exceeds the size limit");
+        }
+        String expected = readManifestChecksum(checksumPath);
+        String actual = calculateSha256(manifestPath);
+        if (!expected.equalsIgnoreCase(actual)) {
+            throw new IOException("Checksum mismatch for " + SdxSdkManifest.FILE_NAME
+                    + ": expected " + expected + ", got " + actual);
+        }
+        try (InputStream input = Files.newInputStream(manifestPath)) {
+            return SdxSdkManifest.parse(objectMapper, input, version);
+        }
+    }
+
+    private static String readManifestChecksum(Path checksumPath) throws IOException {
+        String sidecar = Files.readString(checksumPath);
+        Matcher matcher = SDX_MANIFEST_CHECKSUM.matcher(sidecar);
+        if (!matcher.matches()) {
+            throw new IOException("Invalid " + SDX_MANIFEST_CHECKSUM_NAME
+                    + ": expected '<64 hex>  " + SdxSdkManifest.FILE_NAME + "'");
+        }
+        return matcher.group(1).toLowerCase();
+    }
+
+    private Path downloadManifestArtifact(String sdkId, SdxSdkManifest manifest,
+                                          SdxSdkManifest.Artifact artifact, String versionUrl) throws IOException {
+        Path qualifiedDir = baseCachePath.resolve("sdx-sdk").resolve(sdkId)
+                .resolve(manifest.releaseVersion()).resolve("origins").resolve(sourceCacheKey(versionUrl))
+                .resolve(artifact.platform()).resolve(artifact.variant());
+        Path qualifiedPath = qualifiedDir.resolve(artifact.fileName());
+        if (validArtifact(qualifiedPath, artifact)) return qualifiedPath;
+        Files.deleteIfExists(qualifiedPath);
+
+        Files.createDirectories(qualifiedDir);
+        Path temp = Files.createTempFile(qualifiedDir, "sdk-download-", ".tmp");
+        try {
+            downloadUrl(URI.create(versionUrl).resolve(artifact.fileName()), temp, artifact.size());
+            verifyArtifact(temp, artifact);
+            Files.move(temp, qualifiedPath, StandardCopyOption.REPLACE_EXISTING);
+            return qualifiedPath;
+        } finally {
+            Files.deleteIfExists(temp);
+        }
+    }
+
+    private boolean validArtifact(Path path, SdxSdkManifest.Artifact artifact) throws IOException {
+        if (!Files.isRegularFile(path)) return false;
+        try {
+            verifyArtifact(path, artifact);
+            return true;
+        } catch (IOException invalid) {
+            LOGGER.warn("Ignoring invalid cached SDK artifact {}: {}", path, invalid.getMessage());
+            return false;
+        }
+    }
+
+    private void verifyArtifact(Path path, SdxSdkManifest.Artifact artifact) throws IOException {
+        long actualSize = Files.size(path);
+        if (actualSize != artifact.size()) {
+            throw new IOException("Size mismatch for SDK artifact " + artifact.fileName() +
+                    ": expected " + artifact.size() + ", got " + actualSize);
+        }
+        String actual = calculateSha256(path);
+        if (!artifact.sha256().equalsIgnoreCase(actual)) {
+            throw new IOException("Checksum mismatch for SDK artifact " + artifact.fileName() +
+                    ": expected " + artifact.sha256() + ", got " + actual);
+        }
+    }
+
+    private static String releaseBaseUrl(String version, String baseUrl) throws IOException {
+        requireSafeCacheSegment(version, "version");
+        if (baseUrl == null || baseUrl.isBlank()) {
+            throw new IOException("SDX SDK base URL must not be blank");
+        }
+        String value = baseUrl.trim();
+        String tag = "sdk-v" + version;
+        String suffix = "/" + tag + "/";
+        if (value.endsWith("/" + tag)) {
+            value += "/";
+        } else if (!value.endsWith(suffix)) {
+            value = (value.endsWith("/") ? value : value + "/") + tag + "/";
+        }
+        final URI uri;
+        try {
+            uri = URI.create(value).normalize();
+        } catch (IllegalArgumentException invalid) {
+            throw new IOException("Invalid SDX SDK base URL", invalid);
+        }
+        String scheme = uri.getScheme();
+        if (scheme == null || !(scheme.equalsIgnoreCase("https") || scheme.equalsIgnoreCase("http")
+                || scheme.equalsIgnoreCase("file")) || uri.getQuery() != null || uri.getFragment() != null) {
+            throw new IOException("SDX SDK base URL must be an absolute http, https, or file URL without query/fragment");
+        }
+        return uri.toString();
+    }
+
+    private static String sourceCacheKey(String versionUrl) {
+        return HashUtils.sha256HexShort(versionUrl, 16);
+    }
+
+    private static String manifestSdkId(String component) throws IOException {
+        return switch (component) {
+            case "runtime" -> "sdx-runtime";
+            case "aot" -> "sdx-aot";
+            case "java" -> "sdx-java";
+            default -> throw new IOException("Unsupported SDX manifest component: " + component);
+        };
+    }
+
+    private static void requireSafeCacheSegment(String value, String name) throws IOException {
+        if (value == null || value.isBlank() || value.equals(".") || value.equals("..") ||
+                value.indexOf('/') >= 0 || value.indexOf('\\') >= 0 || value.indexOf('\0') >= 0) {
+            throw new IOException(name + " is not a safe cache path segment");
+        }
+    }
+
+    private static void downloadUrl(URI source, Path destination, long maxBytes) throws IOException {
+        if (maxBytes <= 0) {
+            throw new IOException("Download size limit must be positive");
+        }
+        String scheme = source.getScheme();
+        if (scheme == null) {
+            throw new IOException("Download URI has no scheme: " + source);
+        }
+        if (scheme.equalsIgnoreCase("file")) {
+            try (InputStream input = Files.newInputStream(Paths.get(source))) {
+                copyBounded(input, destination, maxBytes);
+            }
+            return;
+        }
+        if (!scheme.equalsIgnoreCase("https") && !scheme.equalsIgnoreCase("http")) {
+            throw new IOException("Unsupported SDK download URI scheme: " + scheme);
+        }
+        HttpRequest request = HttpRequest.newBuilder(source)
+                .timeout(SDX_DOWNLOAD_TIMEOUT)
+                .GET()
+                .build();
+        final HttpResponse<InputStream> response;
+        try {
+            response = SDX_HTTP_CLIENT.send(request, HttpResponse.BodyHandlers.ofInputStream());
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IOException("SDK download interrupted: " + source, interrupted);
+        }
+        try (InputStream input = response.body()) {
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                throw new IOException("SDK download failed with HTTP " + response.statusCode() + ": " + source);
+            }
+            Optional<String> contentLength = response.headers().firstValue("Content-Length");
+            if (contentLength.isPresent()) {
+                try {
+                    if (Long.parseLong(contentLength.get()) > maxBytes) {
+                        throw new IOException("SDK download exceeds size limit of " + maxBytes + " bytes: " + source);
+                    }
+                } catch (NumberFormatException invalidLength) {
+                    throw new IOException("Invalid Content-Length for SDK download: " + source, invalidLength);
+                }
+            }
+            copyBounded(input, destination, maxBytes);
+        }
+    }
+
+    private static void copyBounded(InputStream input, Path destination, long maxBytes) throws IOException {
+        try (OutputStream output = Files.newOutputStream(destination)) {
+            byte[] buffer = new byte[8192];
+            long total = 0;
+            int read;
+            while ((read = input.read(buffer)) != -1) {
+                if (read > maxBytes - total) {
+                    throw new IOException("SDK download exceeds size limit of " + maxBytes + " bytes");
+                }
+                output.write(buffer, 0, read);
+                total += read;
+            }
+        }
     }
 
     /**
@@ -1816,27 +2089,50 @@ public class KompileModelManager {
      * Checks if an SDK artifact is cached for the given platform.
      */
     public boolean isSdkCached(String sdkVersion, String platformClassifier) {
-        Path sdkDir = baseCachePath.resolve("sdx-sdk").resolve(sdkVersion).resolve(platformClassifier);
-        if (!Files.exists(sdkDir)) {
-            return false;
-        }
-        try (var sdkFiles = Files.list(sdkDir)) {
-            return sdkFiles.findAny().isPresent();
-        } catch (IOException e) {
-            return false;
-        }
+        return isSdkCached("sdx-runtime", sdkVersion, platformClassifier);
+    }
+
+    public boolean isSdkCached(String sdkId, String sdkVersion, String platformClassifier) {
+        return findSdkArtifactPath(sdkId, sdkVersion, platformClassifier) != null;
     }
 
     /**
      * Gets the cached SDK artifact path, or null if not cached.
      */
     public Path getSdkArtifactPath(String sdkVersion, String platformClassifier) {
-        Path sdkDir = baseCachePath.resolve("sdx-sdk").resolve(sdkVersion).resolve(platformClassifier);
-        if (!Files.exists(sdkDir)) {
-            return null;
+        return getSdkArtifactPath("sdx-runtime", sdkVersion, platformClassifier);
+    }
+
+    public Path getSdkArtifactPath(String sdkId, String sdkVersion, String platformClassifier) {
+        return findSdkArtifactPath(sdkId, sdkVersion, platformClassifier);
+    }
+
+    private Path findSdkArtifactPath(String sdkId, String sdkVersion, String platformClassifier) {
+        if (sdkId == null || sdkVersion == null || platformClassifier == null) return null;
+        String canonicalClassifier = platformClassifier.startsWith("macosx-")
+                ? "macos-" + platformClassifier.substring("macosx-".length()) : platformClassifier;
+        Path versionDir = baseCachePath.resolve("sdx-sdk").resolve(sdkId).resolve(sdkVersion);
+        Path legacyDir = versionDir.resolve(platformClassifier);
+        if (Files.isDirectory(legacyDir)) {
+            try (Stream<Path> files = Files.list(legacyDir)) {
+                Optional<Path> legacy = files.filter(Files::isRegularFile).sorted().findFirst();
+                if (legacy.isPresent()) return legacy.get();
+            } catch (IOException ignored) {
+                return null;
+            }
         }
-        try (var sdkFiles = Files.list(sdkDir)) {
-            return sdkFiles.findFirst().orElse(null);
+        Path origins = versionDir.resolve("origins");
+        if (!Files.isDirectory(origins)) return null;
+        try (Stream<Path> paths = Files.walk(origins, 4)) {
+            return paths.filter(Files::isRegularFile)
+                    .filter(path -> {
+                        Path relative = origins.relativize(path);
+                        return relative.getNameCount() == 4
+                                && (relative.getName(1) + "-" + relative.getName(2)).equals(canonicalClassifier);
+                    })
+                    .sorted()
+                    .findFirst()
+                    .orElse(null);
         } catch (IOException e) {
             return null;
         }

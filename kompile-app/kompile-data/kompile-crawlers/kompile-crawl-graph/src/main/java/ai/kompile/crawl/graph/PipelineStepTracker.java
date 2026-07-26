@@ -57,6 +57,7 @@ class PipelineStepTracker {
                 "ENTITY_RESOLUTION",
                 "EDGE_COMPUTATION",
                 "VECTOR_INDEXING",
+                "ENTITY_PARTITIONS",
                 "ENRICHMENT",
                 "LEARNING")) {
             ensurePipelineStep(job, phase);
@@ -353,6 +354,7 @@ class PipelineStepTracker {
             case "ENTITY_RESOLUTION" -> "Entity Resolution";
             case "EDGE_COMPUTATION" -> "Graph Edge Cleanup";
             case "VECTOR_INDEXING" -> "Embedding & Vector Index";
+            case "ENTITY_PARTITIONS" -> "Entity Partitions";
             case "ENRICHMENT" -> "Post-Crawl Enrichment";
             case "LEARNING" -> "KGE Training (Learning)";
             default -> humanizePhase(phase);
@@ -363,7 +365,8 @@ class PipelineStepTracker {
         return switch (normalizeStepId(phase)) {
             case "LOADING", "DISCOVERING" -> "IO";
             case "CONVERTING", "PREPROCESSING", "ROUTING", "CHUNKING" -> "CPU";
-            case "GRAPH_PREP", "SURFACING", "ENTITY_RESOLUTION", "EDGE_COMPUTATION" -> "GRAPH";
+            case "GRAPH_PREP", "SURFACING", "ENTITY_RESOLUTION", "EDGE_COMPUTATION",
+                 "ENTITY_PARTITIONS" -> "GRAPH";
             case "GRAPH_EXTRACTION" -> graphConstructorPresent ? "GRAPH_CONSTRUCTOR" : "LLM";
             case "VECTOR_INDEXING" -> "EMBEDDING";
             case "ENRICHMENT" -> "ENRICHMENT";

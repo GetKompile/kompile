@@ -27,17 +27,18 @@ import org.springframework.stereotype.Service;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.FileVisitOption;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 /**
@@ -54,11 +55,12 @@ public class LocalMarkdownFileStore {
     private ObsidianFrontmatterConverter frontmatterConverter;
 
     public List<SyncAdapter.ExternalNoteSnapshot> fetchChangedSince(NoteSyncConnection conn, Instant since) {
-        Path root = ensureRoot(conn);
+        Path root = requireExistingRoot(conn);
         List<SyncAdapter.ExternalNoteSnapshot> snapshots = new ArrayList<>();
 
-        try (Stream<Path> paths = Files.walk(root, FileVisitOption.FOLLOW_LINKS)) {
+        try (Stream<Path> paths = Files.walk(root)) {
             paths.filter(Files::isRegularFile)
+                    .filter(path -> !Files.isSymbolicLink(path))
                     .filter(this::isMarkdownFile)
                     .filter(path -> !isIgnored(root, path))
                     .sorted(Comparator.comparing(Path::toString))
@@ -71,8 +73,24 @@ public class LocalMarkdownFileStore {
         return snapshots;
     }
 
+    public Set<String> listExternalIds(NoteSyncConnection conn) {
+        Path root = requireExistingRoot(conn);
+        try (Stream<Path> paths = Files.walk(root)) {
+            return paths.filter(Files::isRegularFile)
+                    .filter(path -> !Files.isSymbolicLink(path))
+                    .filter(this::isMarkdownFile)
+                    .filter(path -> !isIgnored(root, path))
+                    .sorted(Comparator.comparing(Path::toString))
+                    .map(path -> toExternalId(root, path))
+                    .collect(Collectors.toCollection(LinkedHashSet::new));
+        } catch (IOException e) {
+            throw new IllegalStateException(
+                    "Failed to enumerate markdown folder " + root + ": " + e.getMessage(), e);
+        }
+    }
+
     public Optional<SyncAdapter.ExternalNoteSnapshot> fetchById(NoteSyncConnection conn, String externalId) {
-        Path root = ensureRoot(conn);
+        Path root = requireExistingRoot(conn);
         Path path = resolveExternalPath(root, externalId);
         if (!Files.isRegularFile(path)) {
             return Optional.empty();
@@ -101,7 +119,7 @@ public class LocalMarkdownFileStore {
     }
 
     public void deleteExternal(NoteSyncConnection conn, String externalId) {
-        Path root = ensureRoot(conn);
+        Path root = requireExistingRoot(conn);
         Path path = resolveExternalPath(root, externalId);
         try {
             Files.deleteIfExists(path);
@@ -112,10 +130,7 @@ public class LocalMarkdownFileStore {
     }
 
     public Path ensureRoot(NoteSyncConnection conn) {
-        if (conn.getExternalScope() == null || conn.getExternalScope().isBlank()) {
-            throw new IllegalArgumentException("externalScope must be an absolute local folder or vault path");
-        }
-        Path root = Paths.get(conn.getExternalScope()).toAbsolutePath().normalize();
+        Path root = configuredRoot(conn);
         try {
             Files.createDirectories(root);
         } catch (IOException e) {
@@ -127,6 +142,29 @@ public class LocalMarkdownFileStore {
         return root;
     }
 
+    /**
+     * Read-side operations must never create a missing mount and then treat it as an
+     * authoritative empty source snapshot.
+     */
+    public Path requireExistingRoot(NoteSyncConnection conn) {
+        Path root = configuredRoot(conn);
+        if (!Files.isDirectory(root)) {
+            throw new IllegalStateException(
+                    "Configured markdown folder is unavailable; rebind or remount it before syncing: " + root);
+        }
+        if (!Files.isReadable(root)) {
+            throw new IllegalStateException("Configured markdown folder is not readable: " + root);
+        }
+        return root;
+    }
+
+    private Path configuredRoot(NoteSyncConnection conn) {
+        if (conn.getExternalScope() == null || conn.getExternalScope().isBlank()) {
+            throw new IllegalArgumentException("externalScope must be an absolute local folder or vault path");
+        }
+        return Paths.get(conn.getExternalScope()).toAbsolutePath().normalize();
+    }
+
     public Path resolveExternalPath(Path root, String externalId) {
         if (externalId == null || externalId.isBlank()) {
             throw new IllegalArgumentException("externalId is required");
@@ -135,7 +173,26 @@ public class LocalMarkdownFileStore {
         if (!resolved.startsWith(root.toAbsolutePath().normalize())) {
             throw new IllegalArgumentException("Invalid markdown path outside repository: " + externalId);
         }
+        assertNoSymlinkEscape(root, resolved, externalId);
         return resolved;
+    }
+
+    private void assertNoSymlinkEscape(Path root, Path resolved, String externalId) {
+        try {
+            Path rootReal = root.toRealPath();
+            Path existing = resolved;
+            while (existing != null
+                    && !Files.exists(existing, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                existing = existing.getParent();
+            }
+            if (existing == null || !existing.toRealPath().startsWith(rootReal)) {
+                throw new IllegalArgumentException(
+                        "Invalid markdown path through a symbolic link outside repository: " + externalId);
+            }
+        } catch (IOException e) {
+            throw new IllegalArgumentException(
+                    "Could not validate markdown path inside repository: " + externalId, e);
+        }
     }
 
     public String toExternalId(Path root, Path path) {
@@ -167,8 +224,8 @@ public class LocalMarkdownFileStore {
                     modified
             ));
         } catch (IOException e) {
-            log.warn("Failed to read markdown note {}: {}", path, e.getMessage());
-            return Optional.empty();
+            throw new IllegalStateException(
+                    "Failed to read markdown note " + path + ": " + e.getMessage(), e);
         }
     }
 

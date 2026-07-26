@@ -17,6 +17,7 @@
 package ai.kompile.crawl.graph;
 
 import ai.kompile.core.crawl.graph.GraphExtractionConfig;
+import ai.kompile.core.crawl.graph.GraphExtractionValidationPolicy;
 import ai.kompile.core.crawl.graph.ProcessingRouteConfig;
 import ai.kompile.core.crawl.graph.UnifiedCrawlJob;
 import ai.kompile.core.crawl.graph.UnifiedCrawlRequest;
@@ -230,10 +231,14 @@ public class GraphExtractionPreviewService {
                 }
 
                 GraphExtractionSchema.ExtractionResult result = GraphExtractionValidator.fromJson(json);
-                var validation = GraphExtractionValidator.validate(result);
+                var validation = validateExtraction(result, config);
                 if (!validation.valid()) {
-                    lastValidationErrors = String.join("; ", validation.errors());
+                    lastValidationErrors = validationFeedback(validation, config);
                     continue;
+                }
+                for (String warning : validation.warnings()) {
+                    addWarning(warnings, "Graph extraction validation warning for "
+                            + sourceTitle(document, document.getId()) + ": " + warning);
                 }
                 return new ExtractionAttempt(result);
             } catch (Exception e) {
@@ -262,9 +267,10 @@ public class GraphExtractionPreviewService {
         return job;
     }
 
-    private String buildExtractionPrompt(GraphExtractionConfig config) {
+    String buildExtractionPrompt(GraphExtractionConfig config) {
         StringBuilder sb = new StringBuilder();
-        sb.append(GraphExtractionValidator.getExtractionPromptInstructions());
+        sb.append(GraphExtractionValidator.getExtractionPromptInstructions(
+                effectiveValidationPolicy(config), null));
 
         if (config.getEntityTypes() != null && !config.getEntityTypes().isEmpty()) {
             sb.append("\n\nFocus on extracting these entity types: ");
@@ -281,6 +287,26 @@ public class GraphExtractionPreviewService {
         }
 
         return sb.toString();
+    }
+
+    GraphExtractionValidator.ValidationResult validateExtraction(
+            GraphExtractionSchema.ExtractionResult result,
+            GraphExtractionConfig config) {
+        return GraphExtractionValidator.validate(result, effectiveValidationPolicy(config), null);
+    }
+
+    private String validationFeedback(
+            GraphExtractionValidator.ValidationResult validation,
+            GraphExtractionConfig config) {
+        int maxErrors = effectiveValidationPolicy(config).effectiveMaxErrorsInRetryPrompt();
+        return String.join("; ", validation.errors().stream().limit(maxErrors).toList());
+    }
+
+    private GraphExtractionValidationPolicy effectiveValidationPolicy(GraphExtractionConfig config) {
+        if (config == null || config.getValidationPolicy() == null) {
+            return GraphExtractionValidationPolicy.defaults();
+        }
+        return config.getValidationPolicy();
     }
 
     private String vlmHint(Document document) {

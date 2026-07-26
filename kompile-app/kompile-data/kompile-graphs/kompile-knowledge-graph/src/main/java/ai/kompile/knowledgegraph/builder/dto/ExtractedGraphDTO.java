@@ -56,6 +56,7 @@ public final class ExtractedGraphDTO {
         private String description;
         private Double weight;
         private Double confidence;
+        private String occurredAt;
         private Map<String, Object> metadata;
     }
 }

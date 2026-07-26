@@ -137,6 +137,21 @@ public class NoteSyncConnection {
     @Column(columnDefinition = "TEXT")
     private String lastSyncError;
 
+    /** Durable single-flight lease for the currently executing source sync. */
+    @Column(length = 64)
+    private String activeSyncRunId;
+
+    @Column
+    private Instant syncLeaseExpiresAt;
+
+    /** Consecutive partial/failed runs, used to back off scheduler retries. */
+    @Column(nullable = false)
+    @Builder.Default
+    private int consecutiveSyncFailures = 0;
+
+    @Column
+    private Instant nextSyncAttemptAt;
+
     @Column(nullable = false)
     private Instant createdAt;
 

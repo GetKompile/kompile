@@ -22,9 +22,8 @@
     <mobile.android.sdk>${env.ANDROID_SDK_ROOT}</mobile.android.sdk>
     <mobile.android.ndk>${env.ANDROID_NDK_ROOT}</mobile.android.ndk>
     <mobile.java.home>${java.home}</mobile.java.home>
-    <mobile.maven>${maven.home}/bin/mvn</mobile.maven>
     <mobile.dl4j.root>${project.basedir}/../../../deeplearning4j</mobile.dl4j.root>
-    <mobile.examples.root>${project.basedir}/../../../deeplearning4j-examples</mobile.examples.root>
+    <mobile.examples.root>${mobile.dl4j.root}/nd4j/sdx-runtime-examples</mobile.examples.root>
 
     <mobile.output.dir>${project.build.directory}/offline-dist</mobile.output.dir>
     <mobile.bundle>${project.build.directory}/kompile-offline-graph-chat-full.zip</mobile.bundle>
@@ -33,23 +32,92 @@
     <mobile.apk.tensor.g3>${mobile.output.dir}/kompile-offline-graph-chat-tensor-g3-pixel-8a.apk</mobile.apk.tensor.g3>
     <mobile.apk.tensor.g5>${mobile.output.dir}/kompile-offline-graph-chat-tensor-g5.apk</mobile.apk.tensor.g5>
 
-    <mobile.aar.vulkan>${mobile.dl4j.root}/libnd4j/build/mobile/vulkan/dist/sdx-runtime-android-arm64-vulkan.aar</mobile.aar.vulkan>
-    <mobile.aar.hexagon>${mobile.dl4j.root}/libnd4j/build/mobile/hexagon/dist/sdx-runtime-android-arm64-hexagon.aar</mobile.aar.hexagon>
-    <mobile.aar.tensor.g3>${mobile.dl4j.root}/libnd4j/build/mobile/tensor-g3/dist/sdx-runtime-android-arm64-tensor-g3.aar</mobile.aar.tensor.g3>
-    <mobile.aar.tensor.g5>${mobile.dl4j.root}/libnd4j/build/mobile/google-tensor-g5/dist/sdx-chat-runtime-android-arm64-google-tensor-g5.aar</mobile.aar.tensor.g5>
+    <!-- Maven is the artifact boundary. Retained scripts receive only these target-local paths. -->
+    <mobile.sdx.version>${nd4j.version}</mobile.sdx.version>
+    <mobile.artifact.stage>${project.build.directory}/maven-artifacts</mobile.artifact.stage>
+    <mobile.graph.unpack>${project.build.directory}/graph-android-arm64</mobile.graph.unpack>
+    <mobile.android.jni>${project.build.directory}/android-jni/arm64-v8a</mobile.android.jni>
 
-    <mobile.graph.module>${project.basedir}/../../kompile-app/kompile-data/kompile-graphs/kompile-graph-reasoning-local</mobile.graph.module>
-    <mobile.graph.sdk>${mobile.graph.module}/target/kompile-graph-reasoning-local-0.1.0-SNAPSHOT-native-sdk.zip</mobile.graph.sdk>
-    <mobile.graph.android.library>${mobile.graph.module}/target/android-aot/jni/arm64-v8a/libkompile_reasoning_android.so</mobile.graph.android.library>
-    <mobile.graph.javacpp.library>${project.basedir}/android/app/src/main/jniLibs/arm64-v8a/libjnikompile_graph.so</mobile.graph.javacpp.library>
-    <mobile.graph.header>${mobile.graph.module}/include/kompile_reasoning.h</mobile.graph.header>
+    <mobile.aar.vulkan>${mobile.artifact.stage}/nd4j-sdx-${mobile.sdx.version}-android-arm64-vulkan.aar</mobile.aar.vulkan>
+    <mobile.aar.hexagon>${mobile.artifact.stage}/nd4j-sdx-${mobile.sdx.version}-android-arm64-hexagon.aar</mobile.aar.hexagon>
+    <mobile.aar.tensor.g3>${mobile.artifact.stage}/nd4j-sdx-${mobile.sdx.version}-android-arm64-tensor-g3.aar</mobile.aar.tensor.g3>
+    <mobile.aar.tensor.g5>${mobile.artifact.stage}/nd4j-sdx-litertlm-${mobile.sdx.version}-android-arm64-google-tensor-g5.aar</mobile.aar.tensor.g5>
 
-    <mobile.canonical.sdz>${mobile.examples.root}/sdx-runtime-examples/models/mlp.sdz</mobile.canonical.sdz>
-    <mobile.canonical.sdz.readme>${mobile.examples.root}/sdx-runtime-examples/models/README.md</mobile.canonical.sdz.readme>
+    <mobile.graph.sdk>${mobile.artifact.stage}/kompile-graph-reasoning-local-${project.version}-android-arm64.zip</mobile.graph.sdk>
+    <mobile.graph.android.library>${mobile.graph.unpack}/jni/arm64-v8a/libkompile_reasoning_android.so</mobile.graph.android.library>
+    <mobile.graph.javacpp.library>${mobile.android.jni}/libjnikompile_graph.so</mobile.graph.javacpp.library>
+    <mobile.graph.header>${mobile.graph.unpack}/include/kompile_reasoning.h</mobile.graph.header>
+    <mobile.graph.verifier>${mobile.graph.unpack}/bin/verify-android-ndk.sh</mobile.graph.verifier>
+    <mobile.javacpp.jar>${mobile.artifact.stage}/javacpp-${javacpp.version}.jar</mobile.javacpp.jar>
+
+    <mobile.canonical.sdz>${mobile.examples.root}/fixture/src/main/resources/models/mlp.sdz</mobile.canonical.sdz>
+    <mobile.canonical.sdz.readme>${mobile.examples.root}/fixture/src/main/resources/contracts/mlp-fixture.md</mobile.canonical.sdz.readme>
   </properties>
+
+  <dependencies>
+    <!-- Explicit reactor edge: Gradle consumes this from Maven local during the outer install. -->
+    <dependency>
+      <groupId>ai.kompile</groupId>
+      <artifactId>kompile-chat-local-core</artifactId>
+      <version>${project.version}</version>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>ai.kompile</groupId>
+      <artifactId>kompile-graph-reasoning-local</artifactId>
+      <version>${project.version}</version>
+      <classifier>android-arm64</classifier>
+      <type>zip</type>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.bytedeco</groupId>
+      <artifactId>javacpp</artifactId>
+      <version>${javacpp.version}</version>
+      <scope>runtime</scope>
+    </dependency>
+  </dependencies>
 
   <build>
     <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-dependency-plugin</artifactId>
+        <version>3.8.1</version>
+        <executions>
+          <execution>
+            <id>stage-mobile-maven-artifacts</id>
+            <phase>initialize</phase>
+            <goals>
+              <goal>copy-dependencies</goal>
+            </goals>
+            <configuration>
+              <outputDirectory>${mobile.artifact.stage}</outputDirectory>
+              <excludeTransitive>true</excludeTransitive>
+              <useBaseVersion>true</useBaseVersion>
+            </configuration>
+          </execution>
+          <execution>
+            <id>unpack-graph-android-sdk</id>
+            <phase>initialize</phase>
+            <goals>
+              <goal>unpack</goal>
+            </goals>
+            <configuration>
+              <artifactItems>
+                <artifactItem>
+                  <groupId>ai.kompile</groupId>
+                  <artifactId>kompile-graph-reasoning-local</artifactId>
+                  <version>${project.version}</version>
+                  <classifier>android-arm64</classifier>
+                  <type>zip</type>
+                  <outputDirectory>${mobile.graph.unpack}</outputDirectory>
+                </artifactItem>
+              </artifactItems>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
       <plugin>
         <groupId>org.codehaus.mojo</groupId>
         <artifactId>exec-maven-plugin</artifactId>
@@ -68,7 +136,6 @@
                 <argument>-DANDROID_SDK=${mobile.android.sdk}</argument>
                 <argument>-DANDROID_NDK=${mobile.android.ndk}</argument>
                 <argument>-DJAVA_HOME_DIR=${mobile.java.home}</argument>
-                <argument>-DMAVEN_EXECUTABLE=${mobile.maven}</argument>
                 <argument>-DMAVEN_OFFLINE=${settings.offline}</argument>
                 <argument>-DDL4J_ROOT=${mobile.dl4j.root}</argument>
                 <argument>-P</argument>
@@ -99,14 +166,21 @@
                 <argument>${mobile.aar.tensor.g5}</argument>
                 <argument>--graph-library</argument>
                 <argument>${mobile.graph.android.library}</argument>
+                <argument>--graph-header</argument>
+                <argument>${mobile.graph.header}</argument>
+                <argument>--graph-verifier</argument>
+                <argument>${mobile.graph.verifier}</argument>
+                <argument>--javacpp-jar</argument>
+                <argument>${mobile.javacpp.jar}</argument>
+                <argument>--jni-output</argument>
+                <argument>${mobile.android.jni}</argument>
                 <argument>--android-sdk</argument>
                 <argument>${mobile.android.sdk}</argument>
                 <argument>--android-ndk</argument>
                 <argument>${mobile.android.ndk}</argument>
                 <argument>--java-home</argument>
                 <argument>${mobile.java.home}</argument>
-                <argument>--maven</argument>
-                <argument>${mobile.maven}</argument>
+                <argument>--maven-artifacts</argument>
                 <argument>--output</argument>
                 <argument>${mobile.output.dir}</argument>
               </arguments>
@@ -123,6 +197,86 @@
 
   <profiles>
     <profile>
+      <id>mobile-vulkan-artifact</id>
+      <activation>
+        <property>
+          <name>kompile.mobile</name>
+          <value>vulkan</value>
+        </property>
+      </activation>
+      <dependencies>
+        <dependency>
+          <groupId>org.eclipse.deeplearning4j</groupId>
+          <artifactId>nd4j-sdx</artifactId>
+          <version>${mobile.sdx.version}</version>
+          <classifier>android-arm64-vulkan</classifier>
+          <type>aar</type>
+          <scope>runtime</scope>
+        </dependency>
+      </dependencies>
+    </profile>
+
+    <profile>
+      <id>mobile-hexagon-artifact</id>
+      <activation>
+        <property>
+          <name>kompile.mobile</name>
+          <value>hexagon</value>
+        </property>
+      </activation>
+      <dependencies>
+        <dependency>
+          <groupId>org.eclipse.deeplearning4j</groupId>
+          <artifactId>nd4j-sdx</artifactId>
+          <version>${mobile.sdx.version}</version>
+          <classifier>android-arm64-hexagon</classifier>
+          <type>aar</type>
+          <scope>runtime</scope>
+        </dependency>
+      </dependencies>
+    </profile>
+
+    <profile>
+      <id>mobile-tensor-g3-artifact</id>
+      <activation>
+        <property>
+          <name>kompile.mobile</name>
+          <value>tensor-g3</value>
+        </property>
+      </activation>
+      <dependencies>
+        <dependency>
+          <groupId>org.eclipse.deeplearning4j</groupId>
+          <artifactId>nd4j-sdx</artifactId>
+          <version>${mobile.sdx.version}</version>
+          <classifier>android-arm64-tensor-g3</classifier>
+          <type>aar</type>
+          <scope>runtime</scope>
+        </dependency>
+      </dependencies>
+    </profile>
+
+    <profile>
+      <id>mobile-tensor-g5-artifact</id>
+      <activation>
+        <property>
+          <name>kompile.mobile</name>
+          <value>tensor-g5</value>
+        </property>
+      </activation>
+      <dependencies>
+        <dependency>
+          <groupId>org.eclipse.deeplearning4j</groupId>
+          <artifactId>nd4j-sdx-litertlm</artifactId>
+          <version>${mobile.sdx.version}</version>
+          <classifier>android-arm64-google-tensor-g5</classifier>
+          <type>aar</type>
+          <scope>runtime</scope>
+        </dependency>
+      </dependencies>
+    </profile>
+
+    <profile>
       <id>mobile-all-bundle</id>
       <activation>
         <property>
@@ -130,6 +284,40 @@
           <value>all</value>
         </property>
       </activation>
+      <dependencies>
+        <dependency>
+          <groupId>org.eclipse.deeplearning4j</groupId>
+          <artifactId>nd4j-sdx</artifactId>
+          <version>${mobile.sdx.version}</version>
+          <classifier>android-arm64-vulkan</classifier>
+          <type>aar</type>
+          <scope>runtime</scope>
+        </dependency>
+        <dependency>
+          <groupId>org.eclipse.deeplearning4j</groupId>
+          <artifactId>nd4j-sdx</artifactId>
+          <version>${mobile.sdx.version}</version>
+          <classifier>android-arm64-hexagon</classifier>
+          <type>aar</type>
+          <scope>runtime</scope>
+        </dependency>
+        <dependency>
+          <groupId>org.eclipse.deeplearning4j</groupId>
+          <artifactId>nd4j-sdx</artifactId>
+          <version>${mobile.sdx.version}</version>
+          <classifier>android-arm64-tensor-g3</classifier>
+          <type>aar</type>
+          <scope>runtime</scope>
+        </dependency>
+        <dependency>
+          <groupId>org.eclipse.deeplearning4j</groupId>
+          <artifactId>nd4j-sdx-litertlm</artifactId>
+          <version>${mobile.sdx.version}</version>
+          <classifier>android-arm64-google-tensor-g5</classifier>
+          <type>aar</type>
+          <scope>runtime</scope>
+        </dependency>
+      </dependencies>
       <build>
         <plugins>
           <plugin>

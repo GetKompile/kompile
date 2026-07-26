@@ -74,12 +74,6 @@
         <dependency>
             <groupId>ai.kompile</groupId>
             <artifactId>kompile-embedding-anserini</artifactId>
-            <exclusions>
-                <exclusion>
-                    <groupId>org.mockito</groupId>
-                    <artifactId>mockito-all</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
 
         <!-- Vector Store -->

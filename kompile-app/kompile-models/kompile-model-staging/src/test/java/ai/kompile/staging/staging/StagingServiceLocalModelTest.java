@@ -3,9 +3,11 @@ package ai.kompile.staging.staging;
 import ai.kompile.core.staging.StagingModelInfo;
 import ai.kompile.core.staging.StagingStatus;
 import ai.kompile.modelmanager.registry.*;
+import ai.kompile.staging.conversion.ConversionArtifact;
 import ai.kompile.staging.conversion.ConversionResult;
 import ai.kompile.staging.conversion.ConversionService;
 import ai.kompile.staging.download.DownloadService;
+import ai.kompile.staging.download.LocalDownloader;
 import ai.kompile.staging.optimization.OptimizationService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -54,7 +56,10 @@ class StagingServiceLocalModelTest {
     void setUp() throws Exception {
         registryService = new RegistryService(tempDir);
         stagingService = new StagingService(
-                registryService, conversionService, List.of(), optimizationService);
+                registryService,
+                conversionService,
+                List.of(new LocalDownloader(registryService)),
+                optimizationService);
         sourceDir = tempDir.resolve("source-models");
         Files.createDirectories(sourceDir);
     }
@@ -66,18 +71,15 @@ class StagingServiceLocalModelTest {
         Files.write(ggufFile, new byte[]{1, 2, 3, 4, 5});
 
         // Mock conversion to write sharded output files in the pending dir
-        when(conversionService.convert(any(), any(), eq("gguf")))
+        when(conversionService.convert(any(), any(), eq("gguf"), any()))
                 .thenAnswer(invocation -> {
                     Path outputPath = invocation.getArgument(1);
-                    // Verify the output path ends with .sdnb, not .sdz
-                    assertTrue(outputPath.toString().endsWith("model.sdnb"),
-                            "GGUF conversion output should use .sdnb extension, got: " + outputPath);
-                    // Simulate saveAutoShard producing sharded files
-                    Path dir = outputPath.getParent();
-                    Files.write(dir.resolve("model.shard0-of-1.sdnb"), new byte[100]);
+                    assertTrue(outputPath.toString().endsWith("model.sdz"),
+                            "GGUF conversion output must be one canonical SDZ, got: " + outputPath);
+                    Files.write(outputPath, new byte[100]);
                     return ConversionResult.builder()
                             .success(true)
-                            .outputModelPath(outputPath)
+                            .artifact(ConversionArtifact.canonicalSdz(outputPath))
                             .checksum("sha256:fake")
                             .build();
                 });
@@ -107,15 +109,13 @@ class StagingServiceLocalModelTest {
         Files.writeString(sourceDir.resolve("tokenizer.json"),
                 "{\"type\": \"BPE\", \"model\": {\"vocab\": {}}}" + "x".repeat(100));
 
-        when(conversionService.convert(any(), any(), eq("gguf")))
+        when(conversionService.convert(any(), any(), eq("gguf"), any()))
                 .thenAnswer(invocation -> {
                     Path outputPath = invocation.getArgument(1);
-                    Path dir = outputPath.getParent();
-                    Files.write(dir.resolve("model.shard0-of-2.sdnb"), new byte[100]);
-                    Files.write(dir.resolve("model.shard1-of-2.sdnb"), new byte[100]);
+                    Files.write(outputPath, new byte[100]);
                     return ConversionResult.builder()
                             .success(true)
-                            .outputModelPath(outputPath)
+                            .artifact(ConversionArtifact.canonicalSdz(outputPath))
                             .checksum("sha256:fake")
                             .build();
                 });
@@ -135,8 +135,8 @@ class StagingServiceLocalModelTest {
 
         ModelEntry model = entry.get();
         assertEquals(ModelType.LLM_GGML, model.getType());
-        assertEquals("model.sdnb", model.getModelFile(),
-                "Sharded GGUF model should have model.sdnb in registry");
+        assertEquals("model.sdz", model.getModelFile(),
+                "Converted GGUF model should retain the canonical SDZ in the registry");
         assertEquals("tokenizer.json", model.getVocabFile(),
                 "GGUF model should have tokenizer.json in registry");
 
@@ -145,10 +145,8 @@ class StagingServiceLocalModelTest {
         assertTrue(Files.exists(productionDir), "Production directory should exist");
         assertTrue(Files.exists(productionDir.resolve("tokenizer.json")),
                 "tokenizer.json should be copied to production dir");
-        assertTrue(Files.exists(productionDir.resolve("model.shard0-of-2.sdnb")),
-                "Shard files should be in production dir");
-        assertTrue(Files.exists(productionDir.resolve("model.sdnb")),
-                "0-byte marker file should be created in production dir");
+        assertTrue(Files.size(productionDir.resolve("model.sdz")) > 0L,
+                "Canonical model.sdz should be in the production directory");
     }
 
     @Test
@@ -161,14 +159,13 @@ class StagingServiceLocalModelTest {
         String tokenizerContent = "{\"type\": \"BPE\", \"model\": {}}" + "x".repeat(100);
         Files.writeString(sourceDir.resolve("tokenizer.json"), tokenizerContent);
 
-        when(conversionService.convert(any(), any(), eq("gguf")))
+        when(conversionService.convert(any(), any(), eq("gguf"), any()))
                 .thenAnswer(invocation -> {
                     Path outputPath = invocation.getArgument(1);
-                    Path dir = outputPath.getParent();
-                    Files.write(dir.resolve("model.shard0-of-1.sdnb"), new byte[100]);
+                    Files.write(outputPath, new byte[100]);
                     return ConversionResult.builder()
                             .success(true)
-                            .outputModelPath(outputPath)
+                            .artifact(ConversionArtifact.canonicalSdz(outputPath))
                             .build();
                 });
 
@@ -193,7 +190,7 @@ class StagingServiceLocalModelTest {
         Path onnxFile = sourceDir.resolve("model.onnx");
         Files.write(onnxFile, new byte[]{1, 2, 3});
 
-        when(conversionService.convert(any(), any(), eq("onnx")))
+        when(conversionService.convert(any(), any(), eq("onnx"), any()))
                 .thenAnswer(invocation -> {
                     Path outputPath = invocation.getArgument(1);
                     assertTrue(outputPath.toString().endsWith("model.sdz"),
@@ -201,7 +198,7 @@ class StagingServiceLocalModelTest {
                     Files.write(outputPath, new byte[100]);
                     return ConversionResult.builder()
                             .success(true)
-                            .outputModelPath(outputPath)
+                            .artifact(ConversionArtifact.canonicalSdz(outputPath))
                             .build();
                 });
 
@@ -231,7 +228,7 @@ class StagingServiceLocalModelTest {
         ModelEntry model = registryService.getModel(modelId).orElseThrow();
         assertEquals(ModelType.VLM_PIPELINE, model.getType());
         assertEquals("pipeline.json", model.getModelFile());
-        verify(conversionService, never()).convert(any(), any(), any());
+        verify(conversionService, never()).convert(any(), any(), any(), any());
         verify(conversionService, never()).validate(any());
     }
 
@@ -247,7 +244,7 @@ class StagingServiceLocalModelTest {
         ModelEntry model = registryService.getModel(modelId).orElseThrow();
         assertEquals(ModelType.VLM_PIPELINE, model.getType());
         assertEquals("decoder_model_merged.onnx", model.getModelFile());
-        verify(conversionService, never()).convert(any(), any(), any());
+        verify(conversionService, never()).convert(any(), any(), any(), any());
         verify(conversionService, never()).validate(any());
     }
 
@@ -271,7 +268,7 @@ class StagingServiceLocalModelTest {
         Files.write(staleFile, new byte[]{(byte) 0xDE, (byte) 0xAD, (byte) 0xBE, (byte) 0xEF});
 
         // When conversion runs the pending directory must be clean — no stale file.
-        when(conversionService.convert(any(), any(), eq("onnx")))
+        when(conversionService.convert(any(), any(), eq("onnx"), any()))
                 .thenAnswer(invocation -> {
                     Path outputPath = invocation.getArgument(1);
                     Path pendingDir = outputPath.getParent();
@@ -281,7 +278,7 @@ class StagingServiceLocalModelTest {
                     Files.write(outputPath, new byte[100]);
                     return ConversionResult.builder()
                             .success(true)
-                            .outputModelPath(outputPath)
+                            .artifact(ConversionArtifact.canonicalSdz(outputPath))
                             .build();
                 });
 

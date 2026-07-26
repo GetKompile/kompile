@@ -1,44 +1,74 @@
 # Kompile Chat Local — Android accelerator builds
 
-This is a mobile-first, fully offline Compose chat application. Graph search and
-reasoning run locally through the Kompile graph engine; local text generation is
-provided by one of four device-specific accelerator flavors.
+This is a mobile-first, local-first Compose chat application. Graph search and
+reasoning run locally through the Kompile graph engine. Prepared `.sdz` text generation
+uses one of four device-specific accelerator flavors:
 
-| Flavor | Model input | Execution route | CPU/BLAS fallback |
+| Flavor | Prepared model input | Prepared execution route | Prepared-route CPU fallback |
 | --- | --- | --- | --- |
 | `vulkan` | canonical `.sdz` | SDX Vulkan lowering, command capture, and replay on Android GPU | forbidden |
 | `hexagon` | canonical `.sdz` | SDX AOT replay on Qualcomm Hexagon/HTP | forbidden |
 | `tensorG3` | canonical `.sdz` | libnd4j NNAPI pinned to one complete-graph `DEVICE_ACCELERATOR` | forbidden |
 | `tensorG5` | canonical `.sdz` | Google LiteRT-LM dispatch on Tensor G5 TPU/NPU | forbidden |
 
-All four variants are ARM64-only, omit the Android `INTERNET` permission, and fail
-closed when their exact provider or model contract is unavailable. OpenBLAS,
-host runtimes, implicit NNAPI partitioning, and alternate providers are rejected by the
-packaging verifier.
+Every flavor additionally packages the explicit provider-independent `SDX_GGUF_AOT`
+route for app-owned `.gguf`/`.ggml` imports. Format selects that raw route; it is never a
+fallback from a failed prepared provider. All four variants are ARM64-only. Inference and
+graph reasoning remain local. `INTERNET` is confined to public Hugging Face repository
+metadata and selected model transfer; cleartext traffic, tokens, remote inference,
+OpenBLAS, host runtimes, implicit NNAPI partitioning, and alternate prepared providers
+are rejected by the application or packaging verifier.
+
+## Model acquisition and activation
+
+The Settings screen exposes two independent paths:
+
+- `owner/repository` and canonical Hugging Face repository/tree/blob/resolve references
+  are resolved directly through the public Hugging Face API. Repository/tree discovery
+  pins the returned commit; exact file URLs retain the requested revision and skip the
+  metadata request. One complete candidate starts app-owned transfer immediately, several
+  GGUF/GGML quantizations require explicit selection, and split GGUF shards are not offered
+  individually. The app follows only strict HTTPS Hugging Face redirects, streams through
+  a bounded cancellable temporary file, and atomically publishes into private storage.
+- an optional Kompile artifact service opens only prepared `.sdz`/`.kproject` downloads in
+  an external browser.
+
+A Hugging Face transfer is not success. The downloaded file must pass GGUF/GGML validation,
+`libsdx_llm` ABI-v2 load, embedded tokenizer and model-owned chat-template rendering, and a
+bounded real decode. The exact SDX session that decoded the probe is then installed in
+`ChatEngine`; only afterward are active-model preferences committed. A failure removes the
+new file and restores the prior selection/runtime. Kompile staging receives only the target
+profile and prepared artifact kind and never participates in the Hugging Face path.
 
 ## Architecture
 
 The application layer depends only on `ChatModel` and
-`AcceleratedChatModelAndroid`. Flavor source sets provide
-`PlatformLocalChatSession` implementations:
+`AcceleratedChatModelAndroid`. Model format selects a `PlatformLocalChatSession`:
 
-- Vulkan, Hexagon, and Tensor G3 share one SDX JavaCPP session lifecycle using `SdxRuntime`,
-  `NativeTokenizer`, and `SdxTextSession`. Only their strict model options and
-  route identity differ: `mobileVulkan()`, `mobileHexagon()`, and
+- Raw `.gguf`/`.ggml` opens `SdxRawGgufChatSession`, a JNA binding limited to the stable
+  `libsdx_llm` ABI-v2 surface. Runtime creation, SDX model import, chat-template rendering,
+  generation, unload, and isolate destruction stay serialized on one OS thread. Inside the
+  image the execution path is `SdxLlmCore` → `GGMLModelImport` → `GenerationPipeline`.
+- Vulkan, Hexagon, and Tensor G3 prepared `.sdz` share one SDX JavaCPP session lifecycle
+  using `SdxRuntime`, `NativeTokenizer`, and `SdxTextSession`. Only their strict model
+  options and route identity differ: `mobileVulkan()`, `mobileHexagon()`, and
   `mobileNnapiAccelerator()`.
-- Tensor G5 uses the SDX JavaCPP LiteRT-LM session and Google's dispatch runtime.
+- Tensor G5 prepared `.sdz` uses the SDX JavaCPP LiteRT-LM session and Google's dispatch
+  runtime.
 
-The retained legacy JNA source is excluded from every accelerator compiler task
-and is not packaged. There is no remote chat route. Streaming, stop-token
-handling, cancellation, session reset, and resource ownership are implemented
-at the provider seam.
+JNA and `libjnidispatch` are intentionally packaged only for the raw SDX C ABI; remote and
+legacy chat transports remain excluded, and `verify-offline-apk.sh` rejects their DEX
+classes. Prepared-provider streaming, stop tokens, cancellation, reset, and ownership stay
+at their provider seams. ABI v2 raw generation is currently a blocking one-shot call: it
+emits the completed result as one chunk and has no cooperative native cancellation entry
+point, while transfer cancellation and session teardown remain bounded.
 
-The bundled `fixture.kgraph` is checksum-verified on every launch. Imports run
-off the UI thread and are transactionally moved into app-owned storage. Graphs
-are opened once for format validation before activation. The application accepts
-only the canonical SameDiff `.sdz` identity. Provider formats are compiler-cache
-details embedded under `META-INF/sdx-cache`, extracted into a checksummed
-app-private cache, and selected by the APK target profile.
+The bundled `fixture.kgraph` is checksum-verified on every launch. Imports run off the UI
+thread and move transactionally into app-owned storage. Graphs are opened once for format
+validation before activation. Prepared models accept the canonical SameDiff `.sdz`
+identity; provider formats are compiler-cache details under `META-INF/sdx-cache`, extracted
+into a checksummed app-private cache and selected by APK target. Raw models instead use the
+common SDX AOT route described above.
 
 Graph reasoning runs in `libkompile_reasoning_android.so`, built by stock
 GraalVM `native-image` plus Android NDK r28b for arm64/bionic API 28. A small
@@ -46,41 +76,120 @@ generated `libjnikompile_graph.so` JavaCPP transport exposes the stable
 `kgr_*` C ABI to the app. Gluon is not used, and graph lifecycle calls remain
 on one native thread because the Graal isolate thread handle is thread-affine.
 
-## Build all four APKs
+## Build the APKs
 
 Required inputs:
 
 - Linux with Bash 4+, GNU coreutils/findutils, Info-ZIP, and CMake 3.20+
 - JDK 17 (Temurin or Amazon Corretto; do not use GraalVM for AGP)
 - Android SDK API 35 and NDK r28b
-- a prebuilt Android graph AOT library, or the pinned stock-Graal/LabsJDK inputs
-  consumed by `kompile-graph-reasoning-local/build-android-ndk.sh`
+- the pinned stock-Graal/LabsJDK inputs consumed by the graph module's Maven
+  `android-aot` profile
 - populated Gradle and Maven caches
-- the exact Vulkan, Hexagon, Tensor G3 NNAPI, and Tensor G5 SDX runtime AARs
-  produced by the corresponding libnd4j CMake/Maven profiles
+- the selected SDX provider AAR installed in the local Maven repository
+- the explicitly built DL4J `nd4j/sdx-aot/target/android-aot` ABI-v2 SDK for direct
+  GGUF/GGML execution; its `android-aot` profile is opt-in and never runs in a default build
 
-The normal entry point is the opt-in Maven module. It is absent from the default
-reactor and is activated only by `-Dkompile.mobile`:
+The graph AOT SDK is no longer a manually supplied prerequisite. Maven builds
+`kompile-graph-reasoning-local` with its Android profile, invokes the retained
+`build-android-ndk.sh`, and attaches the result as the `android-arm64` ZIP
+classifier. The mobile module consumes that classifier from the reactor.
+
+### 1. Install the selected DL4J SDX AAR
+
+The DL4J and Kompile trees are separate reactors, so first install the selected
+provider AAR in the local Maven repository. This Vulkan example is entirely
+Maven-driven; Maven invokes the retained native/tokenizer helper scripts:
 
 ```bash
-./mvnw -o -f kompile-chat-local/pom.xml verify \
-  -Dkompile.mobile=all \
+DL4J_ROOT=/path/to/deeplearning4j
+DL4J_MVN=/path/to/mvn
+ANDROID_NDK=/path/to/android-sdk/ndk/28.1.13356709
+
+# Android tokenizer base JAR, JNI classifier, and preset
+"$DL4J_MVN" -f "$DL4J_ROOT/nd4j/nd4j-tokenizers/pom.xml" \
+  -Pandroid-arm64 \
+  -Dandroid.ndk="$ANDROID_NDK" \
+  -Dandroid.api=28 \
+  -DskipTests install
+
+# Accelerator-native AAR; buildnativeoperations.sh is owned by this Maven profile
+"$DL4J_MVN" -f "$DL4J_ROOT/libnd4j/pom.xml" \
+  -Psdx-android-aar \
+  -Dlibnd4j.vulkan=true \
+  -Djavacpp.platform=android-arm64 \
+  -Dandroid.ndk="$ANDROID_NDK" \
+  -Dlibnd4j.android.api=28 \
+  -Dsdx.android.variant=vulkan \
+  -Dlibnd4j.buildthreads=12 \
+  -DskipTests install
+
+# Full JavaCPP SDX AAR consumed by this application
+"$DL4J_MVN" -f "$DL4J_ROOT/nd4j/nd4j-backends/nd4j-backend-impls/nd4j-sdx/pom.xml" \
+  -Pandroid-arm64 \
+  -Dandroid.ndk="$ANDROID_NDK" \
+  -Dandroid.api=28 \
+  -Dsdx.android.variant=vulkan \
+  -DskipTests install
+```
+
+Use the corresponding libnd4j/SDX producer profile and classifier for Hexagon,
+Tensor G3, or Tensor G5. Tensor G5 remains a specialized LiteRT-LM artifact
+produced by `nd4j-sdx-litertlm`; its vendor/Bazel helper is retained behind that
+Maven boundary.
+
+Direct raw-model execution is a separate explicit producer. Build the DL4J `sdx-aot`
+Android SDK with its opt-in `android-aot` profile and NDK helper, then pass its root to the
+lower-level packager as `--sdx-llm-sdk` (or publish/consume the matching classifier through
+the Maven lifecycle). The packager requires `abi.version=2`, `direct.gguf=true`, and
+`jni/arm64-v8a/libsdx_llm.so`; a default DL4J build does not create this artifact.
+
+### 2. Build from the Kompile root reactor
+
+`kompile-chat-local` is in the root reactor. Its Android child remains opt-in and
+is activated only by `-Dkompile.mobile`:
+
+```bash
+./mvnw -o \
+  -Dkompile.mobile=vulkan \
   -Dmobile.android.sdk=/path/to/android-sdk \
   -Dmobile.android.ndk=/path/to/android-sdk/ndk/28.1.13356709 \
   -Dmobile.java.home=/path/to/jdk-17 \
-  -Dmobile.maven=/absolute/path/to/mvn
+  -Dmobile.graalvm.home=/path/to/graalvm-21.0.10 \
+  -DskipTests \
+  -pl :kompile-chat-local-mobile -am \
+  install
 ```
 
-Use `vulkan`, `hexagon`, `tensor-g3`, or `tensor-g5` instead of `all`
-to assemble one APK. Maven owns lifecycle and variant selection; libnd4j CMake
-owns accelerator-native builds, and the Android Gradle build remains the APK
-packaging boundary. The profile invokes Gradle and its nested Maven preparation
-offline.
+`mobile.java.home` is the JDK used by Android Gradle. The graph AOT producer
+independently requires Oracle GraalVM 21.0.10 / Native Image 23.1.10 through
+`mobile.graalvm.home`.
 
-The lower-level `android/tools/build-offline-accelerators.sh` remains directly
-usable for CI or diagnosis. Runtime AARs may be overridden with its
-`--vulkan-aar`, `--hexagon-aar`, `--tensor-g3-aar`, and
-`--tensor-g5-aar` options or with the matching Maven properties.
+Use `vulkan`, `hexagon`, `tensor-g3`, `tensor-g5`, or `all` as the mobile value.
+Maven owns lifecycle, graph-AOT artifact production, dependency staging, and
+variant selection; libnd4j CMake owns accelerator-native compilation; Gradle is
+the APK packaging boundary. The mobile helper runs in Maven-artifact mode and
+does not launch nested Maven builds or copy generated AARs into the source tree.
+
+The retained lower-level `android/tools/build-offline-accelerators.sh` remains
+directly usable for CI or diagnosis. It has two deliberately separate artifact modes:
+
+- Source-build mode accepts `--vulkan-aar`, `--hexagon-aar`,
+  `--tensor-g3-aar`, and `--tensor-g5-aar` (or their matching Maven
+  properties).
+- Release-consumer mode requires `--sdx-release-version`,
+  `--sdx-release-manifest`, and `--sdx-release-artifact-root`. The independently
+  pinned version must match `releaseVersion`, and `releaseTag` must be
+  `sdk-v<releaseVersion>`. For each requested flavor it reads the `releaseSelector`
+  in `accelerators.json`, selects exactly one `component=runtime` record, retains
+  its exact `fileName`, and rejects an incompatible role/packaging/classifier,
+  missing or ambiguous selection, or wrong-size/wrong-SHA-256 AAR before Gradle runs.
+
+Release-consumer mode passes each verified absolute path to Gradle with an
+explicit Gradle property (`-PsdxVulkanAar`,
+`-PsdxHexagonAar`, `-PsdxTensorG3Aar`, or `-PsdxTensorG5Aar`). It never
+copies the release AAR into the source tree and cannot be combined with source-build
+`--*-aar` overrides.
 
 Maven outputs:
 
@@ -105,27 +214,33 @@ own release signing configuration.
 
 Before and after assembly the build:
 
-1. validates each provider AAR, ELF ABI, accelerator declaration, and forbidden
-   dependency set;
+1. validates each provider AAR, ELF ABI, accelerator declaration, and forbidden dependency
+   set;
 2. assembles only `arm64-v8a`;
 3. verifies the APK signature;
-4. confirms that `INTERNET` is absent;
+4. confirms that `INTERNET` is present for direct Hugging Face discovery and transfer,
+   cleartext remains disabled, and app networking is confined to the acquisition class;
 5. verifies the graph fixture against `offline-assets.json`;
 6. requires and audits the stock-Graal graph AOT plus JavaCPP wrapper;
-7. requires the selected provider libraries;
-8. proves that every AArch64 `DT_NEEDED` dependency is bundled or an
-   explicitly allowed Android/vendor system library;
-9. compares every runtime library byte-for-byte with the selected AAR;
-10. verifies the JavaCPP loader hierarchy in the final APK DEX;
-11. requires extracted native packaging for filesystem-discovered DSP payloads;
-12. rejects OpenBLAS, host/CPU libraries, other accelerators, and undeclared ABIs.
+7. requires the selected provider and the provider-independent `libsdx_llm` runtime;
+8. requires ABI v2 and the direct load, chat-template render, generate, unload, and destroy
+   exports from `libsdx_llm.so`;
+9. proves that every AArch64 `DT_NEEDED` dependency is bundled or an explicitly allowed
+   Android/vendor system library;
+10. compares provider runtime libraries byte-for-byte with the selected AAR;
+11. verifies the JavaCPP and JNA/raw-SDX loader classes in final DEX while rejecting remote
+    and legacy transports;
+12. requires extracted native packaging for filesystem-discovered native side libraries;
+13. rejects OpenBLAS, host libraries, other accelerators, and undeclared ABIs; only the
+    audited provider-independent SDX raw CPU library set is exempt from provider fallback
+    rules.
 
-The machine-readable contract is `accelerators.json`. APK auditing is a
-fail-closed shell entry point with a CMake JSON validator. The final ZIP embeds
-that contract and re-runs the same verifier against every packaged APK and its
-exact packaged AAR before accepting the bundle. There is no host Java tools
-module and no Python in the supported build, audit, APK, or runtime path.
-On-device code is Kotlin/Java plus JavaCPP and the selected native provider.
+The machine-readable contract is `accelerators.json`. APK auditing is a fail-closed shell
+entry point with a CMake JSON validator. The final ZIP embeds that contract and re-runs the
+same verifier against every packaged APK and its exact packaged AAR before accepting the
+bundle. There is no host Java tools module and no Python in the supported build, audit, APK,
+or runtime path. On-device code is Kotlin/Java plus JavaCPP for prepared providers, JNA for
+the ABI-v2 raw SDX image, and the packaged native runtimes.
 
 ## Install and use
 
@@ -141,8 +256,11 @@ adb install -r ../target/offline-dist/kompile-offline-graph-chat-tensor-g5.apk
 In Settings:
 
 - import a `.kgraph` file or use the bundled fixture;
-- import one canonical `.sdz` containing checksummed cache objects for the APK
-  targets you intend to test;
+- import one canonical `.sdz` containing checksummed cache objects for prepared APK targets;
+- resolve a Hugging Face repository name or canonical URL, select a complete GGUF/GGML, and
+  let the app download, SDX-load, decode-probe, and activate it without configuring Kompile;
+- optionally browse a configured Kompile service for already prepared `.sdz`/`.kproject`
+  artifacts;
 - set temperature and maximum output tokens.
 
 Models are not embedded in the APK. This avoids redistributing gated weights
@@ -191,10 +309,10 @@ also intentionally gated to Tensor G5 hardware.
 
 ### Google Tensor G5
 
-The Tensor build uses pinned LiteRT-LM dispatch components. The app still accepts
-only `.sdz`; the compiler/cache extracts the checksummed
-`compiledArtifacts.tensorG5LiteRtLm` derivative internally.
-INT8 validation is fail-closed.
+The prepared Tensor route uses pinned LiteRT-LM dispatch components and accepts only `.sdz`;
+the compiler/cache extracts the checksummed `compiledArtifacts.tensorG5LiteRtLm` derivative
+internally. Direct `.gguf`/`.ggml` continues to use the common `SDX_GGUF_AOT` route rather
+than LiteRT-LM. INT8 validation is fail-closed.
 The build is package-verified here; final acceptance requires a Tensor G5
 device run with dispatch/NPU tracing.
 

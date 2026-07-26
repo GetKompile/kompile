@@ -28,6 +28,7 @@ import java.util.Map;
 
 import ai.kompile.cli.common.config.HardwareAutoConfigurator.Tier;
 import ai.kompile.cli.common.config.GpuProbe.GpuInfo;
+import ai.kompile.cli.common.routing.KompileService;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -278,6 +279,39 @@ class ProjectHardwareProvisionerTest {
         assertTrue(config.containsKey("totalRamGb"));
         assertTrue(config.containsKey("cpus"));
         assertTrue(config.containsKey("provisionedAt"));
+    }
+
+    @Test
+    void provision_projectRuntimeSizesEachPersonaProcess(@TempDir Path tmpDir)
+            throws IOException {
+        ProjectHardwareProvisioner.provision(tmpDir, false);
+
+        Path file = tmpDir.resolve("config/project-runtime.json");
+        ObjectMapper mapper = new ObjectMapper();
+        Map<String, Object> config = mapper.readValue(file.toFile(),
+                new TypeReference<>() {});
+
+        // The persona launcher looks heap up as KompileService.id() + "Heap". Deriving the
+        // expected key from the enum rather than hardcoding it is the point of this test: if a
+        // service id ever changes, the provisioner stops emitting a key the launcher reads and
+        // every persona silently drops to the machine-tier default.
+        for (KompileService service : List.of(KompileService.CHAT, KompileService.CRAWL)) {
+            String key = service.id() + "Heap";
+            assertTrue(config.containsKey(key),
+                    "project-runtime.json must size " + service.componentId() + " via " + key);
+            assertTrue(String.valueOf(config.get(key)).matches("\\d+[mg]"),
+                    key + " must be a -Xmx value, got: " + config.get(key));
+        }
+    }
+
+    @Test
+    void personaHeaps_areDefinedForEveryTier() {
+        for (Tier tier : Tier.values()) {
+            assertTrue(HardwareAutoConfigurator.chatHeapForTier(tier).matches("\\d+[mg]"),
+                    "chatHeapForTier(" + tier + ")");
+            assertTrue(HardwareAutoConfigurator.crawlHeapForTier(tier).matches("\\d+[mg]"),
+                    "crawlHeapForTier(" + tier + ")");
+        }
     }
 
     @Test

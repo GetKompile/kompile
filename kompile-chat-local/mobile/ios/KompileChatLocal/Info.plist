@@ -18,6 +18,8 @@
     <string>1.0</string>
     <key>CFBundleVersion</key>
     <string>1</string>
+    <key>SDXTargetProfile</key>
+    <string>$(SDX_TARGET_PROFILE)</string>
     <key>LSRequiresIPhoneOS</key>
     <true/>
     <key>NSSupportsLiveActivities</key>
@@ -42,6 +44,6 @@
     <true/>
     <!-- Privacy strings (required if submitting to App Store) -->
     <key>NSFileProviderDomainUsageDescription</key>
-    <string>Kompile Chat imports .kgraph knowledge graph files and local model files.</string>
+    <string>Kompile Chat imports .kgraph graphs, compiled .sdz models, and local GGUF/GGML component files.</string>
 </dict>
 </plist>

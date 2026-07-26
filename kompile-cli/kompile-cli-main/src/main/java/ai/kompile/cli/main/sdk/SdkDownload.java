@@ -41,6 +41,18 @@ public class SdkDownload implements Callable<Integer> {
             description = "Optional chip/feature suffix (e.g., nnapi, armcompute, avx2, compile)")
     private String chip;
 
+    @CommandLine.Option(names = "--variant",
+            description = "SDK variant (for example cpu or cuda); --chip remains a compatibility alias")
+    private String variant;
+
+    @CommandLine.Option(names = "--component", defaultValue = "runtime",
+            description = "Manifest component (default: ${DEFAULT-VALUE})")
+    private String component;
+
+    @CommandLine.Option(names = "--package-role",
+            description = "Manifest package role; defaults by platform (android-aar, apple-xcframework, platform-sdk)")
+    private String packageRole;
+
     @CommandLine.Option(names = "--sdk-version",
             description = "SDK version (default: " + SdkConstants.DEFAULT_SDX_SDK_VERSION + ")")
     private String sdkVersion;
@@ -57,25 +69,17 @@ public class SdkDownload implements Callable<Integer> {
     public Integer call() throws Exception {
         KompileModelManager manager = new KompileModelManager();
 
-        // Resolve full classifier
-        String classifier = SdkConstants.resolveClassifier(platform, chip);
-        System.out.println("Resolved platform classifier: " + classifier);
+        if (variant == null || variant.isBlank()) variant = chip;
+        if (packageRole == null || packageRole.isBlank()) {
+            packageRole = platform.startsWith("android") ? "android-aar"
+                    : platform.startsWith("ios") ? "apple-xcframework" : "platform-sdk";
+        }
 
         // Download SDK artifact
         System.out.println("\n--- Downloading SDX Runtime SDK ---");
-        SdkDescriptor sdkDescriptor = SdkConstants.createSdxRuntimeDescriptor(sdkVersion, sdkBaseUrl);
-        if (!sdkDescriptor.hasPlatform(classifier)) {
-            System.err.println("No SDK artifact available for platform: " + classifier);
-            System.err.println("Available platforms for this SDK:");
-            sdkDescriptor.getPlatformArtifacts().keySet().stream()
-                    .filter(p -> p.startsWith(platform.split("-")[0]))
-                    .sorted()
-                    .forEach(p -> System.err.println("  " + p));
-            return 1;
-        }
-
         try {
-            Path sdkPath = manager.downloadSdk(sdkDescriptor, classifier);
+            Path sdkPath = manager.downloadSdxSdk(sdkVersion, component, packageRole,
+                    platform, variant, sdkBaseUrl);
             System.out.println("SDK downloaded to: " + sdkPath);
 
             if (outputDir != null) {
@@ -86,7 +90,7 @@ public class SdkDownload implements Callable<Integer> {
             }
         } catch (Exception e) {
             System.err.println("SDK download failed: " + e.getMessage());
-            System.err.println("(This is expected if the SDK hasn't been published yet)");
+            return 1;
         }
 
         // Download SDZ model bundle

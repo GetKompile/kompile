@@ -36,6 +36,14 @@
         writer) moves in with it. Depends on app-core + platform + the filesystem/rag tool modules + the
         Spring-AI MCP client/server starters + embedded Jetty for the REST bridge. Package name preserved.
         See docs/architecture/services-decomposition-spec.md.
+
+        The MCP *server* itself (ai.kompile.app.mcp: McpToolRegistry, McpServerConfig, the SSE
+        transport and its /mcp controller) moved here from kompile-app-main when web-admin was carved
+        out. It has to live below the persona web layers: kompile-app-web-chat and
+        kompile-app-web-crawl now own the @Tool classes for their surfaces, and those tools are
+        unreachable unless the app mounting them also has a server to expose them on. Leaving the
+        server in app-main would have meant only the admin app speaks MCP.
+        See docs/architecture/app-persona-boundary.md.
     </description>
 
     <dependencies>
@@ -56,6 +64,12 @@
         <dependency>
             <groupId>ai.kompile</groupId>
             <artifactId>kompile-tool-rag</artifactId>
+        </dependency>
+        <!-- McpToolRegistry runs every tool call past the gateway before dispatching. -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-tool-gateway</artifactId>
+            <version>${project.version}</version>
         </dependency>
 
         <!-- Spring-AI MCP client + webmvc server -->

@@ -304,7 +304,10 @@ public final class ProjectBundleResolver {
         if (!"kompile-project".equals(root.get("format"))) {
             throw new IOException("Unsupported archive format: " + root.get("format"));
         }
-        if (requiredLong(root.get("formatVersion"), "formatVersion") != 1) {
+        long formatVersion = requiredLong(root.get("formatVersion"), "formatVersion");
+        // Version 2 adds semantic knowledge-base metadata but keeps the payload inventory,
+        // identity, default-graph, and checksum contract used by the local/mobile resolver.
+        if (formatVersion < 1 || formatVersion > 2) {
             throw new IOException("Unsupported archive formatVersion: " + root.get("formatVersion"));
         }
         Object rawEntries = root.get("entries");

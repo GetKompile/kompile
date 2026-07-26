@@ -1,0 +1,30 @@
+/*
+ * Karma config for the chat app's specs. `exclude` is this app's share of the monolith's
+ * known-broken spec list, split out of the old workspace-root tsconfig.spec.json.
+ *
+ * Keep it in step with this project's `test.options.exclude` in angular.json — karma discovers
+ * specs with its own glob, so a file excluded only here still loads and then fails with
+ * "missing from the TypeScript compilation".
+ */
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "outDir": "../../out-tsc/spec-chat",
+    "types": [
+      "jasmine"
+    ]
+  },
+  "files": [
+    "../kompile-ui-shared/src/polyfills.ts"
+  ],
+  "include": [
+    "src/**/*.spec.ts",
+    "src/**/*.d.ts",
+    "../kompile-ui-shared/src/**/*.d.ts"
+  ],
+  "exclude": [
+    "src/app/components/unified-chat/unified-chat-dark-mode.spec.ts",
+    "src/app/components/unified-chat/unified-chat-token-usage.spec.ts",
+    "src/app/components/unified-chat/unified-chat-context-panel.spec.ts"
+  ]
+}

@@ -23,12 +23,19 @@ import ai.kompile.staging.catalog.ModelCatalog;
 import ai.kompile.staging.config.ModelSourceConfiguration;
 import ai.kompile.staging.config.StagingSettings;
 import ai.kompile.staging.config.StagingSettingsService;
+import ai.kompile.staging.config.StagingAssetLimits;
+import ai.kompile.staging.diagnostics.ImportDiagnosticEvent;
+import ai.kompile.staging.download.ComponentUrlDownloader;
 import ai.kompile.staging.download.DownloadRequest;
+import ai.kompile.staging.download.HuggingFaceReference;
+import ai.kompile.staging.download.TextModelAssetMap;
+import ai.kompile.staging.download.TextModelAssetUrlMap;
 import ai.kompile.staging.export.ExportService;
 import ai.kompile.staging.export.ImportService;
 import ai.kompile.modelmanager.registry.*;
 import ai.kompile.core.staging.StagingModelInfo;
 import ai.kompile.core.staging.StagingStatus;
+import ai.kompile.staging.staging.ModelIdPolicy;
 import ai.kompile.staging.staging.StagingService;
 import ai.kompile.staging.sdx.SdxProjectOutputService;
 import org.nd4j.dsp.model.SdxTargetProfile;
@@ -49,12 +56,17 @@ import org.springframework.web.multipart.MultipartFile;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
 
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -70,7 +82,6 @@ import java.util.stream.Stream;
  */
 @RestController
 @RequestMapping("/api/staging")
-@CrossOrigin(origins = "*")
 public class StagingController {
 
     private static final Logger log = LoggerFactory.getLogger(StagingController.class);
@@ -83,12 +94,26 @@ public class StagingController {
     private final ArchiveModelManager archiveModelManager;
     private final ModelSourceConfiguration modelSourceConfig;
     private final StagingSettingsService stagingSettingsService;
+    private final StagingAssetLimits assetLimits;
 
     @Value("${kompile.staging.project-dir:}")
     private String projectDir;
 
     @Value("${kompile.staging.settings-dir:${kompile.home:${user.home}/.kompile}}")
     private String settingsDir;
+
+    public StagingController(RegistryService registryService,
+                            StagingService stagingService,
+                            ExportService exportService,
+                            ImportService importService,
+                            CatalogService catalogService,
+                            ArchiveModelManager archiveModelManager,
+                            ModelSourceConfiguration modelSourceConfig,
+                            StagingSettingsService stagingSettingsService) {
+        this(registryService, stagingService, exportService, importService, catalogService,
+                archiveModelManager, modelSourceConfig, stagingSettingsService,
+                new StagingAssetLimits());
+    }
 
     @Autowired
     public StagingController(RegistryService registryService,
@@ -98,7 +123,8 @@ public class StagingController {
                             CatalogService catalogService,
                             ArchiveModelManager archiveModelManager,
                             ModelSourceConfiguration modelSourceConfig,
-                            StagingSettingsService stagingSettingsService) {
+                            StagingSettingsService stagingSettingsService,
+                            StagingAssetLimits assetLimits) {
         this.registryService = registryService;
         this.stagingService = stagingService;
         this.exportService = exportService;
@@ -107,6 +133,7 @@ public class StagingController {
         this.archiveModelManager = archiveModelManager;
         this.modelSourceConfig = modelSourceConfig;
         this.stagingSettingsService = stagingSettingsService;
+        this.assetLimits = assetLimits == null ? new StagingAssetLimits() : assetLimits;
     }
 
     // ==================== Context & Settings Endpoints ====================
@@ -143,6 +170,24 @@ public class StagingController {
         return stagingSettingsService.updateSettings(settings);
     }
 
+    /**
+     * Browse the newest sanitized import diagnostics across recent attempts.
+     */
+    @GetMapping("/import-diagnostics")
+    public List<ImportDiagnosticEvent> getImportDiagnostics(
+            @RequestParam(defaultValue = "50") int limit) {
+        return stagingService.getImportDiagnostics(limit);
+    }
+
+    /**
+     * Browse the retained event sequence for one import attempt.
+     */
+    @GetMapping("/import-diagnostics/{attemptId}")
+    public List<ImportDiagnosticEvent> getImportDiagnostics(
+            @PathVariable String attemptId) {
+        return stagingService.getImportDiagnostics(attemptId);
+    }
+
     // ==================== Registry Endpoints ====================
 
     /**
@@ -166,6 +211,7 @@ public class StagingController {
      */
     @GetMapping("/registry/model/{modelId}")
     public ResponseEntity<ModelEntry> getModel(@PathVariable String modelId) {
+        requireModelIdPath(modelId);
         return registryService.getModel(modelId)
                 .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
@@ -178,6 +224,7 @@ public class StagingController {
     public ResponseEntity<Map<String, Object>> updateModel(
             @PathVariable String modelId,
             @RequestBody UpdateModelRequest request) {
+        requireModelIdPath(modelId);
         log.info("Updating model: {} with request: {}", modelId, request);
 
         try {
@@ -220,6 +267,7 @@ public class StagingController {
      */
     @PostMapping("/registry/model/{modelId}/probe-vision-io")
     public ResponseEntity<Map<String, Object>> probeVisionEncoderIO(@PathVariable String modelId) {
+        requireModelIdPath(modelId);
         log.info("Probing vision encoder IO config for: {}", modelId);
         try {
             return registryService.getModel(modelId)
@@ -272,6 +320,7 @@ public class StagingController {
      */
     @DeleteMapping("/registry/model/{modelId}")
     public ResponseEntity<Map<String, Object>> deleteModel(@PathVariable String modelId) {
+        requireModelIdPath(modelId);
         log.info("Deleting model: {}", modelId);
 
         return registryService.removeModel(modelId)
@@ -298,6 +347,7 @@ public class StagingController {
      */
     @GetMapping("/registry/model/{modelId}/download/model")
     public ResponseEntity<?> downloadModelFile(@PathVariable String modelId) {
+        requireModelIdPath(modelId);
         return registryService.getModel(modelId)
                 .map(entry -> {
                     Path modelPath = registryService.getModelDir().resolve(
@@ -327,6 +377,7 @@ public class StagingController {
      */
     @GetMapping("/registry/model/{modelId}/download/vocab")
     public ResponseEntity<?> downloadVocabFile(@PathVariable String modelId) {
+        requireModelIdPath(modelId);
         return registryService.getModel(modelId)
                 .map(entry -> {
                     Path modelDir = registryService.getModelDir().resolve(
@@ -357,6 +408,7 @@ public class StagingController {
      */
     @GetMapping("/registry/model/{modelId}/files")
     public ResponseEntity<?> listModelFiles(@PathVariable String modelId) {
+        requireModelIdPath(modelId);
         return registryService.getModel(modelId)
                 .map(entry -> {
                     Path modelDir = registryService.getModelDir().resolve(
@@ -396,6 +448,7 @@ public class StagingController {
      */
     @GetMapping("/registry/model/{modelId}/download/file/{fileName:.+}")
     public ResponseEntity<?> downloadFile(@PathVariable String modelId, @PathVariable String fileName) {
+        requireModelIdPath(modelId);
         if (fileName.contains("..") || fileName.contains("/") || fileName.contains("\\")) {
             return ResponseEntity.badRequest().build();
         }
@@ -602,6 +655,7 @@ public class StagingController {
      */
     @GetMapping("/models/{modelId}")
     public ResponseEntity<StagingModelInfo> getStagedModel(@PathVariable String modelId) {
+        requireModelIdPath(modelId);
         StagingModelInfo info = stagingService.getStagingModel(modelId);
         if (info != null) {
             return ResponseEntity.ok(info);
@@ -615,6 +669,7 @@ public class StagingController {
      */
     @GetMapping(value = "/models/{modelId}/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter streamStagingProgress(@PathVariable String modelId) {
+        requireModelIdPath(modelId);
         log.info("SSE subscription for staging progress: {}", modelId);
         return stagingService.subscribeToStagingStream(modelId);
     }
@@ -624,6 +679,7 @@ public class StagingController {
      */
     @DeleteMapping("/models/{modelId}")
     public ResponseEntity<Map<String, Object>> cancelStagingModel(@PathVariable String modelId) {
+        requireModelIdPath(modelId);
         boolean cancelled = stagingService.cancelStaging(modelId);
         if (cancelled) {
             return ResponseEntity.ok(Map.of(
@@ -639,57 +695,183 @@ public class StagingController {
      */
     @PostMapping("/stage")
     public ResponseEntity<StagingModelInfo> stageModel(@RequestBody StageModelRequest request) {
-        String outputFormat;
-        String targetProfile = request.getTargetProfile();
-        String quantizationProfile;
-        String targetSoc = request.getTargetSoc();
+        DownloadRequest downloadRequest = toDownloadRequest(request);
+        stagingService.stageModelAsync(downloadRequest);
+        return acceptedStatus(downloadRequest);
+    }
+
+    private DownloadRequest toDownloadRequest(StageModelRequest request) {
+        if (request == null) {
+            throw badRequest("Staging request is required.", null);
+        }
+        String modelId = requireModelIdPath(request.getModelId());
+        if (request.getSource() == null || request.getSource().isBlank()) {
+            throw badRequest("source is required.", null);
+        }
+        String normalizedSource = request.getSource().trim().toLowerCase(Locale.ROOT);
+        boolean componentSource = ComponentUrlDownloader.isComponentSource(normalizedSource);
+        if (!componentSource
+                && (request.getRepository() == null || request.getRepository().isBlank())) {
+            throw badRequest("repository is required.", null);
+        }
+        if (componentSource
+                && request.getRepository() != null
+                && !request.getRepository().isBlank()) {
+            throw badRequest(
+                    "https-components is repository-free; remove repository.", null);
+        }
+
+        if ("trusted-local".equals(normalizedSource)) {
+            throw badRequest("trusted-local is reserved for internal registry staging.", null);
+        }
+        if ("huggingface".equals(normalizedSource) || "hf".equals(normalizedSource)) {
+            try {
+                HuggingFaceReference.parse(request.getRepository(), request.getRevision());
+            } catch (IllegalArgumentException invalidRepository) {
+                throw badRequest(invalidRepository.getMessage(), invalidRepository);
+            }
+        } else if ("local".equals(normalizedSource)
+                && !request.getRepository().matches("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")) {
+            throw badRequest("Local staging requires an opaque upload handle.", null);
+        } else if (componentSource
+                && ((request.getRevision() != null && !request.getRevision().isBlank())
+                    || (request.getAuthToken() != null && !request.getAuthToken().isBlank()))) {
+            throw badRequest(
+                    "https-components accepts only public URLs and no revision or auth token.",
+                    null);
+        }
+
         try {
-            outputFormat =
+            String outputFormat =
                     SdxProjectOutputService.normalizeOutputFormat(request.getOutputFormat());
-            quantizationProfile =
+            String targetProfile = request.getTargetProfile();
+            String quantizationProfile =
                     SdxProjectOutputService.normalizeQuantization(
                             request.getQuantizationProfile());
-            if (SdxProjectOutputService.OUTPUT_KPROJECT.equals(outputFormat)) {
+            String targetSoc = request.getTargetSoc();
+            ModelType modelType = ModelType.fromValue(request.getType());
+
+            TextModelAssetMap textAssets = request.getTextAssets();
+            if (textAssets == null && request.getFiles() != null) {
+                textAssets = TextModelAssetMap.fromFileMap(request.getFiles());
+            }
+
+            boolean targetOutput =
+                    SdxProjectOutputService.OUTPUT_KPROJECT.equals(outputFormat)
+                            || (targetProfile != null && !targetProfile.isBlank());
+            if (targetOutput) {
                 targetProfile =
                         SdxProjectOutputService.normalizeTargetProfile(targetProfile);
                 targetSoc = SdxProjectOutputService.normalizeTargetSoc(
                         SdxTargetProfile.fromId(targetProfile),
                         targetSoc);
+                textAssets = validateRunnableTextSource(request, textAssets);
             }
+
+            DownloadRequest.DownloadRequestBuilder builder = DownloadRequest.builder()
+                    .source(request.getSource())
+                    .repository(request.getRepository())
+                    .modelId(modelId)
+                    .modelType(modelType)
+                    .format(request.getFormat())
+                    .revision(request.getRevision())
+                    .authToken(request.getAuthToken())
+                    .tokenizerUrl(request.getTokenizerUrl())
+                    .audioSynthesis(request.getAudioSynthesis())
+                    .outputFormat(outputFormat)
+                    .targetProfile(targetProfile)
+                    .quantizationProfile(quantizationProfile)
+                    .targetSoc(targetSoc)
+                    .textAssets(textAssets)
+                    .textAssetUrls(request.getTextAssetUrls());
+            if (request.getFiles() != null && !request.getFiles().isEmpty()) {
+                builder.files(new HashMap<>(request.getFiles()));
+            }
+            return builder.build();
+        } catch (ResponseStatusException alreadyMapped) {
+            throw alreadyMapped;
         } catch (IllegalArgumentException invalid) {
-            throw new ResponseStatusException(
-                    HttpStatus.BAD_REQUEST, invalid.getMessage(), invalid);
+            throw badRequest(invalid.getMessage(), invalid);
+        }
+    }
+
+    private TextModelAssetMap validateRunnableTextSource(
+            StageModelRequest request,
+            TextModelAssetMap declaredAssets) {
+        String source = request.getSource().trim().toLowerCase(Locale.ROOT);
+        boolean componentSource = ComponentUrlDownloader.isComponentSource(source);
+        if (!"huggingface".equals(source)
+                && !"hf".equals(source)
+                && !"local".equals(source)
+                && !componentSource) {
+            throw badRequest(
+                    "Offline chat packages accept a pinned Hugging Face repository or a local "
+                            + "multipart text bundle, or a complete public HTTPS component bundle.",
+                    null);
         }
 
-        DownloadRequest.DownloadRequestBuilder builder = DownloadRequest.builder()
-                .source(request.getSource())
-                .repository(request.getRepository())
-                .modelId(request.getModelId())
-                .modelType(ModelType.fromValue(request.getType()))
-                .format(request.getFormat())
-                .revision(request.getRevision())
-                .authToken(request.getAuthToken())
-                .tokenizerUrl(request.getTokenizerUrl())
-                .audioSynthesis(request.getAudioSynthesis())
-                .outputFormat(outputFormat)
-                .targetProfile(targetProfile)
-                .quantizationProfile(quantizationProfile)
-                .targetSoc(targetSoc);
-        if (request.getFiles() != null && !request.getFiles().isEmpty()) {
-            builder.files(new HashMap<>(request.getFiles()));
+        TextModelAssetMap assets = declaredAssets == null
+                ? new TextModelAssetMap()
+                : declaredAssets;
+        if ("huggingface".equals(source) || "hf".equals(source)) {
+            // Repository URLs and mutable branch/tag names are resolved through the
+            // Hugging Face API by the downloader before any asset download. An empty
+            // declaration intentionally requests discovery; multiple model candidates
+            // fail closed until one exact path is selected.
+            return assets;
         }
-        DownloadRequest downloadRequest = builder.build();
+        if (componentSource) {
+            if (!assets.toFileMap().isEmpty()
+                    || (request.getFiles() != null && !request.getFiles().isEmpty())) {
+                throw badRequest(
+                        "https-components accepts absolute component URLs only, not repository paths.",
+                        null);
+            }
+            TextModelAssetUrlMap urls = request.getTextAssetUrls();
+            List<String> missing = urls == null
+                    ? List.of("complete textAssetUrls bundle")
+                    : urls.missingRunnableChatAssets();
+            if (!missing.isEmpty()) {
+                throw badRequest(
+                        "Runnable HTTPS component staging is missing: "
+                                + String.join(", ", missing) + ".",
+                        null);
+            }
+            return assets;
+        }
 
-        // Start async staging
-        CompletableFuture<StagingModelInfo> future = stagingService.stageModelAsync(downloadRequest);
+        List<String> missing = assets.missingRunnableChatAssets();
+        if (!missing.isEmpty()) {
+            throw badRequest(
+                    "Runnable mobile chat staging is missing: " + String.join(", ", missing) + ".",
+                    null);
+        }
+        return assets;
+    }
 
-        // Return initial status immediately
+    private ResponseEntity<StagingModelInfo> acceptedStatus(DownloadRequest request) {
+        String source = ComponentUrlDownloader.isComponentSource(request.getSource())
+                ? ComponentUrlDownloader.SOURCE
+                : request.getSource() + ":" + request.getRepository();
         StagingModelInfo initialStatus = StagingModelInfo.create(
                 request.getModelId(),
-                request.getSource() + ":" + request.getRepository(),
-                ModelType.fromValue(request.getType()));
-
+                source,
+                request.getModelType());
         return ResponseEntity.accepted().body(initialStatus);
+    }
+
+    private static String requireModelIdPath(String modelId) {
+        try {
+            return ModelIdPolicy.requireValid(modelId);
+        } catch (IllegalArgumentException invalid) {
+            throw badRequest(invalid.getMessage(), invalid);
+        }
+    }
+
+    private static ResponseStatusException badRequest(String message, Throwable cause) {
+        return cause == null
+                ? new ResponseStatusException(HttpStatus.BAD_REQUEST, message)
+                : new ResponseStatusException(HttpStatus.BAD_REQUEST, message, cause);
     }
 
     /**
@@ -697,6 +879,7 @@ public class StagingController {
      */
     @GetMapping("/status/{modelId}")
     public ResponseEntity<StagingModelInfo> getStagingStatus(@PathVariable String modelId) {
+        requireModelIdPath(modelId);
         StagingModelInfo info = stagingService.getStagingModel(modelId);
         if (info != null) {
             return ResponseEntity.ok(info);
@@ -705,28 +888,32 @@ public class StagingController {
     }
 
     /**
-     * Download the completed canonical offline project for Android. Compilation remains
+     * Download the completed target SDZ or canonical offline project. Compilation remains
      * asynchronous through /stage; incomplete, failed, or ambiguous outputs are not served.
      */
     @GetMapping("/models/{modelId}/output")
     public ResponseEntity<Resource> downloadStagedOutput(@PathVariable String modelId) {
+        requireModelIdPath(modelId);
         Optional<Path> output = stagingService.getStagedOutput(modelId);
         if (output.isEmpty()) {
             return ResponseEntity.notFound().build();
         }
         Path path = output.get();
         try {
+            String fileName = path.getFileName().toString();
+            String contentType = fileName.toLowerCase(Locale.ROOT).endsWith(".kproject")
+                    ? "application/vnd.kompile.project+zip"
+                    : "application/vnd.kompile.sdx+zip";
             return ResponseEntity.ok()
-                    .contentType(MediaType.parseMediaType(
-                            "application/vnd.kompile.project+zip"))
+                    .contentType(MediaType.parseMediaType(contentType))
                     .contentLength(Files.size(path))
                     .header(
                             "Content-Disposition",
-                            "attachment; filename=\"" + path.getFileName() + "\"")
+                            "attachment; filename=\"" + fileName + "\"")
                     .header("X-Content-Type-Options", "nosniff")
                     .body(new FileSystemResource(path));
         } catch (IOException e) {
-            log.error("Failed to serve mobile project for {}", modelId, e);
+            log.error("Failed to serve mobile artifact for {}", modelId, e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
         }
     }
@@ -739,6 +926,7 @@ public class StagingController {
             @PathVariable String modelId,
             @RequestBody(required = false) PromoteModelRequest request) {
 
+        requireModelIdPath(modelId);
         ModelMetadata metadata = null;
         if (request != null) {
             metadata = ModelMetadata.builder()
@@ -800,6 +988,7 @@ public class StagingController {
      */
     @DeleteMapping("/status/{modelId}")
     public ResponseEntity<Map<String, Object>> cancelStaging(@PathVariable String modelId) {
+        requireModelIdPath(modelId);
         boolean cancelled = stagingService.cancelStaging(modelId);
         if (cancelled) {
             return ResponseEntity.ok(Map.of(
@@ -1109,6 +1298,246 @@ public class StagingController {
     // ==================== File Upload Endpoints ====================
 
     /**
+     * Atomically upload every source artifact needed to produce a runnable offline SDX chat
+     * project. Multipart names are the same stable keys used by {@link TextModelAssetMap}.
+     */
+    @PostMapping(
+            value = "/stage/text-bundle",
+            consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<StagingModelInfo> stageTextBundle(
+            @RequestPart("request") StageModelRequest request,
+            @RequestPart(TextModelAssetMap.MODEL) MultipartFile model,
+            @RequestPart(TextModelAssetMap.TOKENIZER) MultipartFile tokenizer,
+            @RequestPart(value = TextModelAssetMap.TOKENIZER_CONFIG, required = false)
+                    MultipartFile tokenizerConfig,
+            @RequestPart(value = TextModelAssetMap.SPECIAL_TOKENS_MAP, required = false)
+                    MultipartFile specialTokensMap,
+            @RequestPart(value = TextModelAssetMap.ADDED_TOKENS, required = false)
+                    MultipartFile addedTokens,
+            @RequestPart(value = TextModelAssetMap.CHAT_TEMPLATE, required = false)
+                    MultipartFile chatTemplate,
+            @RequestPart(value = TextModelAssetMap.GENERATION_CONFIG, required = false)
+                    MultipartFile generationConfig,
+            @RequestPart(value = TextModelAssetMap.MODEL_CONFIG, required = false)
+                    MultipartFile modelConfig,
+            @RequestPart(value = TextModelAssetMap.TEXT_GENERATION, required = false)
+                    MultipartFile textGeneration) {
+        Path bundleDir = null;
+        String uploadHandle = UUID.randomUUID().toString();
+        try {
+            bundleDir = stagingService.getStagingDirectory()
+                    .resolve("uploads")
+                    .resolve("text-bundles")
+                    .resolve(uploadHandle)
+                    .toAbsolutePath()
+                    .normalize();
+            Files.createDirectories(bundleDir);
+
+            String modelFile = localModelFileName(request.getFormat());
+            TextModelAssetMap assets = TextModelAssetMap.builder()
+                    .model(saveBundlePart(bundleDir, model, modelFile, true))
+                    .tokenizer(saveBundlePart(
+                            bundleDir,
+                            tokenizer,
+                            TextModelAssetMap.TOKENIZER_FILE,
+                            true))
+                    .tokenizerConfig(saveBundlePart(
+                            bundleDir,
+                            tokenizerConfig,
+                            TextModelAssetMap.TOKENIZER_CONFIG_FILE,
+                            false))
+                    .specialTokensMap(saveBundlePart(
+                            bundleDir,
+                            specialTokensMap,
+                            TextModelAssetMap.SPECIAL_TOKENS_MAP_FILE,
+                            false))
+                    .addedTokens(saveBundlePart(
+                            bundleDir,
+                            addedTokens,
+                            TextModelAssetMap.ADDED_TOKENS_FILE,
+                            false))
+                    .chatTemplate(saveBundlePart(
+                            bundleDir,
+                            chatTemplate,
+                            TextModelAssetMap.CHAT_TEMPLATE_FILE,
+                            false))
+                    .generationConfig(saveBundlePart(
+                            bundleDir,
+                            generationConfig,
+                            TextModelAssetMap.GENERATION_CONFIG_FILE,
+                            false))
+                    .modelConfig(saveBundlePart(
+                            bundleDir,
+                            modelConfig,
+                            TextModelAssetMap.MODEL_CONFIG_FILE,
+                            false))
+                    .textGeneration(saveBundlePart(
+                            bundleDir,
+                            textGeneration,
+                            TextModelAssetMap.TEXT_GENERATION_FILE,
+                            false))
+                    .build();
+
+            List<String> missing = assets.missingRunnableChatAssets();
+            if (!missing.isEmpty()) {
+                throw badRequest(
+                        "Local text bundle is missing: " + String.join(", ", missing) + ".",
+                        null);
+            }
+
+            request.setSource("local");
+            request.setRepository(uploadHandle);
+            request.setTextAssets(assets);
+            request.setFiles(assets.toFileMap());
+            if (request.getType() == null || request.getType().isBlank()) {
+                request.setType("llm_ggml");
+            }
+            request.setOutputFormat(SdxProjectOutputService.OUTPUT_KPROJECT);
+
+            DownloadRequest downloadRequest = toDownloadRequest(request);
+            Path cleanupRoot = bundleDir;
+            CompletableFuture<StagingModelInfo> future =
+                    stagingService.stageModelAsync(downloadRequest);
+            future.whenComplete((ignored, failure) -> deleteBundle(cleanupRoot));
+            return acceptedStatus(downloadRequest);
+        } catch (ResponseStatusException invalid) {
+            deleteBundle(bundleDir);
+            throw invalid;
+        } catch (IOException failure) {
+            deleteBundle(bundleDir);
+            throw new ResponseStatusException(
+                    HttpStatus.INTERNAL_SERVER_ERROR,
+                    "Failed to persist the local text-model bundle.",
+                    failure);
+        }
+    }
+
+    private String saveBundlePart(
+            Path bundleDir,
+            MultipartFile part,
+            String canonicalName,
+            boolean required) throws IOException {
+        if (part == null || part.isEmpty()) {
+            if (required) {
+                throw badRequest(canonicalName + " is required and must not be empty.", null);
+            }
+            return null;
+        }
+        Path normalizedBundle = bundleDir.toAbsolutePath().normalize();
+        Path destination = normalizedBundle.resolve(canonicalName).normalize();
+        if (!destination.startsWith(normalizedBundle)) {
+            throw badRequest("Unsafe text-model asset name: " + canonicalName, null);
+        }
+
+        String assetKey = assetKeyForCanonicalName(canonicalName);
+        long maximum = assetLimits.maxBytesFor(assetKey);
+        if (part.getSize() > maximum) {
+            throw badRequest(canonicalName + " exceeds its configured byte limit.", null);
+        }
+
+        Path pending = destination.resolveSibling(
+                "." + destination.getFileName() + ".part-" + UUID.randomUUID());
+        long copied = 0L;
+        try (InputStream input = new BufferedInputStream(part.getInputStream());
+             OutputStream output = new BufferedOutputStream(Files.newOutputStream(pending))) {
+            byte[] buffer = new byte[8192];
+            int count;
+            while ((count = input.read(buffer)) != -1) {
+                copied = Math.addExact(copied, count);
+                if (copied > maximum) {
+                    throw badRequest(canonicalName + " exceeds its configured byte limit.", null);
+                }
+                output.write(buffer, 0, count);
+            }
+        } catch (ArithmeticException overflow) {
+            Files.deleteIfExists(pending);
+            throw badRequest(canonicalName + " is too large.", overflow);
+        } catch (IOException | RuntimeException failure) {
+            Files.deleteIfExists(pending);
+            throw failure;
+        }
+
+        if (copied <= 0L) {
+            Files.deleteIfExists(pending);
+            throw badRequest(canonicalName + " is empty.", null);
+        }
+        try {
+            Files.move(pending, destination, StandardCopyOption.ATOMIC_MOVE);
+        } catch (java.nio.file.AtomicMoveNotSupportedException unsupported) {
+            Files.move(pending, destination, StandardCopyOption.REPLACE_EXISTING);
+        } finally {
+            Files.deleteIfExists(pending);
+        }
+
+        long bundleBytes;
+        try (Stream<Path> files = Files.walk(normalizedBundle)) {
+            bundleBytes = files
+                    .filter(path -> Files.isRegularFile(path, java.nio.file.LinkOption.NOFOLLOW_LINKS))
+                    .mapToLong(path -> {
+                        try {
+                            return Files.size(path);
+                        } catch (IOException unreadable) {
+                            throw new java.io.UncheckedIOException(unreadable);
+                        }
+                    })
+                    .sum();
+        } catch (java.io.UncheckedIOException unreadable) {
+            throw unreadable.getCause();
+        }
+        if (bundleBytes > assetLimits.getTotalBytes()) {
+            Files.deleteIfExists(destination);
+            throw badRequest("Text-model bundle exceeds the configured total-byte limit.", null);
+        }
+        return canonicalName;
+    }
+
+    private static String assetKeyForCanonicalName(String canonicalName) {
+        if (canonicalName.startsWith("model.")) {
+            return TextModelAssetMap.MODEL;
+        }
+        if (TextModelAssetMap.TOKENIZER_FILE.equals(canonicalName)) {
+            return TextModelAssetMap.TOKENIZER;
+        }
+        if (TextModelAssetMap.ADDED_TOKENS_FILE.equals(canonicalName)) {
+            return TextModelAssetMap.ADDED_TOKENS;
+        }
+        if (TextModelAssetMap.SPECIAL_TOKENS_MAP_FILE.equals(canonicalName)) {
+            return TextModelAssetMap.SPECIAL_TOKENS_MAP;
+        }
+        return TextModelAssetMap.MODEL_CONFIG;
+    }
+
+    private static String localModelFileName(String format) {
+        String normalized = format == null ? "" : format.trim().toLowerCase(Locale.ROOT);
+        return switch (normalized) {
+            case "gguf" -> "model.gguf";
+            case "ggml" -> "model.ggml";
+            case "sdz", "samediff" -> "model.sdz";
+            case "onnx" -> "model.onnx";
+            default -> throw badRequest(
+                    "Local runnable-chat bundles support GGUF, GGML, SDZ/SameDiff, or ONNX.",
+                    null);
+        };
+    }
+
+    private static void deleteBundle(Path root) {
+        if (root == null || !Files.exists(root)) {
+            return;
+        }
+        try (Stream<Path> paths = Files.walk(root)) {
+            paths.sorted(Comparator.reverseOrder()).forEach(path -> {
+                try {
+                    Files.deleteIfExists(path);
+                } catch (IOException cleanupFailure) {
+                    log.warn("Could not remove temporary text-model bundle {}", path, cleanupFailure);
+                }
+            });
+        } catch (IOException cleanupFailure) {
+            log.warn("Could not inspect temporary text-model bundle {}", root, cleanupFailure);
+        }
+    }
+
+    /**
      * Upload a model file for conversion/staging.
      * The file is saved to the staging directory with a unique name.
      *
@@ -1125,30 +1554,14 @@ public class StagingController {
         }
 
         try {
-            // Get staging directory from config
-            Path stagingDir = stagingService.getStagingDirectory();
-            Path uploadsDir = stagingDir.resolve("uploads");
-            Files.createDirectories(uploadsDir);
-
-            // Generate unique filename to avoid collisions
-            String originalFilename = file.getOriginalFilename();
-            String extension = "";
-            if (originalFilename != null && originalFilename.contains(".")) {
-                extension = originalFilename.substring(originalFilename.lastIndexOf("."));
-            }
-            String uniqueFilename = UUID.randomUUID().toString() + extension;
-            Path destPath = uploadsDir.resolve(uniqueFilename);
-
-            // Save the file
-            Files.copy(file.getInputStream(), destPath, StandardCopyOption.REPLACE_EXISTING);
-
-            log.info("Uploaded model file: {} -> {} ({} bytes)",
-                    originalFilename, destPath, file.getSize());
+            OpaqueUpload upload = persistOpaqueUpload(file);
+            log.info("Stored model upload {} ({} bytes)", upload.handle(), file.getSize());
 
             return ResponseEntity.ok(Map.of(
                     "success", true,
-                    "filePath", destPath.toAbsolutePath().toString(),
-                    "originalFilename", originalFilename != null ? originalFilename : uniqueFilename,
+                    "uploadHandle", upload.handle(),
+                    "inputPath", upload.handle(),
+                    "originalFilename", upload.originalFilename(),
                     "size", file.getSize()
             ));
 
@@ -1160,6 +1573,98 @@ public class StagingController {
             ));
         }
     }
+
+    private OpaqueUpload persistOpaqueUpload(MultipartFile file) throws IOException {
+        String handle = UUID.randomUUID().toString();
+        Path uploadDirectory = stagingService.getStagingDirectory()
+                .resolve("uploads")
+                .resolve(handle)
+                .toAbsolutePath()
+                .normalize();
+        Files.createDirectories(uploadDirectory);
+        String original = file.getOriginalFilename() == null
+                ? "model"
+                : Paths.get(file.getOriginalFilename()).getFileName().toString();
+        String extension = "";
+        int dot = original.lastIndexOf('.');
+        if (dot >= 0 && dot + 1 < original.length()) {
+            String candidate = original.substring(dot + 1).toLowerCase(Locale.ROOT);
+            if (candidate.matches("[a-z0-9]{1,10}")) {
+                extension = "." + candidate;
+            }
+        }
+        String modelFile = "model" + extension;
+        try {
+            saveBundlePart(uploadDirectory, file, modelFile, true);
+            return new OpaqueUpload(handle, modelFile, original, uploadDirectory);
+        } catch (IOException | RuntimeException failure) {
+            deleteBundle(uploadDirectory);
+            throw failure;
+        }
+    }
+
+    private CompletableFuture<StagingModelInfo> stageOpaqueUpload(
+            OpaqueUpload upload,
+            String modelId,
+            String modelType,
+            String format,
+            boolean autoPromote) {
+        String validModelId = requireModelIdPath(modelId);
+        ModelType type = ModelType.fromValue(modelType);
+        DownloadRequest request = DownloadRequest.builder()
+                .source("local")
+                .repository(upload.handle())
+                .modelId(validModelId)
+                .modelType(type)
+                .format(format)
+                .files(Map.of(TextModelAssetMap.MODEL, upload.modelFile()))
+                .build();
+        CompletableFuture<StagingModelInfo> future = stagingService.stageModelAsync(request);
+        if (autoPromote) {
+            future.thenAccept(staged -> {
+                if (staged.getStatus() == StagingStatus.COMPLETED
+                        || staged.getStatus() == StagingStatus.READY) {
+                    stagingService.promoteModel(validModelId, null);
+                }
+            });
+        }
+        future.whenComplete((ignored, failure) -> deleteBundle(upload.directory()));
+        return future;
+    }
+
+    private OpaqueUpload resolveOpaqueUpload(String handle) throws IOException {
+        if (handle == null || !handle.matches("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")) {
+            throw new IOException("Invalid upload handle");
+        }
+        Path uploadRoot = stagingService.getStagingDirectory()
+                .resolve("uploads")
+                .toAbsolutePath()
+                .normalize();
+        Path directory = uploadRoot.resolve(handle).normalize();
+        if (!directory.startsWith(uploadRoot)
+                || !Files.isDirectory(directory, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+                || Files.isSymbolicLink(directory)) {
+            throw new IOException("Unknown upload handle");
+        }
+        try (Stream<Path> files = Files.list(directory)) {
+            List<Path> models = files
+                    .filter(path -> Files.isRegularFile(path, java.nio.file.LinkOption.NOFOLLOW_LINKS))
+                    .filter(path -> !Files.isSymbolicLink(path))
+                    .toList();
+            if (models.size() != 1) {
+                throw new IOException("Upload handle does not contain exactly one model file");
+            }
+            Path model = models.get(0);
+            return new OpaqueUpload(handle, model.getFileName().toString(),
+                    model.getFileName().toString(), directory);
+        }
+    }
+
+    private record OpaqueUpload(
+            String handle,
+            String modelFile,
+            String originalFilename,
+            Path directory) {}
 
     /**
      * Upload and immediately stage a model file.
@@ -1187,46 +1692,29 @@ public class StagingController {
             ));
         }
 
-        if (modelId == null || modelId.isBlank()) {
+        String validModelId;
+        try {
+            validModelId = requireModelIdPath(modelId);
+        } catch (ResponseStatusException invalid) {
             return ResponseEntity.badRequest().body(Map.of(
                     "success", false,
-                    "error", "modelId is required"
-            ));
+                    "error", invalid.getReason() == null ? "Invalid modelId" : invalid.getReason()));
         }
 
         try {
-            // First upload the file
-            Path stagingDir = stagingService.getStagingDirectory();
-            Path uploadsDir = stagingDir.resolve("uploads");
-            Files.createDirectories(uploadsDir);
+            OpaqueUpload upload = persistOpaqueUpload(file);
+            CompletableFuture<StagingModelInfo> future = stageOpaqueUpload(
+                    upload, validModelId, modelType, format, autoPromote);
+            StagingModelInfo stagingInfo = stagingService.getStagingModel(validModelId);
 
-            String originalFilename = file.getOriginalFilename();
-            String extension = "";
-            if (originalFilename != null && originalFilename.contains(".")) {
-                extension = originalFilename.substring(originalFilename.lastIndexOf("."));
-            }
-            String uniqueFilename = modelId + "-" + System.currentTimeMillis() + extension;
-            Path destPath = uploadsDir.resolve(uniqueFilename);
-
-            Files.copy(file.getInputStream(), destPath, StandardCopyOption.REPLACE_EXISTING);
-
-            log.info("Uploaded model file for staging: {} -> {} ({} bytes)",
-                    originalFilename, destPath, file.getSize());
-
-            // Now stage the model (this will trigger conversion)
-            StagingModelInfo stagingInfo = stagingService.stageLocalModel(
-                    modelId,
-                    destPath.toAbsolutePath().toString(),
-                    format,
-                    autoPromote
-            );
-
-            return ResponseEntity.ok(Map.of(
+            return ResponseEntity.accepted().body(Map.of(
                     "success", true,
-                    "filePath", destPath.toAbsolutePath().toString(),
-                    "modelId", modelId,
+                    "uploadHandle", upload.handle(),
+                    "modelId", validModelId,
                     "status", stagingInfo.getStatus().name(),
-                    "message", stagingInfo.getMessage() != null ? stagingInfo.getMessage() : "Staging started"
+                    "message", stagingInfo.getMessage() != null
+                            ? stagingInfo.getMessage()
+                            : "Staging started"
             ));
 
         } catch (IOException e) {
@@ -1252,35 +1740,35 @@ public class StagingController {
         if (request.getInputPath() == null || request.getInputPath().isBlank()) {
             return ResponseEntity.badRequest().body(Map.of(
                     "success", false,
-                    "error", "inputPath is required"
+                    "error", "inputPath must contain the opaque upload handle returned by /upload"
             ));
         }
 
-        if (request.getModelId() == null || request.getModelId().isBlank()) {
+        String validModelId;
+        try {
+            validModelId = requireModelIdPath(request.getModelId());
+        } catch (ResponseStatusException invalid) {
             return ResponseEntity.badRequest().body(Map.of(
                     "success", false,
-                    "error", "modelId is required"
-            ));
+                    "error", invalid.getReason() == null ? "Invalid modelId" : invalid.getReason()));
         }
 
         try {
             String format = request.getFormat() != null ? request.getFormat() : "onnx";
             boolean autoPromote = request.isAutoPromote();
+            String type = request.getType() == null || request.getType().isBlank()
+                    ? "dense_encoder"
+                    : request.getType();
+            OpaqueUpload upload = resolveOpaqueUpload(request.getInputPath());
 
-            log.info("Converting model: {} from {} (format: {})",
-                    request.getModelId(), request.getInputPath(), format);
-
-            // Stage the local model (this triggers conversion)
-            StagingModelInfo stagingInfo = stagingService.stageLocalModel(
-                    request.getModelId(),
-                    request.getInputPath(),
-                    format,
-                    autoPromote
-            );
+            log.info("Converting uploaded model {} (format: {})", validModelId, format);
+            stageOpaqueUpload(upload, validModelId, type, format, autoPromote);
+            StagingModelInfo stagingInfo = stagingService.getStagingModel(validModelId);
 
             Map<String, Object> response = new LinkedHashMap<>();
             response.put("success", true);
-            response.put("modelId", request.getModelId());
+            response.put("modelId", validModelId);
+            response.put("uploadHandle", upload.handle());
             response.put("status", stagingInfo.getStatus().name());
             response.put("progress", stagingInfo.getProgress());
             response.put("message", stagingInfo.getMessage() != null ? stagingInfo.getMessage() : "Conversion started");

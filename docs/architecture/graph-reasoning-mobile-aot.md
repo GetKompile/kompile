@@ -96,15 +96,13 @@ contract: same tool names, same JSON shapes, dispatched in-process.
 
 ### 2.3 SDX packaging is the template to copy
 
-Per `SdkConstants`: iOS `sdx-runtime-<classifier>.xcframework.zip` → scaffold copies to
-`{Project}/Frameworks/`; Android `sdx-runtime-<classifier>.aar` (wrapping
-`jni/<abi>/libsdx_runtime.so`, JNA-loaded) → `app/libs/` picked up by the existing
-`fileTree("libs", "*.aar")`. Registry: deeplearning4j GitHub releases
-(`sdx-v{version}`), `KOMPILE_SDX_SDK_BASE_URL` override, cache
-`~/.kompile/models/sdx-sdk/...`. The scaffolded chat loop has **no tool-calling** yet;
+The scaffold selects the iOS `apple-xcframework` or Android `android-aar` entry from
+the canonical `sdk-v{version}/sdx-sdk-manifest.json`, copies its exact `fileName`, and
+verifies SHA-256. `KOMPILE_SDX_SDK_BASE_URL` remains the registry override; cache writes
+use `~/.kompile/models/sdx-sdk/<sdkId>/...`. The scaffolded chat loop has **no tool-calling** yet;
 insertion point is the token-accumulation loop on both platforms.
 
-**Reality check (2026-07-11):** GitHub releases are EMPTY (no `sdx-v*` tags/assets);
+**Historical reality check (2026-07-11):** the former release scheme had no published assets;
 the template symbols (`dsp_model_*` iOS, `sdx_init/...` Android JNA) do **not** exist
 in the real `dsp_runtime_c.h` — the real ABI is tensor-level
 (`sdxCreateRuntime/sdxLoadBundle/sdxCreateContext/sdxRun`). The text-level LLM C API,
@@ -325,7 +323,7 @@ constrained decoding (R2), libsdx mobile builds (R3), published releases (R5).
 
 ## 8. Open questions
 
-1. Tag family: **DECIDED 2026-07-12** — separate `kgr-v{v}` for `libkompile_reasoning` (kompile repo GitHub releases) and `kompile-local-sdk-v{v}` for the combined SDK. The SDX Runtime uses `sdx-v{v}` (dl4j repo). This decouples kompile and dl4j release cadences. Base URL env var: `KOMPILE_KGR_SDK_BASE_URL` (default: https://github.com/deeplearning4j/kompile/releases/download/). See SdkConstants.resolveKgrBaseUrl().
+1. Tag family: separate `kgr-v{v}` for `libkompile_reasoning`, `kompile-local-sdk-v{v}` for the composition, and canonical `sdk-v{v}` plus `sdx-sdk-manifest.json` for DL4J SDK artifacts. Base URL overrides remain independent.
 2. `kompile-graph-algorithms` purity audit (centrality) vs ~100-line pure-Java
    pagerank/degree in `-local`.
 3. Final symbol namespace freeze with dl4j (kompile regenerates scaffold templates

@@ -83,6 +83,13 @@ public class GraphExtractionConfig {
     /** Custom extraction prompt (null = use default prompt from GraphExtractionValidator) */
     private String customPrompt;
 
+    /**
+     * Per-project validation and prompt policy. Null is treated as
+     * {@link GraphExtractionValidationPolicy#defaults()} for legacy configurations.
+     */
+    @Builder.Default
+    private GraphExtractionValidationPolicy validationPolicy = GraphExtractionValidationPolicy.defaults();
+
     /** Schema enforcement mode */
     @Builder.Default
     private SchemaEnforcementMode schemaMode = SchemaEnforcementMode.LENIENT;
@@ -208,4 +215,78 @@ public class GraphExtractionConfig {
      * <p>Increase to 4.0 for English-heavy corpora; reduce to 2.5 for mixed-language/code.</p>
      */
     private Double extractionCharsPerToken;
+
+    // -----------------------------------------------------------------------------------------
+    // Decomposed extraction (bounded per-pass model operations)
+    // -----------------------------------------------------------------------------------------
+
+    /**
+     * Whether a chunk is extracted with one monolithic prompt ({@link ExtractionMode#SINGLE_PASS},
+     * the historical behaviour) or as a sequence of bounded passes
+     * ({@link ExtractionMode#DECOMPOSED}). Both modes produce the same schema-shaped result, so
+     * everything downstream is unchanged.
+     */
+    @Builder.Default
+    private ExtractionMode extractionMode = ExtractionMode.SINGLE_PASS;
+
+    /** Accepts a loose/legacy string for {@link #extractionMode} without failing the whole config. */
+    @JsonSetter("extractionMode")
+    public void setExtractionModeFromString(String value) {
+        if (value != null && !value.isBlank()) {
+            try {
+                this.extractionMode = ExtractionMode.valueOf(value.trim().toUpperCase());
+            } catch (IllegalArgumentException ignored) {
+                this.extractionMode = ExtractionMode.SINGLE_PASS;
+            }
+        }
+    }
+
+    /** Upper bound on propositions taken from one chunk in the decomposed pipeline. */
+    @Builder.Default
+    private int decomposedMaxPropositions = 12;
+
+    /** Entity candidates the engine retrieves and offers the model per mention. */
+    @Builder.Default
+    private int decomposedEntityCandidateLimit = 8;
+
+    /** Relation types offered to the model for one resolved endpoint pair. */
+    @Builder.Default
+    private int decomposedRelationCandidateLimit = 12;
+
+    /** Existing claims offered to the model when matching new evidence. */
+    @Builder.Default
+    private int decomposedClaimCandidateLimit = 5;
+
+    /**
+     * Drop proposals whose evidence quote cannot be located in the chunk. Leaving this on is what
+     * makes a fabricated quote fatal rather than merely unverified.
+     */
+    @Builder.Default
+    private boolean decomposedRequireEvidenceSpans = true;
+
+    /** Run the claim/evidence-matching pass when the in-run graph already holds candidate claims. */
+    @Builder.Default
+    private boolean decomposedClaimMatching = true;
+
+    /**
+     * Minimum name-similarity for an in-run entity to be offered as a resolution candidate.
+     * Lower values widen recall (the model still has to pick); higher values keep the ballot short.
+     */
+    @Builder.Default
+    private double decomposedCandidateMinScore = 0.55;
+
+    /**
+     * How the entity-partition pass groups subjects and looks for their evidence.
+     *
+     * <p>Never null: the pass runs on every crawl that has a graph to write into, so it always has
+     * a policy, and a null here would only move the decision to whichever caller forgot to check.
+     * The defaults reproduce the stock policies exactly.</p>
+     */
+    @Builder.Default
+    private PartitionPassConfig partition = PartitionPassConfig.defaults();
+
+    /** The partition settings, defaulted rather than null for a config deserialised without them. */
+    public PartitionPassConfig getPartition() {
+        return partition == null ? PartitionPassConfig.defaults() : partition;
+    }
 }

@@ -21,8 +21,6 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-import java.nio.file.Path;
-
 /**
  * Result of a model conversion operation.
  */
@@ -43,9 +41,10 @@ public class ConversionResult {
     private String errorMessage;
 
     /**
-     * Path to the converted SameDiff model file.
+     * Authoritative physical conversion artifact. Successful conversions always expose
+     * one validated canonical SDZ archive through this descriptor.
      */
-    private Path outputModelPath;
+    private ConversionArtifact artifact;
 
     /**
      * Original format: "onnx", "tensorflow", "keras".
@@ -80,16 +79,24 @@ public class ConversionResult {
     /**
      * Create a successful result.
      */
-    public static ConversionResult success(Path outputPath, String checksum,
+    public static ConversionResult success(ConversionArtifact artifact, String checksum,
                                            int numOps, int numVars, long durationMs) {
         return ConversionResult.builder()
                 .success(true)
-                .outputModelPath(outputPath)
+                .artifact(artifact)
                 .checksum(checksum)
                 .numOperations(numOps)
                 .numVariables(numVars)
                 .durationMs(durationMs)
                 .build();
+    }
+
+    /**
+     * Compatibility view for CLI/API callers. The descriptor remains authoritative.
+     */
+    @Deprecated
+    public java.nio.file.Path getOutputModelPath() {
+        return artifact != null ? artifact.canonicalPath() : null;
     }
 
     /**

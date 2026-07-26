@@ -518,6 +518,12 @@ public final class ProjectHardwareProvisioner {
         Map<String, Object> config = new LinkedHashMap<>();
         config.put("tier", tier.name().toLowerCase());
         config.put("appHeap", HardwareAutoConfigurator.appHeapForTier(tier));
+        // One key per persona process. The launcher looks these up as
+        // `KompileService.id() + "Heap"`, so the names here are load-bearing: chat -> chatHeap,
+        // crawl -> crawlHeap. A missing key is not an error — the launcher falls back to the
+        // ServiceManager machine-tier default — which is what keeps pre-split projects working.
+        config.put("chatHeap", HardwareAutoConfigurator.chatHeapForTier(tier));
+        config.put("crawlHeap", HardwareAutoConfigurator.crawlHeapForTier(tier));
         config.put("stagingHeap", HardwareAutoConfigurator.stagingHeapForTier(tier));
         config.put("servingHeap", HardwareAutoConfigurator.servingHeapForTier(tier));
 

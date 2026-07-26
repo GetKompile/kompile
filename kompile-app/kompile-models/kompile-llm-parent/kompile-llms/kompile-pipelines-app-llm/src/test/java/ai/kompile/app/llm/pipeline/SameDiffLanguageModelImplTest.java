@@ -3,12 +3,15 @@ package ai.kompile.app.llm.pipeline;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.io.TempDir;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.eclipse.deeplearning4j.llm.tokenizer.Tokenizer;
 import org.springframework.ai.chat.model.ChatResponse;
 
 import java.lang.reflect.Field;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -24,6 +27,9 @@ class SameDiffLanguageModelImplTest {
     private SameDiffLanguageModelImpl.InferenceBackend mockBackend;
 
     private SameDiffLanguageModelImpl impl;
+
+    @TempDir
+    Path tempDir;
 
     @BeforeEach
     void setUp() {
@@ -115,11 +121,39 @@ class SameDiffLanguageModelImplTest {
     }
 
     @Test
+    void lastPositionPrefillLogitsAreMemorySafeByDefaultAndConfigurable() {
+        assertTrue(SameDiffLanguageModelImpl.prefillLastPositionLogitsEnabled(Map.of()));
+        assertFalse(SameDiffLanguageModelImpl.prefillLastPositionLogitsEnabled(
+                Map.of("prefillLastPositionLogitsEnabled", false)));
+        assertFalse(SameDiffLanguageModelImpl.prefillLastPositionLogitsEnabled(
+                Map.of("prefillLastPositionLogitsEnabled", "false")));
+    }
+
+    @Test
     void recognizesTokenizerTypesThatUseGenerationPipeline() {
         assertTrue(SameDiffLanguageModelImpl.usesGenerationPipeline("huggingface"));
         assertTrue(SameDiffLanguageModelImpl.usesGenerationPipeline("HF"));
         assertTrue(SameDiffLanguageModelImpl.usesGenerationPipeline("bpe"));
         assertFalse(SameDiffLanguageModelImpl.usesGenerationPipeline("wordpiece"));
+    }
+
+    @Test
+    void detectsGgufBackedStagedModelForContinuation() throws Exception {
+        Path stagedModel = Files.createFile(tempDir.resolve("model.sdnb"));
+        assertFalse(SameDiffLanguageModelImpl.isGgufBackedModel(stagedModel));
+
+        Files.createFile(tempDir.resolve("source-model.gguf"));
+        assertTrue(SameDiffLanguageModelImpl.isGgufBackedModel(stagedModel));
+        assertTrue(SameDiffLanguageModelImpl.isGgufBackedModel(
+                tempDir.resolve("direct.GGUF")));
+    }
+
+    @Test
+    void continuationChunkMustBePositive() {
+        assertEquals(384,
+                SameDiffLanguageModelImpl.validateContinuationChunkTokens(384));
+        assertThrows(IllegalArgumentException.class,
+                () -> SameDiffLanguageModelImpl.validateContinuationChunkTokens(0));
     }
 
     @Test
@@ -129,7 +163,7 @@ class SameDiffLanguageModelImplTest {
         when(tokenizer.getTokenId("<|im_start|>")).thenReturn(6);
         when(tokenizer.getTokenId("<|im_end|>")).thenReturn(7);
 
-        String template = SameDiffLanguageModelImpl.resolveChatTemplate(tokenizer, null);
+        String template = SameDiffLanguageModelImpl.resolveChatTemplate(tokenizer, null, null);
 
         assertSame(SameDiffLanguageModelImpl.CHATML_TEMPLATE, template);
         assertEquals(
@@ -146,7 +180,7 @@ class SameDiffLanguageModelImplTest {
         assertSame(
                 configuredTemplate,
                 SameDiffLanguageModelImpl.resolveChatTemplate(
-                        tokenizer, configuredTemplate));
+                        tokenizer, configuredTemplate, null));
         assertEquals(
                 42,
                 SameDiffLanguageModelImpl.resolveEosTokenId(
@@ -175,13 +209,54 @@ class SameDiffLanguageModelImplTest {
         when(tokenizer.getTokenId("<|im_end|>")).thenReturn(null);
         when(tokenizer.getEosTokenId()).thenReturn(2);
 
-        String template = SameDiffLanguageModelImpl.resolveChatTemplate(tokenizer, null);
+        String template = SameDiffLanguageModelImpl.resolveChatTemplate(tokenizer, null, null);
 
         assertNull(template);
         assertEquals(
                 2,
                 SameDiffLanguageModelImpl.resolveEosTokenId(
                         tokenizer, template, Map.of()));
+    }
+
+    @Test
+    void prefersTheSourceGgufsTemplateOverTheGenericChatMlStandIn() throws Exception {
+        // A model staged before staging carried tokenizer_config.json forward has its real template
+        // in one place only: the GGUF it was converted from. Falling through to the built-in ChatML
+        // template would frame every prompt in a template that merely resembles the model's own.
+        String declared = "{% for m in messages %}<|im_start|>{{ m['role'] }}\n"
+                + "{{ m['content'] }}<|im_end|>\n{% endfor %}";
+        Files.write(tempDir.resolve("source-model.gguf"), GgufFixture.headerWithChatTemplate(declared));
+        Path stagedModel = Files.createFile(tempDir.resolve("model.sdnb"));
+
+        Tokenizer tokenizer = mock(Tokenizer.class);
+        when(tokenizer.getChatTemplate()).thenReturn(null);
+
+        assertEquals(declared,
+                SameDiffLanguageModelImpl.resolveChatTemplate(tokenizer, null, stagedModel));
+        // The GGUF answered, so the ChatML-marker probe is never reached.
+        verify(tokenizer, never()).getTokenId("<|im_start|>");
+    }
+
+    @Test
+    void fallsBackToChatMlWhenTheSourceGgufDeclaresNoTemplate() throws Exception {
+        Files.write(tempDir.resolve("source-model.gguf"), GgufFixture.headerWithChatTemplate(null));
+        Path stagedModel = Files.createFile(tempDir.resolve("model.sdnb"));
+
+        Tokenizer tokenizer = mock(Tokenizer.class);
+        when(tokenizer.getChatTemplate()).thenReturn(null);
+        when(tokenizer.getTokenId("<|im_start|>")).thenReturn(6);
+        when(tokenizer.getTokenId("<|im_end|>")).thenReturn(7);
+
+        assertSame(SameDiffLanguageModelImpl.CHATML_TEMPLATE,
+                SameDiffLanguageModelImpl.resolveChatTemplate(tokenizer, null, stagedModel));
+    }
+
+    @Test
+    void anUnreadableGgufDoesNotBreakTemplateResolution() throws Exception {
+        Files.write(tempDir.resolve("truncated.gguf"), new byte[]{1, 2, 3});
+        Path stagedModel = Files.createFile(tempDir.resolve("model.sdnb"));
+
+        assertNull(SameDiffLanguageModelImpl.chatTemplateFromGguf(stagedModel));
     }
 
     @Test

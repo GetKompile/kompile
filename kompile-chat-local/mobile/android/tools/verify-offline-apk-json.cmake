@@ -13,6 +13,13 @@ function(jget OUT)
   endif()
   set(${OUT} "${VALUE}" PARENT_SCOPE)
 endfunction()
+function(pget OUT)
+  string(JSON VALUE ERROR_VARIABLE ERROR GET "${PROVIDER_JSON}" ${ARGN})
+  if(ERROR)
+    message(FATAL_ERROR "missing or invalid provider.json field ${ARGN}: ${ERROR}")
+  endif()
+  set(${OUT} "${VALUE}" PARENT_SCOPE)
+endfunction()
 function(expect VALUE EXPECTED LABEL)
   if(NOT "${VALUE}" STREQUAL "${EXPECTED}")
     message(FATAL_ERROR "${LABEL}: expected '${EXPECTED}', got '${VALUE}'")
@@ -70,6 +77,17 @@ if(MODE STREQUAL "config")
   jget(FLAVOR variants ${VARIANT} gradleFlavor)
   expect("${FLAVOR}" "${VARIANT}" "Gradle flavor")
   jget(RUNTIME_AAR variants ${VARIANT} runtimeAar)
+  jget(RELEASE_COMPONENT variants ${VARIANT} releaseSelector component)
+  expect("${RELEASE_COMPONENT}" "runtime" "release selector component")
+  jget(RELEASE_PACKAGE_ROLE variants ${VARIANT} releaseSelector packageRole)
+  expect("${RELEASE_PACKAGE_ROLE}" "android-aar" "release selector packageRole")
+  jget(RELEASE_PLATFORM variants ${VARIANT} releaseSelector platform)
+  jget(RELEASE_VARIANT variants ${VARIANT} releaseSelector variant)
+  foreach(VALUE IN ITEMS RELEASE_PLATFORM RELEASE_VARIANT)
+    if(NOT "${${VALUE}}" MATCHES "^[A-Za-z0-9][A-Za-z0-9._+-]*$")
+      message(FATAL_ERROR "unsafe release selector value in ${VALUE}")
+    endif()
+  endforeach()
   jget(BACKEND variants ${VARIANT} requiredBackend)
   jget(MIN_SDK variants ${VARIANT} minSdk)
   if(NOT MIN_SDK MATCHES "^[0-9]+$" OR MIN_SDK LESS 28 OR MIN_SDK GREATER 35)
@@ -103,6 +121,12 @@ if(MODE STREQUAL "config")
     expect("${MIN_SDK}" "31" "Tensor G3 minimum SDK")
     jget(SYSTEM_DEP variants ${VARIANT} requiredSystemDependency)
     expect("${SYSTEM_DEP}" "libneuralnetworks.so" "Tensor G3 system dependency")
+    jget(V variants ${VARIANT} quantization)
+    expect("${V}" "int8-per-tensor" "Tensor G3 quantization scheme")
+    jget(V variants ${VARIANT} quantizedMatmulInputs)
+    expect("${V}" "5" "Tensor G3 quantized matmul arity")
+    jget(V variants ${VARIANT} scaleDtype)
+    expect("${V}" "FLOAT32" "Tensor G3 scale dtype")
     set(GPU_TARGET "")
     set(PACKAGE_SUFFIX tensorg3)
     set(PROVIDER google-tensor-g3-nnapi)
@@ -126,6 +150,8 @@ if(MODE STREQUAL "config")
   file(WRITE "${OUTPUT}"
     "APPLICATION=${APP}\nPACKAGE_SUFFIX=${PACKAGE_SUFFIX}\nFLAVOR=${FLAVOR}\n"
     "RUNTIME_AAR=${RUNTIME_AAR}\nBACKEND=${BACKEND}\nGPU_TARGET=${GPU_TARGET}\n"
+    "RELEASE_COMPONENT=${RELEASE_COMPONENT}\nRELEASE_PACKAGE_ROLE=${RELEASE_PACKAGE_ROLE}\n"
+    "RELEASE_PLATFORM=${RELEASE_PLATFORM}\nRELEASE_VARIANT=${RELEASE_VARIANT}\n"
     "MIN_SDK=${MIN_SDK}\nPROVIDER=${PROVIDER}\nTARGET_PROFILE=${TARGET_PROFILE}\n"
     "DSP_SERVICE=${DSP_SERVICE}\n"
     "REQUIRED_LIBS=${REQUIRED_CSV}\nFORBIDDEN_LIBS=${FORBIDDEN_CSV}\n")
@@ -135,7 +161,7 @@ elseif(MODE STREQUAL "assets")
   jget(V offlineOnly)
   expect("${V}" "ON" "asset manifest permits online use")
   jget(V networkPermissionRequired)
-  expect("${V}" "OFF" "asset manifest requires network")
+  expect("${V}" "ON" "asset manifest omits required Hugging Face discovery network access")
   jget(V graphRuntime androidMode)
   expect("${V}" "stock-graalvm-aot-javacpp" "graph Android mode")
   jget(V graphRuntime minimumSdk)
@@ -147,6 +173,8 @@ elseif(MODE STREQUAL "assets")
   expect("${V}" "ON" "model slot is not device-only")
   jget(V modelSlots ${VARIANT} aotOnly)
   expect("${V}" "ON" "model slot is not AOT-only")
+  jget(V modelSlots ${VARIANT} allowHostFallback)
+  expect("${V}" "OFF" "model slot permits host fallback")
   if(NOT DEFINED EXPECTED_BACKEND)
     message(FATAL_ERROR "EXPECTED_BACKEND is required")
   endif()
@@ -155,6 +183,13 @@ elseif(MODE STREQUAL "assets")
   if(VARIANT STREQUAL "vulkan")
     jget(V modelSlots ${VARIANT} gpuTarget)
     expect("${V}" "VULKAN" "Vulkan model slot GPU target")
+  elseif(VARIANT STREQUAL "tensorG3")
+    jget(V modelSlots ${VARIANT} quantization)
+    expect("${V}" "int8-per-tensor" "Tensor G3 asset quantization scheme")
+    jget(V modelSlots ${VARIANT} quantizedMatmulInputs)
+    expect("${V}" "5" "Tensor G3 asset quantized matmul arity")
+    jget(V modelSlots ${VARIANT} scaleDtype)
+    expect("${V}" "FLOAT32" "Tensor G3 asset scale dtype")
   endif()
   string(JSON COUNT ERROR_VARIABLE ERROR LENGTH "${JSON}" assets)
   if(ERROR)
@@ -180,10 +215,74 @@ elseif(MODE STREQUAL "assets")
     endforeach()
   endif()
 elseif(MODE STREQUAL "binding")
+  if(NOT DEFINED PROVIDER_INPUT OR PROVIDER_INPUT STREQUAL "" OR
+     NOT EXISTS "${PROVIDER_INPUT}")
+    message(FATAL_ERROR "provider.json is required for every accelerator runtime")
+  endif()
+  file(READ "${PROVIDER_INPUT}" PROVIDER_JSON)
+
   jget(V formatVersion)
   expect("${V}" "1" "unsupported binding manifest")
   jget(V platform androidAbi)
   expect("${V}" "arm64-v8a" "binding Android ABI")
+  if(VARIANT STREQUAL "vulkan")
+    set(EXPECTED_PROVIDER_ID "sdx.vulkan.v1")
+    set(EXPECTED_ARTIFACT_FORMAT "sdx-vulkan-plan")
+    set(EXPECTED_TARGET_SOC "Android_Vulkan_1_1")
+    set(EXPECTED_PROVIDER_RUNTIME "libnd4jvulkan.so")
+  elseif(VARIANT STREQUAL "hexagon")
+    set(EXPECTED_PROVIDER_ID "sdx.hexagon-htp.v1")
+    set(EXPECTED_ARTIFACT_FORMAT "sdx-htp-context")
+    set(EXPECTED_TARGET_SOC "SM8650")
+    set(EXPECTED_PROVIDER_RUNTIME "libnd4jhexagon.so")
+  elseif(VARIANT STREQUAL "tensorG3")
+    set(EXPECTED_PROVIDER_ID "sdx.nnapi-tensor-g3.v1")
+    set(EXPECTED_ARTIFACT_FORMAT "sdx-nnapi-plan")
+    set(EXPECTED_TARGET_SOC "Tensor_G3")
+    set(EXPECTED_PROVIDER_RUNTIME "libnd4jnnapi.so")
+  elseif(VARIANT STREQUAL "tensorG5")
+    set(EXPECTED_PROVIDER_ID "sdx.litert-tensor-g5.v1")
+    set(EXPECTED_ARTIFACT_FORMAT "sdx-litert-model")
+    set(EXPECTED_TARGET_SOC "Tensor_G5")
+    set(EXPECTED_PROVIDER_RUNTIME "liblitert-lm.so")
+  else()
+    message(FATAL_ERROR "unsupported provider contract variant: ${VARIANT}")
+  endif()
+
+  foreach(PAIR
+      "id;${EXPECTED_PROVIDER_ID}"
+      "abiVersion;1"
+      "artifactFormat;${EXPECTED_ARTIFACT_FORMAT}"
+      "artifactFormatVersion;1"
+      "defaultTargetSoc;${EXPECTED_TARGET_SOC}"
+      "requiresAotArtifact;ON"
+      "allowRuntimeJit;OFF"
+      "allowCpuFallback;OFF")
+    list(GET PAIR 0 KEY)
+    list(GET PAIR 1 EXPECTED)
+    jget(V platformProvider ${KEY})
+    expect("${V}" "${EXPECTED}" "binding platform provider ${KEY}")
+  endforeach()
+  foreach(PAIR
+      "formatVersion;1"
+      "coreAbi;1"
+      "providerId;${EXPECTED_PROVIDER_ID}"
+      "providerAbi;1"
+      "artifactFormat;${EXPECTED_ARTIFACT_FORMAT}"
+      "artifactFormatVersion;1"
+      "platformId;android-arm64"
+      "architecture;arm64"
+      "defaultTargetSoc;${EXPECTED_TARGET_SOC}"
+      "runtimeLibrary;${EXPECTED_PROVIDER_RUNTIME}"
+      "requiresAotArtifact;ON"
+      "allowRuntimeJit;OFF"
+      "allowCpuFallback;OFF")
+    list(GET PAIR 0 KEY)
+    list(GET PAIR 1 EXPECTED)
+    pget(V ${KEY})
+    expect("${V}" "${EXPECTED}" "provider contract ${KEY}")
+  endforeach()
+
   if(VARIANT STREQUAL "tensorG5")
     jget(V provider)
     expect("${V}" "litert-lm" "Tensor G5 provider")

@@ -17,7 +17,8 @@
 package ai.kompile.cli.main.app;
 
 import ai.kompile.cli.common.http.KompileHttpClient;
-import ai.kompile.cli.common.mcp.InstanceDiscovery;
+import ai.kompile.cli.common.routing.KompileService;
+import ai.kompile.cli.common.routing.KompileServiceEndpoints;
 import ai.kompile.cli.main.graph.GraphServiceRouting;
 import picocli.CommandLine;
 
@@ -27,7 +28,8 @@ import picocli.CommandLine;
  */
 public class AppClientMixin {
 
-    @CommandLine.Option(names = {"--url"}, description = "Base URL of kompile-app (e.g. http://localhost:8080)")
+    @CommandLine.Option(names = {"--url"}, description = "Pin one backend base URL (e.g. http://localhost:8080). "
+            + "Default: route each API to its own service — admin :8080, chat :8081, crawl :8082")
     private String url;
 
     @CommandLine.Option(names = {"--port", "-p"}, description = "Localhost port of kompile-app")
@@ -45,18 +47,35 @@ public class AppClientMixin {
     }
 
     /**
-     * Resolves a KompileHttpClient using: --url > --port > auto-discovery > default 8080.
-     * Returns null and prints an error if the instance is unreachable.
+     * Resolves a KompileHttpClient: {@code --url} > {@code --port} > per-path routing.
+     * Returns null and prints an error if nothing is reachable.
+     *
+     * <p>Naming a server pins the client to it — one host, every request, which is what an
+     * all-in-one deployment needs. Otherwise the client routes each request by path
+     * ({@link KompileServiceEndpoints}), because the API surface now spans three processes: crawl
+     * and indexing live on {@code kompile-app-crawl-manager}, chat and RAG on
+     * {@code kompile-app-chat}, and only the admin contracts on {@code kompile-app-main}. Probing
+     * for "the" instance was the old answer and is now a coin flip between personas.</p>
      */
     public KompileHttpClient requireClient() {
-        String resolved = resolveAppUrl();
-        KompileHttpClient client = new KompileHttpClient(resolved);
+        String pinned = pinnedUrl();
+        KompileHttpClient client = pinned != null ? new KompileHttpClient(pinned) : KompileHttpClient.routed();
         if (!client.isHealthy()) {
-            System.err.println("Error: kompile-app is not reachable at " + resolved);
-            System.err.println("Start the application or specify --url / --port.");
+            if (pinned != null) {
+                System.err.println("Error: kompile-app is not reachable at " + pinned);
+                System.err.println("Start the application or specify --url / --port.");
+            } else {
+                System.err.println("Error: no kompile service is reachable. Checked:");
+                for (KompileService service : KompileService.values()) {
+                    KompileServiceEndpoints.Resolution route = KompileServiceEndpoints.resolve(service);
+                    System.err.println("  " + service.componentId() + " -> " + route.baseUrl()
+                            + " (" + route.source().name().toLowerCase().replace('_', ' ') + ")");
+                }
+                System.err.println("Start one, or specify --url / --port.");
+            }
             return null;
         }
-        OutputFormatter.info("Connected to " + resolved);
+        OutputFormatter.info("Connected to " + (pinned != null ? pinned : "kompile services (routed by API)"));
         return client;
     }
 
@@ -73,18 +92,14 @@ public class AppClientMixin {
         return client;
     }
 
-    private String resolveAppUrl() {
-        String resolved;
+    /** The server the user named with {@code --url} / {@code --port}, or null to route by path. */
+    private String pinnedUrl() {
         if (url != null && !url.isBlank()) {
-            resolved = url;
-        } else if (port != null) {
-            resolved = "http://localhost:" + port;
-        } else {
-            resolved = InstanceDiscovery.discover();
-            if (resolved == null) {
-                resolved = "http://localhost:8080";
-            }
+            return url;
         }
-        return resolved;
+        if (port != null) {
+            return "http://localhost:" + port;
+        }
+        return null;
     }
 }

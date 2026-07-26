@@ -77,6 +77,16 @@ public class NoteSyncScheduler {
 
     private boolean isTimeToRun(NoteSyncConnection conn) {
         try {
+            Instant nowInstant = Instant.now();
+            if (conn.getNextSyncAttemptAt() != null
+                    && conn.getNextSyncAttemptAt().isAfter(nowInstant)) {
+                return false;
+            }
+            if (conn.getActiveSyncRunId() != null
+                    && conn.getSyncLeaseExpiresAt() != null
+                    && conn.getSyncLeaseExpiresAt().isAfter(nowInstant)) {
+                return false;
+            }
             CronExpression cron = CronExpression.parse(conn.getPollCron());
             LocalDateTime now = LocalDateTime.now();
             LocalDateTime lastSync = conn.getLastSyncAt() != null

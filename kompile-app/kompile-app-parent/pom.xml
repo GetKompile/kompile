@@ -27,8 +27,26 @@
         <module>kompile-app-mcp</module>
         <module>kompile-app-agent</module>
         <module>kompile-app-crawl</module>
+        <module>kompile-app-ingest-svc</module>
+        <module>kompile-app-ontology</module>
+        <module>kompile-app-crawl-svc</module>
         <module>kompile-app-enforcer</module>
         <module>kompile-app-diff</module>
+        <!-- Web-layer modules. Each app mounts a subset; an endpoint a persona does not
+             own is not on its classpath. See docs/architecture/app-persona-boundary.md. -->
+        <module>kompile-app-web-shared</module>
+        <module>kompile-app-web-graph</module>
+        <module>kompile-app-web-chat</module>
+        <module>kompile-app-web-crawl</module>
+        <module>kompile-app-web-admin</module>
+        <!-- Angular workspace: one shared library plus one SPA per persona, attached as the
+             classified jars -chat / -crawl / -admin. See docs/architecture/ui-persona-boundary.md. -->
+        <module>kompile-app-ui</module>
+        <!-- The three runnable processes. kompile-app-main is the admin console (:8080) and stays
+             a LIBRARY — its exec jar is opt-in behind -Dkompile.uber. The two end-user apps follow
+             kompile-model-staging and build their -exec.jar on every build. -->
+        <module>kompile-app-chat</module>
+        <module>kompile-app-crawl-manager</module>
         <module>kompile-app-main</module>
     </modules>
 </project>

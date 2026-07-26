@@ -98,6 +98,13 @@ class KompileProjectStoreTest {
         assertTrue(Files.isRegularFile(tempDir.resolve("scripts/start-staging.sh")));
         assertTrue(Files.isRegularFile(tempDir.resolve("scripts/start-serving.sh")));
         assertTrue(Files.isRegularFile(tempDir.resolve("scripts/start-app.sh")));
+        // Chat and the crawl manager are separate processes: the admin console does not mount
+        // /api/agents/chat or /api/unified-crawl, so a project that can only run start-app.sh
+        // serves its admin API but cannot chat or ingest.
+        assertTrue(Files.isRegularFile(tempDir.resolve("scripts/start-chat.sh")));
+        assertTrue(Files.isRegularFile(tempDir.resolve("scripts/start-crawl-manager.sh")));
+        assertTrue(Files.isExecutable(tempDir.resolve("scripts/start-chat.sh")));
+        assertTrue(Files.isExecutable(tempDir.resolve("scripts/start-crawl-manager.sh")));
         assertTrue(Files.isRegularFile(tempDir.resolve("scripts/stop-all.sh")));
         assertTrue(Files.isExecutable(tempDir.resolve("scripts/start-all.sh")));
         assertTrue(Files.isDirectory(tempDir.resolve(".kompile/project")));
@@ -147,6 +154,28 @@ class KompileProjectStoreTest {
         assertTrue(manifest.getCrawlProfiles().get(0).isGraphExtraction());
         assertTrue(manifest.getWorkflows().stream().anyMatch(w -> "start-services".equals(w.getId())));
         assertTrue(manifest.getWorkflows().stream().anyMatch(w -> "bootstrap-crawl".equals(w.getId())));
+
+        // Registering the scripts is what makes `kompile project serve --chat-only` /
+        // --crawl-manager-only resolve a script instead of falling back to a direct launch.
+        assertTrue(manifest.getScripts().stream().anyMatch(s -> "start-chat".equals(s.getId())));
+        assertTrue(manifest.getScripts().stream().anyMatch(s -> "start-crawl-manager".equals(s.getId())));
+
+        KompileProjectWorkflow startServices = manifest.getWorkflows().stream()
+                .filter(w -> "start-services".equals(w.getId())).findFirst().orElseThrow();
+        List<String> startStepIds = startServices.getSteps().stream()
+                .map(KompileProjectWorkflowStep::getId).toList();
+        assertTrue(startStepIds.containsAll(List.of("start-app", "start-chat", "start-crawl-manager")),
+                "start-services must bring up all three personas, got: " + startStepIds);
+
+        // The crawl POST that follows is served by the crawl manager, not the admin console. An
+        // untargeted health check passes as soon as :8080 answers and the crawl then fires into a
+        // connection refused, so this step must probe an endpoint only the crawl manager mounts.
+        KompileProjectWorkflow autoIngest = manifest.getWorkflows().stream()
+                .filter(w -> "auto-ingest".equals(w.getId())).findFirst().orElseThrow();
+        KompileProjectWorkflowStep health = autoIngest.getSteps().stream()
+                .filter(s -> "HEALTH_CHECK".equals(s.getType())).findFirst().orElseThrow();
+        assertEquals("${appUrl}/api/unified-crawl/jobs/active", health.getUrl());
+        assertEquals(200, health.getExpectedStatus());
     }
 
     @Test

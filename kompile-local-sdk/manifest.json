@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "name": "kompile-local-sdk-composition",
+  "kompileVersion": "0.1.0-SNAPSHOT",
+  "kgrAbiVersion": 1,
+  "upstreamSdk": {
+    "manifestEnvironment": "SDX_SDK_MANIFEST",
+    "artifactEnvironment": "SDX_SDK_ARTIFACT",
+    "requiredManifest": "sdx-sdk-manifest.json with .sha256 sidecar",
+    "preservation": "verified archive extracted intact before Kompile overlay"
+  },
+  "overlay": {
+    "component": "kompile-reasoning",
+    "source": "kompile/kompile-app/kompile-data/kompile-graphs/kompile-graph-reasoning-local",
+    "library": "lib/libkompile_reasoning.so",
+    "header": "include/kompile_reasoning.h",
+    "bindings": ["python", "rust", "typescript", "swift", "csharp"]
+  },
+  "compositionManifest": "kompile-composition-manifest.json",
+  "buildNote": "Set SDX_SDK_MANIFEST and SDX_SDK_ARTIFACT to a canonical manifest-selected AOT release pair, then run assemble-local-sdk.sh"
+}

@@ -1,0 +1,1626 @@
+    <div class="unified-crawl-container">
+      <!-- Scheduler notification banner -->
+      <div *ngIf="schedulerNotifications.length > 0" class="scheduler-notifications">
+        <div *ngFor="let notif of schedulerNotifications; let i = index"
+             class="scheduler-notification"
+             [class.notification-blocked]="notif.eventType === 'JOB_BLOCKED'"
+             [class.notification-skipped]="notif.eventType === 'JOB_SKIPPED_AHEAD'"
+             [class.notification-reordered]="notif.eventType === 'JOB_REORDERED'"
+             [class.notification-dispatched]="notif.eventType === 'JOB_DISPATCHED'"
+             [class.notification-completed]="notif.eventType === 'JOB_COMPLETED'"
+             [class.notification-failed]="notif.eventType === 'JOB_FAILED'">
+          <mat-icon class="notif-icon">
+            {{ notif.eventType === 'JOB_BLOCKED' ? 'pause_circle' :
+               notif.eventType === 'JOB_SKIPPED_AHEAD' ? 'fast_forward' :
+               notif.eventType === 'JOB_REORDERED' ? 'swap_vert' :
+               notif.eventType === 'JOB_DISPATCHED' ? 'play_circle' :
+               notif.eventType === 'JOB_COMPLETED' ? 'check_circle' :
+               notif.eventType === 'JOB_FAILED' ? 'error' : 'info' }}
+          </mat-icon>
+          <span class="notif-text">{{ notif.message }}</span>
+          <span class="notif-meta">{{ notif.jobType }} | Q:{{ notif.queueDepth }} R:{{ notif.runningCount }}</span>
+          <button mat-icon-button (click)="dismissNotification(i)" class="notif-dismiss">
+            <mat-icon>close</mat-icon>
+          </button>
+        </div>
+      </div>
+      <div class="page-header">
+        <div class="page-header-info">
+          <mat-icon>travel_explore</mat-icon>
+          <div>
+            <h2 class="page-header-title">Unified Crawl-to-Graph</h2>
+            <span class="page-header-sub">Crawl multiple sources and automatically build a knowledge graph + vector index.</span>
+          </div>
+        </div>
+        <button mat-raised-button color="primary" class="new-crawl-btn" (click)="launchCrawl()" [disabled]="isStarting">
+          <mat-icon>add</mat-icon>
+          {{ isStarting ? 'Starting…' : 'New Crawl' }}
+        </button>
+      </div>
+
+      <mat-tab-group [(selectedIndex)]="activeTab">
+        <!-- Jobs Tab -->
+        <mat-tab>
+          <ng-template mat-tab-label>
+            Jobs
+            <span *ngIf="activeJobCount > 0" class="tab-badge">{{ activeJobCount }}</span>
+          </ng-template>
+          <div class="tab-content">
+            <div class="jobs-toolbar">
+              <button mat-button (click)="refreshJobs()">
+                <mat-icon>refresh</mat-icon> Refresh
+              </button>
+              <button mat-button color="warn" (click)="cleanupJobs()" [disabled]="jobs.length === 0">
+                <mat-icon>cleaning_services</mat-icon> Cleanup Finished
+              </button>
+            </div>
+
+            <!-- Resumable jobs banner -->
+            <div *ngIf="resumableJobs.length > 0" class="resumable-jobs-banner">
+              <div class="resumable-banner-header">
+                <mat-icon>archive</mat-icon>
+                <span><strong>Resumable Jobs</strong> &mdash; {{ resumableJobs.length }} job(s) have archived steps that can be resumed</span>
+              </div>
+              <div *ngFor="let entry of resumableJobs" class="resumable-entry">
+                <div class="resumable-entry-header">
+                  <span class="resumable-job-name">{{ entry.name }}</span>
+                  <span class="resumable-archived-at">archived {{ formatTimestamp(entry.archivedAt) }}</span>
+                </div>
+                <div class="resumable-steps-chips">
+                  <span *ngFor="let stepId of entry.archivedSteps" class="resumable-step-chip">
+                    <mat-icon inline>archive</mat-icon> {{ stepId }}
+                    <button mat-icon-button class="run-now-btn-sm"
+                            [disabled]="isStepActionInProgress(entry.jobId, stepId)"
+                            (click)="runStep(entry.jobId, stepId)"
+                            matTooltip="Run this step now">
+                      <mat-icon>play_circle</mat-icon>
+                    </button>
+                  </span>
+                </div>
+                <button mat-stroked-button color="primary" class="resume-all-btn"
+                        [disabled]="entry.archivedSteps.length === 0"
+                        (click)="resumeAllArchivedSteps(entry)">
+                  <mat-icon>skip_next</mat-icon>
+                  Resume All ({{ entry.archivedSteps.length }})
+                </button>
+              </div>
+            </div>
+
+            <div *ngIf="jobs.length === 0" class="empty-state">
+              <mat-icon>work_outline</mat-icon>
+              <p>No crawl jobs yet. Click <strong>New Crawl</strong> to start one.</p>
+              <button mat-stroked-button color="primary" (click)="launchCrawl()">
+                <mat-icon>add</mat-icon> New Crawl
+              </button>
+            </div>
+
+            <mat-card *ngFor="let job of jobs; trackBy: trackByJobId" class="job-card" (click)="selectJob(job.jobId)">
+              <mat-card-header>
+                <mat-card-title>
+                  {{ job.name || 'Unnamed Job' }}
+                  <span class="status-badge" [class]="'status-' + job.status.toLowerCase()">
+                    {{ job.status }}
+                  </span>
+                  <span *ngIf="job.fromHistory" class="history-badge" matTooltip="Loaded from job history">
+                    History
+                  </span>
+                </mat-card-title>
+                <mat-card-subtitle>
+                  <span class="job-type-badges">
+                    <span *ngIf="job.graphExtractionEnabled" class="job-type-badge graph-badge"
+                          matTooltip="Graph extraction enabled{{ job.llmModel ? ' (' + job.llmModel + ')' : '' }}">
+                      <mat-icon inline>hub</mat-icon> Graph
+                      <ng-container *ngIf="job.llmProvider && job.llmProvider !== 'default'"> ({{ job.llmProvider }})</ng-container>
+                    </span>
+                    <span *ngIf="job.vectorIndexEnabled" class="job-type-badge vector-badge">
+                      <mat-icon inline>storage</mat-icon> Vector Index
+                    </span>
+                    <span *ngIf="!job.graphExtractionEnabled && !job.vectorIndexEnabled" class="job-type-badge crawl-only-badge">
+                      <mat-icon inline>travel_explore</mat-icon> Crawl Only
+                    </span>
+                  </span>
+                  {{ job.sourceCount }} source(s)
+                  <span *ngIf="job.elapsedMs > 0" class="elapsed">
+                    &bull; {{ formatElapsed(job.elapsedMs) }}
+                  </span>
+                  <span *ngIf="job.createdAt" class="elapsed">
+                    &bull; Started {{ formatTimestamp(job.createdAt) }}
+                  </span>
+                  <span *ngIf="job.progressPercent !== undefined && job.progressPercent > 0" class="elapsed">
+                    &bull; {{ job.progressPercent }}%
+                  </span>
+                </mat-card-subtitle>
+              </mat-card-header>
+              <mat-card-content>
+                <!-- Current activity banner -->
+                <div *ngIf="job.status === 'RUNNING'" class="current-activity">
+                  <mat-icon class="activity-icon spinning-icon">sync</mat-icon>
+                  <span class="phase-chip">{{ formatPhase(job.currentPhase) || job.status }}</span>
+                  <span *ngIf="job.currentFile" class="activity-detail">{{ job.currentFile }}</span>
+                  <span *ngIf="job.currentBatchStep" class="activity-detail">{{ job.currentBatchStep }}</span>
+                  <span *ngIf="job.queuePosition && job.queuePosition > 0" class="activity-detail">Queue #{{ job.queuePosition }} of {{ job.queuedJobs }}</span>
+                  <span *ngIf="job.vectorBatchesTotal && job.vectorBatchesTotal > 0" class="activity-detail">
+                    Batch {{ job.vectorBatchesCompleted || 0 }}/{{ job.vectorBatchesTotal }}
+                    <ng-container *ngIf="job.currentBatchSize">({{ job.currentBatchSize }} chunks)</ng-container>
+                  </span>
+                </div>
+                <div *ngIf="job.status === 'PENDING'" class="current-activity pending-activity">
+                  <mat-icon class="activity-icon">hourglass_empty</mat-icon>
+                  <span class="phase-chip">Queued</span>
+                  <span *ngIf="job.queuePosition && job.queuePosition > 0" class="activity-detail">Position #{{ job.queuePosition }} of {{ job.queuedJobs }}</span>
+                </div>
+
+                <!-- Document processing pipeline counters -->
+                <div class="job-pipeline-counters">
+                  <div class="pipeline-counter" [class.active]="job.currentPhase === 'DISCOVERING' || job.currentPhase === 'LOADING'">
+                    <div class="counter-value">{{ job.documentsDiscovered || 0 }}</div>
+                    <div class="counter-label"><mat-icon inline>search</mat-icon> Found</div>
+                  </div>
+                  <mat-icon class="counter-arrow">arrow_forward</mat-icon>
+                  <div class="pipeline-counter" [class.active]="job.currentPhase === 'LOADING'">
+                    <div class="counter-value">{{ job.documentsLoaded }}</div>
+                    <div class="counter-label"><mat-icon inline>description</mat-icon> Loaded</div>
+                  </div>
+                  <mat-icon class="counter-arrow">arrow_forward</mat-icon>
+                  <div class="pipeline-counter" [class.active]="job.currentPhase === 'CHUNKING'">
+                    <div class="counter-value">{{ job.chunksCreated || job.chunksProcessed || 0 }}</div>
+                    <div class="counter-label"><mat-icon inline>segment</mat-icon> Chunks</div>
+                  </div>
+                  <mat-icon class="counter-arrow" *ngIf="job.graphExtractionEnabled !== false">arrow_forward</mat-icon>
+                  <div class="pipeline-counter" *ngIf="job.graphExtractionEnabled !== false"
+                       [class.active]="job.currentPhase === 'GRAPH_EXTRACTION' || job.currentPhase === 'GRAPH_PREP' || job.currentPhase === 'ENTITY_RESOLUTION' || job.currentPhase === 'EDGE_COMPUTATION' || job.currentPhase === 'ENTITY_PARTITIONS'">
+                    <div class="counter-value">{{ job.entitiesExtracted || 0 }}<span class="counter-sub" *ngIf="job.relationshipsExtracted"> / {{ job.relationshipsExtracted }} rels</span></div>
+                    <div class="counter-label"><mat-icon inline>hub</mat-icon> Entities</div>
+                  </div>
+                  <mat-icon class="counter-arrow" *ngIf="job.vectorIndexEnabled !== false">arrow_forward</mat-icon>
+                  <div class="pipeline-counter" *ngIf="job.vectorIndexEnabled !== false"
+                       [class.active]="job.currentPhase === 'EMBEDDING'">
+                    <div class="counter-value">{{ job.chunksEmbedded || 0 }}<span class="counter-sub" *ngIf="job.chunksQueuedForEmbedding"> / {{ job.chunksQueuedForEmbedding }}</span></div>
+                    <div class="counter-label"><mat-icon inline>memory</mat-icon> Embedded</div>
+                  </div>
+                  <mat-icon class="counter-arrow" *ngIf="job.vectorIndexEnabled !== false">arrow_forward</mat-icon>
+                  <div class="pipeline-counter" *ngIf="job.vectorIndexEnabled !== false"
+                       [class.active]="job.currentPhase === 'INDEXING' || job.currentPhase === 'VECTOR_INDEXING'">
+                    <div class="counter-value">{{ job.documentsIndexed || 0 }}</div>
+                    <div class="counter-label"><mat-icon inline>storage</mat-icon> Indexed</div>
+                  </div>
+                </div>
+
+                <!-- Graph stats (if available) -->
+                <div class="job-graph-stats" *ngIf="(job.graphNodeCount ?? 0) > 0">
+                  <mat-icon inline>scatter_plot</mat-icon>
+                  <span>{{ job.graphNodeCount }} graph nodes &bull; {{ job.graphEdgeCount }} graph edges</span>
+                </div>
+
+                <!-- Entity-partition coverage. Shown whenever the pass ran: "every subject covered"
+                     is a result, not a non-event, and an uncovered subject is what an answer drawn
+                     from this graph will be confidently wrong about. -->
+                <div class="job-partition-coverage"
+                     *ngIf="((job.partitionsCovered ?? 0) + (job.partitionsUncovered ?? 0)) > 0"
+                     [class.has-gaps]="(job.partitionsUncovered ?? 0) > 0">
+                  <div class="coverage-headline">
+                    <mat-icon inline>{{ (job.partitionsUncovered ?? 0) > 0 ? 'report_problem' : 'verified' }}</mat-icon>
+                    <span>{{ job.partitionsCovered || 0 }} subject(s) covered</span>
+                    <span *ngIf="(job.partitionsUncovered ?? 0) > 0" class="coverage-gap">
+                      &bull; {{ job.partitionsUncovered }} with no coverage claim
+                    </span>
+                  </div>
+                  <div class="coverage-subjects" *ngIf="job.uncoveredPartitionSubjects?.length">
+                    <span class="coverage-subject" *ngFor="let subject of job.uncoveredPartitionSubjects">{{ subject }}</span>
+                  </div>
+                  <div class="coverage-detail" *ngIf="job.partitionCoverageDetail">{{ job.partitionCoverageDetail }}</div>
+                </div>
+
+                <!-- Real-time entity type breakdown -->
+                <div class="job-type-breakdown" *ngIf="job.entityTypeCounts && objectKeys(job.entityTypeCounts).length > 0">
+                  <div class="type-breakdown-header">
+                    <mat-icon inline>category</mat-icon>
+                    <span>Entity Types</span>
+                  </div>
+                  <div class="type-chips">
+                    <span class="type-chip" *ngFor="let entry of sortedTypeCounts(job.entityTypeCounts) | slice:0:12">
+                      <span class="type-name">{{ entry[0] }}</span>
+                      <span class="type-count">{{ entry[1] }}</span>
+                    </span>
+                    <span class="type-chip more" *ngIf="objectKeys(job.entityTypeCounts).length > 12">
+                      +{{ objectKeys(job.entityTypeCounts).length - 12 }} more
+                    </span>
+                  </div>
+                </div>
+
+                <!-- Real-time relationship type breakdown -->
+                <div class="job-type-breakdown" *ngIf="job.relationshipTypeCounts && objectKeys(job.relationshipTypeCounts).length > 0">
+                  <div class="type-breakdown-header">
+                    <mat-icon inline>link</mat-icon>
+                    <span>Relationship Types</span>
+                  </div>
+                  <div class="type-chips">
+                    <span class="type-chip rel-chip" *ngFor="let entry of sortedTypeCounts(job.relationshipTypeCounts) | slice:0:10">
+                      <span class="type-name">{{ entry[0] }}</span>
+                      <span class="type-count">{{ entry[1] }}</span>
+                    </span>
+                    <span class="type-chip more" *ngIf="objectKeys(job.relationshipTypeCounts).length > 10">
+                      +{{ objectKeys(job.relationshipTypeCounts).length - 10 }} more
+                    </span>
+                  </div>
+                </div>
+
+                <!-- Source progress strip -->
+                <div class="source-progress-strip" *ngIf="job.sources && job.sources.length > 0">
+                  <div *ngFor="let src of job.sources" class="source-progress-row">
+                    <mat-icon inline class="source-icon-sm">{{ getSourceIcon(src.sourceType || '') }}</mat-icon>
+                    <span class="source-label" [title]="src.pathOrUrl">{{ src.label || src.pathOrUrl }}</span>
+                    <span class="source-status-chip" [class]="'status-' + (src.status || 'PENDING').toLowerCase()">{{ src.status || 'PENDING' }}</span>
+                    <span class="source-counters">
+                      {{ src.documentsDiscovered || 0 }} found
+                      <ng-container *ngIf="src.documentsLoaded"> &bull; {{ src.documentsLoaded }} loaded</ng-container>
+                      <ng-container *ngIf="src.chunksCreated"> &bull; {{ src.chunksCreated }} chunks</ng-container>
+                    </span>
+                    <span *ngIf="src.currentItem" class="source-current-item">
+                      <mat-icon inline class="spinning-icon-sm">sync</mat-icon> {{ src.currentItem | slice:0:40 }}
+                    </span>
+                  </div>
+                </div>
+
+                <!-- Discovery feed (recently discovered files/URLs) -->
+                <div class="discovery-feed" *ngIf="job.recentlyDiscoveredItems && job.recentlyDiscoveredItems.length > 0 && (job.status === 'RUNNING' || job.status === 'PENDING')">
+                  <div class="discovery-feed-header">
+                    <mat-icon inline>explore</mat-icon>
+                    <span>Recently Discovered ({{ job.documentsDiscovered || 0 }} total)</span>
+                  </div>
+                  <div class="discovery-feed-items">
+                    <div *ngFor="let item of job.recentlyDiscoveredItems | slice:-8" class="discovery-item">
+                      <mat-icon inline class="discovery-icon">{{ getSourceIcon(item.sourceType) }}</mat-icon>
+                      <span class="discovery-name" [title]="item.name">{{ item.name | slice:0:60 }}</span>
+                      <span class="discovery-source">{{ item.sourceLabel }}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Recent document activity (top 5 most recently active documents) -->
+                <div class="recent-docs-feed" *ngIf="job.recentDocuments && job.recentDocuments.length > 0">
+                  <div class="recent-docs-header">
+                    <mat-icon inline>description</mat-icon>
+                    <span>Recent Document Activity</span>
+                  </div>
+                  <div class="recent-docs-list">
+                    <div *ngFor="let doc of job.recentDocuments | slice:0:5" class="recent-doc-row"
+                         [ngClass]="getDocumentStatusClass(doc.status)">
+                      <span class="recent-doc-name" [title]="doc.documentKey">{{ doc.fileName || doc.documentKey | slice:0:40 }}</span>
+                      <span class="recent-doc-status" [class]="'doc-status-' + (doc.status || 'unknown').toLowerCase()">{{ doc.status || '?' }}</span>
+                      <span class="recent-doc-phase" *ngIf="doc.phase">{{ formatPhase(doc.phase) }}</span>
+                      <span class="recent-doc-stats">
+                        <ng-container *ngIf="doc.chunksCreated">{{ doc.chunksCreated }} chunks</ng-container>
+                        <ng-container *ngIf="doc.entitiesExtracted"> &bull; {{ doc.entitiesExtracted }} entities</ng-container>
+                      </span>
+                      <span *ngIf="doc.errorMessage" class="recent-doc-error" [title]="doc.errorMessage">
+                        <mat-icon inline>error</mat-icon>
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Compact live LLM transcript indicator for the selected running job in the list card -->
+                <div class="live-transcript-summary"
+                     *ngIf="job.status === 'RUNNING' && selectedJob?.jobId === job.jobId && liveTranscripts.length > 0">
+                  <div class="live-transcript-summary-header">
+                    <mat-icon inline>psychology</mat-icon>
+                    <span>LLM Extractions</span>
+                    <span class="live-badge-sm">LIVE</span>
+                  </div>
+                  <div *ngFor="let entry of liveTranscripts | slice:0:3" class="live-transcript-row"
+                       [class.transcript-warn]="entry.level === 'WARN'">
+                    <span class="transcript-time">{{ formatEventTime(entry.timestamp) }}</span>
+                    <span class="transcript-session" *ngIf="transcriptSessionId(entry.message)">
+                      <mat-icon inline style="font-size:11px">tag</mat-icon>{{ transcriptSessionId(entry.message) }}
+                    </span>
+                    <mat-icon *ngIf="entry.level === 'INFO'" class="transcript-status-ok" inline>check_circle</mat-icon>
+                    <mat-icon *ngIf="entry.level === 'WARN'" class="transcript-status-fail" inline>warning</mat-icon>
+                    <span class="live-transcript-snippet">{{ entry.message | slice:0:80 }}</span>
+                  </div>
+                </div>
+
+                <!-- Memory & error row -->
+                <div class="job-meta-row">
+                  <span *ngIf="(job.status === 'RUNNING' || job.status === 'PENDING') && job.memoryUsagePercent !== undefined" class="meta-item">
+                    <mat-icon inline>speed</mat-icon> {{ job.memoryUsagePercent }}% heap
+                  </span>
+                  <span *ngIf="(job.status === 'RUNNING' || job.status === 'PENDING') && job.nativeMemoryUsagePercent !== undefined && job.nativeMaxPhysicalBytes" class="meta-item">
+                    <mat-icon inline>developer_board</mat-icon> {{ job.nativeMemoryUsagePercent }}% native
+                  </span>
+                  <span *ngIf="(job.status === 'RUNNING' || job.status === 'PENDING') && job.processTreeRssBytes" class="meta-item">
+                    <mat-icon inline>memory</mat-icon> {{ formatBytes(job.processTreeRssBytes || 0) }} RSS
+                  </span>
+                  <span *ngIf="(job.status === 'RUNNING' || job.status === 'PENDING') && job.embeddingSubprocessRssBytes !== undefined" class="meta-item">
+                    <mat-icon inline>psychology_alt</mat-icon> embed {{ formatBytes(job.embeddingSubprocessRssBytes || 0) }}
+                  </span>
+                  <span *ngIf="(job.status === 'RUNNING' || job.status === 'PENDING') && job.otherChildProcessRssBytes" class="meta-item">
+                    <mat-icon inline>smart_toy</mat-icon> agents {{ formatBytes(job.otherChildProcessRssBytes || 0) }}
+                  </span>
+                  <span *ngIf="job.errorCount > 0" class="meta-item stat-error" matTooltip="Click job for error details">
+                    <mat-icon inline>warning</mat-icon> {{ job.errorCount }} errors
+                  </span>
+                  <span *ngIf="(job.status === 'RUNNING') && job.adaptiveBatchSize" class="meta-item" matTooltip="Adaptive batch size (dynamic)">
+                    <mat-icon inline>tune</mat-icon> batch {{ job.adaptiveBatchSize }}
+                    <span *ngIf="job.lastBatchAdjustDirection && job.lastBatchAdjustDirection !== 'HOLD'"
+                          [class.adjust-up]="job.lastBatchAdjustDirection === 'UP'"
+                          [class.adjust-down]="job.lastBatchAdjustDirection === 'DOWN'">
+                      {{ job.lastBatchAdjustDirection === 'UP' ? '&#9650;' : '&#9660;' }}
+                    </span>
+                  </span>
+                  <span *ngIf="(job.status === 'RUNNING') && job.workStealCount" class="meta-item" matTooltip="Work stealing: steals/local dispatches">
+                    <mat-icon inline>swap_horiz</mat-icon> {{ job.workStealCount }} steals
+                  </span>
+                  <span *ngIf="job.totalInputTokens || job.totalOutputTokens" class="meta-item" matTooltip="LLM token usage">
+                    <mat-icon inline>token</mat-icon> {{ ((job.totalInputTokens || 0) + (job.totalOutputTokens || 0)) | number }} tok
+                  </span>
+                  <span *ngIf="job.estimatedCostCentsX100" class="meta-item" matTooltip="Estimated LLM cost">
+                    <mat-icon inline>attach_money</mat-icon> {{ formatCost(job.estimatedCostCentsX100 || 0) }}
+                  </span>
+                  <span *ngIf="job.reroutedItems" class="meta-item" matTooltip="Items rerouted between backends">
+                    <mat-icon inline>alt_route</mat-icon> {{ job.reroutedItems }} rerouted
+                  </span>
+                  <span *ngIf="job.retriedBatches" class="meta-item" matTooltip="Batch retries with backoff">
+                    <mat-icon inline>replay</mat-icon> {{ job.retriedBatches }} retries
+                  </span>
+                  <span *ngIf="job.deadLetterCount" class="meta-item stat-error" matTooltip="Dead-letter queue: items that failed after retries">
+                    <mat-icon inline>report</mat-icon> {{ job.deadLetterCount }} failed
+                  </span>
+                  <span *ngIf="job.backendsCoolingDown" class="meta-item" matTooltip="Backends in cooldown">
+                    <mat-icon inline>hourglass_top</mat-icon> {{ job.backendsCoolingDown }} cooling
+                  </span>
+                </div>
+
+                <!-- Pipeline steps — shared CrawlStepMonitor (compact; same component as Fact Sheets + Job Detail) -->
+                <div class="step-strip" *ngIf="job.pipelineSteps && job.pipelineSteps.length > 0"
+                     (click)="$event.stopPropagation()">
+                  <app-crawl-step-monitor
+                    [steps]="job.pipelineSteps"
+                    [job]="job"
+                    [jobId]="job.jobId"
+                    [taskId]="'crawl-' + (job.internalJobId || job.jobId)"
+                    [isJobRunning]="job.status === 'RUNNING' || job.status === 'PENDING'"
+                    [compact]="true"
+                    [runningStepIds]="getRunningStepIds(job.jobId)"
+                    (runStepRequested)="runStep($event.jobId, $event.stepId)">
+                  </app-crawl-step-monitor>
+                </div>
+                <mat-progress-bar *ngIf="job.status === 'RUNNING' || job.status === 'PENDING'"
+                                  [mode]="job.progressPercent !== undefined && job.progressPercent > 0 ? 'determinate' : 'indeterminate'"
+                                  [value]="job.progressPercent || 0"></mat-progress-bar>
+              </mat-card-content>
+              <mat-card-actions *ngIf="job.status === 'RUNNING' || job.status === 'PENDING'" align="end">
+                <button mat-button color="warn" (click)="cancelJob(job.jobId); $event.stopPropagation()">
+                  <mat-icon>cancel</mat-icon> Cancel
+                </button>
+              </mat-card-actions>
+              <mat-card-actions *ngIf="job.status === 'FAILED' || (job.status === 'COMPLETED' && job.errorCount > 0)" align="end">
+                <button mat-button color="primary" (click)="retryFailedDocuments(job.jobId); $event.stopPropagation()">
+                  <mat-icon>replay</mat-icon> Retry Failed
+                </button>
+                <button mat-button (click)="retryFailedDocuments(job.jobId, 'GRAPH_EXTRACTION'); $event.stopPropagation()">
+                  <mat-icon>account_tree</mat-icon> Retry Graph Extraction
+                </button>
+              </mat-card-actions>
+            </mat-card>
+          </div>
+        </mat-tab>
+
+        <!-- Source Maintenance Tab -->
+        <mat-tab>
+          <ng-template mat-tab-label>
+            Source Maintenance
+            <span *ngIf="syncConnections.length > 0" class="tab-badge">{{ syncConnections.length }}</span>
+          </ng-template>
+          <div class="tab-content source-maintenance">
+            <div class="source-maintenance-header">
+              <div>
+                <h3>Connected source updates</h3>
+                <p>Pull changed content into the active Fact Sheet. Updated notes feed graph maintenance and remain observable alongside crawl jobs.</p>
+              </div>
+              <button mat-button (click)="refreshSyncConnections()">
+                <mat-icon>refresh</mat-icon> Refresh
+              </button>
+            </div>
+
+            <mat-card class="source-maintenance-card portable-kb-card">
+              <mat-card-content>
+                <div class="portable-kb-header">
+                  <div class="portable-kb-heading">
+                    <mat-icon>inventory_2</mat-icon>
+                    <div>
+                      <div class="source-maintenance-title">Portable Knowledge Base</div>
+                      <div class="source-maintenance-description">
+                        Flush catalogs and graphs, package the project, or preflight and stage a portable project import.
+                      </div>
+                    </div>
+                  </div>
+                  <div class="source-maintenance-actions">
+                    <button mat-raised-button color="primary"
+                            [disabled]="isPortabilityRunning()"
+                            (click)="startPortableExport()">
+                      <mat-icon>archive</mat-icon>
+                      {{ isPortabilityRunning() ? 'Maintenance running…' : 'Prepare Snapshot' }}
+                    </button>
+                    <label mat-stroked-button [class.disabled]="portabilityActionInProgress">
+                      <mat-icon>upload_file</mat-icon> Inspect Package
+                      <input type="file" accept=".kproject"
+                             [disabled]="portabilityActionInProgress"
+                             (change)="selectPortableArchive($event)" hidden>
+                    </label>
+                  </div>
+                </div>
+
+                <div *ngIf="portabilityError" class="source-sync-error">
+                  <mat-icon>error</mat-icon>{{ portabilityError }}
+                </div>
+
+                <div *ngIf="portableArchive" class="portable-preflight">
+                  <div>
+                    <strong>{{ portableArchive.name }}</strong>
+                    <span class="status-badge status-completed">Format v{{ portableArchive.formatVersion }}</span>
+                  </div>
+                  <div class="source-maintenance-meta">
+                    <span>{{ portableArchive.entryCount }} files</span>
+                    <span>{{ formatBytes(portableArchive.totalBytes) }}</span>
+                    <span *ngIf="portableArchive.defaultGraph">Graph included</span>
+                    <span *ngIf="!portableArchive.defaultGraph">Graph rebuild required</span>
+                  </div>
+                  <div class="portable-asset-groups">
+                    <div class="portable-asset-group" *ngIf="portableArchive.semantic.portableAssets.length">
+                      <strong>Preserved</strong>
+                      <div class="portable-assets">
+                        <span *ngFor="let asset of portableArchive.semantic.portableAssets">
+                          {{ portabilityStage(asset) }}
+                        </span>
+                      </div>
+                    </div>
+                    <div class="portable-asset-group" *ngIf="portableArchive.semantic.rebuildableAssets.length">
+                      <strong>Rebuildable</strong>
+                      <div class="portable-assets">
+                        <span *ngFor="let asset of portableArchive.semantic.rebuildableAssets">
+                          {{ portabilityStage(asset) }}
+                        </span>
+                      </div>
+                    </div>
+                    <div class="portable-asset-group" *ngIf="portableArchive.semantic.externalRequirements.length">
+                      <strong>Machine-local bindings</strong>
+                      <div class="portable-assets external">
+                        <span *ngFor="let asset of portableArchive.semantic.externalRequirements">
+                          {{ portabilityStage(asset) }}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="portable-warning" *ngFor="let warning of portableArchive.warnings">
+                    <mat-icon>warning</mat-icon>{{ warning }}
+                  </div>
+                  <div class="portable-preflight-actions">
+                    <button mat-raised-button color="accent"
+                            [disabled]="portabilityActionInProgress"
+                            (click)="importPortableArchive()">
+                      <mat-icon>drive_folder_upload</mat-icon> Import as New Project
+                    </button>
+                    <span>The imported project stays inactive until explicitly opened.</span>
+                  </div>
+                </div>
+
+                <div class="portable-job-list" *ngIf="portableJobs.length">
+                  <div class="portable-job" *ngFor="let job of portableJobs | slice:0:5">
+                    <div class="portable-job-row">
+                      <mat-icon>{{ job.operation === 'EXPORT' ? 'archive' : 'drive_folder_upload' }}</mat-icon>
+                      <div class="portable-job-details">
+                        <div>
+                          <strong>{{ job.operation === 'EXPORT' ? 'Snapshot export' : 'Project import' }}</strong>
+                          <span class="status-badge" [class]="'status-' + job.status.toLowerCase()">
+                            {{ job.status }}
+                          </span>
+                        </div>
+                        <span>{{ portabilityStage(job.stage) }} · {{ formatTimestamp(job.createdAt) }}</span>
+                      </div>
+                      <button *ngIf="job.downloadReady" mat-stroked-button color="primary"
+                              (click)="downloadPortableArchive(job)">
+                        <mat-icon>download</mat-icon> Download
+                      </button>
+                      <button *ngIf="job.operation === 'IMPORT' && job.status === 'COMPLETED'"
+                              mat-stroked-button
+                              [disabled]="restorationActionInProgress"
+                              (click)="inspectImportedRestoration(job)">
+                        <mat-icon>fact_check</mat-icon> Restoration Plan
+                      </button>
+                    </div>
+                    <mat-progress-bar *ngIf="job.status === 'QUEUED' || job.status === 'RUNNING'"
+                                      [mode]="job.progress > 0 ? 'determinate' : 'indeterminate'"
+                                      [value]="job.progress"></mat-progress-bar>
+                    <div *ngIf="job.archive" class="source-maintenance-meta">
+                      <span>{{ job.archive.name }}</span>
+                      <span>{{ job.archive.entryCount }} files</span>
+                      <span>{{ formatBytes(job.archive.totalBytes) }}</span>
+                      <span *ngIf="job.importedPath">Staged at {{ job.importedPath }}</span>
+                    </div>
+                    <div *ngIf="job.error" class="source-sync-error">
+                      <mat-icon>error</mat-icon>{{ job.error }}
+                    </div>
+                    <div class="portable-warning" *ngFor="let warning of job.warnings">
+                      <mat-icon>info</mat-icon>{{ warning }}
+                    </div>
+                  </div>
+                </div>
+
+                <div *ngIf="restorationReadiness" class="restoration-panel">
+                  <div class="restoration-header">
+                    <div>
+                      <strong>{{ restorationReadiness.active ? 'Active project restoration' : 'Staged project activation' }}</strong>
+                      <span class="status-badge"
+                            [class]="restorationReadiness.ready ? 'status-completed' : 'status-running'">
+                        {{ restorationReadiness.ready ? 'READY' : restorationReadiness.activationMode }}
+                      </span>
+                    </div>
+                    <button *ngIf="restorationInspectionJobId" mat-button
+                            [disabled]="restorationActionInProgress"
+                            (click)="loadRestorationReadiness()">
+                      <mat-icon>home</mat-icon> Current Project
+                    </button>
+                  </div>
+                  <p class="restoration-instruction">{{ restorationReadiness.activationInstruction }}</p>
+                  <div class="restoration-inventory">
+                    <span>{{ restorationReadiness.inventory.catalogFactSheets }} fact sheets</span>
+                    <span>{{ restorationReadiness.inventory.catalogSourceConnections }} sources</span>
+                    <span>{{ restorationReadiness.inventory.chatSessions }} chats</span>
+                    <span>{{ restorationReadiness.inventory.indexedDocuments }} indexed documents</span>
+                    <span>{{ restorationReadiness.inventory.models }} models</span>
+                  </div>
+                  <div *ngIf="restorationReadiness.active" class="portable-preflight-actions">
+                    <button mat-stroked-button
+                            [disabled]="restorationActionInProgress"
+                            (click)="restorePortableCatalogs(true)">
+                      <mat-icon>preview</mat-icon> Preview Restore
+                    </button>
+                    <button mat-raised-button color="accent"
+                            [disabled]="restorationActionInProgress"
+                            (click)="restorePortableCatalogs(false)">
+                      <mat-icon>restore</mat-icon> Restore Missing Catalogs
+                    </button>
+                    <span>Created sources stay disabled and contain no credentials.</span>
+                  </div>
+                  <div *ngIf="restorationResult" class="restoration-result">
+                    Planned {{ restorationResult.plannedFactSheets }} fact sheets and
+                    {{ restorationResult.plannedSourceConnections }} sources.
+                    <span *ngIf="restorationResult.skipped">
+                      {{ restorationResult.skipped }} entries need manual review.
+                    </span>
+                  </div>
+                  <div class="restoration-items">
+                    <div *ngFor="let item of restorationReadiness.items" class="restoration-item">
+                      <mat-icon>{{ item.kind === 'SOURCE_CONNECTION' ? 'sync_alt' :
+                        item.kind === 'FACT_SHEET' ? 'dataset' :
+                        item.kind === 'MODEL' ? 'memory' : 'account_tree' }}</mat-icon>
+                      <div>
+                        <strong>{{ item.label }}</strong>
+                        <span>{{ item.message }}</span>
+                        <small *ngIf="item.actions.length">Next: {{ item.actions.join(' → ').replaceAll('_', ' ') }}</small>
+                      </div>
+                      <span class="status-badge" [class]="'status-' + item.status.toLowerCase()">
+                        {{ portabilityStage(item.status) }}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </mat-card-content>
+            </mat-card>
+
+            <div *ngIf="!activeFactSheet" class="empty-state">
+              <mat-icon>dataset</mat-icon>
+              <p>Select an active Fact Sheet to maintain connected sources.</p>
+            </div>
+            <div *ngIf="activeFactSheet && syncConnections.length === 0" class="empty-state">
+              <mat-icon>sync_disabled</mat-icon>
+              <p>No Notion, Obsidian, folder, or Git sync connections are configured for {{ activeFactSheet.name }}.</p>
+            </div>
+
+            <mat-card *ngFor="let connection of syncConnections" class="source-maintenance-card">
+              <mat-card-content>
+                <div class="source-maintenance-row">
+                  <mat-icon class="source-maintenance-icon">{{ getSyncProviderIcon(connection.provider) }}</mat-icon>
+                  <div class="source-maintenance-details">
+                    <div class="source-maintenance-title">
+                      {{ connection.provider.replace('_', ' ') }}
+                      <span class="status-badge" [class]="'status-' + connection.lastSyncStatus.toLowerCase()">
+                        {{ connection.lastSyncStatus }}
+                      </span>
+                    </div>
+                    <div class="source-maintenance-scope">{{ connection.externalScope }}</div>
+                    <div class="source-maintenance-description">{{ getSyncProviderDescription(connection.provider) }}</div>
+                    <div class="source-maintenance-meta">
+                      <span>Direction: {{ connection.direction.replaceAll('_', ' ') }}</span>
+                      <span>Last sync: {{ connection.lastSyncAt ? formatTimestamp(connection.lastSyncAt) : 'Never' }}</span>
+                      <span *ngIf="connection.pollCron">Schedule: {{ connection.pollCron }}</span>
+                      <span *ngIf="connection.nextSyncAttemptAt">Retry after: {{ formatTimestamp(connection.nextSyncAttemptAt) }}</span>
+                      <span *ngIf="connection.activeSyncRunId">Active run: {{ connection.activeSyncRunId | slice:0:13 }}…</span>
+                      <span>Auth: {{ portabilityStage(connection.authStatus || 'UNKNOWN') }}</span>
+                    </div>
+                    <div *ngIf="connection.authStatusMessage" class="source-auth-message">
+                      {{ connection.authStatusMessage }}
+                    </div>
+                    <div *ngIf="connection.provider === 'NOTION' && !sourceAuthReady(connection)"
+                         class="source-auth-message">
+                      Connect Notion in Connections Manager, then return here and run Test Auth.
+                    </div>
+                    <div *ngIf="requiresSourceSecret(connection)" class="source-credential-binding">
+                      <mat-form-field appearance="outline">
+                        <mat-label>{{ connection.authSecretConfigured ? 'Replace credential' : 'Bind credential' }}</mat-label>
+                        <input matInput type="password"
+                               autocomplete="new-password"
+                               [(ngModel)]="sourceCredentialDrafts[connection.id]">
+                      </mat-form-field>
+                      <button mat-stroked-button
+                              [disabled]="sourceAuthUpdating.has(connection.id) || !sourceCredentialDrafts[connection.id]"
+                              (click)="bindSourceCredential(connection)">
+                        <mat-icon>key</mat-icon> Bind
+                      </button>
+                    </div>
+                  </div>
+                  <div class="source-maintenance-actions">
+                    <button mat-stroked-button
+                            [disabled]="sourceAuthUpdating.has(connection.id)"
+                            (click)="testSourceAuth(connection)">
+                      <mat-icon>verified_user</mat-icon> Test Auth
+                    </button>
+                    <button mat-stroked-button
+                            [disabled]="sourceAuthUpdating.has(connection.id) || (!connection.enabled && !sourceAuthReady(connection))"
+                            (click)="toggleSourceEnabled(connection)">
+                      <mat-icon>{{ connection.enabled ? 'pause_circle' : 'play_circle' }}</mat-icon>
+                      {{ connection.enabled ? 'Disable' : 'Enable' }}
+                    </button>
+                    <mat-slide-toggle
+                      [checked]="!!connection.pollCron"
+                      [disabled]="autoSyncUpdating.has(connection.id) || sourceAuthUpdating.has(connection.id) ||
+                                  (!connection.pollCron && !canOperateSource(connection))"
+                      (change)="setAutoSync(connection, $event.checked)"
+                      matTooltip="Poll this source automatically; the default interval is every 15 minutes">
+                      Auto Sync
+                    </mat-slide-toggle>
+                    <button mat-raised-button color="primary"
+                            [disabled]="!canOperateSource(connection) || isPulling(connection.id)"
+                            (click)="pullSourceUpdates(connection)">
+                      <mat-icon>{{ isPulling(connection.id) ? 'sync' : 'cloud_download' }}</mat-icon>
+                      {{ isPulling(connection.id) ? 'Pulling…' : 'Pull Updates' }}
+                    </button>
+                  </div>
+                </div>
+
+                <div *ngIf="syncProgress.get(connection.id) as progress" class="source-sync-progress">
+                  <mat-progress-bar *ngIf="progress.status === 'QUEUED' || progress.status === 'RUNNING'"
+                                    mode="indeterminate"></mat-progress-bar>
+                  <div class="source-sync-message">
+                    <mat-icon>{{ progress.status === 'ERROR' || progress.status === 'PARTIAL' ? 'error' :
+                      progress.status === 'COMPLETED' ? 'check_circle' :
+                      progress.status === 'INTERRUPTED' ? 'pause_circle' : 'sync' }}</mat-icon>
+                    <span>{{ progress.message || progress.status }}</span>
+                    <span *ngIf="progress.status === 'COMPLETED' || progress.status === 'PARTIAL'">
+                      {{ progress.pulled || 0 }} pulled · {{ progress.deleted || 0 }} deleted ·
+                      {{ progress.skipped || 0 }} unchanged
+                      <ng-container *ngIf="progress.conflicts"> · {{ progress.conflicts }} conflicts</ng-container>
+                      <ng-container *ngIf="progress.errors"> · {{ progress.errors }} errors</ng-container>
+                    </span>
+                  </div>
+                </div>
+                <div *ngIf="syncRuns.get(connection.id) as run" class="source-maintenance-meta">
+                  <span>Run: {{ run.sessionId }}</span>
+                  <span>Stage: {{ portabilityStage(run.stage) }}</span>
+                  <span *ngIf="run.graphStatus && run.graphStatus !== 'NOT_REQUIRED'">
+                    Graph: {{ portabilityStage(run.graphStatus) }}
+                  </span>
+                  <button *ngIf="run.crawlJobId" mat-stroked-button
+                          (click)="openSourceGraphJob(run)">
+                    <mat-icon>account_tree</mat-icon> View graph crawl
+                  </button>
+                  <span *ngIf="run.graphError" class="source-sync-error">{{ run.graphError }}</span>
+                </div>
+                <div *ngIf="connection.lastSyncError" class="source-sync-error">
+                  <mat-icon>warning</mat-icon>{{ connection.lastSyncError }}
+                </div>
+              </mat-card-content>
+            </mat-card>
+          </div>
+        </mat-tab>
+
+        <!-- Job Detail Tab -->
+        <mat-tab label="Job Detail" [disabled]="!selectedJob">
+          <div class="tab-content" *ngIf="selectedJob">
+            <mat-card>
+              <mat-card-header>
+                <mat-card-title>
+                  {{ selectedJob.name || 'Unnamed Job' }}
+                  <span class="status-badge" [class]="'status-' + selectedJob.status.toLowerCase()">
+                    {{ selectedJob.status }}
+                  </span>
+                  <span *ngIf="selectedJob.fromHistory" class="history-badge" matTooltip="Loaded from job history">
+                    History
+                  </span>
+                </mat-card-title>
+                <mat-card-subtitle>
+                  Job ID: {{ selectedJob.jobId | slice:0:8 }}...
+                  <span *ngIf="selectedJob.createdAt" class="elapsed"> &bull; Created {{ formatTimestamp(selectedJob.createdAt) }}</span>
+                  <span *ngIf="selectedJob.startedAt" class="elapsed"> &bull; Started {{ formatTimestamp(selectedJob.startedAt) }}</span>
+                  <span *ngIf="selectedJob.completedAt" class="elapsed"> &bull; Finished {{ formatTimestamp(selectedJob.completedAt) }}</span>
+                  <span *ngIf="extractionAgentLabel" class="elapsed extraction-agent"
+                        matTooltip="LLM / CLI-agent model used for entity &amp; graph extraction (from graph-extraction-config)">
+                    &bull; <mat-icon inline>smart_toy</mat-icon> Extraction: {{ extractionAgentLabel }}
+                  </span>
+                </mat-card-subtitle>
+              </mat-card-header>
+              <mat-card-content>
+                <app-resource-strip></app-resource-strip>
+                <!-- Job Configuration (from original request) -->
+                <div *ngIf="selectedJob.requestConfig" class="job-config-panel">
+                  <h3><mat-icon inline>settings</mat-icon> Job Configuration</h3>
+                  <div class="config-grid">
+                    <!-- Sources configured -->
+                    <div class="config-section" *ngIf="selectedJob.requestConfig.sources && selectedJob.requestConfig.sources.length > 0">
+                      <div class="config-label">Sources ({{ selectedJob.requestConfig.sources.length }})</div>
+                      <div *ngFor="let src of selectedJob.requestConfig.sources" class="config-source-row">
+                        <mat-icon class="source-icon">{{ getSourceIcon(src.sourceType || '') }}</mat-icon>
+                        <strong>{{ src.label || src.pathOrUrl }}</strong>
+                        <span class="source-type-tag">{{ src.sourceType }}</span>
+                        <span class="elapsed" *ngIf="src.maxDepth">depth {{ src.maxDepth }}</span>
+                        <span class="elapsed" *ngIf="src.maxDocuments">max {{ src.maxDocuments }} docs</span>
+                      </div>
+                    </div>
+                    <!-- Graph extraction config -->
+                    <div class="config-section" *ngIf="selectedJob.requestConfig.graphExtraction">
+                      <div class="config-label">
+                        <mat-icon inline>hub</mat-icon> Graph Extraction
+                        <span class="config-status-tag enabled">Mandatory</span>
+                      </div>
+                      <div class="config-details">
+                        <span *ngIf="selectedJob.requestConfig.graphExtraction.llmProvider">
+                          <strong>LLM:</strong> {{ selectedJob.requestConfig.graphExtraction.llmProvider }}
+                          <ng-container *ngIf="selectedJob.requestConfig.graphExtraction.modelName"> / {{ selectedJob.requestConfig.graphExtraction.modelName }}</ng-container>
+                        </span>
+                        <span *ngIf="selectedJob.requestConfig.graphExtraction.entityTypes && selectedJob.requestConfig.graphExtraction.entityTypes.length > 0">
+                          <strong>Entities:</strong> {{ selectedJob.requestConfig.graphExtraction.entityTypes.join(', ') }}
+                        </span>
+                        <span *ngIf="selectedJob.requestConfig.graphExtraction.relationshipTypes && selectedJob.requestConfig.graphExtraction.relationshipTypes.length > 0">
+                          <strong>Relations:</strong> {{ selectedJob.requestConfig.graphExtraction.relationshipTypes.join(', ') }}
+                        </span>
+                        <span><strong>Schema:</strong> {{ selectedJob.requestConfig.graphExtraction.schemaMode || 'LENIENT' }}</span>
+                        <span *ngIf="selectedJob.requestConfig.graphExtraction.schemaPresetId">
+                          <strong>Preset:</strong> {{ selectedJob.requestConfig.graphExtraction.schemaPresetId }}
+                        </span>
+                        <span><strong>Temp:</strong> {{ selectedJob.requestConfig.graphExtraction.temperature }}</span>
+                        <span><strong>Entity resolution:</strong> {{ selectedJob.requestConfig.graphExtraction.entityResolution ? 'Yes' : 'No' }}</span>
+                        <span><strong>Min confidence:</strong> {{ selectedJob.requestConfig.graphExtraction.minConfidence }}</span>
+                      </div>
+                    </div>
+                    <!-- Vector index config -->
+                    <div class="config-section" *ngIf="selectedJob.requestConfig.vectorIndex">
+                      <div class="config-label">
+                        <mat-icon inline>storage</mat-icon> Vector Index
+                        <span class="config-status-tag" [class.enabled]="selectedJob.requestConfig.vectorIndex.enabled">
+                          {{ selectedJob.requestConfig.vectorIndex.enabled ? 'Enabled' : 'Disabled' }}
+                        </span>
+                      </div>
+                      <div class="config-details" *ngIf="selectedJob.requestConfig.vectorIndex.enabled">
+                        <span *ngIf="selectedJob.requestConfig.vectorIndex.collectionName">
+                          <strong>Collection:</strong> {{ selectedJob.requestConfig.vectorIndex.collectionName }}
+                        </span>
+                        <span *ngIf="selectedJob.requestConfig.vectorIndex.chunkerName">
+                          <strong>Chunker:</strong> {{ selectedJob.requestConfig.vectorIndex.chunkerName }}
+                        </span>
+                        <span *ngIf="selectedJob.requestConfig.vectorIndex.chunkSize">
+                          <strong>Chunk size:</strong> {{ selectedJob.requestConfig.vectorIndex.chunkSize }} tokens
+                          <ng-container *ngIf="selectedJob.requestConfig.vectorIndex.chunkOverlap"> (overlap {{ selectedJob.requestConfig.vectorIndex.chunkOverlap }})</ng-container>
+                        </span>
+                        <span *ngIf="selectedJob.requestConfig.vectorIndex.embeddingBatchSize">
+                          <strong>Batch:</strong> {{ selectedJob.requestConfig.vectorIndex.embeddingBatchSize }}
+                          <ng-container *ngIf="selectedJob.requestConfig.vectorIndex.maxEmbeddingBatchSize"> (max {{ selectedJob.requestConfig.vectorIndex.maxEmbeddingBatchSize }})</ng-container>
+                        </span>
+                        <span><strong>Adaptive batching:</strong> {{ selectedJob.requestConfig.vectorIndex.adaptiveBatching ? 'Yes' : 'No' }}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Progress stats -->
+                <div class="detail-stats">
+                  <div class="stat-card">
+                    <div class="stat-value">{{ selectedJob.documentsDiscovered }}</div>
+                    <div class="stat-label">Discovered</div>
+                  </div>
+                  <div class="stat-card">
+                    <div class="stat-value">{{ selectedJob.documentsLoaded }}</div>
+                    <div class="stat-label">Loaded</div>
+                  </div>
+                  <div class="stat-card">
+                    <div class="stat-value">{{ selectedJob.chunksCreated || selectedJob.chunksProcessed }}</div>
+                    <div class="stat-label">Chunks</div>
+                  </div>
+                  <div class="stat-card">
+                    <div class="stat-value">{{ selectedJob.chunksEmbedded || 0 }}<span class="stat-sub" *ngIf="selectedJob.chunksQueuedForEmbedding">/{{ selectedJob.chunksQueuedForEmbedding }}</span></div>
+                    <div class="stat-label">Embedded</div>
+                  </div>
+                  <div class="stat-card">
+                    <div class="stat-value">{{ selectedJob.documentsIndexed }}</div>
+                    <div class="stat-label">Indexed</div>
+                  </div>
+                  <div class="stat-card highlight">
+                    <div class="stat-value">{{ selectedJob.entitiesExtracted }}</div>
+                    <div class="stat-label">Entities</div>
+                  </div>
+                  <div class="stat-card highlight">
+                    <div class="stat-value">{{ selectedJob.relationshipsExtracted }}</div>
+                    <div class="stat-label">Relationships</div>
+                  </div>
+                  <div class="stat-card" [class.error]="selectedJob.errorCount > 0">
+                    <div class="stat-value">{{ selectedJob.errorCount }}</div>
+                    <div class="stat-label">Errors</div>
+                  </div>
+                </div>
+
+                <!-- Elapsed time and current activity -->
+                <div *ngIf="selectedJob.elapsedMs > 0" class="elapsed-row">
+                  <mat-icon inline>timer</mat-icon>
+                  Elapsed: {{ formatElapsed(selectedJob.elapsedMs) }}
+                </div>
+                <div *ngIf="selectedJob.currentFile && selectedJob.status === 'RUNNING'" class="current-file">
+                  <mat-icon inline>sync</mat-icon> {{ selectedJob.currentFile }}
+                </div>
+
+                <div class="runtime-grid">
+                  <div><strong>Phase:</strong> {{ formatPhase(selectedJob.currentPhase) || selectedJob.status }}</div>
+                  <div><strong>Progress:</strong> {{ selectedJob.progressPercent || 0 }}%</div>
+                  <div *ngIf="selectedJob.queuePosition && selectedJob.queuePosition > 0">
+                    <strong>Queue:</strong> #{{ selectedJob.queuePosition }} of {{ selectedJob.queuedJobs }}
+                  </div>
+                  <div *ngIf="selectedJob.memoryUsagePercent !== undefined">
+                    <strong>Heap:</strong> {{ selectedJob.memoryUsagePercent }}% (peak {{ selectedJob.peakMemoryUsagePercent || 0 }}%)
+                  </div>
+                  <div *ngIf="selectedJob.nativeMemoryUsagePercent !== undefined && selectedJob.nativeMaxPhysicalBytes">
+                    <strong>Native:</strong> {{ selectedJob.nativeMemoryUsagePercent }}%
+                    ({{ formatBytes(selectedJob.nativePhysicalBytes || 0) }} / {{ formatBytes(selectedJob.nativeMaxPhysicalBytes || 0) }},
+                    peak {{ selectedJob.peakNativeMemoryUsagePercent || 0 }}%)
+                  </div>
+                  <div *ngIf="selectedJob.nativeTotalBytes || selectedJob.directBufferBytes">
+                    <strong>Tracked native:</strong> {{ formatBytes(selectedJob.nativeTotalBytes || 0) }}
+                    <ng-container *ngIf="selectedJob.directBufferBytes">
+                      &bull; Direct {{ formatBytes(selectedJob.directBufferBytes || 0) }}
+                    </ng-container>
+                  </div>
+                  <div *ngIf="selectedJob.processTreeRssBytes">
+                    <strong>Process RSS:</strong> {{ formatBytes(selectedJob.processTreeRssBytes || 0) }}
+                    <ng-container *ngIf="selectedJob.processRssBytes || selectedJob.childProcessRssBytes">
+                      (app {{ formatBytes(selectedJob.processRssBytes || 0) }},
+                      embedding subprocess {{ formatBytes(selectedJob.embeddingSubprocessRssBytes || 0) }},
+                      other children {{ formatBytes(selectedJob.otherChildProcessRssBytes || selectedJob.childProcessRssBytes || 0) }})
+                    </ng-container>
+                  </div>
+                  <div *ngIf="selectedJob.llmProvider">
+                    <strong>LLM:</strong> {{ selectedJob.llmProvider }}
+                    <ng-container *ngIf="selectedJob.llmModel"> / {{ selectedJob.llmModel }}</ng-container>
+                  </div>
+                  <div *ngIf="selectedJob.embeddingBatchSize">
+                    <strong>Embedding batch:</strong> {{ selectedJob.embeddingBatchSize }}
+                    <ng-container *ngIf="selectedJob.embeddingModelOptimalBatchSize">
+                      (model optimal={{ selectedJob.embeddingModelOptimalBatchSize }} max={{ selectedJob.embeddingModelMaxBatchSize }})
+                    </ng-container>
+                  </div>
+                  <div *ngIf="selectedJob.embeddingSingleDspPlan !== undefined"
+                       title="Embedding batch plan (DSP = dispatcher plan): single-pass fixed batch size vs. dynamic batching">
+                    <strong>Batching:</strong>
+                    {{ selectedJob.embeddingSingleDspPlan ? 'single (batch=' + selectedJob.embeddingDspPlanBatchSize + ')' : 'dynamic' }}
+                  </div>
+                  <div *ngIf="selectedJob.currentBatchStep">
+                    <strong>Batch step:</strong> {{ selectedJob.currentBatchStep }}
+                  </div>
+                </div>
+
+                <div class="pipeline-steps-panel" *ngIf="selectedJob.pipelineSteps && selectedJob.pipelineSteps.length > 0">
+                  <h3>Pipeline Steps</h3>
+                  <!-- Unified, fully-detailed expandable step monitor (shared with fact-sheet + Crawlers) -->
+                  <app-crawl-step-monitor
+                    [steps]="selectedJob.pipelineSteps || []"
+                    [job]="selectedJob"
+                    [jobId]="selectedJob.jobId"
+                    [taskId]="getCrawlHistoryTaskId(selectedJob.jobId)"
+                    [isJobRunning]="isCrawlJobRunning(selectedJob.status)"
+                    [runningStepIds]="getRunningStepIds(selectedJob.jobId)"
+                    (runStepRequested)="runStep($event.jobId, $event.stepId)">
+                  </app-crawl-step-monitor>
+                </div>
+
+                <!-- Post-processing (enrichment) progress: WebSocket + SSE, self-contained -->
+                <app-hydration-progress-panel *ngIf="isCrawlJobRunning(selectedJob.status)"></app-hydration-progress-panel>
+
+                <div class="document-stream-panel" *ngIf="selectedJob.documentProgress && selectedJob.documentProgress.length > 0">
+                  <h3>
+                    Documents ({{ selectedJob.documentProgress.length }})
+                    <span class="live-badge" *ngIf="selectedJob.status === 'RUNNING'">LIVE</span>
+                  </h3>
+                  <!-- Document status summary -->
+                  <div class="doc-status-summary">
+                    <span *ngIf="countDocsByStatus(selectedJob.documentProgress, 'RUNNING') as cnt" class="doc-count-badge running">
+                      <mat-icon inline>sync</mat-icon> {{ cnt }} processing
+                    </span>
+                    <span *ngIf="countDocsByStatus(selectedJob.documentProgress, 'COMPLETED') as cnt" class="doc-count-badge completed">
+                      <mat-icon inline>check_circle</mat-icon> {{ cnt }} completed
+                    </span>
+                    <span *ngIf="countDocsByStatus(selectedJob.documentProgress, 'LOADED') as cnt" class="doc-count-badge loaded">
+                      <mat-icon inline>description</mat-icon> {{ cnt }} loaded
+                    </span>
+                    <span *ngIf="countDocsByStatus(selectedJob.documentProgress, 'FAILED') as cnt" class="doc-count-badge failed">
+                      <mat-icon inline>error</mat-icon> {{ cnt }} failed
+                    </span>
+                    <span *ngIf="countDocsByStatus(selectedJob.documentProgress, 'SKIPPED') as cnt" class="doc-count-badge skipped">
+                      <mat-icon inline>block</mat-icon> {{ cnt }} skipped
+                    </span>
+                    <span class="doc-count-total">{{ selectedJob.documentProgress.length }} total documents</span>
+                  </div>
+                  <!-- Status filter and pagination controls -->
+                  <div class="doc-controls">
+                    <select [(ngModel)]="docStatusFilter" (ngModelChange)="onDocStatusFilterChange()" class="doc-filter-select">
+                      <option value="">All statuses</option>
+                      <option value="RUNNING">Running</option>
+                      <option value="LOADED">Loaded</option>
+                      <option value="COMPLETED">Completed</option>
+                      <option value="FAILED">Failed</option>
+                      <option value="SKIPPED">Skipped</option>
+                    </select>
+                    <span class="doc-page-info">
+                      Page {{ docPageIndex + 1 }} of {{ docTotalPages || 1 }}
+                      ({{ getFilteredDocumentCount(selectedJob.documentProgress) }} docs)
+                    </span>
+                    <button mat-icon-button (click)="docPrevPage()" [disabled]="docPageIndex === 0" class="doc-page-btn">
+                      <mat-icon>chevron_left</mat-icon>
+                    </button>
+                    <button mat-icon-button (click)="docNextPage()" [disabled]="docPageIndex >= docTotalPages - 1" class="doc-page-btn">
+                      <mat-icon>chevron_right</mat-icon>
+                    </button>
+                  </div>
+                  <div class="document-stream-header">
+                    <span>Document</span>
+                    <span>Type</span>
+                    <span>Phase</span>
+                    <span>Status</span>
+                    <span>Chunks</span>
+                    <span>Vector</span>
+                    <span>Entities</span>
+                    <span>Rels</span>
+                    <span>Updated</span>
+                  </div>
+                  <div *ngFor="let doc of getVisibleDocumentProgress(selectedJob.documentProgress)"
+                       class="document-stream-row"
+                       [ngClass]="getDocumentStatusClass(doc.status)">
+                    <div class="doc-main">
+                      <strong [title]="doc.sourcePath || doc.documentKey">{{ doc.fileName || doc.documentKey }}</strong>
+                      <span *ngIf="doc.loaderName" class="doc-loader">via {{ doc.loaderName }}</span>
+                      <span *ngIf="doc.extractors && doc.extractors.length > 0" class="doc-extractors">
+                        {{ doc.extractors.join(' &rarr; ') }}
+                      </span>
+                      <span *ngIf="doc.message" class="doc-message">{{ doc.message }}</span>
+                      <span *ngIf="doc.errorMessage" class="doc-error">{{ doc.errorMessage }}</span>
+                    </div>
+                    <span class="doc-content-type" [title]="doc.contentType || ''">{{ doc.contentType || '-' }}</span>
+                    <span class="phase-chip compact">{{ formatPhase(doc.phase) || 'Document' }}</span>
+                    <span class="status-badge small" [class]="'status-' + (doc.status || 'unknown').toLowerCase()">
+                      {{ doc.status || 'UNKNOWN' }}
+                    </span>
+                    <span>{{ doc.chunksCreated || 0 }}</span>
+                    <span>{{ doc.chunksEmbedded || 0 }}/{{ doc.chunksIndexed || 0 }}</span>
+                    <span>{{ doc.entitiesExtracted || 0 }}</span>
+                    <span>{{ doc.relationshipsExtracted || 0 }}</span>
+                    <span class="doc-updated">{{ formatTimestamp(doc.updatedAt || doc.completedAt || doc.startedAt) || '-' }}</span>
+                  </div>
+                </div>
+
+                <mat-progress-bar *ngIf="selectedJob.status === 'RUNNING' || selectedJob.status === 'PENDING'"
+                                  mode="determinate"
+                                  [value]="selectedJob.progressPercent || 0"></mat-progress-bar>
+
+                <!-- Per-source progress -->
+                <h3>Source Progress ({{ selectedJob.sources.length }})</h3>
+                <div *ngFor="let sp of selectedJob.sources" class="source-progress"
+                     [class.source-running]="sp.status === 'RUNNING'"
+                     [class.source-completed]="sp.status === 'COMPLETED'"
+                     [class.source-failed]="sp.status === 'FAILED'">
+                  <div class="source-progress-header">
+                    <mat-icon class="source-icon">{{ getSourceIcon(sp.sourceType) }}</mat-icon>
+                    <strong>{{ sp.label }}</strong>
+                    <span class="source-type-tag">{{ sp.sourceType }}</span>
+                    <span class="status-badge small" [class]="'status-' + sp.status.toLowerCase()">
+                      {{ sp.status }}
+                    </span>
+                    <span *ngIf="sp.currentPhase" class="phase-chip compact">{{ formatPhase(sp.currentPhase) }}</span>
+                  </div>
+                  <div *ngIf="sp.pathOrUrl" class="source-path" [title]="sp.pathOrUrl">
+                    <mat-icon inline style="font-size:13px;vertical-align:middle">link</mat-icon>
+                    {{ sp.pathOrUrl.length > 60 ? (sp.pathOrUrl | slice:0:57) + '...' : sp.pathOrUrl }}
+                  </div>
+                  <div class="source-counters">
+                    <span><strong>{{ sp.documentsDiscovered }}</strong> discovered</span>
+                    <span><strong>{{ sp.documentsLoaded }}</strong> loaded</span>
+                    <span><strong>{{ sp.chunksCreated || 0 }}</strong> chunks</span>
+                    <span><strong>{{ sp.entitiesExtracted }}</strong> entities</span>
+                    <span><strong>{{ sp.relationshipsExtracted }}</strong> rels</span>
+                  </div>
+                  <mat-progress-bar *ngIf="sp.status === 'RUNNING' && sp.documentsDiscovered > 0"
+                    mode="determinate"
+                    [value]="(sp.documentsLoaded / sp.documentsDiscovered) * 100"></mat-progress-bar>
+                  <div *ngIf="sp.currentItem" class="source-current-item">
+                    <mat-icon inline class="spinning-icon" style="font-size:14px">sync</mat-icon> {{ sp.currentItem }}
+                  </div>
+                  <div *ngIf="sp.errorMessage" class="source-error">{{ sp.errorMessage }}</div>
+                </div>
+
+                <!-- Discovery feed (detail view) -->
+                <div class="discovery-feed detail-discovery" *ngIf="selectedJob.recentlyDiscoveredItems && selectedJob.recentlyDiscoveredItems.length > 0 && (selectedJob.status === 'RUNNING' || selectedJob.status === 'PENDING')">
+                  <div class="discovery-feed-header">
+                    <mat-icon inline>explore</mat-icon>
+                    <span>Recently Discovered Files/URLs ({{ selectedJob.documentsDiscovered || 0 }} total found)</span>
+                  </div>
+                  <div class="discovery-feed-items detail-items">
+                    <div *ngFor="let item of selectedJob.recentlyDiscoveredItems | slice:-20" class="discovery-item">
+                      <mat-icon inline class="discovery-icon">{{ getSourceIcon(item.sourceType) }}</mat-icon>
+                      <span class="discovery-name" [title]="item.name">{{ item.name }}</span>
+                      <span class="discovery-source">{{ item.sourceLabel }}</span>
+                      <span class="discovery-time">{{ formatTimestamp(item.discoveredAt) }}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="batch-summary" *ngIf="selectedJob.vectorBatchesTotal || selectedJob.graphChunksTotal">
+                  <h3>Pipeline Batches</h3>
+                  <div class="batch-row" *ngIf="selectedJob.graphChunksTotal">
+                    <span>Graph extraction</span>
+                    <span>{{ selectedJob.graphChunksProcessed || 0 }}/{{ selectedJob.graphChunksTotal }} chunks</span>
+                  </div>
+                  <div class="batch-row" *ngIf="selectedJob.vectorBatchesTotal">
+                    <span>Embedding/indexing</span>
+                    <span>{{ selectedJob.vectorBatchesCompleted || 0 }}/{{ selectedJob.vectorBatchesTotal }} batches, {{ selectedJob.chunksEmbedded || 0 }}/{{ selectedJob.chunksQueuedForEmbedding || 0 }} chunks</span>
+                  </div>
+                </div>
+
+                <!-- Work-Stealing & Load Balancing -->
+                <div class="work-stealing-panel" *ngIf="selectedJob.workStealCount || selectedJob.localDispatchCount">
+                  <h3>Work Stealing</h3>
+                  <div class="optimizer-grid">
+                    <div class="opt-stat">
+                      <span class="opt-label">Local dispatches</span>
+                      <span class="opt-value">{{ selectedJob.localDispatchCount | number }}</span>
+                    </div>
+                    <div class="opt-stat">
+                      <span class="opt-label">Steals</span>
+                      <span class="opt-value">{{ selectedJob.workStealCount | number }}</span>
+                    </div>
+                    <div class="opt-stat">
+                      <span class="opt-label">Steal failures</span>
+                      <span class="opt-value">{{ selectedJob.workStealFailures | number }}</span>
+                    </div>
+                    <div class="opt-stat">
+                      <span class="opt-label">Imbalance ratio</span>
+                      <span class="opt-value" [class.warn-value]="(selectedJob.workImbalanceRatioX100 || 100) > 300">
+                        {{ ((selectedJob.workImbalanceRatioX100 || 100) / 100).toFixed(1) }}x
+                      </span>
+                    </div>
+                  </div>
+                  <div class="steal-efficiency" *ngIf="selectedJob.workStealCount && selectedJob.localDispatchCount">
+                    <span class="opt-label">Steal rate</span>
+                    <span class="opt-value">{{ ((selectedJob.workStealCount / (selectedJob.workStealCount + selectedJob.localDispatchCount)) * 100).toFixed(1) }}%</span>
+                  </div>
+                </div>
+
+                <!-- Dynamic Batch Sizing -->
+                <div class="dynamic-batch-panel" *ngIf="selectedJob.adaptiveBatchSize">
+                  <h3>Dynamic Batch Sizing</h3>
+                  <div class="optimizer-grid">
+                    <div class="opt-stat">
+                      <span class="opt-label">Adaptive batch size</span>
+                      <span class="opt-value">{{ selectedJob.adaptiveBatchSize }}</span>
+                    </div>
+                    <div class="opt-stat">
+                      <span class="opt-label">Adjustments</span>
+                      <span class="opt-value">{{ selectedJob.batchSizeAdjustments || 0 }}</span>
+                    </div>
+                    <div class="opt-stat" *ngIf="selectedJob.lastBatchAdjustDirection">
+                      <span class="opt-label">Last adjustment</span>
+                      <span class="opt-value" [ngClass]="{
+                        'adjust-up': selectedJob.lastBatchAdjustDirection === 'UP',
+                        'adjust-down': selectedJob.lastBatchAdjustDirection === 'DOWN',
+                        'adjust-hold': selectedJob.lastBatchAdjustDirection === 'HOLD'
+                      }">
+                        {{ selectedJob.lastBatchAdjustDirection }}
+                        <span *ngIf="selectedJob.lastBatchAdjustReason" class="adjust-reason">({{ selectedJob.lastBatchAdjustReason }})</span>
+                      </span>
+                    </div>
+                    <div class="opt-stat" *ngIf="selectedJob.batchEmaLatencyMsX100">
+                      <span class="opt-label">EMA latency/item</span>
+                      <span class="opt-value">{{ (selectedJob.batchEmaLatencyMsX100 / 100).toFixed(1) }}ms</span>
+                    </div>
+                    <div class="opt-stat" *ngIf="selectedJob.peakThroughputX100">
+                      <span class="opt-label">Peak throughput</span>
+                      <span class="opt-value">{{ (selectedJob.peakThroughputX100 / 100).toFixed(1) }} items/s</span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Token Budget & Backend Routing -->
+                <div class="token-budget-panel" *ngIf="selectedJob.totalInputTokens || selectedJob.totalOutputTokens">
+                  <h3>Token Usage & Cost</h3>
+                  <div class="optimizer-grid">
+                    <div class="opt-stat">
+                      <span class="opt-label">Input tokens</span>
+                      <span class="opt-value">{{ selectedJob.totalInputTokens | number }}</span>
+                    </div>
+                    <div class="opt-stat">
+                      <span class="opt-label">Output tokens</span>
+                      <span class="opt-value">{{ selectedJob.totalOutputTokens | number }}</span>
+                    </div>
+                    <div class="opt-stat">
+                      <span class="opt-label">Est. cost</span>
+                      <span class="opt-value">{{ formatCost(selectedJob.estimatedCostCentsX100 || 0) }}</span>
+                    </div>
+                    <div class="opt-stat" *ngIf="selectedJob.reroutedItems">
+                      <span class="opt-label">Rerouted items</span>
+                      <span class="opt-value">{{ selectedJob.reroutedItems | number }}</span>
+                    </div>
+                    <div class="opt-stat" *ngIf="selectedJob.droppedItems">
+                      <span class="opt-label">Dropped items</span>
+                      <span class="opt-value warn-value">{{ selectedJob.droppedItems | number }}</span>
+                    </div>
+                  </div>
+
+                  <!-- Per-backend breakdown -->
+                  <div class="backend-breakdown" *ngIf="selectedJob.backendStats && getBackendIds(selectedJob).length > 0">
+                    <h4>Backend Routing</h4>
+                    <div *ngFor="let bid of getBackendIds(selectedJob)" class="backend-row">
+                      <div class="backend-header">
+                        <span class="backend-name">{{ bid }}</span>
+                        <span class="backend-type-chip" [ngClass]="'type-' + (selectedJob.backendStats![bid].backendType || '').toLowerCase()">
+                          {{ selectedJob.backendStats![bid].backendType }}
+                        </span>
+                        <span class="backend-health" [class.unhealthy]="!selectedJob.backendStats![bid].healthy">
+                          {{ selectedJob.backendStats![bid].healthy ? 'Healthy' : selectedJob.backendStats![bid].unhealthyReason }}
+                        </span>
+                      </div>
+                      <div class="backend-stats-row">
+                        <span>{{ selectedJob.backendStats![bid].requestsCompleted }}/{{ selectedJob.backendStats![bid].requestsDispatched }} completed</span>
+                        <span *ngIf="selectedJob.backendStats![bid].requestsFailed"> | {{ selectedJob.backendStats![bid].requestsFailed }} failed</span>
+                        <span *ngIf="selectedJob.backendStats![bid].requestsRerouted"> | {{ selectedJob.backendStats![bid].requestsRerouted }} rerouted</span>
+                        <span *ngIf="selectedJob.backendStats![bid].inputTokens"> | {{ selectedJob.backendStats![bid].inputTokens | number }} in / {{ selectedJob.backendStats![bid].outputTokens | number }} out tokens</span>
+                        <span *ngIf="selectedJob.backendStats![bid].emaLatencyMsX100"> | {{ (selectedJob.backendStats![bid].emaLatencyMsX100 / 100).toFixed(0) }}ms avg</span>
+                      </div>
+                      <div class="backend-capacity-bar" *ngIf="selectedJob.backendStats![bid].maxConcurrent > 0">
+                        <div class="capacity-fill" [style.width.%]="(selectedJob.backendStats![bid].activeRequests / selectedJob.backendStats![bid].maxConcurrent) * 100"></div>
+                        <span class="capacity-label">{{ selectedJob.backendStats![bid].activeRequests }}/{{ selectedJob.backendStats![bid].maxConcurrent }}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Reroute events -->
+                  <div class="reroute-events" *ngIf="selectedJob.recentRerouteEvents && selectedJob.recentRerouteEvents.length > 0">
+                    <h4>Recent Reroutes</h4>
+                    <div *ngFor="let evt of selectedJob.recentRerouteEvents.slice(-8)" class="reroute-row">
+                      <span class="event-time" *ngIf="evt.timestamp">{{ formatEventTime(evt.timestamp) }}</span>
+                      <span class="reroute-from">{{ evt.fromBackend }}</span>
+                      <span class="reroute-arrow">&rarr;</span>
+                      <span class="reroute-to">{{ evt.toBackend }}</span>
+                      <span class="reroute-reason">({{ evt.reason }})</span>
+                      <span class="reroute-count" *ngIf="evt.itemCount > 1">x{{ evt.itemCount }}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Retry & Fallback -->
+                <div class="retry-panel" *ngIf="selectedJob.retriedBatches || selectedJob.deadLetterCount || selectedJob.backendsCoolingDown">
+                  <h3>Retry & Fallback</h3>
+                  <div class="optimizer-grid">
+                    <div class="opt-stat">
+                      <span class="opt-label">Retried batches</span>
+                      <span class="opt-value">{{ selectedJob.retriedBatches || 0 }}</span>
+                    </div>
+                    <div class="opt-stat">
+                      <span class="opt-label">Retried items</span>
+                      <span class="opt-value">{{ selectedJob.retriedItems || 0 }}</span>
+                    </div>
+                    <div class="opt-stat">
+                      <span class="opt-label">Dead-letter queue</span>
+                      <span class="opt-value" [class.warn-value]="(selectedJob.deadLetterCount || 0) > 0">{{ selectedJob.deadLetterCount || 0 }}</span>
+                    </div>
+                    <div class="opt-stat">
+                      <span class="opt-label">Backends cooling down</span>
+                      <span class="opt-value" [class.warn-value]="(selectedJob.backendsCoolingDown || 0) > 0">{{ selectedJob.backendsCoolingDown || 0 }}</span>
+                    </div>
+                  </div>
+
+                  <!-- Retry timeline -->
+                  <div class="retry-timeline" *ngIf="selectedJob.recentRetryEvents && selectedJob.recentRetryEvents.length > 0">
+                    <h4>Recent Retries</h4>
+                    <div *ngFor="let evt of selectedJob.recentRetryEvents.slice(-10)" class="retry-row"
+                         [class.retry-success]="evt.succeeded"
+                         [class.retry-dlq]="evt.sentToDeadLetter"
+                         [class.retry-pending]="!evt.succeeded && !evt.sentToDeadLetter">
+                      <span class="event-time" *ngIf="evt.timestamp">{{ formatEventTime(evt.timestamp) }}</span>
+                      <span class="retry-stage">{{ evt.stage }}</span>
+                      <span class="retry-attempt">{{ evt.attempt }}/{{ evt.maxAttempts }}</span>
+                      <span class="retry-batch-info" *ngIf="evt.reducedBatchSize !== evt.originalBatchSize">
+                        batch {{ evt.originalBatchSize }}&rarr;{{ evt.reducedBatchSize }}
+                      </span>
+                      <span class="retry-backoff" *ngIf="evt.backoffMs > 0">
+                        {{ evt.backoffMs }}ms backoff
+                      </span>
+                      <span class="retry-backend" *ngIf="evt.backendId">{{ evt.backendId }}</span>
+                      <span class="retry-fallback" *ngIf="evt.fallbackBackendId">&rarr; {{ evt.fallbackBackendId }}</span>
+                      <span class="retry-reason">{{ evt.failureReason | slice:0:50 }}</span>
+                      <span class="retry-outcome">
+                        <mat-icon inline *ngIf="evt.succeeded" class="retry-icon-ok">check_circle</mat-icon>
+                        <mat-icon inline *ngIf="evt.sentToDeadLetter" class="retry-icon-dlq">report</mat-icon>
+                        <span *ngIf="!evt.succeeded && !evt.sentToDeadLetter">{{ evt.itemCount }} items</span>
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- LLM Call Observability -->
+                <div class="llm-calls-panel" *ngIf="selectedJob.llmCallsTotal">
+                  <h3>LLM Call Observability</h3>
+                  <div class="optimizer-grid">
+                    <div class="opt-stat">
+                      <span class="opt-label">Total calls</span>
+                      <span class="opt-value">{{ selectedJob.llmCallsTotal }}</span>
+                    </div>
+                    <div class="opt-stat">
+                      <span class="opt-label">Succeeded</span>
+                      <span class="opt-value">{{ selectedJob.llmCallsSucceeded || 0 }}</span>
+                    </div>
+                    <div class="opt-stat">
+                      <span class="opt-label">Failed</span>
+                      <span class="opt-value" [class.warn-value]="(selectedJob.llmCallsFailed || 0) > 0">{{ selectedJob.llmCallsFailed || 0 }}</span>
+                    </div>
+                    <div class="opt-stat">
+                      <span class="opt-label">Timed out</span>
+                      <span class="opt-value" [class.warn-value]="(selectedJob.llmCallsTimedOut || 0) > 0">{{ selectedJob.llmCallsTimedOut || 0 }}</span>
+                    </div>
+                    <div class="opt-stat">
+                      <span class="opt-label">Rate limited</span>
+                      <span class="opt-value" [class.warn-value]="(selectedJob.llmCallsRateLimited || 0) > 0">{{ selectedJob.llmCallsRateLimited || 0 }}</span>
+                    </div>
+                    <div class="opt-stat">
+                      <span class="opt-label">Circuit broken</span>
+                      <span class="opt-value" [class.warn-value]="(selectedJob.llmCallsCircuitBroken || 0) > 0">{{ selectedJob.llmCallsCircuitBroken || 0 }}</span>
+                    </div>
+                    <div class="opt-stat">
+                      <span class="opt-label">Avg latency</span>
+                      <span class="opt-value">{{ selectedJob.llmCallEmaLatencyMsX100 ? ((selectedJob.llmCallEmaLatencyMsX100 / 100) | number:'1.0-0') + ' ms' : '--' }}</span>
+                    </div>
+                    <div class="opt-stat">
+                      <span class="opt-label">Peak latency</span>
+                      <span class="opt-value">{{ selectedJob.llmCallPeakLatencyMs ? (selectedJob.llmCallPeakLatencyMs | number:'1.0-0') + ' ms' : '--' }}</span>
+                    </div>
+                  </div>
+
+                  <!-- Success rate bar -->
+                  <div class="llm-success-bar" *ngIf="selectedJob.llmCallsTotal > 0">
+                    <div class="llm-success-fill"
+                         [style.width.%]="((selectedJob.llmCallsSucceeded || 0) / selectedJob.llmCallsTotal) * 100">
+                    </div>
+                    <span class="llm-success-label">
+                      {{ ((selectedJob.llmCallsSucceeded || 0) / selectedJob.llmCallsTotal * 100) | number:'1.0-1' }}% success rate
+                    </span>
+                  </div>
+
+                  <!-- Recent LLM calls timeline -->
+                  <div class="llm-call-timeline" *ngIf="selectedJob.recentLlmCalls && selectedJob.recentLlmCalls.length > 0">
+                    <h4>Recent LLM Calls</h4>
+                    <div *ngFor="let call of selectedJob.recentLlmCalls.slice(-15)" class="llm-call-row"
+                         [class.llm-call-success]="call.success"
+                         [class.llm-call-timeout]="call.timedOut"
+                         [class.llm-call-ratelimit]="call.rateLimited"
+                         [class.llm-call-failed]="!call.success && !call.timedOut && !call.rateLimited">
+                      <span class="event-time" *ngIf="call.timestamp">{{ formatEventTime(call.timestamp) }}</span>
+                      <span class="llm-call-backend">{{ call.backendId }}</span>
+                      <span class="llm-call-latency">{{ call.latencyMs | number:'1.0-0' }}ms</span>
+                      <span class="llm-call-tokens" *ngIf="call.success">
+                        {{ call.inputTokens }}&#x2192;{{ call.outputTokens }} tok
+                      </span>
+                      <span class="llm-call-outcome">
+                        <mat-icon inline *ngIf="call.success" class="llm-icon-ok">check_circle</mat-icon>
+                        <mat-icon inline *ngIf="call.timedOut" class="llm-icon-timeout">timer_off</mat-icon>
+                        <mat-icon inline *ngIf="call.rateLimited" class="llm-icon-ratelimit">speed</mat-icon>
+                        <mat-icon inline *ngIf="call.circuitBroken" class="llm-icon-circuit">flash_off</mat-icon>
+                        <mat-icon inline *ngIf="!call.success && !call.timedOut && !call.rateLimited && !call.circuitBroken" class="llm-icon-error">error</mat-icon>
+                      </span>
+                      <span class="llm-call-error" *ngIf="!call.success && call.errorCategory">
+                        {{ call.errorCategory }}<span *ngIf="call.errorMessage">: {{ call.errorMessage | slice:0:60 }}</span>
+                      </span>
+                    </div>
+                  </div>
+
+                  <!-- LLM Transcript Audit -->
+                  <div class="llm-transcript-section">
+                    <button mat-stroked-button (click)="toggleTranscripts(selectedJob.jobId)" class="transcript-toggle-btn">
+                      <mat-icon>{{ transcriptsExpanded ? 'expand_less' : 'expand_more' }}</mat-icon>
+                      <mat-icon>receipt_long</mat-icon>
+                      View LLM Transcripts
+                      <span class="transcript-count" *ngIf="transcriptTotalCount > 0">({{ transcriptTotalCount }})</span>
+                    </button>
+
+                    <div *ngIf="transcriptsExpanded" class="llm-transcript-viewer">
+                      <div *ngIf="transcriptsLoading" class="transcript-loading">
+                        Loading transcripts...
+                      </div>
+
+                      <div *ngIf="!transcriptsLoading && transcriptLogs.length === 0" class="transcript-empty">
+                        No LLM transcripts recorded for this job yet.
+                      </div>
+
+                      <div *ngIf="!transcriptsLoading && transcriptLogs.length > 0">
+                        <div *ngFor="let entry of transcriptLogs" class="transcript-entry"
+                             [class.transcript-warn]="entry.level === 'WARN'">
+                          <div class="transcript-header">
+                            <span class="transcript-time">{{ formatEventTime(entry.timestamp) }}</span>
+                            <span class="transcript-backend" *ngIf="entry.loggerName">{{ entry.loggerName }}</span>
+                            <span class="transcript-session" *ngIf="transcriptSessionId(entry.message)"
+                                  matTooltip="CLI agent chat session id">
+                              <mat-icon inline>tag</mat-icon>{{ transcriptSessionId(entry.message) }}
+                            </span>
+                            <mat-icon *ngIf="entry.level === 'INFO'" class="transcript-status-ok" inline>check_circle</mat-icon>
+                            <mat-icon *ngIf="entry.level === 'WARN'" class="transcript-status-fail" inline>warning</mat-icon>
+                          </div>
+                          <pre class="transcript-content">{{ entry.message }}</pre>
+                        </div>
+
+                        <!-- Pagination -->
+                        <div class="transcript-pagination" *ngIf="transcriptTotalCount > 50">
+                          <button mat-icon-button (click)="loadPrevTranscripts(selectedJob.jobId)"
+                                  [disabled]="transcriptPage === 0" matTooltip="Previous page">
+                            <mat-icon>chevron_left</mat-icon>
+                          </button>
+                          <span class="transcript-page-info">
+                            Page {{ transcriptPage + 1 }} of {{ (transcriptTotalCount / 50 | number:'1.0-0') }}
+                          </span>
+                          <button mat-icon-button (click)="loadMoreTranscripts(selectedJob.jobId)"
+                                  [disabled]="(transcriptPage + 1) * 50 >= transcriptTotalCount" matTooltip="Next page">
+                            <mat-icon>chevron_right</mat-icon>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="recent-events" *ngIf="selectedJob.recentEvents && selectedJob.recentEvents.length > 0">
+                  <h3>Recent Progress</h3>
+                  <div *ngFor="let event of selectedJob.recentEvents.slice(-12)" class="event-row" [class.warn]="event.level === 'WARN'" [class.error]="event.level === 'ERROR'">
+                    <span *ngIf="event.timestamp" class="event-time">{{ formatEventTime(event.timestamp) }}</span>
+                    <span class="event-phase">{{ event.phase }}</span>
+                    <span class="event-message">{{ event.message }}</span>
+                    <span *ngIf="event.details" class="event-details">{{ event.details }}</span>
+                  </div>
+                </div>
+
+                <!-- Live LLM transcript activity — visible while the job is RUNNING without opening the full viewer -->
+                <div class="live-transcript-feed"
+                     *ngIf="(selectedJob.status === 'RUNNING' || selectedJob.status === 'PENDING') && (liveTranscripts.length > 0 || liveTranscriptsLoading)">
+                  <h3>
+                    <mat-icon inline>psychology</mat-icon>
+                    Live LLM Transcript Activity
+                    <span class="live-badge">LIVE</span>
+                  </h3>
+                  <div *ngIf="liveTranscriptsLoading && liveTranscripts.length === 0" class="transcript-loading">
+                    Loading...
+                  </div>
+                  <div *ngFor="let entry of liveTranscripts" class="transcript-entry live-transcript-entry"
+                       [class.transcript-warn]="entry.level === 'WARN'">
+                    <div class="transcript-header">
+                      <span class="transcript-time">{{ formatEventTime(entry.timestamp) }}</span>
+                      <span class="transcript-backend" *ngIf="entry.loggerName">{{ entry.loggerName }}</span>
+                      <span class="transcript-session" *ngIf="transcriptSessionId(entry.message)"
+                            matTooltip="CLI agent chat session id">
+                        <mat-icon inline>tag</mat-icon>{{ transcriptSessionId(entry.message) }}
+                      </span>
+                      <mat-icon *ngIf="entry.level === 'INFO'" class="transcript-status-ok" inline>check_circle</mat-icon>
+                      <mat-icon *ngIf="entry.level === 'WARN'" class="transcript-status-fail" inline>warning</mat-icon>
+                    </div>
+                    <pre class="transcript-content">{{ entry.message | slice:0:300 }}</pre>
+                  </div>
+                </div>
+
+                <div class="live-logs-panel">
+                  <h3>Live Logs</h3>
+                  <app-job-log-viewer
+                    [taskId]="getCrawlHistoryTaskId(selectedJob.jobId)"
+                    [isJobRunning]="isCrawlJobRunning(selectedJob.status)"
+                    logSource="ingest"
+                    [maxTailLogs]="250">
+                  </app-job-log-viewer>
+                </div>
+
+                <!-- Graph summary (live during processing, final on completion) -->
+                <div *ngIf="selectedJob.graph" class="graph-summary">
+                  <h3>
+                    Graph Summary
+                    <span *ngIf="selectedJob.graph.live" class="live-badge">LIVE</span>
+                  </h3>
+
+                  <!-- Stats grid for graph -->
+                  <div class="detail-stats">
+                    <div class="stat-card highlight">
+                      <div class="stat-value">{{ selectedJob.graph.entityCount }}</div>
+                      <div class="stat-label">Entities (JPA)</div>
+                    </div>
+                    <div class="stat-card highlight">
+                      <div class="stat-value">{{ selectedJob.graph.relationshipCount }}</div>
+                      <div class="stat-label">Edges (JPA)</div>
+                    </div>
+                    <div *ngIf="selectedJob.graph.documentCount" class="stat-card">
+                      <div class="stat-value">{{ selectedJob.graph.documentCount }}</div>
+                      <div class="stat-label">Documents</div>
+                    </div>
+                    <div *ngIf="selectedJob.graph.snippetCount" class="stat-card">
+                      <div class="stat-value">{{ selectedJob.graph.snippetCount }}</div>
+                      <div class="stat-label">Snippets</div>
+                    </div>
+                    <div *ngIf="selectedJob.graph.tableCount" class="stat-card">
+                      <div class="stat-value">{{ selectedJob.graph.tableCount }}</div>
+                      <div class="stat-label">Tables</div>
+                    </div>
+                  </div>
+
+                  <div *ngIf="selectedJob.graph.entityTypeCounts" class="type-breakdown">
+                    <h4>Entity Types</h4>
+                    <mat-chip-listbox>
+                      <mat-chip *ngFor="let entry of objectEntries(selectedJob.graph.entityTypeCounts)">
+                        {{ entry[0] }}: {{ entry[1] }}
+                      </mat-chip>
+                    </mat-chip-listbox>
+                  </div>
+
+                  <div *ngIf="selectedJob.graph.edgeTypeCounts" class="type-breakdown">
+                    <h4>Edge Types</h4>
+                    <mat-chip-listbox>
+                      <mat-chip *ngFor="let entry of objectEntries(selectedJob.graph.edgeTypeCounts)">
+                        {{ entry[0] }}: {{ entry[1] }}
+                      </mat-chip>
+                    </mat-chip-listbox>
+                  </div>
+
+                  <div *ngIf="selectedJob.graph.relationshipTypeCounts" class="type-breakdown">
+                    <h4>Relationship Types</h4>
+                    <mat-chip-listbox>
+                      <mat-chip *ngFor="let entry of objectEntries(selectedJob.graph.relationshipTypeCounts)">
+                        {{ entry[0] }}: {{ entry[1] }}
+                      </mat-chip>
+                    </mat-chip-listbox>
+                  </div>
+
+                  <!-- Top entities list -->
+                  <div *ngIf="selectedJob.graph.topEntities && selectedJob.graph.topEntities.length > 0" class="top-entities">
+                    <h4>Top Entities</h4>
+                    <div *ngFor="let entity of selectedJob.graph.topEntities" class="top-entity-row">
+                      <span class="entity-name">{{ entity.name }}</span>
+                      <span class="entity-type-tag">{{ entity.type }}</span>
+                      <span class="entity-count" [title]="entity.connectionCount + ' connections'">{{ entity.connectionCount }} conn</span>
+                    </div>
+                  </div>
+
+                  <!-- Browse entities button -->
+                  <div class="graph-actions">
+                    <button mat-raised-button color="accent" (click)="navigateToKnowledgeGraph()">
+                      <mat-icon>hub</mat-icon> Browse Extracted Entities &rarr;
+                    </button>
+                  </div>
+                </div>
+
+                <!-- Errors & Warnings Detail -->
+                <div *ngIf="selectedJob.errorCount > 0 || (selectedJob.errors && selectedJob.errors.length > 0) || getErrorDocuments(selectedJob.documentProgress).length > 0" class="errors-detail-panel">
+                  <h3>
+                    <mat-icon color="warn">warning</mat-icon>
+                    Errors & Warnings ({{ selectedJob.errorCount || 0 }})
+                  </h3>
+
+                  <!-- Top-level error banner -->
+                  <div *ngIf="selectedJob.errorMessage" class="error-banner">
+                    <mat-icon>error</mat-icon> {{ selectedJob.errorMessage }}
+                  </div>
+
+                  <!-- Per-file error strings from errors[] -->
+                  <div *ngIf="selectedJob.errors && selectedJob.errors.length > 0" class="error-list-section">
+                    <h4>Processing Errors</h4>
+                    <div *ngFor="let err of selectedJob.errors" class="error-item">
+                      <mat-icon inline class="error-item-icon">report_problem</mat-icon>
+                      {{ err }}
+                    </div>
+                  </div>
+
+                  <!-- Documents with errors -->
+                  <div *ngIf="getErrorDocuments(selectedJob.documentProgress).length > 0" class="error-list-section">
+                    <h4>Failed Documents ({{ getErrorDocuments(selectedJob.documentProgress).length }})</h4>
+                    <div *ngFor="let doc of getErrorDocuments(selectedJob.documentProgress)" class="error-doc-row">
+                      <div class="error-doc-header">
+                        <mat-icon inline class="error-doc-icon">{{ doc.status === 'FAILED' ? 'cancel' : 'warning' }}</mat-icon>
+                        <strong>{{ doc.fileName || doc.documentKey }}</strong>
+                        <span class="error-doc-type" *ngIf="doc.contentType">{{ doc.contentType }}</span>
+                        <span class="error-doc-phase" *ngIf="doc.phase">{{ formatPhase(doc.phase) }}</span>
+                      </div>
+                      <div class="error-doc-message" *ngIf="doc.errorMessage">{{ doc.errorMessage }}</div>
+                      <div class="error-doc-path" *ngIf="doc.sourcePath">{{ doc.sourcePath }}</div>
+                    </div>
+                  </div>
+
+                  <!-- Retry actions for failed documents -->
+                  <div *ngIf="getErrorDocuments(selectedJob.documentProgress).length > 0
+                              && (selectedJob.status === 'FAILED' || selectedJob.status === 'COMPLETED' || selectedJob.status === 'CANCELLED')"
+                       class="retry-actions">
+                    <button mat-raised-button color="primary" (click)="retryFailedDocuments(selectedJob.jobId)"
+                            [disabled]="retryInProgress">
+                      <mat-icon>replay</mat-icon>
+                      Retry All Failed ({{ getErrorDocuments(selectedJob.documentProgress).length }})
+                    </button>
+                    <button mat-stroked-button (click)="retryFailedDocuments(selectedJob.jobId, 'GRAPH_EXTRACTION')"
+                            [disabled]="retryInProgress"
+                            *ngIf="getErrorDocumentsForPhase(selectedJob.documentProgress, 'GRAPH_EXTRACTION').length > 0">
+                      <mat-icon>account_tree</mat-icon>
+                      Retry Graph Extraction ({{ getErrorDocumentsForPhase(selectedJob.documentProgress, 'GRAPH_EXTRACTION').length }})
+                    </button>
+                    <span class="retry-status" *ngIf="retryInProgress">Starting retry job...</span>
+                  </div>
+
+                  <!-- WARN/ERROR events from recentEvents -->
+                  <div *ngIf="selectedJob.recentEvents && getWarnErrorEvents(selectedJob.recentEvents).length > 0" class="error-list-section">
+                    <h4>Warning Events</h4>
+                    <div *ngFor="let event of getWarnErrorEvents(selectedJob.recentEvents)" class="event-row" [class.warn]="event.level === 'WARN'" [class.error]="event.level === 'ERROR'">
+                      <span class="event-level-badge" [class]="'level-' + event.level.toLowerCase()">{{ event.level }}</span>
+                      <span class="event-phase">{{ event.phase }}</span>
+                      <span class="event-message">{{ event.message }}</span>
+                      <span *ngIf="event.details" class="event-details">{{ event.details }}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Subprocess Activity -->
+                <div class="subprocess-panel" *ngIf="subprocessEvents.length > 0 || subprocessStats?.available">
+                  <h3>
+                    <mat-icon inline>developer_board</mat-icon>
+                    Subprocess Activity
+                    <span *ngIf="subprocessStats && subprocessStats.available" class="subprocess-stats-inline">
+                      <span *ngIf="subprocessStats.totalCrashes > 0" class="sp-stat sp-stat-crash">{{ subprocessStats.totalCrashes }} crashes</span>
+                      <span *ngIf="subprocessStats.totalRestartAttempts > 0" class="sp-stat sp-stat-restart">{{ subprocessStats.totalRestartAttempts }} restarts ({{ subprocessStats.restartSuccessRate | number:'1.0-0' }}% success)</span>
+                      <span *ngIf="subprocessStats.modelsLoaded > 0" class="sp-stat sp-stat-model">{{ subprocessStats.modelsLoaded }} models loaded</span>
+                    </span>
+                  </h3>
+
+                  <div *ngIf="subprocessEvents.length === 0 && subprocessStats?.available" class="subprocess-empty">
+                    No subprocess events for this job.
+                  </div>
+
+                  <div *ngIf="subprocessEvents.length > 0" class="subprocess-event-list">
+                    <div *ngFor="let ev of subprocessEvents" class="subprocess-event-row" [ngClass]="getSubprocessEventClass(ev.eventType)">
+                      <mat-icon class="sp-event-icon">{{ getSubprocessEventIcon(ev.eventType) }}</mat-icon>
+                      <div class="sp-event-body">
+                        <div class="sp-event-header">
+                          <span class="sp-event-type">{{ formatEventType(ev.eventType) }}</span>
+                          <span class="sp-event-model" *ngIf="ev.modelId">{{ ev.modelId }}</span>
+                          <span class="sp-event-time">{{ formatTimestamp(ev.timestamp) }}</span>
+                        </div>
+                        <div *ngIf="ev.failureReason || ev.errorMessage" class="sp-event-detail">
+                          {{ ev.failureReason || ev.errorMessage }}
+                        </div>
+                        <div class="sp-event-meta" *ngIf="ev.exitCode !== undefined || ev.heapBytes || ev.embeddingDimensions || ev.restartAttemptNumber">
+                          <span *ngIf="ev.exitCode !== undefined">exit={{ ev.exitCode }}</span>
+                          <span *ngIf="ev.heapBytes">heap={{ formatBytes(ev.heapBytes) }}</span>
+                          <span *ngIf="ev.batchSize">batch={{ ev.batchSize }}</span>
+                          <span *ngIf="ev.embeddingDimensions">dims={{ ev.embeddingDimensions }}</span>
+                          <span *ngIf="ev.encoderType">encoder={{ ev.encoderType }}</span>
+                          <span *ngIf="ev.restartAttemptNumber">attempt {{ ev.restartAttemptNumber }}/{{ ev.maxRestartAttempts }}</span>
+                          <span *ngIf="ev.backoffMs">backoff={{ ev.backoffMs }}ms</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </mat-card-content>
+            </mat-card>
+          </div>
+        </mat-tab>
+      </mat-tab-group>
+    </div>

@@ -41,7 +41,6 @@ import java.util.*;
 @ConditionalOnProperty(name = "kompile.staging.app.enabled", havingValue = "true")
 @RestController
 @RequestMapping("/api/vlm")
-@CrossOrigin(origins = "*")
 public class VlmExecutionController {
 
     private static final Logger log = LoggerFactory.getLogger(VlmExecutionController.class);

@@ -895,6 +895,7 @@ public class CrawlCommand implements Callable<Integer> {
             case "ENTITY_RESOLUTION" -> "Resolving entities";
             case "EDGE_COMPUTATION" -> "Graph edge cleanup";
             case "EMBEDDING", "INDEXING", "VECTOR_INDEXING" -> "Embedding & vector indexing";
+            case "ENTITY_PARTITIONS" -> "Entity partition coverage";
             case "ENRICHMENT" -> "Post-Crawl Enrichment";
             case "LEARNING" -> "KGE Training (Learning)";
             case "COMPLETED" -> "Completed";
@@ -1143,27 +1144,35 @@ public class CrawlCommand implements Callable<Integer> {
         private int listJobs(KompileHttpClient client) throws IOException, InterruptedException {
             String suffix = activeOnly ? "/active" : "";
 
-            // Fetch both standard and unified crawl jobs
+            // Two job registries, either of which may legitimately be empty or absent, so one
+            // failing is tolerated. Remember which refused, though: since crawl moved onto its own
+            // service, ALL of them refusing means this server has no crawl API at all — usually
+            // --url pinned at the admin console. Reporting that as "no crawl jobs" hides the
+            // mistake behind a plausible answer, which is the worst way to fail.
+            List<String> endpoints = List.of("/api/crawlers/jobs" + suffix,
+                    "/api/unified-crawl/jobs" + suffix);
             List<JsonNode> allJobs = new ArrayList<>();
+            Map<String, String> refused = new LinkedHashMap<>();
 
-            try {
-                String crawlerResponse = client.getString("/api/crawlers/jobs" + suffix);
-                JsonNode crawlerJobs = client.getObjectMapper().readTree(crawlerResponse);
-                if (crawlerJobs.isArray()) {
-                    for (JsonNode j : crawlerJobs) allJobs.add(j);
+            for (String path : endpoints) {
+                try {
+                    JsonNode jobs = client.getObjectMapper().readTree(client.getString(path));
+                    if (jobs.isArray()) {
+                        for (JsonNode j : jobs) allJobs.add(j);
+                    }
+                } catch (IOException e) {
+                    refused.put(path, e.getMessage());
                 }
-            } catch (IOException ignored) {
-                // Crawler endpoint may not be available
             }
 
-            try {
-                String unifiedResponse = client.getString("/api/unified-crawl/jobs" + suffix);
-                JsonNode unifiedJobs = client.getObjectMapper().readTree(unifiedResponse);
-                if (unifiedJobs.isArray()) {
-                    for (JsonNode j : unifiedJobs) allJobs.add(j);
+            if (refused.size() == endpoints.size()) {
+                System.err.println("Error: this server does not serve the crawl API.");
+                for (Map.Entry<String, String> failure : refused.entrySet()) {
+                    System.err.println("  " + client.urlFor(failure.getKey()) + " -> " + failure.getValue());
                 }
-            } catch (IOException ignored) {
-                // Unified crawl endpoint may not be available
+                System.err.println("Crawl and indexing live on kompile-app-crawl-manager (default :8082); "
+                        + "kompile-app-main serves only the admin API.");
+                return 1;
             }
 
             if (app.isJsonOutput()) {
@@ -1341,7 +1350,9 @@ public class CrawlCommand implements Callable<Integer> {
             String streamPath = (jobId == null || jobId.isBlank())
                     ? "/api/crawl-events/stream"
                     : "/api/crawl-events/stream/" + encodePathSegment(jobId);
-            String url = client.getBaseUrl() + streamPath;
+            // urlFor, not getBaseUrl: crawl events are served by kompile-app-crawl-manager, and a
+            // routed client only knows that from the path.
+            String url = client.urlFor(streamPath);
 
             if (!app.isJsonOutput()) {
                 System.out.println("Tailing crawl events from " + url + " (Ctrl+C to stop)...");

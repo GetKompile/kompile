@@ -59,6 +59,9 @@ public class LocalStagingLlmService {
     private static final String REGISTRY_FILENAME = "registry.json";
     private static final String LLM_GGML_TYPE = "llm_ggml";
     private static final Duration DISCOVERY_CACHE_TTL = Duration.ofSeconds(30);
+    private static final String LLM_SEQ_BUCKETS_PROPERTY = "kompile.llm.seqBuckets";
+    private static final String LLM_SEQ_BUCKETS_DEFAULT = "256,512,1024,2048,4096";
+    private static final int DEFAULT_LOCAL_CONTEXT_WINDOW = 2_048;
 
     private final ObjectMapper objectMapper = JsonUtils.standardMapper();
     private final HttpClient httpClient = HttpClient.newBuilder()
@@ -77,6 +80,45 @@ public class LocalStagingLlmService {
                                       int contextWindow,
                                       long estimatedMemoryBytes,
                                       Path registryPath) {
+    }
+
+    /**
+     * Context window graph planning may safely use before this model has been loaded.
+     *
+     * <p>GGUF metadata describes the architecture's theoretical window, while the local
+     * serving lane deliberately allocates only up to its largest configured sequence
+     * bucket. Advertising the larger value before load lets a crawl create prompts that
+     * the subsequent KV allocation cannot execute.</p>
+     */
+    public int executableContextWindow(LocalModelCandidate candidate) {
+        return executableContextWindow(
+                candidate,
+                System.getProperty(LLM_SEQ_BUCKETS_PROPERTY, LLM_SEQ_BUCKETS_DEFAULT));
+    }
+
+    static int executableContextWindow(LocalModelCandidate candidate, String rawBuckets) {
+        int declaredContext = candidate != null && candidate.contextWindow() > 0
+                ? candidate.contextWindow()
+                : DEFAULT_LOCAL_CONTEXT_WINDOW;
+        return Math.min(declaredContext, configuredExecutionContextCeiling(rawBuckets));
+    }
+
+    static int configuredExecutionContextCeiling(String rawBuckets) {
+        String configured = rawBuckets == null || rawBuckets.isBlank()
+                ? LLM_SEQ_BUCKETS_DEFAULT
+                : rawBuckets;
+        int ceiling = 0;
+        for (String part : configured.split(",")) {
+            try {
+                int bucket = Integer.parseInt(part.trim());
+                if (bucket > 0) {
+                    ceiling = Math.max(ceiling, bucket);
+                }
+            } catch (NumberFormatException ignored) {
+                // Match the staging lane: ignore individual unusable bucket values.
+            }
+        }
+        return ceiling > 0 ? ceiling : 4_096;
     }
 
     public boolean isLocalAgent(String agentName) {
@@ -336,8 +378,9 @@ public class LocalStagingLlmService {
     }
 
     private int maxTokens(LocalModelCandidate candidate) {
-        int context = candidate.contextWindow() > 0 ? candidate.contextWindow() : 2048;
-        return Math.max(128, Math.min(1024, context / 2));
+        int context = executableContextWindow(candidate);
+        int preferred = Math.max(128, context / 2);
+        return Math.max(1, Math.min(Math.min(1024, context), preferred));
     }
 
     private static String toDisplayModelId(String modelId) {

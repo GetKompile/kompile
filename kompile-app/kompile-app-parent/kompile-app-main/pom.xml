@@ -164,6 +164,54 @@
         </dependency>
         <dependency>
             <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-ingest-svc</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-ontology</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-crawl-svc</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <!--
+            Web-layer modules. app-main is the ADMIN CONSOLE: it mounts the shared surface plus the
+            admin surface, and nothing else. kompile-app-web-chat, -web-crawl and -web-graph are
+            deliberately absent — every controller in ai.kompile.app.web.controllers shares one
+            package, so scanBasePackages cannot separate the personas and the CLASSPATH IS THE
+            BOUNDARY. Adding one of them back here silently re-exposes an end-user API on :8080;
+            MainPersonaBoundaryTest fails the build if that happens.
+
+            Chat lives in kompile-app-chat (:8081), crawl/ingest in kompile-app-crawl-manager (:8082).
+            See docs/architecture/app-persona-boundary.md.
+        -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-web-shared</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-web-admin</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <!--
+            The admin SPA. Boot serves classpath:/static/ out of any jar, so declaring this jar is
+            the whole wiring: no unpack, no copy into src/main/resources. Declare exactly ONE spa
+            classifier here — a second one would put two index.html files on the classpath and
+            which SPA loads would come down to jar order.
+        -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-ui</artifactId>
+            <version>${project.version}</version>
+            <classifier>admin</classifier>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-app-enforcer</artifactId>
             <version>${project.version}</version>
         </dependency>
@@ -192,12 +240,6 @@
         <dependency>
             <groupId>ai.kompile</groupId>
             <artifactId>kompile-embedding-anserini</artifactId>
-            <exclusions>
-                <exclusion>
-                    <groupId>org.mockito</groupId>
-                    <artifactId>mockito-all</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
         <dependency>
             <groupId>ai.kompile</groupId>
@@ -278,6 +320,17 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- PersonaApiSurface + PersonaSurfaces, used by MainPersonaBoundaryTest to assert that the
+             admin console mounts the admin surface and nothing else. Shared as a test-jar so all
+             three personas scan the classpath the same way and agree on which module owns which
+             base path. -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-web-shared</artifactId>
+            <version>${project.version}</version>
+            <type>test-jar</type>
             <scope>test</scope>
         </dependency>
         <dependency>
@@ -665,153 +718,15 @@
     </repositories>
 
     <profiles>
-        <profile>
-            <!--
-                Profile to install node and npm dependencies.
-                Run with: mvn clean install -Dui.deps
-                Use this:
-                  * the first time you check out the source
-                  * whenever dependencies have been changed in package.json
-            -->
-            <id>Install node and npm</id>
-            <activation>
-                <property>
-                    <name>ui.deps</name>
-                </property>
-            </activation>
-            <build>
-                <plugins>
-                    <plugin>
-                        <groupId>com.github.eirslett</groupId>
-                        <artifactId>frontend-maven-plugin</artifactId>
-                        <version>${frontend-maven-plugin.version}</version>
-                        <executions>
-                            <execution>
-                                <id>install node and npm</id>
-                                <goals>
-                                    <goal>install-node-and-npm</goal>
-                                </goals>
-                                <configuration>
-                                    <workingDirectory>src/main/frontend</workingDirectory>
-                                    <nodeVersion>${node.version}</nodeVersion>
-                                    <npmVersion>${npm.version}</npmVersion>
-                                </configuration>
-                            </execution>
-                        </executions>
-                    </plugin>
-                </plugins>
-            </build>
-        </profile>
+        <!--
+            There is no UI build here any more. The Angular workspace moved to kompile-app-ui,
+            which builds all three SPAs and attaches one classified jar each; app-main declares the
+            `admin` one as an ordinary dependency and Boot serves it from classpath:/static/.
 
-        <profile>
-            <!--
-                Build the UI by default.
-                To skip UI build, run with: mvn clean install -Dskip.ui
-                To force UI build even if skipped by default: mvn clean install -Dui.build
-            -->
-            <id>Build the UI</id>
-            <activation>
-                <property>
-                    <name>!skip.ui</name>
-                </property>
-            </activation>
-            <build>
-                <plugins>
-                    <!-- Clear Angular cache and old static files before build to ensure fresh compilation -->
-                    <plugin>
-                        <groupId>org.apache.maven.plugins</groupId>
-                        <artifactId>maven-antrun-plugin</artifactId>
-                        <version>3.1.0</version>
-                        <executions>
-                            <execution>
-                                <id>clean-angular-cache</id>
-                                <phase>initialize</phase>
-                                <goals>
-                                    <goal>run</goal>
-                                </goals>
-                                <configuration>
-                                    <target>
-                                        <delete dir="${project.basedir}/src/main/frontend/.angular/cache" quiet="true"/>
-                                        <delete dir="${project.basedir}/src/main/frontend/dist" quiet="true"/>
-                                        <!-- Also clean accumulated static files to prevent serving stale content -->
-                                        <delete quiet="true">
-                                            <fileset dir="${project.basedir}/src/main/resources/static" includes="**/*" erroronmissingdir="false"/>
-                                        </delete>
-                                    </target>
-                                </configuration>
-                            </execution>
-                        </executions>
-                    </plugin>
-                    <plugin>
-                        <groupId>com.github.eirslett</groupId>
-                        <artifactId>frontend-maven-plugin</artifactId>
-                        <version>${frontend-maven-plugin.version}</version>
-                        <executions>
-                            <execution>
-                                <id>npm install</id>
-                                <goals>
-                                    <goal>npm</goal>
-                                </goals>
-                                <configuration>
-                                    <workingDirectory>src/main/frontend</workingDirectory>
-                                    <arguments>install</arguments>
-                                </configuration>
-                            </execution>
-                            <execution>
-                                <id>npm build</id>
-                                <goals>
-                                    <goal>npm</goal>
-                                </goals>
-                                <phase>generate-resources</phase>
-                                <configuration>
-                                    <workingDirectory>src/main/frontend</workingDirectory>
-                                    <arguments>run build</arguments>
-                                </configuration>
-                            </execution>
-                        </executions>
-                    </plugin>
-
-                    <plugin>
-                        <groupId>org.apache.maven.plugins</groupId>
-                        <artifactId>maven-resources-plugin</artifactId>
-                        <executions>
-                            <execution>
-                                <id>copy-angular-to-target-classes</id>
-                                <goals>
-                                    <goal>copy-resources</goal>
-                                </goals>
-                                <phase>prepare-package</phase>
-                                <configuration>
-                                    <outputDirectory>${project.build.outputDirectory}/static</outputDirectory>
-                                    <resources>
-                                        <resource>
-                                            <directory>src/main/frontend/dist/rag-frontend/browser</directory>
-                                            <filtering>false</filtering>
-                                        </resource>
-                                    </resources>
-                                </configuration>
-                            </execution>
-                            <execution>
-                                <id>copy-angular-to-src-main-resources</id>
-                                <goals>
-                                    <goal>copy-resources</goal>
-                                </goals>
-                                <phase>prepare-package</phase>
-                                <configuration>
-                                    <outputDirectory>${project.basedir}/src/main/resources/static</outputDirectory>
-                                    <resources>
-                                        <resource>
-                                            <directory>src/main/frontend/dist/rag-frontend/browser</directory>
-                                            <filtering>false</filtering>
-                                        </resource>
-                                    </resources>
-                                </configuration>
-                            </execution>
-                        </executions>
-                    </plugin>
-                </plugins>
-            </build>
-        </profile>
+            The `-Dui.deps` and `-Dskip.ui` flags still work — they now activate the profiles of the
+            same name in kompile-app-ui/pom.xml, so `-Dskip.ui` on a reactor build skips the SPA
+            build for every app at once instead of just this one.
+        -->
         <!-- GraalVM Native Image profile for kompile-app-main -->
         <profile>
             <id>native</id>

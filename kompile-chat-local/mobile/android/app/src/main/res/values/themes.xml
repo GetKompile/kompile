@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- Base application theme. Compose overrides almost everything via KompileChatTheme;
-         this theme exists so the activity XML attribute is satisfied. -->
+         this theme supplies what Android draws before first composition. The
+         values-night variant keeps that frame dark in dark mode (no white launch flash). -->
     <style name="Theme.KompileChatLocal" parent="android:Theme.Material.Light.NoActionBar">
         <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:windowBackground">@color/window_background</item>
     </style>
 </resources>

@@ -63,6 +63,18 @@ class ProjectArchiveCommandTest {
     }
 
     @Test
+    void rejectsSensitiveFileCompatibilityOption() {
+        Path archive = temp.resolve("sensitive.kproject");
+
+        int exit = new CommandLine(new ProjectCommand.ExportArchive()).execute(
+                "--root", temp.toString(), "--output", archive.toString(),
+                "--include-sensitive-files");
+
+        assertNotEquals(0, exit);
+        assertFalse(Files.exists(archive));
+    }
+
+    @Test
     void exportRequiresKprojectExtension() throws Exception {
         Path project = Files.createDirectory(temp.resolve("extension-source"));
         Files.writeString(project.resolve("kompile.project.json"),

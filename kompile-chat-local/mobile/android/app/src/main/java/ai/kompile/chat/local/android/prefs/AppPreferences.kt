@@ -28,19 +28,15 @@ class AppPreferences(context: Context) {
     private val prefs: SharedPreferences =
         context.getSharedPreferences("kompile_chat_prefs", Context.MODE_PRIVATE)
 
-    // ── Remote endpoint ───────────────────────────────────────────────────────
-
-    var remoteBaseUrl: String
-        get() = prefs.getString(KEY_REMOTE_BASE_URL, "") ?: ""
-        set(value) = prefs.edit().putString(KEY_REMOTE_BASE_URL, value).apply()
-
-    var remoteModel: String
-        get() = prefs.getString(KEY_REMOTE_MODEL, "gpt-4o-mini") ?: "gpt-4o-mini"
-        set(value) = prefs.edit().putString(KEY_REMOTE_MODEL, value).apply()
-
-    var remoteApiKey: String
-        get() = prefs.getString(KEY_REMOTE_API_KEY, "") ?: ""
-        set(value) = prefs.edit().putString(KEY_REMOTE_API_KEY, value).apply()
+    init {
+        // Older prototypes stored an unused remote endpoint and plaintext API key.
+        // Accelerator APKs are strictly offline; synchronously remove those legacy values.
+        prefs.edit()
+            .remove(LEGACY_KEY_REMOTE_BASE_URL)
+            .remove(LEGACY_KEY_REMOTE_MODEL)
+            .remove(LEGACY_KEY_REMOTE_API_KEY)
+            .commit()
+    }
 
     // ── Local paths (set by the SAF file pickers) ─────────────────────────────
 
@@ -122,7 +118,7 @@ class AppPreferences(context: Context) {
 
     // ── Misc ──────────────────────────────────────────────────────────────────
 
-    /** URL opened in an external browser to prepare a target-specific .kproject. */
+    /** URL opened in an external browser to prepare a target-specific .sdz or .kproject. */
     var modelStagingUrl: String
         get() = prefs.getString(KEY_MODEL_STAGING_URL, BuildConfig.MODEL_STAGING_URL)
             ?: BuildConfig.MODEL_STAGING_URL
@@ -143,9 +139,9 @@ class AppPreferences(context: Context) {
             .remove(KEY_PROJECT_TARGET_PROFILE)
 
     companion object {
-        private const val KEY_REMOTE_BASE_URL  = "remote_base_url"
-        private const val KEY_REMOTE_MODEL     = "remote_model"
-        private const val KEY_REMOTE_API_KEY   = "remote_api_key"
+        private const val LEGACY_KEY_REMOTE_BASE_URL = "remote_base_url"
+        private const val LEGACY_KEY_REMOTE_MODEL = "remote_model"
+        private const val LEGACY_KEY_REMOTE_API_KEY = "remote_api_key"
         private const val KEY_KGRAPH_PATH      = "kgraph_path"
         private const val KEY_MODEL_PATH       = "model_path"
         private const val KEY_PROJECT_INSTALLATION_ROOT = "project_installation_root"

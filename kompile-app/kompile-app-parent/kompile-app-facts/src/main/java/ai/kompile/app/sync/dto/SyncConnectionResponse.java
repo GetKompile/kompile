@@ -54,6 +54,10 @@ public class SyncConnectionResponse {
     private Instant lastSyncAt;
     private String lastSyncStatus;
     private String lastSyncError;
+    private String activeSyncRunId;
+    private Instant syncLeaseExpiresAt;
+    private int consecutiveSyncFailures;
+    private Instant nextSyncAttemptAt;
     private Instant createdAt;
     private Instant updatedAt;
 
@@ -81,6 +85,10 @@ public class SyncConnectionResponse {
                 .lastSyncAt(conn.getLastSyncAt())
                 .lastSyncStatus(conn.getLastSyncStatus())
                 .lastSyncError(conn.getLastSyncError())
+                .activeSyncRunId(conn.getActiveSyncRunId())
+                .syncLeaseExpiresAt(conn.getSyncLeaseExpiresAt())
+                .consecutiveSyncFailures(conn.getConsecutiveSyncFailures())
+                .nextSyncAttemptAt(conn.getNextSyncAttemptAt())
                 .createdAt(conn.getCreatedAt())
                 .updatedAt(conn.getUpdatedAt())
                 .build();

@@ -40,7 +40,6 @@ import java.util.Map;
 @ConditionalOnProperty(name = "kompile.staging.app.enabled", havingValue = "true")
 @RestController
 @RequestMapping("/api/alignment")
-@CrossOrigin(origins = "*")
 public class AlignmentController {
 
     private static final Logger log = LoggerFactory.getLogger(AlignmentController.class);

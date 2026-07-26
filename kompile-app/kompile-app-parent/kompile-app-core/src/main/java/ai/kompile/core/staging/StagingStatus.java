@@ -30,6 +30,7 @@ public enum StagingStatus {
     READY("ready"),
     PROMOTING("promoting"),
     COMPLETED("completed"),
+    CANCELLED("cancelled"),
     FAILED("failed");
 
     private final String value;
@@ -53,7 +54,7 @@ public enum StagingStatus {
     }
 
     public boolean isTerminal() {
-        return this == COMPLETED || this == FAILED;
+        return this == COMPLETED || this == CANCELLED || this == FAILED;
     }
 
     public boolean isActive() {

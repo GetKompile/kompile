@@ -1,0 +1,103 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~
+  ~  Licensed under the Apache License, Version 2.0 (the "License");
+  ~  you may not use this file except in compliance with the License.
+  ~  You may obtain a copy of the License at
+  ~
+  ~  http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~  Unless required by applicable law or agreed to in writing, software
+  ~   distributed under the License is distributed on an "AS IS" BASIS,
+  ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<!-- Index Status Banner - shown when no indices are loaded -->
+<app-index-status-banner (navigateToTab)="handleBannerNavigation($event)"></app-index-status-banner>
+
+<div class="app-container">
+  <header>
+    <!-- Modular, white-labelable branding (logo + name). See BrandingComponent. -->
+    <app-branding></app-branding>
+
+    <!-- Model Status Indicator -->
+    <app-model-status-indicator (openStaging)="openModelStaging()"></app-model-status-indicator>
+
+    <!-- Fact Sheet Selector -->
+    <div class="fact-sheet-selector">
+      <button mat-button [matMenuTriggerFor]="factSheetMenu" class="fact-sheet-button">
+        <mat-icon [style.color]="activeFactSheet?.color || '#1976d2'">{{ activeFactSheet?.icon || 'folder' }}</mat-icon>
+        <span class="fact-sheet-name">{{ activeFactSheet?.name || 'No Fact Sheet' }}</span>
+        <mat-icon>arrow_drop_down</mat-icon>
+      </button>
+      <mat-menu #factSheetMenu="matMenu" class="fact-sheet-menu">
+        <div class="menu-header">
+          <span>Switch Fact Sheet</span>
+        </div>
+        <mat-divider></mat-divider>
+        <button mat-menu-item *ngFor="let sheet of factSheets"
+                (click)="selectFactSheet(sheet)"
+                [class.active-sheet]="sheet.id === activeFactSheet?.id">
+          <mat-icon [style.color]="sheet.color">{{ sheet.icon }}</mat-icon>
+          <span>{{ sheet.name }}</span>
+          <span class="fact-count">({{ sheet.factCount }} facts)</span>
+          <mat-icon *ngIf="sheet.id === activeFactSheet?.id" class="check-icon">check</mat-icon>
+        </button>
+        <mat-divider></mat-divider>
+        <button mat-menu-item (click)="openCreateFactSheetDialog()">
+          <mat-icon>add</mat-icon>
+          <span>Create New Fact Sheet</span>
+        </button>
+      </mat-menu>
+    </div>
+
+    <!-- Settings button — only when this app hosts a settings route -->
+    <button mat-icon-button
+            *ngIf="settingsRoute"
+            [routerLink]="settingsRoute"
+            aria-label="Settings"
+            title="Settings"
+            class="settings-btn">
+      <mat-icon>settings</mat-icon>
+    </button>
+
+    <!-- Light/Dark theme toggle (ThemeService). Components conform via the shared design tokens. -->
+    <button mat-icon-button class="theme-toggle-btn"
+            (click)="toggleTheme()"
+            [attr.aria-label]="isDark ? 'Switch to light theme' : 'Switch to dark theme'"
+            [title]="isDark ? 'Switch to light theme' : 'Switch to dark theme'">
+      <mat-icon>{{ isDark ? 'light_mode' : 'dark_mode' }}</mat-icon>
+    </button>
+  </header>
+
+  <nav mat-tab-nav-bar [tabPanel]="tabPanel" backgroundColor="primary">
+    <a *ngFor="let item of navItems"
+       mat-tab-link
+       [routerLink]="item.route"
+       routerLinkActive="active"
+       [routerLinkActiveOptions]="item.exact ? exactMatch : prefixMatch"
+       [class.fact-sheets-tab]="item.activeJobsBadge">
+      {{ item.label }}
+      <span class="active-jobs-badge"
+            *ngIf="item.activeJobsBadge && activeJobsCount > 0"
+            [title]="getActiveJobsSummary()">
+        <span class="badge-pulse"></span>
+        {{ activeJobsCount }}
+      </span>
+    </a>
+  </nav>
+  <mat-tab-nav-panel #tabPanel></mat-tab-nav-panel>
+
+  <div class="content-with-explorer">
+    <!-- Project Explorer Sidebar -->
+    <app-project-explorer *ngIf="showProjectExplorer"
+                          (navigateToTab)="handleBannerNavigation($event)"></app-project-explorer>
+
+    <main>
+      <router-outlet></router-outlet>
+    </main>
+  </div>
+
+</div>

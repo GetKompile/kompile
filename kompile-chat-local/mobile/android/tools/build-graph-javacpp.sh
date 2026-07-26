@@ -10,6 +10,8 @@ ANDROID_API=28
 JAVACPP_VERSION=1.5.13
 JAVACPP_JAR=""
 GRAPH_LIBRARY=""
+GRAPH_HEADER=""
+GRAPH_VERIFIER=""
 WORK_DIR="$ANDROID_ROOT/build/graph-javacpp"
 OUTPUT_DIR="$ANDROID_ROOT/app/src/main/jniLibs/arm64-v8a"
 
@@ -22,6 +24,8 @@ usage() {
         "  --android-api <level>   Android API level (default: 28, minimum: 28)" \
         "  --graph-module <path>   Graph AOT module root" \
         "  --graph-library <path>  Prebuilt libkompile_reasoning_android.so" \
+        "  --graph-header <path>   Packaged kompile_reasoning.h" \
+        "  --graph-verifier <path> Packaged verify-android-ndk.sh" \
         "  --javacpp-jar <path>    JavaCPP ${JAVACPP_VERSION} build JAR" \
         "  --work-dir <path>       Generated-source/build directory" \
         "  --output-dir <path>     arm64-v8a jniLibs output directory"
@@ -48,6 +52,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --graph-library)
             GRAPH_LIBRARY="$2"
+            shift 2
+            ;;
+        --graph-header)
+            GRAPH_HEADER="$2"
+            shift 2
+            ;;
+        --graph-verifier)
+            GRAPH_VERIFIER="$2"
             shift 2
             ;;
         --javacpp-jar)
@@ -80,12 +92,18 @@ done
 [[ "$ANDROID_API" =~ ^[0-9]+$ && "$ANDROID_API" -ge 28 ]] ||
     fail "Android API must be an integer >= 28"
 
-GRAPH_HEADER="$GRAPH_MODULE/include/kompile_reasoning.h"
+if [[ -z "$GRAPH_HEADER" ]]; then
+    GRAPH_HEADER="$GRAPH_MODULE/include/kompile_reasoning.h"
+fi
 if [[ -z "$GRAPH_LIBRARY" ]]; then
     GRAPH_LIBRARY="$GRAPH_MODULE/target/android-aot/jni/arm64-v8a/libkompile_reasoning_android.so"
 fi
+if [[ -z "$GRAPH_VERIFIER" ]]; then
+    GRAPH_VERIFIER="$GRAPH_MODULE/verify-android-ndk.sh"
+fi
 [[ -f "$GRAPH_HEADER" ]] || fail "Graph C header is missing: $GRAPH_HEADER"
 [[ -f "$GRAPH_LIBRARY" ]] || fail "Graph Android AOT library is missing: $GRAPH_LIBRARY"
+[[ -f "$GRAPH_VERIFIER" ]] || fail "Graph Android verifier is missing: $GRAPH_VERIFIER"
 
 if [[ -z "$JAVACPP_JAR" ]]; then
     LOCAL_REPOSITORY="${MAVEN_REPO_LOCAL:-${HOME:?HOME is required to locate Maven local}/.m2/repository}"
@@ -141,7 +159,7 @@ WRAPPER_LIBRARY="$NATIVE_DIR/libjnikompile_graph.so"
     -fvisibility=hidden \
     -fstack-protector-strong \
     -D_FORTIFY_SOURCE=2 \
-    -I"$GRAPH_MODULE/include" \
+    -I"$(dirname "$GRAPH_HEADER")" \
     -shared \
     -static-libstdc++ \
     -Wl,--no-undefined \
@@ -160,7 +178,7 @@ WRAPPER_LIBRARY="$NATIVE_DIR/libjnikompile_graph.so"
     -o "$WRAPPER_UNSTRIPPED"
 "$LLVM_STRIP" --strip-unneeded "$WRAPPER_UNSTRIPPED" -o "$WRAPPER_LIBRARY"
 
-"$GRAPH_MODULE/verify-android-ndk.sh" \
+bash "$GRAPH_VERIFIER" \
     --library "$GRAPH_LIBRARY" \
     --android-ndk "$ANDROID_NDK"
 
@@ -190,16 +208,21 @@ printf '%s\n' "${wrapper_needed[@]}" |
     grep -qx 'libkompile_reasoning_android.so' ||
     fail "JavaCPP wrapper does not link the graph AOT library"
 
-"$LLVM_READELF" -h "$WRAPPER_LIBRARY" | grep -q 'Machine:.*AArch64' ||
+wrapper_elf_header="$("$LLVM_READELF" -h "$WRAPPER_LIBRARY")"
+wrapper_dynamic_section="$("$LLVM_READELF" -d "$WRAPPER_LIBRARY")"
+wrapper_program_headers="$("$LLVM_READELF" -l "$WRAPPER_LIBRARY")"
+wrapper_dynamic_symbols="$("$LLVM_NM" -D "$WRAPPER_LIBRARY")"
+
+grep -q 'Machine:.*AArch64' <<< "$wrapper_elf_header" ||
     fail "JavaCPP wrapper is not AArch64"
-"$LLVM_READELF" -d "$WRAPPER_LIBRARY" | grep -q 'BIND_NOW' ||
+grep -q 'BIND_NOW' <<< "$wrapper_dynamic_section" ||
     fail "JavaCPP wrapper is not linked with BIND_NOW"
-"$LLVM_READELF" -l "$WRAPPER_LIBRARY" | grep -q 'GNU_RELRO' ||
+grep -q 'GNU_RELRO' <<< "$wrapper_program_headers" ||
     fail "JavaCPP wrapper is not linked with RELRO"
-if "$LLVM_READELF" -d "$WRAPPER_LIBRARY" | grep -Eq 'RPATH|RUNPATH|TEXTREL'; then
+if grep -Eq 'RPATH|RUNPATH|TEXTREL' <<< "$wrapper_dynamic_section"; then
     fail "JavaCPP wrapper contains RPATH, RUNPATH, or TEXTREL"
 fi
-if "$LLVM_NM" -D "$WRAPPER_LIBRARY" | grep -Eiq 'openblas|gfortran|mkl|libnd4j|sdx_cpu'; then
+if grep -Eiq 'openblas|gfortran|mkl|libnd4j|sdx_cpu' <<< "$wrapper_dynamic_symbols"; then
     fail "JavaCPP wrapper contains a forbidden CPU/BLAS symbol"
 fi
 

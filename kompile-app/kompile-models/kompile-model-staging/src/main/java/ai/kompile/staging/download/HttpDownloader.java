@@ -16,16 +16,18 @@
 
 package ai.kompile.staging.download;
 
+import ai.kompile.staging.config.StagingAssetLimits;
+import ai.kompile.staging.http.SafeHttpTransport;
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
 import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.io.*;
-import java.net.HttpURLConnection;
-import java.net.URL;
+import java.net.URI;
 import java.nio.file.*;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -43,6 +45,21 @@ public class HttpDownloader implements DownloadService {
     private static final int BUFFER_SIZE = 8192;
     private static final int CONNECTION_TIMEOUT = 30000;
     private static final int READ_TIMEOUT = 120000;
+
+    private final StagingAssetLimits limits;
+    private final SafeHttpTransport httpTransport;
+
+    public HttpDownloader() {
+        this(new StagingAssetLimits(), new SafeHttpTransport());
+    }
+
+    @Autowired
+    public HttpDownloader(
+            StagingAssetLimits limits,
+            SafeHttpTransport httpTransport) {
+        this.limits = limits;
+        this.httpTransport = httpTransport;
+    }
 
     @Override
     public String getSourceName() {
@@ -70,7 +87,8 @@ public class HttpDownloader implements DownloadService {
 
         try {
             progressCallback.accept(DownloadProgress.initializing(
-                    "Preparing to download from: " + request.getRepository()));
+                    "Preparing to download from: "
+                            + safeUrlForDiagnostics(request.getRepository())));
 
             Files.createDirectories(destination);
 
@@ -136,7 +154,8 @@ public class HttpDownloader implements DownloadService {
                     .build();
 
         } catch (Exception e) {
-            log.error("Failed to download: {}", request.getRepository(), e);
+            log.error("Failed to download: {}",
+                    safeUrlForDiagnostics(request.getRepository()), e);
             progressCallback.accept(DownloadProgress.failed(e.getMessage()));
             return DownloadResult.failure("Download failed: " + e.getMessage());
         }
@@ -149,14 +168,14 @@ public class HttpDownloader implements DownloadService {
             if ("github".equalsIgnoreCase(request.getSource())) {
                 url = buildGitHubReleaseUrl(request);
             }
-            HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
-            try {
-                conn.setRequestMethod("HEAD");
-                conn.setConnectTimeout(CONNECTION_TIMEOUT);
-                int responseCode = conn.getResponseCode();
-                return responseCode == 200 || responseCode == 302;
-            } finally {
-                conn.disconnect();
+            try (SafeHttpTransport.Response response = httpTransport.execute(
+                    URI.create(url),
+                    "HEAD",
+                    requestHeaders(request.getAuthToken()),
+                    CONNECTION_TIMEOUT,
+                    READ_TIMEOUT,
+                    limits.getMaxRedirects())) {
+                return response.statusCode() == 200;
             }
         } catch (Exception e) {
             return false;
@@ -185,67 +204,131 @@ public class HttpDownloader implements DownloadService {
         return lastSlash >= 0 ? path.substring(lastSlash + 1) : "download";
     }
 
+    /**
+     * Download one bounded remote asset without archive extraction. Callers can
+     * provide the authentication scheme required by the source while retaining
+     * the shared DNS, redirect, and credential-forwarding policy.
+     */
+    public long downloadAsset(
+            String url,
+            Path destination,
+            Map<String, String> headers,
+            long maximumBytes) throws IOException {
+        if (maximumBytes <= 0L) {
+            throw new IOException("Remote asset byte limit must be positive");
+        }
+        Path parent = destination.toAbsolutePath().normalize().getParent();
+        if (parent != null) {
+            Files.createDirectories(parent);
+        }
+        Map<String, String> requestHeaders = new HashMap<>();
+        requestHeaders.put("User-Agent", "Kompile-Model-Staging/1.0");
+        if (headers != null) {
+            requestHeaders.putAll(headers);
+        }
+        return downloadFile(
+                url,
+                destination,
+                requestHeaders,
+                maximumBytes,
+                progress -> { });
+    }
+
     private long downloadFile(String urlStr, Path destination, String authToken,
                              Consumer<DownloadProgress> progressCallback) throws IOException {
-        URL url = new URL(urlStr);
-        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-        conn.setConnectTimeout(CONNECTION_TIMEOUT);
-        conn.setReadTimeout(READ_TIMEOUT);
-        conn.setRequestProperty("User-Agent", "Kompile-Model-Staging/1.0");
-        conn.setInstanceFollowRedirects(true);
+        return downloadFile(
+                urlStr,
+                destination,
+                requestHeaders(authToken),
+                limits.getTotalBytes(),
+                progressCallback);
+    }
 
-        if (authToken != null && !authToken.isEmpty()) {
-            conn.setRequestProperty("Authorization", "token " + authToken);
+    private long downloadFile(
+            String urlStr,
+            Path destination,
+            Map<String, String> headers,
+            long maximumBytes,
+            Consumer<DownloadProgress> progressCallback) throws IOException {
+        URI uri;
+        try {
+            uri = SafeHttpTransport.validateRemoteUri(URI.create(urlStr));
+        } catch (IllegalArgumentException invalid) {
+            throw new IOException("Invalid remote download URI");
         }
 
-        int responseCode = conn.getResponseCode();
-
-        // Handle redirects manually for cross-domain
-        if (responseCode == HttpURLConnection.HTTP_MOVED_PERM ||
-            responseCode == HttpURLConnection.HTTP_MOVED_TEMP ||
-            responseCode == 307 || responseCode == 308) {
-            String newUrl = conn.getHeaderField("Location");
-            conn.disconnect();
-            return downloadFile(newUrl, destination, authToken, progressCallback);
-        }
-
-        if (responseCode != HttpURLConnection.HTTP_OK) {
-            throw new IOException("HTTP " + responseCode + " for " + urlStr);
-        }
-
-        long contentLength = conn.getContentLengthLong();
-        String fileName = destination.getFileName().toString();
-
-        try (InputStream in = new BufferedInputStream(conn.getInputStream());
-             OutputStream out = new BufferedOutputStream(Files.newOutputStream(destination))) {
-
-            byte[] buffer = new byte[BUFFER_SIZE];
-            long bytesDownloaded = 0;
-            int bytesRead;
-            long lastProgressUpdate = System.currentTimeMillis();
-            long bytesAtLastUpdate = 0;
-
-            while ((bytesRead = in.read(buffer)) != -1) {
-                out.write(buffer, 0, bytesRead);
-                bytesDownloaded += bytesRead;
-
-                long now = System.currentTimeMillis();
-                if (now - lastProgressUpdate >= 500) {
-                    long elapsed = now - lastProgressUpdate;
-                    long bytesDelta = bytesDownloaded - bytesAtLastUpdate;
-                    long bytesPerSecond = elapsed > 0 ? (bytesDelta * 1000) / elapsed : 0;
-
-                    progressCallback.accept(DownloadProgress.downloading(
-                            fileName, bytesDownloaded, contentLength, bytesPerSecond));
-
-                    lastProgressUpdate = now;
-                    bytesAtLastUpdate = bytesDownloaded;
-                }
+        try (SafeHttpTransport.Response response = httpTransport.execute(
+                uri,
+                "GET",
+                headers,
+                CONNECTION_TIMEOUT,
+                READ_TIMEOUT,
+                limits.getMaxRedirects())) {
+            int responseCode = response.statusCode();
+            if (responseCode != 200) {
+                throw new IOException("HTTP " + responseCode + " for "
+                        + SafeHttpTransport.safeUriForDiagnostics(response.uri()));
             }
 
-            return bytesDownloaded;
-        } finally {
-            conn.disconnect();
+            long contentLength = response.contentLength();
+            if (contentLength > maximumBytes) {
+                throw new IOException("Remote download exceeds its configured byte limit");
+            }
+            String fileName = destination.getFileName().toString();
+
+            try (InputStream in = new BufferedInputStream(response.body());
+                 OutputStream out = new BufferedOutputStream(Files.newOutputStream(destination))) {
+                byte[] buffer = new byte[BUFFER_SIZE];
+                long bytesDownloaded = 0;
+                int bytesRead;
+                long lastProgressUpdate = System.currentTimeMillis();
+                long bytesAtLastUpdate = 0;
+
+                while ((bytesRead = in.read(buffer)) != -1) {
+                    try {
+                        bytesDownloaded = Math.addExact(bytesDownloaded, bytesRead);
+                    } catch (ArithmeticException overflow) {
+                        throw new IOException("Remote download byte count overflowed", overflow);
+                    }
+                    if (bytesDownloaded > maximumBytes) {
+                        throw new IOException(
+                                "Remote download exceeded its configured byte limit");
+                    }
+                    out.write(buffer, 0, bytesRead);
+
+                    long now = System.currentTimeMillis();
+                    if (now - lastProgressUpdate >= 500) {
+                        long elapsed = now - lastProgressUpdate;
+                        long bytesDelta = bytesDownloaded - bytesAtLastUpdate;
+                        long bytesPerSecond = elapsed > 0 ? (bytesDelta * 1000) / elapsed : 0;
+
+                        progressCallback.accept(DownloadProgress.downloading(
+                                fileName, bytesDownloaded, contentLength, bytesPerSecond));
+
+                        lastProgressUpdate = now;
+                        bytesAtLastUpdate = bytesDownloaded;
+                    }
+                }
+
+                return bytesDownloaded;
+            }
+        }
+    }
+
+    private static Map<String, String> requestHeaders(String authToken) {
+        Map<String, String> headers = new HashMap<>();
+        headers.put("User-Agent", "Kompile-Model-Staging/1.0");
+        if (authToken != null && !authToken.isBlank()) {
+            headers.put("Authorization", "token " + authToken);
+        }
+        return headers;
+    }
+
+    private static String safeUrlForDiagnostics(String value) {
+        try {
+            return SafeHttpTransport.safeUriForDiagnostics(URI.create(value));
+        } catch (RuntimeException invalid) {
+            return "<invalid-remote-uri>";
         }
     }
 

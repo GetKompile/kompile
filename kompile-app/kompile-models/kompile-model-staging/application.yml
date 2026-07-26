@@ -1,5 +1,6 @@
 server:
   port: 8090
+  address: ${KOMPILE_STAGING_ADDRESS:127.0.0.1}
 
 spring:
   application:
@@ -16,6 +17,10 @@ spring:
 # Model staging configuration
 kompile:
   staging:
+    security:
+      lan-enabled: ${KOMPILE_STAGING_LAN_ENABLED:false}
+      api-token: ${KOMPILE_STAGING_API_TOKEN:}
+      allowed-origins: ${KOMPILE_STAGING_ALLOWED_ORIGINS:}
     ui:
       enabled: false
     app:

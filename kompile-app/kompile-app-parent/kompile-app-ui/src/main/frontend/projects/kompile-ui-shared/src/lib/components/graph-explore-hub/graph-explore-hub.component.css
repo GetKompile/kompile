@@ -1,0 +1,224 @@
+/*
+ * Copyright 2025 Kompile Inc.
+ * Licensed under the Apache License, Version 2.0 (the "License").
+ */
+
+.graph-explore-hub {
+  padding: 16px;
+}
+
+/* ── Hub header ──────────────────────────────────────────────────────────── */
+.hub-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.hub-header-left h2 {
+  margin: 0;
+}
+
+.hub-header-left .subtitle {
+  margin: 4px 0 0;
+  color: rgba(0, 0, 0, 0.6);
+  font-size: 13px;
+}
+
+.hub-header-actions {
+  flex-shrink: 0;
+}
+
+.ask-graph-btn {
+  white-space: nowrap;
+}
+
+/* ── Explore tabs ────────────────────────────────────────────────────────── */
+.inner-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  background: var(--bg-surface, #fafafa);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+  padding: 8px 0 8px;
+  margin-bottom: 16px;
+}
+
+.inner-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 20px;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  color: rgba(0, 0, 0, 0.70);
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.inner-tab:hover {
+  background: rgba(63, 81, 181, 0.06);
+  border-color: rgba(63, 81, 181, 0.3);
+}
+
+.inner-tab.active {
+  background: #e8eaf6;
+  border-color: #3f51b5;
+  color: #303f9f;
+  font-weight: 600;
+}
+
+.inner-tab .tab-icon {
+  font-size: 16px;
+  height: 16px;
+  width: 16px;
+}
+
+/* ── Content area ─────────────────────────────────────────────────────────── */
+.tab-content-area {
+  min-height: 200px;
+}
+
+/* Interactive explorer views (visualizer / hierarchy) need a definite viewport so the graph
+   canvas (height: 100%) renders correctly. 40px taller than admin's hub, which spends that
+   band on the outer section-tabs row this component does not render. */
+.graph-explore-panel {
+  height: calc(100vh - 280px);
+  min-height: 480px;
+  overflow: auto;
+}
+
+.no-fact-sheet-state {
+  min-height: 360px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 40px 24px;
+  text-align: center;
+  color: var(--text-primary, #1a1f36);
+}
+
+.no-fact-sheet-state h3 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.no-fact-sheet-state p {
+  max-width: 560px;
+  margin: 0 0 8px;
+  color: var(--text-secondary, #697386);
+  line-height: 1.5;
+}
+
+.no-fact-sheet-icon {
+  width: 48px;
+  height: 48px;
+  font-size: 48px;
+  color: var(--primary-color, #3f51b5);
+}
+
+/* ── Cold-start lifecycle banner ─────────────────────────────────────────── */
+.cold-start-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+  margin-bottom: 14px;
+  background: var(--bg-info, #e8f4fd);
+  border: 1px solid var(--border-info, #90caf9);
+  border-left: 4px solid var(--primary-color, #3f51b5);
+  border-radius: 8px;
+  color: var(--text-primary, #1a1f36);
+  font-size: 13px;
+}
+
+.banner-icon {
+  color: var(--primary-color, #3f51b5);
+  font-size: 20px;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.banner-body {
+  flex: 1;
+}
+
+.banner-title {
+  font-weight: 600;
+  display: block;
+  margin-bottom: 6px;
+  color: var(--text-primary, #1a1f36);
+}
+
+.banner-text {
+  margin: 0;
+  line-height: 1.6;
+  color: var(--text-secondary, #697386);
+}
+
+.banner-dismiss {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-tertiary, #9aa5b4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  transition: color 0.15s, background 0.15s;
+}
+
+.banner-dismiss:hover {
+  color: var(--text-secondary, #697386);
+  background: var(--bg-surface-elevated, rgba(0, 0, 0, 0.05));
+}
+
+.banner-dismiss mat-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+}
+
+@media (max-width: 768px) {
+  .graph-explore-hub {
+    padding: 8px;
+  }
+
+  .hub-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .hub-header-actions,
+  .ask-graph-btn {
+    width: 100%;
+  }
+
+  .inner-tabs {
+    flex-wrap: nowrap;
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-inline: contain;
+  }
+
+  .inner-tab {
+    flex: 0 0 auto;
+    min-height: 44px;
+  }
+
+  .graph-explore-panel {
+    height: max(420px, calc(100dvh - 260px));
+    min-height: 420px;
+  }
+}

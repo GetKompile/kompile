@@ -139,13 +139,13 @@ public class ChatCli {
                 System.out.println("[graph] No project or .kgraph specified, starting empty.");
             }
 
-        // Print graph stats (use graph_reasoning_query for an overview)
-        try {
-            String overview = bridge.execute("graph_reasoning_query", "{\"query\":\"list all entities\",\"queryType\":\"ENTITY_SEARCH\"}");
-            System.out.println("[graph] " + overview);
-        } catch (Exception e) {
-            // non-fatal — empty graph or tool unavailable
-        }
+            // Print graph stats using the current operation-based query contract.
+            try {
+                String overview = bridge.execute("graph_reasoning_query", "{\"operation\":\"OVERVIEW\"}");
+                System.out.println("[graph] " + overview);
+            } catch (Exception e) {
+                // non-fatal — empty graph or tool unavailable
+            }
 
         // Build inference models
         //

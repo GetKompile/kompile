@@ -123,9 +123,10 @@ public class GraphForecastTool implements CliTool {
             return ToolResult.error("root_type is required");
         }
 
-        if (!backend.isAvailable()) {
-            return ToolResult.error("Graph forecast requires a running kompile-app instance. " +
-                    "Start kompile-app or use --url to connect.");
+        if (!backend.isAvailable("/api/graph/forecast")) {
+            return ToolResult.error("Graph forecast requires a running kompile-app-chat instance at "
+                    + backend.baseUrlFor("/api/graph/forecast")
+                    + ". Start it with: kompile manage start kompile-app-chat, or use --url to connect.");
         }
 
         try {

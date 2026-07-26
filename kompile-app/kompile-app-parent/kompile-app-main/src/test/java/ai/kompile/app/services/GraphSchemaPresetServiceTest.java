@@ -211,18 +211,20 @@ class GraphSchemaPresetServiceTest {
     // --- getPresetTypeNames ---
 
     @Test
-    void getPresetTypeNamesExtractsLabelsAndTypes() throws IOException {
+    void getPresetTypeNamesExtractsLabelsTypesAndPatterns() throws IOException {
         PresetEntry entry = createPreset("typed", "Typed",
                 List.of(new NodeType("PERSON", "Person", null),
                         new NodeType("ORGANIZATION", "Org", null)),
                 List.of(new RelationshipType("WORKS_AT", "Works at", null),
                         new RelationshipType("MANAGES", "Manages", null)));
+        entry.setPatterns(List.of("(PERSON)-[:WORKS_AT]->(ORGANIZATION)"));
         service.savePreset("typed", entry);
 
         Optional<Map<String, List<String>>> typeNames = service.getPresetTypeNames("typed");
         assertTrue(typeNames.isPresent());
         assertEquals(List.of("PERSON", "ORGANIZATION"), typeNames.get().get("entityTypes"));
         assertEquals(List.of("WORKS_AT", "MANAGES"), typeNames.get().get("relationshipTypes"));
+        assertEquals(List.of("(PERSON)-[:WORKS_AT]->(ORGANIZATION)"), typeNames.get().get("patterns"));
     }
 
     @Test

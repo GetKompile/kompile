@@ -79,6 +79,12 @@ public final class CrawlPipelineStepRegistry {
                     Set.of("ENTITY_RESOLUTION"), false, false, false, true),
             new StepDescriptor("VECTOR_INDEXING", "Embedding & Vector Index", "EMBEDDING",
                     Set.of("CHUNKING"), true, false, false, true),
+            // Runs late on purpose: grouping reads the entities the graph ended up with, and the
+            // retrieval discovery channels search an index that only contains this run's chunks
+            // once VECTOR_INDEXING has landed. Depends on GRAPH_EXTRACTION only — a run with entity
+            // resolution off still has entities to partition, they are just less merged.
+            new StepDescriptor("ENTITY_PARTITIONS", "Entity Partitions", "GRAPH",
+                    Set.of("GRAPH_EXTRACTION"), false, false, false, false),
             new StepDescriptor("ENRICHMENT", "Post-Crawl Enrichment", "ENRICHMENT",
                     Set.of("ENTITY_RESOLUTION", "EDGE_COMPUTATION"), false, false, false, false)
     );

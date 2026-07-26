@@ -40,6 +40,8 @@ public class ComponentRegistry {
     
     // Component identifiers
     public static final String KOMPILE_APP_MAIN = "kompile-app-main";
+    public static final String KOMPILE_APP_CHAT = "kompile-app-chat";
+    public static final String KOMPILE_APP_CRAWL_MANAGER = "kompile-app-crawl-manager";
     public static final String KOMPILE_MODEL_STAGING = "kompile-model-staging";
     public static final String KOMPILE_GRAPH_SERVICE = "kompile-graph-service";
     public static final String KOMPILE_CLI = "kompile-cli";
@@ -56,6 +58,8 @@ public class ComponentRegistry {
      */
     private static final Map<String, List<String>> BINARY_ALIASES = Map.of(
             KOMPILE_APP_MAIN, List.of("kompile-app-main", "kompile-server"),
+            KOMPILE_APP_CHAT, List.of("kompile-app-chat", "kompile-chat"),
+            KOMPILE_APP_CRAWL_MANAGER, List.of("kompile-app-crawl-manager", "kompile-crawl-manager"),
             KOMPILE_MODEL_STAGING, List.of("kompile-model-staging"),
             KOMPILE_GRAPH_SERVICE, List.of("kompile-graph-service"),
             KOMPILE_CLI, List.of("kompile-cli", "kompile"));
@@ -74,6 +78,34 @@ public class ComponentRegistry {
                 .defaultPort(8080)
                 .mainClass("ai.kompile.app.MainApplication")
                 .artifactId("kompile-app-main")
+                .groupId("ai.kompile")
+                .build());
+
+        // Register kompile-app-chat — the end-user chat persona (chat, agents, RAG,
+        // project browsing). Ships an exec jar, unlike app-main's thin library artifact.
+        COMPONENTS.put(KOMPILE_APP_CHAT, ComponentDescriptor.builder()
+                .id(KOMPILE_APP_CHAT)
+                .name("Kompile Chat")
+                .description("End-user chat application with project browsing and RAG")
+                .type("app")
+                .defaultPort(8081)
+                .mainClass("ai.kompile.app.chat.ChatApplication")
+                .artifactId("kompile-app-chat")
+                .artifactClassifier("exec")
+                .groupId("ai.kompile")
+                .build());
+
+        // Register kompile-app-crawl-manager — the end-user ingest persona (crawls,
+        // indexing, fact sheets, documents, note sync).
+        COMPONENTS.put(KOMPILE_APP_CRAWL_MANAGER, ComponentDescriptor.builder()
+                .id(KOMPILE_APP_CRAWL_MANAGER)
+                .name("Kompile Crawl Manager")
+                .description("End-user crawl, ingest, and index management application")
+                .type("app")
+                .defaultPort(8082)
+                .mainClass("ai.kompile.app.crawlmanager.CrawlManagerApplication")
+                .artifactId("kompile-app-crawl-manager")
+                .artifactClassifier("exec")
                 .groupId("ai.kompile")
                 .build());
 
@@ -237,6 +269,14 @@ public class ComponentRegistry {
     public File getDistributionJarPath(String componentId) {
         File libDir = new File(installBaseDir, "lib");
         if (!libDir.isDirectory()) return null;
+        // Exact <alias>.jar wins over the prefix scan: with sibling components sharing a
+        // prefix (kompile-chat.jar vs kompile-chat-local.jar) a prefix match is a coin flip.
+        for (String alias : aliasesFor(componentId)) {
+            File exact = new File(libDir, alias + ".jar");
+            if (exact.isFile()) {
+                return exact;
+            }
+        }
         for (String alias : aliasesFor(componentId)) {
             File[] jars = libDir.listFiles((dir, name) ->
                     name.startsWith(alias) && name.endsWith(".jar"));

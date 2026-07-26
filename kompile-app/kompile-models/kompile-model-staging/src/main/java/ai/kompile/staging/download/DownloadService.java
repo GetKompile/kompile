@@ -55,6 +55,23 @@ public interface DownloadService {
                            Consumer<DownloadProgress> progressCallback);
 
     /**
+     * Download with cooperative cancellation. Implementations that do not need
+     * special handling remain source-compatible and receive checkpoints around
+     * the legacy download operation.
+     */
+    default DownloadResult download(DownloadRequest request, Path destination,
+                                    Consumer<DownloadProgress> progressCallback,
+                                    StagingCancellation cancellation) {
+        StagingCancellation signal = cancellation == null
+                ? StagingCancellation.NONE
+                : cancellation;
+        signal.checkpoint();
+        DownloadResult result = download(request, destination, progressCallback);
+        signal.checkpoint();
+        return result;
+    }
+
+    /**
      * Check if a model is available from the source.
      */
     boolean isAvailable(DownloadRequest request);

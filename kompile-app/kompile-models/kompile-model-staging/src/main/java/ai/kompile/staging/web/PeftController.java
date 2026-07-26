@@ -37,7 +37,6 @@ import java.util.Map;
 @ConditionalOnProperty(name = "kompile.staging.app.enabled", havingValue = "true")
 @RestController
 @RequestMapping("/api/peft")
-@CrossOrigin(origins = "*")
 public class PeftController {
 
     private static final Logger log = LoggerFactory.getLogger(PeftController.class);

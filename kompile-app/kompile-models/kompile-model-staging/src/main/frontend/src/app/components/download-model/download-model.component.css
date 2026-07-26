@@ -237,6 +237,54 @@
   color: #666;
 }
 
+.diagnostics-card {
+  border-radius: 8px;
+  grid-column: 1 / -1;
+}
+
+.diagnostics-card mat-card-avatar {
+  color: #455a64;
+}
+
+.diagnostics-card mat-card-content > button {
+  margin: 12px 0;
+}
+
+.diagnostics-card mat-panel-title {
+  align-items: center;
+  gap: 8px;
+}
+
+.diagnostic-error {
+  border-left: 3px solid #c62828;
+}
+
+.diagnostic-error-icon {
+  color: #c62828;
+}
+
+.diagnostic-context,
+.diagnostic-remediation {
+  margin: 8px 0;
+}
+
+.diagnostic-details {
+  display: grid;
+  grid-template-columns: minmax(140px, auto) 1fr;
+  gap: 4px 12px;
+  margin: 12px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.diagnostic-details dt {
+  color: #546e7a;
+  font-weight: 600;
+}
+
+.diagnostic-details dd {
+  margin: 0;
+}
+
 .status-badge {
   display: inline-block;
   padding: 2px 8px;
@@ -323,6 +371,73 @@
   border-radius: 4px;
   font-family: monospace;
   font-size: 13px;
+}
+
+.asset-section,
+.asset-paths {
+  margin: 12px 0 20px;
+  padding: 16px;
+  border: 1px solid #d8dce5;
+  border-radius: 8px;
+  background: #fafbff;
+}
+
+.asset-section h3,
+.asset-paths h4 {
+  margin: 0 0 8px;
+}
+
+.asset-section p,
+.asset-paths p,
+.asset-alternative {
+  color: #596273;
+  font-size: 13px;
+}
+
+.file-input-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 10px 0;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: white;
+}
+
+.file-input-row div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.file-input-row span {
+  overflow: hidden;
+  color: #596273;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-picker {
+  flex: 0 0 auto;
+  padding: 7px 12px;
+  border: 1px solid #3f51b5;
+  border-radius: 4px;
+  color: #3f51b5;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.optional-assets {
+  margin-top: 12px;
+}
+
+.optional-assets summary {
+  margin-bottom: 10px;
+  color: #3f51b5;
+  cursor: pointer;
+  font-weight: 500;
 }
 
 /* Responsive */

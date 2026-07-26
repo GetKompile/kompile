@@ -20,6 +20,8 @@ import ai.kompile.cli.common.http.KompileHttpClient;
 import ai.kompile.cli.common.mcp.InstanceDiscovery;
 import ai.kompile.cli.common.registry.InstanceInfo;
 import ai.kompile.cli.common.registry.InstanceRegistry;
+import ai.kompile.cli.common.routing.KompileService;
+import ai.kompile.cli.common.routing.KompileServiceEndpoints;
 import ai.kompile.cli.main.codeindex.IndexFileStore;
 import ai.kompile.cli.main.codeindex.LocalCodeIndexer;
 import ai.kompile.cli.common.util.JsonUtils;
@@ -155,8 +157,9 @@ public class RegisterProjectTool implements CliTool {
             String url = resolveEndpointUrl(params);
             if (url == null) {
                 return ToolResult.error(
-                        "No kompile-app instance found. Start one with 'kompile app start' "
-                                + "or specify --url explicitly.");
+                        "No kompile app is running. Project registration is on the shared API, so any "
+                                + "persona will do — start one with 'kompile manage start "
+                                + KompileService.ADMIN.componentId() + "' or specify --url explicitly.");
             }
 
             KompileHttpClient client = new KompileHttpClient(url);
@@ -363,23 +366,27 @@ public class RegisterProjectTool implements CliTool {
             sb.append("Registry: unavailable (").append(e.getMessage()).append(")\n");
         }
 
-        // Port scan
-        sb.append("\nPort scan:\n");
-        int[] probePorts = {8080, 8081, 9090, 9091};
+        // Service endpoints — one line per persona, so a partial stack (chat up, crawl manager down)
+        // is visible instead of collapsing into a single "kompile-app is running" answer.
+        sb.append("\nService endpoints:\n");
         boolean foundAny = false;
-        for (int port : probePorts) {
+        for (KompileService service : KompileService.values()) {
+            KompileServiceEndpoints.Resolution resolution = KompileServiceEndpoints.resolve(service);
+            boolean up;
             try {
-                KompileHttpClient client = new KompileHttpClient(
-                        "http://localhost:" + port);
-                if (client.isHealthy()) {
-                    sb.append("  localhost:").append(port).append(" — UP\n");
-                    foundAny = true;
-                }
-            } catch (Exception ignored) {
+                up = new KompileHttpClient(resolution.baseUrl()).isHealthy();
+            } catch (Exception e) {
+                up = false;
             }
+            foundAny |= up;
+            sb.append("  ").append(service.componentId())
+                    .append(" @ ").append(resolution.baseUrl())
+                    .append(" — ").append(up ? "UP" : "DOWN")
+                    .append(" (from ").append(resolution.source()).append(")\n");
         }
         if (!foundAny) {
-            sb.append("  No instances found on standard ports.\n");
+            sb.append("  No kompile app is running. Start one with: kompile manage start "
+                    + KompileService.ADMIN.componentId() + "\n");
         }
 
         return ToolResult.success("Instance Discovery", sb.toString());

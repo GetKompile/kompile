@@ -1376,13 +1376,15 @@ public class KompileProjectStore {
                 "$ROOT/scripts/start-staging.sh"
                 "$ROOT/scripts/start-serving.sh"
                 "$ROOT/scripts/start-app.sh"
+                "$ROOT/scripts/start-chat.sh"
+                "$ROOT/scripts/start-crawl-manager.sh"
                 """);
         writeExecutableIfMissing(root.resolve("scripts/stop-all.sh"), """
                 #!/usr/bin/env bash
                 set -euo pipefail
                 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
                 PID_DIR="$ROOT/.kompile/state/pids"
-                for service in app serving staging; do
+                for service in chat crawl-manager app serving staging; do
                   pid_file="$PID_DIR/$service.pid"
                   if [ -f "$pid_file" ]; then
                     pid="$(cat "$pid_file")"
@@ -1405,6 +1407,17 @@ public class KompileProjectStore {
                 "KOMPILE_APP_COMMAND",
                 "Set KOMPILE_APP_COMMAND to start the Kompile app for this project.",
                 "kompile project service start"));
+        // The end-user personas are separate processes: the admin console does not mount
+        // /api/agents/chat or /api/unified-crawl, so a project that starts only start-app.sh can
+        // serve its admin API but cannot chat or ingest.
+        writeExecutableIfMissing(root.resolve("scripts/start-chat.sh"), serviceScript("chat",
+                "KOMPILE_CHAT_COMMAND",
+                "Set KOMPILE_CHAT_COMMAND to start the Kompile chat app for this project.",
+                "kompile project serve --chat-only"));
+        writeExecutableIfMissing(root.resolve("scripts/start-crawl-manager.sh"), serviceScript("crawl-manager",
+                "KOMPILE_CRAWL_MANAGER_COMMAND",
+                "Set KOMPILE_CRAWL_MANAGER_COMMAND to start the Kompile crawl manager for this project.",
+                "kompile project serve --crawl-manager-only"));
     }
 
     /**
@@ -1457,8 +1470,15 @@ public class KompileProjectStore {
                 "./scripts/stop-all.sh", ".", "stop", "Stop project services and clean service PIDs.",
                 List.of("lifecycle", "stop", "services")));
         upsertScript(manifest, script("start-app", "Start app", "scripts/start-app.sh",
-                "./scripts/start-app.sh", ".", "start", "Start the main Kompile application.",
-                List.of("lifecycle", "app")));
+                "./scripts/start-app.sh", ".", "start", "Start the Kompile admin console.",
+                List.of("lifecycle", "app", "admin")));
+        upsertScript(manifest, script("start-chat", "Start chat", "scripts/start-chat.sh",
+                "./scripts/start-chat.sh", ".", "start", "Start the Kompile chat app.",
+                List.of("lifecycle", "chat")));
+        upsertScript(manifest, script("start-crawl-manager", "Start crawl manager",
+                "scripts/start-crawl-manager.sh", "./scripts/start-crawl-manager.sh", ".", "start",
+                "Start the Kompile crawl manager (crawl, ingest, indexing).",
+                List.of("lifecycle", "crawl", "ingest")));
         upsertScript(manifest, script("start-staging", "Start staging", "scripts/start-staging.sh",
                 "./scripts/start-staging.sh", ".", "start", "Start the model staging service.",
                 List.of("lifecycle", "staging", "models")));
@@ -1486,11 +1506,17 @@ public class KompileProjectStore {
 
     private void upsertStandardWorkflows(KompileProjectManifest manifest) {
         KompileProjectWorkflow start = workflow("start-services", "Start services", "start",
-                "Start staging, serving, and the main application.", List.of("workflow", "lifecycle", "start"));
+                "Start staging, serving, the admin console, chat, and the crawl manager.",
+                List.of("workflow", "lifecycle", "start"));
+        // Chat and the crawl manager come after the admin console because they are separate
+        // processes on their own ports — the crawl manager is what serves /api/unified-crawl, so
+        // the auto-ingest workflow below has nothing to talk to without it.
         start.setSteps(List.of(
                 workflowStep("start-staging", "Start staging", "SCRIPT", "start-staging"),
                 workflowStep("start-serving", "Start serving", "SCRIPT", "start-serving"),
-                workflowStep("start-app", "Start app", "SCRIPT", "start-app")
+                workflowStep("start-app", "Start app", "SCRIPT", "start-app"),
+                workflowStep("start-chat", "Start chat", "SCRIPT", "start-chat"),
+                workflowStep("start-crawl-manager", "Start crawl manager", "SCRIPT", "start-crawl-manager")
         ));
         upsertWorkflow(manifest, start);
 
@@ -1503,11 +1529,18 @@ public class KompileProjectStore {
                 "Wait for services, crawl all profiles, and optionally commit results.",
                 List.of("workflow", "automation", "crawl", "ingest"));
         KompileProjectWorkflowStep healthStep = workflowStep(
-                "wait-for-app", "Wait for app", "HEALTH_CHECK", null);
-        // Do NOT set a hardcoded URL here. Generated kompile apps do not ship Spring Boot
-        // Actuator, so "${appUrl}/actuator/health" 404s. The runner (runHealthCheckStep)
-        // detects a null/default URL and uses KompileHttpClient.isHealthy() which probes
-        // /actuator/health OR /api/setup/status — whichever responds 200 first.
+                "wait-for-crawl-manager", "Wait for crawl manager", "HEALTH_CHECK", null);
+        // Wait for the process that serves the NEXT step, not for "any kompile service".
+        // /api/unified-crawl lives on the crawl manager, so ${appUrl} resolves to :8082 here;
+        // the untargeted probe would pass as soon as the admin console answered on :8080 and the
+        // crawl would then POST into a connection refused. A pinned --url/--port still wins, so
+        // an all-in-one deployment behaves as before.
+        //
+        // Do NOT use "${appUrl}/actuator/health": generated kompile apps do not ship Spring Boot
+        // Actuator, so it 404s. /api/unified-crawl/jobs/active is the crawl manager's own
+        // always-present read endpoint — the same one the CLI polls while a crawl runs.
+        healthStep.setUrl("${appUrl}/api/unified-crawl/jobs/active");
+        healthStep.setExpectedStatus(200);
         healthStep.setTimeoutSeconds(120);
         String crawlRef = manifest.getCrawlProfiles().stream()
                 .map(KompileProjectCrawlProfile::getId)

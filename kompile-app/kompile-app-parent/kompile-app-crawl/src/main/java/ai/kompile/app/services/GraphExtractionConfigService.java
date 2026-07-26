@@ -16,8 +16,10 @@
 
 package ai.kompile.app.services;
 
+import ai.kompile.core.crawl.graph.GraphExtractionValidationPolicy;
 import com.fasterxml.jackson.annotation.JsonAnyGetter;
 import com.fasterxml.jackson.annotation.JsonAnySetter;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import ai.kompile.app.services.agent.CliAgentModelService;
 import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -75,6 +77,7 @@ public class GraphExtractionConfigService {
             if (Files.exists(configPath)) {
                 try {
                     currentConfig = objectMapper.readValue(configPath.toFile(), GraphExtractionConfig.class);
+                    currentConfig.normalizeValidationPolicy();
                     shouldSave = true;
                     logger.info("Loaded graph extraction config from {}", configPath);
                 } catch (IOException e) {
@@ -148,6 +151,9 @@ public class GraphExtractionConfigService {
             }
             if (newConfig.customExtractionPrompt != null) {
                 currentConfig.customExtractionPrompt = newConfig.customExtractionPrompt.isEmpty() ? null : newConfig.customExtractionPrompt;
+            }
+            if (newConfig.validationPolicy != null) {
+                currentConfig.validationPolicy = newConfig.validationPolicy.copy();
             }
             if (newConfig.extractionModelProviderAllow != null) {
                 currentConfig.extractionModelProviderAllow = List.copyOf(newConfig.extractionModelProviderAllow);
@@ -264,6 +270,7 @@ public class GraphExtractionConfigService {
         public Double extractionTemperature;    // 0.0 to 2.0, lower = more deterministic
         public Integer extractionMaxTokens;     // Max tokens for extraction response
         public String customExtractionPrompt;   // Optional custom prompt template
+        public GraphExtractionValidationPolicy validationPolicy; // Per-project validators and prompt rules
         public List<String> extractionModelProviderAllow;  // Provider prefixes eligible for extraction
         public List<String> extractionModelExcludeMarkers; // Model-id substrings rejected for extraction
         public List<String> extractionModelAllow;          // Strict model allow-list, empty/null = no pin
@@ -296,7 +303,7 @@ public class GraphExtractionConfigService {
 
         @JsonAnySetter
         public void setAdditionalProperty(String key, Object value) {
-            if (!"enabled".equals(key)) {
+            if (!"enabled".equals(key) && !"extractionModelDisplayName".equals(key)) {
                 additionalProperties.put(key, value);
             }
         }
@@ -315,6 +322,7 @@ public class GraphExtractionConfigService {
             config.extractionTemperature = 0.0;          // Low temperature for deterministic extraction
             config.extractionMaxTokens = 4096;           // Reasonable default for entity extraction
             config.customExtractionPrompt = null;        // Use built-in prompt
+            config.validationPolicy = GraphExtractionValidationPolicy.defaults();
             config.extractionModelProviderAllow = List.of("opencode", "opencode-go", "local");
             config.extractionModelExcludeMarkers = List.of("claude", "codex", "opus", "sonnet", "gpt", "gemini");
             config.extractionModelAllow = List.of();
@@ -351,6 +359,7 @@ public class GraphExtractionConfigService {
             copy.extractionTemperature = this.extractionTemperature;
             copy.extractionMaxTokens = this.extractionMaxTokens;
             copy.customExtractionPrompt = this.customExtractionPrompt;
+            copy.validationPolicy = this.validationPolicy != null ? this.validationPolicy.copy() : null;
             copy.extractionModelProviderAllow = this.extractionModelProviderAllow != null ? List.copyOf(this.extractionModelProviderAllow) : null;
             copy.extractionModelExcludeMarkers = this.extractionModelExcludeMarkers != null ? List.copyOf(this.extractionModelExcludeMarkers) : null;
             copy.extractionModelAllow = this.extractionModelAllow != null ? List.copyOf(this.extractionModelAllow) : null;
@@ -370,6 +379,12 @@ public class GraphExtractionConfigService {
             return copy;
         }
 
+        private void normalizeValidationPolicy() {
+            validationPolicy = validationPolicy == null
+                    ? GraphExtractionValidationPolicy.defaults()
+                    : validationPolicy.copy();
+        }
+
         /**
          * Get a copy with the actual password (for internal use).
          */
@@ -382,6 +397,7 @@ public class GraphExtractionConfigService {
         /**
          * Get the display name for the configured extraction model.
          */
+        @JsonIgnore
         public String getExtractionModelDisplayName() {
             if (extractionModelProvider == null || "default".equals(extractionModelProvider)) {
                 return "Default (System LLM)";

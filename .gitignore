@@ -24,6 +24,18 @@ buildNumber.properties
 *.iml
 *.json
 !kompile-app/kompile-app-parent/kompile-app-core/src/main/resources/cli-agents.json
+!kompile-local-sdk/manifest.json
+
+# The blanket *.json above otherwise swallows the Angular workspace's build configuration, so a
+# clone can compile the Java but not the SPAs. angular.json and package.json were force-added
+# historically; the rest of the workspace contract has to be allowlisted the same way.
+!kompile-app/kompile-app-parent/kompile-app-ui/src/main/frontend/package-lock.json
+!kompile-app/kompile-app-parent/kompile-app-ui/src/main/frontend/tsconfig*.json
+!kompile-app/kompile-app-parent/kompile-app-ui/src/main/frontend/projects/*/tsconfig*.json
+
+# Runtime resources the new modules load off the classpath — source, not generated output.
+!kompile-app/kompile-app-parent/kompile-app-crawl-svc/src/main/resources/schema-presets/*.json
+!kompile-chat-local/mobile/android/app/src/main/assets/offline-assets.json
 
 # Frontend build artifacts
 node_modules/
@@ -54,6 +66,26 @@ convert_pytorch*.py
 # Kompile runtime metadata
 .kompile/
 **/.kompile/
+
+# State the stack writes when it is run against the repo checkout itself. Generated projects
+# (kompile-fpna-v*) keep their own copies of these and those ARE tracked — the rules below are
+# root-anchored so they only exclude the dev box's working state, not a project's contents.
+# config/ holds oauth-encryption.key, which must never reach a commit.
+/config/
+/log-archives/
+/anserini/
+/fact-sheets/
+
+# Per-project OAuth encryption keys, generated at project init. Ten of these are already tracked
+# from earlier generated projects; this rule stops any new one from being added.
+oauth-encryption.key
+
+# Local reproduction harness: a CMakeLists hardcoding an absolute libnd4j path plus its build trees.
+/cuda-cleanup-concurrency-contract/
+
+# Mobile distribution build output (~718M) and one-off debug screenshots.
+kompile-chat-local/mobile/build/
+/mobile-graph-before.png
 
 # Editor/tool metadata
 .opencode/

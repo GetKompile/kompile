@@ -51,6 +51,8 @@ import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
 import java.io.IOException;
+import org.nd4j.ggml.format.GGUFReader;
+
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -87,6 +89,8 @@ public class SameDiffLanguageModelImpl implements LanguageModel, ChatModel {
 
     private static final Logger logger = LoggerFactory.getLogger(SameDiffLanguageModelImpl.class);
     private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
+    private static final int CONTINUATION_CHUNK_TOKENS_DEFAULT = 384;
+
     /**
      * Minimal ChatML marker template understood by DL4J's ChatTemplate adapter.
      *
@@ -576,6 +580,44 @@ public class SameDiffLanguageModelImpl implements LanguageModel, ChatModel {
         }
     }
 
+    /**
+     * Staged GGUF conversions use a sharded model.sdnb beside the source .gguf.
+     * That provenance is the serving-side signal that the graph has single-model
+     * in-graph KV and can safely use GenerationSession continuation.
+     */
+    static boolean isGgufBackedModel(Path modelFile) {
+        if (modelFile == null) {
+            return false;
+        }
+        String fileName = modelFile.getFileName().toString()
+                .toLowerCase(java.util.Locale.ROOT);
+        if (fileName.endsWith(".gguf")) {
+            return true;
+        }
+        Path parent = modelFile.toAbsolutePath().getParent();
+        if (parent == null || !Files.isDirectory(parent)) {
+            return false;
+        }
+        try (java.util.stream.Stream<Path> entries = Files.list(parent)) {
+            return entries.anyMatch(path -> Files.isRegularFile(path)
+                    && path.getFileName().toString()
+                    .toLowerCase(java.util.Locale.ROOT)
+                    .endsWith(".gguf"));
+        } catch (IOException e) {
+            logger.debug("Could not inspect GGUF provenance beside '{}': {}",
+                    modelFile, e.getMessage());
+            return false;
+        }
+    }
+
+    static int validateContinuationChunkTokens(int chunkTokens) {
+        if (chunkTokens <= 0) {
+            throw new IllegalArgumentException(
+                    "continuationChunkTokens must be positive: " + chunkTokens);
+        }
+        return chunkTokens;
+    }
+
     private InferenceBackend createInferenceBackend(
             String modelId,
             Path modelFile,
@@ -595,7 +637,7 @@ public class SameDiffLanguageModelImpl implements LanguageModel, ChatModel {
                     ? HuggingFaceTokenizer.fromDirectory(tokenizerFile.toFile())
                     : HuggingFaceTokenizer.fromFile(tokenizerFile.toFile());
             try {
-                String effectiveChatTemplate = resolveChatTemplate(tokenizer, chatTemplate);
+                String effectiveChatTemplate = resolveChatTemplate(tokenizer, chatTemplate, modelFile);
                 boolean doSample = booleanOpt(
                         opts, "doSample", temperature > 0.0d && topK != 1);
                 double topP = doubleOpt(opts, "topP", 1.0d);
@@ -613,6 +655,11 @@ public class SameDiffLanguageModelImpl implements LanguageModel, ChatModel {
                 if (padTokenId >= 0) {
                     samplingBuilder.padTokenId(padTokenId);
                 }
+                boolean continuationEnabled = booleanOpt(
+                        opts, "continuationEnabled", isGgufBackedModel(modelFile));
+                int continuationChunkTokens = validateContinuationChunkTokens(
+                        intOpt(opts, "continuationChunkTokens",
+                                CONTINUATION_CHUNK_TOKENS_DEFAULT));
 
                 GenerationPipelineConfig pipelineConfig = GenerationPipelineConfig.builder()
                         .decoderPath(modelFile.toString())
@@ -624,18 +671,21 @@ public class SameDiffLanguageModelImpl implements LanguageModel, ChatModel {
                         .kvCacheStrategy(kvCacheStrategyOpt(opts))
                         .graphOptimizerEnabled(booleanOpt(opts, "graphOptimizerEnabled", true))
                         .dspEnabled(booleanOpt(opts, "dspEnabled", true))
+                        .prefillLastPositionLogitsEnabled(prefillLastPositionLogitsEnabled(opts))
                         .chatTemplate(effectiveChatTemplate)
                         .build();
                 GenerationPipeline pipeline = GenerationPipeline.create(pipelineConfig);
                 logger.info(
                         "Loaded model '{}' with GenerationPipeline "
-                                + "(KV={}, DSP={}, maxNewTokens={}, chatTemplate={}, eosTokenId={})",
+                                + "(KV={}, DSP={}, maxNewTokens={}, chatTemplate={}, eosTokenId={}, "
+                                + "continuation={}, continuationChunkTokens={})",
                         modelId, pipelineConfig.getKvCacheStrategy(),
                         pipelineConfig.isDspEnabled(), maxNewTokens,
                         effectiveChatTemplate == null ? "none" : "configured",
-                        eosTokenId);
+                        eosTokenId, continuationEnabled, continuationChunkTokens);
                 return new GenerationPipelineBackend(
-                        pipeline, tokenizer, maxNewTokens, eosTokenText);
+                        pipeline, tokenizer, maxNewTokens, eosTokenText,
+                        continuationEnabled, continuationChunkTokens);
             } catch (Exception e) {
                 try {
                     tokenizer.close();
@@ -706,7 +756,28 @@ public class SameDiffLanguageModelImpl implements LanguageModel, ChatModel {
                 || normalized.equals("bpe");
     }
 
-    static String resolveChatTemplate(Tokenizer tokenizer, String configuredTemplate) {
+    /**
+     * Resolves the template that frames every prompt, most specific source first.
+     *
+     * <p>Order matters, because a model served with no template is fed its prompt verbatim — no
+     * turn markers, no generation prompt — and answers as a base completion model: on an
+     * instruction that ends in a directive the likeliest continuation is the end of the document,
+     * so it emits end-of-sequence and says nothing. Serving a model with the <em>wrong</em>
+     * template is subtler and worse: it answers, plausibly, in a frame its training never used.
+     *
+     * <ol>
+     *   <li>the configured template — an explicit operator choice outranks anything inferred;</li>
+     *   <li>the tokenizer's own, from {@code tokenizer_config.json} beside {@code tokenizer.json};
+     *   </li>
+     *   <li>the GGUF the graph was converted from, which declares {@code tokenizer.chat_template}
+     *       in its metadata. A model staged before staging carried that file forward has this and
+     *       nothing else, and it is the model's real template;</li>
+     *   <li>the built-in ChatML template, only when the tokenizer resolves ChatML markers. This is
+     *       a stand-in that resembles the model's template rather than being it, so it is reached
+     *       last and says so in the log.</li>
+     * </ol>
+     */
+    static String resolveChatTemplate(Tokenizer tokenizer, String configuredTemplate, Path modelFile) {
         if (configuredTemplate != null && !configuredTemplate.isBlank()) {
             return configuredTemplate;
         }
@@ -720,6 +791,14 @@ public class SameDiffLanguageModelImpl implements LanguageModel, ChatModel {
             logger.debug("Tokenizer chat-template metadata was unavailable: {}", e.getMessage());
         }
 
+        String ggufTemplate = chatTemplateFromGguf(modelFile);
+        if (ggufTemplate != null) {
+            logger.info(
+                    "Tokenizer metadata omits a chat template; using the one declared by the "
+                            + "source GGUF beside '{}' ({} chars)", modelFile, ggufTemplate.length());
+            return ggufTemplate;
+        }
+
         Integer chatStart = tokenId(tokenizer, "<|im_start|>");
         Integer chatEnd = tokenId(tokenizer, "<|im_end|>");
         if (chatStart != null && chatStart >= 0 && chatEnd != null && chatEnd >= 0) {
@@ -729,6 +808,48 @@ public class SameDiffLanguageModelImpl implements LanguageModel, ChatModel {
             return CHATML_TEMPLATE;
         }
         return null;
+    }
+
+    /**
+     * The chat template declared by the GGUF the staged graph was converted from, or null if there
+     * is no GGUF beside the model or it declares none.
+     */
+    static String chatTemplateFromGguf(Path modelFile) {
+        if (modelFile == null) {
+            return null;
+        }
+        Path gguf = ggufBeside(modelFile);
+        if (gguf == null) {
+            return null;
+        }
+        try (GGUFReader reader = new GGUFReader(gguf.toFile())) {
+            String template = reader.getHeader().getChatTemplate();
+            return template == null || template.isBlank() ? null : template;
+        } catch (Exception e) {
+            logger.debug("Could not read a chat template from '{}': {}", gguf, e.getMessage());
+            return null;
+        }
+    }
+
+    private static Path ggufBeside(Path modelFile) {
+        if (modelFile.getFileName().toString()
+                .toLowerCase(java.util.Locale.ROOT).endsWith(".gguf")) {
+            return Files.isRegularFile(modelFile) ? modelFile : null;
+        }
+        Path parent = modelFile.toAbsolutePath().getParent();
+        if (parent == null || !Files.isDirectory(parent)) {
+            return null;
+        }
+        try (java.util.stream.Stream<Path> entries = Files.list(parent)) {
+            return entries.filter(Files::isRegularFile)
+                    .filter(path -> path.getFileName().toString()
+                            .toLowerCase(java.util.Locale.ROOT).endsWith(".gguf"))
+                    .findFirst()
+                    .orElse(null);
+        } catch (IOException e) {
+            logger.debug("Could not list '{}' for a source GGUF: {}", parent, e.getMessage());
+            return null;
+        }
     }
 
     static int resolveEosTokenId(
@@ -817,6 +938,10 @@ public class SameDiffLanguageModelImpl implements LanguageModel, ChatModel {
         }
     }
 
+    static boolean prefillLastPositionLogitsEnabled(Map<String, Object> opts) {
+        return booleanOpt(opts, "prefillLastPositionLogitsEnabled", true);
+    }
+
     private static boolean booleanOpt(Map<String, Object> opts, String key, boolean defaultValue) {
         Object value = opts.get(key);
         if (value instanceof Boolean booleanValue) return booleanValue;
@@ -851,17 +976,24 @@ public class SameDiffLanguageModelImpl implements LanguageModel, ChatModel {
         private final Tokenizer tokenizer;
         private final int maxNewTokens;
         private final String eosTokenText;
+        private final boolean continuationEnabled;
+        private final int continuationChunkTokens;
         private boolean closed;
 
         private GenerationPipelineBackend(
                 GenerationPipeline pipeline,
                 Tokenizer tokenizer,
                 int maxNewTokens,
-                String eosTokenText) {
+                String eosTokenText,
+                boolean continuationEnabled,
+                int continuationChunkTokens) {
             this.pipeline = pipeline;
             this.tokenizer = tokenizer;
             this.maxNewTokens = maxNewTokens;
             this.eosTokenText = eosTokenText;
+            this.continuationEnabled = continuationEnabled;
+            this.continuationChunkTokens =
+                    validateContinuationChunkTokens(continuationChunkTokens);
         }
 
         @Override
@@ -872,14 +1004,55 @@ public class SameDiffLanguageModelImpl implements LanguageModel, ChatModel {
         @Override
         public synchronized String generate(String prompt, int requestedMaxNewTokens) {
             requireOpen();
+            if (requestedMaxNewTokens <= 0) {
+                throw new IllegalArgumentException(
+                        "requestedMaxNewTokens must be positive: " + requestedMaxNewTokens);
+            }
+            if (continuationEnabled
+                    && requestedMaxNewTokens > continuationChunkTokens) {
+                return generateWithContinuation(prompt, requestedMaxNewTokens);
+            }
+
             GenerationResult result = pipeline.generate(prompt, requestedMaxNewTokens);
+            validateGenerationResult(result);
+            return stripTrailingEosToken(result.getText(), eosTokenText);
+        }
+
+        private String generateWithContinuation(
+                String prompt,
+                int requestedMaxNewTokens) {
+            try (GenerationPipeline.GenerationSession session =
+                         pipeline.startSession(prompt, requestedMaxNewTokens)) {
+                int firstBudget = Math.min(
+                        continuationChunkTokens, session.getRemainingCapacity());
+                GenerationResult result = session.generate(firstBudget);
+                int chunks = 1;
+                while (result.isTruncated()
+                        && !session.isEosReached()
+                        && session.getRemainingCapacity() > 0) {
+                    int nextBudget = Math.min(
+                            continuationChunkTokens,
+                            session.getRemainingCapacity());
+                    result = session.continueGeneration(nextBudget);
+                    chunks++;
+                }
+                validateGenerationResult(result);
+                logger.info(
+                        "Retained-KV generation completed in {} chunk(s): "
+                                + "generatedTokens={}, finishReason={}, remainingCapacity={}",
+                        chunks, session.getAllTokens().length,
+                        result.getFinishReason(), session.getRemainingCapacity());
+                return stripTrailingEosToken(session.getFullText(), eosTokenText);
+            }
+        }
+
+        private static void validateGenerationResult(GenerationResult result) {
             if (result == null) {
                 throw new IllegalStateException("GenerationPipeline returned no result");
             }
             if (result.getFinishReason() == GenerationResult.FinishReason.ERROR) {
                 throw new IllegalStateException("GenerationPipeline reported an error");
             }
-            return stripTrailingEosToken(result.getText(), eosTokenText);
         }
 
         @Override

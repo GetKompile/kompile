@@ -29,6 +29,7 @@
   <modules>
     <module>kompile-utils</module>
     <module>kompile-app</module>
+    <module>kompile-chat-local</module>
     <module>kompile-cli</module>
     <module>kompile-e2e-tests</module>
   </modules>
@@ -36,6 +37,12 @@
   <properties>
     <!-- Stable reference to the repo root, usable from any sub-module -->
     <kompile.root.dir>${maven.multiModuleProjectDirectory}</kompile.root.dir>
+
+    <!-- Shared defaults for profile-gated Android modules in the same reactor. -->
+    <mobile.android.ndk>${env.ANDROID_NDK_ROOT}</mobile.android.ndk>
+    <mobile.java.home>${java.home}</mobile.java.home>
+    <mobile.graalvm.home>${java.home}</mobile.graalvm.home>
+
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
     <maven.compiler.source>17</maven.compiler.source>
@@ -128,6 +135,11 @@
       <dependency>
         <groupId>ai.kompile</groupId>
         <artifactId>kompile-cli-common</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-project-contract</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>

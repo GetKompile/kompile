@@ -310,6 +310,11 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
     @Autowired
     private GraphExtractionOrchestrator graphExtractionOrchestrator;
 
+    // Entity-partition pass (ENTITY_PARTITIONS step). Optional so a context that does not scan the
+    // partition components still starts; its absence is reported on the step, never silently.
+    @Autowired(required = false)
+    private EntityPartitionCrawlStep entityPartitionCrawlStep;
+
     // Extracted helper components
 
     @Autowired
@@ -2613,6 +2618,33 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                 skipPipelineStep(job, "EDGE_COMPUTATION", "Graph edge computation disabled or unavailable");
             }
 
+            // ── Phase 8.5: Entity partitions ────────────────────────────────────────────────────────
+            // Runs here, not straight after extraction: grouping reads the entities the graph ended
+            // up with (post entity-resolution) and the retrieval discovery channels are only
+            // meaningful once VECTOR_INDEXING has landed this run's chunks. Skipped on wholesale
+            // extraction failure — there are no entities to claim coverage over.
+            if (graphWholesaleFailure[0]) {
+                skipPipelineStep(job, EntityPartitionCrawlStep.STEP_ID,
+                        "Entity partitions skipped: graph extraction failed wholesale");
+            } else if (entityPartitionCrawlStep == null) {
+                // Same footgun as the hydration orchestrator below: without this bean there is no
+                // durable coverage claim for any entity, and the crawl would look identical to one
+                // that made them. Say so on the step instead of skipping in silence.
+                log.warn("[Job {}] EntityPartitionCrawlStep bean is absent; no entity-partition "
+                        + "coverage will be recorded for this crawl", job.getJobId());
+                skipPipelineStep(job, EntityPartitionCrawlStep.STEP_ID,
+                        "Entity partitions skipped: the partition pass is not wired into this deployment");
+            } else {
+                // The outcome is read, not discarded: the step reports itself on its own pipeline
+                // step, but the subjects it failed to cover are a property of the crawl's result —
+                // an entity with no coverage claim is one an answer drawn from this graph will be
+                // confidently wrong about, and that has to be visible next to the graph itself.
+                recordPartitionCoverage(job,
+                        entityPartitionCrawlStep.run(job, stepPlan, chunkedDocuments, graphConfig));
+            }
+
+            if (isCancelled(job)) return;
+
             // ── Phase 9: Post-crawl enrichment (PSL/MEBN MAP derivation + prune/compact + health) ──────
             // Skipped when graphWholesaleFailure: enrichment over an empty graph is a no-op.
             if (!graphWholesaleFailure[0] && stepPlan.isRun("ENRICHMENT")) {
@@ -3091,6 +3123,50 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
         pipelineStepTracker.skipPipelineStep(job, phase, message);
     }
 
+    /** How many uncovered subjects the job names before it stops naming them. */
+    static final int MAX_NAMED_UNCOVERED_SUBJECTS = 50;
+
+    /**
+     * Carries the partition pass's outcome onto the job, so a reader of the crawl sees which
+     * subjects ended with a durable coverage claim and which did not.
+     *
+     * <p>Covered means a claim was recorded, not that the claim is complete: a partition that
+     * closed with outstanding evidence still filed an honest claim, and how good each claim is
+     * belongs to the coverage report rather than to a job counter. Uncovered is the harder fact —
+     * those subjects have no claim at all, so an answer drawn from this graph about them is
+     * unbounded, and that is worth naming rather than counting.</p>
+     *
+     * <p>Static and package-private on purpose: it reads nothing but its two arguments, and what a
+     * crawl reports about its own coverage is worth testing without standing a service up.</p>
+     */
+    static void recordPartitionCoverage(UnifiedCrawlJob job, EntityPartitionCrawlStep.Outcome outcome) {
+        if (job == null || outcome == null) {
+            return;
+        }
+        job.setPartitionCoverageDetail(outcome.status() == EntityPartitionCrawlStep.Status.RAN
+                ? outcome.detail()
+                // FAILED's detail is the run summary, which never says it failed; the status has to
+                // travel with it or "0 partition(s) | failed: ..." reads like a quiet no-op.
+                : outcome.status() + (outcome.detail() == null ? "" : " — " + outcome.detail()));
+        EntityPartitionCrawlService.StagedRunAllResult result = outcome.result();
+        if (result == null) {
+            // Nothing ran: skipped, nothing to partition, or it fell over before the first
+            // subject. There is no coverage to claim and no subject to blame — the detail says so.
+            return;
+        }
+        job.getPartitionsCovered().set(result.runs().size());
+        job.getPartitionsUncovered().set(result.failed().size());
+        List<String> named = result.failed().size() <= MAX_NAMED_UNCOVERED_SUBJECTS
+                ? result.failed()
+                : result.failed().subList(0, MAX_NAMED_UNCOVERED_SUBJECTS);
+        job.getUncoveredPartitionSubjects().clear();
+        job.getUncoveredPartitionSubjects().addAll(named);
+        if (!result.failed().isEmpty()) {
+            log.warn("[Job {}] Entity partitions: {} subject(s) have no coverage claim: {}",
+                    job.getJobId(), result.failed().size(), String.join(", ", named));
+        }
+    }
+
     /**
      * Pipeline step ids whose failure DEGRADES the crawl (COMPLETED-with-warning) rather than failing
      * the whole job — post-graph enhancements computed over an already-persisted graph (KGE/LEARNING
@@ -3434,6 +3510,11 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
             int done = Math.max(job.getChunksEmbedded().get(), job.getDocumentsIndexed().get());
             return total > 0 ? 85 + (int) Math.min(14, (done * 14L) / total) : 85;
         }
+        // Flat, and deliberately the same floor as ENRICHMENT: the partition pass runs immediately
+        // before enrichment, so sharing the floor is what keeps the reported percentage from moving
+        // backwards when enrichment takes over. Per-group detail is carried by the step tracker's
+        // completed/total counters, which is what the step monitor renders.
+        if (phase.equals(EntityPartitionCrawlStep.STEP_ID)) return 83;
         if (phase.equals("ENRICHMENT")) {
             UnifiedCrawlJob.PipelineStepProgress step = ensurePipelineStep(job, phase);
             int total = step.getTotalItems().get();

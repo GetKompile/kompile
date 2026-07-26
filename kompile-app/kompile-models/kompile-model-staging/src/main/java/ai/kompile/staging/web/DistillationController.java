@@ -40,7 +40,6 @@ import java.util.Map;
 @ConditionalOnProperty(name = "kompile.staging.app.enabled", havingValue = "true")
 @RestController
 @RequestMapping("/api/distillation")
-@CrossOrigin(origins = "*")
 public class DistillationController {
 
     private static final Logger log = LoggerFactory.getLogger(DistillationController.class);

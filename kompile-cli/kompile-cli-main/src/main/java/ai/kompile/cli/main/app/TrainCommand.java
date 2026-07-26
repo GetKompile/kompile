@@ -615,7 +615,7 @@ public class TrainCommand implements Callable<Integer> {
     }
 
     static int streamLogs(KompileHttpClient client, String jobId) {
-        String url = client.getBaseUrl() + "/api/training/jobs/" + jobId + "/stream";
+        String url = client.urlFor("/api/training/jobs/" + jobId + "/stream");
         System.out.printf("Streaming logs for job %s (Ctrl+C to stop)...%n%n", jobId);
 
         try {

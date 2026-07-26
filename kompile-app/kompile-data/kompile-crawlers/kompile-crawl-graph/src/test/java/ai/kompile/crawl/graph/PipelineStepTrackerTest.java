@@ -22,9 +22,13 @@ import ai.kompile.core.crawl.graph.UnifiedCrawlJob.PipelineStepStatus;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.Set;
+import java.util.stream.Collectors;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Pure unit tests for {@link PipelineStepTracker} — no Spring context.
@@ -34,7 +38,13 @@ import static org.junit.jupiter.api.Assertions.assertNull;
  */
 class PipelineStepTrackerTest {
 
-    private static final int ALL_STEPS_COUNT = 14; // 13 registry steps + LEARNING
+    /**
+     * Every step the registry knows, plus LEARNING — which the tracker initializes but the
+     * registry does not carry, because it is not independently selectable. Derived rather than
+     * hardcoded: a new pipeline phase must show up here by construction, not by remembering to
+     * bump a number.
+     */
+    private static final int ALL_STEPS_COUNT = CrawlPipelineStepRegistry.all().size() + 1;
 
     private PipelineStepTracker tracker;
 
@@ -59,12 +69,22 @@ class PipelineStepTrackerTest {
     // -----------------------------------------------------------------------
 
     @Test
-    void initializePipelineSteps_createsAll14Steps() {
+    void initializePipelineSteps_createsEveryRegistryStep() {
         UnifiedCrawlJob job = newJob();
         tracker.initializePipelineSteps(job);
 
         assertEquals(ALL_STEPS_COUNT, job.getPipelineSteps().size(),
                 "Expected " + ALL_STEPS_COUNT + " steps after initialization");
+
+        // A step the registry offers but the tracker never initializes is invisible in the UI and
+        // reports no status, so the two lists have to agree on names, not just on a count.
+        Set<String> initialized = job.getPipelineSteps().stream()
+                .map(PipelineStepProgress::getStepId)
+                .collect(Collectors.toSet());
+        for (CrawlPipelineStepRegistry.StepDescriptor descriptor : CrawlPipelineStepRegistry.all()) {
+            assertTrue(initialized.contains(descriptor.id()),
+                    "Registry step never initialized on the job: " + descriptor.id());
+        }
     }
 
     @Test

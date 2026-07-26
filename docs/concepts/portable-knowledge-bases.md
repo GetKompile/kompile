@@ -16,8 +16,16 @@ visible in one place.
    external bindings in the maintenance UI.
 5. **Import** verifies every payload size and SHA-256, extracts into a new sibling directory, and
    publishes only after the complete archive passes.
-6. **Open explicitly** activates the imported project. Import never starts source schedulers,
-   provider calls, crawls, or graph mutation by itself.
+6. **Inspect restoration** shows the staged project's fact sheets, source bindings, external paths,
+   models, graph, and rebuildable catalogs without reading them into the active runtime.
+7. **Restart explicitly** activates the imported project using
+   `kompile.project.root=<staged-project-path>`. Import never hot-switches the active root or starts
+   source schedulers, provider calls, crawls, or graph mutation.
+8. **Restore safely** first previews, then idempotently creates missing fact sheets and source
+   connection records. Recreated sources are disabled, contain no credentials, and have remote
+   synchronization and automatic commits turned off.
+9. **Bind, test, enable** is performed per source. Credentialed sources cannot be enabled, pulled,
+   or scheduled until **Test Auth** succeeds.
 
 An import target is never merged with or written over an existing directory.
 
@@ -32,7 +40,36 @@ An import target is never merged with or written over an existing directory.
 | Crawl/upload | Crawl profiles, result metadata, project-local source documents | Files under project source/document directories | Remote URLs or external files not copied into the project |
 
 Encrypted tokens, API keys, cookies, SSH keys, and provider credentials are never written into the
-portable catalog. The catalog records a credential-binding name instead.
+portable catalog. The catalog records a credential-binding name and stable binding ID instead.
+Repository URLs are stripped of user-info, queries, and fragments before runtime persistence,
+responses, or catalog export. Provider tokens are accepted only when credential encryption is
+available; Kompile fails closed instead of storing plaintext. Global sync-configuration APIs
+likewise report only whether a webhook secret is configured, preserve it when an update omits the
+write-only field, and never echo the secret.
+Detailed provider error messages and auth-check timestamps are also omitted because they can carry
+machine-local paths or upstream request details; only coarse source status is portable.
+
+## Restoration checklist
+
+The Source Maintenance screen reports each entry as preserved, rebuildable, staged, missing,
+unbound, unverified, disabled, invalid, or ready. A normal imported-source sequence is:
+
+1. inspect the staged project's checklist;
+2. restart with the staged project root;
+3. run **Preview Restore**;
+4. run **Restore Missing Catalogs**;
+5. bind a machine-local token or external path;
+6. run **Test Auth**;
+7. enable the source, then use **Pull Updates** or **Auto Sync**.
+
+Fact sheets are matched by name. Source connections are matched by fact-sheet name, provider, and
+external scope, so repeating restoration does not duplicate runtime records. Chat and indexed
+document catalogs remain provenance summaries; indexes are rebuilt from the preserved corpus.
+Models and external directories remain explicit checklist items.
+
+Portability maintenance jobs are journaled under `.kompile/cache/portability/`, which is excluded
+from archives. Completed downloads and job history survive an application restart. A queued or
+running job found after restart is recorded as `INTERRUPTED` rather than silently disappearing.
 
 ## Manifest v2
 
@@ -58,7 +95,8 @@ reports the following boundaries instead of hiding them:
 - paths that point outside the project still require the external location;
 - missing indexes or graphs are listed as rebuildable assets;
 - external model and code repositories must be made available separately;
-- the imported directory must be opened explicitly before runtime rehydration.
+- the imported directory must become the configured root after a restart before runtime
+  rehydration.
 
 This boundary prevents an uploaded archive from triggering network calls or mutating a populated
 runtime while leaving enough metadata for the UI and future migration tooling to guide restoration.

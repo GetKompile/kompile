@@ -39,7 +39,6 @@ import java.util.Map;
 @ConditionalOnProperty(name = "kompile.staging.app.enabled", havingValue = "true")
 @RestController
 @RequestMapping("/api/evaluation")
-@CrossOrigin(origins = "*")
 public class EvaluationController {
 
     private static final Logger log = LoggerFactory.getLogger(EvaluationController.class);

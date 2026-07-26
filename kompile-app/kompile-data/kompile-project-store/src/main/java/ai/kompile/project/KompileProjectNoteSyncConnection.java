@@ -32,6 +32,8 @@ import lombok.NoArgsConstructor;
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class KompileProjectNoteSyncConnection {
     private Long id;
+    /** Stable, machine-independent identifier used to bind credentials after import. */
+    private String bindingId;
     private String provider;
     private String factSheetName;
     private String externalScope;

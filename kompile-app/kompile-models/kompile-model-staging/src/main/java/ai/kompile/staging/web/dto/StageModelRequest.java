@@ -17,6 +17,8 @@
 package ai.kompile.staging.web.dto;
 
 import ai.kompile.modelmanager.registry.AudioSynthesisConfig;
+import ai.kompile.staging.download.TextModelAssetMap;
+import ai.kompile.staging.download.TextModelAssetUrlMap;
 import com.fasterxml.jackson.annotation.JsonAlias;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -45,7 +47,11 @@ public class StageModelRequest {
     private String authToken;
     private String tokenizerUrl;
     private AudioSynthesisConfig audioSynthesis;
+    /** @deprecated Use {@link #textAssets}; retained for API compatibility. */
+    @Deprecated
     private Map<String, String> files;
+    private TextModelAssetMap textAssets;
+    private TextModelAssetUrlMap textAssetUrls;
     @Builder.Default
     private String outputFormat = "model";
     private String targetProfile;

@@ -1,0 +1,265 @@
+{
+  "id": "fpna-cpg-channel-v1",
+  "name": "FP&A — CPG Channel Mix",
+  "description": "Financial Planning & Analysis schema for CPG companies with multi-channel sales, regional forecasting, and close-cycle automation.",
+  "version": 1,
+  "nodeTypes": [
+    {
+      "label": "CHANNEL_TAXONOMY",
+      "description": "Canonical sales channel definition with alias mappings and GM bands (e.g., DTC, Amazon, Wholesale).",
+      "properties": [
+        {"name": "classification", "type": "String"},
+        {"name": "canonical_name", "type": "String"},
+        {"name": "aliases", "type": "String"},
+        {"name": "gm_band_low", "type": "String"},
+        {"name": "gm_band_high", "type": "String"}
+      ]
+    },
+    {
+      "label": "SKU_MASTER",
+      "description": "Product SKU reference data with pricing, cost, margin targets, and lifecycle status.",
+      "properties": [
+        {"name": "classification", "type": "String"},
+        {"name": "sku_id", "type": "String"},
+        {"name": "canonical_name", "type": "String"},
+        {"name": "lifecycle_status", "type": "String"},
+        {"name": "base_price_usd", "type": "String"},
+        {"name": "std_cost_usd", "type": "String"}
+      ]
+    },
+    {
+      "label": "CURRENCY_REGISTRY",
+      "description": "Active currencies with magnitude conventions and FX source priority.",
+      "properties": [
+        {"name": "classification", "type": "String"},
+        {"name": "currency_code", "type": "String"},
+        {"name": "fx_source_priority", "type": "String"}
+      ]
+    },
+    {
+      "label": "CHART_OF_ACCOUNTS",
+      "description": "P&L line items and GL account mappings.",
+      "properties": [
+        {"name": "classification", "type": "String"},
+        {"name": "account_code", "type": "String"},
+        {"name": "account_name", "type": "String"},
+        {"name": "gl_mapping", "type": "String"}
+      ]
+    },
+    {
+      "label": "FX_FORWARD_CURVE",
+      "description": "Forward exchange rate data for M+1/M+2/M+3 horizons across currency pairs.",
+      "properties": [
+        {"name": "classification", "type": "String"},
+        {"name": "currency_pair", "type": "String"},
+        {"name": "horizon", "type": "String"},
+        {"name": "rate", "type": "String"}
+      ]
+    },
+    {
+      "label": "REGIONAL_FORECAST",
+      "description": "Regional sales forecast workbook submission (AMER, EMEA, APAC) with units, ASP, and revenue by SKU/channel.",
+      "properties": [
+        {"name": "classification", "type": "String"},
+        {"name": "region", "type": "String"},
+        {"name": "forecast_cycle", "type": "String"},
+        {"name": "submitted_by", "type": "String"},
+        {"name": "submission_date", "type": "String"}
+      ]
+    },
+    {
+      "label": "FORECAST_ADJUSTMENT",
+      "description": "Post-submission adjustment to a forecast line item with audit trail.",
+      "properties": [
+        {"name": "classification", "type": "String"},
+        {"name": "sku", "type": "String"},
+        {"name": "channel", "type": "String"},
+        {"name": "field", "type": "String"},
+        {"name": "before_value", "type": "String"},
+        {"name": "after_value", "type": "String"},
+        {"name": "reason", "type": "String"}
+      ]
+    },
+    {
+      "label": "BANK_TRANSACTION",
+      "description": "Individual bank account transaction with GL account classification.",
+      "properties": [
+        {"name": "classification", "type": "String"},
+        {"name": "date", "type": "String"},
+        {"name": "contact", "type": "String"},
+        {"name": "amount", "type": "String"},
+        {"name": "gl_account", "type": "String"}
+      ]
+    },
+    {
+      "label": "VARIANCE_TRIAGE",
+      "description": "Detected variance pattern type (miscoded SKU, channel mismatch, currency tag, calendar shift) with auto-fix policy.",
+      "properties": [
+        {"name": "classification", "type": "String"},
+        {"name": "pattern_name", "type": "String"},
+        {"name": "action", "type": "String"},
+        {"name": "escalation_rule", "type": "String"}
+      ]
+    },
+    {
+      "label": "DATA_QUALITY_FLAG",
+      "description": "Data quality signal detected in a source document (FAIL, REVIEW, WARN, etc.).",
+      "properties": [
+        {"name": "classification", "type": "String"},
+        {"name": "flag_type", "type": "String"},
+        {"name": "cell_reference", "type": "String"},
+        {"name": "context", "type": "String"}
+      ]
+    },
+    {
+      "label": "CONTROL_ASSERTION",
+      "description": "Validation control with severity (hard/soft), owner, and threshold.",
+      "properties": [
+        {"name": "classification", "type": "String"},
+        {"name": "control_id", "type": "String"},
+        {"name": "control_name", "type": "String"},
+        {"name": "control_type", "type": "String"},
+        {"name": "severity", "type": "String"},
+        {"name": "owner", "type": "String"}
+      ]
+    },
+    {
+      "label": "CLOSE_STEP",
+      "description": "A step in the monthly close process with phase, timing, inputs/outputs, and automation status.",
+      "properties": [
+        {"name": "classification", "type": "String"},
+        {"name": "step_id", "type": "String"},
+        {"name": "phase", "type": "String"},
+        {"name": "business_day", "type": "String"},
+        {"name": "automation_status", "type": "String"}
+      ]
+    },
+    {
+      "label": "PIPELINE_COVERAGE",
+      "description": "Pipeline coverage ratio metric (active pipeline / forecast) with target bands.",
+      "properties": [
+        {"name": "classification", "type": "String"},
+        {"name": "coverage_ratio", "type": "String"},
+        {"name": "target_band_low", "type": "String"},
+        {"name": "target_band_high", "type": "String"}
+      ]
+    },
+    {
+      "label": "CASH_CONVERSION_CYCLE",
+      "description": "Cash conversion cycle metric (DSO + DIO - DPO) with trend data.",
+      "properties": [
+        {"name": "classification", "type": "String"},
+        {"name": "dso", "type": "String"},
+        {"name": "dio", "type": "String"},
+        {"name": "dpo", "type": "String"},
+        {"name": "total_days", "type": "String"}
+      ]
+    },
+    {
+      "label": "FREE_CASH_FLOW_MARGIN",
+      "description": "Free cash flow margin metric (FCF / revenue).",
+      "properties": [
+        {"name": "classification", "type": "String"},
+        {"name": "fcf", "type": "String"},
+        {"name": "revenue", "type": "String"},
+        {"name": "margin_pct", "type": "String"}
+      ]
+    },
+    {
+      "label": "ROIC_DECOMPOSITION",
+      "description": "Return on invested capital DuPont decomposition (margin x turnover x leverage).",
+      "properties": [
+        {"name": "classification", "type": "String"},
+        {"name": "margin", "type": "String"},
+        {"name": "turnover", "type": "String"},
+        {"name": "leverage", "type": "String"}
+      ]
+    },
+    {
+      "label": "APPROVAL_ROLE",
+      "description": "Canonical approval role in the authority matrix (VP FP&A, CFO, Controller, etc.).",
+      "properties": [
+        {"name": "classification", "type": "String"},
+        {"name": "role_name", "type": "String"},
+        {"name": "authority_level", "type": "String"}
+      ]
+    },
+    {
+      "label": "PERSON",
+      "description": "Named individual with role, email, and organizational context.",
+      "properties": [
+        {"name": "classification", "type": "String"},
+        {"name": "full_name", "type": "String"},
+        {"name": "email", "type": "String"},
+        {"name": "role", "type": "String"},
+        {"name": "department", "type": "String"}
+      ]
+    },
+    {
+      "label": "TABLE",
+      "description": "Structured table extracted from a document or spreadsheet.",
+      "properties": [
+        {"name": "row_count", "type": "Integer"},
+        {"name": "column_count", "type": "Integer"},
+        {"name": "headers", "type": "String"},
+        {"name": "extraction_method", "type": "String"}
+      ]
+    },
+    {
+      "label": "SPREADSHEET",
+      "description": "An Excel workbook or Google Sheets document containing one or more table sheets.",
+      "properties": [
+        {"name": "sheet_count", "type": "Integer"},
+        {"name": "formula_count", "type": "Integer"}
+      ]
+    },
+    {
+      "label": "EMAIL_MESSAGE",
+      "description": "An email message with sender, recipients, subject, and attachment references.",
+      "properties": [
+        {"name": "subject", "type": "String"},
+        {"name": "from", "type": "String"},
+        {"name": "to", "type": "String"},
+        {"name": "date", "type": "String"}
+      ]
+    }
+  ],
+  "relationshipTypes": [
+    {"type": "CONTAINS", "description": "Parent contains child (source→document, document→table, spreadsheet→sheet).", "properties": []},
+    {"type": "PART_OF", "description": "Inverse of CONTAINS — child is part of parent.", "properties": []},
+    {"type": "VALIDATES", "description": "A control or process step validates data in another entity.", "properties": [{"name": "control_id", "type": "String"}]},
+    {"type": "SOURCE_OF", "description": "Document is the original source of derived data.", "properties": []},
+    {"type": "ATTACHMENT_OF", "description": "Document is attached to an email or message.", "properties": [{"name": "attachment_filename", "type": "String"}]},
+    {"type": "VERSION_OF", "description": "Later version of another document.", "properties": [{"name": "version_label", "type": "String"}]},
+    {"type": "APPROVED_BY", "description": "An action or document is approved by a person/role.", "properties": [{"name": "approval_type", "type": "String"}]},
+    {"type": "SUBMITTED_BY", "description": "A forecast or document was submitted by a person.", "properties": [{"name": "submission_date", "type": "String"}]},
+    {"type": "FEEDS_INTO", "description": "One entity provides input data to another (e.g., forecast feeds into P&L projection).", "properties": []},
+    {"type": "DERIVES_FROM", "description": "One entity is computed from another (e.g., ROIC derives from margin + turnover).", "properties": []},
+    {"type": "REFERENCES_TAXONOMY", "description": "A transactional entity references a taxonomy entity for classification.", "properties": []},
+    {"type": "APPLIES_ADJUSTMENT", "description": "A forecast adjustment modifies a forecast line item.", "properties": [{"name": "field", "type": "String"}]},
+    {"type": "SENT_BY", "description": "Email was sent by a person.", "properties": []},
+    {"type": "SENT_TO", "description": "Email was sent to a person.", "properties": []},
+    {"type": "HAS_ATTACHMENT", "description": "Email has a file attachment.", "properties": []},
+    {"type": "ESCALATED_TO", "description": "A variance or flag is escalated to a person/role.", "properties": []},
+    {"type": "TRIGGERS", "description": "One entity triggers evaluation of another (e.g., DQ flag triggers control assertion).", "properties": []}
+  ],
+  "patterns": [
+    "(PERSON)-[:APPROVED_BY]->(CLOSE_STEP)",
+    "(PERSON)-[:SUBMITTED_BY]->(REGIONAL_FORECAST)",
+    "(REGIONAL_FORECAST)-[:REFERENCES_TAXONOMY]->(CHANNEL_TAXONOMY)",
+    "(REGIONAL_FORECAST)-[:REFERENCES_TAXONOMY]->(SKU_MASTER)",
+    "(CONTROL_ASSERTION)-[:VALIDATES]->(REGIONAL_FORECAST)",
+    "(DATA_QUALITY_FLAG)-[:TRIGGERS]->(CONTROL_ASSERTION)",
+    "(VARIANCE_TRIAGE)-[:ESCALATED_TO]->(APPROVAL_ROLE)",
+    "(FORECAST_ADJUSTMENT)-[:APPLIES_ADJUSTMENT]->(REGIONAL_FORECAST)",
+    "(EMAIL_MESSAGE)-[:SENT_BY]->(PERSON)",
+    "(EMAIL_MESSAGE)-[:SENT_TO]->(PERSON)",
+    "(EMAIL_MESSAGE)-[:HAS_ATTACHMENT]->(SPREADSHEET)",
+    "(SPREADSHEET)-[:CONTAINS]->(TABLE)",
+    "(CHART_OF_ACCOUNTS)-[:FEEDS_INTO]->(CASH_CONVERSION_CYCLE)",
+    "(CHART_OF_ACCOUNTS)-[:FEEDS_INTO]->(ROIC_DECOMPOSITION)",
+    "(CHART_OF_ACCOUNTS)-[:FEEDS_INTO]->(FREE_CASH_FLOW_MARGIN)",
+    "(FX_FORWARD_CURVE)-[:FEEDS_INTO]->(CURRENCY_REGISTRY)",
+    "(PIPELINE_COVERAGE)-[:VALIDATES]->(REGIONAL_FORECAST)"
+  ]
+}

@@ -16,29 +16,12 @@
 
 package ai.kompile.app.config;
 
+import ai.kompile.app.services.mcp.McpToolBeanDiscovery;
 import ai.kompile.app.services.mcp.optimization.CompressingToolCallbackProvider;
 import ai.kompile.app.services.mcp.optimization.ToolResponseCompressorRegistry;
-import ai.kompile.app.tools.*;
 import ai.kompile.core.mcp.optimization.McpOptimizationConfig;
 import ai.kompile.core.mcp.optimization.McpOptimizationConfig.MetaToolMode;
 import ai.kompile.core.mcp.optimization.McpOptimizationConfigProvider;
-import ai.kompile.knowledgegraph.tool.KnowledgeGraphToolImpl;
-import ai.kompile.process.discovery.ProcessDiscoveryTool;
-import ai.kompile.process.discovery.ProcessMiningTool;
-import ai.kompile.process.tool.ProcessEngineTool;
-import ai.kompile.tool.filesystem.FilesystemToolImpl;
-import ai.kompile.tool.graph.GraphAlgorithmsTool;
-import ai.kompile.tool.graph.GraphCommunityTool;
-import ai.kompile.tool.graph.GraphHybridReasoningTool;
-import ai.kompile.tool.graph.GraphLabelTool;
-import ai.kompile.tool.graph.GraphMutationTool;
-import ai.kompile.tool.graph.GraphReasoningQueryTool;
-import ai.kompile.tool.graph.GraphSearchTool;
-import ai.kompile.tool.graph.GraphTraversalTool;
-import ai.kompile.tool.graphlocalization.GraphLocalizationToolImpl;
-import ai.kompile.tool.knowledge.UnifiedKnowledgeTool;
-import ai.kompile.tool.rag.RagToolImpl;
-import ai.kompile.tool.tablesearch.TableSearchToolImpl;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -47,11 +30,11 @@ import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.method.MethodToolCallbackProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 import java.lang.reflect.Method;
-import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -80,113 +63,18 @@ public class McpSseServerConfiguration {
 
     private static final Logger logger = LoggerFactory.getLogger(McpSseServerConfiguration.class);
 
-    // Core tools from kompile-tool modules
+    /**
+     * Tool beans are discovered from the context by annotation, not injected one field per tool.
+     * See {@link McpToolBeanDiscovery}.
+     */
     @Autowired(required = false)
-    private RagToolImpl ragTool;
-
-    @Autowired(required = false)
-    private FilesystemToolImpl filesystemTool;
-
-    @Autowired(required = false)
-    private TableSearchToolImpl tableSearchTool;
-
-    // Application tools from kompile-app-main
-    @Autowired(required = false)
-    private ModelDebugTool modelDebugTool;
-
-    @Autowired(required = false)
-    private ChatSessionTool chatSessionTool;
-
-    @Autowired(required = false)
-    private ActionLogTool actionLogTool;
-
-    @Autowired(required = false)
-    private ApplicationConfigTool applicationConfigTool;
-
-    @Autowired(required = false)
-    private IndexOperationsTool indexOperationsTool;
-
-    @Autowired(required = false)
-    private DocumentManagementTool documentManagementTool;
-
-    @Autowired(required = false)
-    private SystemDiagnosticsTool systemDiagnosticsTool;
-
-    @Autowired(required = false)
-    private ModelManagementTool modelManagementTool;
-
-    @Autowired(required = false)
-    private AgentDelegationTool agentDelegationTool;
-
-    @Autowired(required = false)
-    private AgentTaskTool agentTaskTool;
-
-    @Autowired(required = false)
-    private DiffTrackerTool diffTrackerTool;
-
-    @Autowired(required = false)
-    private DiffIndexTool diffIndexTool;
-
-    // Graph & KB grounding tools — the graph surface chat-spawned agents rely on
-    @Autowired(required = false)
-    private KbVerifyExplainTool kbVerifyExplainTool;
-
-    @Autowired(required = false)
-    private KbGroundingTool kbGroundingTool;
-
-    @Autowired(required = false)
-    private KnowledgeGraphToolImpl knowledgeGraphTool;
-
-    @Autowired(required = false)
-    private UnifiedKnowledgeTool unifiedKnowledgeTool;
-
-    @Autowired(required = false)
-    private GraphSearchTool graphSearchTool;
-
-    @Autowired(required = false)
-    private GraphMutationTool graphMutationTool;
-
-    @Autowired(required = false)
-    private GraphTraversalTool graphTraversalTool;
-
-    @Autowired(required = false)
-    private GraphCommunityTool graphCommunityTool;
-
-    @Autowired(required = false)
-    private GraphAlgorithmsTool graphAlgorithmsTool;
-
-    @Autowired(required = false)
-    private GraphLabelTool graphLabelTool;
-
-    @Autowired(required = false)
-    private GraphHybridReasoningTool graphHybridReasoningTool;
-
-    @Autowired(required = false)
-    private GraphReasoningQueryTool graphReasoningQueryTool;
-
-    @Autowired(required = false)
-    private GraphLocalizationToolImpl graphLocalizationTool;
-
-    @Autowired(required = false)
-    private ProcessDiscoveryTool processDiscoveryTool;
-
-    @Autowired(required = false)
-    private ProcessMiningTool processMiningTool;
-
-    @Autowired(required = false)
-    private ProcessEngineTool processEngineTool;
+    private ApplicationContext applicationContext;
 
     @Autowired(required = false)
     private ToolResponseCompressorRegistry compressorRegistry;
 
     @Autowired
     private ObjectMapper objectMapper;
-
-    @Autowired(required = false)
-    private DynamicToolsetsMetaTool dynamicToolsetsMetaTool;
-
-    @Autowired(required = false)
-    private ResultFetchTool resultFetchTool;
 
     @Autowired(required = false)
     private McpOptimizationConfigProvider optimizationConfigProvider;
@@ -199,57 +87,20 @@ public class McpSseServerConfiguration {
      * <p>When {@link ToolResponseCompressorRegistry} is available the provider
      * is wrapped in {@link CompressingToolCallbackProvider} so every tool result
      * goes through the configured compressor chain before reaching the client.
+     *
+     * <p>Tool objects come from {@link McpToolBeanDiscovery} rather than a hand-written list of
+     * {@code addToolIfAvailable} calls. The old list had drifted to roughly half of what the stdio
+     * registry exposed, so an SSE client saw a smaller tool surface than a stdio client against the
+     * same server — a difference nothing declared or tested. Discovery makes the two paths agree by
+     * construction, and drops the compile-time edge to each tool class that kept the whole surface
+     * pinned to this module.
      */
     @Bean
     public ToolCallbackProvider kompileToolCallbackProvider() {
       try {
-        List<Object> toolObjects = new ArrayList<>();
-
-        // Add core tools from kompile-tool modules
-        addToolIfAvailable(toolObjects, ragTool, "RAG");
-        addToolIfAvailable(toolObjects, filesystemTool, "Filesystem");
-        addToolIfAvailable(toolObjects, tableSearchTool, "Table Search");
-
-        // Add application tools from kompile-app-main
-        addToolIfAvailable(toolObjects, modelDebugTool, "Model Debug");
-        addToolIfAvailable(toolObjects, chatSessionTool, "Chat Session");
-        addToolIfAvailable(toolObjects, actionLogTool, "Action Log");
-        addToolIfAvailable(toolObjects, applicationConfigTool, "Application Config");
-        addToolIfAvailable(toolObjects, indexOperationsTool, "Index Operations");
-        addToolIfAvailable(toolObjects, documentManagementTool, "Document Management");
-        addToolIfAvailable(toolObjects, systemDiagnosticsTool, "System Diagnostics");
-        addToolIfAvailable(toolObjects, modelManagementTool, "Model Management");
-        addToolIfAvailable(toolObjects, agentDelegationTool, "Agent Delegation");
-        addToolIfAvailable(toolObjects, agentTaskTool, "Agent Task");
-        addToolIfAvailable(toolObjects, diffTrackerTool, "Diff Tracker");
-        addToolIfAvailable(toolObjects, diffIndexTool, "Diff Index");
-
-        // Graph & KB grounding tools — kb_verify_explain, kb_query/kb_assert, knowledge-graph
-        // search and graph mutation/community/algorithm tools, so chat-spawned agents get the
-        // graph surface alongside RAG.
-        addToolIfAvailable(toolObjects, kbVerifyExplainTool, "KB Verify/Explain");
-        addToolIfAvailable(toolObjects, kbGroundingTool, "KB Grounding");
-        addToolIfAvailable(toolObjects, knowledgeGraphTool, "Knowledge Graph");
-        addToolIfAvailable(toolObjects, unifiedKnowledgeTool, "Unified Knowledge");
-        addToolIfAvailable(toolObjects, graphSearchTool, "Graph Search");
-        addToolIfAvailable(toolObjects, graphMutationTool, "Graph Mutation");
-        addToolIfAvailable(toolObjects, graphTraversalTool, "Graph Traversal");
-        addToolIfAvailable(toolObjects, graphCommunityTool, "Graph Community");
-        addToolIfAvailable(toolObjects, graphAlgorithmsTool, "Graph Algorithms");
-        addToolIfAvailable(toolObjects, graphLabelTool, "Graph Label");
-        addToolIfAvailable(toolObjects, graphHybridReasoningTool, "Graph Hybrid Reasoning");
-        addToolIfAvailable(toolObjects, graphReasoningQueryTool, "Graph Reasoning Query");
-        addToolIfAvailable(toolObjects, graphLocalizationTool, "Graph Localization");
-
-        // Process tools — process mining, workflow discovery, and engine operations
-        addToolIfAvailable(toolObjects, processDiscoveryTool, "Process Discovery");
-        addToolIfAvailable(toolObjects, processMiningTool, "Process Mining");
-        addToolIfAvailable(toolObjects, processEngineTool, "Process Engine");
-
-        // Meta-tools are always registered; the mode filter below decides which
+        // Meta-tools are discovered along with everything else; the mode filter below decides which
         // tool *names* the MCP client actually sees.
-        addToolIfAvailable(toolObjects, dynamicToolsetsMetaTool, "Dynamic Toolsets");
-        addToolIfAvailable(toolObjects, resultFetchTool, "Result Fetch");
+        List<Object> toolObjects = McpToolBeanDiscovery.discoverToolBeans(applicationContext);
 
         logger.info("Created MCP SSE tool callback provider with {} tool objects", toolObjects.size());
 
@@ -350,11 +201,4 @@ public class McpSseServerConfiguration {
 
     // Note: SpringMvcSseServerTransport is now created in McpServerConfig.java
     // to avoid bean definition conflicts and provide proper MCP server integration.
-
-    private void addToolIfAvailable(List<Object> toolObjects, Object tool, String toolName) {
-        if (tool != null) {
-            toolObjects.add(tool);
-            logger.info("Registered {} tool for MCP SSE server", toolName);
-        }
-    }
 }

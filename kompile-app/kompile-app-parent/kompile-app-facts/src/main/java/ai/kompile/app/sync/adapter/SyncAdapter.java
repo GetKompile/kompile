@@ -23,6 +23,7 @@ import ai.kompile.app.sync.dto.SyncConnectionTestResponse;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * Provider-specific adapter for bilateral note sync.
@@ -37,6 +38,14 @@ public interface SyncAdapter {
      * Fetch all externally-changed items since a given timestamp.
      */
     List<ExternalNoteSnapshot> fetchChangedSince(NoteSyncConnection conn, Instant since);
+
+    /**
+     * Return a complete snapshot of IDs currently present in this connection's scope.
+     * Empty means the provider cannot enumerate safely, so deletion reconciliation is skipped.
+     */
+    default Optional<Set<String>> listExternalIds(NoteSyncConnection conn) {
+        return Optional.empty();
+    }
 
     /**
      * Fetch a single external item by its externalId. Returns empty if deleted.

@@ -1,0 +1,28 @@
+/*
+ * Build-time TypeScript config for the chat app.
+ *
+ * `include` names only this project's own sources. Shared code is pulled in transitively through
+ * the @shared/* path alias declared in the workspace tsconfig, so anything the app does not
+ * actually import never enters the program — that is what keeps admin-only shared components out
+ * of this bundle. The one exception is the shared ambient declaration (mermaid.d.ts): ambient
+ * .d.ts files are not reached by imports and must be listed explicitly.
+ */
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "outDir": "../../out-tsc/chat-app",
+    "types": []
+  },
+  "files": [
+    "src/main.ts",
+    "../kompile-ui-shared/src/polyfills.ts"
+  ],
+  "include": [
+    "src/**/*.d.ts",
+    "src/app/**/*.ts",
+    "../kompile-ui-shared/src/**/*.d.ts"
+  ],
+  "exclude": [
+    "src/**/*.spec.ts"
+  ]
+}

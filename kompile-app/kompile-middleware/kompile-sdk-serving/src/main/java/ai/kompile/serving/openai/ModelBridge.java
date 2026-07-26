@@ -61,57 +61,46 @@ public class ModelBridge {
     }
 
     /**
-     * Creates a SamplingConfig from the OpenAI request parameters.
-     * The SamplingConfig is set at TextGenerator build time via config(),
-     * so per-request parameters are applied through maxNewTokens on the generate call.
+     * Creates a per-request SamplingConfig while retaining tokenizer-specific and
+     * pipeline-level defaults that the OpenAI request does not override.
      */
-    public SamplingConfig buildSamplingConfig(ChatCompletionRequest request, SamplingConfig defaults) {
-        SamplingConfig.SamplingConfigBuilder builder = SamplingConfig.builder();
+    public SamplingConfig buildSamplingConfig(
+            ChatCompletionRequest request,
+            SamplingConfig defaults) {
+        SamplingConfig base = defaults != null ? defaults : SamplingConfig.defaultConfig();
+        double temperature = request.getTemperature() != null
+                ? request.getTemperature() : base.getTemperature();
+        boolean doSample = request.getTemperature() != null
+                ? temperature > 0.0
+                : base.isDoSample() && temperature > 0.0;
 
-        double temp = request.getTemperature() != null ? request.getTemperature() : defaults.getTemperature();
-        builder.temperature(temp);
-        builder.doSample(temp > 0);
-
-        if (request.getTopP() != null) {
-            builder.topP(request.getTopP());
-        } else {
-            builder.topP(defaults.getTopP());
-        }
-
-        builder.topK(defaults.getTopK());
-
-        if (request.getMaxTokens() != null) {
-            builder.maxNewTokens(request.getMaxTokens());
-        } else {
-            builder.maxNewTokens(defaults.getMaxNewTokens());
-        }
-
-        if (request.getSeed() != null) {
-            builder.seed(request.getSeed());
-        }
-
-        builder.eosTokenId(defaults.getEosTokenId());
-        builder.padTokenId(defaults.getPadTokenId());
-
-        if (request.getFrequencyPenalty() != null && request.getFrequencyPenalty() > 0) {
-            builder.repetitionPenalty(1.0 + request.getFrequencyPenalty());
-        } else {
-            builder.repetitionPenalty(defaults.getRepetitionPenalty());
-        }
-
-        return builder.build();
+        return base.toBuilder()
+                .temperature(temperature)
+                .doSample(doSample)
+                .topP(request.getTopP() != null ? request.getTopP() : base.getTopP())
+                .maxNewTokens(request.getMaxTokens() != null
+                        ? request.getMaxTokens() : base.getMaxNewTokens())
+                .seed(request.getSeed() != null ? request.getSeed() : base.getSeed())
+                .frequencyPenalty(request.getFrequencyPenalty() != null
+                        ? request.getFrequencyPenalty() : base.getFrequencyPenalty())
+                .presencePenalty(request.getPresencePenalty() != null
+                        ? request.getPresencePenalty() : base.getPresencePenalty())
+                .build();
     }
 
     /**
      * Performs non-streaming generation and returns an OpenAI-compatible response.
      */
-    public ChatCompletionResponse generate(ChatCompletionRequest request, SamplingConfig defaults) {
+    public synchronized ChatCompletionResponse generate(
+            ChatCompletionRequest request,
+            SamplingConfig defaults) {
         String prompt = buildPrompt(request.getMessages());
         int maxTokens = request.getMaxTokens() != null ? request.getMaxTokens() : defaults.getMaxNewTokens();
 
         log.debug("Generating with prompt length={}, maxTokens={}", prompt.length(), maxTokens);
 
-        GenerationResult result = pipeline.generate(prompt, maxTokens);
+        SamplingConfig requestSampling = buildSamplingConfig(request, defaults);
+        GenerationResult result = pipeline.generate(prompt, maxTokens, requestSampling);
 
         return toResponse(result, request.getModel());
     }
@@ -119,9 +108,11 @@ public class ModelBridge {
     /**
      * Performs streaming generation, calling the chunk callback for each token.
      */
-    public void generateStreaming(ChatCompletionRequest request, SamplingConfig defaults,
-                                  Consumer<ChatCompletionChunk> chunkCallback,
-                                  Runnable doneCallback) {
+    public synchronized void generateStreaming(
+            ChatCompletionRequest request,
+            SamplingConfig defaults,
+            Consumer<ChatCompletionChunk> chunkCallback,
+            Runnable doneCallback) {
         String prompt = buildPrompt(request.getMessages());
         int maxTokens = request.getMaxTokens() != null ? request.getMaxTokens() : defaults.getMaxNewTokens();
         String completionId = "chatcmpl-" + UUID.randomUUID().toString().replace("-", "").substring(0, 24);
@@ -144,23 +135,32 @@ public class ModelBridge {
                 .build();
         chunkCallback.accept(roleChunk);
 
-        // Stream tokens
-        pipeline.generateStream(prompt, maxTokens, token -> {
-            ChatCompletionChunk chunk = ChatCompletionChunk.builder()
-                    .id(completionId)
-                    .object("chat.completion.chunk")
-                    .created(created)
-                    .model(model)
-                    .choices(Collections.singletonList(
-                            ChatCompletionChunk.Choice.builder()
-                                    .index(0)
-                                    .delta(ChatCompletionChunk.Delta.builder()
-                                            .content(token)
-                                            .build())
-                                    .build()))
-                    .build();
-            chunkCallback.accept(chunk);
-        });
+        // Streaming currently decodes post-hoc inside GenerationPipeline. Apply the
+        // request sampling config for that call, then restore defaults before releasing
+        // the bridge monitor so no request can observe another request's decode options.
+        SamplingConfig requestSampling = buildSamplingConfig(request, defaults);
+        SamplingConfig previousSampling = pipeline.getSamplingConfig();
+        pipeline.setSamplingConfig(requestSampling);
+        try {
+            pipeline.generateStream(prompt, maxTokens, token -> {
+                ChatCompletionChunk chunk = ChatCompletionChunk.builder()
+                        .id(completionId)
+                        .object("chat.completion.chunk")
+                        .created(created)
+                        .model(model)
+                        .choices(Collections.singletonList(
+                                ChatCompletionChunk.Choice.builder()
+                                        .index(0)
+                                        .delta(ChatCompletionChunk.Delta.builder()
+                                                .content(token)
+                                                .build())
+                                        .build()))
+                        .build();
+                chunkCallback.accept(chunk);
+            });
+        } finally {
+            pipeline.setSamplingConfig(previousSampling);
+        }
 
         // Send final chunk with finish_reason
         ChatCompletionChunk finalChunk = ChatCompletionChunk.builder()

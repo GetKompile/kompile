@@ -517,11 +517,11 @@
       <artifactId>commons-text</artifactId>
       <version>1.10.0</version>
     </dependency>
-    <dependency>
-      <groupId>org.mockito</groupId>
-      <artifactId>mockito-all</artifactId>
-      <version>1.10.19</version>
-    </dependency>
+    <!-- No mockito here. It was declared at compile scope and nothing under src/ references
+         org.mockito, so it only ever reached consumers: mockito-all 1.10.19 bundles a Mockito 1.x
+         org.mockito.Mockito that does not extend ArgumentMatchers, and any downstream test
+         static-importing both Mockito.* and ArgumentMatchers.* then fails to compile with
+         "reference to any is ambiguous". Every consumer used to carry an exclusion for it. -->
     <dependency>
       <groupId>org.jbibtex</groupId>
       <artifactId>jbibtex</artifactId>

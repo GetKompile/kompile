@@ -1,0 +1,89 @@
+<!--
+  ~ Copyright 2025 Kompile Inc.
+  ~ Licensed under the Apache License, Version 2.0 (the "License").
+  -->
+
+<div class="graph-explore-hub">
+  <!-- Hub header with CTA -->
+  <div class="hub-header">
+    <div class="hub-header-left">
+      <h2>Graph</h2>
+      <p class="subtitle">Explore the knowledge graph — visualize, browse hierarchy, inspect communities, and see what evidence it has actually read.</p>
+    </div>
+    <div class="hub-header-actions" *ngIf="chatRoute">
+      <button mat-raised-button color="primary" class="ask-graph-btn" (click)="openChat()"
+              matTooltip="Open chat to ask questions about this graph">
+        <mat-icon>chat</mat-icon>
+        Ask about this graph
+      </button>
+    </div>
+  </div>
+
+  <!-- Cold-start banner: shown when a fact sheet is active but has no facts yet -->
+  <div *ngIf="showColdStartBanner" class="cold-start-banner" role="alert">
+    <mat-icon class="banner-icon">info</mat-icon>
+    <div class="banner-body">
+      <span class="banner-title">This graph is empty</span>
+      <p class="banner-text">
+        Nothing has been extracted into this fact sheet yet. Add sources and run a crawl in the
+        Crawl Manager; nodes and edges appear here as the crawl completes.
+      </p>
+    </div>
+    <button class="banner-dismiss" (click)="dismissColdStartBanner()" aria-label="Dismiss">
+      <mat-icon>close</mat-icon>
+    </button>
+  </div>
+
+  <!-- ── Explore tabs ─────────────────────────────────────────────────────── -->
+  <div class="inner-tabs">
+    <button *ngFor="let tab of tabs"
+            class="inner-tab"
+            [class.active]="activeTab === tab"
+            (click)="selectTab(tab)">
+      <mat-icon class="tab-icon">{{ tabIcon(tab) }}</mat-icon>
+      <span class="tab-label">{{ tabLabel(tab) }}</span>
+    </button>
+  </div>
+
+  <!-- ── Tab content ─────────────────────────────────────────────────────── -->
+  <div class="tab-content-area">
+    <div *ngIf="!activeFactSheet" class="no-fact-sheet-state" role="status">
+      <mat-icon class="no-fact-sheet-icon">note_add</mat-icon>
+      <h3>Create a fact sheet to start building your graph</h3>
+      <p>
+        There is no active fact sheet. Create one first, then add sources or run a crawl
+        when you are ready. An empty fact sheet is a valid starting point.
+      </p>
+      <button mat-raised-button color="primary" (click)="openFactSheetCreation()">
+        <mat-icon>add</mat-icon>
+        Create fact sheet
+      </button>
+    </div>
+
+    <ng-container *ngIf="activeFactSheet">
+      <div *ngIf="activeTab === 'visualizer'" class="graph-explore-panel">
+        <app-graph-visualizer
+          [factSheetId]="activeFactSheet?.id || null"
+          [factSheetName]="activeFactSheet?.name || ''"
+          [focusNodeId]="focusNodeId">
+        </app-graph-visualizer>
+      </div>
+      <div *ngIf="activeTab === 'hierarchy'" class="graph-explore-panel">
+        <app-graph-hierarchy
+          [factSheetId]="activeFactSheetId"
+          (navigateToGraph)="onNavigateToGraph($event)"
+          (viewSubGraph)="onNavigateToGraph($event)">
+        </app-graph-hierarchy>
+      </div>
+      <div *ngIf="activeTab === 'overview'">
+        <app-graph-overview></app-graph-overview>
+      </div>
+      <div *ngIf="activeTab === 'communities'">
+        <app-community-panel [factSheetId]="activeFactSheetId"></app-community-panel>
+      </div>
+      <div *ngIf="activeTab === 'coverage'">
+        <app-partition-coverage-panel [factSheetId]="activeFactSheetId"></app-partition-coverage-panel>
+      </div>
+    </ng-container>
+  </div>
+</div>

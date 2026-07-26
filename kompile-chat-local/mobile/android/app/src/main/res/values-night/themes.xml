@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Dark parent keeps every pre-compose system surface (window background, dialogs
+         Android may show before composition) dark, matching KompileChatTheme's palette. -->
+    <style name="Theme.KompileChatLocal" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:windowBackground">@color/window_background</item>
+    </style>
+</resources>

@@ -12,9 +12,16 @@ kompile sdk list --platform=ios --type=sdk
 ## Download
 
 ```bash
-kompile sdk download --model=qwen3-0.6b --platform=ios --chip=gpu
-kompile sdk download --sdk-version=1.0 --output-dir=./sdk
+kompile sdk download --model=qwen3-0.6b --platform=ios-arm64 \
+  --component=runtime --package-role=apple-xcframework --variant=cpu
+kompile sdk download --model=qwen3-0.6b --platform=linux-x86_64 \
+  --sdk-version=1.0 --component=runtime --package-role=platform-sdk --output-dir=./sdk
 ```
+
+The CLI fetches `sdk-v<version>/sdx-sdk-manifest.json`, selects by component,
+package role, platform, and variant, then downloads the manifest's exact `fileName`
+and verifies SHA-256. `--chip` remains a compatibility alias for `--variant`.
+CPU is inferred only when it is the sole manifest variant for the selection.
 
 ## Scaffold a mobile app
 
@@ -24,6 +31,9 @@ Generate a mobile chat application project with SDX Runtime integration:
 kompile sdk scaffold \
   --model=qwen3-0.6b \
   --platform=ios \
+  --sdk-component=runtime \
+  --sdk-package-role=apple-xcframework \
+  --sdk-variant=cpu \
   --project-name=MyChatApp \
   --package-name=com.example.chat \
   --mode=chat \

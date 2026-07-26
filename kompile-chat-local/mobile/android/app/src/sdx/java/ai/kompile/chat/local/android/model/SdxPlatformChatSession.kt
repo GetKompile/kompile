@@ -25,6 +25,9 @@ internal object SdxPlatformChatSession {
         modelIdPrefix: String
     ): PlatformLocalChatSession {
         val resolvedModel = MobileModelArtifactResolver.resolve(context, modelPath)
+        val textAssets = resolvedModel.requireTextModelAssets()
+        val tokenizerConfigJson =
+            textAssets.tokenizerConfig().toFile().readText(Charsets.UTF_8)
         if (options.backend == SdxRuntime.SDX_BACKEND_NNAPI &&
             options.device_compilation_cache_directory.isNullOrBlank()
         ) {
@@ -43,14 +46,13 @@ internal object SdxPlatformChatSession {
                 "Unsupported SDX runtime ABI ${runtime.abiVersion()}"
             }
             model = runtime.loadModel(resolvedModel.runtimeModelPath().toString(), options)
-            val tokenizerPath = model.tokenizerPath()
-                ?: error("SDX bundle has no tokenizerPath metadata")
-            tokenizer = NativeTokenizer.fromFile(tokenizerPath)
+            tokenizer = NativeTokenizer.fromFile(textAssets.tokenizer().toString())
             textSession = model.createTextSession()
             return Session(
                 runtime = runtime,
                 model = model,
                 tokenizer = tokenizer,
+                tokenizerConfigJson = tokenizerConfigJson,
                 textSession = textSession,
                 routeName = routeName,
                 modelId = "$modelIdPrefix:${File(modelPath).name}"
@@ -68,6 +70,7 @@ internal object SdxPlatformChatSession {
         private val runtime: SdxRuntime,
         private val model: SdxRuntime.SdxModel,
         private val tokenizer: NativeTokenizer,
+        private val tokenizerConfigJson: String,
         private val textSession: SdxTextSession,
         override val routeName: String,
         override val modelId: String
@@ -78,8 +81,9 @@ internal object SdxPlatformChatSession {
             opts: GenOptions,
             onChunk: Consumer<String>?
         ): String {
-            val prompt = MobilePromptRenderer.chatMl(messages)
-            val promptIds = tokenizer.encodeLong(prompt, true)
+            val prompt = renderChatTemplate(messages)
+            // The chat template already places every model-specific special token.
+            val promptIds = tokenizer.encodeLong(prompt, false)
             require(promptIds.isNotEmpty()) { "Tokenizer produced an empty prompt" }
 
             val generationOptions = SdxTextSession.GenerationOptions(opts.maxTokens())
@@ -109,6 +113,25 @@ internal object SdxPlatformChatSession {
             }
             return tokenizer.decode(result.tokenIds(), true).trim()
         }
+
+        /**
+         * Renders the conversation with the model's own chat template. This runs
+         * through the tokenizer runtime, so it stays in the SDX source set: the
+         * LiteRT-LM provider ships no tokenizer facade and templates internally.
+         */
+        private fun renderChatTemplate(messages: List<Message>): String =
+            tokenizer.applyChatTemplate(
+                tokenizerConfigJson,
+                messages.map { message ->
+                    NativeTokenizer.ChatMessage(
+                        // tool_result is Kompile's internal graph-replay role. The graph
+                        // protocol exposes it to general chat models as the next user turn.
+                        if (message.role() == "tool_result") "user" else message.role(),
+                        message.content()
+                    )
+                },
+                true
+            )
 
         override fun cancel() {
             textSession.cancel()

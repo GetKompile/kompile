@@ -1,0 +1,71 @@
+{
+  "formatVersion": 1,
+  "offlineOnly": true,
+  "networkPermissionRequired": true,
+  "graphRuntime": {
+    "androidMode": "stock-graalvm-aot-javacpp",
+    "target": "aarch64-linux-android",
+    "minimumSdk": 28,
+    "kgrAbiVersion": 1,
+    "nativeLibraries": [
+      "libjnikompile_graph.so",
+      "libkompile_reasoning_android.so"
+    ],
+    "nativeAotSdkIncludedInDistribution": true
+  },
+  "assets": [
+    {
+      "path": "graphs/fixture.kgraph",
+      "kind": "kompile-kgraph",
+      "sha256": "be0ce745a8e75ba97b7b39b11b92c7c16227afd6b342e4596271a1ce4e16e93c"
+    }
+  ],
+  "modelContract": {
+    "format": ".sdz",
+    "source": "canonical-samediff",
+    "derivedArtifacts": "embedded-content-addressed-cache",
+    "runtimeCompilation": false
+  },
+  "modelSlots": {
+    "vulkan": {
+      "formats": [".sdz"],
+      "targetProfile": "android-arm64-vulkan",
+      "backend": "VULKAN",
+      "gpuTarget": "VULKAN",
+      "deviceOnly": true,
+      "aotOnly": true,
+      "allowHostFallback": false,
+      "replay": "lowered-command-buffer"
+    },
+    "hexagon": {
+      "formats": [".sdz"],
+      "targetProfile": "android-arm64-hexagon-htp",
+      "backend": "HEXAGON",
+      "deviceOnly": true,
+      "aotOnly": true,
+      "allowHostFallback": false
+    },
+    "tensorG3": {
+      "formats": [".sdz"],
+      "targetProfile": "android-arm64-nnapi-accelerator",
+      "backend": "NNAPI_ACCELERATOR_ONLY",
+      "deviceOnly": true,
+      "aotOnly": true,
+      "allowHostFallback": false,
+      "driverCompilation": "load-time-content-addressed-cache",
+      "deviceSelection": "single-DEVICE_ACCELERATOR-complete-graph",
+      "quantization": "int8-per-tensor",
+      "quantizedMatmulInputs": 5,
+      "scaleDtype": "FLOAT32"
+    },
+    "tensorG5": {
+      "formats": [".sdz"],
+      "targetProfile": "android-arm64-google-tensor-g5",
+      "backend": "npu",
+      "deviceOnly": true,
+      "aotOnly": true,
+      "allowHostFallback": false,
+      "quantization": "int8-per-channel"
+    }
+  }
+}

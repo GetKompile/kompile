@@ -36,10 +36,12 @@ class ModelCapabilityResolverImplTest {
     }
 
     @Test
-    void localResolutionUsesStagedLlmContextInsteadOfRegistryDefault() {
+    void localResolutionClampsDiscoveryContextToExecutablePreloadCeiling() {
         LocalStagingLlmService staging = mock(LocalStagingLlmService.class);
-        when(staging.resolveCandidate("lfm2.5-1.2b-instruct")).thenReturn(Optional.of(candidate(32_768)));
-        when(staging.currentModelId()).thenReturn(null); // nothing loaded → discovery metadata wins
+        LocalStagingLlmService.LocalModelCandidate candidate = candidate(32_768);
+        when(staging.resolveCandidate("lfm2.5-1.2b-instruct")).thenReturn(Optional.of(candidate));
+        when(staging.currentModelId()).thenReturn(null);
+        when(staging.executableContextWindow(candidate)).thenReturn(4_096);
 
         ModelCapabilityResolverImpl resolver = new ModelCapabilityResolverImpl(null, null, null, staging);
         ModelCapability cap = resolver.resolve(
@@ -47,8 +49,8 @@ class ModelCapabilityResolverImplTest {
                 null, "lfm2.5-1.2b-instruct", "local-staging").orElseThrow();
 
         assertTrue(cap.local());
-        assertEquals(32_768, cap.contextTokens(),
-                "a staged GGUF LLM must budget from its real window, not the 2k registry default");
+        assertEquals(4_096, cap.contextTokens(),
+                "pre-load planning must use the serving lane's executable ceiling, not the GGUF theoretical window");
     }
 
     @Test

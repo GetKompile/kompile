@@ -80,68 +80,106 @@ public class NoteSyncEngine {
      */
     @Transactional
     public SyncRunResult syncConnection(Long connectionId) {
-        return syncConnection(connectionId, false);
+        return syncConnection(connectionId, "sync-" + java.util.UUID.randomUUID(), false);
     }
 
     /** Pull external changes without pushing local edits back to the provider. */
     @Transactional
     public SyncRunResult pullConnection(Long connectionId) {
-        return syncConnection(connectionId, true);
+        return syncConnection(connectionId, "pull-" + java.util.UUID.randomUUID(), true);
     }
 
-    private SyncRunResult syncConnection(Long connectionId, boolean pullOnly) {
+    /**
+     * Executes a previously accepted durable run. checkpointCandidate is captured before
+     * reading the provider and is committed only when every requested phase succeeds.
+     */
+    @Transactional
+    public SyncRunResult syncConnection(Long connectionId, String syncSessionId, boolean pullOnly) {
         NoteSyncConnection conn = connectionRepository.findById(connectionId)
                 .orElseThrow(() -> new IllegalArgumentException("Connection not found: " + connectionId));
-        if (!conn.getEnabled()) {
-            return SyncRunResult.skipped(connectionId);
+        if (!Boolean.TRUE.equals(conn.getEnabled())) {
+            SyncRunResult skipped = SyncRunResult.skipped(connectionId);
+            progressTracker.complete(syncSessionId, skipped, conn.getLastSyncAt());
+            return skipped;
         }
 
-        SyncAdapter adapter = resolveAdapter(conn.getProvider());
-        String syncSessionId = "sync-" + connectionId + "-" + System.currentTimeMillis();
-        progressTracker.start(syncSessionId, conn);
+        Instant checkpointBefore = conn.getLastSyncAt();
+        Instant checkpointCandidate = Instant.now();
 
         try {
+            SyncAdapter adapter = resolveAdapter(conn.getProvider());
+            progressTracker.start(syncSessionId, conn);
             SyncRunResult result = doSync(conn, adapter, syncSessionId, pullOnly);
-            conn.setLastSyncAt(Instant.now());
             if (result.getErrors() > 0) {
                 conn.setLastSyncStatus("ERROR");
-                conn.setLastSyncError("Sync completed with " + result.getErrors() + " error(s). Check sync records and auth status for details.");
-            } else if (result.getConflicts() > 0) {
-                conn.setLastSyncStatus("CONFLICT");
-                conn.setLastSyncError("Sync completed with " + result.getConflicts() + " conflict(s).");
+                conn.setLastSyncError("Sync completed with " + result.getErrors()
+                        + " error(s); the prior checkpoint was retained for a safe retry.");
+                applyFailureBackoff(conn);
             } else {
-                conn.setLastSyncStatus("OK");
-                conn.setLastSyncError(null);
+                conn.setLastSyncAt(checkpointCandidate);
+                conn.setConsecutiveSyncFailures(0);
+                conn.setNextSyncAttemptAt(null);
+                if (result.getConflicts() > 0) {
+                    conn.setLastSyncStatus("CONFLICT");
+                    conn.setLastSyncError("Sync completed with " + result.getConflicts() + " conflict(s).");
+                } else {
+                    conn.setLastSyncStatus("OK");
+                    conn.setLastSyncError(null);
+                }
             }
             connectionRepository.save(conn);
-            progressTracker.complete(syncSessionId, result);
-            if (result.getPulled() > 0 && eventPublisher != null) {
+            progressTracker.complete(syncSessionId, result, conn.getLastSyncAt());
+            if ((result.getPulled() > 0 || result.getDeleted() > 0) && eventPublisher != null) {
+                progressTracker.graphPending(syncSessionId);
                 eventPublisher.publishEvent(new NoteSyncPulledEvent(
-                        syncSessionId, conn.getId(), conn.getFactSheetId(), conn.getProvider(), result.getPulled()));
+                        syncSessionId, conn.getId(), conn.getFactSheetId(), conn.getProvider(),
+                        result.getPulled(), result.getDeleted()));
             }
             return result;
+        } catch (NoteSyncConnectionService.SyncLeaseLostException leaseLost) {
+            log.warn("Stopping stale source sync worker {}: {}",
+                    syncSessionId, leaseLost.getMessage());
+            throw leaseLost;
         } catch (Exception e) {
-            log.error("Sync failed for connection {}: {}", connectionId, e.getMessage(), e);
+            String message = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+            log.error("Sync failed for connection {}: {}", connectionId, message, e);
+            conn.setLastSyncAt(checkpointBefore);
             conn.setLastSyncStatus("ERROR");
-            conn.setLastSyncError(e.getMessage());
+            conn.setLastSyncError(message);
+            applyFailureBackoff(conn);
             connectionRepository.save(conn);
-            progressTracker.error(syncSessionId, connectionId, e.getMessage());
-            throw new RuntimeException("Sync failed: " + e.getMessage(), e);
+            progressTracker.error(syncSessionId, connectionId, message);
+            return SyncRunResult.builder()
+                    .connectionId(connectionId)
+                    .errors(1)
+                    .build();
         }
+    }
+
+    private void applyFailureBackoff(NoteSyncConnection conn) {
+        int failures = Math.max(0, conn.getConsecutiveSyncFailures()) + 1;
+        int exponent = Math.min(failures - 1, 7);
+        long delaySeconds = Math.min(3600L, 30L * (1L << exponent));
+        conn.setConsecutiveSyncFailures(failures);
+        conn.setNextSyncAttemptAt(Instant.now().plusSeconds(delaySeconds));
     }
 
     private SyncRunResult doSync(NoteSyncConnection conn, SyncAdapter adapter, String sessionId, boolean pullOnly) {
         SyncRunResult.SyncRunResultBuilder result = SyncRunResult.builder().connectionId(conn.getId());
         Instant since = conn.getLastSyncAt() != null ? conn.getLastSyncAt() : Instant.EPOCH;
 
-        int pulled = 0, pushed = 0, conflicts = 0, skipped = 0, errors = 0;
+        int pulled = 0, pushed = 0, deleted = 0, conflicts = 0, skipped = 0, errors = 0;
+        boolean pullSucceeded = conn.getDirection() == SyncDirection.KOMPILE_TO_EXTERNAL;
 
         // --- PULL: external -> Kompile ---
         if (conn.getDirection() != SyncDirection.KOMPILE_TO_EXTERNAL) {
             try {
+                progressTracker.progress(
+                        sessionId, conn.getId(), "PULL", "Checking the source for updates");
                 List<ExternalNoteSnapshot> changed = adapter.fetchChangedSince(conn, since);
                 for (ExternalNoteSnapshot snap : changed) {
-                    progressTracker.progress(sessionId, conn.getId(), "Pulling: " + snap.title());
+                    progressTracker.progress(
+                            sessionId, conn.getId(), "PULL", "Pulling: " + snap.title());
                     PullResult pr = pullExternalChange(conn, snap);
                     switch (pr) {
                         case CREATED, UPDATED -> pulled++;
@@ -149,6 +187,16 @@ public class NoteSyncEngine {
                         case SKIPPED -> skipped++;
                     }
                 }
+
+                Optional<java.util.Set<String>> externalIds = adapter.listExternalIds(conn);
+                if (externalIds.isPresent()) {
+                    progressTracker.progress(
+                            sessionId, conn.getId(), "RECONCILE", "Reconciling source deletions");
+                    deleted += reconcileExternalDeletions(conn, externalIds.get());
+                }
+                pullSucceeded = true;
+            } catch (NoteSyncConnectionService.SyncLeaseLostException leaseLost) {
+                throw leaseLost;
             } catch (Exception e) {
                 log.error("Pull phase failed for connection {}: {}", conn.getId(), e.getMessage(), e);
                 errors++;
@@ -156,12 +204,15 @@ public class NoteSyncEngine {
         }
 
         // --- PUSH: Kompile -> external ---
-        if (!pullOnly && conn.getDirection() != SyncDirection.EXTERNAL_TO_KOMPILE) {
+        boolean pushRequested = !pullOnly
+                && conn.getDirection() != SyncDirection.EXTERNAL_TO_KOMPILE;
+        if (pushRequested && pullSucceeded) {
             try {
                 List<Note> modifiedNotes = noteRepository.findByFactSheetIdAndUpdatedAtAfter(
                         conn.getFactSheetId(), since);
                 for (Note note : modifiedNotes) {
-                    progressTracker.progress(sessionId, conn.getId(), "Pushing: " + note.getTitle());
+                    progressTracker.progress(
+                            sessionId, conn.getId(), "PUSH", "Pushing: " + note.getTitle());
                     PushResult pr = pushNoteChange(conn, note, adapter);
                     switch (pr) {
                         case CREATED, UPDATED -> pushed++;
@@ -169,14 +220,62 @@ public class NoteSyncEngine {
                         case ERROR -> errors++;
                     }
                 }
+            } catch (NoteSyncConnectionService.SyncLeaseLostException leaseLost) {
+                throw leaseLost;
             } catch (Exception e) {
                 log.error("Push phase failed for connection {}: {}", conn.getId(), e.getMessage(), e);
                 errors++;
             }
+        } else if (pushRequested) {
+            progressTracker.progress(
+                    sessionId, conn.getId(), "PUSH_SKIPPED",
+                    "Push skipped because the source pull did not complete safely");
         }
 
-        return result.pulled(pulled).pushed(pushed).conflicts(conflicts)
+        return result.pulled(pulled).pushed(pushed).deleted(deleted).conflicts(conflicts)
                 .skipped(skipped).errors(errors).build();
+    }
+
+    private int reconcileExternalDeletions(NoteSyncConnection conn, java.util.Set<String> externalIds) {
+        int deleted = 0;
+        for (NoteSyncRecord record : syncRecordRepository.findByConnectionId(conn.getId())) {
+            String externalId = record.getExternalId();
+            String status = record.getStatus();
+            if (externalId == null || "EXTERNAL_DELETED".equals(status)) {
+                continue;
+            }
+
+            if (externalIds.contains(externalId)) {
+                if ("EXTERNAL_MISSING".equals(status)) {
+                    record.setStatus("SYNCED");
+                    record.setErrorMessage(null);
+                    record.setLastSyncAt(Instant.now());
+                    syncRecordRepository.save(record);
+                }
+                continue;
+            }
+
+            // Conflict and error states require explicit resolution; deletion reconciliation
+            // must not silently replace or clear them.
+            if (!"SYNCED".equals(status) && !"EXTERNAL_MISSING".equals(status)) {
+                continue;
+            }
+
+            if ("EXTERNAL_MISSING".equals(status)) {
+                record.setStatus("EXTERNAL_DELETED");
+                record.setErrorMessage(
+                        "The source item was deleted. The Kompile note is retained until this tombstone is resolved.");
+                deleted++;
+            } else {
+                record.setStatus("EXTERNAL_MISSING");
+                record.setErrorMessage(
+                        "The source item was absent from one complete snapshot; "
+                                + "deletion must be confirmed by the next successful sync.");
+            }
+            record.setLastSyncAt(Instant.now());
+            syncRecordRepository.save(record);
+        }
+        return deleted;
     }
 
     @Transactional
@@ -199,7 +298,7 @@ public class NoteSyncEngine {
                     .externalId(snap.externalId())
                     .kompileUpdatedAt(note.getUpdatedAt())
                     .externalUpdatedAt(snap.externalUpdatedAt())
-                    .contentChecksum(sha256(snap.markdownContent()))
+                    .contentChecksum(noteChecksum(snap.title(), snap.tags(), snap.markdownContent()))
                     .status("SYNCED").lastSyncAt(Instant.now()).build();
             syncRecordRepository.save(record);
             return PullResult.CREATED;
@@ -211,7 +310,9 @@ public class NoteSyncEngine {
             return PullResult.SKIPPED;
         }
 
-        boolean externalChanged = !snap.externalUpdatedAt().equals(record.getExternalUpdatedAt());
+        String externalChecksum = noteChecksum(snap.title(), snap.tags(), snap.markdownContent());
+        boolean externalChanged = "EXTERNAL_DELETED".equals(record.getStatus())
+                || !externalChecksum.equals(record.getContentChecksum());
         boolean kompileChanged = note.getUpdatedAt().isAfter(
                 record.getKompileUpdatedAt() != null ? record.getKompileUpdatedAt() : Instant.EPOCH);
 
@@ -231,12 +332,12 @@ public class NoteSyncEngine {
 
         } else if (externalChanged) {
             // External wins -- update Kompile note
-            noteService.updateNote(note.getId(), snap.title(), snap.markdownContent(), note.getTags());
+            noteService.updateNote(note.getId(), snap.title(), snap.markdownContent(), snap.tags());
             note.setExternalUpdatedAt(snap.externalUpdatedAt());
             noteRepository.save(note);
             record.setExternalUpdatedAt(snap.externalUpdatedAt());
             record.setKompileUpdatedAt(Instant.now());
-            record.setContentChecksum(sha256(snap.markdownContent()));
+            record.setContentChecksum(externalChecksum);
             record.setStatus("SYNCED");
             record.setLastSyncAt(Instant.now());
             syncRecordRepository.save(record);
@@ -251,7 +352,7 @@ public class NoteSyncEngine {
         Optional<NoteSyncRecord> existingRecord = syncRecordRepository
                 .findByNoteIdAndConnectionId(note.getId(), conn.getId());
 
-        String currentChecksum = sha256(note.getContent());
+        String currentChecksum = noteChecksum(note.getTitle(), note.getTags(), note.getContent());
 
         if (existingRecord.isEmpty()) {
             // First push for this note
@@ -277,6 +378,12 @@ public class NoteSyncEngine {
         }
 
         NoteSyncRecord record = existingRecord.get();
+        if ("EXTERNAL_MISSING".equals(record.getStatus())
+                || "EXTERNAL_DELETED".equals(record.getStatus())) {
+            // Preserve the local note while an external deletion is provisional or confirmed.
+            // Re-creating remote content requires an explicit resolution.
+            return PushResult.SKIPPED;
+        }
         if (currentChecksum.equals(record.getContentChecksum())) {
             return PushResult.SKIPPED;
         }
@@ -308,6 +415,26 @@ public class NoteSyncEngine {
                 .filter(a -> a.adapterId().equalsIgnoreCase(provider.name()))
                 .findFirst()
                 .orElseThrow(() -> new IllegalStateException("No adapter for " + provider));
+    }
+
+    static String noteChecksum(String title, String tags, String content) {
+        String normalizedTags = tags == null ? "" : java.util.Arrays.stream(tags.split(","))
+                .map(String::trim)
+                .filter(tag -> !tag.isEmpty())
+                .sorted(String.CASE_INSENSITIVE_ORDER)
+                .collect(java.util.stream.Collectors.joining(","));
+        String canonical = checksumPart(title) + checksumPart(normalizedTags) + checksumPart(content);
+        return sha256(canonical);
+    }
+
+    private static String checksumPart(String value) {
+        if (value == null) {
+            return "-1:";
+        }
+        String normalized = java.text.Normalizer.normalize(
+                value.replace("\r\n", "\n").replace('\r', '\n'),
+                java.text.Normalizer.Form.NFC);
+        return normalized.length() + ":" + normalized;
     }
 
     static String sha256(String content) {

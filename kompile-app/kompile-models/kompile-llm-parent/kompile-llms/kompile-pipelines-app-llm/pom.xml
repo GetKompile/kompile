@@ -77,6 +77,15 @@
             <artifactId>samediff-llm</artifactId>
         </dependency>
 
+        <!-- Serving reads the source GGUF's own chat template when the staged tokenizer has none.
+             samediff-llm keeps nd4j-ggml test-scoped to stay decoupled from the file format, so it
+             is declared here rather than relied on transitively. -->
+        <dependency>
+            <groupId>org.eclipse.deeplearning4j</groupId>
+            <artifactId>nd4j-ggml</artifactId>
+            <version>${nd4j.version}</version>
+        </dependency>
+
         <dependency>
             <groupId>ai.kompile</groupId>
             <artifactId>kompile-pipelines-framework-api</artifactId>

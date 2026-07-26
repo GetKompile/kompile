@@ -91,6 +91,12 @@ public class LlmExecutionService {
     private static final String SEQ_BUCKETS_PROP = "kompile.llm.seqBuckets";
     private static final String SEQ_BUCKETS_DEFAULT = "256,512,1024,2048,4096";
 
+    // Decode chunk size for retained-KV continuation on in-graph-KV GGUF models.
+    // maxTokens remains the total per-request output ceiling.
+    static final String CONTINUATION_CHUNK_TOKENS_PROP =
+            "kompile.llm.continuationChunkTokens";
+    private static final int CONTINUATION_CHUNK_TOKENS_DEFAULT = 384;
+
     // Safety fraction for native-memory ceiling estimate.
     // Configurable via system property: kompile.llm.memorySafetyFraction
     private static final String SAFETY_FRACTION_PROP = "kompile.llm.memorySafetyFraction";
@@ -111,7 +117,7 @@ public class LlmExecutionService {
      * @param kvCacheType the KV cache type to use (STATIC, PAGED, QUANTIZED)
      * @return status response
      */
-    public LlmModelStatusResponse loadModel(String modelId, String modelPath, String kvCacheType) {
+    public synchronized LlmModelStatusResponse loadModel(String modelId, String modelPath, String kvCacheType) {
         if (modelLoading.get()) {
             return LlmModelStatusResponse.builder()
                     .modelId(modelId)
@@ -160,6 +166,9 @@ public class LlmExecutionService {
             // Rounds up the context window to the nearest configured bucket,
             // then clamps it by the native-memory ceiling so one request can't
             // exhaust native memory (org.bytedeco.javacpp.maxphysicalbytes).
+            if (decoderConfig.getMaxContextLength() > 0) {
+                modelContextWindow = Math.min(modelContextWindow, decoderConfig.getMaxContextLength());
+            }
             int kvBucket = computeKvBucket(modelContextWindow, hiddenSize);
 
             // Build GenerationPipeline from model path with the bucketed maxKvCacheLength.
@@ -169,6 +178,7 @@ public class LlmExecutionService {
                     .samplingConfig(defaultConfig)
                     .kvCacheStrategy(cacheStrategy)
                     .maxKvCacheLength(kvBucket)
+                    .prefillLastPositionLogitsEnabled(true)
                     .build();
 
             GenerationPipeline pipeline = GenerationPipeline.create(config);
@@ -193,8 +203,8 @@ public class LlmExecutionService {
                     .memoryUsageMb(memoryUsage)
                     .kvCacheType(this.kvCacheType)
                     .decoderPath(modelPath)
-                    .maxContextLength(decoderConfig.getMaxContextLength() > 0
-                            ? decoderConfig.getMaxContextLength() : modelContextWindow)
+                    .maxContextLength(effectiveExecutionContext(
+                            decoderConfig.getMaxContextLength(), modelContextWindow, kvBucket))
                     .kvBucket(kvBucket)
                     .message("Model loaded successfully")
                     .build();
@@ -214,7 +224,7 @@ public class LlmExecutionService {
     /**
      * Unload the currently loaded model and free resources.
      */
-    public LlmModelStatusResponse unloadModel() {
+    public synchronized LlmModelStatusResponse unloadModel() {
         String modelId = currentModelId.get();
         unloadModelInternal();
         return LlmModelStatusResponse.builder()
@@ -247,8 +257,10 @@ public class LlmExecutionService {
         GenerationPipeline pipeline = currentPipeline.get();
         boolean loaded = pipeline != null && modelId != null;
         int effectiveMaxContext = loaded
-                ? (decoderConfig.getMaxContextLength() > 0
-                        ? decoderConfig.getMaxContextLength() : currentModelContextWindow)
+                ? effectiveExecutionContext(
+                        decoderConfig.getMaxContextLength(),
+                        currentModelContextWindow,
+                        currentKvBucket)
                 : 0;
 
         return LlmModelStatusResponse.builder()
@@ -271,7 +283,7 @@ public class LlmExecutionService {
      * @param request generation parameters
      * @return generation response with metrics
      */
-    public LlmGenerateResponse generate(LlmGenerateRequest request) {
+    public synchronized LlmGenerateResponse generate(LlmGenerateRequest request) {
         GenerationPipeline pipeline = currentPipeline.get();
         if (pipeline == null) {
             return LlmGenerateResponse.builder()
@@ -290,8 +302,11 @@ public class LlmExecutionService {
         try {
             int maxTokens = request.getMaxTokens();
             long startTime = System.currentTimeMillis();
+            SamplingConfig requestSampling = buildSamplingConfig(
+                    request, currentSamplingConfig.get());
 
-            GenerationResult result = pipeline.generate(request.getPrompt(), maxTokens);
+            GenerationResult result = generateWithOptionalContinuation(
+                    pipeline, request.getPrompt(), maxTokens, requestSampling);
 
             long totalTime = System.currentTimeMillis() - startTime;
             String generatedText = result.getText();
@@ -333,7 +348,7 @@ public class LlmExecutionService {
      * @param tokenCallback callback invoked for each generated token
      * @return final generation response with metrics
      */
-    public LlmGenerateResponse generateStreaming(LlmGenerateRequest request, Consumer<String> tokenCallback) {
+    public synchronized LlmGenerateResponse generateStreaming(LlmGenerateRequest request, Consumer<String> tokenCallback) {
         GenerationPipeline pipeline = currentPipeline.get();
         if (pipeline == null) {
             return LlmGenerateResponse.builder()
@@ -353,15 +368,23 @@ public class LlmExecutionService {
             int maxTokens = request.getMaxTokens();
             long startTime = System.currentTimeMillis();
             StringBuilder fullText = new StringBuilder();
+            SamplingConfig requestSampling = buildSamplingConfig(
+                    request, currentSamplingConfig.get());
+            SamplingConfig previousSampling = pipeline.getSamplingConfig();
 
-            pipeline.generateStream(
-                    request.getPrompt(),
-                    maxTokens,
-                    token -> {
-                        fullText.append(token);
-                        tokenCallback.accept(token);
-                    }
-            );
+            pipeline.setSamplingConfig(requestSampling);
+            try {
+                pipeline.generateStream(
+                        request.getPrompt(),
+                        maxTokens,
+                        token -> {
+                            fullText.append(token);
+                            tokenCallback.accept(token);
+                        }
+                );
+            } finally {
+                pipeline.setSamplingConfig(previousSampling);
+            }
 
             long totalTime = System.currentTimeMillis() - startTime;
 
@@ -663,42 +686,137 @@ public class LlmExecutionService {
     // ==================== Internal Helpers ====================
 
     /**
-     * Build SamplingConfig from a generate request, respecting presets.
+     * Generate through retained in-graph KV when the requested output is larger than one
+     * bounded decode chunk. The session owns the total output ceiling; continuation calls
+     * only divide that ceiling and never re-prefill or silently increase it.
      */
-    private SamplingConfig buildSamplingConfig(LlmGenerateRequest request) {
-        // Check for named presets first
+    private GenerationResult generateWithOptionalContinuation(
+            GenerationPipeline pipeline,
+            String prompt,
+            int maxTokens,
+            SamplingConfig requestSampling) {
+        int chunkTokens = continuationChunkTokens(maxTokens);
+        boolean supportsContinuation = currentDecoderPath != null
+                && currentDecoderPath.toLowerCase(Locale.ROOT).endsWith(".gguf");
+        if (!supportsContinuation || maxTokens <= chunkTokens) {
+            return pipeline.generate(prompt, maxTokens, requestSampling);
+        }
+
+        SamplingConfig previousSampling = pipeline.getSamplingConfig();
+        pipeline.setSamplingConfig(requestSampling);
+        long startedAt = System.currentTimeMillis();
+        try (GenerationPipeline.GenerationSession session =
+                     pipeline.startSession(prompt, maxTokens)) {
+            int firstBudget = Math.min(chunkTokens, session.getRemainingCapacity());
+            GenerationResult first = session.generate(firstBudget);
+            GenerationResult last = first;
+            int chunks = 1;
+
+            while (last.isTruncated()
+                    && !session.isEosReached()
+                    && session.getRemainingCapacity() > 0) {
+                int nextBudget = Math.min(chunkTokens, session.getRemainingCapacity());
+                last = session.continueGeneration(nextBudget);
+                chunks++;
+            }
+
+            int[] allTokens = session.getAllTokens();
+            long elapsedMs = System.currentTimeMillis() - startedAt;
+            log.info("Completed retained-KV generation in {} chunk(s): generated={}, finishReason={}, "
+                            + "remainingCapacity={}",
+                    chunks, allTokens.length, last.getFinishReason(), session.getRemainingCapacity());
+            return GenerationResult.builder()
+                    .text(session.getFullText())
+                    .tokenIds(allTokens)
+                    .generatedTokenCount(allTokens.length)
+                    .promptTokenCount(first.getPromptTokenCount())
+                    .totalTokenCount(first.getPromptTokenCount() + allTokens.length)
+                    .finishReason(last.getFinishReason())
+                    .firstTokenLatencyMs(first.getFirstTokenLatencyMs())
+                    .generationTimeMs(elapsedMs)
+                    .tokensPerSecond(elapsedMs > 0 ? allTokens.length * 1000.0 / elapsedMs : 0.0)
+                    .decodeTokensPerSecond(last.getDecodeTokensPerSecond())
+                    .steadyStateTokensPerSecond(last.getSteadyStateTokensPerSecond())
+                    .lateSteadyStateTokensPerSecond(last.getLateSteadyStateTokensPerSecond())
+                    .sessionId(session.getSessionId())
+                    .build();
+        } finally {
+            pipeline.setSamplingConfig(previousSampling);
+        }
+    }
+
+    static int continuationChunkTokens(int maxTokens) {
+        String raw = System.getProperty(CONTINUATION_CHUNK_TOKENS_PROP);
+        int configured = CONTINUATION_CHUNK_TOKENS_DEFAULT;
+        if (raw != null && !raw.isBlank()) {
+            try {
+                configured = Integer.parseInt(raw.trim());
+            } catch (NumberFormatException e) {
+                throw new IllegalArgumentException(
+                        CONTINUATION_CHUNK_TOKENS_PROP + " must be a positive integer: " + raw, e);
+            }
+        }
+        return validateContinuationChunkTokens(configured, maxTokens);
+    }
+
+    static int validateContinuationChunkTokens(int configured, int maxTokens) {
+        if (maxTokens <= 0) {
+            throw new IllegalArgumentException("maxTokens must be positive: " + maxTokens);
+        }
+        if (configured <= 0) {
+            throw new IllegalArgumentException(
+                    CONTINUATION_CHUNK_TOKENS_PROP + " must be positive: " + configured);
+        }
+        return Math.min(configured, maxTokens);
+    }
+
+    /**
+     * Build SamplingConfig from a generate request, respecting presets while retaining
+     * tokenizer-specific EOS/pad IDs and other pipeline defaults.
+     */
+    static SamplingConfig buildSamplingConfig(
+            LlmGenerateRequest request,
+            SamplingConfig defaults) {
+        Objects.requireNonNull(request, "request");
+        SamplingConfig base = defaults != null ? defaults : SamplingConfig.defaultConfig();
+        int maxTokens = request.getMaxTokens();
+        if (maxTokens <= 0) {
+            throw new IllegalArgumentException("maxTokens must be positive: " + maxTokens);
+        }
+
+        Long requestSeed = request.getSeed() >= 0
+                ? Long.valueOf(request.getSeed())
+                : base.getSeed();
+        SamplingConfig.SamplingConfigBuilder builder = base.toBuilder()
+                .maxNewTokens(maxTokens)
+                .minNewTokens(Math.min(Math.max(0, request.getMinTokens()), maxTokens))
+                .frequencyPenalty(request.getFrequencyPenalty())
+                .presencePenalty(request.getPresencePenalty())
+                .repetitionPenalty(request.getRepetitionPenalty())
+                .seed(requestSeed);
+
         if (request.getPresetName() != null) {
-            switch (request.getPresetName().toLowerCase()) {
+            switch (request.getPresetName().toLowerCase(Locale.ROOT)) {
                 case "greedy":
-                    return SamplingConfig.builder()
-                            .doSample(false).temperature(0.0)
-                            .maxNewTokens(request.getMaxTokens()).build();
+                    return builder.doSample(false).temperature(0.0).build();
                 case "default":
-                    return SamplingConfig.builder()
-                            .temperature(0.7).topP(0.9).doSample(true)
-                            .maxNewTokens(request.getMaxTokens()).build();
+                    return builder.temperature(0.7).topP(0.9).doSample(true).build();
                 case "creative":
-                    return SamplingConfig.builder()
-                            .temperature(0.9).topK(50).topP(0.95).doSample(true)
-                            .maxNewTokens(request.getMaxTokens()).build();
+                    return builder.temperature(0.9).topK(50).topP(0.95).doSample(true).build();
                 case "precise":
-                    return SamplingConfig.builder()
-                            .temperature(0.3).topP(0.85).doSample(true)
-                            .maxNewTokens(request.getMaxTokens()).build();
+                    return builder.temperature(0.3).topP(0.85).doSample(true).build();
                 default:
-                    log.warn("Unknown sampling preset '{}', using explicit parameters", request.getPresetName());
+                    log.warn("Unknown sampling preset '{}', using explicit parameters",
+                            request.getPresetName());
                     break;
             }
         }
 
-        // Build from individual parameters
-        return SamplingConfig.builder()
+        return builder
                 .temperature(request.getTemperature())
                 .topK(request.getTopK())
                 .topP(request.getTopP())
-                .repetitionPenalty(request.getRepetitionPenalty())
-                .doSample(request.isDoSample())
-                .maxNewTokens(request.getMaxTokens())
+                .doSample(request.isDoSample() && request.getTemperature() > 0.0)
                 .build();
     }
 
@@ -733,6 +851,45 @@ public class LlmExecutionService {
     }
 
     /**
+     * Return the context window this loaded lane can actually execute. A declared model
+     * window or caller override is never allowed to exceed the allocated KV ceiling.
+     */
+    static int effectiveExecutionContext(
+            int configuredContext,
+            int modelContext,
+            int kvBucket) {
+        int effective = Integer.MAX_VALUE;
+        if (configuredContext > 0) {
+            effective = Math.min(effective, configuredContext);
+        }
+        if (modelContext > 0) {
+            effective = Math.min(effective, modelContext);
+        }
+        if (kvBucket > 0) {
+            effective = Math.min(effective, kvBucket);
+        }
+        return effective == Integer.MAX_VALUE ? 0 : Math.max(1, effective);
+    }
+
+    /**
+     * Largest configured bucket that does not exceed a hard resource cap.
+     */
+    static int floorBucketFor(int hardCap, int[] sortedBuckets) {
+        if (hardCap <= 0) {
+            throw new IllegalArgumentException("hardCap must be positive: " + hardCap);
+        }
+        int selected = 0;
+        if (sortedBuckets != null) {
+            for (int bucket : sortedBuckets) {
+                if (bucket > 0 && bucket <= hardCap) {
+                    selected = Math.max(selected, bucket);
+                }
+            }
+        }
+        return selected > 0 ? selected : hardCap;
+    }
+
+    /**
      * Parse the comma-separated sequence-bucket system property into a sorted int array.
      * Falls back to {@link #SEQ_BUCKETS_DEFAULT} when the property is absent or unparseable.
      */
@@ -757,6 +914,7 @@ public class LlmExecutionService {
             // Absolute fallback if the property was set to something unusable
             return new int[]{256, 512, 1024, 2048, 4096};
         }
+        Collections.sort(list);
         int[] result = new int[list.size()];
         for (int i = 0; i < list.size(); i++) {
             result[i] = list.get(i);
@@ -786,23 +944,28 @@ public class LlmExecutionService {
         double safetyFraction = parseDoubleProperty(SAFETY_FRACTION_PROP, SAFETY_FRACTION_DEFAULT);
         double activationFactor = parseDoubleProperty(ACTIVATION_FACTOR_PROP, ACTIVATION_FACTOR_DEFAULT);
 
-        // Step 1: bucket the full context window → this gives us the smallest bucket
-        // that covers the model's maximum sequence length.
-        int bucketedContext = InferenceBatchPlanner.bucketFor(modelContextWindow, seqBuckets, modelContextWindow);
+        // The largest configured bucket is an explicit executable-context ceiling.
+        // A model may declare 128k, but advertising or allocating that much is unsafe when this
+        // lane was configured only for 4k. Operators can opt into larger contexts by extending
+        // kompile.llm.seqBuckets.
+        int configuredCeiling = seqBuckets[seqBuckets.length - 1];
+        int executionHardCap = Math.max(1, Math.min(modelContextWindow, configuredCeiling));
+        int bucketedContext = InferenceBatchPlanner.bucketFor(
+                executionHardCap, seqBuckets, executionHardCap);
 
-        // Step 2: clamp by native-memory ceiling if both hiddenSize > 0 and the
-        // org.bytedeco.javacpp.maxphysicalbytes property is set.
+        // Clamp by native-memory ceiling if both hiddenSize > 0 and the
+        // org.bytedeco.javacpp.maxphysicalbytes property is set. Use a floor bucket:
+        // rounding upward would violate the memory cap it is meant to enforce.
         int memoryClamped = bucketedContext;
         if (hiddenSize > 0) {
             String maxPhysicalProp = System.getProperty(ND4JSystemProperties.JAVACPP_MEMORY_MAX_PHYSICAL_BYTES);
             long maxPhysicalBytes = InferenceBatchPlanner.parseByteSize(maxPhysicalProp);
             if (maxPhysicalBytes > 0) {
-                // estimateMaxBatchTokens returns a token budget for the whole batch; for a single
-                // LLM request (rows=1) this bounds the max KV/context length we can afford.
                 long memTokenBudget = InferenceBatchPlanner.estimateMaxBatchTokens(
-                        maxPhysicalBytes, hiddenSize, 4, safetyFraction, activationFactor, modelContextWindow);
-                int memCapContext = (int) Math.min(memTokenBudget, modelContextWindow);
-                int memCappedBucket = InferenceBatchPlanner.bucketFor(memCapContext, seqBuckets, modelContextWindow);
+                        maxPhysicalBytes, hiddenSize, 4, safetyFraction, activationFactor, executionHardCap);
+                int memCapContext = (int) Math.max(
+                        1L, Math.min(memTokenBudget, executionHardCap));
+                int memCappedBucket = floorBucketFor(memCapContext, seqBuckets);
                 memoryClamped = Math.min(bucketedContext, memCappedBucket);
                 if (memoryClamped < bucketedContext) {
                     log.info("LLM KV bucket memory-clamped: {} → {} (maxphysicalbytes={}, hiddenSize={}, safety={}, activationFactor={})",
@@ -813,8 +976,8 @@ public class LlmExecutionService {
             }
         }
 
-        log.info("LLM KV bucket selected: {} (contextWindow={}, hiddenSize={}, seqBuckets={})",
-                memoryClamped, modelContextWindow, hiddenSize, Arrays.toString(seqBuckets));
+        log.info("LLM KV bucket selected: {} (declaredContext={}, configuredCeiling={}, hiddenSize={}, seqBuckets={})",
+                memoryClamped, modelContextWindow, configuredCeiling, hiddenSize, Arrays.toString(seqBuckets));
         return memoryClamped;
     }
 

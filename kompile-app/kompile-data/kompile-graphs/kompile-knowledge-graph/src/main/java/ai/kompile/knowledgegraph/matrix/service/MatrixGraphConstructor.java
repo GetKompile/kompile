@@ -16,9 +16,13 @@
 package ai.kompile.knowledgegraph.matrix.service;
 
 import ai.kompile.core.crawl.graph.AgentCallContext;
+import ai.kompile.core.crawl.graph.GraphExtractionValidationPolicy;
 import ai.kompile.core.crawl.graph.LlmTranscriptLogger;
 import ai.kompile.core.embeddings.EmbeddingModel;
 import ai.kompile.core.graphrag.GraphConstructor;
+import ai.kompile.core.graphrag.format.GraphExtractionSchema;
+import ai.kompile.core.graphrag.format.GraphExtractionValidator;
+import ai.kompile.core.graphrag.format.GraphExtractionValidator.ValidationResult;
 import ai.kompile.core.graphrag.model.Entity;
 import ai.kompile.core.graphrag.model.Graph;
 import ai.kompile.core.graphrag.model.Relationship;
@@ -82,6 +86,10 @@ public class MatrixGraphConstructor implements GraphConstructor {
     @Autowired(required = false)
     private LlmFallbackExecutor fallbackExecutor;
 
+    private volatile GraphExtractionValidationPolicy validationPolicy =
+            GraphExtractionValidationPolicy.defaults();
+    private volatile ExtractionModelConfig extractionModelConfig = ExtractionModelConfig.defaults();
+
     /** No-arg constructor for Spring. */
     public MatrixGraphConstructor() {}
 
@@ -92,6 +100,18 @@ public class MatrixGraphConstructor implements GraphConstructor {
         this.llmChat = llmChat;
         this.embeddingModel = embeddingModel;
         this.objectMapper = objectMapper;
+    }
+
+    @Override
+    public void configure(ExtractionModelConfig config) {
+        this.extractionModelConfig = config == null ? ExtractionModelConfig.defaults() : config;
+    }
+
+    @Override
+    public void configureValidation(GraphExtractionValidationPolicy policy) {
+        this.validationPolicy = policy == null
+                ? GraphExtractionValidationPolicy.defaults()
+                : policy.copy();
     }
 
     /**
@@ -334,7 +354,7 @@ public class MatrixGraphConstructor implements GraphConstructor {
                 try {
                     if (fallbackExecutor != null) {
                         jsonResponse = fallbackExecutor.executeWithFallback(prompt, "graph-constructor",
-                                r -> parseExtractionResponse(r) != null);
+                                response -> isValidExtractionResponse(response, schema, mode));
                     } else {
                         jsonResponse = llmChat.prompt().user(prompt).call().content();
                     }
@@ -378,6 +398,16 @@ public class MatrixGraphConstructor implements GraphConstructor {
                 if (extracted != null) {
                     if (mode == SchemaEnforcementMode.STRICT && schema != null) {
                         cleanGraph(extracted, schema);
+                    }
+
+                    ValidationResult validation = validateExtractedGraph(extracted, schema);
+                    if (!validation.valid()) {
+                        throw new IllegalArgumentException(
+                                "Graph extraction validation failed: " + validationFeedback(validation.errors()));
+                    }
+                    if (!validation.warnings().isEmpty()) {
+                        log.warn("Accepted Matrix graph extraction with {} validation warning(s): {}",
+                                validation.warnings().size(), validationFeedback(validation.warnings()));
                     }
 
                     // For batched extraction, prefix each entity/rel with a batch-unique prefix
@@ -499,119 +529,182 @@ public class MatrixGraphConstructor implements GraphConstructor {
     }
 
     /**
-     * Creates a batched extraction prompt that includes multiple documents.
-     * Each document is labeled so the LLM can attribute entities to source documents.
+     * Creates a batched prompt with no semantic example facts that a small model
+     * could copy into the extraction.
      */
     private String createBatchExtractionPrompt(List<RetrievedDoc> docs, GraphSchema schema) {
-        String schemaDescription = getSchemaDescription(schema);
-
         StringBuilder docsSection = new StringBuilder();
         for (int i = 0; i < docs.size(); i++) {
-            docsSection.append("--- DOCUMENT ").append(i + 1).append(" ---\n");
-            docsSection.append(docs.get(i).getText());
+            docsSection.append("--- SOURCE DOCUMENT ").append(i + 1).append(" ---\n");
+            docsSection.append(docs.get(i).getText() == null ? "" : docs.get(i).getText());
             docsSection.append("\n\n");
         }
-
-        return """
-               Extract ALL entities and relationships from ALL the documents below.
-               %s
-
-               Documents:
-               %s
-
-               IMPORTANT: Your entire response MUST be a single raw JSON object — no preamble, no explanation, no markdown fences, no tool calls before or after. Start your response with { and end with }.
-               The JSON must have exactly two keys: "entities" (array) and "relationships" (array).
-               For entity IDs, use unique identifiers (e.g. "entity_1", "entity_2").
-               Example: {"entities": [{"id": "e1", "title": "John", "label": "PERSON", "description": "A person"}],
-                         "relationships": [{"source": "e1", "target": "e2", "type": "WORKS_AT", "description": "John works at Acme"}]}
-               """.formatted(schemaDescription, docsSection.toString());
-    }
-
-    private String getSchemaDescription(GraphSchema schema) {
-        if (schema != null && schema.getNodeTypes() != null && schema.getRelationshipTypes() != null) {
-            return """
-                    The entities must conform to the following node types:
-                    %s
-
-                    The relationships must conform to the following types:
-                    %s
-
-                    For each entity, provide:
-                    - "id": a unique identifier
-                    - "title": the primary name
-                    - "label": the node label from the schema
-                    - "description": a short description
-                    - "metadata": additional properties
-
-                    For each relationship, provide:
-                    - "source": the source entity id
-                    - "target": the target entity id
-                    - "type": the relationship type from the schema
-                    - "description": how they are related
-                    - "weight": optional strength (0.0 to 1.0)
-                    """.formatted(
-                    schema.getNodeTypes().stream()
-                            .map(nt -> "- Label: " + nt.getLabel() + ", Description: " + nt.getDescription())
-                            .collect(Collectors.joining("\n")),
-                    schema.getRelationshipTypes().stream()
-                            .map(rt -> "- Type: " + rt.getType() + ", Description: " + rt.getDescription())
-                            .collect(Collectors.joining("\n"))
-            );
-        }
-        return "Extract entities with 'id', 'title', 'label', and 'description'. " +
-                "Extract relationships with 'source', 'target', 'type', and 'description'.";
+        return extractionPromptPreamble(schema)
+                + "\nSOURCE DOCUMENTS:\n"
+                + docsSection
+                + extractionPromptOutputContract();
     }
 
     private String createExtractionPrompt(String text, GraphSchema schema) {
-        String schemaDescription;
-        if (schema != null && schema.getNodeTypes() != null && schema.getRelationshipTypes() != null) {
-            schemaDescription = """
-                    The entities must conform to the following node types:
-                    %s
+        return extractionPromptPreamble(schema)
+                + "\nSOURCE TEXT:\n"
+                + (text == null ? "" : text)
+                + extractionPromptOutputContract();
+    }
 
-                    The relationships must conform to the following types:
-                    %s
+    private String extractionPromptPreamble(GraphSchema schema) {
+        StringBuilder prompt = new StringBuilder("""
+                Extract a knowledge graph ONLY from the source text below.
+                Never invent entities, process steps, roles, dates, or relationships.
+                If the source supports no graph facts, return {"entities":[],"relationships":[]}.
+                Resolve repeated mentions of the same real-world item to one entity id before emitting JSON.
+                Emit a relationship only when the same source passage supports its source, relationship, and target.
+                """);
+        prompt.append(getSchemaDescription(schema));
+        prompt.append(GraphExtractionValidator.semanticPromptInstructions(validationPolicy, schema));
+        if (extractionModelConfig.customPrompt() != null
+                && !extractionModelConfig.customPrompt().isBlank()) {
+            prompt.append("\nAdditional project instructions:\n")
+                    .append(extractionModelConfig.customPrompt().trim())
+                    .append('\n');
+        }
+        return prompt.toString();
+    }
 
-                    For each entity, provide:
-                    - "id": a unique identifier
-                    - "title": the primary name
-                    - "label": the node label from the schema
-                    - "description": a short description
-                    - "metadata": additional properties
+    private String extractionPromptOutputContract() {
+        return """
 
-                    For each relationship, provide:
-                    - "source": the source entity id
-                    - "target": the target entity id
-                    - "type": the relationship type from the schema
-                    - "description": how they are related
-                    - "weight": optional strength (0.0 to 1.0)
-                    """.formatted(
-                    schema.getNodeTypes().stream()
-                            .map(nt -> "- Label: " + nt.getLabel() + ", Description: " + nt.getDescription())
-                            .collect(Collectors.joining("\n")),
-                    schema.getRelationshipTypes().stream()
-                            .map(rt -> "- Type: " + rt.getType() + ", Description: " + rt.getDescription())
-                            .collect(Collectors.joining("\n"))
-            );
-        } else {
-            schemaDescription = "Extract entities with 'id', 'title', 'label', and 'description'. " +
-                    "Extract relationships with 'source', 'target', 'type', and 'description'.";
+                OUTPUT CONTRACT:
+                - Return exactly one raw JSON object and nothing else. Start with { and end with }.
+                - The object MUST have exactly two arrays: "entities" and "relationships".
+                - Every entity MUST contain string fields "id", "title", "label", and "description".
+                - Entity "title" MUST be an exact meaningful source mention, not a generic category placeholder.
+                - Entity "metadata" is optional and MUST contain only source-supported values.
+                - Every relationship MUST contain string fields "source", "target", "type", and "description".
+                - Relationship endpoints MUST reference ids emitted in "entities".
+                - Relationship "confidence" is optional and, when present, MUST be in [0.0, 1.0].
+                - Relationship "weight", "metadata", and ISO-8601 "occurredAt" are optional.
+                - Populate only this empty shape; do not copy facts from these instructions:
+                  {"entities":[],"relationships":[]}
+                """;
+    }
+
+    private String getSchemaDescription(GraphSchema schema) {
+        if (schema == null) {
+            return "\nUse precise UPPERCASE_WITH_UNDERSCORES labels and relationship types.\n";
         }
 
-        return """
-               Extract entities and relationships from the text below.
-               %s
+        StringBuilder description = new StringBuilder();
+        if (schema.getNodeTypes() != null && !schema.getNodeTypes().isEmpty()) {
+            description.append("\nAllowed entity labels:\n");
+            schema.getNodeTypes().forEach(type -> {
+                description.append("- ").append(type.getLabel());
+                if (type.getDescription() != null && !type.getDescription().isBlank()) {
+                    description.append(": ").append(type.getDescription());
+                }
+                description.append('\n');
+            });
+        }
+        if (schema.getRelationshipTypes() != null && !schema.getRelationshipTypes().isEmpty()) {
+            description.append("\nAllowed relationship types:\n");
+            schema.getRelationshipTypes().forEach(type -> {
+                description.append("- ").append(type.getType());
+                if (type.getDescription() != null && !type.getDescription().isBlank()) {
+                    description.append(": ").append(type.getDescription());
+                }
+                description.append('\n');
+            });
+        }
+        return description.toString();
+    }
 
-               Text:
-               \"""
-               %s
-               \"""
+    private boolean isValidExtractionResponse(String response,
+                                              GraphSchema schema,
+                                              SchemaEnforcementMode mode) {
+        ExtractedGraphDTO.ExtractedGraph extracted = parseExtractionResponse(response);
+        if (extracted == null) {
+            return false;
+        }
+        if (mode == SchemaEnforcementMode.STRICT && schema != null) {
+            cleanGraph(extracted, schema);
+        }
+        ValidationResult validation = validateExtractedGraph(extracted, schema);
+        if (!validation.valid()) {
+            log.debug("Rejecting graph-constructor response: {}", validationFeedback(validation.errors()));
+        }
+        return validation.valid();
+    }
 
-               IMPORTANT: Your entire response MUST be a single raw JSON object — no preamble, no explanation, no markdown fences, no tool calls before or after. Start your response with { and end with }.
-               The JSON must have exactly two keys: "entities" (array) and "relationships" (array).
-               Example: {"entities": [{"id": "e1", "title": "John", "label": "PERSON", "description": "A person"}],
-                         "relationships": [{"source": "e1", "target": "e2", "type": "WORKS_AT", "description": "John works at Acme"}]}
-               """.formatted(schemaDescription, text);
+    private ValidationResult validateExtractedGraph(ExtractedGraphDTO.ExtractedGraph extracted,
+                                                    GraphSchema schema) {
+        List<GraphExtractionSchema.ExtractedEntity> entities = new ArrayList<>();
+        if (extracted.getEntities() != null) {
+            for (ExtractedGraphDTO.ExtractedEntity entity : extracted.getEntities()) {
+                if (entity == null) {
+                    entities.add(null);
+                    continue;
+                }
+                entities.add(new GraphExtractionSchema.ExtractedEntity(
+                        entity.getId(),
+                        entity.getTitle(),
+                        entity.getNodeLabel(),
+                        List.of(),
+                        entity.getDescription(),
+                        null,
+                        stringMetadata(entity.getMetadata())));
+            }
+        }
+
+        List<GraphExtractionSchema.ExtractedRelation> relations = new ArrayList<>();
+        if (extracted.getRelationships() != null) {
+            for (ExtractedGraphDTO.ExtractedRelationship relation : extracted.getRelationships()) {
+                if (relation == null) {
+                    relations.add(null);
+                    continue;
+                }
+                Double confidence = relation.getConfidence() != null
+                        ? relation.getConfidence()
+                        : relation.getWeight();
+                relations.add(new GraphExtractionSchema.ExtractedRelation(
+                        relation.getSource(),
+                        relation.getTarget(),
+                        relation.getRelationshipType(),
+                        relation.getDescription(),
+                        confidence,
+                        stringMetadata(relation.getMetadata()),
+                        relation.getOccurredAt()));
+            }
+        }
+
+        return GraphExtractionValidator.validate(
+                GraphExtractionSchema.ExtractionResult.of(entities, relations, null),
+                validationPolicy,
+                schema);
+    }
+
+    private Map<String, String> stringMetadata(Map<String, Object> metadata) {
+        if (metadata == null || metadata.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, String> values = new LinkedHashMap<>();
+        metadata.forEach((key, value) -> {
+            if (key != null && value != null) {
+                values.put(key, value.toString());
+            }
+        });
+        return values;
+    }
+
+    private String validationFeedback(List<String> errors) {
+        if (errors == null || errors.isEmpty()) {
+            return "Unknown validation failure";
+        }
+        int limit = validationPolicy.effectiveMaxErrorsInRetryPrompt();
+        String feedback = errors.stream().limit(limit).collect(Collectors.joining("; "));
+        if (errors.size() > limit) {
+            feedback += "; ... and " + (errors.size() - limit) + " more";
+        }
+        return feedback;
     }
 
     private ExtractedGraphDTO.ExtractedGraph parseExtractionResponse(String jsonResponse) {
@@ -742,6 +835,7 @@ public class MatrixGraphConstructor implements GraphConstructor {
             Entity entity = new Entity();
             entity.setId(e.getId());
             entity.setTitle(e.getTitle());
+            entity.setType(e.getNodeLabel());
             entity.setDescription(e.getDescription());
             entity.setMetadata(e.getMetadata());
             return entity;
@@ -751,13 +845,20 @@ public class MatrixGraphConstructor implements GraphConstructor {
             Relationship rel = new Relationship();
             rel.setSource(r.getSource());
             rel.setTarget(r.getTarget());
+            rel.setType(r.getRelationshipType());
             rel.setDescription(r.getDescription());
-            if (r.getMetadata() == null) {
-                r.setMetadata(new HashMap<>());
+            Double confidence = r.getConfidence() != null ? r.getConfidence() : r.getWeight();
+            rel.setConfidence(confidence);
+            rel.setWeight(r.getWeight() != null ? r.getWeight() : confidence);
+            Map<String, Object> metadata = r.getMetadata() == null
+                    ? new HashMap<>()
+                    : new HashMap<>(r.getMetadata());
+            metadata.put("relationshipType", r.getRelationshipType());
+            metadata.put("weight", r.getWeight());
+            if (r.getOccurredAt() != null && !r.getOccurredAt().isBlank()) {
+                metadata.put("occurredAt", r.getOccurredAt());
             }
-            r.getMetadata().put("relationshipType", r.getRelationshipType());
-            r.getMetadata().put("weight", r.getWeight());
-            rel.setMetadata(r.getMetadata());
+            rel.setMetadata(metadata);
             return rel;
         }).collect(Collectors.toList()));
 

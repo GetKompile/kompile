@@ -18,6 +18,8 @@ package ai.kompile.cli.common.mcp;
 
 import ai.kompile.cli.common.registry.InstanceInfo;
 import ai.kompile.cli.common.registry.InstanceRegistry;
+import ai.kompile.cli.common.routing.KompileService;
+import ai.kompile.cli.common.routing.KompileServiceEndpoints;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -27,18 +29,23 @@ import java.time.Duration;
 import java.util.List;
 
 /**
- * Auto-discovers running kompile-app instances that have MCP enabled.
+ * Auto-discovers a running kompile app that has MCP enabled.
+ *
+ * <p>Every persona — admin console, chat, crawl manager — mounts its own MCP server carrying its own
+ * tools, so "any app that answers" is the honest contract here; unlike an API path, an MCP endpoint
+ * does not name one owner. What is no longer guessed is <em>where</em> to look: candidates come from
+ * {@link KompileServiceEndpoints}, which honours the per-service override ladder, rather than a fixed
+ * port sweep that predated :8082.</p>
  */
 public class InstanceDiscovery {
 
-    private static final int[] PROBE_PORTS = {8080, 8081, 9090, 9091};
     private static final HttpClient HTTP_CLIENT = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(2))
             .build();
 
     /**
-     * Discovers a running kompile-app instance with MCP support.
-     * Checks the instance registry first, then probes common ports.
+     * Discovers a running kompile app instance with MCP support.
+     * Checks the instance registry first, then the resolved endpoint of each service.
      *
      * @return the base URL of the found instance, or null if none found
      */
@@ -56,12 +63,10 @@ public class InstanceDiscovery {
                 }
             }
         } catch (Exception e) {
-            // Registry unavailable, fall through to port probing
+            // Registry unavailable, fall through to the resolved endpoints
         }
 
-        // Probe common ports on localhost
-        for (int port : PROBE_PORTS) {
-            String url = "http://localhost:" + port;
+        for (String url : KompileServiceEndpoints.allBaseUrls()) {
             if (probeMcp(url)) {
                 return url;
             }
@@ -70,12 +75,22 @@ public class InstanceDiscovery {
         return null;
     }
 
-    /** Prevent auxiliary services with an actuator endpoint from being mistaken for kompile-app. */
+    /** Prevent auxiliary services with an actuator endpoint from being mistaken for a kompile app. */
     static boolean isAppInstance(InstanceInfo info) {
         if (info == null || info.getType() == null) {
             return false;
         }
-        return "app".equals(info.getType()) || "kompile-app-main".equals(info.getType());
+        if ("app".equals(info.getType())) {
+            return true;
+        }
+        // ServiceManager registers instances under the component id, so each persona shows up as
+        // its own type. All three serve MCP; none of them is "the" app any more.
+        for (KompileService service : KompileService.values()) {
+            if (service.componentId().equals(info.getType())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

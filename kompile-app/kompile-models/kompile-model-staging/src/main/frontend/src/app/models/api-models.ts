@@ -660,7 +660,83 @@ export type StagingTargetProfile =
   | 'android-arm64-hexagon-htp'
   | 'android-arm64-nnapi-accelerator'
   | 'android-arm64-google-tensor-g5';
-export type StagingQuantizationProfile = 'none' | 'int8-per-channel';
+export type StagingQuantizationProfile = 'none' | 'int8';
+
+export type TextModelAssetKey =
+  | 'model'
+  | 'tokenizer'
+  | 'tokenizer_config'
+  | 'special_tokens_map'
+  | 'added_tokens'
+  | 'chat_template'
+  | 'generation_config'
+  | 'model_config'
+  | 'text_generation';
+
+export interface TextModelAssetMap {
+  model?: string;
+  tokenizer?: string;
+  tokenizerConfig?: string;
+  specialTokensMap?: string;
+  addedTokens?: string;
+  chatTemplate?: string;
+  generationConfig?: string;
+  modelConfig?: string;
+  textGeneration?: string;
+}
+
+/**
+ * Explicit public HTTPS locations for canonical text-model components.
+ * These override repository-relative discovery without changing the SDX format.
+ */
+export interface TextModelAssetUrlMap extends TextModelAssetMap {}
+
+export interface HuggingFaceDiscoveryRequest {
+  reference: string;
+  revision?: string;
+  authToken?: string;
+}
+
+export interface HuggingFaceModelCandidate {
+  path: string;
+  size: number;
+  format: string;
+  quantizationHint?: string;
+}
+
+export interface HuggingFaceDiscovery {
+  repository: string;
+  requestedRevision: string;
+  resolvedRevision: string;
+  requestedPath?: string;
+  referenceType: string;
+  discoveredAssets: TextModelAssetMap;
+  modelCandidates: HuggingFaceModelCandidate[];
+  requiresModelSelection: boolean;
+}
+
+export type ImportDiagnosticPhase =
+  | 'parse'
+  | 'resolve'
+  | 'discover'
+  | 'select'
+  | 'download'
+  | 'validate'
+  | 'compile'
+  | 'cache';
+
+export interface ImportDiagnosticEvent {
+  attemptId: string;
+  timestamp: string;
+  phase: ImportDiagnosticPhase;
+  code: string;
+  severity: 'info' | 'error';
+  summary: string;
+  remediation: string;
+  modelId: string;
+  source: string;
+  details: { [key: string]: string };
+}
 
 export interface StageModelRequest {
   modelId: string;
@@ -670,7 +746,10 @@ export interface StageModelRequest {
   type?: string;
   authToken?: string;
   revision?: string;
-  files?: string[];
+  /** @deprecated Use textAssets for runnable text models. */
+  files?: { [key: string]: string };
+  textAssets?: TextModelAssetMap;
+  textAssetUrls?: TextModelAssetUrlMap;
   tokenizerUrl?: string;
   autoPromote?: boolean;
   outputFormat?: StagingOutputFormat;

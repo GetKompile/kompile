@@ -40,7 +40,6 @@ import java.util.Map;
 @ConditionalOnProperty(name = "kompile.staging.app.enabled", havingValue = "true")
 @RestController
 @RequestMapping("/api/compiler")
-@CrossOrigin(origins = "*")
 public class CompilerController {
 
     private static final Logger log = LoggerFactory.getLogger(CompilerController.class);

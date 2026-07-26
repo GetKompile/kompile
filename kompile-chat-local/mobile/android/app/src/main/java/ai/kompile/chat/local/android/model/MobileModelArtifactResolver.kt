@@ -25,6 +25,10 @@ internal object MobileModelArtifactResolver {
 
         val target = SdxTargetProfile.fromId(BuildConfig.SDX_TARGET_PROFILE)
         val cacheRoot = File(context.noBackupFilesDir, "sdx-model-cache")
-        return SdxModelCache(cacheRoot.toPath()).resolve(source.toPath(), target)
+        val compiled = SdxModelCache(cacheRoot.toPath()).resolve(source.toPath(), target)
+        // A target object alone is not a runnable chat model. Fail at import with
+        // the staging guidance from SDX instead of opening a partial native session.
+        compiled.requireTextModelAssets()
+        return compiled
     }
 }

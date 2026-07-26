@@ -14,12 +14,16 @@ import ai.kompile.project.KompileProjectStore;
 import ai.kompile.project.archive.ProjectArchiveService;
 import ai.kompile.staging.config.SdxStagingProperties;
 import ai.kompile.staging.config.StagingPropertyKeys;
+import ai.kompile.staging.conversion.ConversionArtifact;
 import ai.kompile.staging.download.DownloadRequest;
+import ai.kompile.staging.download.StagingCancellation;
+import ai.kompile.staging.download.TextModelAssetMap;
 import org.nd4j.dsp.model.SdxCompiledModel;
 import org.nd4j.dsp.model.SdxModelCache;
 import org.nd4j.dsp.model.SdxModelCompiler;
 import org.nd4j.dsp.model.SdxQuantizationContract;
 import org.nd4j.dsp.model.SdxTargetProfile;
+import org.nd4j.dsp.model.SdxTensorG3NnapiCompiler;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -38,24 +42,30 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
 
 /**
- * Compiles one canonical SDZ for one mobile target and publishes a canonical .kproject.
+ * Compiles one canonical SDZ for one mobile target and publishes either that complete chat
+ * model or a canonical .kproject containing the exact same SDZ.
  *
- * <p>Target products remain internal SDX cache objects. The project contains one enriched
- * .sdz plus the project's portable graph and Markdown provenance; applications never select
- * a vendor model format. Compilation and archive publication are both fail-closed.</p>
+ * <p>Target products remain internal SDX cache objects. Model output is a runnable .sdz with
+ * its tokenizer, tokenizer configuration, chat template, and generation configuration.
+ * Project output wraps those same bytes with the project's portable graph and Markdown
+ * provenance. Applications never select a vendor model format. Compilation and publication
+ * are both fail-closed.</p>
  */
 @Service
 public class SdxProjectOutputService {
     public static final String OUTPUT_MODEL = "model";
     public static final String OUTPUT_KPROJECT = "kproject";
     public static final String QUANTIZATION_NONE = "none";
-    public static final String QUANTIZATION_INT8 = "int8-per-channel";
+    public static final String QUANTIZATION_INT8 = "int8";
+    public static final String QUANTIZATION_INT8_PER_TENSOR = "int8-per-tensor";
+    public static final String QUANTIZATION_INT8_PER_CHANNEL = "int8-per-channel";
 
     private static final Pattern SAFE_MODEL_ID =
             Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{0,127}");
@@ -65,11 +75,6 @@ public class SdxProjectOutputService {
             "data/fact-sheets",
             "data/sources",
             "data/indexed-documents");
-    private static final Set<String> TOKENIZER_NAMES =
-            Set.of("tokenizer.json", "tokenizer.model");
-    private static final Set<String> GENERATION_CONFIG_NAMES =
-            Set.of("generation_config.json", "text-generation.json");
-
     private final Path modelsDir;
     private final Path sourceProjectRoot;
     private final SdxStagingProperties properties;
@@ -110,45 +115,96 @@ public class SdxProjectOutputService {
                 && OUTPUT_KPROJECT.equals(normalizeOutputFormat(request.getOutputFormat()));
     }
 
+    /**
+     * A model request becomes a target output only when it names a target profile. This keeps
+     * the legacy untargeted model-staging and promotion path intact for API clients that still
+     * need it, while all mobile UI requests produce a downloadable canonical artifact.
+     */
+    public static boolean isTargetOutputRequested(DownloadRequest request) {
+        if (request == null) {
+            return false;
+        }
+        String outputFormat = normalizeOutputFormat(request.getOutputFormat());
+        return OUTPUT_KPROJECT.equals(outputFormat)
+                || (OUTPUT_MODEL.equals(outputFormat)
+                        && request.getTargetProfile() != null
+                        && !request.getTargetProfile().isBlank());
+    }
+
     public Path createProject(
             Path stagingWorkspace,
             Path canonicalSdz,
             DownloadRequest request) throws IOException {
-        Objects.requireNonNull(request, "request");
+        return createProject(
+                stagingWorkspace,
+                ConversionArtifact.canonicalSdz(canonicalSdz),
+                request,
+                StagingCancellation.NONE);
+    }
+
+    public Path createProject(
+            Path stagingWorkspace,
+            ConversionArtifact conversionArtifact,
+            DownloadRequest request,
+            StagingCancellation cancellation) throws IOException {
         if (!isProjectOutputRequested(request)) {
             throw new IllegalArgumentException("SDX project output was not requested");
         }
+        return createOutput(stagingWorkspace, conversionArtifact, request, cancellation);
+    }
 
+    public Path createOutput(
+            Path stagingWorkspace,
+            ConversionArtifact conversionArtifact,
+            DownloadRequest request,
+            StagingCancellation cancellation) throws IOException {
+        Objects.requireNonNull(request, "request");
+        StagingCancellation signal = cancellation == null
+                ? StagingCancellation.NONE
+                : cancellation;
+        signal.checkpoint();
+        if (!isTargetOutputRequested(request)) {
+            throw new IllegalArgumentException(
+                    "A targetProfile is required for downloadable mobile SDX output");
+        }
+
+        boolean projectOutput = isProjectOutputRequested(request);
         String modelId = requireModelId(request.getModelId());
-        SdxTargetProfile target = requireAndroidTarget(request.getTargetProfile());
-        String quantization = normalizeQuantization(request.getQuantizationProfile());
+        SdxTargetProfile target = requireMobileTarget(request.getTargetProfile());
+        String quantizationIntent = normalizeQuantization(request.getQuantizationProfile());
         String targetSoc = normalizeTargetSoc(target, request.getTargetSoc());
+        String quantization = resolveQuantization(target, targetSoc, quantizationIntent);
 
         Path workspace = Objects.requireNonNull(stagingWorkspace, "stagingWorkspace")
                 .toAbsolutePath().normalize();
         Files.createDirectories(workspace);
-        Path source = Objects.requireNonNull(canonicalSdz, "canonicalSdz")
-                .toAbsolutePath().normalize();
+        Path source = Objects.requireNonNull(conversionArtifact, "conversionArtifact")
+                .requireCanonicalSdz();
         requireRegularFile(source, "Canonical SameDiff model");
         if (!source.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".sdz")) {
-            throw new IOException("Mobile project compilation requires a canonical .sdz model");
+            throw new IOException("Mobile target compilation requires a canonical .sdz model");
         }
 
-        KompileProjectManifest sourceProject = loadSourceProject();
-        Path operationRoot = workspace.resolve(".sdx-project-" + UUID.randomUUID());
+        // A full project must fail before target compilation if no synced graph/Markdown
+        // source is configured. Model-only output deliberately has no project dependency.
+        KompileProjectManifest sourceProject = projectOutput ? loadSourceProject() : null;
+        Path operationRoot = workspace.resolve(".sdx-output-" + UUID.randomUUID());
         Path projectRoot = operationRoot.resolve("project");
         Path outputDirectory = workspace.resolve("outputs");
-        Path output = outputDirectory.resolve(modelId + "-" + target.id() + ".kproject");
+        String extension = projectOutput ? ".kproject" : ".sdz";
+        Path output = outputDirectory.resolve(modelId + "-" + target.id() + extension);
         if (Files.exists(output, LinkOption.NOFOLLOW_LINKS)) {
-            throw new IOException("Refusing to overwrite staged mobile project: " + output);
+            throw new IOException("Refusing to overwrite staged mobile artifact: " + output);
         }
 
-        Path tokenizer = findUniqueAsset(workspace, TOKENIZER_NAMES);
-        Path generationConfig = findUniqueAsset(workspace, GENERATION_CONFIG_NAMES);
         Files.createDirectories(operationRoot);
         try {
-            Path quantizationConfig = QUANTIZATION_INT8.equals(quantization)
-                    ? writeInt8Contract(operationRoot, target, targetSoc)
+            signal.checkpoint();
+            SdxTextModelStager.PreparedTextAssets textAssets =
+                    SdxTextModelStager.prepare(workspace, source, operationRoot);
+            signal.checkpoint();
+            Path quantizationConfig = QUANTIZATION_INT8.equals(quantizationIntent)
+                    ? writeInt8Contract(operationRoot, source, target, targetSoc)
                     : null;
 
             SdxModelCache cache = new SdxModelCache(cacheRoot());
@@ -156,22 +212,56 @@ public class SdxProjectOutputService {
                     SdxModelCompiler.CompileOptions.builder()
                             .modelId(modelId)
                             .targetSoc(targetSoc)
-                            .cacheKeyProperty("stagingOutput", OUTPUT_KPROJECT);
-            if (tokenizer != null) {
-                options.tokenizer(tokenizer);
-            }
-            if (generationConfig != null) {
-                options.textGenerationConfig(generationConfig);
-            }
+                            // The compile key must be identical whether the canonical SDZ is
+                            // downloaded directly or wrapped in a project archive.
+                            .cacheKeyProperty("stagingOutput", "mobile-sdz")
+                            .cacheKeyProperty(
+                                    "sourceRepository",
+                                    firstNonBlank(request.getRepository(), "unspecified"))
+                            .cacheKeyProperty(
+                                    "sourceRevision",
+                                    firstNonBlank(request.getRevision(), "unversioned"))
+                            .cacheKeyProperty(
+                                    "sourceModelSelection",
+                                    firstNonBlank(
+                                            request.effectiveSourceAssetProvenance().get(
+                                                    TextModelAssetMap.MODEL),
+                                            firstNonBlank(
+                                                    request.getTextAssets() == null
+                                                            ? null
+                                                            : request.getTextAssets().getModel(),
+                                                    "model")))
+                            .tokenizer(textAssets.tokenizer())
+                            .tokenizerConfig(textAssets.tokenizerConfig())
+                            .textGenerationConfig(textAssets.textGenerationConfig());
             if (quantizationConfig != null) {
                 options.quantizationConfig(quantizationConfig);
             }
 
-            SdxCompiledModel compiled = new SdxModelCompiler(cache).compile(
-                    source,
-                    target,
-                    targetCompiler(target, quantization, targetSoc),
-                    options.build());
+            SdxCompiledModel compiled;
+            try {
+                compiled = new SdxModelCompiler(cache).compile(
+                        source,
+                        target,
+                        cancellableCompiler(
+                                targetCompiler(target, quantizationIntent, targetSoc), signal),
+                        options.build());
+            } catch (IOException compileFailure) {
+                // SDX converts target-compiler runtime failures to IOException after deleting
+                // its private staging directory. Recover the shared cancellation semantic here
+                // so the staging lifecycle reports CANCELLED instead of a false build failure.
+                signal.checkpoint();
+                throw compileFailure;
+            }
+            signal.checkpoint();
+            compiled.requireTextModelAssets();
+
+            Path packagedSdz = operationRoot.resolve("compiled-model.sdz");
+            cache.packageCompiledSdz(source, List.of(target), packagedSdz);
+            signal.checkpoint();
+            if (!projectOutput) {
+                return publishPreparedArtifact(packagedSdz, output);
+            }
 
             KompileProjectModel model = projectModel(
                     request, target, targetSoc, quantization, compiled);
@@ -196,27 +286,38 @@ public class SdxProjectOutputService {
 
             copyPortableKnowledge(sourceProjectRoot, projectRoot);
             requirePortableKnowledge(projectRoot);
+            signal.checkpoint();
 
             Path packagedModel = projectRoot.resolve(model.getPath());
             Files.createDirectories(packagedModel.getParent());
-            cache.packageCompiledSdz(source, List.of(target), packagedModel);
+            Files.copy(packagedSdz, packagedModel, StandardCopyOption.COPY_ATTRIBUTES);
+            signal.checkpoint();
 
-            Files.createDirectories(outputDirectory);
-            Path pending = output.resolveSibling(
-                    "." + UUID.randomUUID() + ".pending-" + output.getFileName());
-            try {
-                archiveService.exportProject(projectRoot, pending);
-                AtomicProjectPublisher.publish(pending, output);
-                return output;
-            } catch (java.nio.file.FileAlreadyExistsException raced) {
-                throw new IOException(
-                        "Refusing to overwrite staged mobile project: " + output,
-                        raced);
-            } finally {
-                Files.deleteIfExists(pending);
-            }
+            Path preparedProject = operationRoot.resolve("compiled-project.kproject");
+            archiveService.exportProject(projectRoot, preparedProject);
+            signal.checkpoint();
+            Path published = publishPreparedArtifact(preparedProject, output);
+            signal.checkpoint();
+            return published;
         } finally {
             deleteTree(operationRoot);
+        }
+    }
+
+    private static Path publishPreparedArtifact(Path prepared, Path output) throws IOException {
+        Files.createDirectories(output.getParent());
+        Path pending = output.resolveSibling(
+                "." + UUID.randomUUID() + ".pending-" + output.getFileName());
+        try {
+            Files.copy(prepared, pending, StandardCopyOption.COPY_ATTRIBUTES);
+            AtomicProjectPublisher.publish(pending, output);
+            return output;
+        } catch (java.nio.file.FileAlreadyExistsException raced) {
+            throw new IOException(
+                    "Refusing to overwrite staged mobile artifact: " + output,
+                    raced);
+        } finally {
+            Files.deleteIfExists(pending);
         }
     }
 
@@ -248,22 +349,31 @@ public class SdxProjectOutputService {
                 : configured.toAbsolutePath().normalize();
     }
 
-    private SdxModelCompiler.TargetCompiler targetCompiler(
+    SdxModelCompiler.TargetCompiler targetCompiler(
             SdxTargetProfile target,
-            String quantization,
+            String quantizationIntent,
             String targetSoc) throws IOException {
         if (compilerOverride != null) {
             return compilerOverride;
         }
-        if (target == SdxTargetProfile.ANDROID_ARM64_NNAPI_ACCELERATOR
-                && QUANTIZATION_NONE.equals(quantization)) {
-            return SdxModelCompiler.nnapiDeviceCompilationPolicy(targetSoc);
+        if (target == SdxTargetProfile.IOS_ARM64_METAL
+                && QUANTIZATION_NONE.equals(quantizationIntent)) {
+            return SdxModelCompiler.metalDeviceCompilationPolicy(targetSoc);
+        }
+        if (target == SdxTargetProfile.ANDROID_ARM64_NNAPI_ACCELERATOR) {
+            if (QUANTIZATION_NONE.equals(quantizationIntent)) {
+                return SdxModelCompiler.nnapiDeviceCompilationPolicy(targetSoc);
+            }
+            if ("Tensor_G3".equals(targetSoc)
+                    && QUANTIZATION_INT8.equals(quantizationIntent)) {
+                return new SdxTensorG3NnapiCompiler();
+            }
         }
         List<String> command = properties.getCompilerCommand();
         if (command.isEmpty() || command.stream().anyMatch(value -> value == null || value.isBlank())) {
             throw new IOException(
                     "No SDX target compiler is configured for " + target.id()
-                            + " with quantization " + quantization + ". Set "
+                            + " with quantization " + quantizationIntent + ". Set "
                             + "kompile.staging.sdx.compiler-command as an argument vector; "
                             + "mobile staging never substitutes CPU or a prepared placeholder.");
         }
@@ -276,6 +386,39 @@ public class SdxProjectOutputService {
                 requireSetting(
                         properties.getCompilerFingerprint(),
                         "kompile.staging.sdx.compiler-fingerprint"));
+    }
+
+    private static SdxModelCompiler.TargetCompiler cancellableCompiler(
+            SdxModelCompiler.TargetCompiler delegate,
+            StagingCancellation cancellation) {
+        return new SdxModelCompiler.TargetCompiler() {
+            @Override
+            public String id() {
+                return delegate.id();
+            }
+
+            @Override
+            public String version() {
+                return delegate.version();
+            }
+
+            @Override
+            public String cacheKeyMaterial(
+                    Path sourceModel,
+                    SdxTargetProfile target,
+                    SdxModelCompiler.CompileOptions options) throws IOException {
+                cancellation.checkpoint();
+                return delegate.cacheKeyMaterial(sourceModel, target, options);
+            }
+
+            @Override
+            public Path compile(SdxModelCompiler.CompilationContext context) throws Exception {
+                cancellation.checkpoint();
+                Path output = delegate.compile(context);
+                cancellation.checkpoint();
+                return output;
+            }
+        };
     }
 
     private static String requireSetting(String value, String name) throws IOException {
@@ -309,6 +452,14 @@ public class SdxProjectOutputService {
         metadata.put("sdxCompilerId", compiled.compilerId());
         metadata.put("sdxCompilerVersion", compiled.compilerVersion());
         metadata.put("sourceSha256", compiled.sourceIdentity().sha256());
+        if (request.getSourceReference() != null && !request.getSourceReference().isBlank()) {
+            metadata.put("sourceReference", request.getSourceReference());
+        }
+        if (request.getRequestedRevision() != null && !request.getRequestedRevision().isBlank()) {
+            metadata.put("sourceRequestedRevision", request.getRequestedRevision());
+        }
+        request.effectiveSourceAssetProvenance().forEach(
+                (key, value) -> metadata.put("sourceAsset." + key, value));
         metadata.put("quantization", quantization);
         metadata.put("deviceOnly", "true");
         metadata.put("allowHostFallback", "false");
@@ -420,39 +571,44 @@ public class SdxProjectOutputService {
 
     private Path writeInt8Contract(
             Path operationRoot,
+            Path source,
             SdxTargetProfile target,
             String targetSoc) throws IOException {
-        Path output = operationRoot.resolve("int8-per-channel.json");
+        Path output = operationRoot.resolve(
+                resolveQuantization(target, targetSoc, QUANTIZATION_INT8) + ".json");
+        if (target == SdxTargetProfile.ANDROID_ARM64_NNAPI_ACCELERATOR
+                && SdxTensorG3NnapiCompiler.TARGET_SOC.equals(targetSoc)) {
+            copyEmbeddedQuantizationContract(source, output);
+            return output;
+        }
         SdxQuantizationContract.writeWeightInt8Profile(output, target, targetSoc);
         return output;
     }
 
-    private static Path findUniqueAsset(Path root, Set<String> names) throws IOException {
-        List<Path> matches = new ArrayList<>();
-        try (Stream<Path> paths = Files.walk(root)) {
-            paths.filter(path -> Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS))
-                    .filter(path -> !Files.isSymbolicLink(path))
-                    .filter(path -> names.contains(
-                            path.getFileName().toString().toLowerCase(Locale.ROOT)))
-                    .sorted()
-                    .forEach(matches::add);
+    private static void copyEmbeddedQuantizationContract(Path source, Path output)
+            throws IOException {
+        try (ZipFile zip = new ZipFile(source.toFile())) {
+            ZipEntry entry = zip.getEntry("metadata/quantization.json");
+            if (entry == null || entry.isDirectory()) {
+                throw new IOException(
+                        "Tensor G3 NNAPI staging requires calibrated metadata/quantization.json "
+                                + "in the canonical SDZ");
+            }
+            try (var input = zip.getInputStream(entry)) {
+                Files.copy(input, output, StandardCopyOption.REPLACE_EXISTING);
+            }
         }
-        if (matches.size() > 1) {
-            throw new IOException("Multiple candidate assets found for " + names + ": " + matches);
-        }
-        return matches.isEmpty() ? null : matches.get(0);
     }
 
-    private static SdxTargetProfile requireAndroidTarget(String value) {
+    private static SdxTargetProfile requireMobileTarget(String value) {
         if (value == null || value.isBlank()) {
             throw new IllegalArgumentException(
-                    "targetProfile is required when outputFormat is kproject");
+                    "targetProfile is required for downloadable mobile SDX output");
         }
         SdxTargetProfile target = SdxTargetProfile.fromId(value);
-        if (target == SdxTargetProfile.IOS_ARM64_METAL) {
-            throw new IllegalArgumentException(
-                    "Android model staging does not accept the iOS Metal target");
-        }
+        // Resolve through the exact provider registry now so unsupported or ambiguous
+        // targets fail before any cache or project state is created.
+        target.platformProvider();
         return target;
     }
 
@@ -475,16 +631,32 @@ public class SdxProjectOutputService {
         if (QUANTIZATION_NONE.equals(normalized)) {
             return normalized;
         }
-        if ("int8".equals(normalized) || QUANTIZATION_INT8.equals(normalized)) {
+        if (QUANTIZATION_INT8.equals(normalized)
+                || QUANTIZATION_INT8_PER_CHANNEL.equals(normalized)
+                || QUANTIZATION_INT8_PER_TENSOR.equals(normalized)) {
             return QUANTIZATION_INT8;
         }
         throw new IllegalArgumentException(
                 "Unsupported SDX quantizationProfile: " + value
-                        + ". Supported values are none and int8-per-channel.");
+                        + ". Supported values are none and int8.");
+    }
+
+    public static String resolveQuantization(
+            SdxTargetProfile target, String targetSoc, String quantizationIntent) {
+        Objects.requireNonNull(target, "target");
+        String normalized = normalizeQuantization(quantizationIntent);
+        if (QUANTIZATION_NONE.equals(normalized)) {
+            return QUANTIZATION_NONE;
+        }
+        if (target == SdxTargetProfile.ANDROID_ARM64_NNAPI_ACCELERATOR
+                && SdxTensorG3NnapiCompiler.TARGET_SOC.equals(targetSoc)) {
+            return QUANTIZATION_INT8_PER_TENSOR;
+        }
+        return QUANTIZATION_INT8_PER_CHANNEL;
     }
 
     public static String normalizeTargetProfile(String value) {
-        return requireAndroidTarget(value).id();
+        return requireMobileTarget(value).id();
     }
 
     public static String normalizeTargetSoc(SdxTargetProfile target, String value) {
@@ -498,14 +670,9 @@ public class SdxProjectOutputService {
     }
 
     private static String defaultTargetSoc(SdxTargetProfile target) {
-        return switch (target) {
-            case ANDROID_ARM64_VULKAN -> "Android_Vulkan_1_1";
-            case ANDROID_ARM64_HEXAGON_HTP -> "SM8650";
-            case ANDROID_ARM64_NNAPI_ACCELERATOR -> "Tensor_G3";
-            case ANDROID_ARM64_GOOGLE_TENSOR_G5 -> "Tensor_G5";
-            default -> throw new IllegalArgumentException(
-                    "No Android target SoC for " + target.id());
-        };
+        return Objects.requireNonNull(target, "target")
+                .platformProvider()
+                .defaultTargetSoc();
     }
 
     private static String requireModelId(String value) {

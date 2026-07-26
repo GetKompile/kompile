@@ -3144,11 +3144,15 @@ public class ProjectCommand implements Callable<Integer> {
         private boolean allowRunning;
 
         @Option(names = "--include-sensitive-files",
-                description = "Include credential/key files excluded by default.")
+                description = "Deprecated compatibility option; .kproject archives always reject sensitive files.")
         private boolean includeSensitiveFiles;
 
         @Override
         public Integer call() throws Exception {
+            if (includeSensitiveFiles) {
+                throw new IllegalArgumentException(
+                        ".kproject archives never include sensitive files; use a separate encrypted backup.");
+            }
             Path projectRoot = root.toPath().toAbsolutePath().normalize();
             KompileProjectManifest project = new KompileProjectStore().load(projectRoot);
             Path archive = output == null

@@ -18,6 +18,8 @@ package ai.kompile.cli.common.status;
 
 import ai.kompile.cli.common.registry.InstanceInfo;
 import ai.kompile.cli.common.registry.InstanceRegistry;
+import ai.kompile.cli.common.routing.KompileService;
+import ai.kompile.cli.common.routing.KompileServiceEndpoints;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -35,13 +37,27 @@ public class ServiceProber {
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(2);
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(2);
 
-    private static final List<ServiceDefinition> KNOWN_SERVICES = List.of(
-            new ServiceDefinition("kompile-app", 8080, "/actuator/health"),
-            new ServiceDefinition("kompile-app", 8081, "/actuator/health"),
+    private static final List<ServiceDefinition> KNOWN_AUXILIARY_SERVICES = List.of(
             new ServiceDefinition("kompile-model-staging", 8090, "/actuator/health"),
             new ServiceDefinition("pipeline-serve", 9090, "/health"),
             new ServiceDefinition("pipeline-serve", 9091, "/health")
     );
+
+    /**
+     * The three persona apps, each at its resolved port.
+     *
+     * <p>Built per call rather than held in a constant so a port override is reflected, and named by
+     * component id so status output distinguishes the admin console from chat and the crawl manager —
+     * the old list had two entries both labelled {@code kompile-app} and no :8082 at all.</p>
+     */
+    private static List<ServiceDefinition> personaServices() {
+        List<ServiceDefinition> defs = new ArrayList<>();
+        for (KompileService service : KompileService.values()) {
+            defs.add(new ServiceDefinition(service.componentId(),
+                    KompileServiceEndpoints.resolve(service).port(), "/actuator/health"));
+        }
+        return defs;
+    }
 
     /**
      * Probes all known services and registered instances concurrently.
@@ -50,8 +66,11 @@ public class ServiceProber {
         Map<Integer, ServiceDefinition> toProbe = new LinkedHashMap<>();
 
         // Add known services
-        for (ServiceDefinition def : KNOWN_SERVICES) {
+        for (ServiceDefinition def : personaServices()) {
             toProbe.put(def.getPort(), def);
+        }
+        for (ServiceDefinition def : KNOWN_AUXILIARY_SERVICES) {
+            toProbe.putIfAbsent(def.getPort(), def);
         }
 
         // Add registered instances (dedup by port)

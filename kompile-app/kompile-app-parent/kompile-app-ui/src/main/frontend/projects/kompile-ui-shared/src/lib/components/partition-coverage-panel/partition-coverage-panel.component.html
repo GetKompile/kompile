@@ -1,0 +1,235 @@
+<!--
+  ~ Copyright 2025 Kompile Inc.
+  ~ Licensed under the Apache License, Version 2.0 (the "License").
+  -->
+
+<div class="partition-coverage-panel">
+
+  <div class="panel-header">
+    <div class="panel-header-left">
+      <h3><mat-icon inline>fact_check</mat-icon> Evidence coverage</h3>
+      <p class="panel-subtitle">
+        What the graph has actually read about each subject — and what it has not. Every figure is
+        relative to the policy version the claim was recorded under.
+      </p>
+    </div>
+    <button mat-stroked-button (click)="load()" [disabled]="loading" matTooltip="Reload coverage claims">
+      <mat-icon>refresh</mat-icon>
+      Refresh
+    </button>
+  </div>
+
+  <div class="loading-state" *ngIf="loading">
+    <mat-spinner diameter="28"></mat-spinner>
+    <span>Reading coverage claims…</span>
+  </div>
+
+  <div class="error-state" *ngIf="errorMessage && !loading" role="alert">
+    <mat-icon>error_outline</mat-icon>
+    <span>{{ errorMessage }}</span>
+  </div>
+
+  <ng-container *ngIf="report && !loading && !errorMessage">
+
+    <!-- Roll-up. "No claims" is an answer, not an empty state: it means nothing has recorded
+         what it read, so nothing here can be said to be grounded. -->
+    <div class="empty-state" *ngIf="report.partitions === 0">
+      <mat-icon>help_outline</mat-icon>
+      <div>
+        <div class="empty-title">No coverage claims for {{ report.scope }}</div>
+        <p class="empty-text">
+          The entity-partition pass has not recorded anything here. Nothing in this graph carries a
+          claim about how much of the available evidence it is based on.
+        </p>
+      </div>
+    </div>
+
+    <ng-container *ngIf="report.partitions > 0">
+      <div class="rollup">
+        <div class="rollup-metric">
+          <div class="metric-value">{{ percent(report.coverage) }}%</div>
+          <div class="metric-label">of admitted evidence read</div>
+        </div>
+        <div class="rollup-metric">
+          <div class="metric-value">{{ report.covered }} / {{ report.admitted }}</div>
+          <div class="metric-label">chunks read / admitted</div>
+        </div>
+        <div class="rollup-metric">
+          <div class="metric-value">{{ report.complete }} / {{ report.partitions }}</div>
+          <div class="metric-label">subjects provisionally complete</div>
+        </div>
+        <div class="rollup-metric" [class.warn]="report.completeWithGaps > 0">
+          <div class="metric-value">{{ report.completeWithGaps }}</div>
+          <div class="metric-label">complete with known gaps</div>
+        </div>
+        <div class="rollup-metric" [class.warn]="report.outstanding > 0">
+          <div class="metric-value">{{ report.outstanding }}</div>
+          <div class="metric-label">chunks still owed</div>
+        </div>
+        <div class="rollup-metric" [class.warn]="report.inaccessible > 0">
+          <div class="metric-value">{{ report.inaccessible }}</div>
+          <div class="metric-label">chunks not permitted</div>
+        </div>
+        <div class="rollup-metric" [class.warn]="report.invalidated > 0">
+          <div class="metric-value">{{ report.invalidated }}</div>
+          <div class="metric-label">chunks whose source moved</div>
+        </div>
+        <div class="rollup-metric">
+          <div class="metric-value">{{ report.excluded }}</div>
+          <div class="metric-label">proposals rejected by policy</div>
+        </div>
+      </div>
+
+      <div class="chip-row" *ngIf="entries(report.byChannel).length">
+        <span class="chip-row-label">Found via</span>
+        <span class="chip" *ngFor="let entry of entries(report.byChannel)">
+          {{ entry.key }} <span class="chip-count">{{ entry.value }}</span>
+        </span>
+      </div>
+
+      <!-- Per subject, least covered first: the subject that has read the least is the one an
+           answer is most likely to be wrong about. -->
+      <div class="subject-list">
+        <div class="subject-row" *ngFor="let subject of report.subjects; trackBy: trackBySubject">
+          <div class="subject-head" (click)="toggle(subject.partitionId)">
+            <mat-icon class="expand-icon">{{ isExpanded(subject.partitionId) ? 'expand_less' : 'expand_more' }}</mat-icon>
+            <span class="subject-name">{{ subject.subject || subject.entityId || subject.partitionId }}</span>
+            <span class="claim-badge" [ngClass]="claimClass(subject)">{{ claimLabel(subject) }}</span>
+            <span class="subject-coverage">{{ percent(subject.coverage) }}%</span>
+            <span class="subject-counts">{{ subject.covered }} / {{ subject.admitted }} chunks</span>
+            <span class="subject-gap" *ngIf="gapCount(subject) > 0">{{ gapCount(subject) }} not read</span>
+            <span class="subject-policy" matTooltip="Coverage is relative to this policy version">{{ subject.policyVersion }}</span>
+          </div>
+
+          <div class="coverage-bar">
+            <div class="coverage-bar-fill" [style.width.%]="percent(subject.coverage)"></div>
+          </div>
+
+          <div class="subject-detail" *ngIf="isExpanded(subject.partitionId)">
+            <div class="detail-line"><span class="detail-key">Partition</span><span class="detail-value">{{ subject.partitionId }}</span></div>
+            <div class="detail-line"><span class="detail-key">Phase</span><span class="detail-value">{{ subject.phase }} &bull; round {{ subject.round }} &bull; frontier {{ subject.frontierExhausted ? 'exhausted' : 'open' }}</span></div>
+            <div class="detail-line" *ngIf="subject.snapshotId"><span class="detail-key">Snapshot</span><span class="detail-value">{{ subject.snapshotId }}</span></div>
+            <div class="detail-line"><span class="detail-key">Summary</span><span class="detail-value mono">{{ subject.summary }}</span></div>
+
+            <div class="chip-row" *ngIf="entries(subject.byState).length">
+              <span class="chip-row-label">Membership</span>
+              <span class="chip" *ngFor="let entry of entries(subject.byState)">
+                {{ entry.key }} <span class="chip-count">{{ entry.value }}</span>
+              </span>
+            </div>
+
+            <!-- The gaps, named. A count of what was not read cannot be acted on. -->
+            <div class="gap-block" *ngIf="subject.outstanding?.length">
+              <div class="gap-title">Still owed ({{ subject.outstanding.length }})</div>
+              <div class="gap-ids"><span class="gap-id" *ngFor="let id of subject.outstanding">{{ id }}</span></div>
+            </div>
+            <div class="gap-block" *ngIf="subject.deferred?.length">
+              <div class="gap-title">Deferred ({{ subject.deferred.length }})</div>
+              <div class="gap-ids"><span class="gap-id" *ngFor="let id of subject.deferred">{{ id }}</span></div>
+            </div>
+            <div class="gap-block" *ngIf="subject.inaccessible?.length">
+              <div class="gap-title">Not permitted to read ({{ subject.inaccessible.length }})</div>
+              <div class="gap-ids"><span class="gap-id" *ngFor="let id of subject.inaccessible">{{ id }}</span></div>
+            </div>
+            <div class="gap-block" *ngIf="subject.invalidated?.length">
+              <div class="gap-title">Source moved, must be re-read ({{ subject.invalidated.length }})</div>
+              <div class="gap-ids"><span class="gap-id" *ngFor="let id of subject.invalidated">{{ id }}</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </ng-container>
+  </ng-container>
+
+  <!-- ── The other axis: one document ──────────────────────────────────────── -->
+  <div class="document-lookup">
+    <h4><mat-icon inline>description</mat-icon> By document</h4>
+    <p class="panel-subtitle">
+      How much of one document was read, and for which subjects. A document being loaded is not the
+      same as its chunks being read.
+    </p>
+    <div class="document-input">
+      <input type="text" [(ngModel)]="documentId" name="documentId"
+             placeholder="Document id or source path"
+             (keyup.enter)="lookupDocument()" />
+      <button mat-stroked-button (click)="lookupDocument()" [disabled]="documentLoading || !documentId.trim()">
+        <mat-icon>search</mat-icon>
+        Look up
+      </button>
+      <button mat-button (click)="clearDocument()" *ngIf="documentReport || documentError">Clear</button>
+    </div>
+
+    <div class="loading-state" *ngIf="documentLoading">
+      <mat-spinner diameter="24"></mat-spinner>
+      <span>Reading document coverage…</span>
+    </div>
+
+    <div class="error-state" *ngIf="documentError && !documentLoading" role="alert">
+      <mat-icon>error_outline</mat-icon>
+      <span>{{ documentError }}</span>
+    </div>
+
+    <ng-container *ngIf="documentReport && !documentLoading && !documentError">
+      <div class="empty-state" *ngIf="documentReport.partitions === 0">
+        <mat-icon>help_outline</mat-icon>
+        <div>
+          <div class="empty-title">No partition has read {{ documentReport.documentId }}</div>
+          <p class="empty-text">
+            No subject claims this document as evidence, so nothing in the graph rests on it. That
+            is not the same as it having been read and found irrelevant.
+          </p>
+        </div>
+      </div>
+
+      <ng-container *ngIf="documentReport.partitions > 0">
+        <div class="rollup">
+          <div class="rollup-metric">
+            <div class="metric-value">{{ percent(documentReport.coverage) }}%</div>
+            <div class="metric-label">of its admitted chunks read</div>
+          </div>
+          <div class="rollup-metric">
+            <div class="metric-value">{{ documentReport.read }} / {{ documentReport.admitted }}</div>
+            <div class="metric-label">chunks read / admitted</div>
+          </div>
+          <div class="rollup-metric">
+            <div class="metric-value">{{ documentReport.partitions }}</div>
+            <div class="metric-label">subjects claiming it</div>
+          </div>
+          <div class="rollup-metric" [class.warn]="documentReport.outstanding > 0">
+            <div class="metric-value">{{ documentReport.outstanding }}</div>
+            <div class="metric-label">chunks still owed</div>
+          </div>
+          <div class="rollup-metric" [class.warn]="documentReport.inaccessible > 0">
+            <div class="metric-value">{{ documentReport.inaccessible }}</div>
+            <div class="metric-label">chunks not permitted</div>
+          </div>
+          <div class="rollup-metric" [class.warn]="documentReport.invalidated > 0">
+            <div class="metric-value">{{ documentReport.invalidated }}</div>
+            <div class="metric-label">chunks whose source moved</div>
+          </div>
+        </div>
+
+        <div class="chip-row" *ngIf="documentReport.subjects?.length">
+          <span class="chip-row-label">Read for</span>
+          <span class="chip" *ngFor="let subject of documentReport.subjects">{{ subject }}</span>
+        </div>
+
+        <div class="chunk-table">
+          <div class="chunk-row chunk-head">
+            <span class="chunk-id">Chunk</span>
+            <span class="chunk-state">State</span>
+            <span class="chunk-channel">Found via</span>
+            <span class="chunk-holders">Held by</span>
+          </div>
+          <div class="chunk-row" *ngFor="let chunk of documentReport.chunkDetail"
+               [class.unread]="chunk.state !== 'PROCESSED'">
+            <span class="chunk-id mono">{{ chunk.chunkId }}</span>
+            <span class="chunk-state">{{ chunk.state }}</span>
+            <span class="chunk-channel">{{ chunk.channel || '—' }}</span>
+            <span class="chunk-holders">{{ chunk.heldBy.join(', ') }}</span>
+          </div>
+        </div>
+      </ng-container>
+    </ng-container>
+  </div>
+</div>

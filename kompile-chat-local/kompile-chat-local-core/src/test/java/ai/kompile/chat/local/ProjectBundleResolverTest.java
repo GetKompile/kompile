@@ -178,7 +178,7 @@ class ProjectBundleResolverTest {
                 List.of(oversized)), Map.of("project/large.kgraph", graph));
         assertMessage("size out of bounds", () -> ProjectBundleResolver.resolve(limit, null));
 
-        Path version = archive("version.kproject", manifest(2, "graph.kgraph",
+        Path version = archive("version.kproject", manifest(3, "graph.kgraph",
                 List.of(entry("graph.kgraph", graph))), Map.of("project/graph.kgraph", graph));
         assertMessage("formatVersion", () -> ProjectBundleResolver.resolve(version, null));
     }

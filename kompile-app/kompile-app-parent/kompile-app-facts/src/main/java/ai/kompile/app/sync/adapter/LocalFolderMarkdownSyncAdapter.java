@@ -27,6 +27,7 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * Sync adapter for local Markdown folders.
@@ -45,6 +46,11 @@ public class LocalFolderMarkdownSyncAdapter implements SyncAdapter {
     @Override
     public List<ExternalNoteSnapshot> fetchChangedSince(NoteSyncConnection conn, Instant since) {
         return fileStore.fetchChangedSince(conn, since);
+    }
+
+    @Override
+    public Optional<Set<String>> listExternalIds(NoteSyncConnection conn) {
+        return Optional.of(fileStore.listExternalIds(conn));
     }
 
     @Override
@@ -69,7 +75,7 @@ public class LocalFolderMarkdownSyncAdapter implements SyncAdapter {
 
     @Override
     public SyncConnectionTestResponse testConnection(NoteSyncConnection conn) {
-        Path root = fileStore.ensureRoot(conn);
+        Path root = fileStore.requireExistingRoot(conn);
         if (!Files.isDirectory(root)) {
             return SyncConnectionTestResponse.failure(conn.getId(), conn.getAuthMode(), "Folder is not a directory: " + root);
         }

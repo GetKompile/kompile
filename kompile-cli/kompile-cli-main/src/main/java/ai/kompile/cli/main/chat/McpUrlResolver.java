@@ -16,20 +16,26 @@
 
 package ai.kompile.cli.main.chat;
 
+import ai.kompile.cli.common.routing.KompileServiceEndpoints;
+
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 
 /**
- * Shared utility for resolving the MCP server URL of a running kompile-app instance.
+ * Shared utility for resolving the MCP server URL of a running kompile app.
  * <p>
  * Supports three resolution strategies:
  * <ol>
  *   <li>Explicit URL provided by the user</li>
  *   <li>Explicit port provided by the user</li>
- *   <li>Auto-detection by probing common ports (8080, 8443, 9090, 3000)</li>
+ *   <li>Auto-detection across the resolved kompile service endpoints (admin, chat, crawl manager)</li>
  * </ol>
+ * <p>
+ * Each persona app runs its own MCP server exposing its own tools, so auto-detection takes the first
+ * one that answers — but the candidate list comes from {@link KompileServiceEndpoints} rather than a
+ * fixed port sweep, so overrides are honoured and the crawl manager is reachable.
  * <p>
  * Thread-safe: each caller should maintain their own instance for caching,
  * or use the static resolution methods directly.
@@ -45,9 +51,6 @@ public class McpUrlResolver {
     private static final String RESET = "\033[0m";
     /** ANSI dim code for terminal output. */
     private static final String DIM = "\033[2m";
-
-    /** Common ports to probe for auto-detection. */
-    private static final int[] PROBE_PORTS = {8080, 8443, 9090, 3000};
 
     /** In-memory cache for resolved URL. */
     private String resolvedMcpUrl;
@@ -95,22 +98,22 @@ public class McpUrlResolver {
 
         if (mcpPort > 0) return "http://localhost:" + mcpPort + "/mcp/sse";
 
-        for (int port : PROBE_PORTS) {
-            if (probeKompileApp(port)) {
-                System.err.println(DIM + "Auto-detected kompile-app on port " + port + RESET);
-                return "http://localhost:" + port + "/mcp/sse";
+        for (String baseUrl : KompileServiceEndpoints.allBaseUrls()) {
+            if (probeKompileApp(baseUrl)) {
+                System.err.println(DIM + "Auto-detected a kompile MCP server at " + baseUrl + RESET);
+                return baseUrl + "/mcp/sse";
             }
         }
         return null;
     }
 
     /**
-     * Probe a single port to check if kompile-app is running there.
+     * Probe a single base URL to check if a kompile app is serving MCP there.
      */
-    private static boolean probeKompileApp(int port) {
+    private static boolean probeKompileApp(String baseUrl) {
         try {
             HttpRequest request = HttpRequest.newBuilder()
-                    .uri(java.net.URI.create("http://localhost:" + port + "/mcp/status"))
+                    .uri(java.net.URI.create(baseUrl + "/mcp/status"))
                     .timeout(Duration.ofMillis(1000))
                     .GET()
                     .build();

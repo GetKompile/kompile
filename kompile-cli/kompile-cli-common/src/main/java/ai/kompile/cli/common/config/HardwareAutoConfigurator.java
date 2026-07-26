@@ -372,6 +372,35 @@ public final class HardwareAutoConfigurator {
         };
     }
 
+    /**
+     * Default {@code -Xmx} for the chat app. Chat serves RAG queries and graph reads — read-side
+     * work with a live index rather than the bulk write path, so it sits at the app tier.
+     */
+    public static String chatHeapForTier(Tier tier) {
+        return switch (tier) {
+            case SMALL -> "2g";
+            case MEDIUM -> "3g";
+            case LARGE -> "4g";
+            case XLARGE -> "6g";
+            case SERVER -> "8g";
+        };
+    }
+
+    /**
+     * Default {@code -Xmx} for the crawl manager — the heaviest of the three personas. Extraction,
+     * embedding, indexing and graph hydration all run here, and it is where heap pressure has
+     * actually shown up; the admin console no longer carries any of it.
+     */
+    public static String crawlHeapForTier(Tier tier) {
+        return switch (tier) {
+            case SMALL -> "3g";
+            case MEDIUM -> "4g";
+            case LARGE -> "6g";
+            case XLARGE -> "10g";
+            case SERVER -> "16g";
+        };
+    }
+
     /** Default {@code -Xmx} for the model-staging server. */
     public static String stagingHeapForTier(Tier tier) {
         return switch (tier) {

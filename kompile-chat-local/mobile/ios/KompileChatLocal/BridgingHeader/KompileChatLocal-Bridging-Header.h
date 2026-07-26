@@ -2,7 +2,7 @@
  * KompileChatLocal-Bridging-Header.h
  *
  * Exposes C libraries to Swift.  Both libraries are OPTIONAL — the project
- * compiles and runs (remote-only mode) when neither xcframework is present.
+ * compiles without native frameworks, but local chat remains unavailable until they are linked.
  * The #if __has_include guards prevent build errors on machines that do not
  * yet have the framework artifacts.
  *
@@ -38,15 +38,15 @@
  * (dsp_runtime_c.h / DspRuntimeC) is intentionally NOT imported here;
  * this project binds ONLY the text API described in SdxLlmAbi.java.
  *
- * Swift sees: sdxLlmCreateRuntime, sdxLlmDestroyRuntime, sdxLlmAbiVersion,
- *             sdxLlmLoadModel, sdxLlmUnloadModel, sdxLlmGenerate,
- *             sdxLlmLastResultJson, sdxLlmInfoJson, sdxLlmFree,
+ * Swift sees the ABI v2 canonical resolver and tokenizer-aware text surface:
+ *             sdxLlmResolveModelBundle, sdxLlmLoadModel,
+ *             sdxLlmRenderChatPrompt, sdxLlmGenerate, sdxLlmFree,
  *             sdxLlmGetLastError
  *
  * The module name used in #if canImport() checks is "SdxLlm".
  */
-#if __has_include(<SdxLlm/sdx_llm.h>)
-#  include <SdxLlm/sdx_llm.h>
-#elif __has_include("sdx_llm.h")
-#  include "sdx_llm.h"
+#if __has_include(<SdxLlm/sdx_llm_c.h>)
+#  include <SdxLlm/sdx_llm_c.h>
+#elif __has_include("sdx_llm_c.h")
+#  include "sdx_llm_c.h"
 #endif

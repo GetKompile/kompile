@@ -16,8 +16,9 @@
 
 package ai.kompile.cli.main.chat;
 
-import ai.kompile.cli.common.mcp.InstanceDiscovery;
 import ai.kompile.cli.common.mcp.McpSseClient;
+import ai.kompile.cli.common.routing.KompileService;
+import ai.kompile.cli.common.routing.KompileServiceEndpoints;
 import ai.kompile.cli.main.chat.agent.SubprocessAgentRunner;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.SetupWizard;
@@ -62,12 +63,12 @@ import java.util.concurrent.Callable;
 public class ChatCommand implements Callable<Integer> {
 
     @CommandLine.Option(names = {"--url"}, description = {
-            "Base URL of the kompile-app instance.",
-            "Example: http://localhost:8080"
+            "Base URL of the kompile chat server.",
+            "Example: http://localhost:8081"
     })
     private String url;
 
-    @CommandLine.Option(names = {"--port", "-p"}, description = "Port of the kompile-app instance on localhost")
+    @CommandLine.Option(names = {"--port", "-p"}, description = "Port of the kompile chat server on localhost")
     private Integer port;
 
     @CommandLine.Option(names = {"--session-id"}, description = "Chat session ID (generated if not provided)")
@@ -291,7 +292,8 @@ public class ChatCommand implements Callable<Integer> {
                 return runServerMode(serverUrl, isResume, resolvedRole);
             }
             System.err.println("Config has kompile provider but no --url/--port given.");
-            System.err.println("Use: kompile chat --url http://localhost:8080");
+            System.err.println("Use: kompile chat --url "
+                    + KompileServiceEndpoints.resolve(KompileService.CHAT).baseUrl());
             System.err.println("Or reconfigure with: kompile chat --setup");
             return 1;
         }
@@ -734,7 +736,7 @@ public class ChatCommand implements Callable<Integer> {
         if (explicit != null) {
             return explicit;
         }
-        return InstanceDiscovery.discover();
+        return KompileServiceEndpoints.resolve(KompileService.CHAT).baseUrl();
     }
 
     /**

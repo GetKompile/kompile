@@ -52,6 +52,9 @@ public final class StagingStatus {
     public static final ai.kompile.core.staging.StagingStatus COMPLETED =
             ai.kompile.core.staging.StagingStatus.COMPLETED;
 
+    public static final ai.kompile.core.staging.StagingStatus CANCELLED =
+            ai.kompile.core.staging.StagingStatus.CANCELLED;
+
     public static final ai.kompile.core.staging.StagingStatus FAILED =
             ai.kompile.core.staging.StagingStatus.FAILED;
 }

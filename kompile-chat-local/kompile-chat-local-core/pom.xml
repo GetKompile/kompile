@@ -21,6 +21,13 @@
     </description>
 
     <dependencies>
+        <!-- Shared dependency-free project/knowledge archive rules used by Android and server. -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-project-contract</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
         <!-- Graph reasoning: provides LocalReasoningSession, LocalToolDispatcher, MiniJson, etc. -->
         <dependency>
             <groupId>ai.kompile</groupId>

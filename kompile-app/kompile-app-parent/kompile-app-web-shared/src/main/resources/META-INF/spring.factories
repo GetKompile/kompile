@@ -1,0 +1,8 @@
+# Seeds the irreducible Spring framework bootstrap defaults (datasource, web server, MCP server,
+# per-project data root) so every kompile server process — the admin console, kompile-app-chat,
+# kompile-app-crawl-manager and every generated RAG instance — runs with NO application.properties.
+# Lives in web-shared because that is the one module all three persona apps depend on, and it still
+# sits ABOVE the subprocess layer: subprocesses (app-core-only) are unaffected, which is why it used
+# to live in app-main. Lowest precedence — explicit sources win.
+org.springframework.boot.env.EnvironmentPostProcessor=\
+  ai.kompile.app.config.KompileBootstrapEnvironmentPostProcessor

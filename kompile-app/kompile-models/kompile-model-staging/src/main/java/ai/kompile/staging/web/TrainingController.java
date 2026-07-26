@@ -43,7 +43,6 @@ import java.util.Map;
 @ConditionalOnProperty(name = "kompile.staging.app.enabled", havingValue = "true")
 @RestController
 @RequestMapping("/api/training")
-@CrossOrigin(origins = "*")
 public class TrainingController {
 
     private static final Logger log = LoggerFactory.getLogger(TrainingController.class);

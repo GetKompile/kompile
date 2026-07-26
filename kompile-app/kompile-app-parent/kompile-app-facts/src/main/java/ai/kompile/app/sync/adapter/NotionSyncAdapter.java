@@ -131,6 +131,42 @@ public class NotionSyncAdapter implements SyncAdapter {
 
     @Override
     @SuppressWarnings("unchecked")
+    public Optional<Set<String>> listExternalIds(NoteSyncConnection conn) {
+        checkEnabled();
+        Set<String> pageIds = new LinkedHashSet<>();
+        Map<String, Object> searchBody = new LinkedHashMap<>();
+        searchBody.put("filter", Map.of("property", "object", "value", "page"));
+        searchBody.put("page_size", 100);
+
+        String cursor = null;
+        boolean hasMore = true;
+        while (hasMore) {
+            if (cursor == null) {
+                searchBody.remove("start_cursor");
+            } else {
+                searchBody.put("start_cursor", cursor);
+            }
+            Map<String, Object> response = notionPost("/search", searchBody);
+            List<Map<String, Object>> pages =
+                    (List<Map<String, Object>>) response.getOrDefault("results", List.of());
+            for (Map<String, Object> page : pages) {
+                if (Objects.equals(conn.getExternalScope(), extractParentId(page))
+                        && !Boolean.TRUE.equals(page.get("archived"))
+                        && !Boolean.TRUE.equals(page.get("in_trash"))) {
+                    Object pageId = page.get("id");
+                    if (pageId instanceof String id && !id.isBlank()) {
+                        pageIds.add(id);
+                    }
+                }
+            }
+            hasMore = Boolean.TRUE.equals(response.get("has_more"));
+            cursor = (String) response.get("next_cursor");
+        }
+        return Optional.of(pageIds);
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
     public Optional<ExternalNoteSnapshot> fetchById(NoteSyncConnection conn, String externalId) {
         checkEnabled();
         try {

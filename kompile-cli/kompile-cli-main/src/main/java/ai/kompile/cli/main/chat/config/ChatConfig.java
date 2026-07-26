@@ -17,6 +17,8 @@
 package ai.kompile.cli.main.chat.config;
 
 import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.common.routing.KompileService;
+import ai.kompile.cli.common.routing.KompileServiceEndpoints;
 import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
@@ -185,7 +187,8 @@ public class ChatConfig {
     public static String getDefaultBaseUrl(String provider) {
         if (provider == null) return null;
         switch (provider.toLowerCase()) {
-            case "kompile":    return "http://localhost:8080";
+            // Server mode talks to /api/agents/chat, which kompile-app-chat owns.
+            case "kompile":    return KompileServiceEndpoints.resolve(KompileService.CHAT).baseUrl();
             case "openai":     return "https://api.openai.com/v1";
             case "anthropic":  return "https://api.anthropic.com";
             case "gemini":     return "https://generativelanguage.googleapis.com/v1beta/openai";
