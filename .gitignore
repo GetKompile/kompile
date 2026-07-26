@@ -31,6 +31,7 @@ buildNumber.properties
 *.json
 !**/src/main/resources/**/*.json
 !**/src/test/resources/**/*.json
+!**/src/main/python/**/*.json
 !**/src/main/assets/*.json
 !**/src/main/frontend/*.json
 !**/src/main/frontend/projects/*/*.json
