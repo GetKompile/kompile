@@ -1,0 +1,63 @@
+{
+  "name": "PYTHON_SCRIPT",
+  "runnerClassName": "ai.kompile.pipelines.steps.python.PythonRunner",
+  "description": "Executes Python code or a Python script. Input and output data are exchanged as JSON objects with type information.",
+  "parameters": [
+    {
+      "name": "pythonCode",
+      "description": "A string containing the Python code to execute. Mutually exclusive with 'scriptPath'.",
+      "type": "STRING",
+      "required": false
+    },
+    {
+      "name": "scriptPath",
+      "description": "URI (e.g., 'file:/path/to/your/script.py') of the Python script to execute. Mutually exclusive with 'pythonCode'.",
+      "type": "STRING",
+      "required": false
+    },
+    {
+      "name": "inputVariables",
+      "description": "A map where keys are names of variables in the input 'Data' object, and values are the corresponding variable names to be created in the Python script's global scope. Example: {'data_input_key': 'python_var_x'}",
+      "type": "DATA",
+      "required": false
+    },
+    {
+      "name": "outputVariables",
+      "description": "A map where keys are Python variable names in the script's global scope whose values should be captured, and values are the corresponding keys under which they will be stored in the output 'Data' object. Example: {'python_result_var': 'data_output_key'}",
+      "type": "DATA",
+      "required": false
+    },
+    {
+      "name": "pythonPath",
+      "description": "Optional path to a specific Python executable (e.g., '/usr/bin/python3.8' or 'path/to/venv/bin/python'). If not set, tries 'python3' then 'python' from PATH.",
+      "type": "STRING",
+      "required": false
+    },
+    {
+      "name": "setupCode",
+      "description": "Optional Python code string that will be executed once during the initialization of the Python environment for this step (e.g., for imports or global setup). This code runs before the main 'pythonCode' or 'scriptPath'.",
+      "type": "STRING",
+      "required": false
+    },
+    {
+      "name": "returnFullPythonGlobals",
+      "description": "If true, all non-builtin global variables from the Python script's execution scope will be returned in the output Data object (keys will be Python variable names). Overrides 'outputVariables' if true. Defaults to false.",
+      "type": "BOOLEAN",
+      "required": false,
+      "defaultValue": false
+    },
+    {
+      "name": "args",
+      "description": "A list of string arguments to be passed to the Python script if 'scriptPath' is used (sys.argv).",
+      "type": "LIST",
+      "listElementType": "STRING",
+      "required": false
+    },
+    {
+      "name": "environmentVariables",
+      "description": "A map of environment variables (key-value strings) to set for the Python process. Note: Direct support depends on execution method; current Apache Commons Exec has limited direct support.",
+      "type": "DATA",
+      "required": false
+    }
+  ]
+}

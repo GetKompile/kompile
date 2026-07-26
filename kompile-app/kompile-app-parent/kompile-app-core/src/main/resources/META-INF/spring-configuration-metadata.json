@@ -1,0 +1,111 @@
+{
+  "properties": [
+    {
+      "name": "kompile.chat.memory.enabled",
+      "type": "java.lang.Boolean",
+      "description": "Whether to enable chat memory functionality.",
+      "defaultValue": true
+    },
+    {
+      "name": "kompile.chat.memory.max-messages",
+      "type": "java.lang.Integer",
+      "description": "Maximum number of messages to keep in the message window.",
+      "defaultValue": 20
+    },
+    {
+      "name": "kompile.llm.chat.enabled",
+      "type": "java.lang.Boolean",
+      "description": "Whether to enable LLMChat auto-configuration.",
+      "defaultValue": true
+    },
+    {
+      "name": "kompile.llm.chat.default-system",
+      "type": "java.lang.String",
+      "description": "Default system message for all LLMChat instances.",
+      "defaultValue": null
+    },
+    {
+      "name": "kompile.llm.chat.auto-configure-memory",
+      "type": "java.lang.Boolean",
+      "description": "Whether to automatically configure chat memory advisor when ChatMemory is available.",
+      "defaultValue": true
+    },
+    {
+      "name": "kompile.llm.chat.auto-configure-rag",
+      "type": "java.lang.Boolean",
+      "description": "Whether to automatically configure RAG advisor when VectorStore is available.",
+      "defaultValue": true
+    },
+    {
+      "name": "kompile.llm.chat.rag-max-documents",
+      "type": "java.lang.Integer",
+      "description": "Maximum number of documents to retrieve for RAG operations.",
+      "defaultValue": 5
+    }
+  ],
+  "hints": [
+    {
+      "name": "kompile.chat.memory.max-messages",
+      "values": [
+        {
+          "value": 10,
+          "description": "Small window for short conversations"
+        },
+        {
+          "value": 20,
+          "description": "Default window size"
+        },
+        {
+          "value": 50,
+          "description": "Large window for detailed conversations"
+        },
+        {
+          "value": 100,
+          "description": "Very large window (use with caution regarding token limits)"
+        }
+      ]
+    },
+    {
+      "name": "kompile.llm.chat.rag-max-documents",
+      "values": [
+        {
+          "value": 3,
+          "description": "Small number of documents for focused context"
+        },
+        {
+          "value": 5,
+          "description": "Default number of documents"
+        },
+        {
+          "value": 10,
+          "description": "More documents for comprehensive context"
+        },
+        {
+          "value": 20,
+          "description": "Large number of documents (may impact performance)"
+        }
+      ]
+    },
+    {
+      "name": "kompile.llm.chat.default-system",
+      "values": [
+        {
+          "value": "You are a helpful AI assistant.",
+          "description": "Generic helpful assistant"
+        },
+        {
+          "value": "You are a coding assistant specialized in Java and Spring.",
+          "description": "Java/Spring coding assistant"
+        },
+        {
+          "value": "You are a document analysis assistant.",
+          "description": "Document analysis specialist"
+        },
+        {
+          "value": "You are a conversational AI with access to chat history and documents.",
+          "description": "Comprehensive assistant with memory and RAG"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,110 @@
+{
+  "name": "SAMEDIFF_TRAINING",
+  "runnerClassName": "ai.kompile.pipelines.steps.samediff.trainer.SameDiffTrainerRunner",
+  "description": "Performs one training iteration (fit) on a SameDiff model using input data.",
+  "parameters": [
+    {
+      "name": "modelUri",
+      "description": "URI of the saved SameDiff model file to load and train (e.g., 'file:/path/to/model.fb', 'classpath:/models/model.fb').",
+      "type": "STRING",
+      "required": true
+    },
+    {
+      "name": "modelSaveOutputPath",
+      "description": "Optional path where the updated model will be saved after the training iteration. If null, the model is not saved.",
+      "type": "STRING",
+      "required": false
+    },
+    {
+      "name": "inputFeatures",
+      "description": "List of keys in the input Data object corresponding to the model's feature input variables.",
+      "type": "LIST",
+      "listElementType": "STRING",
+      "required": true
+    },
+    {
+      "name": "labels",
+      "description": "List of keys in the input Data object corresponding to the model's label input variables (placeholders).",
+      "type": "LIST",
+      "listElementType": "STRING",
+      "required": true
+    },
+    {
+      "name": "targetVariables",
+      "description": "List of the model's output variable names that correspond to the predictions used in loss calculation (must match order of 'labels' and 'lossVariables').",
+      "type": "LIST",
+      "listElementType": "STRING",
+      "required": true
+    },
+    {
+      "name": "lossVariables",
+      "description": "List of the loss variable names defined in the SameDiff graph (must match order of 'labels' and 'targetVariables'). If 'lossFunction' is specified, these can be auto-generated.",
+      "type": "LIST",
+      "listElementType": "STRING",
+      "required": false
+    },
+    {
+      "name": "lossFunction",
+      "description": "Optionally specify a standard loss function to add/use. If specified, 'lossVariables' can potentially be omitted (uses default naming) or used to name the generated loss ops. Requires 'labels' and 'targetVariables' to be set.",
+      "type": "STRING",
+      "required": false,
+      "allowedValues": ["L1", "L2", "MSE", "XENT", "MCXENT", "HINGE", "SPARSE_MCXENT", "SQUARED_HINGE", "NEGATIVELOGLIKELIHOOD", "POISSON"]
+    },
+    {
+      "name": "updaterConfig",
+      "description": "Configuration for the ND4J IUpdater as a JSON/Map object. Requires 'updaterClass' and parameters specific to that updater (e.g., 'learningRate'). Example: {'updaterClass': 'Adam', 'learningRate': 0.001, 'beta1': 0.9, 'beta2': 0.999}",
+      "type": "DATA",
+      "required": true
+    },
+    {
+      "name": "l1",
+      "description": "L1 regularization coefficient. Defaults to 0.",
+      "type": "DOUBLE",
+      "required": false,
+      "defaultValue": 0.0
+    },
+    {
+      "name": "l2",
+      "description": "L2 regularization coefficient. Defaults to 0.",
+      "type": "DOUBLE",
+      "required": false,
+      "defaultValue": 0.0
+    },
+    {
+      "name": "weightDecayCoefficient",
+      "description": "Weight decay coefficient. Defaults to 0.",
+      "type": "DOUBLE",
+      "required": false,
+      "defaultValue": 0.0
+    },
+    {
+      "name": "weightDecayApplyLearningRate",
+      "description": "Whether to apply learning rate to weight decay. Defaults to true.",
+      "type": "BOOLEAN",
+      "required": false,
+      "defaultValue": true
+    },
+    {
+      "name": "initialLossType",
+      "description": "Data type for loss calculation placeholders if dynamically added (e.g., FLOAT, DOUBLE). Defaults to FLOAT.",
+      "type": "STRING",
+      "required": false,
+      "defaultValue": "FLOAT",
+      "allowedValues": ["FLOAT", "DOUBLE", "INT", "LONG", "SHORT", "BYTE", "UBYTE", "BOOL", "HALF", "BFLOAT16", "UINT16", "UINT32", "UINT64"]
+    },
+    {
+      "name": "debugMode",
+      "description": "Enable ND4J executioner debug mode.",
+      "type": "BOOLEAN",
+      "required": false,
+      "defaultValue": false
+    },
+    {
+      "name": "verboseMode",
+      "description": "Enable ND4J executioner verbose mode.",
+      "type": "BOOLEAN",
+      "required": false,
+      "defaultValue": false
+    }
+  ]
+}

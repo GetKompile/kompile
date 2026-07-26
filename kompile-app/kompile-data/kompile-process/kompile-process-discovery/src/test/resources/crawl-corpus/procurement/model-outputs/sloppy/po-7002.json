@@ -1,0 +1,14 @@
+{
+  "$schema": "kompile-graph-extraction/v1",
+  "entities": [
+    {"id": "d2-po", "name": "PO-7002", "type": "PURCHASE_ORDER"},
+    {"id": "d2-req", "name": "Gopal Rao", "type": "ORGANIZATION"},
+    {"id": "d2-fin", "name": "Initech Finance", "type": "ORGANIZATION"},
+    {"id": "d2-x", "name": "Q2 Budget", "type": "PROJECT"}
+  ],
+  "relations": [
+    {"source": "d2-po", "target": "d2-req", "type": "REQUESTED_BY"},
+    {"source": "d2-po", "target": "d2-fin", "type": "PAID_BY"}
+  ],
+  "metadata": {"sourceDocumentId": "po-7002", "extractionModel": "sloppy-sim"}
+}

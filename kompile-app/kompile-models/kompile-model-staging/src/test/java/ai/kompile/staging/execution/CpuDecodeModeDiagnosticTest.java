@@ -19,7 +19,10 @@ import org.eclipse.deeplearning4j.llm.generation.sampling.SamplingConfig;
 import org.eclipse.deeplearning4j.llm.tokenizer.HuggingFaceTokenizer;
 import org.eclipse.deeplearning4j.model.benchmark.BenchmarkConfig;
 import org.junit.jupiter.api.Test;
+import org.nd4j.autodiff.samediff.diagnostics.DspDiagnostics;
 import org.nd4j.imports.converters.DifferentialFunctionClassHolder;
+import org.nd4j.nativeblas.NativeOps;
+import org.nd4j.nativeblas.NativeOpsHolder;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -43,9 +46,15 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * produced, not only by whether the expected word appears.</p>
  *
  * <p>The modes are ordered cheapest-trust-first: {@code SLOT_BY_SLOT} runs op by op with no graph
- * backend and is the reference; the {@code AUTO} cascade adds the OneDNN/OpenVINO graph backends;
- * {@code CPU_CASCADE} additionally freezes and merges DSP segments. Whichever step first turns
- * sane text into repetition is the one that corrupts the logits.</p>
+ * backend and is the reference; {@code OPENVINO} forces the one backend the AUTO chain reaches
+ * first; the {@code AUTO} cascade then adds OneDNN behind it; {@code CPU_CASCADE} additionally
+ * freezes and merges DSP segments. Whichever step first turns sane text into repetition is the one
+ * that corrupts the logits.</p>
+ *
+ * <p>The forced-OpenVINO row is what makes the AUTO rows readable. AUTO builds a chain and hands
+ * each segment to the first backend that accepts it, so a wrong answer from AUTO names the chain,
+ * not a member of it. OneDNN has no forced execution mode of its own — the native selector only
+ * appends it under an auto-like mode — so it can only ever be observed as AUTO minus OpenVINO.</p>
  *
  * <p>Opt-in like the other real-model harnesses (loading a multi-GB model is slow):
  * {@code mvn -o test -pl :kompile-model-staging -Dtest=CpuDecodeModeDiagnosticTest
@@ -67,6 +76,15 @@ class CpuDecodeModeDiagnosticTest {
     /** Filler sentence counts for the prompt-length sweep; ~14 tokens each. */
     private static final int[] FILLER_SENTENCES = {0, 8, 30, 48};
 
+    /**
+     * Optional native DSP diagnostic category mask (see {@code DspDiagnostics} for the bits;
+     * {@code COMPILE} is 1). The graph backends do their backend selection, partitioning and
+     * fusion decisions in native code and log through that channel, so when a mode disagrees
+     * with the reference this is the only way to see <em>why</em> from here. Left at 0 the
+     * native side stays silent, which is what the normal pass/fail run wants.
+     */
+    private static final int DSP_DIAG_MASK = Integer.getInteger("kompile.samediff.llm.dspdiag", 0);
+
     @Test
     void everyCpuExecutionModeDecodesTheSameSentence() throws Exception {
         assumeTrue(Boolean.getBoolean("kompile.samediff.llm.harness"),
@@ -76,16 +94,20 @@ class CpuDecodeModeDiagnosticTest {
                 "lfm2.5 SameDiff model not staged at " + MODEL_DIR);
 
         DifferentialFunctionClassHolder.initInstance();
+        enableNativeDiagnostics();
 
         // Ordered cheapest-trust-first so the report reads as a bisect.
         Map<String, Supplier<BenchmarkConfig>> modes = new LinkedHashMap<>();
         modes.put("SLOT_BY_SLOT (reference)", BenchmarkConfig::cpuSlotBySlot);
+        modes.put("OPENVINO only (forced)", BenchmarkConfig::cpuOpenVino);
         modes.put("AUTO cascade, no merge", BenchmarkConfig::cpuCascadeNoMerge);
         modes.put("AUTO cascade + freeze/merge", BenchmarkConfig::cpuCascade);
 
         List<String> report = new ArrayList<>();
         for (Map.Entry<String, Supplier<BenchmarkConfig>> mode : modes.entrySet()) {
+            clearNativeDiagnostics();
             report.add(runOne(mode.getKey(), mode.getValue().get(), modelFile, PROMPT, 512));
+            dumpNativeDiagnostics(mode.getKey());
         }
 
         System.out.println("\n================ CPU decode mode bisect ================");
@@ -173,6 +195,64 @@ class CpuDecodeModeDiagnosticTest {
                 + " chars; expected: a JSON object with \"propositions\"");
         report.forEach(System.out::println);
         System.out.println("=============================================================\n");
+    }
+
+    /**
+     * Turns on the requested native DSP diagnostic channels; a zero mask leaves them off.
+     *
+     * <p>Both knobs are required. The category mask decides which events are <em>recorded</em>,
+     * but {@code recordEventV} only echoes an event to stdout at {@code LEVEL_FULL} (or under
+     * debug+verbose) — enabling a category alone fills the native ring buffer and prints nothing,
+     * which reads exactly like "the condition never fired". {@code DspDebugger} pairs the two
+     * calls for the same reason; keep them paired here.</p>
+     */
+    private static void enableNativeDiagnostics() {
+        if (DSP_DIAG_MASK == 0) {
+            return;
+        }
+        NativeOps ops = NativeOpsHolder.getInstance().getDeviceNativeOps();
+        ops.dspDiagEnableCategories(DSP_DIAG_MASK);
+        ops.dspDiagSetLevel(DspDiagnostics.LEVEL_FULL);
+        System.out.println("native DSP diagnostics enabled, requested=0x"
+                + Integer.toHexString(DSP_DIAG_MASK) + ", readback=0x"
+                + Integer.toHexString(ops.dspDiagGetEnabledMask()) + ", level=FULL");
+    }
+
+    /** Empties the native event ring so each mode's dump contains only that mode's events. */
+    private static void clearNativeDiagnostics() {
+        if (DSP_DIAG_MASK == 0) {
+            return;
+        }
+        NativeOpsHolder.getInstance().getDeviceNativeOps().dspDiagClear();
+    }
+
+    /**
+     * Pulls the native event ring back into Java and writes it beside the surefire output.
+     *
+     * <p>Not a convenience over reading stdout — the native echo is unusable from here. Events are
+     * always recorded to the ring, but the stdout echo in {@code recordEventV} is a bare
+     * {@code fprintf(stdout)} straight to fd 1, while surefire wraps the forked JVM's Java stream
+     * in its own fork protocol. Java {@code System.out} therefore reaches the build log and native
+     * writes do not, so an unprinted event and an event that never fired look identical. Reading
+     * the ring back through JNI removes that ambiguity: {@code dspDiagGetTotalEventCount()} counts
+     * what actually fired regardless of whether anything was ever echoed.</p>
+     */
+    private static void dumpNativeDiagnostics(String modeLabel) {
+        if (DSP_DIAG_MASK == 0) {
+            return;
+        }
+        NativeOps ops = NativeOpsHolder.getInstance().getDeviceNativeOps();
+        long events = ops.dspDiagGetTotalEventCount();
+        String slug = modeLabel.replaceAll("[^A-Za-z0-9]+", "-").toLowerCase();
+        Path out = Paths.get("target", "dspdiag-" + slug + ".json");
+        System.out.println("native DSP events recorded for [" + modeLabel + "]: " + events
+                + " -> " + out.toAbsolutePath());
+        try {
+            Files.createDirectories(out.getParent());
+            Files.writeString(out, ops.dspDiagGetJsonReport());
+        } catch (Exception e) {
+            System.out.println("could not write " + out + ": " + e);
+        }
     }
 
     /** Neutral, non-repeating background text that does not answer the question. */

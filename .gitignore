@@ -22,20 +22,36 @@ buildNumber.properties
 .mvn/wrapper/maven-wrapper.jar
 .idea/
 *.iml
+# JSON is ignored by default because Kompile writes its runtime state as JSON — managed config,
+# project metadata, crawl state — directly into the checkout. The rule is about *where* a file
+# lives, not what it is, so source trees are re-included wholesale below. Allowlisting one file
+# at a time does not hold: it silently dropped every GraalVM native-image config, the pipeline
+# step schemas, and the Angular workspace's tsconfigs, leaving a clone that builds the Java but
+# neither the SPAs nor a working native image.
 *.json
-!kompile-app/kompile-app-parent/kompile-app-core/src/main/resources/cli-agents.json
+!**/src/main/resources/**/*.json
+!**/src/test/resources/**/*.json
+!**/src/main/assets/*.json
+!**/src/main/frontend/*.json
+!**/src/main/frontend/projects/*/*.json
+
+# Source JSON that sits outside a src/ tree, so the rules above cannot reach it.
+!/native-image/*.json
 !kompile-local-sdk/manifest.json
+!kompile-local-sdk/bindings/**/*.json
+!kompile-local-sdk/examples/**/*.json
+!kompile-chat-local/mobile/android/accelerators.json
 
-# The blanket *.json above otherwise swallows the Angular workspace's build configuration, so a
-# clone can compile the Java but not the SPAs. angular.json and package.json were force-added
-# historically; the rest of the workspace contract has to be allowlisted the same way.
-!kompile-app/kompile-app-parent/kompile-app-ui/src/main/frontend/package-lock.json
-!kompile-app/kompile-app-parent/kompile-app-ui/src/main/frontend/tsconfig*.json
-!kompile-app/kompile-app-parent/kompile-app-ui/src/main/frontend/projects/*/tsconfig*.json
-
-# Runtime resources the new modules load off the classpath — source, not generated output.
-!kompile-app/kompile-app-parent/kompile-app-crawl-svc/src/main/resources/schema-presets/*.json
-!kompile-chat-local/mobile/android/app/src/main/assets/offline-assets.json
+# Agent/editor tooling and scratch output that happen to be JSON at a repo or project root.
+.mcp.json
+opencode.json
+.opencode.json
+kompile.project.json
+/package.json
+/package-lock.json
+/pipelines/
+/kg_output.json
+/pathfinder_extraction.json
 
 # Frontend build artifacts
 node_modules/

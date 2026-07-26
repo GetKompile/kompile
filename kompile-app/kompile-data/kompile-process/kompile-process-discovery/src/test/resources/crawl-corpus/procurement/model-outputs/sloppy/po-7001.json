@@ -1,0 +1,13 @@
+{
+  "$schema": "kompile-graph-extraction/v1",
+  "entities": [
+    {"id": "d1-po", "name": "PO-7001", "type": "PURCHASE_ORDER"},
+    {"id": "d1-req", "name": "Dana Reyes", "type": "ORGANIZATION"},
+    {"id": "d1-fin", "name": "Initech Finance", "type": "ORGANIZATION"}
+  ],
+  "relations": [
+    {"source": "d1-po", "target": "d1-req", "type": "REQUESTED_BY"},
+    {"source": "d1-po", "target": "d1-fin", "type": "PAID_BY"}
+  ],
+  "metadata": {"sourceDocumentId": "po-7001", "extractionModel": "sloppy-sim"}
+}

@@ -1,0 +1,11 @@
+{
+  "resources": {
+    "includes": [
+      {"pattern": "META-INF/services/org\\.apache\\.camel\\..*"},
+      {"pattern": "org/apache/camel/.*\\.json"},
+      {"pattern": "META-INF/org/apache/camel/.*"},
+      {"pattern": "camel-xml-io-dsl\\.properties"},
+      {"pattern": "camel-yaml-dsl\\.properties"}
+    ]
+  }
+}

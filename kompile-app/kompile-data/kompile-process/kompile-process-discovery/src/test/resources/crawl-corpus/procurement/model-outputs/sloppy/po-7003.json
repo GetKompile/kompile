@@ -1,0 +1,11 @@
+{
+  "$schema": "kompile-graph-extraction/v1",
+  "entities": [
+    {"id": "d3-po", "name": "PO-7003", "type": "PURCHASE_ORDER"},
+    {"id": "d3-req", "name": "Hana Kim", "type": "PERSON"}
+  ],
+  "relations": [
+    {"source": "d3-po", "target": "d3-req", "type": "REQUESTED_BY"}
+  ],
+  "metadata": {"sourceDocumentId": "po-7003", "extractionModel": "sloppy-sim"}
+}

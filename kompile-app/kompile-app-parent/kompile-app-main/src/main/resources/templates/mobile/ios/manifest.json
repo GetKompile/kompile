@@ -1,0 +1,27 @@
+{
+  "files": {
+    "App.swift.ftl": "{{projectName}}/App/{{projectName}}App.swift",
+    "AppConfig.swift.ftl": "{{projectName}}/App/AppConfig.swift",
+    "AppSettings.swift.ftl": "{{projectName}}/App/AppSettings.swift",
+    "ChatMessage.swift.ftl": "{{projectName}}/Models/ChatMessage.swift",
+    "ChatSession.swift.ftl": "{{projectName}}/Models/ChatSession.swift",
+    "DocumentSource.swift.ftl": "{{projectName}}/Models/DocumentSource.swift",
+    "ContentView.swift.ftl": "{{projectName}}/Views/ContentView.swift",
+    "ChatView.swift.ftl": "{{projectName}}/Views/Chat/ChatView.swift",
+    "ChatBubbleView.swift.ftl": "{{projectName}}/Views/Chat/ChatBubbleView.swift",
+    "ChatInputView.swift.ftl": "{{projectName}}/Views/Chat/ChatInputView.swift",
+    "StreamingTextView.swift.ftl": "{{projectName}}/Views/Chat/StreamingTextView.swift",
+    "SessionListView.swift.ftl": "{{projectName}}/Views/Chat/SessionListView.swift",
+    "DocumentImportView.swift.ftl": "{{projectName}}/Views/Sources/DocumentImportView.swift",
+    "SourceListView.swift.ftl": "{{projectName}}/Views/Sources/SourceListView.swift",
+    "SettingsView.swift.ftl": "{{projectName}}/Views/Settings/SettingsView.swift",
+    "SdxInferenceService.swift.ftl": "{{projectName}}/Services/SdxInferenceService.swift",
+    "RemoteLLMService.swift.ftl": "{{projectName}}/Services/RemoteLLMService.swift",
+    "HybridInferenceService.swift.ftl": "{{projectName}}/Services/HybridInferenceService.swift",
+    "ChatStorageService.swift.ftl": "{{projectName}}/Services/ChatStorageService.swift",
+    "DocumentIngestionService.swift.ftl": "{{projectName}}/Services/DocumentIngestionService.swift",
+    "VectorSearchService.swift.ftl": "{{projectName}}/Services/VectorSearchService.swift",
+    "SdxBridgingHeader.h.ftl": "{{projectName}}/BridgingHeader/{{projectName}}-Bridging-Header.h",
+    "Info.plist.ftl": "{{projectName}}/Info.plist"
+  }
+}

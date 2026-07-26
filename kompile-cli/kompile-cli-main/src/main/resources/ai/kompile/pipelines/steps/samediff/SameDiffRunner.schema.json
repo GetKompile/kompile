@@ -1,0 +1,34 @@
+{
+  "name": "SAMEDIFF_INFERENCE",
+  "runnerClassName": "ai.kompile.pipelines.steps.samediff.SameDiffRunner",
+  "description": "Executes a pre-trained SameDiff model.",
+  "parameters": [
+    {
+      "name": "modelUri",
+      "description": "URI of the saved SameDiff model file (e.g., 'file:/path/to/model.fb', 'classpath:/models/model.fb').",
+      "type": "STRING",
+      "required": true
+    },
+    {
+      "name": "outputNames",
+      "description": "A list of strings representing the keys under which the output NDArray(s) from the model will be stored in the output Data object. These should match the names of output variables in the SameDiff graph.",
+      "type": "LIST",
+      "listElementType": "STRING",
+      "required": true
+    },
+    {
+      "name": "debugMode",
+      "description": "Enable ND4J executioner debug mode.",
+      "type": "BOOLEAN",
+      "required": false,
+      "defaultValue": false
+    },
+    {
+      "name": "verboseMode",
+      "description": "Enable ND4J executioner verbose mode.",
+      "type": "BOOLEAN",
+      "required": false,
+      "defaultValue": false
+    }
+  ]
+}

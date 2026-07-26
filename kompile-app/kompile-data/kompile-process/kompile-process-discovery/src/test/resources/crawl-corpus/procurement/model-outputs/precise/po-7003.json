@@ -1,0 +1,20 @@
+{
+  "$schema": "kompile-graph-extraction/v1",
+  "entities": [
+    {"id": "po-7003", "name": "PO-7003", "type": "PURCHASE_ORDER", "confidence": 0.95,
+     "description": "GPU server expansion purchase order"},
+    {"id": "hana-kim", "name": "Hana Kim", "type": "PERSON", "confidence": 0.9},
+    {"id": "erin-wu", "name": "Erin Wu", "type": "PERSON", "confidence": 0.9,
+     "description": "Procurement lead"},
+    {"id": "initech-finance", "name": "Initech Finance", "type": "ORGANIZATION", "confidence": 0.9}
+  ],
+  "relations": [
+    {"source": "po-7003", "target": "hana-kim", "type": "REQUESTED_BY", "confidence": 0.9,
+     "properties": {"caseId": "po-7003"}, "occurredAt": "2026-05-05T09:00:00Z"},
+    {"source": "po-7003", "target": "erin-wu", "type": "APPROVED_BY", "confidence": 0.9,
+     "properties": {"caseId": "po-7003"}, "occurredAt": "2026-05-06T09:00:00Z"},
+    {"source": "po-7003", "target": "initech-finance", "type": "PAID_BY", "confidence": 0.85,
+     "properties": {"caseId": "po-7003"}, "occurredAt": "2026-05-11T09:00:00Z"}
+  ],
+  "metadata": {"sourceDocumentId": "po-7003", "extractionModel": "precise-sim"}
+}

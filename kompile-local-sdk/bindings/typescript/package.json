@@ -1,0 +1,29 @@
+{
+  "name": "@kompile/local-sdk",
+  "version": "0.1.0",
+  "description": "TypeScript/Node.js bindings for the Kompile Local SDK (libkompile_reasoning + libsdx_llm via koffi)",
+  "main": "kompile_reasoning.ts",
+  "types": "kompile_reasoning.ts",
+  "license": "Apache-2.0",
+  "keywords": ["kompile", "reasoning", "graph", "llm", "local", "koffi"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/deeplearning4j/kompile.git"
+  },
+  "dependencies": {
+    "koffi": "^2.9.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "peerDependencies": {},
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  }
+}

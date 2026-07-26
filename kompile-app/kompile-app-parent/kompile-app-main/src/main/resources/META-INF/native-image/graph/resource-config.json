@@ -1,0 +1,2021 @@
+{
+  "resources":{
+  "includes":[{
+    "pattern":"\\QMETA-INF/maven/org.bytedeco/javacpp/pom.properties\\E"
+  }, {
+    "pattern":"\\QMETA-INF/maven/org.bytedeco/openblas/pom.properties\\E"
+  }, {
+    "pattern":"\\QMETA-INF/services/ch.qos.logback.classic.spi.Configurator\\E"
+  }, {
+    "pattern":"\\QMETA-INF/services/com.sun.net.httpserver.spi.HttpServerProvider\\E"
+  }, {
+    "pattern":"\\QMETA-INF/services/java.lang.System$LoggerFinder\\E"
+  }, {
+    "pattern":"\\QMETA-INF/services/java.net.spi.URLStreamHandlerProvider\\E"
+  }, {
+    "pattern":"\\QMETA-INF/services/java.nio.channels.spi.SelectorProvider\\E"
+  }, {
+    "pattern":"\\QMETA-INF/services/java.time.zone.ZoneRulesProvider\\E"
+  }, {
+    "pattern":"\\QMETA-INF/services/kotlin.reflect.jvm.internal.impl.resolve.ExternalOverridabilityCondition\\E"
+  }, {
+    "pattern":"\\QMETA-INF/services/kotlin.reflect.jvm.internal.impl.util.ModuleVisibilityHelper\\E"
+  }, {
+    "pattern":"\\QMETA-INF/services/org.nd4j.linalg.factory.Nd4jBackend\\E"
+  }, {
+    "pattern":"\\QMETA-INF/services/org.slf4j.spi.SLF4JServiceProvider\\E"
+  }, {
+    "pattern":"\\QMETA-INF/spring.components\\E"
+  }, {
+    "pattern":"\\QMETA-INF/spring.factories\\E"
+  }, {
+    "pattern":"\\Qai/kompile/app/subprocess/SubprocessGraphConfiguration.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/cli/common/config/ManagedJsonConfigManager.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/agent/\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/crawl/graph/CrawlJobScoped.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/crawler/remote/ConnectionHealthMonitor.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/crawler/remote/DefaultConnectionHealthMonitor$ProviderState.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/crawler/remote/DefaultConnectionHealthMonitor.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/embeddings/EmbeddingModel.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/embeddings/NoOpEmbeddingModelImpl.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/embeddings/NoOpVectorStoreImpl.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/embeddings/VectorStore.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/graphrag/GraphConstructor.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/graphrag/GraphRagService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/graphrag/agent/ExtractionLlmService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/graphrag/agent/ExtractionLlmServiceRegistry$FallbackConfig.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/graphrag/agent/ExtractionLlmServiceRegistry$FallbackExtractionLlmService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/graphrag/agent/ExtractionLlmServiceRegistry$ProviderInfo.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/graphrag/agent/ExtractionLlmServiceRegistry.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/graphrag/agent/RelationExtractionAgent.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/graphrag/prompts/DefaultPromptEngine.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/graphrag/prompts/PromptEngine.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/graphrag/prompts/PromptTemplateService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/graphrag/reporting/Reporter.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/indexers/IndexerService$IndexingOptions.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/indexers/IndexerService$IndexingResult.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/indexers/IndexerService$JobState.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/indexers/IndexerService$JobStatus.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/indexers/IndexerService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/indexers/NoOpIndexerService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/llm/ConversationalLanguageModel.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/llm/LanguageModel.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/llm/NoOpConversationalLanguageModelImpl.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/llm/NoOpLanguageModelImpl.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/llm/chat/IntegratedChatConfiguration.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/llm/chat/LLMChat.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/llm/chat/LLMChatConfiguration$LLMChatProperties.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/llm/chat/LLMChatConfiguration.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/llm/chat/NoOpLLMChat$NoOpBuilder.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/llm/chat/NoOpLLMChat$NoOpCallResponseSpec.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/llm/chat/NoOpLLMChat$NoOpChatClientRequestSpec.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/llm/chat/NoOpLLMChat$NoOpStreamResponseSpec.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/llm/chat/NoOpLLMChat.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/llm/memory/ChatMemoryConfigService$ChatMemoryConfig.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/llm/memory/ChatMemoryConfigService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/llm/memory/KompileChatMemoryConfiguration.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/mcp/optimization/ResultReferenceCache$CacheEntry.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/mcp/optimization/ResultReferenceCache.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/query/NoOpQueryTransformer.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/query/QueryTransformer.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/rag/NoOpRagServiceImpl.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/rag/RagService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/resources/ResourceDiagnosticComponent.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/source/SourceDocumentStorageConfig.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/source/provider/SourceProviderRegistry.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/structured/TableSummaryService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/embedding/anserini/AnseriniEmbeddingModelImpl$EmbedTimingResult.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/embedding/anserini/AnseriniEmbeddingModelImpl$LoadingPhase.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/embedding/anserini/AnseriniEmbeddingModelImpl$ModelSource.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/embedding/anserini/AnseriniEmbeddingModelImpl.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/embedding/anserini/AnseriniImageEmbeddingModel.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/embedding/anserini/SpringAiEmbeddingModelAdapter.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/embedding/anserini/\\E"
+  }, {
+    "pattern":"\\Qai/kompile/embedding/anserini/config/AnseriniEmbeddingConfiguration$AnseriniEmbeddingProperties.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/embedding/anserini/config/AnseriniEmbeddingStartupInitializer$SubprocessInitStatus.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/embedding/anserini/config/AnseriniEmbeddingStartupInitializer.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/embedding/anserini/config/EmbeddingRestartConfigService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/event/attribution/\\E"
+  }, {
+    "pattern":"\\Qai/kompile/event/attribution/algorithm/bayesian/mebn/resolution/MebnProbabilisticScorer.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/event/attribution/llm/AttributionLlmService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/event/attribution/service/BayesianNetworkService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/event/attribution/service/EventAttributionService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/event/attribution/service/PslReasoningService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/graph/reasoning/\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/agent/LlmChatExtractionLlmService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/agent/LlmRelationExtractionAgent.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/agent/MultiAgentExtractionService$AgentInfo.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/agent/MultiAgentExtractionService$PersistenceSummary.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/agent/MultiAgentExtractionService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/agent/PatternRelationExtractionAgent.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/audit/PinGuard.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/confidence/ExtractionConfidenceStamper.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/confidence/KbConfigManager.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/confidence/SourceTrustResolver.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/confidence/StructuralFactAssertionService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/grounding/KbCorrectionService$CorrectionResult.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/grounding/KbCorrectionService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/grounding/KbGroundingService$AssertResult.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/grounding/KbGroundingService$CachedQueryIndex.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/grounding/KbGroundingService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/grounding/LuceneGroundingFactory.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/impl/BulkGraphSyncService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/impl/ConceptExtractorImpl$ConceptOccurrence.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/impl/ConceptExtractorImpl.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/impl/EntityExtractionServiceImpl.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/impl/FactSheetGraphServiceImpl.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/impl/GraphBuildingServiceImpl.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/impl/GraphEdgeComputationServiceImpl.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/impl/InMemoryNamedGraphStore.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/impl/SourceLinkingServiceImpl.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/matrix/gnn/GraphNeuralScoringService$EdgeRef.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/matrix/gnn/GraphNeuralScoringService$GraphSnapshot.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/matrix/gnn/GraphNeuralScoringService$ScoringResult.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/matrix/gnn/GraphNeuralScoringService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/matrix/service/CommunitySummaryService$CommunityReport.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/matrix/service/CommunitySummaryService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/matrix/service/MatrixGraphConstructor$GraphConstructionResult.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/matrix/service/MatrixGraphConstructor$InvalidExtractionResponseException.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/matrix/service/MatrixGraphConstructor.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/matrix/service/MatrixGraphRagService$RetrievalResult.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/matrix/service/MatrixGraphRagService$ScoredCandidate.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/matrix/service/MatrixGraphRagService$ScoredPath.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/matrix/service/MatrixGraphRagService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/matrix/service/MatrixKnowledgeGraphService$NodeWithDepth.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/matrix/service/MatrixKnowledgeGraphService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/matrix/store/MatrixGraphStore.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/matrix/store/VectorStoreMatrixGraphStore.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/neural/NeuralScoreProvider.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/neural/SparseGraphNeuralScoreProvider.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/reasoning/AnswerSynthesisService$CandidateFeatures.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/reasoning/AnswerSynthesisService$GoldenQA.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/reasoning/AnswerSynthesisService$GroundingContext.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/reasoning/AnswerSynthesisService$Scored.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/reasoning/AnswerSynthesisService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/reasoning/CommunitySummaryService$CommunitySummaryResult.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/reasoning/CommunitySummaryService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/reasoning/FactPromotionTracker$PromotionState.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/reasoning/FactPromotionTracker.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/reasoning/GraphCommunityService$CommunityResult.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/reasoning/GraphCommunityService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/reasoning/GraphToFactStoreProjector.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/reasoning/GraphTopologyStatsService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/reasoning/IncrementalReasoningOrchestrator.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/reasoning/InferredFactGraphMaterializer$MaterializationResult.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/reasoning/InferredFactGraphMaterializer$StoreSink.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/reasoning/InferredFactGraphMaterializer.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/reasoning/InferredFactGraphPruner$PruneResult.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/reasoning/InferredFactGraphPruner.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/reasoning/MebnTheoryRegistrationService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/reasoning/SparseGraphAssessor.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/reasoning/TraceHumanizer.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/reporting/MarkdownReporter$ScoredRelationship.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/reporting/MarkdownReporter.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/repository/SourceWeightStore.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/resolution/BarcodeIdentifierScheme.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/resolution/EmailIdentifierScheme.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/resolution/EntityResolutionService$MergeState.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/resolution/EntityResolutionService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/resolution/GraphCompactionService$AttributeBehavior.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/resolution/GraphCompactionService$BarcodeSignal.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/resolution/GraphCompactionService$BlockingResult.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/resolution/GraphCompactionService$BoundedEmbeddingCache.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/resolution/GraphCompactionService$CompactionConfig.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/resolution/GraphCompactionService$CompactionProgress.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/resolution/GraphCompactionService$CompactionResult.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/resolution/GraphCompactionService$CompactionRuntimeConfig.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/resolution/GraphCompactionService$MatchCandidate.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/resolution/GraphCompactionService$MatchExplanation.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/resolution/GraphCompactionService$MergeDecision.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/resolution/GraphCompactionService$ProgressListener.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/resolution/GraphCompactionService$ResolutionInput.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/resolution/GraphCompactionService$Script.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/resolution/GraphCompactionService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/resolution/IdentifierScheme.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/resolution/IdentityGraphService$IdentifierCollision.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/resolution/IdentityGraphService$IdentifierLink.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/resolution/IdentityGraphService$IdentifierLinkPlan.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/resolution/IdentityGraphService$IdentifierObservation.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/resolution/IdentityGraphService$MaterializeResult.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/resolution/IdentityGraphService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/resolution/ProbabilisticScorer.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/service/ConceptExtractor.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/service/EntityExtractionService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/service/FactSheetGraphService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/service/GraphBuildingService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/service/GraphDataPatchService$PatchOutcome.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/service/GraphDataPatchService$PatchRequest.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/service/GraphDataPatchService$PatchResult.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/service/GraphDataPatchService$PatchRule.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/service/GraphDataPatchService$PatchSample.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/service/GraphDataPatchService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/service/GraphEdgeComputationService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/service/GraphForecastService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/service/HierarchicalAggregationService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/service/KnowledgeGraphService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/service/SourceLinkingService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/modelmanager/KompileModelManagerAutoConfiguration.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/modelmanager/\\E"
+  }, {
+    "pattern":"\\Qai/kompile/modelmanager/registry/RegistryService$DeleteResult.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/modelmanager/registry/RegistryService$ModelExistsInfo.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/modelmanager/registry/RegistryService$OptimizationResult.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/modelmanager/registry/RegistryService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/vectorstore/anserini/AnseriniVectorStoreAutoConfiguration.class\\E"
+  }, {
+    "pattern":"\\Qai/skymind/\\E"
+  }, {
+    "pattern":"\\Qapplication.properties\\E"
+  }, {
+    "pattern":"\\Qcom/fasterxml/jackson/annotation/JacksonAnnotation.class\\E"
+  }, {
+    "pattern":"\\Qcom/fasterxml/jackson/annotation/JsonIgnoreProperties.class\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-/libdl.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-/libomp.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-armcompute/libdl.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-armcompute/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-armcompute/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-armcompute/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-armcompute/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-armcompute/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-armcompute/libomp.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-avx2/libdl.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-avx2/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-avx2/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-avx2/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-avx2/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-avx2/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-avx2/libomp.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-avx512/libdl.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-avx512/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-avx512/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-avx512/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-avx512/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-avx512/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-avx512/libomp.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-compat/libdl.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-compat/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-compat/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-compat/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-compat/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-compat/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-compat/libomp.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-compile-avx2/libdl.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-compile-avx2/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-compile-avx2/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-compile-avx2/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-compile-avx2/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-compile-avx2/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-compile-avx2/libomp.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-compile-avx512/libdl.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-compile-avx512/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-compile-avx512/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-compile-avx512/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-compile-avx512/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-compile-avx512/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-compile-avx512/libomp.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-compile-nnapi/libdl.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-compile-nnapi/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-compile-nnapi/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-compile-nnapi/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-compile-nnapi/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-compile-nnapi/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-compile-nnapi/libomp.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-compile/libdl.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-compile/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-compile/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-compile/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-compile/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-compile/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-compile/libomp.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-nnapi/libdl.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-nnapi/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-nnapi/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-nnapi/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-nnapi/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-nnapi/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-nnapi/libomp.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-onednn-avx2/libdl.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-onednn-avx2/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-onednn-avx2/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-onednn-avx2/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-onednn-avx2/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-onednn-avx2/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-onednn-avx2/libomp.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-onednn-avx512/libdl.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-onednn-avx512/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-onednn-avx512/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-onednn-avx512/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-onednn-avx512/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-onednn-avx512/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-onednn-avx512/libomp.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-onednn/libdl.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-onednn/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-onednn/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-onednn/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-onednn/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-onednn/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-onednn/libomp.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-vednn-avx2/libnd4jcpu_device.vsa\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64-vednn-avx2/libnd4jcpu_device.vso\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64/libdl.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64/libgcc_s.1.1.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64/libgcc_s.1.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64/libgcc_s.so.1.1\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64/libgcc_s.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64/libgfortran.3.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64/libgfortran.4.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64/libgfortran.5.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64/libgfortran.so.3\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64/libgfortran.so.4\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64/libgfortran.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64/libomp.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64/libopenblas.0.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64/libopenblas.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64/libopenblas_nolapack.0.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64/libopenblas_nolapack.so.0\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64/libopenblas_nolapack.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64/libquadmath.0.so\\E"
+  }, {
+    "pattern":"\\Qlinux-x86_64/libquadmath.so\\E"
+  }, {
+    "pattern":"\\Qlogback-test.scmo\\E"
+  }, {
+    "pattern":"\\Qlogback-test.xml\\E"
+  }, {
+    "pattern":"\\Qlogback.scmo\\E"
+  }, {
+    "pattern":"\\Qlogback.xml\\E"
+  }, {
+    "pattern":"\\Qnd4j-native.properties\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/javacpp/linux-x86_64/libjnijavacpp.so\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/javacpp/properties/linux-x86_64.properties\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/linux-x86_64/libgcc_s.1.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/linux-x86_64/libgcc_s.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/linux-x86_64/libgcc_s.so.1.1\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/linux-x86_64/libgcc_s.so\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/linux-x86_64/libgfortran.3.so\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/linux-x86_64/libgfortran.4.so\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/linux-x86_64/libgfortran.5.so\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/linux-x86_64/libgfortran.so.3\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/linux-x86_64/libgfortran.so.4\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/linux-x86_64/libgfortran.so\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/linux-x86_64/libopenblas.0.so\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/linux-x86_64/libopenblas.so\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/linux-x86_64/libopenblas_nolapack.0.so\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/linux-x86_64/libopenblas_nolapack.so.0\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/linux-x86_64/libopenblas_nolapack.so\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/linux-x86_64/libquadmath.0.so\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/linux-x86_64/libquadmath.so\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/global/linux-x86_64/libgcc_s.1.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/global/linux-x86_64/libgcc_s.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/global/linux-x86_64/libgcc_s.so.1.1\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/global/linux-x86_64/libgcc_s.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/global/linux-x86_64/libgcc_s.so\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/global/linux-x86_64/libgfortran.3.so\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/global/linux-x86_64/libgfortran.4.so\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/global/linux-x86_64/libgfortran.5.so\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/global/linux-x86_64/libgfortran.so.3\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/global/linux-x86_64/libgfortran.so.4\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/global/linux-x86_64/libgfortran.so.5\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/global/linux-x86_64/libgfortran.so\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/global/linux-x86_64/libjniopenblas.so\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/global/linux-x86_64/libjniopenblas_nolapack.so\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/global/linux-x86_64/libopenblas.0.so\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/global/linux-x86_64/libopenblas.so.0\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/global/linux-x86_64/libopenblas.so\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/global/linux-x86_64/libopenblas_nolapack.0.so\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/global/linux-x86_64/libopenblas_nolapack.so.0\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/global/linux-x86_64/libopenblas_nolapack.so\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/global/linux-x86_64/libquadmath.0.so\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/global/linux-x86_64/libquadmath.so.0\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/global/linux-x86_64/libquadmath.so\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/linux-x86_64/libgcc_s.1.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/linux-x86_64/libgcc_s.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/linux-x86_64/libgcc_s.so.1.1\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/linux-x86_64/libgcc_s.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/linux-x86_64/libgcc_s.so\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/linux-x86_64/libgfortran.3.so\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/linux-x86_64/libgfortran.4.so\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/linux-x86_64/libgfortran.5.so\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/linux-x86_64/libgfortran.so.3\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/linux-x86_64/libgfortran.so.4\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/linux-x86_64/libgfortran.so.5\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/linux-x86_64/libgfortran.so\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/linux-x86_64/libjniopenblas.so\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/linux-x86_64/libjniopenblas_nolapack.so\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/linux-x86_64/libopenblas.0.so\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/linux-x86_64/libopenblas.so.0\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/linux-x86_64/libopenblas.so\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/linux-x86_64/libopenblas_nolapack.0.so\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/linux-x86_64/libopenblas_nolapack.so.0\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/linux-x86_64/libopenblas_nolapack.so\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/linux-x86_64/libquadmath.0.so\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/linux-x86_64/libquadmath.so.0\\E"
+  }, {
+    "pattern":"\\Qorg/bytedeco/openblas/linux-x86_64/libquadmath.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-armcompute/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-armcompute/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-armcompute/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-armcompute/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-armcompute/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-armcompute/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-armcompute/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-avx2/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-avx2/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-avx2/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-avx2/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-avx2/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-avx2/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-avx2/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-avx512/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-avx512/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-avx512/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-avx512/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-avx512/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-avx512/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-avx512/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-compat/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-compat/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-compat/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-compat/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-compat/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-compat/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-compat/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-compile-avx2/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-compile-avx2/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-compile-avx2/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-compile-avx2/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-compile-avx2/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-compile-avx2/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-compile-avx2/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-compile-avx512/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-compile-avx512/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-compile-avx512/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-compile-avx512/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-compile-avx512/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-compile-avx512/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-compile-avx512/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-compile-nnapi/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-compile-nnapi/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-compile-nnapi/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-compile-nnapi/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-compile-nnapi/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-compile-nnapi/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-compile-nnapi/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-compile/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-compile/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-compile/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-compile/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-compile/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-compile/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-compile/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-nnapi/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-nnapi/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-nnapi/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-nnapi/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-nnapi/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-nnapi/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-nnapi/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-onednn-avx2/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-onednn-avx2/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-onednn-avx2/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-onednn-avx2/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-onednn-avx2/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-onednn-avx2/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-onednn-avx2/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-onednn-avx512/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-onednn-avx512/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-onednn-avx512/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-onednn-avx512/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-onednn-avx512/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-onednn-avx512/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-onednn-avx512/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-onednn/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-onednn/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-onednn/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-onednn/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-onednn/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-onednn/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64-onednn/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64/libgcc_s.1.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64/libgcc_s.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64/libgcc_s.so.1.1\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64/libgcc_s.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64/libgfortran.3.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64/libgfortran.4.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64/libgfortran.5.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64/libgfortran.so.3\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64/libgfortran.so.4\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64/libgfortran.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64/libopenblas.0.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64/libopenblas.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64/libopenblas_nolapack.0.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64/libopenblas_nolapack.so.0\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64/libopenblas_nolapack.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64/libquadmath.0.so\\E"
+  }, {
+    "pattern":"\\Qorg/linux-x86_64/libquadmath.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-armcompute/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-armcompute/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-armcompute/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-armcompute/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-armcompute/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-armcompute/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-armcompute/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-avx2/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-avx2/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-avx2/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-avx2/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-avx2/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-avx2/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-avx2/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-avx512/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-avx512/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-avx512/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-avx512/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-avx512/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-avx512/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-avx512/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-compat/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-compat/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-compat/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-compat/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-compat/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-compat/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-compat/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-compile-avx2/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-compile-avx2/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-compile-avx2/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-compile-avx2/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-compile-avx2/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-compile-avx2/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-compile-avx2/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-compile-avx512/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-compile-avx512/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-compile-avx512/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-compile-avx512/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-compile-avx512/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-compile-avx512/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-compile-avx512/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-compile-nnapi/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-compile-nnapi/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-compile-nnapi/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-compile-nnapi/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-compile-nnapi/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-compile-nnapi/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-compile-nnapi/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-compile/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-compile/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-compile/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-compile/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-compile/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-compile/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-compile/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-nnapi/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-nnapi/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-nnapi/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-nnapi/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-nnapi/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-nnapi/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-nnapi/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-onednn-avx2/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-onednn-avx2/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-onednn-avx2/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-onednn-avx2/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-onednn-avx2/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-onednn-avx2/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-onednn-avx2/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-onednn-avx512/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-onednn-avx512/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-onednn-avx512/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-onednn-avx512/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-onednn-avx512/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-onednn-avx512/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-onednn-avx512/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-onednn/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-onednn/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-onednn/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-onednn/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-onednn/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-onednn/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64-onednn/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/linux-x86_64/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-armcompute/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-armcompute/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-armcompute/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-armcompute/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-armcompute/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-armcompute/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-armcompute/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-avx2/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-avx2/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-avx2/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-avx2/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-avx2/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-avx2/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-avx2/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-avx512/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-avx512/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-avx512/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-avx512/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-avx512/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-avx512/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-avx512/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-compat/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-compat/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-compat/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-compat/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-compat/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-compat/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-compat/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-compile-avx2/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-compile-avx2/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-compile-avx2/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-compile-avx2/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-compile-avx2/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-compile-avx2/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-compile-avx2/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-compile-avx512/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-compile-avx512/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-compile-avx512/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-compile-avx512/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-compile-avx512/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-compile-avx512/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-compile-avx512/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-compile-nnapi/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-compile-nnapi/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-compile-nnapi/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-compile-nnapi/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-compile-nnapi/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-compile-nnapi/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-compile-nnapi/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-compile/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-compile/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-compile/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-compile/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-compile/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-compile/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-compile/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-nnapi/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-nnapi/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-nnapi/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-nnapi/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-nnapi/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-nnapi/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-nnapi/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-onednn-avx2/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-onednn-avx2/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-onednn-avx2/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-onednn-avx2/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-onednn-avx2/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-onednn-avx2/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-onednn-avx2/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-onednn-avx512/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-onednn-avx512/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-onednn-avx512/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-onednn-avx512/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-onednn-avx512/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-onednn-avx512/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-onednn-avx512/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-onednn/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-onednn/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-onednn/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-onednn/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-onednn/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-onednn/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-onednn/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-vednn-avx2/libnd4jcpu_device.vsa\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64-vednn-avx2/libnd4jcpu_device.vso\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-armcompute/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-armcompute/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-armcompute/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-armcompute/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-armcompute/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-armcompute/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-armcompute/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-avx2/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-avx2/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-avx2/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-avx2/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-avx2/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-avx2/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-avx2/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-avx512/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-avx512/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-avx512/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-avx512/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-avx512/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-avx512/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-avx512/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-compat/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-compat/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-compat/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-compat/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-compat/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-compat/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-compat/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-compile-avx2/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-compile-avx2/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-compile-avx2/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-compile-avx2/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-compile-avx2/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-compile-avx2/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-compile-avx2/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-compile-avx512/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-compile-avx512/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-compile-avx512/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-compile-avx512/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-compile-avx512/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-compile-avx512/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-compile-avx512/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-compile-nnapi/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-compile-nnapi/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-compile-nnapi/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-compile-nnapi/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-compile-nnapi/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-compile-nnapi/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-compile-nnapi/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-compile/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-compile/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-compile/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-compile/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-compile/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-compile/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-compile/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-nnapi/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-nnapi/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-nnapi/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-nnapi/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-nnapi/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-nnapi/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-nnapi/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-onednn-avx2/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-onednn-avx2/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-onednn-avx2/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-onednn-avx2/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-onednn-avx2/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-onednn-avx2/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-onednn-avx2/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-onednn-avx512/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-onednn-avx512/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-onednn-avx512/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-onednn-avx512/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-onednn-avx512/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-onednn-avx512/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-onednn-avx512/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-onednn/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-onednn/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-onednn/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-onednn/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-onednn/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-onednn/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64-onednn/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/cpu/nativecpu/linux-x86_64/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-armcompute/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-armcompute/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-armcompute/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-armcompute/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-armcompute/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-armcompute/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-armcompute/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-avx2/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-avx2/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-avx2/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-avx2/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-avx2/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-avx2/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-avx2/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-avx512/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-avx512/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-avx512/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-avx512/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-avx512/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-avx512/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-avx512/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-compat/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-compat/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-compat/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-compat/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-compat/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-compat/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-compat/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-compile-avx2/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-compile-avx2/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-compile-avx2/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-compile-avx2/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-compile-avx2/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-compile-avx2/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-compile-avx2/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-compile-avx512/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-compile-avx512/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-compile-avx512/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-compile-avx512/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-compile-avx512/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-compile-avx512/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-compile-avx512/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-compile-nnapi/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-compile-nnapi/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-compile-nnapi/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-compile-nnapi/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-compile-nnapi/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-compile-nnapi/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-compile-nnapi/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-compile/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-compile/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-compile/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-compile/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-compile/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-compile/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-compile/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-nnapi/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-nnapi/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-nnapi/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-nnapi/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-nnapi/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-nnapi/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-nnapi/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-onednn-avx2/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-onednn-avx2/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-onednn-avx2/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-onednn-avx2/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-onednn-avx2/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-onednn-avx2/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-onednn-avx2/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-onednn-avx512/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-onednn-avx512/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-onednn-avx512/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-onednn-avx512/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-onednn-avx512/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-onednn-avx512/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-onednn-avx512/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-onednn/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-onednn/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-onednn/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-onednn/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-onednn/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-onednn/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64-onednn/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linalg/linux-x86_64/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-armcompute/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-armcompute/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-armcompute/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-armcompute/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-armcompute/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-armcompute/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-armcompute/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-avx2/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-avx2/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-avx2/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-avx2/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-avx2/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-avx2/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-avx2/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-avx512/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-avx512/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-avx512/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-avx512/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-avx512/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-avx512/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-avx512/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-compat/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-compat/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-compat/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-compat/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-compat/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-compat/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-compat/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-compile-avx2/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-compile-avx2/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-compile-avx2/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-compile-avx2/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-compile-avx2/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-compile-avx2/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-compile-avx2/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-compile-avx512/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-compile-avx512/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-compile-avx512/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-compile-avx512/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-compile-avx512/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-compile-avx512/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-compile-avx512/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-compile-nnapi/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-compile-nnapi/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-compile-nnapi/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-compile-nnapi/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-compile-nnapi/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-compile-nnapi/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-compile-nnapi/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-compile/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-compile/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-compile/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-compile/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-compile/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-compile/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-compile/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-nnapi/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-nnapi/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-nnapi/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-nnapi/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-nnapi/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-nnapi/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-nnapi/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-onednn-avx2/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-onednn-avx2/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-onednn-avx2/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-onednn-avx2/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-onednn-avx2/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-onednn-avx2/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-onednn-avx2/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-onednn-avx512/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-onednn-avx512/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-onednn-avx512/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-onednn-avx512/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-onednn-avx512/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-onednn-avx512/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-onednn-avx512/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-onednn/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-onednn/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-onednn/libgomp.so.1\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-onednn/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-onednn/libjnind4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-onednn/libnd4jcpu.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64-onednn/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64/libdl.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64/libgomp.1.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64/libgomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/nd4j/linux-x86_64/libomp.so\\E"
+  }, {
+    "pattern":"\\Qorg/springframework/ai/embedding/EmbeddingModel.class\\E"
+  }, {
+    "pattern":"\\Qorg/springframework/ai/model/Model.class\\E"
+  }, {
+    "pattern":"\\Qorg/springframework/aot/hint/RuntimeHintsRegistrar.class\\E"
+  }, {
+    "pattern":"\\Qorg/springframework/boot/autoconfigure/AutoConfiguration.class\\E"
+  }, {
+    "pattern":"\\Qorg/springframework/boot/autoconfigure/AutoConfigureAfter.class\\E"
+  }, {
+    "pattern":"\\Qorg/springframework/boot/autoconfigure/AutoConfigureBefore.class\\E"
+  }, {
+    "pattern":"\\Qorg/springframework/boot/autoconfigure/condition/ConditionalOnBean.class\\E"
+  }, {
+    "pattern":"\\Qorg/springframework/boot/autoconfigure/condition/ConditionalOnClass.class\\E"
+  }, {
+    "pattern":"\\Qorg/springframework/boot/autoconfigure/condition/ConditionalOnMissingBean.class\\E"
+  }, {
+    "pattern":"\\Qorg/springframework/boot/autoconfigure/condition/ConditionalOnProperty.class\\E"
+  }, {
+    "pattern":"\\Qorg/springframework/boot/autoconfigure/jackson/JacksonAutoConfiguration$JacksonMixinConfiguration.class\\E"
+  }, {
+    "pattern":"\\Qorg/springframework/boot/context/properties/EnableConfigurationProperties.class\\E"
+  }, {
+    "pattern":"\\Qorg/springframework/boot/context/properties/EnableConfigurationPropertiesRegistrar.class\\E"
+  }, {
+    "pattern":"\\Qorg/springframework/context/annotation/Conditional.class\\E"
+  }, {
+    "pattern":"\\Qorg/springframework/context/annotation/Configuration.class\\E"
+  }, {
+    "pattern":"\\Qorg/springframework/context/annotation/Import.class\\E"
+  }, {
+    "pattern":"\\Qorg/springframework/context/annotation/ImportBeanDefinitionRegistrar.class\\E"
+  }, {
+    "pattern":"\\Qorg/springframework/context/annotation/Lazy.class\\E"
+  }, {
+    "pattern":"\\Qorg/springframework/context/annotation/Primary.class\\E"
+  }, {
+    "pattern":"\\Qspring.properties\\E"
+  }]},
+  "bundles":[]
+}

@@ -1,0 +1,43 @@
+{
+  "resources": {
+    "includes": [
+      {
+        "pattern": "application\\.properties"
+      },
+      {
+        "pattern": "application-.*\\.properties"
+      },
+      {
+        "pattern": "META-INF/services/.*"
+      },
+      {
+        "pattern": "META-INF/native-image/.*"
+      },
+      {
+        "pattern": "org/bytedeco/.*"
+      },
+      {
+        "pattern": "org/nd4j/.*"
+      },
+      {
+        "pattern": "org/eclipse/deeplearning4j/.*"
+      },
+      {
+        "pattern": "model-sources\\.yml"
+      },
+      {
+        "pattern": "nd4j-.*\\.properties"
+      },
+      {
+        "pattern": "META-INF/spring/.*"
+      },
+      {
+        "pattern": "META-INF/spring\\.factories"
+      },
+      {
+        "pattern": "opennlp/.*"
+      }
+    ]
+  },
+  "bundles": []
+}

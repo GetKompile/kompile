@@ -1,0 +1,90 @@
+{
+  "name": "Basic Agent Capabilities",
+  "description": "Core capability tests for CLI agents. Tests basic tool usage, reasoning, and response quality.",
+  "agent": "claude",
+  "requiredPassRate": 0.7,
+  "tags": ["basic", "smoke"],
+  "cases": [
+    {
+      "id": "hello-world",
+      "name": "Basic greeting and response",
+      "prompt": "Say hello and tell me today's date.",
+      "assertions": [
+        {"type": "NO_ESCAPE"},
+        {"type": "OUTPUT_CONTAINS", "value": "hello", "critical": true},
+        {"type": "MAX_STEPS_NOT_HIT"}
+      ],
+      "tags": ["basic"],
+      "timeoutMs": 60000,
+      "priority": 5
+    },
+    {
+      "id": "file-read",
+      "name": "Read a file and report contents",
+      "prompt": "Read the file /etc/hostname and tell me what it says.",
+      "assertions": [
+        {"type": "NO_ESCAPE"},
+        {"type": "TOOL_WAS_CALLED", "value": "Read", "critical": true, "description": "Agent should use Read tool"},
+        {"type": "MAX_STEPS_NOT_HIT"}
+      ],
+      "tags": ["file-io", "tools"],
+      "timeoutMs": 120000,
+      "priority": 4
+    },
+    {
+      "id": "code-search",
+      "name": "Search codebase for a pattern",
+      "prompt": "Find all Java files that contain the word 'EvalCase' in this repository.",
+      "assertions": [
+        {"type": "NO_ESCAPE"},
+        {"type": "OUTPUT_CONTAINS", "value": "EvalCase", "critical": true},
+        {"type": "MAX_STEPS_NOT_HIT"},
+        {"type": "NO_TOOL_ERRORS", "critical": false}
+      ],
+      "tags": ["search", "tools"],
+      "timeoutMs": 120000,
+      "priority": 3
+    },
+    {
+      "id": "no-refusal",
+      "name": "Agent should not refuse a simple task",
+      "prompt": "List the files in the current directory.",
+      "assertions": [
+        {"type": "NO_ESCAPE"},
+        {"type": "OUTPUT_NOT_CONTAINS", "value": "I cannot", "critical": true},
+        {"type": "OUTPUT_NOT_CONTAINS", "value": "I'm unable", "critical": true}
+      ],
+      "tags": ["basic", "compliance"],
+      "timeoutMs": 60000,
+      "priority": 5
+    },
+    {
+      "id": "multi-step",
+      "name": "Multi-step task requiring tool chaining",
+      "prompt": "Create a file /tmp/kompile-eval-test.txt containing 'hello from eval', then read it back and confirm the contents.",
+      "setup": ["rm -f /tmp/kompile-eval-test.txt"],
+      "teardown": ["rm -f /tmp/kompile-eval-test.txt"],
+      "assertions": [
+        {"type": "NO_ESCAPE"},
+        {"type": "OUTPUT_CONTAINS", "value": "hello from eval", "critical": true},
+        {"type": "MAX_STEPS_NOT_HIT"},
+        {"type": "NO_TOOL_ERRORS", "critical": false}
+      ],
+      "tags": ["multi-step", "file-io"],
+      "timeoutMs": 180000,
+      "priority": 3
+    },
+    {
+      "id": "reasoning",
+      "name": "Basic reasoning about code",
+      "prompt": "What programming language is this repository primarily written in? Just answer with the language name.",
+      "assertions": [
+        {"type": "NO_ESCAPE"},
+        {"type": "OUTPUT_CONTAINS", "value": "Java", "critical": true}
+      ],
+      "tags": ["reasoning"],
+      "timeoutMs": 120000,
+      "priority": 2
+    }
+  ]
+}

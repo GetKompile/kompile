@@ -1,0 +1,9 @@
+[
+  {
+    "interfaces": ["sun.misc.SignalHandler"]
+  },
+  { "interfaces": ["org.eclipse.lsp4j.services.LanguageServer", "org.eclipse.lsp4j.jsonrpc.Endpoint"] },
+  { "interfaces": ["org.eclipse.lsp4j.services.LanguageServer"] },
+  { "interfaces": ["org.eclipse.lsp4j.services.LanguageClient", "org.eclipse.lsp4j.jsonrpc.Endpoint"] },
+  { "interfaces": ["org.eclipse.lsp4j.services.LanguageClient"] }
+]

@@ -1,0 +1,36 @@
+{
+  "resources": {
+    "includes": [
+      {"pattern": "\\Qlog4j2.component.properties\\E"},
+      {"pattern": "\\Qlog4j2.xml\\E"},
+      {"pattern": "\\Qlog4j2-spring.xml\\E"},
+      {"pattern": ".*Log4j2Plugins\\.dat$"},
+      {"pattern": "\\Qapplication.yml\\E"},
+      {"pattern": "\\Qapplication-standalone.yml\\E"},
+      {"pattern": "application.*"},
+      {"pattern": "\\Qmodel-sources.yml\\E"},
+      {"pattern": "static/.*"},
+      {"pattern": "staging-static/.*"},
+      {"pattern": "META-INF/services/.*"},
+      {"pattern": "META-INF/spring/.*"},
+      {"pattern": "META-INF/spring\\.factories"},
+      {"pattern": "META-INF/spring\\.components"},
+      {"pattern": "META-INF/spring/.*\\.imports"},
+      {"pattern": "META-INF/native-image/.*\\.json"},
+      {"pattern": "org/bytedeco/.*"},
+      {"pattern": "org/nd4j/.*"},
+      {"pattern": "ai/kompile/tokenizers/.*\\.so"},
+      {"pattern": "ai/kompile/tokenizers/.*\\.dll"},
+      {"pattern": "ai/kompile/tokenizers/.*\\.dylib"},
+      {"pattern": "ai/kompile/bindings/.*\\.so"},
+      {"pattern": "ai/kompile/bindings/.*\\.dll"},
+      {"pattern": "ai/kompile/bindings/.*\\.dylib"}
+    ],
+    "excludes": [
+      {"pattern": "META-INF/services/org\\.hibernate\\.bytecode\\.spi\\.BytecodeProvider"},
+      {"pattern": "org/nd4j/linalg/.*/linux-x86_64/.*\\.so.*"},
+      {"pattern": "org/bytedeco/.*/linux-x86_64/.*\\.so.*"},
+      {"pattern": "org/eclipse/deeplearning4j/.*/linux-x86_64/.*\\.so.*"}
+    ]
+  }
+}

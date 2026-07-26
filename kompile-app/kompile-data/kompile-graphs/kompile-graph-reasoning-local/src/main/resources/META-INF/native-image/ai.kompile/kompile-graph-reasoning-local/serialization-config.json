@@ -1,0 +1,91 @@
+[
+  {
+    "name": "ai.kompile.graph.reasoning.psl.PslProgram",
+    "customTargetConstructorClass": "ai.kompile.graph.reasoning.psl.PslProgram"
+  },
+  {
+    "name": "ai.kompile.graph.reasoning.psl.PslRule"
+  },
+  {
+    "name": "ai.kompile.graph.reasoning.psl.PslAtom"
+  },
+  {
+    "name": "ai.kompile.graph.reasoning.psl.Term"
+  },
+  {
+    "name": "ai.kompile.graph.reasoning.psl.ArithmeticRule"
+  },
+  {
+    "name": "ai.kompile.graph.reasoning.mebn.MTheory",
+    "customTargetConstructorClass": "ai.kompile.graph.reasoning.mebn.MTheory"
+  },
+  {
+    "name": "ai.kompile.graph.reasoning.mebn.MFrag",
+    "customTargetConstructorClass": "ai.kompile.graph.reasoning.mebn.MFrag"
+  },
+  {
+    "name": "ai.kompile.graph.reasoning.mebn.RandomVariable",
+    "customTargetConstructorClass": "ai.kompile.graph.reasoning.mebn.RandomVariable"
+  },
+  {
+    "name": "ai.kompile.graph.reasoning.mebn.EntityType",
+    "customTargetConstructorClass": "ai.kompile.graph.reasoning.mebn.EntityType"
+  },
+  {
+    "name": "ai.kompile.graph.reasoning.mebn.type.TypeRegistry",
+    "customTargetConstructorClass": "ai.kompile.graph.reasoning.mebn.type.TypeRegistry"
+  },
+  {
+    "name": "ai.kompile.graph.reasoning.mebn.type.TypeAttributeSchema",
+    "customTargetConstructorClass": "ai.kompile.graph.reasoning.mebn.type.TypeAttributeSchema"
+  },
+  {
+    "name": "ai.kompile.graph.reasoning.mebn.type.TypeRegistry$Declaration"
+  },
+  {
+    "name": "ai.kompile.graph.reasoning.mebn.type.AttributeDefinition"
+  },
+  {
+    "name": "ai.kompile.graph.reasoning.mebn.type.TypeConstraint$RelationConstraint"
+  },
+  {
+    "name": "ai.kompile.graph.reasoning.mebn.type.TypeConstraint$CardinalityConstraint"
+  },
+  {
+    "name": "ai.kompile.graph.reasoning.mebn.type.TypeConstraint$AttributeRequiredConstraint"
+  },
+  {
+    "name": "ai.kompile.graph.reasoning.explain.ReasoningTrace",
+    "customTargetConstructorClass": "ai.kompile.graph.reasoning.explain.ReasoningTrace"
+  },
+  {
+    "name": "ai.kompile.graph.reasoning.explain.ReasoningTrace$Step"
+  },
+  {
+    "name": "ai.kompile.graph.reasoning.confidence.Opinion"
+  },
+  {
+    "name": "ai.kompile.graph.reasoning.confidence.ds.MassFunction"
+  },
+  {
+    "name": "java.util.ArrayList"
+  },
+  {
+    "name": "java.util.LinkedHashMap"
+  },
+  {
+    "name": "java.util.HashMap"
+  },
+  {
+    "name": "java.util.LinkedList"
+  },
+  {
+    "name": "java.util.HashSet"
+  },
+  {
+    "name": "java.util.LinkedHashSet"
+  },
+  {
+    "name": "java.util.TreeMap"
+  }
+]

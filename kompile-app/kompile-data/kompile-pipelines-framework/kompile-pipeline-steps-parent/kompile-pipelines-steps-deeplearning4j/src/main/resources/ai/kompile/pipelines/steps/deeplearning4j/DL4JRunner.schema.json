@@ -1,0 +1,27 @@
+{
+  "name": "DL4J_INFERENCE",
+  "runnerClassName": "ai.kompile.pipelines.steps.deeplearning4j.DL4JRunner",
+  "description": "Executes a Deeplearning4j model (MultiLayerNetwork or ComputationGraph) from a saved model file.",
+  "parameters": [
+    {
+      "name": "modelUri",
+      "description": "URI of the saved DL4J model file (e.g., 'file:/path/to/model.zip'). Currently, only local file URIs are directly supported.",
+      "type": "STRING",
+      "required": true
+    },
+    {
+      "name": "inputNames",
+      "description": "A list of strings representing the keys in the input Data object that contain the NDArray(s) for the model. For MultiLayerNetwork, typically one name. For ComputationGraph, matches the model's input array names/order.",
+      "type": "LIST",
+      "listElementType": "STRING",
+      "required": false
+    },
+    {
+      "name": "outputNames",
+      "description": "A list of strings representing the keys under which the output NDArray(s) from the model will be stored in the output Data object. For MultiLayerNetwork, typically one name. For ComputationGraph, matches the model's output array names/order.",
+      "type": "LIST",
+      "listElementType": "STRING",
+      "required": false
+    }
+  ]
+}

@@ -44,7 +44,6 @@ import org.eclipse.deeplearning4j.llm.generation.GenerationResult;
 import org.eclipse.deeplearning4j.llm.generation.kvcache.KvCacheStrategy;
 import org.eclipse.deeplearning4j.llm.generation.sampling.SamplingConfig;
 import org.eclipse.deeplearning4j.model.benchmark.BenchmarkConfig;
-import org.eclipse.deeplearning4j.model.benchmark.BenchmarkConfigApplier;
 import org.eclipse.deeplearning4j.vlm.model.encoder.VisionEncoderIOConfig;
 import org.eclipse.deeplearning4j.vlm.model.VisionLanguageModel;
 import org.eclipse.deeplearning4j.vlm.model.patching.SameDiffGraphPatch;
@@ -1210,16 +1209,19 @@ public class VlmDocumentPipeline implements OcrPipeline {
 
         logger.info("VLM auto-detected format: {}", hasSdzDecoder ? "SDZ" : hasOnnxDecoder ? "ONNX" : "fallback");
 
-        // Use the same source-of-truth optimization config as the DL4J VLM benchmark.
-        // Apply environment flags now; decoder/embed_tokens compile is deferred until
-        // GenerationPipeline has been constructed so the ordering matches platform-tests.
-        BenchmarkConfig optimalConfig = BenchmarkConfig.optimal();
-        logger.info("Applying VLM benchmark config: {}", optimalConfig.getName());
-        BenchmarkConfigApplier.apply(optimalConfig);
-
-        this.vlm.setBenchmarkConfig(optimalConfig);
-        logger.info("Deferred BenchmarkConfig.{} decoder/embed_tokens compile until GenerationPipeline creation",
-                optimalConfig.getName());
+        // Backend selection belongs to the native resolver, not to this pipeline.
+        // GraphExecutionMode states the rule outright: "The native resolver owns capability
+        // selection ... Java must not remap these modes based only on GPU availability."
+        //
+        // BenchmarkConfig.optimal() is an NVIDIA-shaped benchmark control — ~30 triton* flags,
+        // cuBLAS TF32, and a fixed benchmark token budget — so applying it here stamped one
+        // vendor's tuning into process-global ND4J Environment state on every chip this pipeline
+        // runs on. Leaving the model's benchmarkConfig unset carries null through to
+        // GenerationPipelineConfig, which leaves the decoder in AUTO and lets the resolver walk
+        // the ladder for the hardware actually present. Process-wide environment flags are owned
+        // by Nd4jEnvironmentConfigService, not by a benchmark type reached from an OCR pipeline.
+        logger.info("Execution backend left to the native resolver (AUTO); "
+                + "no benchmark config pinned by the VLM pipeline");
     }
 
     /**

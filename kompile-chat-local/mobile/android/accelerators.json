@@ -1,0 +1,202 @@
+{
+  "formatVersion": 1,
+  "application": "ai.kompile.chat.local.android",
+  "offlineOnly": true,
+  "variants": {
+    "vulkan": {
+      "gradleFlavor": "vulkan",
+      "minSdk": 28,
+      "apkTask": ":app:assembleVulkanDebug",
+      "runtimeAar": "sdx-runtime-android-arm64-vulkan.aar",
+      "runtimeEnv": "SDX_VULKAN_AAR",
+      "releaseSelector": {
+        "component": "runtime",
+        "packageRole": "android-aar",
+        "platform": "android-arm64",
+        "variant": "vulkan"
+      },
+      "modelFormats": [".sdz", ".gguf", ".ggml"],
+      "requiredBackend": "VULKAN",
+      "requiredGpuTarget": "VULKAN",
+      "requiredNativeLibraries": [
+        "libsdx_llm.so",
+        "libjnidispatch.so",
+        "libnd4jvulkan.so",
+        "libjnisdx.so",
+        "libjnitokenizers.so"
+      ],
+      "forbiddenLibraries": [
+        "mkl",
+        "dnnl",
+        "onednn",
+        "gfortran",
+        "cpuinfo",
+        "xnnpack",
+        "ruy",
+        "tensorflowlite_jni",
+        "nnapi",
+        "neuralnetworks",
+        "hexagon",
+        "litert",
+        "opencl",
+        "host"
+      ],
+      "deviceOnly": true,
+      "aotOnly": true,
+      "allowHostFallback": false,
+      "replay": "lowered-command-buffer"
+    },
+    "hexagon": {
+      "gradleFlavor": "hexagon",
+      "minSdk": 28,
+      "apkTask": ":app:assembleHexagonDebug",
+      "runtimeAar": "sdx-runtime-android-arm64-hexagon.aar",
+      "runtimeEnv": "SDX_HEXAGON_AAR",
+      "releaseSelector": {
+        "component": "runtime",
+        "packageRole": "android-aar",
+        "platform": "android-arm64",
+        "variant": "hexagon"
+      },
+      "modelFormats": [".sdz", ".gguf", ".ggml"],
+      "requiredBackend": "HEXAGON",
+      "requiredNativeLibraries": [
+        "libsdx_llm.so",
+        "libjnidispatch.so",
+        "libnd4jhexagon.so",
+        "libjnisdx.so",
+        "libjnitokenizers.so",
+        "libsdx_hexagon_runtime_skel.so"
+      ],
+      "dspServiceLibrary": "libsdx_hexagon_runtime_skel.so",
+      "forbiddenLibraries": [
+        "mkl",
+        "dnnl",
+        "onednn",
+        "gfortran",
+        "cpuinfo",
+        "xnnpack",
+        "ruy",
+        "tensorflowlite_jni",
+        "nnapi",
+        "vulkan",
+        "opencl",
+        "gpu",
+        "host"
+      ],
+      "deviceOnly": true,
+      "aotOnly": true,
+      "allowHostFallback": false
+    },
+    "tensorG3": {
+      "gradleFlavor": "tensorG3",
+      "minSdk": 31,
+      "apkTask": ":app:assembleTensorG3Debug",
+      "runtimeAar": "sdx-runtime-android-arm64-tensor-g3.aar",
+      "runtimeEnv": "SDX_TENSOR_G3_AAR",
+      "releaseSelector": {
+        "component": "runtime",
+        "packageRole": "android-aar",
+        "platform": "android-arm64",
+        "variant": "tensor-g3"
+      },
+      "modelFormats": [".sdz", ".gguf", ".ggml"],
+      "bundleArtifact": "compiledArtifacts.nnapiAcceleratorPolicy",
+      "requiredBackend": "NNAPI_ACCELERATOR_ONLY",
+      "requiredNativeLibraries": [
+        "libsdx_llm.so",
+        "libjnidispatch.so",
+        "libnd4jnnapi.so",
+        "libjnisdx.so",
+        "libjnitokenizers.so"
+      ],
+      "forbiddenLibraries": [
+        "mkl",
+        "dnnl",
+        "onednn",
+        "gfortran",
+        "cpuinfo",
+        "xnnpack",
+        "ruy",
+        "tensorflowlite_jni",
+        "vulkan",
+        "hexagon",
+        "litert",
+        "opencl",
+        "gpu",
+        "host"
+      ],
+      "requiredSystemDependency": "libneuralnetworks.so",
+      "deviceOnly": true,
+      "aotOnly": true,
+      "allowHostFallback": false,
+      "driverCompilation": "load-time-content-addressed-cache",
+      "deviceSelection": "single-DEVICE_ACCELERATOR-complete-graph",
+      "quantization": "int8-per-tensor",
+      "quantizedMatmulInputs": 5,
+      "scaleDtype": "FLOAT32"
+    },
+    "tensorG5": {
+      "gradleFlavor": "tensorG5",
+      "minSdk": 28,
+      "apkTask": ":app:assembleTensorG5Debug",
+      "runtimeAar": "sdx-chat-runtime-android-arm64-google-tensor-g5.aar",
+      "runtimeEnv": "SDX_TENSOR_G5_AAR",
+      "releaseSelector": {
+        "component": "runtime",
+        "packageRole": "android-aar",
+        "platform": "android-arm64",
+        "variant": "google-tensor-g5"
+      },
+      "modelFormats": [".sdz", ".gguf", ".ggml"],
+      "bundleArtifact": "compiledArtifacts.tensorG5LiteRtLm",
+      "requiredBackend": "npu",
+      "requiredSoc": "Tensor_G5",
+      "requiredNativeLibraries": [
+        "libsdx_llm.so",
+        "libjnidispatch.so",
+        "liblitert-lm.so",
+        "libLiteRtDispatch_GoogleTensor.so",
+        "libGemmaModelConstraintProvider.so"
+      ],
+      "forbiddenLibraries": [
+        "mkl",
+        "dnnl",
+        "onednn",
+        "gfortran",
+        "cpuinfo",
+        "xnnpack",
+        "ruy",
+        "tensorflowlite_jni",
+        "nnapi",
+        "vulkan",
+        "opencl",
+        "gpu",
+        "host"
+      ],
+      "deviceOnly": true,
+      "aotOnly": true,
+      "allowHostFallback": false,
+      "quantization": "int8-per-channel"
+    }
+  },
+  "graphReasoning": {
+    "androidRuntime": "stock-GraalVM-native-AOT-C-ABI-v1",
+    "jniTransport": "JavaCPP",
+    "target": "aarch64-linux-android",
+    "minSdk": 28,
+    "assetFormat": ".kgraph",
+    "kgrAbiVersion": 1,
+    "androidNativeLibraries": [
+      "libjnikompile_graph.so",
+      "libkompile_reasoning_android.so"
+    ],
+    "desktopAotSdk": "kompile-graph-reasoning-local-0.1.0-SNAPSHOT-native-sdk.zip",
+    "androidNativeAotStatus": "built-and-verified",
+    "toolchain": {
+      "nativeImage": "stock GraalVM 23.1.5",
+      "targetJdk": "LabsJDK jvmci-23.1-b33",
+      "compilerLinker": "Android NDK r28b clang/lld"
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "resources": {
+    "includes": [
+      {"pattern": "cli-agents\\.json"},
+      {"pattern": "templates/.*"},
+      {"pattern": "ai/kompile/pipelines/steps/.*/.*\\.schema\\.json"},
+      {"pattern": "META-INF/services/org\\.apache\\.sshd\\..*"},
+      {"pattern": ".*-theme\\.properties"},
+      {"pattern": "multilang/lanterna-ui.*\\.properties"},
+      {"pattern": "ai/kompile/modelmanager/.*"},
+      {"pattern": "io/anserini/encoder/.*"},
+      {"pattern": "org/jline/.*"},
+      {"pattern": "META-INF/services/org/jline/.*"}
+    ]
+  }
+}

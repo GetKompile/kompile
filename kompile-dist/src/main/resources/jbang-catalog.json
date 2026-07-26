@@ -1,0 +1,241 @@
+{
+  "description": "JBang catalog for an unpacked Kompile distribution. Script-refs are relative to the zip root so `jbang --catalog ./jbang-catalog.json kompile-server` works immediately after extraction. Native binaries in bin/ are the primary path; these jars are the fallback.",
+  "catalogs": {},
+  "aliases": {
+    "kompile": {
+      "script-ref": "lib/kompile-cli.jar",
+      "description": "Kompile CLI — project scaffold, crawl, chat, and admin commands",
+      "java": "17+",
+      "java-options": [
+        "-Dfile.encoding=UTF-8"
+      ]
+    },
+    "kompile-server": {
+      "script-ref": "lib/kompile-server.jar",
+      "description": "Kompile admin console (:8080) — developer, agents, enforcer, settings, graph maintenance. End-user chat and crawl are the kompile-chat and kompile-crawl-manager aliases",
+      "java": "17+",
+      "java-options": [
+        "-XX:+ExitOnOutOfMemoryError",
+        "--add-opens=java.base/java.lang=ALL-UNNAMED",
+        "--add-opens=java.base/java.lang.invoke=ALL-UNNAMED",
+        "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED",
+        "--add-opens=java.base/java.io=ALL-UNNAMED",
+        "--add-opens=java.base/java.net=ALL-UNNAMED",
+        "--add-opens=java.base/java.nio=ALL-UNNAMED",
+        "--add-opens=java.base/java.util=ALL-UNNAMED",
+        "--add-opens=java.base/java.util.concurrent=ALL-UNNAMED",
+        "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED",
+        "--add-opens=java.base/sun.misc=ALL-UNNAMED",
+        "--add-exports=java.base/jdk.internal.misc=ALL-UNNAMED",
+        "-Dfile.encoding=UTF-8"
+      ]
+    },
+    "kompile-staging": {
+      "script-ref": "lib/kompile-model-staging.jar",
+      "description": "Kompile Model Staging — download, convert, and stage ML models",
+      "java": "17+",
+      "java-options": [
+        "-XX:+ExitOnOutOfMemoryError",
+        "--add-opens=java.base/java.lang=ALL-UNNAMED",
+        "--add-opens=java.base/java.lang.invoke=ALL-UNNAMED",
+        "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED",
+        "--add-opens=java.base/java.io=ALL-UNNAMED",
+        "--add-opens=java.base/java.net=ALL-UNNAMED",
+        "--add-opens=java.base/java.nio=ALL-UNNAMED",
+        "--add-opens=java.base/java.util=ALL-UNNAMED",
+        "--add-opens=java.base/java.util.concurrent=ALL-UNNAMED",
+        "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED",
+        "--add-opens=java.base/sun.misc=ALL-UNNAMED",
+        "--add-exports=java.base/jdk.internal.misc=ALL-UNNAMED",
+        "-Dfile.encoding=UTF-8"
+      ]
+    },
+    "kompile-chat": {
+      "script-ref": "lib/kompile-chat.jar",
+      "description": "Kompile chat (:8081) — chat, project browsing, read-only fact sheets and graph",
+      "java": "17+",
+      "java-options": [
+        "-XX:+ExitOnOutOfMemoryError",
+        "--add-opens=java.base/java.lang=ALL-UNNAMED",
+        "--add-opens=java.base/java.lang.invoke=ALL-UNNAMED",
+        "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED",
+        "--add-opens=java.base/java.io=ALL-UNNAMED",
+        "--add-opens=java.base/java.net=ALL-UNNAMED",
+        "--add-opens=java.base/java.nio=ALL-UNNAMED",
+        "--add-opens=java.base/java.util=ALL-UNNAMED",
+        "--add-opens=java.base/java.util.concurrent=ALL-UNNAMED",
+        "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED",
+        "--add-opens=java.base/sun.misc=ALL-UNNAMED",
+        "--add-exports=java.base/jdk.internal.misc=ALL-UNNAMED",
+        "-Dfile.encoding=UTF-8"
+      ]
+    },
+    "kompile-crawl-manager": {
+      "script-ref": "lib/kompile-crawl-manager.jar",
+      "description": "Kompile crawl manager (:8082) — crawls, ingest and indexing, fact sheets, documents and index browser, note sync, graph viewing",
+      "java": "17+",
+      "java-options": [
+        "-XX:+ExitOnOutOfMemoryError",
+        "--add-opens=java.base/java.lang=ALL-UNNAMED",
+        "--add-opens=java.base/java.lang.invoke=ALL-UNNAMED",
+        "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED",
+        "--add-opens=java.base/java.io=ALL-UNNAMED",
+        "--add-opens=java.base/java.net=ALL-UNNAMED",
+        "--add-opens=java.base/java.nio=ALL-UNNAMED",
+        "--add-opens=java.base/java.util=ALL-UNNAMED",
+        "--add-opens=java.base/java.util.concurrent=ALL-UNNAMED",
+        "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED",
+        "--add-opens=java.base/sun.misc=ALL-UNNAMED",
+        "--add-exports=java.base/jdk.internal.misc=ALL-UNNAMED",
+        "-Dfile.encoding=UTF-8"
+      ]
+    },
+    "kompile-ingest": {
+      "script-ref": "lib/kompile-server.jar",
+      "description": "Kompile ingest subprocess — document ingestion and Tika extraction",
+      "java": "17+",
+      "java-options": [
+        "-XX:+ExitOnOutOfMemoryError",
+        "--add-opens=java.base/java.lang=ALL-UNNAMED",
+        "--add-opens=java.base/java.lang.invoke=ALL-UNNAMED",
+        "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED",
+        "--add-opens=java.base/java.io=ALL-UNNAMED",
+        "--add-opens=java.base/java.net=ALL-UNNAMED",
+        "--add-opens=java.base/java.nio=ALL-UNNAMED",
+        "--add-opens=java.base/java.util=ALL-UNNAMED",
+        "--add-opens=java.base/java.util.concurrent=ALL-UNNAMED",
+        "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED",
+        "--add-opens=java.base/sun.misc=ALL-UNNAMED",
+        "--add-exports=java.base/jdk.internal.misc=ALL-UNNAMED",
+        "-Dfile.encoding=UTF-8"
+      ],
+      "arguments": ["--subprocess=ingest"]
+    },
+    "kompile-vector": {
+      "script-ref": "lib/kompile-server.jar",
+      "description": "Kompile vector-population subprocess — Lucene/vector index population",
+      "java": "17+",
+      "java-options": [
+        "-XX:+ExitOnOutOfMemoryError",
+        "--add-opens=java.base/java.lang=ALL-UNNAMED",
+        "--add-opens=java.base/java.lang.invoke=ALL-UNNAMED",
+        "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED",
+        "--add-opens=java.base/java.io=ALL-UNNAMED",
+        "--add-opens=java.base/java.net=ALL-UNNAMED",
+        "--add-opens=java.base/java.nio=ALL-UNNAMED",
+        "--add-opens=java.base/java.util=ALL-UNNAMED",
+        "--add-opens=java.base/java.util.concurrent=ALL-UNNAMED",
+        "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED",
+        "--add-opens=java.base/sun.misc=ALL-UNNAMED",
+        "--add-exports=java.base/jdk.internal.misc=ALL-UNNAMED",
+        "-Dfile.encoding=UTF-8"
+      ],
+      "arguments": ["--subprocess=vector-population"]
+    },
+    "kompile-embedding": {
+      "script-ref": "lib/kompile-server.jar",
+      "description": "Kompile embedding subprocess — ND4J/ONNX sentence-embedding generation",
+      "java": "17+",
+      "java-options": [
+        "-XX:+ExitOnOutOfMemoryError",
+        "--add-opens=java.base/java.lang=ALL-UNNAMED",
+        "--add-opens=java.base/java.lang.invoke=ALL-UNNAMED",
+        "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED",
+        "--add-opens=java.base/java.io=ALL-UNNAMED",
+        "--add-opens=java.base/java.net=ALL-UNNAMED",
+        "--add-opens=java.base/java.nio=ALL-UNNAMED",
+        "--add-opens=java.base/java.util=ALL-UNNAMED",
+        "--add-opens=java.base/java.util.concurrent=ALL-UNNAMED",
+        "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED",
+        "--add-opens=java.base/sun.misc=ALL-UNNAMED",
+        "--add-exports=java.base/jdk.internal.misc=ALL-UNNAMED",
+        "-Dfile.encoding=UTF-8"
+      ],
+      "arguments": ["--subprocess=embedding"]
+    },
+    "kompile-model-init": {
+      "script-ref": "lib/kompile-server.jar",
+      "description": "Kompile model-init subprocess — model warmup and initialization",
+      "java": "17+",
+      "java-options": [
+        "-XX:+ExitOnOutOfMemoryError",
+        "--add-opens=java.base/java.lang=ALL-UNNAMED",
+        "--add-opens=java.base/java.lang.invoke=ALL-UNNAMED",
+        "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED",
+        "--add-opens=java.base/java.io=ALL-UNNAMED",
+        "--add-opens=java.base/java.net=ALL-UNNAMED",
+        "--add-opens=java.base/java.nio=ALL-UNNAMED",
+        "--add-opens=java.base/java.util=ALL-UNNAMED",
+        "--add-opens=java.base/java.util.concurrent=ALL-UNNAMED",
+        "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED",
+        "--add-opens=java.base/sun.misc=ALL-UNNAMED",
+        "--add-exports=java.base/jdk.internal.misc=ALL-UNNAMED",
+        "-Dfile.encoding=UTF-8"
+      ],
+      "arguments": ["--subprocess=model-init"]
+    },
+    "kompile-graph": {
+      "script-ref": "lib/kompile-server.jar",
+      "description": "Kompile graph-matrix subprocess — adjacency matrix and knowledge graph computation",
+      "java": "17+",
+      "java-options": [
+        "-XX:+ExitOnOutOfMemoryError",
+        "--add-opens=java.base/java.lang=ALL-UNNAMED",
+        "--add-opens=java.base/java.lang.invoke=ALL-UNNAMED",
+        "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED",
+        "--add-opens=java.base/java.io=ALL-UNNAMED",
+        "--add-opens=java.base/java.net=ALL-UNNAMED",
+        "--add-opens=java.base/java.nio=ALL-UNNAMED",
+        "--add-opens=java.base/java.util=ALL-UNNAMED",
+        "--add-opens=java.base/java.util.concurrent=ALL-UNNAMED",
+        "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED",
+        "--add-opens=java.base/sun.misc=ALL-UNNAMED",
+        "--add-exports=java.base/jdk.internal.misc=ALL-UNNAMED",
+        "-Dfile.encoding=UTF-8"
+      ],
+      "arguments": ["--subprocess=graph-matrix"]
+    },
+    "kompile-learning": {
+      "script-ref": "lib/kompile-server.jar",
+      "description": "Kompile learning subprocess — background learning and pattern extraction",
+      "java": "17+",
+      "java-options": [
+        "-XX:+ExitOnOutOfMemoryError",
+        "--add-opens=java.base/java.lang=ALL-UNNAMED",
+        "--add-opens=java.base/java.lang.invoke=ALL-UNNAMED",
+        "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED",
+        "--add-opens=java.base/java.io=ALL-UNNAMED",
+        "--add-opens=java.base/java.net=ALL-UNNAMED",
+        "--add-opens=java.base/java.nio=ALL-UNNAMED",
+        "--add-opens=java.base/java.util=ALL-UNNAMED",
+        "--add-opens=java.base/java.util.concurrent=ALL-UNNAMED",
+        "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED",
+        "--add-opens=java.base/sun.misc=ALL-UNNAMED",
+        "--add-exports=java.base/jdk.internal.misc=ALL-UNNAMED",
+        "-Dfile.encoding=UTF-8"
+      ],
+      "arguments": ["--subprocess=learning"]
+    },
+    "kompile-serving": {
+      "script-ref": "lib/kompile-server.jar",
+      "description": "Kompile serving subprocess — local model inference serving (OpenAI-compatible)",
+      "java": "17+",
+      "java-options": [
+        "-XX:+ExitOnOutOfMemoryError",
+        "--add-opens=java.base/java.lang=ALL-UNNAMED",
+        "--add-opens=java.base/java.lang.invoke=ALL-UNNAMED",
+        "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED",
+        "--add-opens=java.base/java.io=ALL-UNNAMED",
+        "--add-opens=java.base/java.net=ALL-UNNAMED",
+        "--add-opens=java.base/java.nio=ALL-UNNAMED",
+        "--add-opens=java.base/java.util=ALL-UNNAMED",
+        "--add-opens=java.base/java.util.concurrent=ALL-UNNAMED",
+        "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED",
+        "--add-opens=java.base/sun.misc=ALL-UNNAMED",
+        "--add-exports=java.base/jdk.internal.misc=ALL-UNNAMED",
+        "-Dfile.encoding=UTF-8"
+      ],
+      "arguments": ["--subprocess=serving"]
+    }
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "name": "DOCUMENT_PARSER",
+  "runnerClassName": "ai.kompile.pipelines.steps.documentparser.DocumentParserRunner",
+  "description": "Parses various document formats (PDF, DOCX, etc.) using Apache Tika to extract text, HTML, metadata, and potentially tables.",
+  "parameters": [
+    {
+      "name": "inputKey",
+      "description": "The key in the input Data object that holds the document content as a byte array.",
+      "type": "STRING",
+      "required": false,
+      "defaultValue": "documentBytes"
+    },
+    {
+      "name": "outputKeyPrefix",
+      "description": "The prefix for keys in the output Data object where parsed content will be stored (e.g., if 'parsedDoc', outputs might be 'parsedDoc.text', 'parsedDoc.metadata').",
+      "type": "STRING",
+      "required": false,
+      "defaultValue": "parsedDocument"
+    },
+    {
+      "name": "extractionTypes",
+      "description": "A list of strings specifying what content to extract. Multiple types can be provided.",
+      "type": "LIST",
+      "listElementType": "STRING",
+      "required": false,
+      "defaultValue": ["PLAIN_TEXT", "METADATA"],
+      "allowedValues": ["PLAIN_TEXT", "LAYOUT_TEXT", "HTML", "TABLES", "METADATA"]
+    },
+    {
+      "name": "password",
+      "description": "Optional password for opening encrypted documents (e.g., password-protected PDFs).",
+      "type": "STRING",
+      "required": false
+    },
+    {
+      "name": "tikaConfigPath",
+      "description": "Optional path to a custom Tika configuration XML file (tika-config.xml). If not provided, default Tika configuration is used.",
+      "type": "STRING",
+      "required": false
+    }
+  ]
+}

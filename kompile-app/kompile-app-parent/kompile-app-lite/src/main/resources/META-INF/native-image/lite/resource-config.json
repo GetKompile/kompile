@@ -1,0 +1,13 @@
+{
+  "resources": {
+    "includes": [
+      {"pattern": "application.*"},
+      {"pattern": "META-INF/native-image/.*\\.json"},
+      {"pattern": "org/bytedeco/.*"},
+      {"pattern": "log4j2\\.component\\.properties"},
+      {"pattern": "model-sources\\.yml"},
+      {"pattern": "schema\\.sql"},
+      {"pattern": "db/migration/.*"}
+    ]
+  }
+}
